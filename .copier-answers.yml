@@ -1,0 +1,14 @@
+# This file is managed by Copier; DO NOT EDIT OR REMOVE.
+_commit: 7e940d9
+_src_path: https://github.com/panel-extensions/copier-template-panel-extension
+add_autobump_workflow: true
+author_email: philipp.jfr@gmail.com
+author_name: Philipp Rudiger
+docs_url: https://panel-extensions.github.io/panel-flowdash/
+extension_type: panel
+github_url: https://github.com/panel-extensions/panel-flowdash
+github_user: panel-extensions
+minimal_python_version: py310
+project_short_description: Extends Panel with a dataflow and draggable grid based
+    dashboard editor.
+project_slug: panel-flowdash
