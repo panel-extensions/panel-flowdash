@@ -1,8 +1,7 @@
-"""Core tests module."""
+"""Core tests - basic import and version check."""
 
-import panel_flowdash  # noqa
+import panel_flowdash
 
 
-def test_example():
-    """Test example."""
-    assert panel_flowdash
+def test_import():
+    assert panel_flowdash.__version__

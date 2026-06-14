@@ -1,19 +1,34 @@
 [project]
 site_name = "panel-flowdash"
-site_description = "Extends Panel with a dataflow and draggable grid based dashboard editor."
+site_description = "A dataflow-driven dashboard builder for Panel."
 site_author = "Philipp Rudiger"
+site_url = "https://panel-extensions.github.io/panel-flowdash"
+site_dir = "builtdocs"
 repo_url = "https://github.com/panel-extensions/panel-flowdash"
 repo_name = "panel-extensions/panel-flowdash"
 edit_uri = "edit/main/docs/"
 nav = [
   {"Home" = "index.md"},
-  {"Examples" = "examples.md"},
-  {"Reference" = "reference/panel_flowdash.md"}
+  {"Quickstart" = "quickstart.md"},
+  {"How-to" = [
+    {"Register Components" = "how-to/register-components.md"},
+    {"Define Ports" = "how-to/define-ports.md"},
+    {"Wire the Dataflow" = "how-to/wire-dataflow.md"},
+    {"Persist Dashboards" = "how-to/persist-dashboards.md"},
+    {"Serve a Project" = "how-to/serve-project.md"}
+  ]},
+  {"Examples" = [
+    {"Gallery" = "examples/index.md"},
+    {"Viewer Components" = "examples/viewer-components.md"},
+    {"Multi-step Pipeline" = "examples/pipeline.md"}
+  ]},
+  {"Reference" = "reference/panel_flowdash.md"},
+  {"Releases" = "releases.md"}
 ]
 
 # Theme configuration
 [project.theme]
-logo = "assets/logo.svg"
+variant = "modern"
 features = [
   "announce.dismiss",
   "content.action.edit",
@@ -35,23 +50,22 @@ features = [
   "toc.follow"
 ]
 
-# Color palette - light mode
+# Color palette
 [[project.theme.palette]]
 media = "(prefers-color-scheme: light)"
 scheme = "default"
-primary = "white"
+primary = "custom"
 accent = "blue"
 
 [project.theme.palette.toggle]
 icon = "material/brightness-7"
 name = "Switch to dark mode"
 
-# Color palette - dark mode
 [[project.theme.palette]]
 media = "(prefers-color-scheme: dark)"
 scheme = "slate"
-primary = "black"
-accent = "blue"
+primary = "custom"
+accent = "black"
 
 [project.theme.palette.toggle]
 icon = "material/brightness-4"
@@ -63,22 +77,42 @@ permalink = true
 
 [project.markdown_extensions.pymdownx.highlight]
 anchor_linenums = true
+line_spans = "__span"
+pygments_lang_class = true
+
+[project.markdown_extensions.pymdownx.superfences]
 
 [project.markdown_extensions.pymdownx.tasklist]
 custom_checkbox = true
 
 [project.markdown_extensions.pymdownx.inlinehilite]
 
-[project.markdown_extensions.pymdownx.snippets]
-url_download = true
-
 [project.markdown_extensions.admonition]
 
-[project.markdown_extensions.pymdownx.superfences]
+[project.markdown_extensions.pymdownx.snippets]
+url_download = true
+base_path = ["."]
+
+[project.markdown_extensions.pymdownx.tabbed]
+alternate_style = true
+
+[project.markdown_extensions.pymdownx.emoji]
+emoji_index = "zensical.extensions.emoji.twemoji"
+emoji_generator = "zensical.extensions.emoji.to_svg"
+
+[project.markdown_extensions.attr_list]
+
+[project.markdown_extensions.md_in_html]
+
+[project.markdown_extensions.abbr]
+
+[project.markdown_extensions.def_list]
 
 # Plugins
 [project.plugins]
 search = {}
+typeset = {}
+literate_nav = {}
 
 [project.plugins.mkdocstrings.handlers.python]
 paths = ["src"]
@@ -93,24 +127,16 @@ filters = ["!^_"]
 
 [[project.extra.social]]
 icon = "fontawesome/brands/github"
-link = "https://github.com/panel-extensions"
-
-[[project.extra.social]]
-icon = "fontawesome/brands/twitter"
-link = "https://twitter.com/panel_org"
-
-[[project.extra.social]]
-icon = "fontawesome/brands/python"
-link = "https://pypi.org/project/panel-flowdash"
+link = "https://github.com/panel-extensions/panel-flowdash"
 
 [[project.extra.social]]
 icon = "fontawesome/brands/discourse"
-link = "https://discourse.holoviz.org/"
+link = "https://discourse.holoviz.org/c/panel/"
 
 [[project.extra.social]]
 icon = "fontawesome/brands/discord"
 link = "https://discord.com/invite/rb6gPXbdAr"
 
 [[project.extra.social]]
-icon = "fontawesome/brands/linkedin"
-link = "https://www.linkedin.com/company/panel-org"
+icon = "fontawesome/brands/python"
+link = "https://pypi.org/project/panel-flowdash/"

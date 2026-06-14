@@ -41,7 +41,13 @@ classifiers = [
 dependencies = [
     "packaging",
     "panel >=1.5.0",
+    "panel-material-ui",
+    "panel-reactflow",
+    "panel-tiles",
 ]
+
+[project.scripts]
+flowdash = "panel_flowdash.command:main"
 
 [project.urls]
 Homepage = "https://github.com/panel-extensions/panel-flowdash"
@@ -49,14 +55,16 @@ Source = "https://github.com/panel-extensions/panel-flowdash"
 
 [project.optional-dependencies]
 dev = [
-    "zensical",
-    "mkdocstrings[python]",
     "pre-commit",
     "pytest-asyncio",
     "pytest-rerunfailures",
     "pytest-xdist",
     "pytest",
     "watchfiles",
+]
+docs = [
+    "zensical",
+    "mkdocstrings[python]",
 ]
 mypy = [
     "mypy",
