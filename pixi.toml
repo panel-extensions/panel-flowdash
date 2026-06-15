@@ -44,7 +44,7 @@ twine = "*"
 wheel = "*"
 
 [feature.build.tasks]
-build-wheel = "python -m build --no-isolation ."
+build-wheel = "python -m build ."
 check-wheel = "twine check dist/*"
 
 [feature.lint.dependencies]
