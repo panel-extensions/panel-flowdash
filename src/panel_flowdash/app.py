@@ -150,7 +150,8 @@ def build_app_class(
             self._component_picker = self._make_component_picker()
             self._component_status = pn.pane.Alert("", alert_type="primary", visible=False)
             self._dataflow_graph = DataflowGraph(
-                self._component_specs, on_error=self._on_wiring_error,
+                self._component_specs,
+                on_error=self._on_wiring_error,
             )
             self._flow_canvas = self._build_flow_canvas()
             self._component_view = self._build_component_view()
@@ -174,10 +175,12 @@ def build_app_class(
                     for p in ("config", "executor", "instance_config", "context")
                     if hasattr(app, p)
                 }
-            return (
-                inspect.signature(app).parameters.keys()
-                & {"config", "executor", "instance_config", "context"}
-            )
+            return inspect.signature(app).parameters.keys() & {
+                "config",
+                "executor",
+                "instance_config",
+                "context",
+            }
 
         def _add_kwargs_dict(self, app, *, context: str, instance_config: dict | None = None):
             params = self._accepted_injected_params(app)
@@ -281,7 +284,8 @@ def build_app_class(
                 show_minimap=True,
                 sizing_mode="stretch_both",
                 min_height=600,
-                stylesheets=["""
+                stylesheets=[
+                    """\
                 .react-flow__node {
                   padding: 0;
                   border-radius: 6px;
@@ -297,8 +301,8 @@ def build_app_class(
                   height: 14px;
                   border: 1px solid black;
                   background: transparent;
-                }
-                """],
+                }"""
+                ],
             )
 
             def _on_edge_added(event):
@@ -316,7 +320,7 @@ def build_app_class(
                         if edge_id:
                             self._edge_id_map[edge_id] = (src_id, src_handle, tgt_id, tgt_handle)
                         pn.state.notifications.success(
-                            f"Wired: {src_handle} → {tgt_handle}", duration=3000,
+                            f"Wired: {src_handle} → {tgt_handle}", duration=3000
                         )
                     else:
                         logger.warning("Edge rejected: %s", result)
@@ -338,8 +342,11 @@ def build_app_class(
                 if node_id:
                     self._dataflow_graph.remove_node(node_id)
                     idx = next(
-                        (i for i, item in enumerate(self._tile_items)
-                         if item["instance_id"] == node_id),
+                        (
+                            i
+                            for i, item in enumerate(self._tile_items)
+                            if item["instance_id"] == node_id
+                        ),
                         None,
                     )
                     if idx is not None:
@@ -632,9 +639,9 @@ def build_app_class(
         async def _load_dashboard(self, dashboard_id: str):
             dashboard = self._store.load_dashboard(self._user_id, dashboard_id)
             if dashboard is None:
-                self._page.main = [pn.pane.Alert(
-                    f"Dashboard not found: {dashboard_id}", alert_type="danger",
-                )]
+                self._page.main = [
+                    pn.pane.Alert(f"Dashboard not found: {dashboard_id}", alert_type="danger")
+                ]
                 return
             self._current_dashboard = dashboard
             self._loading = True
@@ -687,27 +694,32 @@ def build_app_class(
             edge_counter = 0
             for edge in dashboard.edges:
                 success = self._dataflow_graph.add_edge(
-                    edge.source, edge.source_port, edge.target, edge.target_port,
+                    edge.source, edge.source_port, edge.target, edge.target_port
                 )
                 if success is True:
                     edge_counter += 1
                     edge_id = f"e{edge_counter}"
                     self._edge_id_map[edge_id] = (
-                        edge.source, edge.source_port, edge.target, edge.target_port,
+                        edge.source,
+                        edge.source_port,
+                        edge.target,
+                        edge.target_port,
                     )
-                    self._flow.add_edge({
-                        "id": edge_id,
-                        "source": edge.source,
-                        "target": edge.target,
-                        "sourceHandle": edge.source_port,
-                        "targetHandle": edge.target_port,
-                        "markerEnd": {"type": "arrowclosed"},
-                    })
+                    self._flow.add_edge(
+                        {
+                            "id": edge_id,
+                            "source": edge.source,
+                            "target": edge.target,
+                            "sourceHandle": edge.source_port,
+                            "targetHandle": edge.target_port,
+                            "markerEnd": {"type": "arrowclosed"},
+                        }
+                    )
 
             self._loading = False
             self._pending_tile_layout = dashboard.tile_layout or []
             self._set_component_status(
-                f"Loaded dashboard \"{dashboard.title}\" with {len(self._tile_items)} tiles.",
+                f'Loaded dashboard "{dashboard.title}" with {len(self._tile_items)} tiles.',
                 alert_type="primary",
             )
             self._show_view_mode()

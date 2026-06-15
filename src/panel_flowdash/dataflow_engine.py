@@ -25,16 +25,16 @@ def build_node_state_class(spec: ComponentSpec) -> type[param.Parameterized]:
     for port in spec.inputs:
         if port.name in _RESERVED_PARAMS:
             continue
-        params[port.name] = param.Parameter(
-            default=port.default, allow_None=True, allow_refs=True,
-        )
+        params[port.name] = param.Parameter(default=port.default, allow_None=True, allow_refs=True)
 
     for port in spec.outputs:
         if port.name in _RESERVED_PARAMS:
             continue
         if port.name not in params:
             params[port.name] = param.Parameter(
-                default=None, allow_None=True, allow_refs=True,
+                default=None,
+                allow_None=True,
+                allow_refs=True,
             )
 
     class_name = f"NodeState_{spec.component_id.replace('/', '_')}"
@@ -125,7 +125,7 @@ class DataflowGraph:
         target_spec = self._node_specs.get(target_id)
         if source_spec and target_spec:
             error = self._check_type_compatibility(
-                source_spec, source_port, target_spec, target_port,
+                source_spec, source_port, target_spec, target_port
             )
             if error:
                 return error
@@ -156,12 +156,14 @@ class DataflowGraph:
                 if self._on_error:
                     self._on_error(source_id, source_port, target_id, target_port, exc)
 
-        self._edges.append({
-            "source": source_id,
-            "source_port": source_port,
-            "target": target_id,
-            "target_port": target_port,
-        })
+        self._edges.append(
+            {
+                "source": source_id,
+                "source_port": source_port,
+                "target": target_id,
+                "target_port": target_port,
+            }
+        )
         return True
 
     def _would_create_cycle(self, source_id: str, target_id: str) -> bool:

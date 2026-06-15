@@ -115,7 +115,7 @@ class TestBuildAppClass:
     def test_db_defaults_to_project_dir(self, tmp_path):
         _create_project(tmp_path)
         db_path = tmp_path / "dashboards.db"
-        store = DashboardStore(db_path)
+        DashboardStore(db_path)
         assert db_path.exists()
 
 
@@ -123,7 +123,8 @@ class TestCLI:
     def test_version(self):
         result = subprocess.run(
             [sys.executable, "-m", "panel_flowdash.command", "--version"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         assert result.returncode == 0
         assert "unknown" not in result.stdout or result.stdout.strip()
@@ -131,7 +132,8 @@ class TestCLI:
     def test_help(self):
         result = subprocess.run(
             [sys.executable, "-m", "panel_flowdash.command", "serve", "--help"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         assert result.returncode == 0
         assert "directory" in result.stdout
@@ -141,6 +143,7 @@ class TestCLI:
     def test_missing_directory(self):
         result = subprocess.run(
             [sys.executable, "-m", "panel_flowdash.command", "serve", "/nonexistent/path"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         assert result.returncode != 0

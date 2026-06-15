@@ -141,7 +141,9 @@ class DashboardStore:
             """)
             for col, default in [("edges_json", "'[]'"), ("tile_layout_json", "'[]'")]:
                 try:
-                    conn.execute(f"ALTER TABLE dashboards ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}")
+                    conn.execute(
+                        f"ALTER TABLE dashboards ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}"
+                    )
                 except sqlite3.OperationalError:
                     pass
 
