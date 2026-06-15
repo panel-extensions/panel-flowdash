@@ -17,13 +17,8 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: 3b3f7c3f57fe9925356faf5fe6230835138be230  # frozen: v0.15.17
     hooks:
-      - id: ruff
-        args: ["check", "--select", "I", "--fix"]
-        files: "^src/"
       - id: ruff-format
-        types_or: [python, pyi]
-      - id: ruff
-        args: [--fix]
+      - id: ruff-check
   - repo: https://github.com/hoxbro/clean_notebook
     rev: 2e6f506fab3cdfbe16bc18fd0d24e828db773b74  # frozen: v0.2.1
     hooks:
