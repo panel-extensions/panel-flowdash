@@ -2,7 +2,6 @@
 
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 from panel_flowdash.app import build_app_class, build_registry
@@ -71,9 +70,7 @@ class TestBuildRegistry:
         hidden = tmp_path / ".hidden"
         hidden.mkdir()
         (hidden / "mod.py").write_text(
-            "from panel_flowdash import register\n\n"
-            "@register(component=True)\n"
-            "def app(): pass\n"
+            "from panel_flowdash import register\n\n@register(component=True)\ndef app(): pass\n"
         )
         sys.path.insert(0, str(tmp_path))
         try:
@@ -118,7 +115,7 @@ class TestBuildAppClass:
     def test_db_defaults_to_project_dir(self, tmp_path):
         _create_project(tmp_path)
         db_path = tmp_path / "dashboards.db"
-        store = DashboardStore(db_path)
+        DashboardStore(db_path)
         assert db_path.exists()
 
 
@@ -126,7 +123,8 @@ class TestCLI:
     def test_version(self):
         result = subprocess.run(
             [sys.executable, "-m", "panel_flowdash.command", "--version"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         assert result.returncode == 0
         assert "unknown" not in result.stdout or result.stdout.strip()
@@ -134,7 +132,8 @@ class TestCLI:
     def test_help(self):
         result = subprocess.run(
             [sys.executable, "-m", "panel_flowdash.command", "serve", "--help"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         assert result.returncode == 0
         assert "directory" in result.stdout
@@ -144,6 +143,7 @@ class TestCLI:
     def test_missing_directory(self):
         result = subprocess.run(
             [sys.executable, "-m", "panel_flowdash.command", "serve", "/nonexistent/path"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         assert result.returncode != 0

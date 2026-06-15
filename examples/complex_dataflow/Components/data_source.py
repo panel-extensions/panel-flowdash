@@ -1,9 +1,9 @@
 """Loads the wind turbines dataset and outputs it as a DataFrame."""
 
-import param
 import pandas as pd
 import panel as pn
 import panel_material_ui as pmui
+import param
 
 from panel_flowdash import register
 
@@ -17,8 +17,10 @@ class app(pn.viewable.Viewer):
     @param.output(param.DataFrame)
     @param.depends("n_rows")
     def dataset(self):
-        df = pn.state.as_cached("data", pd.read_parquet,
-            path="http://datasets.holoviz.org/windturbines/v1/windturbines.parquet"
+        df = pn.state.as_cached(
+            "data",
+            pd.read_parquet,
+            path="http://datasets.holoviz.org/windturbines/v1/windturbines.parquet",
         )
         return df.head(self.n_rows)
 
@@ -26,8 +28,8 @@ class app(pn.viewable.Viewer):
         return pn.Column(
             pmui.IntInput.from_param(self.param.n_rows, label="Max rows"),
             pn.pane.Markdown(
-                pn.rx(
-                    "Loading up to **{n_rows}** rows from the wind turbines dataset."
-                ).format(n_rows=self.param.n_rows)
-            )
+                pn.rx("Loading up to **{n_rows}** rows from the wind turbines dataset.").format(
+                    n_rows=self.param.n_rows
+                )
+            ),
         )

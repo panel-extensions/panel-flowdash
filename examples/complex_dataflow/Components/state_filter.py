@@ -1,9 +1,9 @@
 """Filters the dataset by US state."""
 
-import param
+import pandas as pd
 import panel as pn
 import panel_material_ui as pmui
-import pandas as pd
+import param
 
 from panel_flowdash import register
 
@@ -37,8 +37,10 @@ class app(pn.viewable.Viewer):
     def __panel__(self):
         return pn.Column(
             pmui.Select.from_param(self.param.state, label="State"),
-            pn.pane.Markdown(pn.rx("**{n}** turbines in {s}").format(
-                n=pn.rx(self.filtered).rx.pipe(len),
-                s=self.param.state,
-            )),
+            pn.pane.Markdown(
+                pn.rx("**{n}** turbines in {s}").format(
+                    n=pn.rx(self.filtered).rx.pipe(len),
+                    s=self.param.state,
+                )
+            ),
         )

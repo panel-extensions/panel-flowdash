@@ -549,6 +549,7 @@ class TestRuntimeValidation:
         }
 
         errors = []
+
         def capture_error(src_id, src_port, tgt_id, tgt_port, exc):
             errors.append((src_id, src_port, tgt_id, tgt_port, exc))
 

@@ -150,7 +150,8 @@ def build_app_class(
             self._component_picker = self._make_component_picker()
             self._component_status = pn.pane.Alert("", alert_type="primary", visible=False)
             self._dataflow_graph = DataflowGraph(
-                self._component_specs, on_error=self._on_wiring_error,
+                self._component_specs,
+                on_error=self._on_wiring_error,
             )
             self._flow_canvas = self._build_flow_canvas()
             self._component_view = self._build_component_view()
@@ -166,6 +167,7 @@ def build_app_class(
                 return pn.state.user
             return "default"
 
+        @staticmethod
         @cache
         def _accepted_injected_params(self, app):
             if inspect.isclass(app) and issubclass(app, pn.viewable.Viewer):
@@ -174,10 +176,12 @@ def build_app_class(
                     for p in ("config", "executor", "instance_config", "context")
                     if hasattr(app, p)
                 }
-            return (
-                inspect.signature(app).parameters.keys()
-                & {"config", "executor", "instance_config", "context"}
-            )
+            return inspect.signature(app).parameters.keys() & {
+                "config",
+                "executor",
+                "instance_config",
+                "context",
+            }
 
         def _add_kwargs_dict(self, app, *, context: str, instance_config: dict | None = None):
             params = self._accepted_injected_params(app)
@@ -248,8 +252,12 @@ def build_app_class(
                 groups.setdefault(section, {})[entry.title] = app_id
             value = next(iter(self._component_entries), None)
             return pmui.Select(
-                label="Component", groups=groups, value=value,
-                searchable=True, filter_on_search=True, size="small",
+                label="Component",
+                groups=groups,
+                value=value,
+                searchable=True,
+                filter_on_search=True,
+                size="small",
             )
 
         def _build_flow_canvas(self):
@@ -260,8 +268,7 @@ def build_app_class(
                     type=type_key,
                     label=spec.title,
                     inputs=[
-                        {"id": port.name, "label": port.label or port.name}
-                        for port in spec.inputs
+                        {"id": port.name, "label": port.label or port.name} for port in spec.inputs
                     ],
                     outputs=[
                         {"id": port.name, "label": port.label or port.name}
@@ -278,7 +285,8 @@ def build_app_class(
                 show_minimap=True,
                 sizing_mode="stretch_both",
                 min_height=600,
-                stylesheets=["""
+                stylesheets=[
+                    """\
                 .react-flow__node {
                   padding: 0;
                   border-radius: 6px;
@@ -294,8 +302,8 @@ def build_app_class(
                   height: 14px;
                   border: 1px solid black;
                   background: transparent;
-                }
-                """],
+                }"""
+                ],
             )
 
             def _on_edge_added(event):
@@ -313,7 +321,7 @@ def build_app_class(
                         if edge_id:
                             self._edge_id_map[edge_id] = (src_id, src_handle, tgt_id, tgt_handle)
                         pn.state.notifications.success(
-                            f"Wired: {src_handle} → {tgt_handle}", duration=3000,
+                            f"Wired: {src_handle} → {tgt_handle}", duration=3000
                         )
                     else:
                         logger.warning("Edge rejected: %s", result)
@@ -335,8 +343,11 @@ def build_app_class(
                 if node_id:
                     self._dataflow_graph.remove_node(node_id)
                     idx = next(
-                        (i for i, item in enumerate(self._tile_items)
-                         if item["instance_id"] == node_id),
+                        (
+                            i
+                            for i, item in enumerate(self._tile_items)
+                            if item["instance_id"] == node_id
+                        ),
                         None,
                     )
                     if idx is not None:
@@ -412,7 +423,9 @@ def build_app_class(
 
         def _build_component_view(self):
             self._add_button = pmui.Button(icon="add", color="primary", variant="outlined")
-            self._clear_button = pmui.Button(icon="delete_sweep", color="danger", variant="outlined")
+            self._clear_button = pmui.Button(
+                icon="delete_sweep", color="danger", variant="outlined"
+            )
             self._save_button = pmui.Button(icon="save", color="primary", variant="outlined")
             self._add_button.on_click(lambda _event: self._add_component_to_graph())
             self._clear_button.on_click(lambda _event: self._clear_components())
@@ -447,8 +460,11 @@ def build_app_class(
             self._mode_toggle.param.watch(_on_mode_change, "value")
 
             self._controls_row = pn.Row(
-                self._component_picker, self._add_button,
-                self._clear_button, self._save_button, self._mode_toggle,
+                self._component_picker,
+                self._add_button,
+                self._clear_button,
+                self._save_button,
+                self._mode_toggle,
                 sizing_mode="stretch_width",
                 align="center",
             )
@@ -476,7 +492,11 @@ def build_app_class(
         def _on_wiring_error(self, source_id, source_port, target_id, target_port, exc):
             logger.error(
                 "Runtime wiring error (%s.%s -> %s.%s): %s",
-                source_id, source_port, target_id, target_port, exc,
+                source_id,
+                source_port,
+                target_id,
+                target_port,
+                exc,
                 exc_info=exc,
             )
             pn.state.notifications.error(
@@ -579,7 +599,8 @@ def build_app_class(
         def _save_current_dashboard(self):
             if self._current_dashboard is None:
                 self._set_component_status(
-                    "No dashboard loaded. Create one from the sidebar.", alert_type="warning",
+                    "No dashboard loaded. Create one from the sidebar.",
+                    alert_type="warning",
                 )
                 return
 
@@ -611,7 +632,7 @@ def build_app_class(
             self._current_dashboard.tile_layout = self._tile_grid.layout
             self._store.save_dashboard(self._current_dashboard)
             self._set_component_status(
-                f"Dashboard \"{self._current_dashboard.title}\" saved.",
+                f'Dashboard "{self._current_dashboard.title}" saved.',
                 alert_type="success",
             )
 
@@ -619,9 +640,9 @@ def build_app_class(
         async def _load_dashboard(self, dashboard_id: str):
             dashboard = self._store.load_dashboard(self._user_id, dashboard_id)
             if dashboard is None:
-                self._page.main = [pn.pane.Alert(
-                    f"Dashboard not found: {dashboard_id}", alert_type="danger",
-                )]
+                self._page.main = [
+                    pn.pane.Alert(f"Dashboard not found: {dashboard_id}", alert_type="danger")
+                ]
                 return
             self._current_dashboard = dashboard
             self._loading = True
@@ -650,7 +671,9 @@ def build_app_class(
                 try:
                     view = self._instantiate_for_node(entry, node_state)
                 except Exception:
-                    logger.exception("Error loading component '%s' (%s)", component_id, instance_id)
+                    logger.exception(
+                        "Error loading component '%s' (%s)", component_id, instance_id
+                    )
                     self._dataflow_graph.remove_node(instance_id)
                     continue
 
@@ -672,27 +695,32 @@ def build_app_class(
             edge_counter = 0
             for edge in dashboard.edges:
                 success = self._dataflow_graph.add_edge(
-                    edge.source, edge.source_port, edge.target, edge.target_port,
+                    edge.source, edge.source_port, edge.target, edge.target_port
                 )
                 if success is True:
                     edge_counter += 1
                     edge_id = f"e{edge_counter}"
                     self._edge_id_map[edge_id] = (
-                        edge.source, edge.source_port, edge.target, edge.target_port,
+                        edge.source,
+                        edge.source_port,
+                        edge.target,
+                        edge.target_port,
                     )
-                    self._flow.add_edge({
-                        "id": edge_id,
-                        "source": edge.source,
-                        "target": edge.target,
-                        "sourceHandle": edge.source_port,
-                        "targetHandle": edge.target_port,
-                        "markerEnd": {"type": "arrowclosed"},
-                    })
+                    self._flow.add_edge(
+                        {
+                            "id": edge_id,
+                            "source": edge.source,
+                            "target": edge.target,
+                            "sourceHandle": edge.source_port,
+                            "targetHandle": edge.target_port,
+                            "markerEnd": {"type": "arrowclosed"},
+                        }
+                    )
 
             self._loading = False
             self._pending_tile_layout = dashboard.tile_layout or []
             self._set_component_status(
-                f"Loaded dashboard \"{dashboard.title}\" with {len(self._tile_items)} tiles.",
+                f'Loaded dashboard "{dashboard.title}" with {len(self._tile_items)} tiles.',
                 alert_type="primary",
             )
             self._show_view_mode()
@@ -701,14 +729,16 @@ def build_app_class(
         def _create_new_dashboard(self, title_str: str):
             title_str = title_str.strip()
             if not title_str:
-                self._set_component_status("Dashboard title cannot be empty.", alert_type="warning")
+                self._set_component_status(
+                    "Dashboard title cannot be empty.", alert_type="warning"
+                )
                 return
             dashboard = self._store.create_dashboard(self._user_id, title_str)
             self._current_dashboard = dashboard
             self._tile_items = []
             self._tile_objects = []
             self._set_component_status(
-                f"Created new dashboard \"{dashboard.title}\".",
+                f'Created new dashboard "{dashboard.title}".',
                 alert_type="success",
             )
             self._refresh_sidebar_dashboards()
@@ -761,7 +791,7 @@ def build_app_class(
                 return
 
             if pathname.startswith(DASH_ROUTE_PREFIX):
-                dashboard_id = pathname[len(DASH_ROUTE_PREFIX):].strip("/")
+                dashboard_id = pathname[len(DASH_ROUTE_PREFIX) :].strip("/")
                 if dashboard_id:
                     await self._load_dashboard(dashboard_id)
                     return
@@ -789,10 +819,7 @@ def build_app_class(
         def _show_view_mode(self):
             self._controls_row.visible = False
             self._component_status.visible = False
-            self._tile_grid.param.update(
-                card=False,
-                editable=False
-            )
+            self._tile_grid.param.update(card=False, editable=False)
             self._workspace_area[:] = [self._tile_grid]
             self._rebuild_tile_grid()
 
@@ -806,26 +833,30 @@ def build_app_class(
             items = []
             dashboards = self._store.list_dashboards(self._user_id)
             for d in dashboards:
-                items.append({
-                    "icon": "dashboard",
-                    "label": d.title,
-                    "path": f"{DASH_ROUTE_PREFIX}{d.dashboard_id}",
-                    "href": f"{DASH_ROUTE_PREFIX}{d.dashboard_id}",
+                items.append(
+                    {
+                        "icon": "dashboard",
+                        "label": d.title,
+                        "path": f"{DASH_ROUTE_PREFIX}{d.dashboard_id}",
+                        "href": f"{DASH_ROUTE_PREFIX}{d.dashboard_id}",
+                        "disable_link": True,
+                        "actions": self._DASHBOARD_ACTIONS,
+                    }
+                )
+            items.append(
+                {
+                    "icon": "add",
+                    "label": "New Dashboard",
+                    "path": "__new_dashboard__",
                     "disable_link": True,
-                    "actions": self._DASHBOARD_ACTIONS,
-                })
-            items.append({
-                "icon": "add",
-                "label": "New Dashboard",
-                "path": "__new_dashboard__",
-                "disable_link": True,
-                "actions": [{"label": "Create", "icon": "add", "inline": True}],
-            })
+                    "actions": [{"label": "Create", "icon": "add", "inline": True}],
+                }
+            )
             return items
 
         def _dashboard_id_from_path(self, path: str) -> str | None:
             if path and path.startswith(DASH_ROUTE_PREFIX):
-                return path[len(DASH_ROUTE_PREFIX):].strip("/")
+                return path[len(DASH_ROUTE_PREFIX) :].strip("/")
             return None
 
         def _on_action_edit(self, item):
@@ -895,7 +926,8 @@ def build_app_class(
         @pn.io.hold()
         def _build_dialog(self):
             self._dialog_name_input = pmui.TextInput(
-                label="Name", sizing_mode="stretch_width",
+                label="Name",
+                sizing_mode="stretch_width",
             )
             confirm_btn = pmui.Button(label="Confirm", color="primary")
             cancel_btn = pmui.Button(label="Cancel", color="light")

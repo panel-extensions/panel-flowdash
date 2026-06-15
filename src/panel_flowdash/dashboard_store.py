@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -114,11 +115,19 @@ class DashboardStore:
         self._db_path = str(db_path)
         self._init_db()
 
-    def _get_conn(self) -> sqlite3.Connection:
+    @contextmanager
+    def _get_conn(self):
         conn = sqlite3.connect(self._db_path)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.row_factory = sqlite3.Row
-        return conn
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def _init_db(self):
         with self._get_conn() as conn:
@@ -141,7 +150,9 @@ class DashboardStore:
             """)
             for col, default in [("edges_json", "'[]'"), ("tile_layout_json", "'[]'")]:
                 try:
-                    conn.execute(f"ALTER TABLE dashboards ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}")
+                    conn.execute(
+                        f"ALTER TABLE dashboards ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}"
+                    )
                 except sqlite3.OperationalError:
                     pass
 
@@ -180,7 +191,15 @@ class DashboardStore:
                     tile_layout_json = excluded.tile_layout_json,
                     updated_at = datetime('now')
                 """,
-                (dashboard.dashboard_id, dashboard.user_id, dashboard.title, dashboard.version, items_json, edges_json, tile_layout_json),
+                (
+                    dashboard.dashboard_id,
+                    dashboard.user_id,
+                    dashboard.title,
+                    dashboard.version,
+                    items_json,
+                    edges_json,
+                    tile_layout_json,
+                ),
             )
 
     def delete_dashboard(self, user_id: str, dashboard_id: str) -> bool:

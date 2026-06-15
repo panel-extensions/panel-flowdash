@@ -1,8 +1,8 @@
 """Scatter plot of turbine locations colored by capacity."""
 
-import param
-import panel as pn
 import pandas as pd
+import panel as pn
+import param
 
 from panel_flowdash import register
 

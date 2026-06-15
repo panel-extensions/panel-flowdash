@@ -1,8 +1,7 @@
 """Displays a DataFrame in a Tabulator table."""
 
-import param
 import panel as pn
-import pandas as pd
+import param
 
 from panel_flowdash import register
 
