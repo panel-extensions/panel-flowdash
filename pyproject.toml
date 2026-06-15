@@ -74,21 +74,7 @@ mypy = [
 ]
 
 [tool.ruff]
-exclude = [
-    ".git",
-    "__pycache__",
-    ".tox",
-    ".eggs",
-    "*.egg",
-    "doc",
-    "dist",
-    "build",
-    "_build",
-    "examples",
-    ".ipynb_checkpoints",
-    "node_modules",
-]
-line-length = 165
+line-length = 99
 fix = true
 
 [tool.ruff.lint]
@@ -132,7 +118,8 @@ convention = "numpy"
 "*_test.py" = ["D"]
 
 [tool.ruff.lint.isort]
-force-single-line = true
+known-first-party = ["panel_flowdash"]
+combine-as-imports = true
 
 [tool.pytest.ini_options]
 addopts = "--pyargs --doctest-ignore-import-errors --color=yes"

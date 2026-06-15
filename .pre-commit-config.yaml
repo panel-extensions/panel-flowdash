@@ -2,7 +2,7 @@ default_stages: [pre-commit]
 exclude: ^(\.copier-answers\.yml)|.pixi$
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c  # frozen: v6.0.0
     hooks:
       - id: check-builtin-literals
       - id: check-case-conflict
@@ -15,7 +15,7 @@ repos:
         exclude: \.min\.js$
       - id: trailing-whitespace
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.8.0
+    rev: 3b3f7c3f57fe9925356faf5fe6230835138be230  # frozen: v0.15.17
     hooks:
       - id: ruff
         args: ["check", "--select", "I", "--fix"]
@@ -25,24 +25,24 @@ repos:
       - id: ruff
         args: [--fix]
   - repo: https://github.com/hoxbro/clean_notebook
-    rev: v0.1.15
+    rev: 2e6f506fab3cdfbe16bc18fd0d24e828db773b74  # frozen: v0.2.1
     hooks:
       - id: clean-notebook
         args: [-i, tags]
   - repo: https://github.com/codespell-project/codespell
-    rev: v2.3.0
+    rev: 2ccb47ff45ad361a21071a7eedda4c37e6ae8c5a  # frozen: v2.4.2
     hooks:
       - id: codespell
         additional_dependencies:
           - tomli
   - repo: https://github.com/hoxbro/prettier-pre-commit
-    rev: v3.3.3
+    rev: df80de29d357cd4f5a116d1226eae3b8352271bd  # frozen: v3.8.4
     hooks:
       - id: prettier
         entry: prettier --write --ignore-unknown --no-error-on-unmatched-pattern
         types_or: [css]
   - repo: https://github.com/shssoichiro/oxipng
-    rev: v9.1.3
+    rev: 628e241e23f368097883807fa6e985ccf7c00357  # frozen: v10.1.1
     hooks:
       - id: oxipng
         stages: [manual]
