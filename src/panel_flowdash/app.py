@@ -167,6 +167,7 @@ def build_app_class(
                 return pn.state.user
             return "default"
 
+        @staticmethod
         @cache
         def _accepted_injected_params(self, app):
             if inspect.isclass(app) and issubclass(app, pn.viewable.Viewer):

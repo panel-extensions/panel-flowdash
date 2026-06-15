@@ -86,7 +86,7 @@ class Serve:
     def invoke(self, args: argparse.Namespace):
         project_dir = Path(args.directory).resolve()
         if not project_dir.is_dir():
-            print(f"ERROR: '{args.directory}' is not a directory.")
+            print(f"ERROR: '{args.directory}' is not a directory.", file=sys.stderr)  # noqa: T201
             raise SystemExit(1)
 
         db_path = args.db_path or str(project_dir / "dashboards.db")
