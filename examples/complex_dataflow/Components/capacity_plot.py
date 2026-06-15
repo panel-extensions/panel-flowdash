@@ -1,8 +1,8 @@
 """Plots turbine capacity by year for filtered data."""
 
-import param
-import panel as pn
 import pandas as pd
+import panel as pn
+import param
 
 from panel_flowdash import register
 

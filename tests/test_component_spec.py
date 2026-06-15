@@ -4,9 +4,6 @@ import param
 from panel.viewable import Viewer
 
 from panel_flowdash import (
-    ComponentSpec,
-    InputPort,
-    OutputPort,
     PanelAppMetadata,
     RegistryEntry,
     build_component_spec,
@@ -79,8 +76,21 @@ class TestDecoratorDictPorts:
         @register(
             component=True,
             requires=[
-                {"key": "company", "type": "str", "label": "Company Name", "required": True, "blocking": True},
-                {"key": "date", "type": "date", "label": "Filter Date", "required": False, "blocking": False, "fallback": "2024-01-01"},
+                {
+                    "key": "company",
+                    "type": "str",
+                    "label": "Company Name",
+                    "required": True,
+                    "blocking": True,
+                },
+                {
+                    "key": "date",
+                    "type": "date",
+                    "label": "Filter Date",
+                    "required": False,
+                    "blocking": False,
+                    "fallback": "2024-01-01",
+                },
             ],
         )
         def app(config):

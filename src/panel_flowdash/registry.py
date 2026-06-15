@@ -84,7 +84,7 @@ def register(
     def _decorator(app):
         _APP_METADATA_BY_ID[id(app)] = metadata
         try:
-            setattr(app, "__panel_app_metadata__", metadata)
+            app.__panel_app_metadata__ = metadata
         except Exception:
             pass
         return app

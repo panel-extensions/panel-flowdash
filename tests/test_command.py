@@ -2,7 +2,6 @@
 
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 from panel_flowdash.app import build_app_class, build_registry
@@ -71,9 +70,7 @@ class TestBuildRegistry:
         hidden = tmp_path / ".hidden"
         hidden.mkdir()
         (hidden / "mod.py").write_text(
-            "from panel_flowdash import register\n\n"
-            "@register(component=True)\n"
-            "def app(): pass\n"
+            "from panel_flowdash import register\n\n@register(component=True)\ndef app(): pass\n"
         )
         sys.path.insert(0, str(tmp_path))
         try:

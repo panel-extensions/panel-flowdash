@@ -1,9 +1,9 @@
 """Filters the dataset by US state."""
 
-import param
+import pandas as pd
 import panel as pn
 import panel_material_ui as pmui
-import pandas as pd
+import param
 
 from panel_flowdash import register
 

@@ -3,23 +3,22 @@
 import importlib.metadata
 import warnings
 
-from panel_flowdash.component_spec import ComponentSpec
-from panel_flowdash.component_spec import InputPort
-from panel_flowdash.component_spec import OutputPort
-from panel_flowdash.component_spec import build_component_spec
-from panel_flowdash.component_spec import build_component_specs
-from panel_flowdash.dashboard_store import DashboardEdge
-from panel_flowdash.dashboard_store import DashboardItem
-from panel_flowdash.dashboard_store import DashboardModel
-from panel_flowdash.dashboard_store import DashboardStore
-from panel_flowdash.dataflow_engine import DataflowGraph
-from panel_flowdash.dataflow_engine import build_node_state_class
-from panel_flowdash.registry import PanelAppMetadata
-from panel_flowdash.registry import RegistryEntry
-from panel_flowdash.registry import panel_app
-from panel_flowdash.registry import register
-from panel_flowdash.session_state import build_session_state_class
-from panel_flowdash.session_state import check_requirements
+from panel_flowdash.component_spec import (
+    ComponentSpec,
+    InputPort,
+    OutputPort,
+    build_component_spec,
+    build_component_specs,
+)
+from panel_flowdash.dashboard_store import (
+    DashboardEdge,
+    DashboardItem,
+    DashboardModel,
+    DashboardStore,
+)
+from panel_flowdash.dataflow_engine import DataflowGraph, build_node_state_class
+from panel_flowdash.registry import PanelAppMetadata, RegistryEntry, panel_app, register
+from panel_flowdash.session_state import build_session_state_class, check_requirements
 
 try:
     __version__ = importlib.metadata.version(__name__)

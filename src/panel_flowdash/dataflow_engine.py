@@ -10,12 +10,10 @@ assigned to the target port inside a try/except so that runtime type errors
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
 
 import param
 
-from panel_flowdash.component_spec import ComponentSpec, InputPort, OutputPort
-
+from panel_flowdash.component_spec import ComponentSpec
 
 _RESERVED_PARAMS = set(param.Parameterized.param)
 
@@ -83,10 +81,7 @@ class DataflowGraph:
 
     def remove_node(self, instance_id: str):
         """Remove a node and any edges connected to it."""
-        keys_to_remove = [
-            k for k in self._watchers
-            if k[0] == instance_id or k[2] == instance_id
-        ]
+        keys_to_remove = [k for k in self._watchers if k[0] == instance_id or k[2] == instance_id]
         for key in keys_to_remove:
             watcher = self._watchers.pop(key)
             src = self._nodes.get(key[0])
@@ -94,8 +89,7 @@ class DataflowGraph:
                 src.param.unwatch(watcher)
 
         self._edges = [
-            e for e in self._edges
-            if e["source"] != instance_id and e["target"] != instance_id
+            e for e in self._edges if e["source"] != instance_id and e["target"] != instance_id
         ]
         self._nodes.pop(instance_id, None)
         self._node_specs.pop(instance_id, None)
@@ -136,9 +130,14 @@ class DataflowGraph:
             if error:
                 return error
 
-        def _propagate(event, _src_id=source_id, _src_port=source_port,
-                       _tgt_id=target_id, _tgt_port=target_port,
-                       _target=target_state):
+        def _propagate(
+            event,
+            _src_id=source_id,
+            _src_port=source_port,
+            _tgt_id=target_id,
+            _tgt_port=target_port,
+            _target=target_state,
+        ):
             try:
                 setattr(_target, _tgt_port, event.new)
             except Exception as exc:
@@ -217,7 +216,8 @@ class DataflowGraph:
     def remove_edge(self, source_id: str, source_port: str, target_id: str, target_port: str):
         """Remove an edge, unsubscribe the watcher, and reset target to default."""
         self._edges = [
-            e for e in self._edges
+            e
+            for e in self._edges
             if not (
                 e["source"] == source_id
                 and e["source_port"] == source_port

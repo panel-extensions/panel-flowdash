@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import param
@@ -49,6 +49,7 @@ class ComponentSpec:
 _BASE_PARAMS: set[str] = set(param.Parameterized.param)
 try:
     from panel.viewable import Viewable
+
     _BASE_PARAMS |= set(Viewable.param)
 except Exception:
     pass
@@ -62,25 +63,29 @@ def _ports_from_metadata(
         if isinstance(item, str):
             outputs.append(OutputPort(name=item))
         elif isinstance(item, dict):
-            outputs.append(OutputPort(
-                name=item["key"],
-                type=item.get("type"),
-                label=item.get("label"),
-            ))
+            outputs.append(
+                OutputPort(
+                    name=item["key"],
+                    type=item.get("type"),
+                    label=item.get("label"),
+                )
+            )
 
     inputs = []
     for item in metadata.requires:
         if isinstance(item, str):
             inputs.append(InputPort(name=item))
         elif isinstance(item, dict):
-            inputs.append(InputPort(
-                name=item.get("key", ""),
-                type=item.get("type"),
-                label=item.get("label"),
-                required=item.get("required", True),
-                blocking=item.get("blocking", True),
-                default=item.get("fallback"),
-            ))
+            inputs.append(
+                InputPort(
+                    name=item.get("key", ""),
+                    type=item.get("type"),
+                    label=item.get("label"),
+                    required=item.get("required", True),
+                    blocking=item.get("blocking", True),
+                    default=item.get("fallback"),
+                )
+            )
 
     return outputs, inputs
 
@@ -106,12 +111,14 @@ def _ports_from_viewer_class(
         if pname in _BASE_PARAMS or pname.startswith("_"):
             continue
         type_str = type(p).__name__ if p else None
-        inputs.append(InputPort(
-            name=pname,
-            type=type_str,
-            required=False,
-            blocking=False,
-        ))
+        inputs.append(
+            InputPort(
+                name=pname,
+                type=type_str,
+                required=False,
+                blocking=False,
+            )
+        )
 
     return outputs, inputs
 

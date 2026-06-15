@@ -10,9 +10,9 @@ from pathlib import Path
 from typing import Any
 
 import panel as pn
+
 from panel_flowdash.app import build_app_class
 from panel_flowdash.dashboard_store import DashboardStore
-
 
 log = logging.getLogger(__name__)
 

@@ -180,7 +180,15 @@ class DashboardStore:
                     tile_layout_json = excluded.tile_layout_json,
                     updated_at = datetime('now')
                 """,
-                (dashboard.dashboard_id, dashboard.user_id, dashboard.title, dashboard.version, items_json, edges_json, tile_layout_json),
+                (
+                    dashboard.dashboard_id,
+                    dashboard.user_id,
+                    dashboard.title,
+                    dashboard.version,
+                    items_json,
+                    edges_json,
+                    tile_layout_json,
+                ),
             )
 
     def delete_dashboard(self, user_id: str, dashboard_id: str) -> bool:
