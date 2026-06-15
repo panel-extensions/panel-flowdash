@@ -1162,7 +1162,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/win-64/vcomp14-14.51.36231-h1b9f54f_39.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/yaml-0.2.5-h6a83c73_3.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/zstd-1.5.7-h534d264_6.conda
-  py310:
+  test-310:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
     indexes:
@@ -1500,7 +1500,7 @@ environments:
       - conda_source: panel_flowdash[3c051db0] @ .
       - pypi: https://files.pythonhosted.org/packages/65/51/80af081eee54ad73079e3e23c572024fef6d8dec04e2688ec29f0d14d72c/panel_reactflow-0.4.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/fb/f1/8337920d09ab3c1177d9fdca5884c910abe1e31b43ce6759152c895fba48/panel_tiles-0.2.0-py3-none-any.whl
-  py311:
+  test-311:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
     indexes:
@@ -1833,7 +1833,7 @@ environments:
       - conda_source: panel_flowdash[3c051db0] @ .
       - pypi: https://files.pythonhosted.org/packages/65/51/80af081eee54ad73079e3e23c572024fef6d8dec04e2688ec29f0d14d72c/panel_reactflow-0.4.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/fb/f1/8337920d09ab3c1177d9fdca5884c910abe1e31b43ce6759152c895fba48/panel_tiles-0.2.0-py3-none-any.whl
-  py312:
+  test-312:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
     indexes:
@@ -2166,7 +2166,7 @@ environments:
       - conda_source: panel_flowdash[3c051db0] @ .
       - pypi: https://files.pythonhosted.org/packages/65/51/80af081eee54ad73079e3e23c572024fef6d8dec04e2688ec29f0d14d72c/panel_reactflow-0.4.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/fb/f1/8337920d09ab3c1177d9fdca5884c910abe1e31b43ce6759152c895fba48/panel_tiles-0.2.0-py3-none-any.whl
-  py313:
+  test-313:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
     indexes:
@@ -2499,7 +2499,7 @@ environments:
       - conda_source: panel_flowdash[3c051db0] @ .
       - pypi: https://files.pythonhosted.org/packages/65/51/80af081eee54ad73079e3e23c572024fef6d8dec04e2688ec29f0d14d72c/panel_reactflow-0.4.0-py3-none-any.whl
       - pypi: https://files.pythonhosted.org/packages/fb/f1/8337920d09ab3c1177d9fdca5884c910abe1e31b43ce6759152c895fba48/panel_tiles-0.2.0-py3-none-any.whl
-  py314:
+  test-314:
     channels:
     - url: https://conda.anaconda.org/conda-forge/
     indexes:
