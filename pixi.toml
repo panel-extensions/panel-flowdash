@@ -54,9 +54,8 @@ python = "3.14.*"
 channels = ["microsoft"]
 
 [feature.test-ui.dependencies]
-playwright = { version = "*", channel = "microsoft" }
-pytest-playwright = { version = "*", channel = "microsoft" }
-pytest-asyncio = "*"
+playwright = "*"
+pytest-playwright = "*"
 pytest-rerunfailures = "*"
 pytest-xdist = "*"
 jupyter_server = "*"
