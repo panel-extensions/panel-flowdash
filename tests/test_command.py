@@ -133,7 +133,7 @@ class TestCLI:
 
     def test_version(self):
         result = subprocess.run(
-            [sys.executable, "-m", "panel_flowdash.command", "--version"],
+            [sys.executable, "-m", "panel_flowdash", "--version"],
             capture_output=True,
             text=True,
         )
@@ -142,7 +142,7 @@ class TestCLI:
 
     def test_help(self):
         result = subprocess.run(
-            [sys.executable, "-m", "panel_flowdash.command", "serve", "--help"],
+            [sys.executable, "-m", "panel_flowdash", "serve", "--help"],
             capture_output=True,
             text=True,
         )
@@ -161,7 +161,7 @@ class TestCLI:
 
     def test_missing_directory(self):
         result = subprocess.run(
-            [sys.executable, "-m", "panel_flowdash.command", "serve", "/nonexistent/path"],
+            [sys.executable, "-m", "panel_flowdash", "serve", "/nonexistent/path"],
             capture_output=True,
             text=True,
         )
