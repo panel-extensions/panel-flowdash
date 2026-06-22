@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 
 from bokeh.command.subcommand import Argument
+from bokeh.embed.bundle import extension_dirs
+from bokeh.server.views.multi_root_static_handler import MultiRootStaticHandler
 from panel.command.serve import Serve as _PanelServe
 from panel.io.application import build_applications
 
@@ -81,3 +83,10 @@ class Serve(_PanelServe):
 
     def customize_applications(self, args, applications):
         return self._apps
+
+    def customize_kwargs(self, args, server_kwargs):
+        kwargs = super().customize_kwargs(args, server_kwargs)
+        kwargs["extra_patterns"].append(
+            (r"/.+/static/extensions/(.*)", MultiRootStaticHandler, dict(root=extension_dirs))
+        )
+        return kwargs
