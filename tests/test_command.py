@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 from panel_flowdash.app import build_app_class, build_registry
+from panel_flowdash.command.serve import Serve
 from panel_flowdash.dashboard_store import DashboardStore
 
 
@@ -120,6 +121,16 @@ class TestBuildAppClass:
 
 
 class TestCLI:
+    def test_excludes_file_args(self):
+        arg_names = {name for name, _ in Serve.args}
+        assert "files" not in arg_names
+        assert "--args" not in arg_names
+
+    def test_has_flowdash_args(self):
+        arg_names = {name for name, _ in Serve.args}
+        for expected in ("directory", "--db-path", "--title"):
+            assert expected in arg_names, f"missing FlowDash arg: {expected}"
+
     def test_version(self):
         result = subprocess.run(
             [sys.executable, "-m", "panel_flowdash.command", "--version"],
@@ -136,9 +147,17 @@ class TestCLI:
             text=True,
         )
         assert result.returncode == 0
+        # FlowDash specific
         assert "directory" in result.stdout
         assert "--db-path" in result.stdout
         assert "--port" in result.stdout
+        # Panel specific (non exhaustive)
+        assert "--dev" in result.stdout
+        assert "--admin" in result.stdout
+        assert "--profiler" in result.stdout
+        assert "--num-threads" in result.stdout
+        assert "--allow-websocket-origin" in result.stdout
+        assert "--oauth-provider" in result.stdout
 
     def test_missing_directory(self):
         result = subprocess.run(

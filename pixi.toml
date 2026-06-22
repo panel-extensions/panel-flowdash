@@ -18,6 +18,7 @@ hatch-vcs = "*"
 
 [package.run-dependencies]
 python = ">=3.10"
+python-gil = '*'
 panel = ">=1.9.0"
 panel-material-ui = "*"
 
