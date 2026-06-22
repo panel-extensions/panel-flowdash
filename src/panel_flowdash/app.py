@@ -169,7 +169,7 @@ def build_app_class(
 
         @staticmethod
         @cache
-        def _accepted_injected_params(self, app):
+        def _accepted_injected_params(app):
             if inspect.isclass(app) and issubclass(app, pn.viewable.Viewer):
                 return {
                     p
@@ -838,7 +838,7 @@ def build_app_class(
                         "icon": "dashboard",
                         "label": d.title,
                         "path": f"{DASH_ROUTE_PREFIX}{d.dashboard_id}",
-                        "href": f"{DASH_ROUTE_PREFIX}{d.dashboard_id}",
+                        # "href": f"{DASH_ROUTE_PREFIX}{d.dashboard_id}",  # Else we can't click on the submenu
                         "disable_link": True,
                         "actions": self._DASHBOARD_ACTIONS,
                     }
