@@ -1030,7 +1030,7 @@ def build_app_class(
             routes: dict[str, Any] = {
                 "/": cls,
                 COMPONENTS_ROUTE: cls,
-                f"{DASH_ROUTE_PREFIX}{{custom_app}}": cls,
+                f"{DASH_ROUTE_PREFIX}[^/]+": cls,
             }
             for app_id in cls._page_entries:
                 routes[f"/{app_id}"] = cls
