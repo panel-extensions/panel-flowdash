@@ -110,7 +110,7 @@ class TestBuildAppClass:
         routes = AppClass.build_routes()
         assert "/" in routes
         assert "/components" in routes
-        assert "/dash/{custom_app}" in routes
+        assert "/dash/[^/]+" in routes
         assert "/Analytics/page" in routes
 
     def test_db_defaults_to_project_dir(self, tmp_path):
