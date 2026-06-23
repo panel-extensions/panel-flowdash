@@ -27,7 +27,6 @@ except importlib.metadata.PackageNotFoundError as e:  # pragma: no cover
     __version__ = "unknown"
 
 __all__: list[str] = [
-    "__version__",
     "ComponentSpec",
     "DashboardEdge",
     "DashboardItem",
@@ -38,6 +37,7 @@ __all__: list[str] = [
     "OutputPort",
     "PanelAppMetadata",
     "RegistryEntry",
+    "__version__",
     "build_component_spec",
     "build_component_specs",
     "build_node_state_class",

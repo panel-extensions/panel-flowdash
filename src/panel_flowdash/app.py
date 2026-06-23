@@ -7,12 +7,12 @@ import importlib
 import inspect
 import logging
 import traceback
+import typing as t
 import uuid
 import warnings
 from functools import cache, partial
 from html import escape
 from pathlib import Path
-from typing import Any
 
 import panel as pn
 import panel_material_ui as pmui
@@ -33,6 +33,12 @@ from panel_flowdash.session_state import build_session_state_class, check_requir
 pn.config.notifications = True
 
 logger = logging.getLogger("panel_flowdash")
+
+if t.TYPE_CHECKING:
+
+    class _DASHBOARD_ACTION_TYPE(t.TypedDict):
+        label: str
+        icon: str
 
 
 def build_registry(project_dir: Path) -> dict[str, RegistryEntry]:
@@ -823,11 +829,11 @@ def build_app_class(
             self._workspace_area[:] = [self._tile_grid]
             self._rebuild_tile_grid()
 
-        _DASHBOARD_ACTIONS = [
+        _DASHBOARD_ACTIONS: t.TypeVar[list[_DASHBOARD_ACTION_TYPE, ...]] = (
             {"label": "Edit", "icon": "edit"},
             {"label": "Rename", "icon": "drive_file_rename_outline"},
             {"label": "Delete", "icon": "delete"},
-        ]
+        )
 
         def _get_dashboard_menu_items(self) -> list[dict]:
             items = []
@@ -1027,7 +1033,7 @@ def build_app_class(
         @classmethod
         def build_routes(cls) -> dict[str, type]:
             """Generate route mapping for pn.serve."""
-            routes: dict[str, Any] = {
+            routes: dict[str, t.Any] = {
                 "/": cls,
                 COMPONENTS_ROUTE: cls,
                 f"{DASH_ROUTE_PREFIX}[^/]+": cls,

@@ -99,22 +99,18 @@ select = [
     "I",    # isort
     "PIE",
     "T20",
-    "RUF006",
-    "UP004",
-    "UP006",
-    "UP020",
-    "UP028",
-    "UP030",
-    "UP031",
-    "UP032",
-    "UP034",
-    "UP036",
+    "RUF",
+    "UP",
+]
+extend-unsafe-fixes = [
+    "F401", # Unused imports
+    "F841", # Unused variables
 ]
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
 
-[tool.ruff.per-file-ignores]
+[tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D"]
 "*_test.py" = ["D"]
 "examples/**" = ["D"]
