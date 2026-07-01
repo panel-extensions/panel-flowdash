@@ -28,7 +28,7 @@ jobs:
       img_change: ${{ steps.filter.outputs.img }}
       matrix: ${{ env.MATRIX }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         if: github.event_name != 'pull_request'
         with:
           persist-credentials: false
@@ -100,7 +100,7 @@ jobs:
         if: needs.setup.outputs.img_change == 'true'
         with:
           extra_args: -a --hook-stage manual oxipng || true --
-      - uses: stefanzweifel/git-auto-commit-action@04702edda442b2e678b25b537cec683a1493fcb9 # v7
+      - uses: stefanzweifel/git-auto-commit-action@4a55954c782fc1ea30b9056cd3e7a2b40ca8887d # v7
         if: needs.setup.outputs.img_change == 'true'
         with:
           commit_message: "Optimize PNG images (lossless)"
@@ -115,12 +115,12 @@ jobs:
       matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
     steps:
       - name: Checkout branch
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           persist-credentials: false
       - name: Set up pixi
-        uses: prefix-dev/setup-pixi@5185adfbffb4bd703da3010310260805d89ebb11 # v0.9.6
+        uses: prefix-dev/setup-pixi@a09b6247153796b190642a2b53fac4241043cf6f # v0.10.0
         with:
           environments: ${{ matrix.environment }}
       - name: Run pytest
@@ -143,13 +143,13 @@ jobs:
       PANEL_LOG_LEVEL: info
     steps:
       - name: Checkout branch
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Pixi
-        uses: prefix-dev/setup-pixi@5185adfbffb4bd703da3010310260805d89ebb11 # v0.9.6
+        uses: prefix-dev/setup-pixi@a09b6247153796b190642a2b53fac4241043cf6f # v0.10.0
         with:
           environments: ${{ matrix.environment }}
 
