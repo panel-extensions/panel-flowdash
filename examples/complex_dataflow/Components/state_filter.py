@@ -8,7 +8,7 @@ import param
 from panel_flowdash import register
 
 
-@register(component=True, title="State Filter")
+@register(component=True, sidebar=True, title="State Filter")
 class app(pn.viewable.Viewer):
     """Filters a DataFrame to rows matching the selected state."""
 
