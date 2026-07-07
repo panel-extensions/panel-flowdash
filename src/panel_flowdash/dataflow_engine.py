@@ -175,6 +175,7 @@ class DataflowGraph:
                 return error
 
         if is_list:
+
             def _propagate(
                 event,
                 _src_id=source_id,
@@ -188,6 +189,7 @@ class DataflowGraph:
                     if self._on_error:
                         self._on_error(_src_id, _src_port, _tgt_id, _tgt_port, exc)
         else:
+
             def _propagate(
                 event,
                 _src_id=source_id,

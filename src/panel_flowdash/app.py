@@ -30,7 +30,7 @@ from panel_flowdash.dataflow_engine import DataflowGraph
 from panel_flowdash.registry import PanelAppMetadata, RegistryEntry
 from panel_flowdash.session_state import build_session_state_class, check_requirements
 
-pn.extension('tabulator', 'vega', 'deckgl', notifications=True)
+pn.extension("tabulator", "vega", "deckgl", notifications=True)
 
 logger = logging.getLogger("panel_flowdash")
 
@@ -467,9 +467,7 @@ def build_app_class(
                 value="wiring",
             )
             self._workspace_area = pn.Column(
-                self._flow_canvas,
-                sizing_mode="stretch_both",
-                scroll="y-auto"
+                self._flow_canvas, sizing_mode="stretch_both", scroll="y-auto"
             )
 
             self._preview_switch.visible = False
@@ -507,13 +505,13 @@ def build_app_class(
                 sizing_mode="stretch_both",
             )
 
-        _DEFAULT_BREAKPOINTS = [768, 1200]
+        _DEFAULT_BREAKPOINTS = (768, 1200)
 
         @property
         def _tile_grid(self):
             if not hasattr(self, "_tile__grid"):
                 self._tile__grid = TileGrid(
-                    breakpoints=self._DEFAULT_BREAKPOINTS,
+                    breakpoints=list(self._DEFAULT_BREAKPOINTS),
                     card=False,
                     close_action="hide",
                     editable=False,
@@ -590,9 +588,7 @@ def build_app_class(
             self._tile_objects.append(view)
             self._dirty = True
 
-            pn.state.notifications.success(
-                f"Added component: {entry.title}", duration=3000
-            )
+            pn.state.notifications.success(f"Added component: {entry.title}", duration=3000)
 
         @pn.io.hold()
         def _rebuild_tile_grid(self):
@@ -681,9 +677,7 @@ def build_app_class(
                 self._store.save_dashboard(self._current_dashboard)
             except Exception as exc:
                 logger.exception("Failed to save dashboard")
-                pn.state.notifications.error(
-                    f"Save failed: {exc}", duration=5000
-                )
+                pn.state.notifications.error(f"Save failed: {exc}", duration=5000)
                 return
             self._dirty = False
             pn.state.notifications.success(
@@ -790,9 +784,7 @@ def build_app_class(
         def _create_new_dashboard(self, title_str: str):
             title_str = title_str.strip()
             if not title_str:
-                pn.state.notifications.warning(
-                    "Dashboard title cannot be empty.", duration=3000
-                )
+                pn.state.notifications.warning("Dashboard title cannot be empty.", duration=3000)
                 return
             dashboard = self._store.create_dashboard(self._user_id, title_str)
             self._current_dashboard = dashboard
@@ -1083,22 +1075,25 @@ def build_app_class(
             items = []
             dashboards = self._store.list_dashboards(self._user_id)
             for d in dashboards:
-                items.append({
-                    "icon": "dashboard",
-                    "label": d.title,
-                    "path": f"{DASH_ROUTE_PREFIX}{d.dashboard_id}",
+                items.append(
+                    {
+                        "icon": "dashboard",
+                        "label": d.title,
+                        "path": f"{DASH_ROUTE_PREFIX}{d.dashboard_id}",
+                        "disable_link": True,
+                        "actions": self._DASHBOARD_ACTIONS,
+                    }
+                )
+            items.append(
+                {
+                    "icon": "add",
+                    "label": "New Dashboard",
+                    "path": "__new_dashboard__",
                     "disable_link": True,
-                    "actions": self._DASHBOARD_ACTIONS,
-                })
-            items.append({
-                "icon": "add",
-                "label": "New Dashboard",
-                "path": "__new_dashboard__",
-                "disable_link": True,
-                "actions": [{"label": "Create", "icon": "add", "inline": True}],
-            })
+                    "actions": [{"label": "Create", "icon": "add", "inline": True}],
+                }
+            )
             return items
-
 
         def _dashboard_id_from_path(self, path: str) -> str | None:
             if path and path.startswith(DASH_ROUTE_PREFIX):
@@ -1265,9 +1260,7 @@ def build_app_class(
             self._unsaved_dialog = pmui.Dialog(
                 objects=[
                     pn.Column(
-                        pn.pane.Markdown(
-                            "You have unsaved changes. What would you like to do?"
-                        ),
+                        pn.pane.Markdown("You have unsaved changes. What would you like to do?"),
                         pn.Row(save_btn, discard_btn, stay_btn),
                         sizing_mode="stretch_width",
                     )
@@ -1318,27 +1311,31 @@ def build_app_class(
                 },
             ]
             for section, section_apps in sorted(sections.items()):
-                menu_items.append({
-                    "label": section.replace("_", " "),
+                menu_items.append(
+                    {
+                        "label": section.replace("_", " "),
+                        "selectable": False,
+                        "icon": None,
+                        "items": [
+                            {
+                                "icon": None,
+                                "label": page_entry.title,
+                                "path": page_entry.page_path,
+                                "href": page_entry.page_path,
+                                "disable_link": True,
+                            }
+                            for page_entry in sorted(section_apps, key=lambda e: e.name)
+                        ],
+                    }
+                )
+            menu_items.append(
+                {
+                    "label": "Custom Apps",
                     "selectable": False,
                     "icon": None,
-                    "items": [
-                        {
-                            "icon": None,
-                            "label": page_entry.title,
-                            "path": page_entry.page_path,
-                            "href": page_entry.page_path,
-                            "disable_link": True,
-                        }
-                        for page_entry in sorted(section_apps, key=lambda e: e.name)
-                    ],
-                })
-            menu_items.append({
-                "label": "Custom Apps",
-                "selectable": False,
-                "icon": None,
-                "items": self._get_dashboard_menu_items(),
-            })
+                    "items": self._get_dashboard_menu_items(),
+                }
+            )
 
             current_path = pn.state.location.pathname if pn.state.location is not None else ""
             pathname = "/" + (current_path.strip("/") or self._default_page)
