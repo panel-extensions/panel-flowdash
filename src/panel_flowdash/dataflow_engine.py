@@ -18,6 +18,13 @@ from panel_flowdash.component_spec import ComponentSpec
 _RESERVED_PARAMS = set(param.Parameterized.param)
 
 
+def _is_list_port(port) -> bool:
+    """Return True if a port's declared type indicates a list/multi-connection input."""
+    if port.type is None:
+        return False
+    return port.type.lower() in ("list", "List")
+
+
 def build_node_state_class(spec: ComponentSpec) -> type[param.Parameterized]:
     """Create a Parameterized subclass with one param per port (inputs + outputs)."""
     params: dict[str, param.Parameter] = {}
@@ -25,7 +32,12 @@ def build_node_state_class(spec: ComponentSpec) -> type[param.Parameterized]:
     for port in spec.inputs:
         if port.name in _RESERVED_PARAMS:
             continue
-        params[port.name] = param.Parameter(default=port.default, allow_None=True, allow_refs=True)
+        if _is_list_port(port):
+            params[port.name] = param.List(default=port.default or [], allow_refs=True)
+        else:
+            params[port.name] = param.Parameter(
+                default=port.default, allow_None=True, allow_refs=True
+            )
 
     for port in spec.outputs:
         if port.name in _RESERVED_PARAMS:
@@ -94,6 +106,35 @@ class DataflowGraph:
         self._nodes.pop(instance_id, None)
         self._node_specs.pop(instance_id, None)
 
+    def _is_list_input(self, target_id: str, target_port: str) -> bool:
+        """Return True if the target port is a List-typed multi-connection input."""
+        spec = self._node_specs.get(target_id)
+        if not spec:
+            return False
+        for port in spec.inputs:
+            if port.name == target_port:
+                return _is_list_port(port)
+        return False
+
+    def _rebuild_list_port(self, target_id: str, target_port: str):
+        """Recompute the list value for a multi-connection port from all sources."""
+        target_state = self._nodes.get(target_id)
+        if target_state is None:
+            return
+        values = []
+        for e in self._edges:
+            if e["target"] == target_id and e["target_port"] == target_port:
+                src_state = self._nodes.get(e["source"])
+                if src_state is not None:
+                    val = getattr(src_state, e["source_port"], None)
+                    if val is not None:
+                        values.append(val)
+        try:
+            setattr(target_state, target_port, values)
+        except Exception as exc:
+            if self._on_error:
+                self._on_error("", "", target_id, target_port, exc)
+
     def add_edge(
         self,
         source_id: str,
@@ -114,47 +155,56 @@ class DataflowGraph:
         if not hasattr(target_state.param, target_port):
             return f"Input port '{target_port}' does not exist on target node."
 
-        for e in self._edges:
-            if e["target"] == target_id and e["target_port"] == target_port:
-                return f"Input '{target_port}' already has a connection. Disconnect it first."
+        is_list = self._is_list_input(target_id, target_port)
+
+        if not is_list:
+            for e in self._edges:
+                if e["target"] == target_id and e["target_port"] == target_port:
+                    return f"Input '{target_port}' already has a connection. Disconnect it first."
 
         if self._would_create_cycle(source_id, target_id):
             return "Connection rejected: would create a cycle."
 
         source_spec = self._node_specs.get(source_id)
         target_spec = self._node_specs.get(target_id)
-        if source_spec and target_spec:
+        if source_spec and target_spec and not is_list:
             error = self._check_type_compatibility(
                 source_spec, source_port, target_spec, target_port
             )
             if error:
                 return error
 
-        def _propagate(
-            event,
-            _src_id=source_id,
-            _src_port=source_port,
-            _tgt_id=target_id,
-            _tgt_port=target_port,
-            _target=target_state,
-        ):
-            try:
-                setattr(_target, _tgt_port, event.new)
-            except Exception as exc:
-                if self._on_error:
-                    self._on_error(_src_id, _src_port, _tgt_id, _tgt_port, exc)
+        if is_list:
+            def _propagate(
+                event,
+                _src_id=source_id,
+                _src_port=source_port,
+                _tgt_id=target_id,
+                _tgt_port=target_port,
+            ):
+                try:
+                    self._rebuild_list_port(_tgt_id, _tgt_port)
+                except Exception as exc:
+                    if self._on_error:
+                        self._on_error(_src_id, _src_port, _tgt_id, _tgt_port, exc)
+        else:
+            def _propagate(
+                event,
+                _src_id=source_id,
+                _src_port=source_port,
+                _tgt_id=target_id,
+                _tgt_port=target_port,
+                _target=target_state,
+            ):
+                try:
+                    setattr(_target, _tgt_port, event.new)
+                except Exception as exc:
+                    if self._on_error:
+                        self._on_error(_src_id, _src_port, _tgt_id, _tgt_port, exc)
 
         watcher = source_state.param.watch(_propagate, source_port)
         edge_key = (source_id, source_port, target_id, target_port)
         self._watchers[edge_key] = watcher
-
-        current = getattr(source_state, source_port)
-        if current is not None:
-            try:
-                setattr(target_state, target_port, current)
-            except Exception as exc:
-                if self._on_error:
-                    self._on_error(source_id, source_port, target_id, target_port, exc)
 
         self._edges.append(
             {
@@ -164,6 +214,18 @@ class DataflowGraph:
                 "target_port": target_port,
             }
         )
+
+        if is_list:
+            self._rebuild_list_port(target_id, target_port)
+        else:
+            current = getattr(source_state, source_port)
+            if current is not None:
+                try:
+                    setattr(target_state, target_port, current)
+                except Exception as exc:
+                    if self._on_error:
+                        self._on_error(source_id, source_port, target_id, target_port, exc)
+
         return True
 
     def _would_create_cycle(self, source_id: str, target_id: str) -> bool:
@@ -217,6 +279,8 @@ class DataflowGraph:
 
     def remove_edge(self, source_id: str, source_port: str, target_id: str, target_port: str):
         """Remove an edge, unsubscribe the watcher, and reset target to default."""
+        is_list = self._is_list_input(target_id, target_port)
+
         self._edges = [
             e
             for e in self._edges
@@ -235,16 +299,19 @@ class DataflowGraph:
             if source_state is not None:
                 source_state.param.unwatch(watcher)
 
-        target_state = self._nodes.get(target_id)
-        if target_state is not None and hasattr(target_state, target_port):
-            spec = self._node_specs.get(target_id)
-            default = None
-            if spec:
-                for port in spec.inputs:
-                    if port.name == target_port:
-                        default = port.default
-                        break
-            setattr(target_state, target_port, default)
+        if is_list:
+            self._rebuild_list_port(target_id, target_port)
+        else:
+            target_state = self._nodes.get(target_id)
+            if target_state is not None and hasattr(target_state, target_port):
+                spec = self._node_specs.get(target_id)
+                default = None
+                if spec:
+                    for port in spec.inputs:
+                        if port.name == target_port:
+                            default = port.default
+                            break
+                setattr(target_state, target_port, default)
 
     def get_state(self, instance_id: str) -> param.Parameterized | None:
         """Get the state instance for a node."""
