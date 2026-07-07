@@ -83,6 +83,8 @@ class DashboardModel:
     items: list[DashboardItem] = field(default_factory=list)
     edges: list[DashboardEdge] = field(default_factory=list)
     tile_layout: list[dict[str, Any]] = field(default_factory=list)
+    breakpoints: list[int] = field(default_factory=list)
+    responsive_layouts: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -93,6 +95,8 @@ class DashboardModel:
             "items": [item.to_dict() for item in self.items],
             "edges": [edge.to_dict() for edge in self.edges],
             "tile_layout": self.tile_layout,
+            "breakpoints": self.breakpoints,
+            "responsive_layouts": self.responsive_layouts,
         }
 
     @classmethod
@@ -105,6 +109,8 @@ class DashboardModel:
             items=[DashboardItem.from_dict(i) for i in data.get("items", [])],
             edges=[DashboardEdge.from_dict(e) for e in data.get("edges", [])],
             tile_layout=data.get("tile_layout", []),
+            breakpoints=data.get("breakpoints", []),
+            responsive_layouts=data.get("responsive_layouts", {}),
         )
 
 
@@ -148,7 +154,13 @@ class DashboardStore:
                 CREATE INDEX IF NOT EXISTS idx_dashboards_user
                 ON dashboards (user_id)
             """)
-            for col, default in [("edges_json", "'[]'"), ("tile_layout_json", "'[]'")]:
+            migrations = [
+                ("edges_json", "'[]'"),
+                ("tile_layout_json", "'[]'"),
+                ("breakpoints_json", "'[]'"),
+                ("responsive_layouts_json", "'{}'"),
+            ]
+            for col, default in migrations:
                 try:
                     conn.execute(
                         f"ALTER TABLE dashboards ADD COLUMN {col} TEXT NOT NULL DEFAULT {default}"
@@ -164,6 +176,21 @@ class DashboardStore:
             ).fetchall()
         return [self._row_to_model(row) for row in rows]
 
+    def title_exists(self, user_id: str, title: str, exclude_id: str | None = None) -> bool:
+        """Check if a dashboard with the given title already exists for this user."""
+        with self._get_conn() as conn:
+            if exclude_id:
+                row = conn.execute(
+                    "SELECT 1 FROM dashboards WHERE user_id = ? AND title = ? AND dashboard_id != ? LIMIT 1",
+                    (user_id, title, exclude_id),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT 1 FROM dashboards WHERE user_id = ? AND title = ? LIMIT 1",
+                    (user_id, title),
+                ).fetchone()
+        return row is not None
+
     def load_dashboard(self, user_id: str, dashboard_id: str) -> DashboardModel | None:
         with self._get_conn() as conn:
             row = conn.execute(
@@ -178,17 +205,21 @@ class DashboardStore:
         items_json = json.dumps([item.to_dict() for item in dashboard.items])
         edges_json = json.dumps([edge.to_dict() for edge in dashboard.edges])
         tile_layout_json = json.dumps(dashboard.tile_layout)
+        breakpoints_json = json.dumps(dashboard.breakpoints)
+        responsive_layouts_json = json.dumps(dashboard.responsive_layouts)
         with self._get_conn() as conn:
             conn.execute(
                 """
-                INSERT INTO dashboards (dashboard_id, user_id, title, version, items_json, edges_json, tile_layout_json, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                INSERT INTO dashboards (dashboard_id, user_id, title, version, items_json, edges_json, tile_layout_json, breakpoints_json, responsive_layouts_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(dashboard_id) DO UPDATE SET
                     title = excluded.title,
                     version = excluded.version,
                     items_json = excluded.items_json,
                     edges_json = excluded.edges_json,
                     tile_layout_json = excluded.tile_layout_json,
+                    breakpoints_json = excluded.breakpoints_json,
+                    responsive_layouts_json = excluded.responsive_layouts_json,
                     updated_at = datetime('now')
                 """,
                 (
@@ -199,6 +230,8 @@ class DashboardStore:
                     items_json,
                     edges_json,
                     tile_layout_json,
+                    breakpoints_json,
+                    responsive_layouts_json,
                 ),
             )
 
@@ -232,8 +265,14 @@ class DashboardStore:
         keys = row.keys()
         edges_raw = row["edges_json"] if "edges_json" in keys else "[]"
         tile_layout_raw = row["tile_layout_json"] if "tile_layout_json" in keys else "[]"
+        breakpoints_raw = row["breakpoints_json"] if "breakpoints_json" in keys else "[]"
+        responsive_raw = (
+            row["responsive_layouts_json"] if "responsive_layouts_json" in keys else "{}"
+        )
         edges = json.loads(edges_raw)
         tile_layout = json.loads(tile_layout_raw)
+        breakpoints = json.loads(breakpoints_raw)
+        responsive_layouts = json.loads(responsive_raw)
         return DashboardModel(
             dashboard_id=row["dashboard_id"],
             user_id=row["user_id"],
@@ -242,4 +281,6 @@ class DashboardStore:
             items=[DashboardItem.from_dict(i) for i in items],
             edges=[DashboardEdge.from_dict(e) for e in edges],
             tile_layout=tile_layout,
+            breakpoints=breakpoints,
+            responsive_layouts=responsive_layouts,
         )
