@@ -183,7 +183,7 @@ class FlowDashApp(Viewer):
 
     _main_task: asyncio.Task | None = None
 
-    def __init__(self, registry: dict[str, RegistryEntry], **params):
+    def __init__(self, registry: dict[str, RegistryEntry] | None = None, **params):
         super().__init__(**params)
 
         if not registry:
