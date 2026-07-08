@@ -14,7 +14,7 @@ from bokeh.server.views.multi_root_static_handler import MultiRootStaticHandler
 from panel.command.serve import Serve as _PanelServe
 from panel.io.application import build_applications
 
-from panel_flowdash.app import build_app_class
+from panel_flowdash.app import FlowDashApp
 from panel_flowdash.dashboard_store import DashboardStore
 
 log = logging.getLogger(__name__)
@@ -69,8 +69,8 @@ class Serve(_PanelServe):
         os.chdir(str(project_dir))
 
         store = DashboardStore(db_path)
-        AppClass = build_app_class(project_dir, store=store, title=args.title)
-        routes = AppClass.build_routes()
+        app = FlowDashApp(project_dir=project_dir, store=store, title=args.title)
+        routes = app.build_routes()
 
         log.info(f"Serving FlowDash from '{project_dir}' on port {args.port}")
         log.info(f"Database: {db_path}")
