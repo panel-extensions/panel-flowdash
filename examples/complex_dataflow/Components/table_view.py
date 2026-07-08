@@ -12,13 +12,14 @@ class app(pn.viewable.Viewer):
 
     filtered = param.DataFrame()
 
-    def __panel__(self):
-        df = self.param.filtered.rx()
+    def _transform(self, df):
         columns = ["t_state", "t_county", "p_name", "p_year", "t_cap", "t_hh", "t_rd"]
-        available = [c for c in columns if c in df.columns]
+        available = [c for c in columns if df is not None and c in df.columns]
         return pn.widgets.Tabulator(
             df[available] if available else df,
-            sizing_mode="stretch_both",
-            page_size=20,
+            initial_page_size=10,
             pagination="remote",
         )
+
+    def __panel__(self):
+        return self.param.filtered.rx.pipe(self._transform)
