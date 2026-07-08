@@ -6,6 +6,7 @@ import asyncio
 import importlib
 import inspect
 import logging
+import pathlib
 import traceback
 import typing as t
 import uuid
@@ -37,6 +38,7 @@ pn.extension("tabulator", "vega", "deckgl", notifications=True)
 logger = logging.getLogger("panel_flowdash")
 
 if t.TYPE_CHECKING:
+    from panel.viewable import Viewable
 
     class _DASHBOARD_ACTION_TYPE(t.TypedDict):
         label: str
@@ -139,6 +141,17 @@ _LAUNCHER_DASH_CARD_CSS = """
 }
 """
 
+_COMPONENT_PALETTE_CARD_CSS = """
+:host {
+  cursor: pointer;
+  border-radius: 6px;
+  transition: background-color 0.15s;
+}
+:host(:hover) {
+  background-color: rgba(0, 114, 181, 0.08);
+}
+"""
+
 _LAUNCHER_SPEED_DIAL_CSS = """
 :host {
   position: absolute;
@@ -158,30 +171,32 @@ _LAUNCHER_SPEED_DIAL_CSS = """
 class FlowDashApp(Viewer):
     """FlowDash application: scans a project directory and serves its pages and components."""
 
-    project_dir = param.Parameter(doc="Path to the project directory.")
+    breakpoints = param.List(default=[768, 1200], doc="Responsive breakpoints for the tile grid.")
+
+    project_dir = param.Path(doc="Path to the project directory.")
+
     store = param.ClassSelector(
         class_=DashboardStore, doc="DashboardStore instance for persistence."
     )
+
     title = param.String(default="FlowDash", doc="Application title shown in the browser tab.")
-    default_page = param.String(default="", doc="Default page app_id to redirect to from /.")
-    breakpoints = param.List(default=[768, 1200], doc="Responsive breakpoints for the tile grid.")
 
     _main_task: asyncio.Task | None = None
 
-    def __init__(self, **params):
+    def __init__(self, registry: dict[str, RegistryEntry], **params):
         super().__init__(**params)
-        registry = build_registry(self.project_dir)
+
+        if not registry:
+            registry = build_registry(self.project_dir)
         page_entries = {k: v for k, v in registry.items() if v.metadata.page}
         component_entries = {k: v for k, v in registry.items() if v.metadata.component}
         component_specs = build_component_specs(registry)
         session_state_class = build_session_state_class(registry)
-
         self._registry = registry
         self._page_entries = page_entries
         self._component_entries = component_entries
         self._component_specs = component_specs
         self._session_state_class = session_state_class
-        self._resolved_default_page = self.default_page or next(iter(page_entries), "")
 
         self._session_state = self._session_state_class()
         self._user_id = self._resolve_user_id()
@@ -190,8 +205,8 @@ class FlowDashApp(Viewer):
         self._edge_id_map: dict[str, tuple[str, str, str, str]] = {}
         self._current_dashboard: DashboardModel | None = None
         self._tile_items: list[dict] = []
-        self._tile_objects: list[pn.viewable.Viewable] = []
-        self._sidebar_views: list[pn.viewable.Viewable] = []
+        self._tile_objects: list[Viewable] = []
+        self._sidebar_views: list[Viewable] = []
         self._sidebar_container = pn.Column(sizing_mode="stretch_width")
         self._component_picker = self._make_component_picker()
         self._dataflow_graph = DataflowGraph(
@@ -1313,7 +1328,7 @@ class FlowDashApp(Viewer):
         )
 
         current_path = pn.state.location.pathname if pn.state.location is not None else ""
-        pathname = "/" + (current_path.strip("/") or self._resolved_default_page)
+        pathname = "/" + current_path.strip("/")
         initial_active = None
         for si, s in enumerate(menu_items):
             if s.get("path") == pathname:
@@ -1364,21 +1379,20 @@ class FlowDashApp(Viewer):
         """Render the app."""
         return self._page
 
-    def build_routes(self) -> dict[str, t.Any]:
+    @classmethod
+    def build_routes(cls, project_dir: str | pathlib.Path, **params) -> dict[str, t.Any]:
         """Generate route mapping for pn.serve."""
-        factory = partial(
-            FlowDashApp,
-            project_dir=self.project_dir,
-            store=self.store,
-            title=self.title,
-            default_page=self.default_page,
-            breakpoints=self.breakpoints,
-        )
+        registry = build_registry(project_dir)
+
+        def factory():
+            return cls(registry=registry, **params)
+
         routes: dict[str, t.Any] = {
             "/": factory,
             COMPONENTS_ROUTE: factory,
             f"{DASH_ROUTE_PREFIX}[^/]+": factory,
         }
-        for app_id in self._page_entries:
-            routes[f"/{app_id}"] = factory
+        for app_id, v in registry.items():
+            if v.metadata.page:
+                routes[f"/{app_id}"] = factory
         return routes

@@ -69,8 +69,7 @@ class Serve(_PanelServe):
         os.chdir(str(project_dir))
 
         store = DashboardStore(db_path)
-        app = FlowDashApp(project_dir=project_dir, store=store, title=args.title)
-        routes = app.build_routes()
+        routes = FlowDashApp.build_routes(project_dir=project_dir, store=store, title=args.title)
 
         log.info(f"Serving FlowDash from '{project_dir}' on port {args.port}")
         log.info(f"Database: {db_path}")
