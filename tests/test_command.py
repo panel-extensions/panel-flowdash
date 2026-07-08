@@ -4,7 +4,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from panel_flowdash.app import build_app_class, build_registry
+from panel_flowdash.app import FlowDashApp, build_registry
 from panel_flowdash.command.serve import Serve
 from panel_flowdash.dashboard_store import DashboardStore
 
@@ -82,20 +82,20 @@ class TestBuildRegistry:
         assert not any(".hidden" in k for k in registry)
 
 
-class TestBuildAppClass:
-    def test_creates_viewer_class(self, tmp_path):
+class TestFlowDashApp:
+    def test_creates_viewer_instance(self, tmp_path):
         _create_project(tmp_path)
         sys.path.insert(0, str(tmp_path))
         try:
             db_path = tmp_path / "test.db"
             store = DashboardStore(db_path)
-            AppClass = build_app_class(tmp_path, store=store, title="Test App")
+            app = FlowDashApp(project_dir=tmp_path, store=store, title="Test App")
         finally:
             sys.path.remove(str(tmp_path))
 
-        assert AppClass._title == "Test App"
-        assert len(AppClass._component_entries) == 2
-        assert len(AppClass._page_entries) == 1
+        assert app.title == "Test App"
+        assert len(app._component_entries) == 2
+        assert len(app._page_entries) == 1
 
     def test_build_routes(self, tmp_path):
         _create_project(tmp_path)
@@ -103,11 +103,10 @@ class TestBuildAppClass:
         try:
             db_path = tmp_path / "test.db"
             store = DashboardStore(db_path)
-            AppClass = build_app_class(tmp_path, store=store)
+            routes = FlowDashApp.build_routes(project_dir=tmp_path, store=store)
         finally:
             sys.path.remove(str(tmp_path))
 
-        routes = AppClass.build_routes()
         assert "/" in routes
         assert "/components" in routes
         assert "/dash/[^/]+" in routes
