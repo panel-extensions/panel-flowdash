@@ -103,11 +103,10 @@ class TestFlowDashApp:
         try:
             db_path = tmp_path / "test.db"
             store = DashboardStore(db_path)
-            app = FlowDashApp(project_dir=tmp_path, store=store)
+            routes = FlowDashApp.build_routes(project_dir=tmp_path, store=store)
         finally:
             sys.path.remove(str(tmp_path))
 
-        routes = app.build_routes()
         assert "/" in routes
         assert "/components" in routes
         assert "/dash/[^/]+" in routes

@@ -187,7 +187,7 @@ class FlowDashApp(Viewer):
         super().__init__(**params)
 
         if not registry:
-            registry = build_registry(self.project_dir)
+            registry = build_registry(pathlib.Path(self.project_dir))
         page_entries = {k: v for k, v in registry.items() if v.metadata.page}
         component_entries = {k: v for k, v in registry.items() if v.metadata.component}
         component_specs = build_component_specs(registry)
@@ -1382,7 +1382,7 @@ class FlowDashApp(Viewer):
     @classmethod
     def build_routes(cls, project_dir: str | pathlib.Path, **params) -> dict[str, t.Any]:
         """Generate route mapping for pn.serve."""
-        registry = build_registry(project_dir)
+        registry = build_registry(pathlib.Path(project_dir))
 
         def factory():
             return cls(registry=registry, **params)
