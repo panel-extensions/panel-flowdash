@@ -6,13 +6,24 @@ import param
 from panel_flowdash import register
 
 
-@register(component=True, title="Location Map")
+@register(component=True, title="Location Map", config=["zoom", "radius_scale"])
 class app(pn.viewable.Viewer):
-    """Scatter plot of turbine lat/lon colored by capacity using DeckGL."""
+    """Scatter plot of turbine lat/lon colored by capacity using DeckGL.
+
+    ``zoom`` and ``radius_scale`` are set in the node editor rather than wired.
+    """
 
     filtered = param.DataFrame()
 
-    def _transform(self, df):
+    zoom = param.Number(default=4, bounds=(1, 12), step=0.5, doc="Initial map zoom level.")
+
+    radius_scale = param.Number(
+        default=1.0, bounds=(0.25, 4), step=0.25, doc="Multiplier for point radii."
+    )
+
+    @param.depends("filtered", "zoom", "radius_scale")
+    def _transform(self):
+        df = self.filtered
         if df is None or df.empty or "xlong" not in df.columns:
             return pn.pane.Markdown("*No location data available.*")
 
@@ -34,7 +45,7 @@ class app(pn.viewable.Viewer):
                 {
                     "position": [row["xlong"], row["ylat"]],
                     "color": [r, g, b, 180],
-                    "radius": 3000 + norm * 7000,
+                    "radius": (3000 + norm * 7000) * self.radius_scale,
                     "name": row.get("p_name", ""),
                     "capacity": row["t_cap"],
                     "year": row.get("p_year", ""),
@@ -48,7 +59,7 @@ class app(pn.viewable.Viewer):
             "initialViewState": {
                 "longitude": center_lon,
                 "latitude": center_lat,
-                "zoom": 4,
+                "zoom": self.zoom,
                 "pitch": 0,
             },
             "layers": [
@@ -70,4 +81,4 @@ class app(pn.viewable.Viewer):
         return pn.pane.DeckGL(spec, sizing_mode="stretch_both", height=400, min_width=300)
 
     def __panel__(self):
-        return self.param.filtered.rx.pipe(self._transform)
+        return pn.panel(self._transform)

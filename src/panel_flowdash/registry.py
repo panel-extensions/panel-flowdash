@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -23,7 +24,9 @@ class PanelAppMetadata:
     singleton: bool = False
     provides: list[str] = field(default_factory=list)
     requires: list[Any] = field(default_factory=list)
-    config_schema: dict[str, Any] | None = None
+    config_schema: Any = None
+    config: list[str] = field(default_factory=list)
+    config_editor: Callable | None = None
 
     @classmethod
     def from_app(cls, app: Any) -> PanelAppMetadata:
@@ -58,11 +61,21 @@ def register(
     singleton: bool = False,
     provides: list[str] | None = None,
     requires: list[Any] | None = None,
-    config_schema: dict[str, Any] | None = None,
+    config_schema: Any = None,
+    config: list[str] | None = None,
+    config_editor: Callable | None = None,
 ):
     """Metadata-only decorator for app exports.
 
     Annotates an app object/callable without altering runtime behavior.
+
+    The ``config_schema``, ``config`` and ``config_editor`` arguments declare
+    design-time configuration options that appear in the node editor. Use
+    ``config_schema`` (a ``param.Parameterized`` subclass, a Pydantic model, or
+    a JSON Schema dict) to define config explicitly, or ``config`` to name which
+    of a Viewer's own params are configuration rather than input ports. Pass
+    ``config_editor`` to supply a custom editor callable instead of the
+    auto-generated form.
     """
     metadata = PanelAppMetadata(
         page=page,
@@ -79,6 +92,8 @@ def register(
         provides=list(provides or []),
         requires=list(requires or []),
         config_schema=config_schema,
+        config=list(config or []),
+        config_editor=config_editor,
     )
 
     def _decorator(app):

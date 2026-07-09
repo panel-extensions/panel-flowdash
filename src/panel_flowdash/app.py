@@ -216,18 +216,25 @@ class FlowDashApp(Viewer):
         self._flow_canvas = self._build_flow_canvas()
         self._component_view = self._build_component_view()
         self._nav_menu = self._build_nav_menu()
-        dialog = self._build_dialog()
-        unsaved_dialog = self._build_unsaved_dialog()
+        self._contextbar = pn.Column(
+            pmui.Typography(
+                "Navigation",
+                variant="overline",
+                margin=(8, 16, 0, 16),
+                styles={"opacity": "0.6", "letter-spacing": "0.08em"},
+            ),
+            pmui.Divider(margin=(4, 0, 4, 0)),
+            self._nav_menu,
+            sizing_mode="stretch_width",
+        )
+        self._build_dialog()
+        self._build_unsaved_dialog()
         self._page = pmui.Page(
             title=self.title,
             theme_config={"palette": {"primary": {"main": "#0072B5"}}},
             sidebar_open=False,
-            sidebar=[
-                self._sidebar_container,
-                dialog,
-                unsaved_dialog,
-            ],
-            contextbar=[self._nav_menu],
+            sidebar=[self._sidebar_container],
+            contextbar=[self._contextbar],
         )
         pn.state.onload(self._load_page_layout)
 
@@ -329,11 +336,13 @@ class FlowDashApp(Viewer):
 
     def _build_flow_canvas(self):
         node_types = {}
+        node_editors = {}
         for comp_id, spec in self._component_specs.items():
             type_key = comp_id.replace("/", "__")
             node_types[type_key] = pr.NodeType(
                 type=type_key,
                 label=spec.title,
+                schema=spec.config_state_class,
                 inputs=[
                     {"id": port.name, "label": port.label or port.name} for port in spec.inputs
                 ],
@@ -341,11 +350,14 @@ class FlowDashApp(Viewer):
                     {"id": port.name, "label": port.label or port.name} for port in spec.outputs
                 ],
             )
+            if spec.config_editor is not None:
+                node_editors[type_key] = spec.config_editor
 
         flow = pr.ReactFlow(
             nodes=[],
             edges=[],
             node_types=node_types,
+            node_editors=node_editors,
             editable=True,
             enable_connect=True,
             show_minimap=True,
@@ -406,6 +418,15 @@ class FlowDashApp(Viewer):
                 self._dataflow_graph.remove_edge(*mapping)
                 self._dirty = True
 
+        def _on_node_data_changed(event):
+            if self._loading:
+                return
+            node_id = event.get("node_id", "") if isinstance(event, dict) else ""
+            patch = event.get("patch", {}) if isinstance(event, dict) else {}
+            if not node_id or not patch:
+                return
+            self._apply_config_patch(node_id, patch)
+
         def _on_node_deleted(event):
             node_id = event.get("node_id", "") if isinstance(event, dict) else ""
             if node_id:
@@ -425,12 +446,65 @@ class FlowDashApp(Viewer):
 
         flow.on("edge_added", _on_edge_added)
         flow.on("edge_deleted", _on_edge_deleted)
+        flow.on("node_data_changed", _on_node_data_changed)
         flow.on("node_deleted", _on_node_deleted)
 
         self._flow = flow
         return flow
 
-    def _instantiate_for_node(self, entry, node_state):
+    def _apply_config_patch(self, node_id, patch):
+        """Apply an editor patch to a node's config state and persist it."""
+        config_state = self._dataflow_graph.get_config_state(node_id)
+        applied = {}
+        for key, value in patch.items():
+            if config_state is not None and hasattr(config_state.param, key):
+                try:
+                    setattr(config_state, key, value)
+                except Exception as exc:
+                    logger.warning("Config '%s' rejected on %s: %s", key, node_id, exc)
+                    continue
+            applied[key] = value
+        if not applied:
+            return
+        for item in self._tile_items:
+            if item["instance_id"] == node_id:
+                item.setdefault("config", {}).update(applied)
+                break
+        self._dirty = True
+
+    def _seed_config_state(self, instance_id, config):
+        """Overlay saved config onto a node's config state and return node data seed."""
+        config_state = self._dataflow_graph.get_config_state(instance_id)
+        if config_state is None:
+            return {}
+        for key, value in (config or {}).items():
+            if hasattr(config_state.param, key):
+                try:
+                    setattr(config_state, key, value)
+                except Exception as exc:
+                    logger.warning("Saved config '%s' rejected on %s: %s", key, instance_id, exc)
+        return {name: getattr(config_state, name) for name in config_state.param if name != "name"}
+
+    def _bind_config_to_viewer(self, instance, config_state):
+        """Sync config-state params onto a Viewer instance, live."""
+        for name in config_state.param:
+            if name == "name" or not hasattr(instance.param, name):
+                continue
+            try:
+                setattr(instance, name, getattr(config_state, name))
+            except Exception as exc:
+                logger.warning("Config '%s' could not be set: %s", name, exc)
+                continue
+
+            def _propagate(event, _name=name):
+                try:
+                    setattr(instance, _name, event.new)
+                except Exception as exc:
+                    logger.warning("Config '%s' update failed: %s", _name, exc)
+
+            config_state.param.watch(_propagate, name)
+
+    def _instantiate_for_node(self, entry, node_state, config_state=None):
         """Create a live component view wired to the node_state."""
         app_fn = entry.app
 
@@ -438,22 +512,27 @@ class FlowDashApp(Viewer):
             return pn.panel(app_fn)
 
         if inspect.isclass(app_fn) and issubclass(app_fn, pn.viewable.Viewer):
-            return self._instantiate_viewer_for_node(app_fn, entry, node_state)
+            return self._instantiate_viewer_for_node(app_fn, entry, node_state, config_state)
 
         sig = inspect.signature(app_fn)
         kwargs = {}
         if "config" in sig.parameters:
             kwargs["config"] = node_state
+        if "instance_config" in sig.parameters and config_state is not None:
+            kwargs["instance_config"] = config_state
         if "context" in sig.parameters:
             kwargs["context"] = "component"
 
         result = app_fn(**kwargs)
         return pn.panel(result)
 
-    def _instantiate_viewer_for_node(self, viewer_cls, entry, node_state):
+    def _instantiate_viewer_for_node(self, viewer_cls, entry, node_state, config_state=None):
         """Instantiate a Viewer and wire its params to the node_state."""
         spec = self._component_specs.get(entry.app_id)
         instance = viewer_cls()
+
+        if config_state is not None:
+            self._bind_config_to_viewer(instance, config_state)
 
         input_names = [p.name for p in spec.inputs] if spec else []
         for name in input_names:
@@ -604,9 +683,11 @@ class FlowDashApp(Viewer):
         instance_id = f"{type_key}_{uuid.uuid4().hex[:6]}"
 
         node_state = self._dataflow_graph.add_node(instance_id, component_id)
+        config_state = self._dataflow_graph.get_config_state(instance_id)
+        config_data = self._seed_config_state(instance_id, {})
 
         try:
-            view = self._instantiate_for_node(entry, node_state)
+            view = self._instantiate_for_node(entry, node_state, config_state)
         except Exception as e:
             logger.exception("Failed to add component '%s'", component_id)
             self._dataflow_graph.remove_node(instance_id)
@@ -623,7 +704,7 @@ class FlowDashApp(Viewer):
             type=type_key,
             position=position,
             label=spec.title,
-            data={"component_id": component_id},
+            data=config_data,
         )
         node_dict = node.to_dict()
         node_dict["view"] = view
@@ -736,7 +817,9 @@ class FlowDashApp(Viewer):
         dashboard = self.store.load_dashboard(self._user_id, dashboard_id)
         if dashboard is None:
             self._page.main = [
-                pn.pane.Alert(f"Dashboard not found: {dashboard_id}", alert_type="danger")
+                pn.pane.Alert(f"Dashboard not found: {dashboard_id}", alert_type="danger"),
+                self._dialog,
+                self._unsaved_dialog,
             ]
             return
         self._current_dashboard = dashboard
@@ -762,9 +845,11 @@ class FlowDashApp(Viewer):
             instance_id = item.instance_id
             type_key = component_id.replace("/", "__")
             node_state = self._dataflow_graph.add_node(instance_id, component_id)
+            config_state = self._dataflow_graph.get_config_state(instance_id)
+            config_data = self._seed_config_state(instance_id, item.config)
 
             try:
-                view = self._instantiate_for_node(entry, node_state)
+                view = self._instantiate_for_node(entry, node_state, config_state)
             except Exception:
                 logger.exception("Error loading component '%s' (%s)", component_id, instance_id)
                 self._dataflow_graph.remove_node(instance_id)
@@ -776,7 +861,7 @@ class FlowDashApp(Viewer):
                 type=type_key,
                 position=position,
                 label=spec.title,
-                data={"component_id": component_id},
+                data=config_data,
             )
             node_dict = node.to_dict()
             node_dict["view"] = view
@@ -824,7 +909,7 @@ class FlowDashApp(Viewer):
             self._show_edit_mode()
         else:
             self._show_view_mode()
-        self._page.main = [self._component_view]
+        self._page.main = [self._component_view, self._dialog, self._unsaved_dialog]
 
     def _create_new_dashboard(self, title_str: str):
         title_str = title_str.strip()
@@ -847,17 +932,30 @@ class FlowDashApp(Viewer):
                 search="?edit=true",
             )
         self._show_edit_mode()
-        self._page.main = [self._component_view]
+        self._page.main = [self._component_view, self._dialog, self._unsaved_dialog]
 
     def _delete_dashboard(self, dashboard_id: str):
+        was_current = bool(
+            self._current_dashboard and self._current_dashboard.dashboard_id == dashboard_id
+        )
         self.store.delete_dashboard(self._user_id, dashboard_id)
-        if self._current_dashboard and self._current_dashboard.dashboard_id == dashboard_id:
+        if was_current:
             self._current_dashboard = None
             self._tile_items = []
             self._tile_objects = []
+            self._dirty = False
 
         self._refresh_sidebar_dashboards()
         pn.state.notifications.info("Dashboard deleted.", duration=3000)
+
+        if was_current:
+            self._navigate_to("/")
+        elif pn.state.location is not None and pn.state.location.pathname == "/":
+            self._page.main = [
+                self._build_launcher(),
+                self._dialog,
+                self._unsaved_dialog,
+            ]
 
     def _rename_dashboard(self, dashboard_id: str, new_title: str):
         new_title = new_title.strip()
@@ -1011,14 +1109,14 @@ class FlowDashApp(Viewer):
             self._current_dashboard = None
             self._sidebar_container.objects = []
             self._page.sidebar_open = False
-            self._page.main = [self._build_launcher()]
+            self._page.main = [self._build_launcher(), self._dialog, self._unsaved_dialog]
             return
 
         if pathname == COMPONENTS_ROUTE:
             self._current_dashboard = None
             self._sidebar_container.objects = []
             self._show_edit_mode()
-            self._page.main = [self._component_view]
+            self._page.main = [self._component_view, self._dialog, self._unsaved_dialog]
             return
 
         if pathname.startswith(DASH_ROUTE_PREFIX):
@@ -1034,9 +1132,9 @@ class FlowDashApp(Viewer):
         self._sidebar_container.objects = []
         key = tuple(pathname.strip("/").split("/"))
         if len(key) == 2 and self._entry_from_key(key):
-            self._page.main = [await self._render_page(key)]
+            self._page.main = [await self._render_page(key), self._dialog, self._unsaved_dialog]
         else:
-            self._page.main = [f"Invalid URL: {pathname}"]
+            self._page.main = [f"Invalid URL: {pathname}", self._dialog, self._unsaved_dialog]
 
     @pn.io.hold()
     def _show_edit_mode(self):
@@ -1096,6 +1194,7 @@ class FlowDashApp(Viewer):
 
     def _on_action_edit(self, item):
         self._action_fired = True
+        self._page.contextbar_open = False
         path = item.get("path", "")
         dashboard_id = self._dashboard_id_from_path(path)
         if not dashboard_id:
@@ -1122,6 +1221,7 @@ class FlowDashApp(Viewer):
         )
         self._dialog_context = {"action": "rename", "dashboard_id": dashboard_id}
         self._dialog.title = "Rename Dashboard"
+        self._page.contextbar_open = False
         self._dialog.open = True
 
     @pn.io.hold()
@@ -1134,17 +1234,23 @@ class FlowDashApp(Viewer):
         self._dialog_name_input.param.update(value=item.get("label", ""), disabled=True)
         self._dialog_context = {"action": "delete", "dashboard_id": dashboard_id}
         self._dialog.title = "Delete Dashboard"
+        self._page.contextbar_open = False
         self._dialog.open = True
 
     @pn.io.hold()
     def _on_action_create(self, item):
         self._action_fired = True
+        self._open_create_dialog()
+
+    @pn.io.hold()
+    def _open_create_dialog(self):
         self._dialog_name_input.param.update(
             value="", disabled=False, error_state=False, helper_text=""
         )
         self._dialog_context = {"action": "create"}
         self._dialog.title = "Create Dashboard"
         self._dialog.open = True
+        self._page.contextbar_open = False
 
     def _validate_dashboard_name(self, title: str) -> str | None:
         """Return an error message if the title is invalid, else None."""
@@ -1190,7 +1296,6 @@ class FlowDashApp(Viewer):
         self._dialog_name_input.param.update(disabled=False, error_state=False, helper_text="")
         self._dialog_context = {}
 
-    @pn.io.hold()
     def _build_dialog(self):
         self._dialog_name_input = pmui.TextInput(
             label="Name",
@@ -1214,7 +1319,6 @@ class FlowDashApp(Viewer):
             open=False,
             min_width=350,
         )
-        return self._dialog
 
     def _build_unsaved_dialog(self):
         self._pending_navigation: str | None = None
@@ -1287,6 +1391,15 @@ class FlowDashApp(Viewer):
         else:
             self._navigate_to(path)
 
+    _SECTION_ICONS: t.ClassVar[dict[str, str]] = {
+        "components": "widgets",
+        "pages": "description",
+    }
+
+    def _section_icon(self, section: str) -> str:
+        """Pick a menu icon for a page section, keyed by its (normalized) name."""
+        return self._SECTION_ICONS.get(section.replace("_", " ").lower(), "folder")
+
     def _build_nav_menu(self):
         sections: dict[str, list[RegistryEntry]] = {}
         for entry in self._page_entries.values():
@@ -1305,7 +1418,7 @@ class FlowDashApp(Viewer):
                 {
                     "label": section.replace("_", " "),
                     "selectable": False,
-                    "icon": None,
+                    "icon": self._section_icon(section),
                     "items": [
                         {
                             "icon": None,
@@ -1322,7 +1435,7 @@ class FlowDashApp(Viewer):
             {
                 "label": "Custom Apps",
                 "selectable": False,
-                "icon": None,
+                "icon": "dashboard_customize",
                 "items": self._get_dashboard_menu_items(),
             }
         )
@@ -1349,6 +1462,7 @@ class FlowDashApp(Viewer):
                 return
             path = event["path"]
             if path == "__new_dashboard__":
+                self._open_create_dialog()
                 return
             if path == pn.state.location.pathname:
                 if "edit=true" in (pn.state.location.search or ""):
