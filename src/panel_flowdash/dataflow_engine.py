@@ -74,6 +74,7 @@ class DataflowGraph:
         self._specs = specs
         self._state_classes: dict[str, type[param.Parameterized]] = {}
         self._nodes: dict[str, param.Parameterized] = {}
+        self._config_states: dict[str, param.Parameterized] = {}
         self._node_specs: dict[str, ComponentSpec] = {}
         self._edges: list[dict[str, str]] = []
         self._watchers: dict[tuple, param.parameterized.Watcher] = {}
@@ -89,6 +90,10 @@ class DataflowGraph:
         state = cls(name=instance_id)
         self._nodes[instance_id] = state
         self._node_specs[instance_id] = spec
+        if spec.config_state_class is not None:
+            self._config_states[instance_id] = spec.config_state_class(
+                name=f"{instance_id}_config"
+            )
         return state
 
     def remove_node(self, instance_id: str):
@@ -104,6 +109,7 @@ class DataflowGraph:
             e for e in self._edges if e["source"] != instance_id and e["target"] != instance_id
         ]
         self._nodes.pop(instance_id, None)
+        self._config_states.pop(instance_id, None)
         self._node_specs.pop(instance_id, None)
 
     def _is_list_input(self, target_id: str, target_port: str) -> bool:
@@ -318,6 +324,10 @@ class DataflowGraph:
     def get_state(self, instance_id: str) -> param.Parameterized | None:
         """Get the state instance for a node."""
         return self._nodes.get(instance_id)
+
+    def get_config_state(self, instance_id: str) -> param.Parameterized | None:
+        """Get the config state instance for a node, if it has config."""
+        return self._config_states.get(instance_id)
 
     @property
     def edges(self) -> list[dict[str, str]]:

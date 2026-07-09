@@ -5,6 +5,7 @@ import warnings
 
 from panel_flowdash.component_spec import (
     ComponentSpec,
+    ConfigField,
     InputPort,
     OutputPort,
     build_component_spec,
@@ -28,6 +29,7 @@ except importlib.metadata.PackageNotFoundError as e:  # pragma: no cover
 
 __all__: list[str] = [
     "ComponentSpec",
+    "ConfigField",
     "DashboardEdge",
     "DashboardItem",
     "DashboardModel",

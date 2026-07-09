@@ -6,13 +6,26 @@ import param
 from panel_flowdash import register
 
 
-@register(component=True, title="Capacity by Year")
+@register(component=True, title="Capacity by Year", config=["title", "color_scheme"])
 class app(pn.viewable.Viewer):
-    """Bar chart showing total installed capacity per year using Vega-Lite."""
+    """Bar chart showing total installed capacity per year using Vega-Lite.
+
+    ``title`` and ``color_scheme`` are set in the node editor rather than wired.
+    """
 
     filtered = param.DataFrame()
 
-    def _transform(self, df):
+    title = param.String(default="Installed Capacity by Year", doc="Chart title.")
+
+    color_scheme = param.Selector(
+        default="viridis",
+        objects=["viridis", "magma", "plasma", "blues", "greens", "oranges"],
+        doc="Vega-Lite color scheme for the bars.",
+    )
+
+    @param.depends("filtered", "title", "color_scheme")
+    def _transform(self):
+        df = self.filtered
         if df is None or df.empty or "p_year" not in df.columns:
             return pn.pane.Markdown("*No data to plot.*")
 
@@ -25,7 +38,7 @@ class app(pn.viewable.Viewer):
 
         spec = {
             "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
-            "title": "Installed Capacity by Year",
+            "title": self.title,
             "data": {"values": by_year.to_dict(orient="records")},
             "mark": {"type": "bar", "cornerRadiusTopLeft": 3, "cornerRadiusTopRight": 3},
             "encoding": {
@@ -41,7 +54,7 @@ class app(pn.viewable.Viewer):
                 "color": {
                     "field": "Total Capacity (kW)",
                     "type": "quantitative",
-                    "scale": {"scheme": "viridis"},
+                    "scale": {"scheme": self.color_scheme},
                     "legend": None,
                 },
             },
@@ -52,4 +65,4 @@ class app(pn.viewable.Viewer):
         return pn.pane.Vega(spec, sizing_mode="stretch_both", min_width=300, min_height=300)
 
     def __panel__(self):
-        return self.param.filtered.rx.pipe(self._transform)
+        return pn.panel(self._transform)
