@@ -4,6 +4,13 @@ The `DataflowGraph` engine manages node instances and edge connections. It
 validates connections at wire-time (types, cycles, single-source) and catches
 runtime errors via `param.watch`.
 
+In the editor you build this graph visually: each component becomes a node whose
+ports are the handles on its left (inputs) and right (outputs), and dragging
+between handles creates an edge. The example below wires three sidebar filters
+into a data source that feeds a table, a chart, and a map.
+
+![Components wired together on the flow canvas](../assets/images/wiring-canvas.png)
+
 ---
 
 ## Create a graph

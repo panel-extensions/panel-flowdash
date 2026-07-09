@@ -94,8 +94,13 @@ jobs:
     name: Run pre-commit
     needs: [setup]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: holoviz-dev/holoviz_tasks/pre-commit@1a9884850782b0b80ba2e91b573e7d63d9d3c3dc # v1
+      - name: Set git credentials
+        if: needs.setup.outputs.img_change == 'true'
+        run: git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
       - uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd # v3.0.1
         if: needs.setup.outputs.img_change == 'true'
         with:

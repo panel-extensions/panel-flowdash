@@ -19,6 +19,11 @@ This:
 4. Creates a `DashboardStore` at `my_project/dashboards.db`
 5. Serves the app on `http://0.0.0.0:5006`
 
+The landing page lists the project's pages and any saved dashboards. From here
+you can open a dashboard, or jump into the editor to build a new one.
+
+![The FlowDash launcher listing saved dashboards under Custom Apps](../assets/images/launcher.png)
+
 ---
 
 ## CLI options

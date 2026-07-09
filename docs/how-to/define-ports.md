@@ -95,6 +95,11 @@ Each user-defined param (excluding base class params like `name`, `loading`,
 etc.) becomes an `InputPort`. The type is the param class name (e.g. `"Number"`,
 `"Selector"`).
 
+!!! note "Config params are not ports"
+    Params named in the `config` argument (or covered by a `config_schema`) are
+    treated as design-time configuration and excluded from the input ports. See
+    [Configure nodes](configure-nodes.md).
+
 ---
 
 ## Type compatibility rules

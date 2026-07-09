@@ -31,16 +31,20 @@ def app(config):
 |-----------|------|---------|-------------|
 | `page` | `bool` | `True` | Register as a routable page. |
 | `component` | `bool` | `False` | Register as a dataflow component (tile). |
-| `sidebar` | `bool` | `False` | Show in the sidebar navigation. |
+| `sidebar` | `bool` | `False` | In dashboard mode, render this component's view in the Page sidebar instead of the tile grid. See [Layout & sizing](layout-and-sizing.md). |
 | `title` | `str` | Module name | Human-readable display title. |
 | `icon` | `str` | `None` | Icon identifier for the component palette. |
 | `description` | `str` | `None` | Short description shown in tooltips. |
 | `tags` | `list[str]` | `[]` | Tags for filtering in the component palette. |
-| `provides` | `list` | `[]` | Output port declarations. |
-| `requires` | `list` | `[]` | Input port declarations. |
-| `default_size` | `dict` | `None` | Default grid tile size `{"w": 4, "h": 3}`. |
+| `provides` | `list` | `[]` | Output port declarations. See [Define ports](define-ports.md). |
+| `requires` | `list` | `[]` | Input port declarations. See [Define ports](define-ports.md). |
+| `default_size` | `dict` | `None` | Default tile size hint, e.g. `{"w": 4, "h": 3}`. See [Layout & sizing](layout-and-sizing.md). |
+| `min_size` | `dict` | `None` | Minimum tile size hint. |
+| `max_size` | `dict` | `None` | Maximum tile size hint. |
 | `singleton` | `bool` | `False` | Only allow one instance on a dashboard. |
-| `config_schema` | `dict` | `None` | JSON Schema for configuration form generation. |
+| `config_schema` | `type \| dict` | `None` | Design-time configuration definition: a `param.Parameterized` subclass, a Pydantic model, or a JSON-Schema-like dict. See [Configure nodes](configure-nodes.md). |
+| `config` | `list[str]` | `[]` | For Viewer components, names the params that are design-time configuration rather than input ports. See [Configure nodes](configure-nodes.md). |
+| `config_editor` | `callable` | `None` | Custom editor callable for the node's configuration form. See [Configure nodes](configure-nodes.md). |
 
 ---
 
