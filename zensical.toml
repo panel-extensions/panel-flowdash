@@ -13,7 +13,9 @@ nav = [
   {"How-to" = [
     {"Register Components" = "how-to/register-components.md"},
     {"Define Ports" = "how-to/define-ports.md"},
+    {"Configure Nodes" = "how-to/configure-nodes.md"},
     {"Wire the Dataflow" = "how-to/wire-dataflow.md"},
+    {"Layout & Sizing" = "how-to/layout-and-sizing.md"},
     {"Persist Dashboards" = "how-to/persist-dashboards.md"},
     {"Serve a Project" = "how-to/serve-project.md"}
   ]},

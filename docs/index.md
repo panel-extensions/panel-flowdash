@@ -4,6 +4,8 @@
 with Panel.** Define components with typed ports, wire them together, and persist
 layouts to SQLite.
 
+![The FlowDash wiring canvas with components connected by typed ports](assets/images/wiring-canvas.png)
+
 !!! tip "Quick Demo"
     New to FlowDash? **[Try the quickstart &rarr;](quickstart.md)**
 
@@ -34,7 +36,9 @@ flowdash serve my_project/ --port 5006
 
 - [Register Components](how-to/register-components.md) - the `@register` decorator and Viewer classes
 - [Define Ports](how-to/define-ports.md) - typed inputs and outputs for dataflow wiring
+- [Configure Nodes](how-to/configure-nodes.md) - design-time configuration and custom editors
 - [Wire the Dataflow](how-to/wire-dataflow.md) - connecting components with validation
+- [Layout & Sizing](how-to/layout-and-sizing.md) - dashboard mode, sidebar components, and responsive tiles
 - [Persist Dashboards](how-to/persist-dashboards.md) - SQLite storage for layouts and edges
 - [Serve a Project](how-to/serve-project.md) - the `flowdash serve` CLI
 
