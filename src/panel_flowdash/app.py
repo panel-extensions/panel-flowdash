@@ -752,15 +752,7 @@ class FlowDashApp(Viewer):
     @pn.io.hold()
     def _clear_components(self):
         had_items = bool(self._tile_items)
-        for node_id in list(self._dataflow_graph.node_ids):
-            self._dataflow_graph.remove_node(node_id)
-        self._tile_items = []
-        self._tile_objects = []
-        self._edge_id_map.clear()
-        self._sidebar_views = []
-        self._sidebar_container.objects = []
-        self._flow.nodes = []
-        self._flow.edges = []
+        self._reset_canvas()
         if had_items:
             self._dirty = True
         pn.state.notifications.info("Cleared all component tiles.", duration=3000)
@@ -812,8 +804,23 @@ class FlowDashApp(Viewer):
             f'Dashboard "{self._current_dashboard.title}" saved.', duration=3000
         )
 
-    @pn.io.hold()
+    def _reset_canvas(self):
+        """Tear down all node/edge state and clear the ReactFlow canvas."""
+        for node_id in list(self._dataflow_graph.node_ids):
+            self._dataflow_graph.remove_node(node_id)
+        self._tile_items = []
+        self._tile_objects = []
+        self._edge_id_map.clear()
+        self._sidebar_views = []
+        self._sidebar_container.objects = []
+        self._flow.nodes = []
+        self._flow.edges = []
+
     async def _load_dashboard(self, dashboard_id: str, edit: bool = False):
+        with pn.io.hold():
+            self._load_dashboard_sync(dashboard_id, edit=edit)
+
+    def _load_dashboard_sync(self, dashboard_id: str, edit: bool = False):
         dashboard = self.store.load_dashboard(self._user_id, dashboard_id)
         if dashboard is None:
             self._page.main = [
@@ -825,13 +832,7 @@ class FlowDashApp(Viewer):
         self._current_dashboard = dashboard
         self._loading = True
 
-        for node_id in list(self._dataflow_graph.node_ids):
-            self._dataflow_graph.remove_node(node_id)
-        self._tile_items = []
-        self._tile_objects = []
-        self._edge_id_map.clear()
-        self._flow.nodes = []
-        self._flow.edges = []
+        self._reset_canvas()
 
         for item in dashboard.items:
             component_id = item.component_id
@@ -909,6 +910,7 @@ class FlowDashApp(Viewer):
             self._show_edit_mode()
         else:
             self._show_view_mode()
+        self._sync_menu_active(f"{DASH_ROUTE_PREFIX}{dashboard_id}")
         self._page.main = [self._component_view, self._dialog, self._unsaved_dialog]
 
     def _create_new_dashboard(self, title_str: str):
@@ -918,9 +920,8 @@ class FlowDashApp(Viewer):
             return
         dashboard = self.store.create_dashboard(self._user_id, title_str)
         self._current_dashboard = dashboard
+        self._reset_canvas()
         self._dirty = False
-        self._tile_items = []
-        self._tile_objects = []
 
         pn.state.notifications.success(
             f'Created new dashboard "{dashboard.title}".', duration=3000
@@ -932,6 +933,7 @@ class FlowDashApp(Viewer):
                 search="?edit=true",
             )
         self._show_edit_mode()
+        self._sync_menu_active(f"{DASH_ROUTE_PREFIX}{dashboard.dashboard_id}")
         self._page.main = [self._component_view, self._dialog, self._unsaved_dialog]
 
     def _delete_dashboard(self, dashboard_id: str):
@@ -941,8 +943,7 @@ class FlowDashApp(Viewer):
         self.store.delete_dashboard(self._user_id, dashboard_id)
         if was_current:
             self._current_dashboard = None
-            self._tile_items = []
-            self._tile_objects = []
+            self._reset_canvas()
             self._dirty = False
 
         self._refresh_sidebar_dashboards()
@@ -1193,7 +1194,6 @@ class FlowDashApp(Viewer):
         return None
 
     def _on_action_edit(self, item):
-        self._action_fired = True
         self._page.contextbar_open = False
         path = item.get("path", "")
         dashboard_id = self._dashboard_id_from_path(path)
@@ -1211,7 +1211,6 @@ class FlowDashApp(Viewer):
 
     @pn.io.hold()
     def _on_action_rename(self, item):
-        self._action_fired = True
         path = item.get("path", "")
         dashboard_id = self._dashboard_id_from_path(path)
         if not dashboard_id:
@@ -1226,7 +1225,6 @@ class FlowDashApp(Viewer):
 
     @pn.io.hold()
     def _on_action_delete(self, item):
-        self._action_fired = True
         path = item.get("path", "")
         dashboard_id = self._dashboard_id_from_path(path)
         if not dashboard_id:
@@ -1239,7 +1237,6 @@ class FlowDashApp(Viewer):
 
     @pn.io.hold()
     def _on_action_create(self, item):
-        self._action_fired = True
         self._open_create_dialog()
 
     @pn.io.hold()
@@ -1455,9 +1452,6 @@ class FlowDashApp(Viewer):
                 break
 
         def on_click(event):
-            if self._action_fired:
-                self._action_fired = False
-                return
             if "path" not in event or pn.state.location is None:
                 return
             path = event["path"]
@@ -1470,8 +1464,6 @@ class FlowDashApp(Viewer):
                     self._show_view_mode()
                 return
             self._request_navigation(path)
-
-        self._action_fired = False
 
         self._menu_list = pmui.MenuList(
             items=menu_items,

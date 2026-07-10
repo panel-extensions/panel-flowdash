@@ -61,40 +61,40 @@ class TestBasicWiring:
         self.graph.add_node("p1", "producer")
         self.graph.add_node("c1", "consumer")
 
-    def test_valid_edge(self):
+    async def test_valid_edge(self):
         result = self.graph.add_edge("p1", "value", "c1", "value")
         assert result is True
 
-    def test_propagation(self):
+    async def test_propagation(self):
         self.graph.add_edge("p1", "value", "c1", "value")
         source = self.graph.get_state("p1")
         target = self.graph.get_state("c1")
         source.value = "hello"
         assert target.value == "hello"
 
-    def test_nonexistent_source_node(self):
+    async def test_nonexistent_source_node(self):
         result = self.graph.add_edge("missing", "value", "c1", "value")
         assert isinstance(result, str)
         assert "not found" in result
 
-    def test_nonexistent_target_node(self):
+    async def test_nonexistent_target_node(self):
         result = self.graph.add_edge("p1", "value", "missing", "value")
         assert isinstance(result, str)
         assert "not found" in result
 
-    def test_nonexistent_source_port(self):
+    async def test_nonexistent_source_port(self):
         result = self.graph.add_edge("p1", "nope", "c1", "value")
         assert isinstance(result, str)
         assert "does not exist" in result
 
-    def test_nonexistent_target_port(self):
+    async def test_nonexistent_target_port(self):
         result = self.graph.add_edge("p1", "value", "c1", "nope")
         assert isinstance(result, str)
         assert "does not exist" in result
 
 
 class TestSingleSourcePerInput:
-    def test_rejects_second_edge_to_same_input(self):
+    async def test_rejects_second_edge_to_same_input(self):
         specs = {
             "producer": make_spec("producer", outputs=[OutputPort(name="value", type="str")]),
             "producer2": make_spec("producer2", outputs=[OutputPort(name="value", type="str")]),
@@ -112,7 +112,7 @@ class TestSingleSourcePerInput:
         assert isinstance(result2, str)
         assert "already has a connection" in result2
 
-    def test_allows_after_disconnect(self):
+    async def test_allows_after_disconnect(self):
         specs = {
             "producer": make_spec("producer", outputs=[OutputPort(name="value", type="str")]),
             "producer2": make_spec("producer2", outputs=[OutputPort(name="value", type="str")]),
@@ -131,7 +131,7 @@ class TestSingleSourcePerInput:
 
 
 class TestCycleDetection:
-    def test_self_loop(self):
+    async def test_self_loop(self):
         specs = {
             "node": make_spec(
                 "node",
@@ -145,7 +145,7 @@ class TestCycleDetection:
         assert isinstance(result, str)
         assert "cycle" in result.lower()
 
-    def test_direct_cycle(self):
+    async def test_direct_cycle(self):
         specs = {
             "node": make_spec(
                 "node",
@@ -164,7 +164,7 @@ class TestCycleDetection:
         assert isinstance(result2, str)
         assert "cycle" in result2.lower()
 
-    def test_indirect_cycle(self):
+    async def test_indirect_cycle(self):
         specs = {
             "node": make_spec(
                 "node",
@@ -184,7 +184,7 @@ class TestCycleDetection:
         assert isinstance(result, str)
         assert "cycle" in result.lower()
 
-    def test_non_cycle_diamond(self):
+    async def test_non_cycle_diamond(self):
         """Diamond shape (A->B, A->C, B->D, C->D) is not a cycle."""
         specs = {
             "node": make_spec(
@@ -206,7 +206,7 @@ class TestCycleDetection:
 
 
 class TestTypeCompatibility:
-    def test_matching_types(self):
+    async def test_matching_types(self):
         specs = {
             "src": make_spec("src", outputs=[OutputPort(name="val", type="str")]),
             "tgt": make_spec("tgt", inputs=[InputPort(name="val", type="str")]),
@@ -216,7 +216,7 @@ class TestTypeCompatibility:
         graph.add_node("t", "tgt")
         assert graph.add_edge("s", "val", "t", "val") is True
 
-    def test_mismatched_types(self):
+    async def test_mismatched_types(self):
         specs = {
             "src": make_spec("src", outputs=[OutputPort(name="val", type="int")]),
             "tgt": make_spec("tgt", inputs=[InputPort(name="val", type="str")]),
@@ -228,7 +228,7 @@ class TestTypeCompatibility:
         assert isinstance(result, str)
         assert "Type mismatch" in result
 
-    def test_untyped_source_allows_connection(self):
+    async def test_untyped_source_allows_connection(self):
         specs = {
             "src": make_spec("src", outputs=[OutputPort(name="val", type=None)]),
             "tgt": make_spec("tgt", inputs=[InputPort(name="val", type="str")]),
@@ -238,7 +238,7 @@ class TestTypeCompatibility:
         graph.add_node("t", "tgt")
         assert graph.add_edge("s", "val", "t", "val") is True
 
-    def test_untyped_target_allows_connection(self):
+    async def test_untyped_target_allows_connection(self):
         specs = {
             "src": make_spec("src", outputs=[OutputPort(name="val", type="int")]),
             "tgt": make_spec("tgt", inputs=[InputPort(name="val", type=None)]),
@@ -248,7 +248,7 @@ class TestTypeCompatibility:
         graph.add_node("t", "tgt")
         assert graph.add_edge("s", "val", "t", "val") is True
 
-    def test_both_untyped_allows_connection(self):
+    async def test_both_untyped_allows_connection(self):
         specs = {
             "src": make_spec("src", outputs=[OutputPort(name="val", type=None)]),
             "tgt": make_spec("tgt", inputs=[InputPort(name="val", type=None)]),
@@ -258,7 +258,7 @@ class TestTypeCompatibility:
         graph.add_node("t", "tgt")
         assert graph.add_edge("s", "val", "t", "val") is True
 
-    def test_case_insensitive_match(self):
+    async def test_case_insensitive_match(self):
         specs = {
             "src": make_spec("src", outputs=[OutputPort(name="val", type="String")]),
             "tgt": make_spec("tgt", inputs=[InputPort(name="val", type="string")]),
@@ -270,7 +270,7 @@ class TestTypeCompatibility:
 
 
 class TestNodeStateCreation:
-    def test_creates_params_for_inputs_and_outputs(self):
+    async def test_creates_params_for_inputs_and_outputs(self):
         spec = make_spec(
             "test",
             inputs=[InputPort(name="x", default=42)],
@@ -283,7 +283,7 @@ class TestNodeStateCreation:
         assert instance.x == 42
         assert instance.y is None
 
-    def test_shared_port_name_uses_single_param(self):
+    async def test_shared_port_name_uses_single_param(self):
         spec = make_spec(
             "passthrough",
             inputs=[InputPort(name="val")],
@@ -294,7 +294,7 @@ class TestNodeStateCreation:
         instance.val = "test"
         assert instance.val == "test"
 
-    def test_allows_refs(self):
+    async def test_allows_refs(self):
         spec = make_spec(
             "test",
             inputs=[InputPort(name="x")],
@@ -306,7 +306,7 @@ class TestNodeStateCreation:
 
 
 class TestEdgeRemoval:
-    def test_remove_resets_to_default(self):
+    async def test_remove_resets_to_default(self):
         specs = {
             "src": make_spec("src", outputs=[OutputPort(name="val")]),
             "tgt": make_spec("tgt", inputs=[InputPort(name="val", default="fallback")]),
@@ -322,7 +322,7 @@ class TestEdgeRemoval:
         graph.remove_edge("s", "val", "t", "val")
         assert graph.get_state("t").val == "fallback"
 
-    def test_remove_node_clears_edges(self):
+    async def test_remove_node_clears_edges(self):
         specs = {
             "src": make_spec("src", outputs=[OutputPort(name="val")]),
             "tgt": make_spec("tgt", inputs=[InputPort(name="val")]),
@@ -340,7 +340,7 @@ class TestEdgeRemoval:
 class TestViewerComponents:
     """End-to-end tests using real Viewer subclasses through spec extraction and wiring."""
 
-    def test_viewer_output_propagates_to_viewer_input(self):
+    async def test_viewer_output_propagates_to_viewer_input(self):
         class Producer(Viewer):
             company = param.String(default="")
 
@@ -374,7 +374,7 @@ class TestViewerComponents:
         graph.get_state("p1").selected_company = "Acme Corp"
         assert graph.get_state("c1").company == "Acme Corp"
 
-    def test_viewer_chain_three_nodes(self):
+    async def test_viewer_chain_three_nodes(self):
         """Multi-hop propagation: each hop fires when the source port is set."""
 
         class Selector(Viewer):
@@ -428,7 +428,7 @@ class TestViewerComponents:
         graph.get_state("t1").output_val = "HELLO"
         assert graph.get_state("d1").text == "HELLO"
 
-    def test_viewer_type_mismatch_rejected(self):
+    async def test_viewer_type_mismatch_rejected(self):
         @register(
             component=True,
             provides=[{"key": "count", "type": "int"}],
@@ -465,7 +465,7 @@ class TestViewerComponents:
         sys.version_info[:2] == (3, 10),
         reason="param.output introspection differs on Python 3.10",
     )
-    def test_viewer_cycle_rejected(self):
+    async def test_viewer_cycle_rejected(self):
         class Node(Viewer):
             input_val = param.String(default="")
 
@@ -488,7 +488,7 @@ class TestViewerComponents:
         assert "cycle" in result.lower()
 
     @pytest.mark.skip(reason="param.output introspection differs between released and dev param")
-    def test_viewer_single_source_rejected(self):
+    async def test_viewer_single_source_rejected(self):
         class Source(Viewer):
             @param.output(param.String)
             def value(self):
@@ -517,7 +517,7 @@ class TestViewerComponents:
         assert isinstance(result, str)
         assert "already has a connection" in result
 
-    def test_decorator_function_component_wiring(self):
+    async def test_decorator_function_component_wiring(self):
         """Decorator-based function components wired through the graph."""
 
         @register(component=True, provides=["company"])
@@ -545,7 +545,7 @@ class TestViewerComponents:
 class TestRuntimeValidation:
     """Tests that runtime type errors during propagation are caught and reported."""
 
-    def test_on_error_called_on_assignment_failure(self):
+    async def test_on_error_called_on_assignment_failure(self):
         """When target param rejects a value, on_error fires instead of crashing."""
 
         class TypedTarget(param.Parameterized):
@@ -578,7 +578,7 @@ class TestRuntimeValidation:
         assert errors[0][3] == "count"
         assert isinstance(errors[0][4], Exception)
 
-    def test_on_error_with_typed_node_state(self):
+    async def test_on_error_with_typed_node_state(self):
         """Use a custom NodeState with a typed param to trigger validation."""
 
         class TypedState(param.Parameterized):
@@ -603,7 +603,7 @@ class TestRuntimeValidation:
         assert len(errors) == 1
         assert "count" in errors[0][3]
 
-    def test_no_error_on_valid_assignment(self):
+    async def test_no_error_on_valid_assignment(self):
         specs = {
             "src": make_spec("src", outputs=[OutputPort(name="val")]),
             "tgt": make_spec("tgt", inputs=[InputPort(name="val")]),
@@ -618,7 +618,7 @@ class TestRuntimeValidation:
         assert graph.get_state("t").val == "perfectly fine"
         assert len(errors) == 0
 
-    def test_on_error_not_set_still_works(self):
+    async def test_on_error_not_set_still_works(self):
         """Without on_error callback, bad assignments are silently swallowed."""
 
         class TypedState(param.Parameterized):
@@ -640,7 +640,7 @@ class TestRuntimeValidation:
         graph.get_state("s").val = "not_an_int"
         assert typed_state.count == 0
 
-    def test_error_on_initial_propagation(self):
+    async def test_error_on_initial_propagation(self):
         """If source already has a value that the target rejects, on_error fires at wire time."""
 
         class TypedState(param.Parameterized):
@@ -663,7 +663,7 @@ class TestRuntimeValidation:
         graph.add_edge("s", "val", "t", "count")
         assert len(errors) == 1
 
-    def test_watcher_removed_on_edge_disconnect(self):
+    async def test_watcher_removed_on_edge_disconnect(self):
         """After removing an edge, source changes no longer propagate."""
         specs = {
             "src": make_spec("src", outputs=[OutputPort(name="val")]),

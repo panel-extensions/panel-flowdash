@@ -20,7 +20,7 @@ hatch-vcs = "*"
 python = ">=3.10"
 python-gil = '*'
 panel = ">=1.9.0"
-panel-material-ui = "*"
+panel-material-ui = ">=0.14.0"
 
 [dependencies]
 panel_flowdash = { path = "." }
@@ -34,6 +34,9 @@ panel_tiles = "*"
 pytest = ">=6"
 pytest-cov = "*"
 mypy = "*"
+
+[feature.test.pypi-dependencies]
+pytest-asyncio = ">=0.23"
 
 [feature.test.tasks]
 test = "pytest"

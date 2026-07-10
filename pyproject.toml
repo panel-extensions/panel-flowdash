@@ -42,7 +42,7 @@ classifiers = [
 dependencies = [
     "packaging",
     "panel >=1.9.3",
-    "panel-material-ui >=0.13.0",
+    "panel-material-ui >=0.14.0",
     "panel-reactflow >=0.4.0",
     "panel-tiles >=0.3.0",
 ]
@@ -57,7 +57,7 @@ Source = "https://github.com/panel-extensions/panel-flowdash"
 [project.optional-dependencies]
 dev = [
     "pre-commit",
-    "pytest-asyncio",
+    "pytest-asyncio>=0.23",
     "pytest-rerunfailures",
     "pytest-xdist",
     "pytest",
@@ -127,6 +127,7 @@ minversion = "7"
 log_cli_level = "INFO"
 testpaths = ["tests"]
 filterwarnings = ["error"]
+asyncio_mode = "auto"
 
 [tool.mypy]
 python_version = '3.10'

@@ -37,7 +37,7 @@ def _create_project(tmp_path: Path):
 
 
 class TestBuildRegistry:
-    def test_scans_sections(self, tmp_path):
+    async def test_scans_sections(self, tmp_path):
         _create_project(tmp_path)
         sys.path.insert(0, str(tmp_path))
         try:
@@ -50,7 +50,7 @@ class TestBuildRegistry:
         assert "Analytics/page" in registry
         assert "Analytics/_private" not in registry
 
-    def test_metadata_extracted(self, tmp_path):
+    async def test_metadata_extracted(self, tmp_path):
         _create_project(tmp_path)
         sys.path.insert(0, str(tmp_path))
         try:
@@ -66,7 +66,7 @@ class TestBuildRegistry:
         assert page.metadata.page is True
         assert page.title == "Overview"
 
-    def test_ignores_dot_dirs(self, tmp_path):
+    async def test_ignores_dot_dirs(self, tmp_path):
         _create_project(tmp_path)
         hidden = tmp_path / ".hidden"
         hidden.mkdir()
@@ -83,7 +83,7 @@ class TestBuildRegistry:
 
 
 class TestFlowDashApp:
-    def test_creates_viewer_instance(self, tmp_path):
+    async def test_creates_viewer_instance(self, tmp_path):
         _create_project(tmp_path)
         sys.path.insert(0, str(tmp_path))
         try:
@@ -97,7 +97,7 @@ class TestFlowDashApp:
         assert len(app._component_entries) == 2
         assert len(app._page_entries) == 1
 
-    def test_build_routes(self, tmp_path):
+    async def test_build_routes(self, tmp_path):
         _create_project(tmp_path)
         sys.path.insert(0, str(tmp_path))
         try:
@@ -112,7 +112,7 @@ class TestFlowDashApp:
         assert "/dash/[^/]+" in routes
         assert "/Analytics/page" in routes
 
-    def test_db_defaults_to_project_dir(self, tmp_path):
+    async def test_db_defaults_to_project_dir(self, tmp_path):
         _create_project(tmp_path)
         db_path = tmp_path / "dashboards.db"
         DashboardStore(db_path)

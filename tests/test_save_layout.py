@@ -18,7 +18,7 @@ def store(tmp_path):
 class TestSavePreservesTileLayout:
     """Regression tests: tile_layout must not be lost when saving from wiring mode."""
 
-    def test_save_from_wiring_mode_preserves_existing_layout(self, store):
+    async def test_save_from_wiring_mode_preserves_existing_layout(self, store):
         """When user saves in wiring mode, the previously loaded tile_layout is kept."""
         layout = [{"i": "n1", "x": 0, "y": 0, "w": 6, "h": 3}]
         dashboard = DashboardModel(
@@ -41,7 +41,7 @@ class TestSavePreservesTileLayout:
         assert reloaded.tile_layout == layout
         assert reloaded.items[0].x == 200
 
-    def test_save_with_empty_layout_does_not_clobber(self, store):
+    async def test_save_with_empty_layout_does_not_clobber(self, store):
         """If tile_layout was never set (new dashboard), empty list is fine to persist."""
         dashboard = DashboardModel(
             dashboard_id="d2",
@@ -55,7 +55,7 @@ class TestSavePreservesTileLayout:
         loaded = store.load_dashboard("user1", "d2")
         assert loaded.tile_layout == []
 
-    def test_full_round_trip_with_edges_and_layout(self, store):
+    async def test_full_round_trip_with_edges_and_layout(self, store):
         """Complete round-trip: items + edges + tile_layout all survive."""
         original = DashboardModel(
             dashboard_id="d3",
