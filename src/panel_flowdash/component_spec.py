@@ -206,9 +206,12 @@ def _ports_from_viewer_class(
     exclude = exclude or set()
     instance = viewer_cls()
     output_info = instance.param.outputs()
+    mro_dicts = [cls.__dict__ for cls in viewer_cls.__mro__]
 
     outputs = []
     for name, (ptype, _method, _index) in output_info.items():
+        if not any(name in d for d in mro_dicts):
+            continue
         if ptype is None:
             type_str = None
         elif isinstance(ptype, type):
