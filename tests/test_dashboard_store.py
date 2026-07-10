@@ -36,14 +36,14 @@ def sample_dashboard():
 
 
 class TestDashboardStoreBasic:
-    def test_create_and_load(self, store):
+    async def test_create_and_load(self, store):
         dashboard = store.create_dashboard("user1", "My Dashboard")
         loaded = store.load_dashboard("user1", dashboard.dashboard_id)
         assert loaded is not None
         assert loaded.title == "My Dashboard"
         assert loaded.user_id == "user1"
 
-    def test_list_dashboards(self, store):
+    async def test_list_dashboards(self, store):
         store.create_dashboard("user1", "First")
         store.create_dashboard("user1", "Second")
         store.create_dashboard("user2", "Other User")
@@ -52,33 +52,33 @@ class TestDashboardStoreBasic:
         assert len(user1_dashboards) == 2
         assert all(d.user_id == "user1" for d in user1_dashboards)
 
-    def test_delete_dashboard(self, store):
+    async def test_delete_dashboard(self, store):
         dashboard = store.create_dashboard("user1", "To Delete")
         assert store.delete_dashboard("user1", dashboard.dashboard_id)
         assert store.load_dashboard("user1", dashboard.dashboard_id) is None
 
-    def test_rename_dashboard(self, store):
+    async def test_rename_dashboard(self, store):
         dashboard = store.create_dashboard("user1", "Original")
         store.rename_dashboard("user1", dashboard.dashboard_id, "Renamed")
         loaded = store.load_dashboard("user1", dashboard.dashboard_id)
         assert loaded.title == "Renamed"
 
-    def test_load_nonexistent_returns_none(self, store):
+    async def test_load_nonexistent_returns_none(self, store):
         assert store.load_dashboard("user1", "does_not_exist") is None
 
 
 class TestTileLayoutPersistence:
-    def test_tile_layout_round_trip(self, store, sample_dashboard):
+    async def test_tile_layout_round_trip(self, store, sample_dashboard):
         store.save_dashboard(sample_dashboard)
         loaded = store.load_dashboard("user1", "d1")
         assert loaded.tile_layout == sample_dashboard.tile_layout
 
-    def test_empty_tile_layout_preserved(self, store):
+    async def test_empty_tile_layout_preserved(self, store):
         dashboard = store.create_dashboard("user1", "Empty Layout")
         loaded = store.load_dashboard("user1", dashboard.dashboard_id)
         assert loaded.tile_layout == []
 
-    def test_tile_layout_update(self, store, sample_dashboard):
+    async def test_tile_layout_update(self, store, sample_dashboard):
         store.save_dashboard(sample_dashboard)
 
         sample_dashboard.tile_layout = [
@@ -90,7 +90,9 @@ class TestTileLayoutPersistence:
         loaded = store.load_dashboard("user1", "d1")
         assert loaded.tile_layout == sample_dashboard.tile_layout
 
-    def test_tile_layout_not_clobbered_on_resave_without_change(self, store, sample_dashboard):
+    async def test_tile_layout_not_clobbered_on_resave_without_change(
+        self, store, sample_dashboard
+    ):
         """Saving again with the same layout does not lose it."""
         store.save_dashboard(sample_dashboard)
         original_layout = list(sample_dashboard.tile_layout)
@@ -103,7 +105,7 @@ class TestTileLayoutPersistence:
 
 
 class TestEdgePersistence:
-    def test_edges_round_trip(self, store, sample_dashboard):
+    async def test_edges_round_trip(self, store, sample_dashboard):
         store.save_dashboard(sample_dashboard)
         loaded = store.load_dashboard("user1", "d1")
         assert len(loaded.edges) == 1
@@ -113,7 +115,7 @@ class TestEdgePersistence:
         assert edge.target == "n2"
         assert edge.target_port == "company"
 
-    def test_multiple_edges(self, store):
+    async def test_multiple_edges(self, store):
         dashboard = DashboardModel(
             dashboard_id="d2",
             user_id="user1",
@@ -133,7 +135,7 @@ class TestEdgePersistence:
         loaded = store.load_dashboard("user1", "d2")
         assert len(loaded.edges) == 3
 
-    def test_no_edges(self, store):
+    async def test_no_edges(self, store):
         dashboard = DashboardModel(
             dashboard_id="d3",
             user_id="user1",
@@ -147,30 +149,30 @@ class TestEdgePersistence:
 
 
 class TestTitleUniqueness:
-    def test_title_exists_returns_true_for_duplicate(self, store):
+    async def test_title_exists_returns_true_for_duplicate(self, store):
         store.create_dashboard("user1", "My Dashboard")
         assert store.title_exists("user1", "My Dashboard") is True
 
-    def test_title_exists_returns_false_for_unique(self, store):
+    async def test_title_exists_returns_false_for_unique(self, store):
         store.create_dashboard("user1", "My Dashboard")
         assert store.title_exists("user1", "Other Name") is False
 
-    def test_title_exists_scoped_to_user(self, store):
+    async def test_title_exists_scoped_to_user(self, store):
         store.create_dashboard("user1", "Shared Name")
         assert store.title_exists("user2", "Shared Name") is False
 
-    def test_title_exists_exclude_id(self, store):
+    async def test_title_exists_exclude_id(self, store):
         dashboard = store.create_dashboard("user1", "Original")
         assert store.title_exists("user1", "Original", exclude_id=dashboard.dashboard_id) is False
 
-    def test_title_exists_exclude_id_still_catches_other(self, store):
+    async def test_title_exists_exclude_id_still_catches_other(self, store):
         d1 = store.create_dashboard("user1", "First")
         store.create_dashboard("user1", "Second")
         assert store.title_exists("user1", "Second", exclude_id=d1.dashboard_id) is True
 
 
 class TestResponsiveLayoutPersistence:
-    def test_breakpoints_round_trip(self, store):
+    async def test_breakpoints_round_trip(self, store):
         dashboard = DashboardModel(
             dashboard_id="d5",
             user_id="user1",
@@ -190,13 +192,13 @@ class TestResponsiveLayoutPersistence:
             "sm": [{"width": 50, "height": 150, "visible": True}],
         }
 
-    def test_empty_responsive_layouts_preserved(self, store):
+    async def test_empty_responsive_layouts_preserved(self, store):
         dashboard = store.create_dashboard("user1", "No Responsive")
         loaded = store.load_dashboard("user1", dashboard.dashboard_id)
         assert loaded.breakpoints == []
         assert loaded.responsive_layouts == {}
 
-    def test_responsive_layouts_update(self, store):
+    async def test_responsive_layouts_update(self, store):
         dashboard = DashboardModel(
             dashboard_id="d6",
             user_id="user1",
@@ -217,7 +219,7 @@ class TestResponsiveLayoutPersistence:
         assert loaded.breakpoints == [768, 1200]
         assert "sm" in loaded.responsive_layouts
 
-    def test_responsive_layouts_not_clobbered_on_resave(self, store):
+    async def test_responsive_layouts_not_clobbered_on_resave(self, store):
         dashboard = DashboardModel(
             dashboard_id="d7",
             user_id="user1",
@@ -237,7 +239,7 @@ class TestResponsiveLayoutPersistence:
 
 
 class TestItemPersistence:
-    def test_items_round_trip(self, store, sample_dashboard):
+    async def test_items_round_trip(self, store, sample_dashboard):
         store.save_dashboard(sample_dashboard)
         loaded = store.load_dashboard("user1", "d1")
         assert len(loaded.items) == 2
@@ -247,14 +249,14 @@ class TestItemPersistence:
         assert item.x == 100
         assert item.y == 200
 
-    def test_item_positions_preserved(self, store, sample_dashboard):
+    async def test_item_positions_preserved(self, store, sample_dashboard):
         store.save_dashboard(sample_dashboard)
         loaded = store.load_dashboard("user1", "d1")
         for original, loaded_item in zip(sample_dashboard.items, loaded.items, strict=True):
             assert original.x == loaded_item.x
             assert original.y == loaded_item.y
 
-    def test_item_config_preserved(self, store):
+    async def test_item_config_preserved(self, store):
         dashboard = DashboardModel(
             dashboard_id="d4",
             user_id="user1",

@@ -26,7 +26,7 @@ def make_entry(app, *, component_id="test/comp"):
 
 
 class TestConfigSchemaExtraction:
-    def test_param_class_schema(self):
+    async def test_param_class_schema(self):
         class Cfg(param.Parameterized):
             title = param.String(default="hi")
             count = param.Integer(default=3, bounds=(0, 10))
@@ -43,7 +43,7 @@ class TestConfigSchemaExtraction:
         assert spec.config_state_class is not None
         assert spec.config_state_class().count == 3
 
-    def test_dict_schema_with_enum(self):
+    async def test_dict_schema_with_enum(self):
         schema = {
             "properties": {
                 "mode": {
@@ -64,7 +64,7 @@ class TestConfigSchemaExtraction:
         assert spec.config[0].label == "Mode"
         assert spec.config_state_class().mode == "a"
 
-    def test_no_config(self):
+    async def test_no_config(self):
         @register(component=True, provides=["x"])
         def app(config):
             pass
@@ -75,7 +75,7 @@ class TestConfigSchemaExtraction:
 
 
 class TestViewerConfigNames:
-    def test_config_params_excluded_from_inputs(self):
+    async def test_config_params_excluded_from_inputs(self):
         @register(component=True, config=["show_labels"])
         class app(Viewer):
             start = param.Integer(default=2000)
@@ -92,7 +92,7 @@ class TestViewerConfigNames:
         assert "start" in input_names
         assert config_names == ["show_labels"]
 
-    def test_config_state_carries_default(self):
+    async def test_config_state_carries_default(self):
         @register(component=True, config=["show_labels"])
         class app(Viewer):
             show_labels = param.Boolean(default=True)
@@ -102,7 +102,7 @@ class TestViewerConfigNames:
 
 
 class TestConfigEditor:
-    def test_editor_passed_through(self):
+    async def test_editor_passed_through(self):
         def editor(data, schema, *, id, type, on_patch):
             return None
 
@@ -115,7 +115,7 @@ class TestConfigEditor:
 
 
 class TestConfigStateInGraph:
-    def test_graph_creates_config_state(self):
+    async def test_graph_creates_config_state(self):
         class Cfg(param.Parameterized):
             title = param.String(default="hi")
 
@@ -131,7 +131,7 @@ class TestConfigStateInGraph:
         assert config_state is not None
         assert config_state.title == "hi"
 
-    def test_config_state_removed_with_node(self):
+    async def test_config_state_removed_with_node(self):
         class Cfg(param.Parameterized):
             title = param.String(default="hi")
 
@@ -145,7 +145,7 @@ class TestConfigStateInGraph:
         graph.remove_node("n1")
         assert graph.get_config_state("n1") is None
 
-    def test_no_config_state_when_no_config(self):
+    async def test_no_config_state_when_no_config(self):
         @register(component=True, provides=["x"])
         def app(config):
             pass

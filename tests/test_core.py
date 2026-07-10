@@ -3,5 +3,5 @@
 import panel_flowdash
 
 
-def test_import():
+async def test_import():
     assert panel_flowdash.__version__

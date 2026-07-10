@@ -53,7 +53,7 @@ def _create_project(tmp_path):
 
 
 @pytest.fixture
-def app(tmp_path):
+async def app(tmp_path):
     """A FlowDashApp with a fake Location so navigation code paths run."""
     _create_project(tmp_path)
     sys.path.insert(0, str(tmp_path))
@@ -81,7 +81,7 @@ def _fire_action(app, name, item):
 
 
 class TestCanvasReset:
-    def test_reset_clears_all_state(self, app):
+    async def test_reset_clears_all_state(self, app):
         app._add_component_to_graph()
         assert app._tile_items
         assert app._flow.nodes
@@ -96,7 +96,7 @@ class TestCanvasReset:
         assert app._flow.edges == []
         assert app._sidebar_container.objects == []
 
-    def test_create_new_dashboard_resets_canvas(self, app):
+    async def test_create_new_dashboard_resets_canvas(self, app):
         """Creating a dashboard while another has nodes must clear the canvas."""
         app._add_component_to_graph()
         assert app._flow.nodes
@@ -108,7 +108,7 @@ class TestCanvasReset:
         assert list(app._dataflow_graph.node_ids) == []
         assert app._current_dashboard.title == "Fresh"
 
-    def test_clear_components_resets_canvas(self, app):
+    async def test_clear_components_resets_canvas(self, app):
         app._add_component_to_graph()
         app._add_component_to_graph()
         assert len(app._flow.nodes) == 2
@@ -120,7 +120,7 @@ class TestCanvasReset:
 
 
 class TestMenuClickNavigation:
-    def test_plain_item_click_navigates(self, app):
+    async def test_plain_item_click_navigates(self, app):
         calls = []
         app._navigate_to = lambda path: calls.append(path)
 
@@ -128,7 +128,7 @@ class TestMenuClickNavigation:
 
         assert calls == ["/Analytics/page"]
 
-    def test_click_after_action_still_navigates(self, app):
+    async def test_click_after_action_still_navigates(self, app):
         """Regression: an action must not swallow the next plain nav click."""
         calls = []
         app._navigate_to = lambda path: calls.append(path)
@@ -144,12 +144,12 @@ class TestMenuClickNavigation:
 
         assert calls == ["/Analytics/page"]
 
-    def test_new_dashboard_click_opens_create_dialog(self, app):
+    async def test_new_dashboard_click_opens_create_dialog(self, app):
         _click_item(app, {"path": "__new_dashboard__"})
         assert app._dialog.open is True
         assert app._dialog_context == {"action": "create"}
 
-    def test_click_current_path_in_edit_mode_switches_to_view(self, app):
+    async def test_click_current_path_in_edit_mode_switches_to_view(self, app):
         pn.state.location.param.update(pathname="/Analytics/page", search="?edit=true")
         switched = []
         app._show_view_mode = lambda: switched.append(True)
@@ -159,7 +159,7 @@ class TestMenuClickNavigation:
         assert switched == [True]
         assert "edit=true" not in (pn.state.location.search or "")
 
-    def test_click_without_path_is_ignored(self, app):
+    async def test_click_without_path_is_ignored(self, app):
         calls = []
         app._navigate_to = lambda path: calls.append(path)
         _click_item(app, {"label": "No path here"})
@@ -167,7 +167,7 @@ class TestMenuClickNavigation:
 
 
 class TestRequestNavigation:
-    def test_clean_state_navigates_directly(self, app):
+    async def test_clean_state_navigates_directly(self, app):
         calls = []
         app._navigate_to = lambda path: calls.append(path)
         app._dirty = False
@@ -177,7 +177,7 @@ class TestRequestNavigation:
         assert calls == ["/Analytics/page"]
         assert app._unsaved_dialog.open is False
 
-    def test_dirty_dashboard_prompts_before_navigating(self, app):
+    async def test_dirty_dashboard_prompts_before_navigating(self, app):
         calls = []
         app._navigate_to = lambda path: calls.append(path)
         app._current_dashboard = app.store.create_dashboard(app._user_id, "Dirty")
@@ -189,7 +189,7 @@ class TestRequestNavigation:
         assert app._unsaved_dialog.open is True
         assert app._pending_navigation == "/Analytics/page"
 
-    def test_dirty_without_current_dashboard_navigates(self, app):
+    async def test_dirty_without_current_dashboard_navigates(self, app):
         """A dirty flag without a loaded dashboard should not block navigation."""
         calls = []
         app._navigate_to = lambda path: calls.append(path)
@@ -202,7 +202,7 @@ class TestRequestNavigation:
 
 
 class TestNavigateTo:
-    def test_updates_location_and_menu_active(self, app):
+    async def test_updates_location_and_menu_active(self, app):
         app._load_page_layout = lambda: None
 
         app._navigate_to("/Analytics/page")
@@ -226,7 +226,7 @@ def _menu_index_for_path(app, path):
 class TestMenuActiveSync:
     """The nav menu highlight must track the loaded dashboard in every mode."""
 
-    def test_load_dashboard_view_mode_highlights_menu(self, app):
+    async def test_load_dashboard_view_mode_highlights_menu(self, app):
         dash = app.store.create_dashboard(app._user_id, "Dash A")
         app._refresh_sidebar_dashboards()
         path = f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}"
@@ -235,7 +235,7 @@ class TestMenuActiveSync:
 
         assert app._menu_list.active == _menu_index_for_path(app, path)
 
-    def test_load_dashboard_edit_mode_highlights_menu(self, app):
+    async def test_load_dashboard_edit_mode_highlights_menu(self, app):
         """Regression: edit mode bypasses _navigate_to but must still sync."""
         dash = app.store.create_dashboard(app._user_id, "Dash A")
         app._refresh_sidebar_dashboards()
@@ -246,7 +246,7 @@ class TestMenuActiveSync:
         assert app._menu_list.active == _menu_index_for_path(app, path)
         assert app._menu_list.active is not None
 
-    def test_switching_dashboards_moves_highlight(self, app):
+    async def test_switching_dashboards_moves_highlight(self, app):
         a = app.store.create_dashboard(app._user_id, "Dash A")
         b = app.store.create_dashboard(app._user_id, "Dash B")
         app._refresh_sidebar_dashboards()
@@ -260,7 +260,7 @@ class TestMenuActiveSync:
         assert second == _menu_index_for_path(app, f"{DASH_ROUTE_PREFIX}{b.dashboard_id}")
         assert first != second
 
-    def test_create_new_dashboard_highlights_menu(self, app):
+    async def test_create_new_dashboard_highlights_menu(self, app):
         app._create_new_dashboard("Fresh")
         path = f"{DASH_ROUTE_PREFIX}{app._current_dashboard.dashboard_id}"
 
