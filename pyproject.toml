@@ -42,7 +42,7 @@ classifiers = [
 dependencies = [
     "packaging",
     "panel >=1.9.3",
-    "panel-material-ui >=0.13.0",
+    "panel-material-ui >=0.14.0",
     "panel-reactflow >=0.4.0",
     "panel-tiles >=0.3.0",
 ]
