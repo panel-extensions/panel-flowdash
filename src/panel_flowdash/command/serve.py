@@ -16,6 +16,7 @@ from panel.io.application import build_applications
 
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.dashboard_store import DashboardStore
+from panel_flowdash.registry import build_registry
 
 log = logging.getLogger(__name__)
 
@@ -69,8 +70,6 @@ class Serve(_PanelServe):
         os.chdir(str(project_dir))
 
         store = DashboardStore(db_path)
-
-        from panel_flowdash.registry import build_registry
 
         registry = build_registry(project_dir)
 
