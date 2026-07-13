@@ -62,6 +62,7 @@ async def app(tmp_path):
     try:
         store = DashboardStore(tmp_path / "test.db")
         instance = FlowDashApp(project_dir=tmp_path, store=store)
+        await instance._ensure_components_loaded()
         yield instance
     finally:
         pn.state._location = previous

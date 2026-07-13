@@ -69,7 +69,21 @@ class Serve(_PanelServe):
         os.chdir(str(project_dir))
 
         store = DashboardStore(db_path)
-        routes = FlowDashApp.build_routes(project_dir=project_dir, store=store, title=args.title)
+
+        from panel_flowdash.registry import build_registry
+
+        registry = build_registry(project_dir)
+
+        if args.warm:
+            for entry in registry.values():
+                try:
+                    entry.load()
+                except Exception as exc:
+                    log.warning("Failed to import '%s': %s", entry.app_id, exc)
+
+        routes = FlowDashApp.build_routes(
+            project_dir=project_dir, store=store, title=args.title, registry=registry
+        )
 
         log.info(f"Serving FlowDash from '{project_dir}' on port {args.port}")
         log.info(f"Database: {db_path}")
