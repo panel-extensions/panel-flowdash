@@ -31,7 +31,7 @@ from panel_flowdash.dataflow_engine import DataflowGraph
 from panel_flowdash.registry import RegistryEntry, build_registry
 from panel_flowdash.session_state import build_session_state_class, check_requirements
 
-pn.extension("tabulator", "vega", "deckgl", notifications=True)
+pn.extension(notifications=True)
 
 logger = logging.getLogger("panel_flowdash")
 

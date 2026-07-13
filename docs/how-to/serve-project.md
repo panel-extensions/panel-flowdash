@@ -38,6 +38,7 @@ flowdash serve <directory> [options]
 | `--address` | `0.0.0.0` | Address to bind to. |
 | `--title` | `FlowDash` | Application title in the browser tab. |
 | `--db-path` | `<dir>/dashboards.db` | Path to the SQLite database. |
+| `--warm` | off | Import all modules at startup instead of lazily on first visit. |
 | `--dev` | off | Enable autoreload for development. |
 | `--admin` | off | Enable the Panel admin interface. |
 | `--profiler` | none | Profiler to use (pyinstrument, snakeviz). |
@@ -78,12 +79,53 @@ python -m panel_flowdash.command serve my_project/
 
 ---
 
+## Lazy loading and warm start
+
+By default, page and component modules are imported lazily — on the first visit
+to that page or on first open of the component editor. This keeps startup fast
+even when individual modules have heavy dependencies.
+
+Pass `--warm` to import all modules at startup instead:
+
+```bash
+flowdash serve my_project/ --warm
+```
+
+Import errors are logged as warnings; they do not abort startup.
+
+---
+
+## Project initialization file
+
+If `my_project/__init__.py` exists, it is executed during server startup —
+before registry scanning and before Panel launches. Use it for any
+pre-configuration that the rest of the project depends on:
+
+```python
+# my_project/__init__.py
+import os
+import panel as pn
+
+os.environ.setdefault("DATABASE_URL", "postgresql://localhost/mydb")
+
+# Register Panel extensions needed by your components (e.g. tabulator, vega, deckgl).
+# FlowDash only calls pn.extension() with notifications enabled by default,
+# so any additional extensions must be loaded here.
+pn.extension("tabulator", "vega", sizing_mode="stretch_width")
+```
+
+The file runs with `my_project/` already on `sys.path` and as the working
+directory, so local relative imports work normally.
+
+---
+
 ## Project structure requirements
 
 ```
 my_project/
+    __init__.py             # optional startup hook (runs before server launch)
     SectionA/
-        __init__.py         # optional but recommended
+        __init__.py         # optional
         component1.py       # must export `app`
         component2.py
     SectionB/
