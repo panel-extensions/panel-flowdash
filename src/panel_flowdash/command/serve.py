@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import logging
 import os
 import sys
@@ -68,6 +69,12 @@ class Serve(_PanelServe):
 
         sys.path.insert(0, str(project_dir))
         os.chdir(str(project_dir))
+
+        init_file = project_dir / "__init__.py"
+        if init_file.exists():
+            spec = importlib.util.spec_from_file_location("__init__", init_file)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
 
         store = DashboardStore(db_path)
 
