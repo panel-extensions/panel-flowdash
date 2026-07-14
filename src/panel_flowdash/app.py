@@ -3,17 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-import importlib
 import inspect
 import logging
 import pathlib
 import traceback
 import typing as t
 import uuid
-import warnings
+from contextlib import asynccontextmanager
 from functools import cache, partial
 from html import escape
-from pathlib import Path
 
 import panel as pn
 import panel_material_ui as pmui
@@ -30,10 +28,10 @@ from panel_flowdash.dashboard_store import (
     DashboardStore,
 )
 from panel_flowdash.dataflow_engine import DataflowGraph
-from panel_flowdash.registry import PanelAppMetadata, RegistryEntry
+from panel_flowdash.registry import RegistryEntry, build_registry
 from panel_flowdash.session_state import build_session_state_class, check_requirements
 
-pn.extension("tabulator", "vega", "deckgl", notifications=True)
+pn.extension(notifications=True)
 
 logger = logging.getLogger("panel_flowdash")
 
@@ -43,66 +41,6 @@ if t.TYPE_CHECKING:
     class _DASHBOARD_ACTION_TYPE(t.TypedDict):
         label: str
         icon: str
-
-
-def build_registry(project_dir: Path) -> dict[str, RegistryEntry]:
-    """Scan a project directory for page/component modules.
-
-    Expects a structure like:
-        project_dir/
-            SectionA/
-                page1.py   (exports `app`)
-                page2.py
-            SectionB/
-                widget.py
-
-    Each .py file must export an `app` object decorated with @register.
-    """
-    registry: dict[str, RegistryEntry] = {}
-
-    for section_dir in sorted(project_dir.glob("*")):
-        if not section_dir.is_dir() or section_dir.name.startswith(("_", ".")):
-            continue
-        section = section_dir.name
-        for module_path in sorted(section_dir.glob("*.py")):
-            if module_path.name.startswith("_"):
-                continue
-
-            module_name = ".".join(module_path.relative_to(project_dir).with_suffix("").parts)
-            try:
-                module = importlib.import_module(module_name)
-            except Exception as exc:
-                warnings.warn(
-                    f"Failed to import '{module_name}': {exc}",
-                    stacklevel=2,
-                )
-                continue
-
-            if not hasattr(module, "app"):
-                warnings.warn(f"Module '{module_name}' has no 'app' export.", stacklevel=2)
-                continue
-
-            app = module.app
-            metadata = PanelAppMetadata.from_app(app)
-            if not metadata.page and not metadata.component:
-                warnings.warn(
-                    f"Module '{module_name}' ignored: page=False and component=False.",
-                    stacklevel=2,
-                )
-                continue
-
-            app_id = f"{section}/{module_path.stem}"
-            registry[app_id] = RegistryEntry(
-                app_id=app_id,
-                section=section,
-                name=module_path.stem,
-                page_path=f"/{app_id}",
-                module_name=module_name,
-                app=app,
-                metadata=metadata,
-            )
-
-    return registry
 
 
 COMPONENTS_ROUTE = "/components"
@@ -190,18 +128,20 @@ class FlowDashApp(Viewer):
             registry = build_registry(pathlib.Path(self.project_dir))
         page_entries = {k: v for k, v in registry.items() if v.metadata.page}
         component_entries = {k: v for k, v in registry.items() if v.metadata.component}
-        component_specs = build_component_specs(registry)
+        # Session state is built from AST metadata — no imports needed.
         session_state_class = build_session_state_class(registry)
         self._registry = registry
         self._page_entries = page_entries
         self._component_entries = component_entries
-        self._component_specs = component_specs
+        # Component specs and dataflow graph are built lazily on first editor visit.
+        self._component_specs: dict = {}
         self._session_state_class = session_state_class
 
         self._session_state = self._session_state_class()
         self._user_id = self._resolve_user_id()
         self._loading = False
         self._dirty = False
+        self._components_loaded = False
         self._edge_id_map: dict[str, tuple[str, str, str, str]] = {}
         self._current_dashboard: DashboardModel | None = None
         self._tile_items: list[dict] = []
@@ -209,10 +149,7 @@ class FlowDashApp(Viewer):
         self._sidebar_views: list[Viewable] = []
         self._sidebar_container = pn.Column(sizing_mode="stretch_width")
         self._component_picker = self._make_component_picker()
-        self._dataflow_graph = DataflowGraph(
-            self._component_specs,
-            on_error=self._on_wiring_error,
-        )
+        self._dataflow_graph = DataflowGraph({}, on_error=self._on_wiring_error)
         self._flow_canvas = self._build_flow_canvas()
         self._component_view = self._build_component_view()
         self._nav_menu = self._build_nav_menu()
@@ -237,6 +174,24 @@ class FlowDashApp(Viewer):
             contextbar=[self._contextbar],
         )
         pn.state.onload(self._load_page_layout)
+
+    @asynccontextmanager
+    async def _loading_screen(self, delay: float = 0.5):
+        """Show a loading placeholder if the block takes longer than *delay* seconds."""
+
+        async def _show_after_delay():
+            await asyncio.sleep(delay)
+            self._page.main = [
+                pmui.LinearProgress(sizing_mode="stretch_width"),
+                self._dialog,
+                self._unsaved_dialog,
+            ]
+
+        task = asyncio.create_task(_show_after_delay())
+        try:
+            yield
+        finally:
+            task.cancel()
 
     def _resolve_user_id(self) -> str:
         if pn.state.user:
@@ -288,7 +243,7 @@ class FlowDashApp(Viewer):
                 alert_type="warning",
             )
 
-        app = entry.app
+        app = await asyncio.to_thread(entry.load)
         if not callable(app):
             return pn.panel(app)
         kwargs = self._add_kwargs_dict(app, context=context, instance_config=instance_config)
@@ -305,9 +260,10 @@ class FlowDashApp(Viewer):
             self._main_task.cancel()
 
         try:
-            coroutine = self._instantiate_entry(entry, context="page")
-            self._main_task = asyncio.create_task(coroutine)
-            return await self._main_task
+            async with self._loading_screen():
+                coroutine = self._instantiate_entry(entry, context="page")
+                self._main_task = asyncio.create_task(coroutine)
+                return await self._main_task
         except asyncio.CancelledError:
             return None
         except Exception as e:
@@ -334,7 +290,7 @@ class FlowDashApp(Viewer):
             size="small",
         )
 
-    def _build_flow_canvas(self):
+    def _node_types_from_specs(self):
         node_types = {}
         node_editors = {}
         for comp_id, spec in self._component_specs.items():
@@ -352,6 +308,15 @@ class FlowDashApp(Viewer):
             )
             if spec.config_editor is not None:
                 node_editors[type_key] = spec.config_editor
+        return node_types, node_editors
+
+    def _rebuild_flow_canvas(self):
+        """Update node_types on the live ReactFlow canvas after component load."""
+        node_types, node_editors = self._node_types_from_specs()
+        self._flow.param.update(node_types=node_types, node_editors=node_editors)
+
+    def _build_flow_canvas(self):
+        node_types, node_editors = self._node_types_from_specs()
 
         flow = pr.ReactFlow(
             nodes=[],
@@ -506,7 +471,7 @@ class FlowDashApp(Viewer):
 
     def _instantiate_for_node(self, entry, node_state, config_state=None):
         """Create a live component view wired to the node_state."""
-        app_fn = entry.app
+        app_fn = entry.load()
 
         if not callable(app_fn):
             return pn.panel(app_fn)
@@ -1101,6 +1066,34 @@ class FlowDashApp(Viewer):
             self._dialog.title = "Delete Dashboard"
             self._dialog.open = True
 
+    async def _ensure_components_loaded(self):
+        """Load all component modules and rebuild the dataflow canvas if not done yet."""
+        if self._components_loaded:
+            return
+
+        already_loaded = all(e.app is not None for e in self._component_entries.values())
+
+        if not already_loaded:
+            errors: list[str] = []
+
+            def _load_all():
+                for entry in self._component_entries.values():
+                    try:
+                        entry.load()
+                    except Exception as exc:
+                        errors.append(f"{entry.app_id}: {exc}")
+
+            await asyncio.to_thread(_load_all)
+
+            for msg in errors:
+                logger.warning("Failed to load component: %s", msg)
+                pn.state.notifications.warning(f"Component load failed: {msg}", duration=6000)
+
+        self._component_specs = build_component_specs(self._registry)
+        self._dataflow_graph = DataflowGraph(self._component_specs, on_error=self._on_wiring_error)
+        self._rebuild_flow_canvas()
+        self._components_loaded = True
+
     async def _load_page_layout(self):
         if pn.state.location is None:
             return
@@ -1116,6 +1109,8 @@ class FlowDashApp(Viewer):
         if pathname == COMPONENTS_ROUTE:
             self._current_dashboard = None
             self._sidebar_container.objects = []
+            async with self._loading_screen():
+                await self._ensure_components_loaded()
             self._show_edit_mode()
             self._page.main = [self._component_view, self._dialog, self._unsaved_dialog]
             return
@@ -1125,7 +1120,9 @@ class FlowDashApp(Viewer):
             if dashboard_id:
                 search = pn.state.location.search or ""
                 edit_requested = "edit=true" in search
-                await self._load_dashboard(dashboard_id, edit=edit_requested)
+                async with self._loading_screen():
+                    await self._ensure_components_loaded()
+                    await self._load_dashboard(dashboard_id, edit=edit_requested)
                 return
 
         self._current_dashboard = None
@@ -1486,9 +1483,15 @@ class FlowDashApp(Viewer):
         return self._page
 
     @classmethod
-    def build_routes(cls, project_dir: str | pathlib.Path, **params) -> dict[str, t.Any]:
+    def build_routes(
+        cls,
+        project_dir: str | pathlib.Path,
+        registry: dict[str, RegistryEntry] | None = None,
+        **params,
+    ) -> dict[str, t.Any]:
         """Generate route mapping for pn.serve."""
-        registry = build_registry(pathlib.Path(project_dir))
+        if registry is None:
+            registry = build_registry(pathlib.Path(project_dir))
 
         def factory():
             return cls(registry=registry, **params)

@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import ast
+import importlib
+import pathlib
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 
@@ -110,7 +114,7 @@ def register(
 panel_app = register
 
 
-@dataclass(frozen=True)
+@dataclass
 class RegistryEntry:
     """A registered component/page with its metadata."""
 
@@ -119,10 +123,168 @@ class RegistryEntry:
     name: str
     page_path: str
     module_name: str
-    app: Any
     metadata: PanelAppMetadata
+    module_path: pathlib.Path | None = None
+    app: Any = None
 
     @property
     def title(self) -> str:
         """Human-readable title."""
         return self.metadata.title or self.name.replace("_", " ")
+
+    def load(self) -> Any:
+        """Import the module and return the app object.
+
+        Caches the result on ``self.app``.  Raises on import failure.
+        """
+        if self.app is not None:
+            return self.app
+        module = importlib.import_module(self.module_name)
+        app = getattr(module, "app", None)
+        if app is None:
+            raise ImportError(f"Module '{self.module_name}' has no 'app' export.")
+        # Refresh metadata from the live object (decorators may carry richer info
+        # e.g. config_schema / config_editor that AST cannot capture).
+        object.__setattr__(self, "app", app)
+        live_metadata = PanelAppMetadata.from_app(app)
+        # Only replace if the live decorator actually produced a non-default result
+        # (guards against bare Viewer classes with no @register decorator).
+        if live_metadata != PanelAppMetadata():
+            object.__setattr__(self, "metadata", live_metadata)
+        return app
+
+
+# ---------------------------------------------------------------------------
+# AST-based metadata extraction
+# ---------------------------------------------------------------------------
+
+_REGISTER_NAMES = {"register", "panel_app"}
+
+_LITERAL_KEYS = {
+    "page",
+    "component",
+    "sidebar",
+    "title",
+    "icon",
+    "description",
+    "singleton",
+    "provides",
+    "requires",
+    "config",
+    "tags",
+    "default_size",
+    "min_size",
+    "max_size",
+}
+
+
+def _eval_literal(node: ast.expr) -> Any:
+    """Safely evaluate an AST literal node; return None on failure."""
+    try:
+        return ast.literal_eval(node)
+    except Exception:
+        return None
+
+
+def _extract_register_kwargs(source: str) -> dict[str, Any] | None:
+    """Parse *source* and return the kwargs of the first @register/@panel_app call.
+
+    Only literal-evaluable arguments are captured; runtime expressions (e.g.
+    ``config_schema=MyParamClass``) are silently skipped — they are picked up
+    later when the module is actually imported.
+
+    Returns ``None`` if no @register call is found.
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        for decorator in node.decorator_list:
+            call = decorator if isinstance(decorator, ast.Call) else None
+            if call is None:
+                continue
+            func = call.func
+            name = (
+                func.id
+                if isinstance(func, ast.Name)
+                else func.attr
+                if isinstance(func, ast.Attribute)
+                else None
+            )
+            if name not in _REGISTER_NAMES:
+                continue
+            kwargs: dict[str, Any] = {}
+            for kw in call.keywords:
+                if kw.arg in _LITERAL_KEYS:
+                    val = _eval_literal(kw.value)
+                    if val is not None or isinstance(kw.value, ast.Constant):
+                        kwargs[kw.arg] = val
+            return kwargs
+
+    return None
+
+
+def build_registry(project_dir: Path) -> dict[str, RegistryEntry]:
+    """Scan *project_dir* for page/component modules without importing them.
+
+    Reads each ``.py`` file with the AST to extract ``@register`` metadata.
+    Modules are **not** imported at this stage; each ``RegistryEntry.app`` is
+    ``None`` until ``RegistryEntry.load()`` is called.
+    """
+    registry: dict[str, RegistryEntry] = {}
+
+    for section_dir in sorted(project_dir.glob("*")):
+        if not section_dir.is_dir() or section_dir.name.startswith(("_", ".")):
+            continue
+        section = section_dir.name
+        for module_path in sorted(section_dir.glob("*.py")):
+            if module_path.name.startswith("_"):
+                continue
+
+            source = module_path.read_text(encoding="utf-8")
+            kwargs = _extract_register_kwargs(source)
+            if kwargs is None:
+                # No @register call found — skip silently (same as before).
+                continue
+
+            # Defaults that match PanelAppMetadata
+            page = kwargs.get("page", True)
+            component = kwargs.get("component", False)
+            if not page and not component:
+                continue
+
+            metadata = PanelAppMetadata(
+                page=bool(page),
+                component=bool(component),
+                sidebar=bool(kwargs.get("sidebar", False)),
+                title=kwargs.get("title"),
+                icon=kwargs.get("icon"),
+                description=kwargs.get("description"),
+                tags=list(kwargs.get("tags") or []),
+                default_size=kwargs.get("default_size"),
+                min_size=kwargs.get("min_size"),
+                max_size=kwargs.get("max_size"),
+                singleton=bool(kwargs.get("singleton", False)),
+                provides=list(kwargs.get("provides") or []),
+                requires=list(kwargs.get("requires") or []),
+                config=list(kwargs.get("config") or []),
+            )
+
+            module_name = ".".join(module_path.relative_to(project_dir).with_suffix("").parts)
+            app_id = f"{section}/{module_path.stem}"
+            registry[app_id] = RegistryEntry(
+                app_id=app_id,
+                section=section,
+                name=module_path.stem,
+                page_path=f"/{app_id}",
+                module_name=module_name,
+                metadata=metadata,
+                module_path=module_path,
+                app=None,
+            )
+
+    return registry

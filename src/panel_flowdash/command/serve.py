@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import logging
 import os
 import sys
@@ -16,6 +17,7 @@ from panel.io.application import build_applications
 
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.dashboard_store import DashboardStore
+from panel_flowdash.registry import build_registry
 
 log = logging.getLogger(__name__)
 
@@ -68,8 +70,26 @@ class Serve(_PanelServe):
         sys.path.insert(0, str(project_dir))
         os.chdir(str(project_dir))
 
+        init_file = project_dir / "__init__.py"
+        if init_file.exists():
+            spec = importlib.util.spec_from_file_location("__init__", init_file)
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+
         store = DashboardStore(db_path)
-        routes = FlowDashApp.build_routes(project_dir=project_dir, store=store, title=args.title)
+
+        registry = build_registry(project_dir)
+
+        if args.warm:
+            for entry in registry.values():
+                try:
+                    entry.load()
+                except Exception as exc:
+                    log.warning("Failed to import '%s': %s", entry.app_id, exc)
+
+        routes = FlowDashApp.build_routes(
+            project_dir=project_dir, store=store, title=args.title, registry=registry
+        )
 
         log.info(f"Serving FlowDash from '{project_dir}' on port {args.port}")
         log.info(f"Database: {db_path}")
