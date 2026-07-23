@@ -17,7 +17,7 @@ import panel as pn
 import panel_material_ui as pmui
 import panel_reactflow as pr
 import param
-from panel.viewable import Viewer
+from panel.viewable import Children, Viewer
 from panel_tiles import TileGrid
 
 from panel_flowdash.component_spec import build_component_specs
@@ -111,7 +111,28 @@ class FlowDashApp(Viewer):
 
     breakpoints = param.List(default=[768, 1200], doc="Responsive breakpoints for the tile grid.")
 
+    configure_layout = param.Callable(
+        default=None,
+        doc="""
+        Optional callback invoked on every navigation with
+        (app, content, route). Use it to set `app.sidebar` and
+        `app.contextbar` for the page currently being served.""",
+    )
+
+    contextbar = Children(default=[], doc="Items prepended to the contextbar.")
+
+    contextbar_open = param.Boolean(default=False, doc="Whether the contextbar is open.")
+
+    page_options = param.Dict(
+        default={},
+        doc="""
+        Extra keyword arguments passed through to the underlying
+        `panel_material_ui.Page`, overriding the app's own defaults.""",
+    )
+
     project_dir = param.Path(doc="Path to the project directory.")
+
+    sidebar = Children(default=[], doc="Items prepended to the sidebar.")
 
     store = param.ClassSelector(
         class_=DashboardStore, doc="DashboardStore instance for persistence."
@@ -153,7 +174,7 @@ class FlowDashApp(Viewer):
         self._flow_canvas = self._build_flow_canvas()
         self._component_view = self._build_component_view()
         self._nav_menu = self._build_nav_menu()
-        self._contextbar = pn.Column(
+        self._nav_drawer = pmui.Drawer(
             pmui.Typography(
                 "Navigation",
                 variant="overline",
@@ -162,17 +183,23 @@ class FlowDashApp(Viewer):
             ),
             pmui.Divider(margin=(4, 0, 4, 0)),
             self._nav_menu,
-            sizing_mode="stretch_width",
+            anchor="right",
+            inline=True,
+            variant="docked",
         )
         self._build_dialog()
         self._build_unsaved_dialog()
-        self._page = pmui.Page(
-            title=self.title,
-            theme_config={"palette": {"primary": {"main": "#0072B5"}}},
-            sidebar_open=False,
-            sidebar=[self._sidebar_container],
-            contextbar=[self._contextbar],
-        )
+        page_kwargs = {
+            "title": self.title,
+            "theme_config": {"palette": {"primary": {"main": "#0072B5"}}},
+            "sidebar_open": False,
+            "sidebar": self.param.sidebar.rx() + [self._sidebar_container],  # noqa: RUF005
+            "contextbar": self.param.contextbar.rx(),
+            "contextbar_variant": "persistent",
+            "contextbar_open": self.param.contextbar_open,
+            **self.page_options,
+        }
+        self._page = pmui.Page(**page_kwargs)
         pn.state.onload(self._load_page_layout)
 
     @asynccontextmanager
@@ -789,7 +816,10 @@ class FlowDashApp(Viewer):
         dashboard = self.store.load_dashboard(self._user_id, dashboard_id)
         if dashboard is None:
             self._page.main = [
-                pn.pane.Alert(f"Dashboard not found: {dashboard_id}", alert_type="danger"),
+                pn.Row(
+                    pn.pane.Alert(f"Dashboard not found: {dashboard_id}", alert_type="danger"),
+                    self._nav_drawer,
+                ),
                 self._dialog,
                 self._unsaved_dialog,
             ]
@@ -876,7 +906,12 @@ class FlowDashApp(Viewer):
         else:
             self._show_view_mode()
         self._sync_menu_active(f"{DASH_ROUTE_PREFIX}{dashboard_id}")
-        self._page.main = [self._component_view, self._dialog, self._unsaved_dialog]
+        self._apply_layout_config(self._component_view, f"{DASH_ROUTE_PREFIX}{dashboard_id}")
+        self._page.main = [
+            pn.Row(self._component_view, self._nav_drawer),
+            self._dialog,
+            self._unsaved_dialog,
+        ]
 
     def _create_new_dashboard(self, title_str: str):
         title_str = title_str.strip()
@@ -899,7 +934,14 @@ class FlowDashApp(Viewer):
             )
         self._show_edit_mode()
         self._sync_menu_active(f"{DASH_ROUTE_PREFIX}{dashboard.dashboard_id}")
-        self._page.main = [self._component_view, self._dialog, self._unsaved_dialog]
+        self._apply_layout_config(
+            self._component_view, f"{DASH_ROUTE_PREFIX}{dashboard.dashboard_id}"
+        )
+        self._page.main = [
+            pn.Row(self._component_view, self._nav_drawer),
+            self._dialog,
+            self._unsaved_dialog,
+        ]
 
     def _delete_dashboard(self, dashboard_id: str):
         was_current = bool(
@@ -918,7 +960,7 @@ class FlowDashApp(Viewer):
             self._navigate_to("/")
         elif pn.state.location is not None and pn.state.location.pathname == "/":
             self._page.main = [
-                self._build_launcher(),
+                pn.Row(self._build_launcher(), self._nav_drawer),
                 self._dialog,
                 self._unsaved_dialog,
             ]
@@ -1094,6 +1136,15 @@ class FlowDashApp(Viewer):
         self._rebuild_flow_canvas()
         self._components_loaded = True
 
+    def _apply_layout_config(self, content, route):
+        """Run the ``configure_layout`` hook for the current navigation, if any."""
+        if self.configure_layout is None:
+            return
+        try:
+            self.configure_layout(self, content, route)
+        except Exception:
+            logger.exception("configure_layout hook failed for route '%s'", route)
+
     async def _load_page_layout(self):
         if pn.state.location is None:
             return
@@ -1103,7 +1154,13 @@ class FlowDashApp(Viewer):
             self._current_dashboard = None
             self._sidebar_container.objects = []
             self._page.sidebar_open = False
-            self._page.main = [self._build_launcher(), self._dialog, self._unsaved_dialog]
+            launcher = self._build_launcher()
+            self._apply_layout_config(launcher, pathname)
+            self._page.main = [
+                pn.Row(launcher, self._nav_drawer),
+                self._dialog,
+                self._unsaved_dialog,
+            ]
             return
 
         if pathname == COMPONENTS_ROUTE:
@@ -1112,7 +1169,12 @@ class FlowDashApp(Viewer):
             async with self._loading_screen():
                 await self._ensure_components_loaded()
             self._show_edit_mode()
-            self._page.main = [self._component_view, self._dialog, self._unsaved_dialog]
+            self._apply_layout_config(self._component_view, pathname)
+            self._page.main = [
+                pn.Row(self._component_view, self._nav_drawer),
+                self._dialog,
+                self._unsaved_dialog,
+            ]
             return
 
         if pathname.startswith(DASH_ROUTE_PREFIX):
@@ -1130,9 +1192,21 @@ class FlowDashApp(Viewer):
         self._sidebar_container.objects = []
         key = tuple(pathname.strip("/").split("/"))
         if len(key) == 2 and self._entry_from_key(key):
-            self._page.main = [await self._render_page(key), self._dialog, self._unsaved_dialog]
+            content = await self._render_page(key)
+            self._apply_layout_config(content, pathname)
+            self._page.main = [
+                pn.Row(content, self._nav_drawer),
+                self._dialog,
+                self._unsaved_dialog,
+            ]
         else:
-            self._page.main = [f"Invalid URL: {pathname}", self._dialog, self._unsaved_dialog]
+            self._apply_layout_config(None, pathname)
+            self._page.main = [
+                f"Invalid URL: {pathname}",
+                self._dialog,
+                self._unsaved_dialog,
+                self._nav_drawer,
+            ]
 
     @pn.io.hold()
     def _show_edit_mode(self):
@@ -1191,7 +1265,7 @@ class FlowDashApp(Viewer):
         return None
 
     def _on_action_edit(self, item):
-        self._page.contextbar_open = False
+        self._nav_drawer.open = False
         path = item.get("path", "")
         dashboard_id = self._dashboard_id_from_path(path)
         if not dashboard_id:
@@ -1217,7 +1291,7 @@ class FlowDashApp(Viewer):
         )
         self._dialog_context = {"action": "rename", "dashboard_id": dashboard_id}
         self._dialog.title = "Rename Dashboard"
-        self._page.contextbar_open = False
+        self._nav_drawer.open = False
         self._dialog.open = True
 
     @pn.io.hold()
@@ -1229,7 +1303,7 @@ class FlowDashApp(Viewer):
         self._dialog_name_input.param.update(value=item.get("label", ""), disabled=True)
         self._dialog_context = {"action": "delete", "dashboard_id": dashboard_id}
         self._dialog.title = "Delete Dashboard"
-        self._page.contextbar_open = False
+        self._nav_drawer.open = False
         self._dialog.open = True
 
     @pn.io.hold()
@@ -1244,7 +1318,7 @@ class FlowDashApp(Viewer):
         self._dialog_context = {"action": "create"}
         self._dialog.title = "Create Dashboard"
         self._dialog.open = True
-        self._page.contextbar_open = False
+        self._nav_drawer.open = False
 
     def _validate_dashboard_name(self, title: str) -> str | None:
         """Return an error message if the title is invalid, else None."""
@@ -1468,7 +1542,7 @@ class FlowDashApp(Viewer):
             dense=True,
             expanded=list(range(len(menu_items))),
             active=initial_active,
-            sizing_mode="stretch_width",
+            width_policy="max",
         )
 
         self._menu_list.on_action("Edit", self._on_action_edit)

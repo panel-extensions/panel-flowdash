@@ -70,11 +70,13 @@ class Serve(_PanelServe):
         sys.path.insert(0, str(project_dir))
         os.chdir(str(project_dir))
 
+        configure_layout = None
         init_file = project_dir / "__init__.py"
         if init_file.exists():
             spec = importlib.util.spec_from_file_location("__init__", init_file)
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
+            configure_layout = getattr(mod, "configure_layout", None)
 
         store = DashboardStore(db_path)
 
@@ -88,7 +90,11 @@ class Serve(_PanelServe):
                     log.warning("Failed to import '%s': %s", entry.app_id, exc)
 
         routes = FlowDashApp.build_routes(
-            project_dir=project_dir, store=store, title=args.title, registry=registry
+            project_dir=project_dir,
+            store=store,
+            title=args.title,
+            registry=registry,
+            configure_layout=configure_layout,
         )
 
         log.info(f"Serving FlowDash from '{project_dir}' on port {args.port}")

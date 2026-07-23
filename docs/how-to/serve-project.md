@@ -119,6 +119,48 @@ directory, so local relative imports work normally.
 
 ---
 
+## Page-aware sidebar and contextbar
+
+`FlowDashApp` exposes two `sidebar` and `contextbar` parameters whose contents
+are prepended to the app's own sidebar and navigation contextbar. To populate
+them differently depending on which page is being served, define a
+`configure_layout` function in the project `__init__.py`:
+
+```python
+# my_project/__init__.py
+import panel_material_ui as pmui
+
+
+def configure_layout(app, content, route):
+    """Set sidebar/contextbar contents for the page currently being served.
+
+    Called on every navigation with:
+      app     - the FlowDashApp instance (set app.sidebar / app.contextbar)
+      content - the resolved view for this route (page, editor, or launcher)
+      route   - the current pathname, e.g. "/", "/components", "/dash/<id>"
+    """
+    if route.startswith("/dash/"):
+        app.sidebar = [pmui.Typography("Dashboard tools", variant="overline")]
+        app.contextbar = []
+    else:
+        app.sidebar = []
+        app.contextbar = []
+```
+
+FlowDash looks the function up by name after executing `__init__.py`, so the
+name must be exactly `configure_layout`. It runs once per navigation, just
+before the main area is rendered, and is responsible for both slots: whatever
+you assign to `app.sidebar` / `app.contextbar` replaces the previous page's
+contribution, so clear a slot by assigning `[]`. Exceptions raised by the hook
+are logged and do not break navigation.
+
+The `route` argument distinguishes the built-in routes (`/` for the launcher,
+`/components` for the editor, `/dash/<id>` for a saved dashboard) from page
+routes (`/<Section>/<name>`). Use `content` when the sidebar needs to reach into
+the rendered view itself.
+
+---
+
 ## Project structure requirements
 
 ```
