@@ -3,6 +3,14 @@
 import importlib.metadata
 import warnings
 
+from panel_flowdash.auth import (
+    AuthConfig,
+    Identity,
+    Permission,
+    can_administer,
+    is_authorized,
+    resolve_identity,
+)
 from panel_flowdash.component_spec import (
     ComponentSpec,
     ConfigField,
@@ -28,6 +36,7 @@ except importlib.metadata.PackageNotFoundError as e:  # pragma: no cover
     __version__ = "unknown"
 
 __all__: list[str] = [
+    "AuthConfig",
     "ComponentSpec",
     "ConfigField",
     "DashboardEdge",
@@ -35,16 +44,21 @@ __all__: list[str] = [
     "DashboardModel",
     "DashboardStore",
     "DataflowGraph",
+    "Identity",
     "InputPort",
     "OutputPort",
     "PanelAppMetadata",
+    "Permission",
     "RegistryEntry",
     "__version__",
     "build_component_spec",
     "build_component_specs",
     "build_node_state_class",
     "build_session_state_class",
+    "can_administer",
     "check_requirements",
+    "is_authorized",
     "panel_app",
     "register",
+    "resolve_identity",
 ]

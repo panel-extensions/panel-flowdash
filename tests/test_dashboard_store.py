@@ -2,12 +2,17 @@
 
 import pytest
 
+from panel_flowdash.auth import Identity, Permission
 from panel_flowdash.dashboard_store import (
     DashboardEdge,
     DashboardItem,
     DashboardModel,
     DashboardStore,
 )
+
+
+def _identity(user, *, groups=()):
+    return Identity(user=user, oauth_user=user, groups=frozenset(groups))
 
 
 @pytest.fixture
@@ -236,6 +241,99 @@ class TestResponsiveLayoutPersistence:
         assert reloaded.responsive_layouts == {
             "xs": [{"width": 100, "height": 200, "visible": True}]
         }
+
+
+class TestPermissionPersistence:
+    async def test_permission_round_trip(self, store):
+        dashboard = store.create_dashboard("alice", "Shared")
+        dashboard.permission = Permission.from_spec(allow_groups=["finance"])
+        store.save_dashboard(dashboard)
+        loaded = store.load_dashboard("alice", dashboard.dashboard_id)
+        assert loaded.permission.allow_groups == frozenset({"finance"})
+
+    async def test_default_permission_empty(self, store):
+        dashboard = store.create_dashboard("alice", "Private")
+        loaded = store.load_dashboard("alice", dashboard.dashboard_id)
+        assert loaded.permission.is_empty
+
+    async def test_set_permission(self, store):
+        dashboard = store.create_dashboard("alice", "D")
+        assert store.set_permission(
+            dashboard.dashboard_id, Permission.from_spec(allow_users=["bob"])
+        )
+        loaded = store._load_any(dashboard.dashboard_id)
+        assert loaded.permission.allow_users == frozenset({"bob"})
+
+
+class TestAccessControl:
+    async def test_owner_sees_own_and_shared(self, store):
+        d1 = store.create_dashboard("alice", "Alice One")
+        d2 = store.create_dashboard("bob", "Bob Shared")
+        store.set_permission(d2.dashboard_id, Permission.from_spec(allow_users=["alice"]))
+        store.create_dashboard("bob", "Bob Private")
+
+        accessible = store.list_accessible(_identity("alice"), default_allow=False)
+        ids = {d.dashboard_id for d in accessible}
+        assert d1.dashboard_id in ids
+        assert d2.dashboard_id in ids
+        assert len(accessible) == 2
+
+    async def test_owned_sort_first(self, store):
+        shared = store.create_dashboard("bob", "Shared")
+        store.set_permission(shared.dashboard_id, Permission.from_spec(allow_groups=["eng"]))
+        owned = store.create_dashboard("alice", "Owned")
+
+        accessible = store.list_accessible(_identity("alice", groups=["eng"]))
+        assert accessible[0].dashboard_id == owned.dashboard_id
+
+    async def test_group_grant(self, store):
+        d = store.create_dashboard("bob", "Finance Dash")
+        store.set_permission(d.dashboard_id, Permission.from_spec(allow_groups=["finance"]))
+
+        assert store.load_for_access(_identity("alice", groups=["finance"]), d.dashboard_id)
+        assert store.load_for_access(_identity("alice", groups=["eng"]), d.dashboard_id) is None
+
+    async def test_deny_wins(self, store):
+        d = store.create_dashboard("bob", "Dash")
+        store.set_permission(
+            d.dashboard_id,
+            Permission.from_spec(allow_groups=["finance"], deny_users=["alice"]),
+        )
+        assert (
+            store.load_for_access(_identity("alice", groups=["finance"]), d.dashboard_id) is None
+        )
+
+    async def test_owner_always_accesses(self, store):
+        d = store.create_dashboard("alice", "Dash")
+        store.set_permission(d.dashboard_id, Permission.from_spec(allow_groups=["nobody"]))
+        assert store.load_for_access(_identity("alice"), d.dashboard_id)
+
+    async def test_default_deny_hides_unshared(self, store):
+        d = store.create_dashboard("bob", "Private")
+        assert (
+            store.load_for_access(_identity("alice"), d.dashboard_id, default_allow=False) is None
+        )
+
+    async def test_default_allow_shows_unrestricted(self, store):
+        d = store.create_dashboard("bob", "Open")
+        assert store.load_for_access(_identity("alice"), d.dashboard_id, default_allow=True)
+
+    async def test_can_administer_unrestricted_without_admin_groups(self, store):
+        # With no admin groups configured administration is unrestricted.
+        d = store.create_dashboard("alice", "Dash")
+        assert store.can_administer(_identity("alice"), d.dashboard_id)
+        assert store.can_administer(_identity("bob"), d.dashboard_id)
+
+    async def test_can_administer_owner_with_admin_groups(self, store):
+        d = store.create_dashboard("alice", "Dash")
+        admins = frozenset({"admins"})
+        assert store.can_administer(_identity("alice"), d.dashboard_id, admins)
+        assert not store.can_administer(_identity("bob"), d.dashboard_id, admins)
+
+    async def test_can_administer_admin_group(self, store):
+        d = store.create_dashboard("alice", "Dash")
+        admin = _identity("carol", groups=["admins"])
+        assert store.can_administer(admin, d.dashboard_id, frozenset({"admins"}))
 
 
 class TestItemPersistence:
