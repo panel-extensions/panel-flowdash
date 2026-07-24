@@ -176,6 +176,31 @@ class TestTitleUniqueness:
         assert store.title_exists("user1", "Second", exclude_id=d1.dashboard_id) is True
 
 
+class TestFindByIdOrTitle:
+    async def test_resolves_by_id(self, store):
+        dashboard = store.create_dashboard("user1", "By Id")
+        found = store.find_by_id_or_title(dashboard.dashboard_id)
+        assert found is not None
+        assert found.dashboard_id == dashboard.dashboard_id
+
+    async def test_resolves_by_title(self, store):
+        dashboard = store.create_dashboard("user1", "By Title")
+        found = store.find_by_id_or_title("By Title")
+        assert found is not None
+        assert found.dashboard_id == dashboard.dashboard_id
+
+    async def test_missing_returns_none(self, store):
+        assert store.find_by_id_or_title("nope") is None
+
+    async def test_id_takes_precedence_over_title(self, store):
+        target = store.create_dashboard("user1", "First")
+        # Give another dashboard a title equal to the target's id.
+        other = store.create_dashboard("user2", target.dashboard_id)
+        found = store.find_by_id_or_title(target.dashboard_id)
+        assert found.dashboard_id == target.dashboard_id
+        assert found.dashboard_id != other.dashboard_id
+
+
 class TestResponsiveLayoutPersistence:
     async def test_breakpoints_round_trip(self, store):
         dashboard = DashboardModel(

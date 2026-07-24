@@ -119,8 +119,20 @@ class TestFlowDashApp:
             sys.path.remove(str(tmp_path))
 
         assert app.title == "Test App"
+        assert app.home_dashboard is None
         assert len(app._component_entries) == 2
         assert len(app._page_entries) == 2
+
+    async def test_home_dashboard_param_passthrough(self, tmp_path):
+        _create_project(tmp_path)
+        sys.path.insert(0, str(tmp_path))
+        try:
+            store = DashboardStore(tmp_path / "test.db")
+            app = FlowDashApp(project_dir=tmp_path, store=store, home_dashboard="Sales")
+        finally:
+            sys.path.remove(str(tmp_path))
+
+        assert app.home_dashboard == "Sales"
 
     async def test_build_routes(self, tmp_path):
         _create_project(tmp_path)
@@ -152,7 +164,7 @@ class TestCLI:
 
     def test_has_flowdash_args(self):
         arg_names = {name for name, _ in Serve.args}
-        for expected in ("directory", "--db-path", "--title"):
+        for expected in ("directory", "--db-path", "--title", "--home-dashboard"):
             assert expected in arg_names, f"missing FlowDash arg: {expected}"
 
     def test_version(self):
