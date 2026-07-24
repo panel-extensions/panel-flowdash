@@ -17,7 +17,8 @@ nav = [
     {"Wire the Dataflow" = "how-to/wire-dataflow.md"},
     {"Layout & Sizing" = "how-to/layout-and-sizing.md"},
     {"Persist Dashboards" = "how-to/persist-dashboards.md"},
-    {"Serve a Project" = "how-to/serve-project.md"}
+    {"Serve a Project" = "how-to/serve-project.md"},
+    {"Manage Permissions" = "how-to/manage-permissions.md"}
   ]},
   {"Examples" = [
     {"Gallery" = "examples/index.md"},

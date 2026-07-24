@@ -32,6 +32,13 @@ def _create_project(tmp_path: Path):
         "def app():\n"
         "    return 'page content'\n"
     )
+    (section / "restricted.py").write_text(
+        "from panel_flowdash import register\n\n"
+        "@register(page=True, title='Restricted', allow_groups=['finance'],"
+        " deny_users=['bob'])\n"
+        "def app():\n"
+        "    return 'secret'\n"
+    )
     # Should be ignored
     (section / "_private.py").write_text("app = None\n")
 
@@ -66,6 +73,24 @@ class TestBuildRegistry:
         assert page.metadata.page is True
         assert page.title == "Overview"
 
+    async def test_permission_fields_captured_by_ast(self, tmp_path):
+        _create_project(tmp_path)
+        sys.path.insert(0, str(tmp_path))
+        try:
+            registry = build_registry(tmp_path)
+        finally:
+            sys.path.remove(str(tmp_path))
+
+        restricted = registry["Analytics/restricted"]
+        assert restricted.metadata.allow_groups == ["finance"]
+        assert restricted.metadata.deny_users == ["bob"]
+        perm = restricted.metadata.permission
+        assert perm.allow_groups == frozenset({"finance"})
+        assert perm.deny_users == frozenset({"bob"})
+
+        # A page with no permission kwargs yields an empty permission.
+        assert registry["Analytics/page"].metadata.permission.is_empty
+
     async def test_ignores_dot_dirs(self, tmp_path):
         _create_project(tmp_path)
         hidden = tmp_path / ".hidden"
@@ -95,7 +120,7 @@ class TestFlowDashApp:
 
         assert app.title == "Test App"
         assert len(app._component_entries) == 2
-        assert len(app._page_entries) == 1
+        assert len(app._page_entries) == 2
 
     async def test_build_routes(self, tmp_path):
         _create_project(tmp_path)

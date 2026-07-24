@@ -20,6 +20,12 @@ import param
 from panel.viewable import Children, Viewer
 from panel_tiles import TileGrid
 
+from panel_flowdash.auth import (
+    AuthConfig,
+    Permission,
+    is_authorized,
+    resolve_identity,
+)
 from panel_flowdash.component_spec import build_component_specs
 from panel_flowdash.dashboard_store import (
     DashboardEdge,
@@ -109,6 +115,13 @@ _LAUNCHER_SPEED_DIAL_CSS = """
 class FlowDashApp(Viewer):
     """FlowDash application: scans a project directory and serves its pages and components."""
 
+    auth_config = param.ClassSelector(
+        class_=AuthConfig,
+        doc="""
+        Project-level authorization configuration controlling group discovery,
+        the admin groups and the default access policy.""",
+    )
+
     breakpoints = param.List(default=[768, 1200], doc="Responsive breakpoints for the tile grid.")
 
     configure_layout = param.Callable(
@@ -145,6 +158,9 @@ class FlowDashApp(Viewer):
     def __init__(self, registry: dict[str, RegistryEntry] | None = None, **params):
         super().__init__(**params)
 
+        if self.auth_config is None:
+            self.auth_config = AuthConfig()
+
         if not registry:
             registry = build_registry(pathlib.Path(self.project_dir))
         page_entries = {k: v for k, v in registry.items() if v.metadata.page}
@@ -159,6 +175,7 @@ class FlowDashApp(Viewer):
         self._session_state_class = session_state_class
 
         self._session_state = self._session_state_class()
+        self._identity = resolve_identity(self.auth_config)
         self._user_id = self._resolve_user_id()
         self._loading = False
         self._dirty = False
@@ -186,9 +203,13 @@ class FlowDashApp(Viewer):
             anchor="right",
             inline=True,
             variant="docked",
+            width_policy="fixed",
         )
         self._build_dialog()
         self._build_unsaved_dialog()
+        self._build_share_dialog()
+        # The share dialog is a portaled overlay; mount it once inside the
+        # always-present nav drawer rather than in each _page.main layout.
         page_kwargs = {
             "title": self.title,
             "theme_config": {"palette": {"primary": {"main": "#0072B5"}}},
@@ -212,6 +233,7 @@ class FlowDashApp(Viewer):
                 pmui.LinearProgress(sizing_mode="stretch_width"),
                 self._dialog,
                 self._unsaved_dialog,
+                self._share_dialog,
             ]
 
         task = asyncio.create_task(_show_after_delay())
@@ -221,9 +243,7 @@ class FlowDashApp(Viewer):
             task.cancel()
 
     def _resolve_user_id(self) -> str:
-        if pn.state.user:
-            return pn.state.user
-        return "default"
+        return self._identity.user
 
     @staticmethod
     @cache
@@ -254,6 +274,52 @@ class FlowDashApp(Viewer):
         app_id = "/".join(key)
         return self._page_entries.get(app_id)
 
+    def _default_allow(self) -> bool:
+        return self.auth_config.default_allow if self.auth_config else True
+
+    def _can_access_entry(self, entry: RegistryEntry) -> bool:
+        """Whether the current identity may access a page/component entry."""
+        authorize = entry.metadata.authorize
+        if authorize is not None:
+            try:
+                return bool(authorize(self._identity))
+            except Exception:
+                logger.exception("authorize callback failed for '%s'", entry.app_id)
+                return False
+        return is_authorized(
+            entry.metadata.permission,
+            self._identity,
+            default_allow=self._default_allow(),
+        )
+
+    def _admin_groups(self) -> frozenset[str]:
+        return self.auth_config.admin_groups if self.auth_config else frozenset()
+
+    def _accessible_page_entries(self) -> dict[str, RegistryEntry]:
+        """Page entries the current identity is authorized to see."""
+        return {
+            app_id: entry
+            for app_id, entry in self._page_entries.items()
+            if self._can_access_entry(entry)
+        }
+
+    def _can_administer_dashboard(self, dashboard_id: str) -> bool:
+        """Whether the current identity may edit/delete/share a dashboard."""
+        return self.store.can_administer(self._identity, dashboard_id, self._admin_groups())
+
+    def _access_denied_view(self, title: str | None = None):
+        """Generate the view shown when the user is not authorized for the target."""
+        label = f" **{title}**" if title else ""
+        return pmui.Alert(
+            object=(
+                f"Access denied.{label} You are not authorized to view this "
+                f"(signed in as `{self._identity.user}`)."
+            ),
+            severity="error",
+            title="Access denied",
+            sizing_mode="stretch_width",
+        )
+
     async def _instantiate_entry(
         self,
         entry: RegistryEntry,
@@ -282,6 +348,9 @@ class FlowDashApp(Viewer):
         entry = self._entry_from_key(key)
         if entry is None:
             return f"Unknown page: {'/'.join(key)}"
+
+        if not self._can_access_entry(entry):
+            return self._access_denied_view(entry.title)
 
         if self._main_task is not None and not self._main_task.done():
             self._main_task.cancel()
@@ -565,9 +634,13 @@ class FlowDashApp(Viewer):
         self._add_button = pmui.Button(icon="add", color="primary", variant="outlined")
         self._clear_button = pmui.Button(icon="delete_sweep", color="danger", variant="outlined")
         self._save_button = pmui.Button(icon="save", color="primary", variant="outlined")
+        self._share_button = pmui.Button(
+            icon="share", color="primary", variant="outlined", visible=False
+        )
         self._add_button.on_click(lambda _event: self._add_component_to_graph())
         self._clear_button.on_click(lambda _event: self._clear_components())
         self._save_button.on_click(lambda _event: self._save_current_dashboard())
+        self._share_button.on_click(lambda _event: self._share_current_dashboard())
 
         no_components = len(self._component_entries) == 0
         self._component_picker.disabled = no_components
@@ -613,6 +686,7 @@ class FlowDashApp(Viewer):
             self._add_button,
             self._clear_button,
             self._save_button,
+            self._share_button,
             pn.layout.HSpacer(),
             self._preview_switch,
             self._mode_toggle,
@@ -710,26 +784,42 @@ class FlowDashApp(Viewer):
 
         pn.state.notifications.success(f"Added component: {entry.title}", duration=3000)
 
+    def _rebuild_sidebar(self):
+        """Populate the page sidebar from tiles whose component opts into it.
+
+        The sidebar is independent of the wiring/dashboard toggle, so this runs
+        whenever a dashboard is shown, not only when the tile grid is visible.
+        """
+        sidebar_views = []
+        for i, item in enumerate(self._tile_items):
+            component_id = item["component_id"]
+            entry = self._component_entries.get(component_id)
+            if entry is None or not entry.metadata.sidebar:
+                continue
+            view = self._tile_objects[i] if i < len(self._tile_objects) else None
+            if view is None:
+                view = pn.pane.Markdown(f"*{entry.title}*")
+            sidebar_views.append(view)
+        self._sidebar_views = sidebar_views
+        self._sidebar_container.objects = sidebar_views
+        self._page.sidebar_open = bool(sidebar_views)
+
     @pn.io.hold()
     def _rebuild_tile_grid(self):
         grid_views = []
-        sidebar_views = []
         for i, item in enumerate(self._tile_items):
             component_id = item["component_id"]
             entry = self._component_entries.get(component_id)
             if entry is None:
                 continue
+            if entry.metadata.sidebar:
+                continue
             view = self._tile_objects[i] if i < len(self._tile_objects) else None
             if view is None:
                 view = pn.pane.Markdown(f"*{entry.title}*")
-            if entry.metadata.sidebar:
-                sidebar_views.append(view)
-            else:
-                grid_views.append(view)
+            grid_views.append(view)
         self._tile_grid[:] = grid_views
-        self._sidebar_views = sidebar_views
-        self._sidebar_container.objects = sidebar_views
-        self._page.sidebar_open = bool(sidebar_views)
+        self._rebuild_sidebar()
         pending = getattr(self, "_pending_tile_layout", [])
         if pending:
             self._tile_grid.layout = pending
@@ -753,6 +843,12 @@ class FlowDashApp(Viewer):
         if self._current_dashboard is None:
             pn.state.notifications.warning(
                 "No dashboard loaded. Create one from the sidebar.", duration=4000
+            )
+            return
+
+        if not self._can_administer_dashboard(self._current_dashboard.dashboard_id):
+            pn.state.notifications.error(
+                "You have view-only access to this dashboard.", duration=4000
             )
             return
 
@@ -796,6 +892,14 @@ class FlowDashApp(Viewer):
             f'Dashboard "{self._current_dashboard.title}" saved.', duration=3000
         )
 
+    def _share_current_dashboard(self):
+        if self._current_dashboard is None:
+            pn.state.notifications.warning("No dashboard loaded.", duration=3000)
+            return
+        self._open_share_dialog(
+            self._current_dashboard.dashboard_id, self._current_dashboard.title
+        )
+
     def _reset_canvas(self):
         """Tear down all node/edge state and clear the ReactFlow canvas."""
         for node_id in list(self._dataflow_graph.node_ids):
@@ -813,7 +917,12 @@ class FlowDashApp(Viewer):
             self._load_dashboard_sync(dashboard_id, edit=edit)
 
     def _load_dashboard_sync(self, dashboard_id: str, edit: bool = False):
-        dashboard = self.store.load_dashboard(self._user_id, dashboard_id)
+        dashboard = self.store.load_for_access(
+            self._identity, dashboard_id, default_allow=self._default_allow()
+        )
+        if edit and dashboard is not None and not self._can_administer_dashboard(dashboard_id):
+            # A viewer with read access followed an edit link; downgrade to view.
+            edit = False
         if dashboard is None:
             self._page.main = [
                 pn.Row(
@@ -822,6 +931,7 @@ class FlowDashApp(Viewer):
                 ),
                 self._dialog,
                 self._unsaved_dialog,
+                self._share_dialog,
             ]
             return
         self._current_dashboard = dashboard
@@ -911,6 +1021,7 @@ class FlowDashApp(Viewer):
             pn.Row(self._component_view, self._nav_drawer),
             self._dialog,
             self._unsaved_dialog,
+            self._share_dialog,
         ]
 
     def _create_new_dashboard(self, title_str: str):
@@ -941,13 +1052,18 @@ class FlowDashApp(Viewer):
             pn.Row(self._component_view, self._nav_drawer),
             self._dialog,
             self._unsaved_dialog,
+            self._share_dialog,
         ]
 
     def _delete_dashboard(self, dashboard_id: str):
+        if not self._can_administer_dashboard(dashboard_id):
+            pn.state.notifications.error("You are not allowed to delete this dashboard.")
+            return
         was_current = bool(
             self._current_dashboard and self._current_dashboard.dashboard_id == dashboard_id
         )
-        self.store.delete_dashboard(self._user_id, dashboard_id)
+        owner = self.store.get_owner(dashboard_id) or self._user_id
+        self.store.delete_dashboard(owner, dashboard_id)
         if was_current:
             self._current_dashboard = None
             self._reset_canvas()
@@ -963,13 +1079,18 @@ class FlowDashApp(Viewer):
                 pn.Row(self._build_launcher(), self._nav_drawer),
                 self._dialog,
                 self._unsaved_dialog,
+                self._share_dialog,
             ]
 
     def _rename_dashboard(self, dashboard_id: str, new_title: str):
         new_title = new_title.strip()
         if not new_title:
             return
-        self.store.rename_dashboard(self._user_id, dashboard_id, new_title)
+        if not self._can_administer_dashboard(dashboard_id):
+            pn.state.notifications.error("You are not allowed to rename this dashboard.")
+            return
+        owner = self.store.get_owner(dashboard_id) or self._user_id
+        self.store.rename_dashboard(owner, dashboard_id, new_title)
         if self._current_dashboard and self._current_dashboard.dashboard_id == dashboard_id:
             self._current_dashboard.title = new_title
         self._refresh_sidebar_dashboards()
@@ -982,7 +1103,7 @@ class FlowDashApp(Viewer):
 
     def _build_launcher(self):
         sections: dict[str, list[RegistryEntry]] = {}
-        for entry in self._page_entries.values():
+        for entry in self._accessible_page_entries().values():
             sections.setdefault(entry.section, []).append(entry)
 
         accordion_items = []
@@ -1017,25 +1138,27 @@ class FlowDashApp(Viewer):
             else:
                 accordion_items.append((section_label, content))
 
-        dashboards = self.store.list_dashboards(self._user_id)
+        dashboards = self.store.list_accessible(
+            self._identity, default_allow=self._default_allow()
+        )
         if dashboards:
             dash_cards = []
             for d in dashboards:
-                speed_dial = pmui.SpeedDial(
-                    items=[
-                        {"label": "Edit", "icon": "edit"},
-                        {"label": "Rename", "icon": "drive_file_rename_outline"},
-                        {"label": "Delete", "icon": "delete"},
-                    ],
-                    icon="more_vert",
-                    direction="down",
-                    color="default",
-                    size="small",
-                    stylesheets=[_LAUNCHER_SPEED_DIAL_CSS],
-                )
-                speed_dial.param.watch(
-                    partial(self._on_launcher_dash_action, d.dashboard_id, d.title), "value"
-                )
+                can_admin = self._can_administer_dashboard(d.dashboard_id)
+                speed_dial = None
+                if can_admin:
+                    speed_dial = pmui.SpeedDial(
+                        items=self._dashboard_speed_dial_items(can_admin),
+                        icon="more_vert",
+                        direction="down",
+                        color="default",
+                        size="small",
+                        persistent_tooltips=True,
+                        stylesheets=[_LAUNCHER_SPEED_DIAL_CSS],
+                    )
+                    speed_dial.param.watch(
+                        partial(self._on_launcher_dash_action, d.dashboard_id, d.title), "value"
+                    )
 
                 card = pmui.Card(
                     pmui.ButtonIcon(
@@ -1054,9 +1177,11 @@ class FlowDashApp(Viewer):
                 path = f"{DASH_ROUTE_PREFIX}{d.dashboard_id}"
                 clickable = pmui.Clickable(object=card)
                 clickable.on_click(partial(self._launcher_navigate, path))
+                wrapper_objects = [clickable]
+                if speed_dial is not None:
+                    wrapper_objects.append(speed_dial)
                 wrapper = pn.Column(
-                    clickable,
-                    speed_dial,
+                    *wrapper_objects,
                     styles={"position": "relative", "overflow": "visible"},
                     sizing_mode="fixed",
                     width=200,
@@ -1100,8 +1225,7 @@ class FlowDashApp(Viewer):
                 value=title, disabled=False, error_state=False, helper_text=""
             )
             self._dialog_context = {"action": "rename", "dashboard_id": dashboard_id}
-            self._dialog.title = "Rename Dashboard"
-            self._dialog.open = True
+            self._dialog.param.update(title="Rename Dashboard", open=True)
         elif label == "Delete":
             self._dialog_name_input.param.update(value=title, disabled=True)
             self._dialog_context = {"action": "delete", "dashboard_id": dashboard_id}
@@ -1211,9 +1335,14 @@ class FlowDashApp(Viewer):
     @pn.io.hold()
     def _show_edit_mode(self):
         self._controls_row.visible = True
+        self._share_button.visible = (
+            self._current_dashboard is not None
+            and self._can_administer_dashboard(self._current_dashboard.dashboard_id)
+        )
         self._tile_grid.param.update(editable=True, card=True)
         if self._mode_toggle.value == "wiring":
             self._workspace_area[:] = [self._flow_canvas]
+            self._rebuild_sidebar()
         else:
             self._workspace_area[:] = [self._tile_grid]
             self._rebuild_tile_grid()
@@ -1229,25 +1358,39 @@ class FlowDashApp(Viewer):
         if pn.state.location is not None:
             pn.state.location.param.update(search="")
 
-    _DASHBOARD_ACTIONS = (
+    _ADMIN_DASHBOARD_ACTIONS = (
         {"label": "Edit", "icon": "edit"},
         {"label": "Rename", "icon": "drive_file_rename_outline"},
         {"label": "Delete", "icon": "delete"},
     )
 
+    _VIEWER_DASHBOARD_ACTIONS = ()
+
+    def _dashboard_actions(self, can_admin: bool) -> tuple:
+        """Menu actions for a dashboard, gated by administration rights."""
+        return self._ADMIN_DASHBOARD_ACTIONS if can_admin else self._VIEWER_DASHBOARD_ACTIONS
+
+    def _dashboard_speed_dial_items(self, can_admin: bool) -> list[dict]:
+        """SpeedDial items for a launcher dashboard card, gated by admin rights."""
+        return [dict(action) for action in self._dashboard_actions(can_admin)]
+
     def _get_dashboard_menu_items(self) -> list[dict]:
         items = []
-        dashboards = self.store.list_dashboards(self._user_id)
+        dashboards = self.store.list_accessible(
+            self._identity, default_allow=self._default_allow()
+        )
         for d in dashboards:
-            items.append(
-                {
-                    "icon": "dashboard",
-                    "label": d.title,
-                    "path": f"{DASH_ROUTE_PREFIX}{d.dashboard_id}",
-                    "disable_link": True,
-                    "actions": self._DASHBOARD_ACTIONS,
-                }
-            )
+            can_admin = self._can_administer_dashboard(d.dashboard_id)
+            item = {
+                "icon": "dashboard",
+                "label": d.title,
+                "path": f"{DASH_ROUTE_PREFIX}{d.dashboard_id}",
+                "disable_link": True,
+            }
+            actions = self._dashboard_actions(can_admin)
+            if actions:
+                item["actions"] = list(actions)
+            items.append(item)
         items.append(
             {
                 "icon": "add",
@@ -1388,6 +1531,125 @@ class FlowDashApp(Viewer):
             min_width=350,
         )
 
+    def _build_share_dialog(self):
+        """Build the (owner/admin-only) dashboard sharing dialog."""
+        self._share_context: dict = {}
+        common = dict(sizing_mode="stretch_width", solid=True, delete_button=True)
+        self._share_allow_groups = pmui.MultiChoice(
+            label="Allow groups", helper_text="Members of any listed group.", **common
+        )
+        self._share_allow_users = pmui.MultiChoice(
+            label="Allow users", helper_text="OAuth logins or system users.", **common
+        )
+        self._share_deny_groups = pmui.MultiChoice(
+            label="Deny groups", helper_text="Deny always wins.", **common
+        )
+        self._share_deny_users = pmui.MultiChoice(
+            label="Deny users", helper_text="Deny always wins.", **common
+        )
+        self._share_widgets = (
+            self._share_allow_groups,
+            self._share_allow_users,
+            self._share_deny_groups,
+            self._share_deny_users,
+        )
+        confirm_btn = pmui.Button(label="Save sharing", color="primary")
+        cancel_btn = pmui.Button(label="Cancel", color="light")
+        confirm_btn.on_click(self._on_share_confirm)
+        cancel_btn.on_click(lambda _: setattr(self._share_dialog, "open", False))
+        self._share_dialog = pmui.Dialog(
+            objects=[
+                pn.Column(
+                    pmui.Typography(
+                        "Grant access by group or user. With no rules the project "
+                        "default applies.",
+                        variant="body2",
+                        styles={"opacity": "0.7"},
+                    ),
+                    self._share_allow_groups,
+                    self._share_allow_users,
+                    self._share_deny_groups,
+                    self._share_deny_users,
+                    pn.Row(confirm_btn, cancel_btn),
+                    sizing_mode="stretch_width",
+                )
+            ],
+            title="Share Dashboard",
+            open=False,
+            min_width=420,
+        )
+        return self._share_dialog
+
+    def _known_groups(self) -> list[str]:
+        """Discoverable group names to offer in the sharing dialog."""
+        groups: set[str] = set(self._identity.groups)
+        if self.auth_config is not None:
+            groups |= set(self.auth_config.admin_groups)
+            for member_groups in self.auth_config.user_groups.values():
+                groups |= set(member_groups)
+        return sorted(groups)
+
+    def _known_users(self) -> list[str]:
+        """Discoverable user names to offer in the sharing dialog."""
+        users: set[str] = set(self._identity.user_names)
+        if self.auth_config is not None:
+            users |= set(self.auth_config.user_groups)
+        return sorted(users)
+
+    @pn.io.hold()
+    def _open_share_dialog(self, dashboard_id: str, title: str):
+        if not self._can_administer_dashboard(dashboard_id):
+            pn.state.notifications.error("You are not allowed to share this dashboard.")
+            return
+        model = self.store.load_for_access(
+            self._identity, dashboard_id, default_allow=self._default_allow()
+        )
+        perm = model.permission if model else Permission()
+        self._share_context = {"dashboard_id": dashboard_id}
+
+        # Seed options from discoverable names, extended with any values already
+        # stored on the permission so custom entries render (MultiChoice shows
+        # out-of-option values as removable chips).
+        known_groups = self._known_groups()
+        known_users = self._known_users()
+        for widget, options, selected in (
+            (self._share_allow_groups, known_groups, perm.allow_groups),
+            (self._share_allow_users, known_users, perm.allow_users),
+            (self._share_deny_groups, known_groups, perm.deny_groups),
+            (self._share_deny_users, known_users, perm.deny_users),
+        ):
+            widget.param.update(
+                options=sorted(set(options) | set(selected)),
+                value=sorted(selected),
+            )
+
+        self._share_dialog.title = f"Share “{title}”" if title else "Share Dashboard"
+        self._share_dialog.open = True
+
+    @pn.io.hold()
+    def _on_share_confirm(self, _event):
+        ctx = self._share_context
+        dashboard_id = ctx.get("dashboard_id", "")
+        if not dashboard_id:
+            return
+        if not self._can_administer_dashboard(dashboard_id):
+            pn.state.notifications.error("You are not allowed to share this dashboard.")
+            self._share_dialog.open = False
+            return
+        permission = Permission.from_spec(
+            allow_groups=self._share_allow_groups.value,
+            allow_users=self._share_allow_users.value,
+            deny_groups=self._share_deny_groups.value,
+            deny_users=self._share_deny_users.value,
+        )
+        self.store.set_permission(dashboard_id, permission)
+        if self._current_dashboard and self._current_dashboard.dashboard_id == dashboard_id:
+            self._current_dashboard.permission = permission
+        self._share_dialog.open = False
+        self._share_context = {}
+        self._refresh_sidebar_dashboards()
+        pn.state.notifications.success("Sharing updated.", duration=3000)
+
     def _build_unsaved_dialog(self):
         self._pending_navigation: str | None = None
 
@@ -1470,7 +1732,7 @@ class FlowDashApp(Viewer):
 
     def _build_nav_menu(self):
         sections: dict[str, list[RegistryEntry]] = {}
-        for entry in self._page_entries.values():
+        for entry in self._accessible_page_entries().values():
             sections.setdefault(entry.section, []).append(entry)
 
         menu_items = [

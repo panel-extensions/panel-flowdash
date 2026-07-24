@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from panel_flowdash.auth import Identity, Permission, can_administer, is_authorized
+
 
 @dataclass
 class DashboardItem:
@@ -79,12 +81,18 @@ class DashboardModel:
     dashboard_id: str
     user_id: str
     title: str
-    version: int = 2
+    version: int = 3
     items: list[DashboardItem] = field(default_factory=list)
     edges: list[DashboardEdge] = field(default_factory=list)
     tile_layout: list[dict[str, Any]] = field(default_factory=list)
     breakpoints: list[int] = field(default_factory=list)
     responsive_layouts: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    permission: Permission = field(default_factory=Permission)
+
+    @property
+    def owner(self) -> str:
+        """The immutable owner principal (the creating user)."""
+        return self.user_id
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -97,6 +105,7 @@ class DashboardModel:
             "tile_layout": self.tile_layout,
             "breakpoints": self.breakpoints,
             "responsive_layouts": self.responsive_layouts,
+            "permission": self.permission.to_dict(),
         }
 
     @classmethod
@@ -111,6 +120,7 @@ class DashboardModel:
             tile_layout=data.get("tile_layout", []),
             breakpoints=data.get("breakpoints", []),
             responsive_layouts=data.get("responsive_layouts", {}),
+            permission=Permission.from_dict(data.get("permission")),
         )
 
 
@@ -159,6 +169,7 @@ class DashboardStore:
                 ("tile_layout_json", "'[]'"),
                 ("breakpoints_json", "'[]'"),
                 ("responsive_layouts_json", "'{}'"),
+                ("permission_json", "'{}'"),
             ]
             for col, default in migrations:
                 try:
@@ -201,17 +212,99 @@ class DashboardStore:
             return None
         return self._row_to_model(row)
 
+    def _load_any(self, dashboard_id: str) -> DashboardModel | None:
+        """Load a dashboard by id regardless of owner (for access checks)."""
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM dashboards WHERE dashboard_id = ?",
+                (dashboard_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_model(row)
+
+    def list_accessible(
+        self, identity: Identity, *, default_allow: bool = True
+    ) -> list[DashboardModel]:
+        """List dashboards the *identity* owns or has been granted access to.
+
+        Owned dashboards sort first (both groups by recency), so a user's own
+        dashboards stay visually grouped ahead of ones shared with them.
+        """
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM dashboards ORDER BY updated_at DESC",
+            ).fetchall()
+        owned: list[DashboardModel] = []
+        shared: list[DashboardModel] = []
+        for row in rows:
+            model = self._row_to_model(row)
+            if model.owner in identity.user_names:
+                owned.append(model)
+            elif is_authorized(
+                model.permission,
+                identity,
+                default_allow=default_allow,
+                owner=model.owner,
+            ):
+                shared.append(model)
+        return owned + shared
+
+    def load_for_access(
+        self, identity: Identity, dashboard_id: str, *, default_allow: bool = True
+    ) -> DashboardModel | None:
+        """Load a dashboard if *identity* is authorized, else ``None``.
+
+        Returns ``None`` both when the dashboard does not exist and when access
+        is denied, so callers render a single "not found / denied" view.
+        """
+        model = self._load_any(dashboard_id)
+        if model is None:
+            return None
+        if is_authorized(
+            model.permission,
+            identity,
+            default_allow=default_allow,
+            owner=model.owner,
+        ):
+            return model
+        return None
+
+    def get_owner(self, dashboard_id: str) -> str | None:
+        """Return the owner (user_id) of a dashboard, or ``None`` if missing."""
+        model = self._load_any(dashboard_id)
+        return model.owner if model else None
+
+    def can_administer(
+        self, identity: Identity, dashboard_id: str, admin_groups: frozenset[str] = frozenset()
+    ) -> bool:
+        """Whether *identity* may administer (edit/delete/share) the dashboard."""
+        model = self._load_any(dashboard_id)
+        if model is None:
+            return False
+        return can_administer(identity, model.owner, admin_groups)
+
+    def set_permission(self, dashboard_id: str, permission: Permission) -> bool:
+        """Persist a new permission set on a dashboard. Returns success."""
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                "UPDATE dashboards SET permission_json = ?, updated_at = datetime('now') WHERE dashboard_id = ?",
+                (json.dumps(permission.to_dict()), dashboard_id),
+            )
+        return cursor.rowcount > 0
+
     def save_dashboard(self, dashboard: DashboardModel) -> None:
         items_json = json.dumps([item.to_dict() for item in dashboard.items])
         edges_json = json.dumps([edge.to_dict() for edge in dashboard.edges])
         tile_layout_json = json.dumps(dashboard.tile_layout)
         breakpoints_json = json.dumps(dashboard.breakpoints)
         responsive_layouts_json = json.dumps(dashboard.responsive_layouts)
+        permission_json = json.dumps(dashboard.permission.to_dict())
         with self._get_conn() as conn:
             conn.execute(
                 """
-                INSERT INTO dashboards (dashboard_id, user_id, title, version, items_json, edges_json, tile_layout_json, breakpoints_json, responsive_layouts_json, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                INSERT INTO dashboards (dashboard_id, user_id, title, version, items_json, edges_json, tile_layout_json, breakpoints_json, responsive_layouts_json, permission_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(dashboard_id) DO UPDATE SET
                     title = excluded.title,
                     version = excluded.version,
@@ -220,6 +313,7 @@ class DashboardStore:
                     tile_layout_json = excluded.tile_layout_json,
                     breakpoints_json = excluded.breakpoints_json,
                     responsive_layouts_json = excluded.responsive_layouts_json,
+                    permission_json = excluded.permission_json,
                     updated_at = datetime('now')
                 """,
                 (
@@ -232,6 +326,7 @@ class DashboardStore:
                     tile_layout_json,
                     breakpoints_json,
                     responsive_layouts_json,
+                    permission_json,
                 ),
             )
 
@@ -269,10 +364,12 @@ class DashboardStore:
         responsive_raw = (
             row["responsive_layouts_json"] if "responsive_layouts_json" in keys else "{}"
         )
+        permission_raw = row["permission_json"] if "permission_json" in keys else "{}"
         edges = json.loads(edges_raw)
         tile_layout = json.loads(tile_layout_raw)
         breakpoints = json.loads(breakpoints_raw)
         responsive_layouts = json.loads(responsive_raw)
+        permission = Permission.from_dict(json.loads(permission_raw))
         return DashboardModel(
             dashboard_id=row["dashboard_id"],
             user_id=row["user_id"],
@@ -283,4 +380,5 @@ class DashboardStore:
             tile_layout=tile_layout,
             breakpoints=breakpoints,
             responsive_layouts=responsive_layouts,
+            permission=permission,
         )

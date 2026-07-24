@@ -9,6 +9,7 @@ import os
 import sys
 from pathlib import Path
 
+import panel as pn
 from bokeh.command.subcommand import Argument
 from bokeh.embed.bundle import extension_dirs
 from bokeh.server.views.multi_root_static_handler import MultiRootStaticHandler
@@ -16,6 +17,7 @@ from panel.command.serve import Serve as _PanelServe
 from panel.io.application import build_applications
 
 from panel_flowdash.app import FlowDashApp
+from panel_flowdash.auth import AuthConfig, make_authorize_callback
 from panel_flowdash.dashboard_store import DashboardStore
 from panel_flowdash.registry import build_registry
 
@@ -71,16 +73,24 @@ class Serve(_PanelServe):
         os.chdir(str(project_dir))
 
         configure_layout = None
+        init_mod = None
         init_file = project_dir / "__init__.py"
         if init_file.exists():
             spec = importlib.util.spec_from_file_location("__init__", init_file)
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
+            init_mod = mod
             configure_layout = getattr(mod, "configure_layout", None)
+
+        auth_config = AuthConfig.from_module(init_mod)
 
         store = DashboardStore(db_path)
 
         registry = build_registry(project_dir)
+
+        # Install the HTTP-boundary authorization callback for page routes.
+        # SPA and dashboard routes are gated in-app by FlowDashApp.
+        pn.config.authorize_callback = make_authorize_callback(registry, auth_config)
 
         if args.warm:
             for entry in registry.values():
@@ -95,6 +105,7 @@ class Serve(_PanelServe):
             title=args.title,
             registry=registry,
             configure_layout=configure_layout,
+            auth_config=auth_config,
         )
 
         log.info(f"Serving FlowDash from '{project_dir}' on port {args.port}")

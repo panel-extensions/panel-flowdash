@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from panel_flowdash.auth import Permission
+
 
 @dataclass(frozen=True)
 class PanelAppMetadata:
@@ -31,6 +33,21 @@ class PanelAppMetadata:
     config_schema: Any = None
     config: list[str] = field(default_factory=list)
     config_editor: Callable | None = None
+    allow_users: list[str] = field(default_factory=list)
+    allow_groups: list[str] = field(default_factory=list)
+    deny_users: list[str] = field(default_factory=list)
+    deny_groups: list[str] = field(default_factory=list)
+    authorize: Callable | None = None
+
+    @property
+    def permission(self) -> Permission:
+        """Build a :class:`~panel_flowdash.auth.Permission` from the declared rules."""
+        return Permission.from_spec(
+            allow_users=self.allow_users,
+            allow_groups=self.allow_groups,
+            deny_users=self.deny_users,
+            deny_groups=self.deny_groups,
+        )
 
     @classmethod
     def from_app(cls, app: Any) -> PanelAppMetadata:
@@ -68,6 +85,11 @@ def register(
     config_schema: Any = None,
     config: list[str] | None = None,
     config_editor: Callable | None = None,
+    allow_users: list[str] | None = None,
+    allow_groups: list[str] | None = None,
+    deny_users: list[str] | None = None,
+    deny_groups: list[str] | None = None,
+    authorize: Callable | None = None,
 ):
     """Metadata-only decorator for app exports.
 
@@ -80,6 +102,14 @@ def register(
     of a Viewer's own params are configuration rather than input ports. Pass
     ``config_editor`` to supply a custom editor callable instead of the
     auto-generated form.
+
+    The ``allow_users``, ``allow_groups``, ``deny_users`` and ``deny_groups``
+    arguments declare page-level authorization rules. Users are matched against
+    either the OAuth login or the system user; groups against the identity's
+    resolved group membership. Deny rules always win; when only allow rules are
+    present the identity must match at least one; with no rules the project's
+    default policy applies. Pass ``authorize`` for a custom callable taking the
+    resolved ``Identity`` and returning a bool (resolved on import).
     """
     metadata = PanelAppMetadata(
         page=page,
@@ -98,6 +128,11 @@ def register(
         config_schema=config_schema,
         config=list(config or []),
         config_editor=config_editor,
+        allow_users=list(allow_users or []),
+        allow_groups=list(allow_groups or []),
+        deny_users=list(deny_users or []),
+        deny_groups=list(deny_groups or []),
+        authorize=authorize,
     )
 
     def _decorator(app):
@@ -175,6 +210,10 @@ _LITERAL_KEYS = {
     "default_size",
     "min_size",
     "max_size",
+    "allow_users",
+    "allow_groups",
+    "deny_users",
+    "deny_groups",
 }
 
 
@@ -272,6 +311,10 @@ def build_registry(project_dir: Path) -> dict[str, RegistryEntry]:
                 provides=list(kwargs.get("provides") or []),
                 requires=list(kwargs.get("requires") or []),
                 config=list(kwargs.get("config") or []),
+                allow_users=list(kwargs.get("allow_users") or []),
+                allow_groups=list(kwargs.get("allow_groups") or []),
+                deny_users=list(kwargs.get("deny_users") or []),
+                deny_groups=list(kwargs.get("deny_groups") or []),
             )
 
             module_name = ".".join(module_path.relative_to(project_dir).with_suffix("").parts)
