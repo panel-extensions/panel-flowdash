@@ -136,6 +136,13 @@ class FlowDashApp(Viewer):
 
     contextbar_open = param.Boolean(default=False, doc="Whether the contextbar is open.")
 
+    home_dashboard = param.String(
+        default=None,
+        doc="""
+        Dashboard shown on the homepage ('/'). Accepts a dashboard id or
+        title. When unset, the homepage shows the dashboard grid launcher.""",
+    )
+
     page_options = param.Dict(
         default={},
         doc="""
@@ -1269,12 +1276,37 @@ class FlowDashApp(Viewer):
         except Exception:
             logger.exception("configure_layout hook failed for route '%s'", route)
 
+    async def _show_home_dashboard(self) -> bool:
+        """Render the configured home dashboard on '/'. Returns whether it was shown.
+
+        Falls back to the launcher grid (by returning ``False``) if the
+        configured dashboard cannot be resolved or the current identity is not
+        authorized to view it.
+        """
+        model = self.store.find_by_id_or_title(self.home_dashboard)
+        if model is None:
+            logger.warning("Configured home dashboard not found: '%s'", self.home_dashboard)
+            return False
+        if (
+            self.store.load_for_access(
+                self._identity, model.dashboard_id, default_allow=self._default_allow()
+            )
+            is None
+        ):
+            return False
+        async with self._loading_screen():
+            await self._ensure_components_loaded()
+            await self._load_dashboard(model.dashboard_id, edit=False)
+        return True
+
     async def _load_page_layout(self):
         if pn.state.location is None:
             return
         pathname = pn.state.location.pathname
 
         if pathname == "/":
+            if self.home_dashboard and await self._show_home_dashboard():
+                return
             self._current_dashboard = None
             self._sidebar_container.objects = []
             self._page.sidebar_open = False

@@ -58,6 +58,18 @@ class Serve(_PanelServe):
                 help="Application title shown in the browser tab.",
             ),
         ),
+        (
+            "--home-dashboard",
+            Argument(
+                action="store",
+                type=str,
+                default=None,
+                help=(
+                    "Dashboard (id or title) to show on the homepage. "
+                    "When unset, the homepage shows the dashboard grid."
+                ),
+            ),
+        ),
         *((name, arg) for name, arg in _PanelServe.args if name not in _EXCLUDED_ARGS),
     )
 
@@ -103,6 +115,7 @@ class Serve(_PanelServe):
             project_dir=project_dir,
             store=store,
             title=args.title,
+            home_dashboard=args.home_dashboard,
             registry=registry,
             configure_layout=configure_layout,
             auth_config=auth_config,

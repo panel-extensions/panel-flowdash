@@ -270,6 +270,25 @@ class DashboardStore:
             return model
         return None
 
+    def find_by_id_or_title(self, ref: str) -> DashboardModel | None:
+        """Resolve a dashboard by its id first, then by title.
+
+        Titles are only unique per user, so a title match returns the most
+        recently updated dashboard. Used to resolve the operator-configured
+        home dashboard, which may be given as either an id or a title.
+        """
+        model = self._load_any(ref)
+        if model is not None:
+            return model
+        with self._get_conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM dashboards WHERE title = ? ORDER BY updated_at DESC LIMIT 1",
+                (ref,),
+            ).fetchone()
+        if row is None:
+            return None
+        return self._row_to_model(row)
+
     def get_owner(self, dashboard_id: str) -> str | None:
         """Return the owner (user_id) of a dashboard, or ``None`` if missing."""
         model = self._load_any(dashboard_id)

@@ -37,6 +37,7 @@ flowdash serve <directory> [options]
 | `--port` | `5006` | Port to serve on. |
 | `--address` | `0.0.0.0` | Address to bind to. |
 | `--title` | `FlowDash` | Application title in the browser tab. |
+| `--home-dashboard` | none | Dashboard (id or title) to show on the homepage instead of the grid. |
 | `--db-path` | `<dir>/dashboards.db` | Path to the SQLite database. |
 | `--warm` | off | Import all modules at startup instead of lazily on first visit. |
 | `--dev` | off | Enable autoreload for development. |
@@ -66,6 +67,24 @@ Override this for shared deployments:
 ```bash
 flowdash serve my_project/ --db-path /var/data/flowdash.db
 ```
+
+---
+
+## Homepage dashboard
+
+By default the homepage (`/`) shows the launcher grid listing the project's
+pages and saved dashboards. To land users directly on a specific dashboard
+instead, pass `--home-dashboard` with either its id or its title:
+
+```bash
+flowdash serve my_project/ --home-dashboard "Sales Overview"
+```
+
+The dashboard is resolved by id first, then by title. If it cannot be found, or
+the current user is not authorized to view it, the homepage falls back to the
+launcher grid. The grid remains reachable through the "Home" entry only when no
+home dashboard is configured, so use this for deployments centered on a single
+dashboard.
 
 ---
 
