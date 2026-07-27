@@ -143,6 +143,15 @@ class FlowDashApp(Viewer):
         title. When unset, the homepage shows the dashboard grid launcher.""",
     )
 
+    nav_variant = param.Selector(
+        default="drawer",
+        objects=["drawer", "menubar"],
+        doc="""
+        Where the navigation menu is rendered. 'drawer' docks a MenuList in a
+        right-hand drawer; 'menubar' places a MenuBar in the page header with
+        quick-action icons alongside it.""",
+    )
+
     page_options = param.Dict(
         default={},
         doc="""
@@ -197,6 +206,7 @@ class FlowDashApp(Viewer):
         self._dataflow_graph = DataflowGraph({}, on_error=self._on_wiring_error)
         self._flow_canvas = self._build_flow_canvas()
         self._component_view = self._build_component_view()
+        self._menu_bar = None
         self._nav_menu = self._build_nav_menu()
         self._nav_drawer = pmui.Drawer(
             pmui.Typography(
@@ -212,6 +222,9 @@ class FlowDashApp(Viewer):
             variant="docked",
             width_policy="fixed",
         )
+        if self.nav_variant == "menubar":
+            self._build_nav_bar()
+        self._menubar_mode = self.nav_variant == "menubar"
         self._build_dialog()
         self._build_unsaved_dialog()
         self._build_share_dialog()
@@ -227,6 +240,8 @@ class FlowDashApp(Viewer):
             "contextbar_open": self.param.contextbar_open,
             **self.page_options,
         }
+        if self._menu_bar is not None:
+            page_kwargs.setdefault("header", [self._menu_bar])
         self._page = pmui.Page(**page_kwargs)
         pn.state.onload(self._load_page_layout)
 
@@ -248,6 +263,16 @@ class FlowDashApp(Viewer):
             yield
         finally:
             task.cancel()
+
+    def _nav_content(self, content):
+        """Wrap page content with the docked nav drawer, unless in menubar mode.
+
+        In menubar mode navigation lives in the page header, so the content is
+        returned as-is; in drawer mode it is paired with the docked drawer.
+        """
+        if self._menubar_mode:
+            return content
+        return pn.Row(content, self._nav_drawer)
 
     def _resolve_user_id(self) -> str:
         return self._identity.user
@@ -932,9 +957,8 @@ class FlowDashApp(Viewer):
             edit = False
         if dashboard is None:
             self._page.main = [
-                pn.Row(
-                    pn.pane.Alert(f"Dashboard not found: {dashboard_id}", alert_type="danger"),
-                    self._nav_drawer,
+                self._nav_content(
+                    pn.pane.Alert(f"Dashboard not found: {dashboard_id}", alert_type="danger")
                 ),
                 self._dialog,
                 self._unsaved_dialog,
@@ -1025,7 +1049,7 @@ class FlowDashApp(Viewer):
         self._sync_menu_active(f"{DASH_ROUTE_PREFIX}{dashboard_id}")
         self._apply_layout_config(self._component_view, f"{DASH_ROUTE_PREFIX}{dashboard_id}")
         self._page.main = [
-            pn.Row(self._component_view, self._nav_drawer),
+            self._nav_content(self._component_view),
             self._dialog,
             self._unsaved_dialog,
             self._share_dialog,
@@ -1056,7 +1080,7 @@ class FlowDashApp(Viewer):
             self._component_view, f"{DASH_ROUTE_PREFIX}{dashboard.dashboard_id}"
         )
         self._page.main = [
-            pn.Row(self._component_view, self._nav_drawer),
+            self._nav_content(self._component_view),
             self._dialog,
             self._unsaved_dialog,
             self._share_dialog,
@@ -1083,7 +1107,7 @@ class FlowDashApp(Viewer):
             self._navigate_to("/")
         elif pn.state.location is not None and pn.state.location.pathname == "/":
             self._page.main = [
-                pn.Row(self._build_launcher(), self._nav_drawer),
+                self._nav_content(self._build_launcher()),
                 self._dialog,
                 self._unsaved_dialog,
                 self._share_dialog,
@@ -1107,6 +1131,7 @@ class FlowDashApp(Viewer):
         items = list(self._menu_list.items)
         items[-1] = {**items[-1], "items": dash_items}
         self._menu_list.items = items
+        self._refresh_menu_bar()
 
     def _build_launcher(self):
         sections: dict[str, list[RegistryEntry]] = {}
@@ -1313,7 +1338,7 @@ class FlowDashApp(Viewer):
             launcher = self._build_launcher()
             self._apply_layout_config(launcher, pathname)
             self._page.main = [
-                pn.Row(launcher, self._nav_drawer),
+                self._nav_content(launcher),
                 self._dialog,
                 self._unsaved_dialog,
             ]
@@ -1327,7 +1352,7 @@ class FlowDashApp(Viewer):
             self._show_edit_mode()
             self._apply_layout_config(self._component_view, pathname)
             self._page.main = [
-                pn.Row(self._component_view, self._nav_drawer),
+                self._nav_content(self._component_view),
                 self._dialog,
                 self._unsaved_dialog,
             ]
@@ -1351,18 +1376,20 @@ class FlowDashApp(Viewer):
             content = await self._render_page(key)
             self._apply_layout_config(content, pathname)
             self._page.main = [
-                pn.Row(content, self._nav_drawer),
+                self._nav_content(content),
                 self._dialog,
                 self._unsaved_dialog,
             ]
         else:
             self._apply_layout_config(None, pathname)
-            self._page.main = [
+            main = [
                 f"Invalid URL: {pathname}",
                 self._dialog,
                 self._unsaved_dialog,
-                self._nav_drawer,
             ]
+            if not self._menubar_mode:
+                main.append(self._nav_drawer)
+            self._page.main = main
 
     @pn.io.hold()
     def _show_edit_mode(self):
@@ -1762,7 +1789,8 @@ class FlowDashApp(Viewer):
         """Pick a menu icon for a page section, keyed by its (normalized) name."""
         return self._SECTION_ICONS.get(section.replace("_", " ").lower(), "folder")
 
-    def _build_nav_menu(self):
+    def _build_nav_menu_items(self) -> list[dict]:
+        """Assemble the nav tree: Home, page sections and the Custom Apps group."""
         sections: dict[str, list[RegistryEntry]] = {}
         for entry in self._accessible_page_entries().values():
             sections.setdefault(entry.section, []).append(entry)
@@ -1801,41 +1829,44 @@ class FlowDashApp(Viewer):
                 "items": self._get_dashboard_menu_items(),
             }
         )
+        return menu_items
 
+    def _initial_menu_active(self, menu_items: list[dict]):
+        """Index of the menu item matching the current pathname, if any."""
         current_path = pn.state.location.pathname if pn.state.location is not None else ""
         pathname = "/" + current_path.strip("/")
-        initial_active = None
         for si, s in enumerate(menu_items):
             if s.get("path") == pathname:
-                initial_active = (si,)
-                break
+                return (si,)
             for pi, p in enumerate(s.get("items", [])):
                 if p.get("path") == pathname:
-                    initial_active = (si, pi)
-                    break
-            if initial_active:
-                break
+                    return (si, pi)
+        return None
 
-        def on_click(event):
-            if "path" not in event or pn.state.location is None:
-                return
-            path = event["path"]
-            if path == "__new_dashboard__":
-                self._open_create_dialog()
-                return
-            if path == pn.state.location.pathname:
-                if "edit=true" in (pn.state.location.search or ""):
-                    pn.state.location.param.update(search="")
-                    self._show_view_mode()
-                return
-            self._request_navigation(path)
+    def _on_nav_click(self, event):
+        """Shared click handler for both the drawer MenuList and header MenuBar."""
+        if "path" not in event or pn.state.location is None:
+            return
+        path = event["path"]
+        if path == "__new_dashboard__":
+            self._open_create_dialog()
+            return
+        if path == pn.state.location.pathname:
+            if "edit=true" in (pn.state.location.search or ""):
+                pn.state.location.param.update(search="")
+                self._show_view_mode()
+            return
+        self._request_navigation(path)
+
+    def _build_nav_menu(self):
+        menu_items = self._build_nav_menu_items()
 
         self._menu_list = pmui.MenuList(
             items=menu_items,
-            on_click=on_click,
+            on_click=self._on_nav_click,
             dense=True,
             expanded=list(range(len(menu_items))),
-            active=initial_active,
+            active=self._initial_menu_active(menu_items),
             width_policy="max",
         )
 
@@ -1845,6 +1876,98 @@ class FlowDashApp(Viewer):
         self._menu_list.on_action("Create", self._on_action_create)
 
         return self._menu_list
+
+    def _build_menu_bar_items(self) -> list[dict]:
+        """MenuBar equivalent of the nav tree, with dashboard management submenus.
+
+        MenuBar has no inline action buttons, so each dashboard is exposed as a
+        submenu (Open plus, for administrators, Edit/Rename/Delete) and the
+        management verbs are encoded via a ``nav_action`` key routed in
+        :meth:`_on_menu_bar_click`.
+        """
+        sections: dict[str, list[RegistryEntry]] = {}
+        for entry in self._accessible_page_entries().values():
+            sections.setdefault(entry.section, []).append(entry)
+
+        nav_items: list[dict] = [{"label": "Home", "icon": "home", "path": "/"}]
+        for section, section_apps in sorted(sections.items()):
+            nav_items.append(
+                {
+                    "label": section.replace("_", " "),
+                    "icon": self._section_icon(section),
+                    "items": [
+                        {"label": page_entry.title, "path": page_entry.page_path}
+                        for page_entry in sorted(section_apps, key=lambda e: e.name)
+                    ],
+                }
+            )
+
+        dashboards = self.store.list_accessible(
+            self._identity, default_allow=self._default_allow()
+        )
+        dash_items: list[dict] = [
+            {"label": "New Dashboard", "icon": "add", "path": "__new_dashboard__"},
+        ]
+        if dashboards:
+            dash_items.append(None)
+        for d in dashboards:
+            path = f"{DASH_ROUTE_PREFIX}{d.dashboard_id}"
+            entries = [{"label": "Open", "icon": "open_in_new", "path": path}]
+            if self._can_administer_dashboard(d.dashboard_id):
+                entries += [
+                    {"label": "Edit", "icon": "edit", "path": path, "nav_action": "edit"},
+                    {
+                        "label": "Rename",
+                        "icon": "drive_file_rename_outline",
+                        "path": path,
+                        "nav_action": "rename",
+                        "title": d.title,
+                    },
+                    {
+                        "label": "Delete",
+                        "icon": "delete",
+                        "path": path,
+                        "nav_action": "delete",
+                        "title": d.title,
+                    },
+                ]
+            dash_items.append({"label": d.title, "icon": "dashboard", "items": entries})
+
+        return [
+            {"label": "Navigate", "icon": "menu", "items": nav_items},
+            {"label": "Dashboards", "icon": "dashboard_customize", "items": dash_items},
+        ]
+
+    def _on_menu_bar_click(self, item):
+        """Route a MenuBar click, dispatching dashboard management verbs."""
+        action = item.get("nav_action") if isinstance(item, dict) else None
+        if action is None:
+            self._on_nav_click(item)
+            return
+        synthetic = {"path": item.get("path", ""), "label": item.get("title", "")}
+        if action == "edit":
+            self._on_action_edit(synthetic)
+        elif action == "rename":
+            self._on_action_rename(synthetic)
+        elif action == "delete":
+            self._on_action_delete(synthetic)
+
+    def _build_nav_bar(self):
+        """Build the header MenuBar and its quick-action icons (menubar variant)."""
+        self._menu_bar = pmui.MenuBar(
+            items=self._build_menu_bar_items(),
+            on_click=self._on_menu_bar_click,
+            color="default",
+            margin=(0, 0, 0, 30),
+            variant="outlined",
+            sx={"border": "none", "boxShadow": "none"},
+        )
+        return self._menu_bar
+
+    def _refresh_menu_bar(self):
+        """Rebuild the header MenuBar items after the dashboard list changes."""
+        if self._menu_bar is not None:
+            self._menu_bar.items = self._build_menu_bar_items()
 
     def __panel__(self):
         """Render the app."""
