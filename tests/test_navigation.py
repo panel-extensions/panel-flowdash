@@ -267,3 +267,90 @@ class TestMenuActiveSync:
 
         assert app._menu_list.active == _menu_index_for_path(app, path)
         assert app._menu_list.active is not None
+
+
+@pytest.fixture
+async def menubar_app(tmp_path):
+    """A FlowDashApp configured with the header MenuBar navigation."""
+    _create_project(tmp_path)
+    sys.path.insert(0, str(tmp_path))
+    previous = pn.state._location
+    pn.state._location = FakeLocation()
+    try:
+        store = DashboardStore(tmp_path / "test.db")
+        instance = FlowDashApp(project_dir=tmp_path, store=store, nav_variant="menubar")
+        await instance._ensure_components_loaded()
+        yield instance
+    finally:
+        pn.state._location = previous
+        sys.path.remove(str(tmp_path))
+
+
+def _find_menu_bar_item(items, label):
+    """Depth-first search for a MenuBar item dict with the given label."""
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if item.get("label") == label:
+            return item
+        found = _find_menu_bar_item(item.get("items", []), label)
+        if found is not None:
+            return found
+    return None
+
+
+class TestMenuBarVariant:
+    async def test_menubar_mounts_in_header(self, menubar_app):
+        assert menubar_app._menu_bar is not None
+        assert menubar_app._menu_bar in menubar_app._page.header
+
+    async def test_drawer_default_keeps_header_empty(self, app):
+        assert app._menu_bar is None
+        assert app._page.header == []
+
+    async def test_nav_content_omits_drawer_in_menubar(self, menubar_app):
+        content = pn.pane.Markdown("x")
+        assert menubar_app._nav_content(content) is content
+
+    async def test_nav_content_wraps_drawer_in_drawer_mode(self, app):
+        content = pn.pane.Markdown("x")
+        wrapped = app._nav_content(content)
+        assert app._nav_drawer in wrapped
+
+    async def test_menubar_click_navigates(self, menubar_app):
+        calls = []
+        menubar_app._navigate_to = lambda path: calls.append(path)
+        item = _find_menu_bar_item(menubar_app._menu_bar.items, "Overview")
+        assert item is not None
+        menubar_app._on_menu_bar_click(item)
+        assert calls == ["/Analytics/page"]
+
+    async def test_menubar_new_dashboard_opens_dialog(self, menubar_app):
+        item = _find_menu_bar_item(menubar_app._menu_bar.items, "New Dashboard")
+        assert item is not None
+        menubar_app._on_menu_bar_click(item)
+        assert menubar_app._dialog.open is True
+
+    async def test_menubar_dashboard_submenu_has_admin_actions(self, menubar_app):
+        dash = menubar_app.store.create_dashboard(menubar_app._user_id, "Dash A")
+        menubar_app._refresh_sidebar_dashboards()
+        submenu = _find_menu_bar_item(menubar_app._menu_bar.items, "Dash A")
+        assert submenu is not None
+        labels = [i["label"] for i in submenu["items"]]
+        assert labels == ["Open", "Edit", "Rename", "Delete"]
+        assert (
+            _find_menu_bar_item(menubar_app._menu_bar.items, "Dash A")["items"][0]["path"]
+            == f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}"
+        )
+
+    async def test_menubar_delete_action_routes(self, menubar_app):
+        dash = menubar_app.store.create_dashboard(menubar_app._user_id, "Dash A")
+        menubar_app._refresh_sidebar_dashboards()
+        submenu = _find_menu_bar_item(menubar_app._menu_bar.items, "Dash A")
+        delete_item = next(i for i in submenu["items"] if i["label"] == "Delete")
+        menubar_app._on_menu_bar_click(delete_item)
+        assert menubar_app._dialog.open is True
+        assert menubar_app._dialog_context == {
+            "action": "delete",
+            "dashboard_id": dash.dashboard_id,
+        }

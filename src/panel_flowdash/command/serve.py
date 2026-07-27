@@ -70,6 +70,19 @@ class Serve(_PanelServe):
                 ),
             ),
         ),
+        (
+            "--nav-variant",
+            Argument(
+                action="store",
+                type=str,
+                default="drawer",
+                choices=("drawer", "menubar"),
+                help=(
+                    "Where to render the navigation menu: 'drawer' (docked "
+                    "right-hand drawer) or 'menubar' (in the page header)."
+                ),
+            ),
+        ),
         *((name, arg) for name, arg in _PanelServe.args if name not in _EXCLUDED_ARGS),
     )
 
@@ -116,6 +129,7 @@ class Serve(_PanelServe):
             store=store,
             title=args.title,
             home_dashboard=args.home_dashboard,
+            nav_variant=args.nav_variant,
             registry=registry,
             configure_layout=configure_layout,
             auth_config=auth_config,
