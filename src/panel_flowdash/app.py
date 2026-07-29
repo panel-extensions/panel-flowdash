@@ -85,6 +85,27 @@ _LAUNCHER_DASH_CARD_CSS = """
 }
 """
 
+_LAUNCHER_NEW_CARD_CSS = """
+:host {
+  cursor: pointer;
+  transition: box-shadow 0.2s, border-color 0.2s;
+}
+:host .MuiPaper-root {
+  border: 1px dashed var(--mui-palette-divider, rgba(0,0,0,0.23));
+  box-shadow: none;
+  background: transparent;
+}
+:host(:hover) .MuiPaper-root {
+  border-color: var(--mui-palette-primary-main, #0072b5);
+}
+:host .MuiCardContent-root {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+}
+"""
+
 _COMPONENT_PALETTE_CARD_CSS = """
 :host {
   cursor: pointer;
@@ -1173,56 +1194,74 @@ class FlowDashApp(Viewer):
         dashboards = self.store.list_accessible(
             self._identity, default_allow=self._default_allow()
         )
-        if dashboards:
-            dash_cards = []
-            for d in dashboards:
-                can_admin = self._can_administer_dashboard(d.dashboard_id)
-                speed_dial = None
-                if can_admin:
-                    speed_dial = pmui.SpeedDial(
-                        items=self._dashboard_speed_dial_items(can_admin),
-                        icon="more_vert",
-                        direction="down",
-                        color="default",
-                        size="small",
-                        persistent_tooltips=True,
-                        stylesheets=[_LAUNCHER_SPEED_DIAL_CSS],
-                    )
-                    speed_dial.param.watch(
-                        partial(self._on_launcher_dash_action, d.dashboard_id, d.title), "value"
-                    )
+        dash_cards = []
+        for d in dashboards:
+            can_admin = self._can_administer_dashboard(d.dashboard_id)
+            speed_dial = None
+            if can_admin:
+                speed_dial = pmui.SpeedDial(
+                    items=self._dashboard_speed_dial_items(can_admin),
+                    icon="more_vert",
+                    direction="down",
+                    color="default",
+                    size="small",
+                    persistent_tooltips=True,
+                    stylesheets=[_LAUNCHER_SPEED_DIAL_CSS],
+                )
+                speed_dial.param.watch(
+                    partial(self._on_launcher_dash_action, d.dashboard_id, d.title), "value"
+                )
 
-                card = pmui.Card(
-                    pmui.ButtonIcon(
-                        icon="dashboard",
-                        icon_size="3em",
-                        disabled=True,
-                        stylesheets=[":host { pointer-events: none; opacity: 1; }"],
-                    ),
-                    title=d.title,
-                    collapsible=False,
-                    stylesheets=[_LAUNCHER_CARD_CSS],
-                    title_variant="h4",
-                    width=200,
-                    height=140,
-                )
-                path = f"{DASH_ROUTE_PREFIX}{d.dashboard_id}"
-                clickable = pmui.Clickable(object=card)
-                clickable.on_click(partial(self._launcher_navigate, path))
-                wrapper_objects = [clickable]
-                if speed_dial is not None:
-                    wrapper_objects.append(speed_dial)
-                wrapper = pn.Column(
-                    *wrapper_objects,
-                    styles={"position": "relative", "overflow": "visible"},
-                    sizing_mode="fixed",
-                    width=200,
-                    height=140,
-                )
-                dash_cards.append(wrapper)
-            accordion_items.append(
-                ("Custom Apps", pn.FlexBox(*dash_cards, gap="12px", margin=(0, 0, 12, 0)))
+            card = pmui.Card(
+                pmui.ButtonIcon(
+                    icon="dashboard",
+                    icon_size="3em",
+                    disabled=True,
+                    stylesheets=[":host { pointer-events: none; opacity: 1; }"],
+                ),
+                title=d.title,
+                collapsible=False,
+                stylesheets=[_LAUNCHER_CARD_CSS],
+                title_variant="h4",
+                width=200,
+                height=140,
             )
+            path = f"{DASH_ROUTE_PREFIX}{d.dashboard_id}"
+            clickable = pmui.Clickable(object=card)
+            clickable.on_click(partial(self._launcher_navigate, path))
+            wrapper_objects = [clickable]
+            if speed_dial is not None:
+                wrapper_objects.append(speed_dial)
+            wrapper = pn.Column(
+                *wrapper_objects,
+                styles={"position": "relative", "overflow": "visible"},
+                sizing_mode="fixed",
+                width=200,
+                height=140,
+            )
+            dash_cards.append(wrapper)
+
+        new_card = pmui.Card(
+            pmui.ButtonIcon(
+                icon="add",
+                icon_size="3em",
+                disabled=True,
+                stylesheets=[":host { pointer-events: none; opacity: 1; }"],
+            ),
+            title="New Dashboard",
+            collapsible=False,
+            stylesheets=[_LAUNCHER_NEW_CARD_CSS],
+            title_variant="h4",
+            width=200,
+            height=140,
+        )
+        new_clickable = pmui.Clickable(object=new_card)
+        new_clickable.on_click(lambda *_args: self._open_create_dialog())
+        dash_cards.append(new_clickable)
+
+        accordion_items.append(
+            ("Custom Apps", pn.FlexBox(*dash_cards, gap="12px", margin=(0, 0, 12, 0)))
+        )
 
         if component_item:
             accordion_items.append(component_item)
