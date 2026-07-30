@@ -1,4 +1,8 @@
-"""Tests for DashboardStore persistence, especially tile_layout round-tripping."""
+"""Tests for dashboard persistence, especially tile_layout round-tripping.
+
+Every test here runs against both store backends, so the in-memory store is held
+to exactly the same contract as the SQLite one.
+"""
 
 import pytest
 
@@ -8,6 +12,7 @@ from panel_flowdash.dashboard_store import (
     DashboardItem,
     DashboardModel,
     DashboardStore,
+    MemoryDashboardStore,
 )
 
 
@@ -15,9 +20,11 @@ def _identity(user, *, groups=()):
     return Identity(user=user, oauth_user=user, groups=frozenset(groups))
 
 
-@pytest.fixture
-def store(tmp_path):
-    return DashboardStore(tmp_path / "test.db")
+@pytest.fixture(params=["sqlite", "memory"])
+def store(request, tmp_path):
+    if request.param == "sqlite":
+        return DashboardStore(tmp_path / "test.db")
+    return MemoryDashboardStore()
 
 
 @pytest.fixture

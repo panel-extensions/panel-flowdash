@@ -11,6 +11,7 @@ from panel_flowdash.auth import (
     is_authorized,
     resolve_identity,
 )
+from panel_flowdash.component_library import normalize_components
 from panel_flowdash.component_spec import (
     ComponentSpec,
     ConfigField,
@@ -20,12 +21,15 @@ from panel_flowdash.component_spec import (
     build_component_specs,
 )
 from panel_flowdash.dashboard_store import (
+    BaseDashboardStore,
     DashboardEdge,
     DashboardItem,
     DashboardModel,
     DashboardStore,
+    MemoryDashboardStore,
 )
 from panel_flowdash.dataflow_engine import DataflowGraph, build_node_state_class
+from panel_flowdash.editor import FlowDash
 from panel_flowdash.registry import PanelAppMetadata, RegistryEntry, panel_app, register
 from panel_flowdash.session_state import build_session_state_class, check_requirements
 
@@ -37,6 +41,7 @@ except importlib.metadata.PackageNotFoundError as e:  # pragma: no cover
 
 __all__: list[str] = [
     "AuthConfig",
+    "BaseDashboardStore",
     "ComponentSpec",
     "ConfigField",
     "DashboardEdge",
@@ -44,8 +49,10 @@ __all__: list[str] = [
     "DashboardModel",
     "DashboardStore",
     "DataflowGraph",
+    "FlowDash",
     "Identity",
     "InputPort",
+    "MemoryDashboardStore",
     "OutputPort",
     "PanelAppMetadata",
     "Permission",
@@ -58,6 +65,7 @@ __all__: list[str] = [
     "can_administer",
     "check_requirements",
     "is_authorized",
+    "normalize_components",
     "panel_app",
     "register",
     "resolve_identity",

@@ -231,6 +231,9 @@ def _ports_from_viewer_class(
                 type=type_str,
                 required=False,
                 blocking=False,
+                # Carried through so that disconnecting an edge resets the port
+                # to a value the target param will actually accept.
+                default=p.default,
             )
         )
 

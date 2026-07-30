@@ -14,6 +14,7 @@ A dataflow-driven dashboard builder for [Panel](https://panel.holoviz.org). Defi
 - **Dataflow engine** with cycle detection, type checking, single-source-per-input validation, and runtime error reporting
 - **SQLite persistence** for dashboard layouts, edges, and tile configurations
 - **CLI** (`flowdash serve`) to launch a project directory as a full dashboard app
+- **Embeddable editor** (`FlowDash`) for using the canvas and layout editor inside your own Panel app
 
 ## Installation
 
@@ -80,6 +81,24 @@ class StockFilter(pn.viewable.Viewer):
     def __panel__(self):
         return pn.widgets.TextInput.from_param(self.param.ticker)
 ```
+
+## Embedding the editor
+
+The project-directory workflow is optional. `FlowDash` is the editor on its own, without the routing, pages and navigation that `flowdash serve` layers on top:
+
+```python
+from panel_flowdash import FlowDash
+
+editor = FlowDash([selector, chart], store="dashboards.db")
+
+src = editor.add_component("Analytics/selector")
+dst = editor.add_component("Analytics/chart")
+editor.connect(src, "company", dst, "company")
+
+editor.servable()
+```
+
+Components can be passed as decorated functions, `Viewer` subclasses, a mapping of explicit ids, a project directory, or any mix. See [Embed the Editor](https://panel-extensions.github.io/panel-flowdash/how-to/embed-the-editor/) for building dashboards in code, persistence, and read-only viewers.
 
 ## CLI
 

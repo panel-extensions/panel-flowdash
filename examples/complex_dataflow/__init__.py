@@ -1,7 +1,7 @@
 import panel as pn
 import panel_material_ui as pmui
 
-pn.extension("tabulator", "vega", "deckgl")
+pn.extension("tabulator", "vega", "deckgl", "jsoneditor")
 
 
 def _assistant_reply(contents, user, instance):

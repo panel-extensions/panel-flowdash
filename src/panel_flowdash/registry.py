@@ -149,6 +149,51 @@ def register(
 panel_app = register
 
 
+_DEFAULT_SECTION = "Components"
+
+_UNINFORMATIVE_MODULES = {"main", "builtins", "abc"}
+
+
+def _module_parts(app: Any) -> list[str]:
+    """Meaningful dotted parts of an app's defining module, outermost first."""
+    module = getattr(app, "__module__", "") or ""
+    return [
+        part
+        for part in module.split(".")
+        if part and not part.startswith("_") and part not in _UNINFORMATIVE_MODULES
+    ]
+
+
+def _app_name(app: Any) -> str:
+    """Derive a component name from a live app object.
+
+    Modules following the project-directory convention export their component as
+    ``app``, which makes a useless id, so in that case the module stem names the
+    component instead (matching how :func:`build_registry` ids it).
+    """
+    for attr in ("__name__", "__qualname__"):
+        value = getattr(app, attr, None)
+        if isinstance(value, str) and value and value != "app":
+            return value
+    parts = _module_parts(app)
+    if parts:
+        return parts[-1]
+    return type(app).__name__
+
+
+def _app_section(app: Any) -> str:
+    """Derive a section from an app object's defining module.
+
+    A component defined in ``myproject.analytics`` lands in an "analytics"
+    section. When the module stem already names the component (the ``app``
+    convention), the parent package supplies the section instead.
+    """
+    parts = _module_parts(app)
+    if getattr(app, "__name__", None) == "app":
+        parts = parts[:-1]
+    return parts[-1] if parts else _DEFAULT_SECTION
+
+
 @dataclass
 class RegistryEntry:
     """A registered component/page with its metadata."""
@@ -166,6 +211,49 @@ class RegistryEntry:
     def title(self) -> str:
         """Human-readable title."""
         return self.metadata.title or self.name.replace("_", " ")
+
+    @classmethod
+    def from_app(
+        cls,
+        app: Any,
+        *,
+        app_id: str | None = None,
+        section: str | None = None,
+        name: str | None = None,
+    ) -> RegistryEntry:
+        """Build an entry from an already-imported app object.
+
+        Unlike :func:`build_registry`, which discovers modules on disk and defers
+        importing them, this wraps a live object so ``load()`` is a no-op. Used
+        by the programmatic API where components are passed in directly.
+
+        Objects without ``@register`` metadata are treated as components, since
+        a bare ``Viewer`` subclass handed to the editor is only ever meant to be
+        one.
+        """
+        metadata = PanelAppMetadata.from_app(app)
+        if metadata == PanelAppMetadata():
+            metadata = PanelAppMetadata(page=False, component=True)
+
+        name = name or _app_name(app)
+        if app_id is not None:
+            section, _, derived = app_id.rpartition("/")
+            section = section or "Components"
+            name = derived or name
+        else:
+            section = section or _app_section(app)
+            app_id = f"{section}/{name}"
+
+        return cls(
+            app_id=app_id,
+            section=section,
+            name=name,
+            page_path=f"/{app_id}",
+            module_name=getattr(app, "__module__", "") or "",
+            metadata=metadata,
+            module_path=None,
+            app=app,
+        )
 
     def load(self) -> Any:
         """Import the module and return the app object.

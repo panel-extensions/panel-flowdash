@@ -83,41 +83,44 @@ def _fire_action(app, name, item):
 
 class TestCanvasReset:
     async def test_reset_clears_all_state(self, app):
-        await app._add_component_to_graph()
-        assert app._tile_items
-        assert app._flow.nodes
+        editor = app._editor
+        editor.add_component("Analytics/selector")
+        assert editor.layout or editor._tile_items
+        assert editor._flow.nodes
 
         app._reset_canvas()
 
-        assert app._tile_items == []
-        assert app._tile_objects == []
-        assert app._edge_id_map == {}
-        assert list(app._dataflow_graph.node_ids) == []
-        assert app._flow.nodes == []
-        assert app._flow.edges == []
+        assert editor._tile_items == []
+        assert editor._tile_objects == []
+        assert editor._edge_id_map == {}
+        assert list(editor.graph.node_ids) == []
+        assert editor._flow.nodes == []
+        assert editor._flow.edges == []
         assert app._sidebar_container.objects == []
 
     async def test_create_new_dashboard_resets_canvas(self, app):
         """Creating a dashboard while another has nodes must clear the canvas."""
-        await app._add_component_to_graph()
-        assert app._flow.nodes
+        editor = app._editor
+        editor.add_component("Analytics/selector")
+        assert editor._flow.nodes
 
         app._create_new_dashboard("Fresh")
 
-        assert app._flow.nodes == []
-        assert app._tile_items == []
-        assert list(app._dataflow_graph.node_ids) == []
+        assert editor._flow.nodes == []
+        assert editor._tile_items == []
+        assert list(editor.graph.node_ids) == []
         assert app._current_dashboard.title == "Fresh"
 
     async def test_clear_components_resets_canvas(self, app):
-        await app._add_component_to_graph()
-        await app._add_component_to_graph()
-        assert len(app._flow.nodes) == 2
+        editor = app._editor
+        editor.add_component("Analytics/selector")
+        editor.add_component("Analytics/chart")
+        assert len(editor._flow.nodes) == 2
 
-        app._clear_components()
+        editor.clear()
 
-        assert app._flow.nodes == []
-        assert list(app._dataflow_graph.node_ids) == []
+        assert editor._flow.nodes == []
+        assert list(editor.graph.node_ids) == []
 
 
 class TestMenuClickNavigation:
