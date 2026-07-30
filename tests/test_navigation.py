@@ -83,7 +83,7 @@ def _fire_action(app, name, item):
 
 class TestCanvasReset:
     async def test_reset_clears_all_state(self, app):
-        app._add_component_to_graph()
+        await app._add_component_to_graph()
         assert app._tile_items
         assert app._flow.nodes
 
@@ -99,7 +99,7 @@ class TestCanvasReset:
 
     async def test_create_new_dashboard_resets_canvas(self, app):
         """Creating a dashboard while another has nodes must clear the canvas."""
-        app._add_component_to_graph()
+        await app._add_component_to_graph()
         assert app._flow.nodes
 
         app._create_new_dashboard("Fresh")
@@ -110,8 +110,8 @@ class TestCanvasReset:
         assert app._current_dashboard.title == "Fresh"
 
     async def test_clear_components_resets_canvas(self, app):
-        app._add_component_to_graph()
-        app._add_component_to_graph()
+        await app._add_component_to_graph()
+        await app._add_component_to_graph()
         assert len(app._flow.nodes) == 2
 
         app._clear_components()
