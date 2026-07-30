@@ -424,6 +424,7 @@ class FlowDashApp(Viewer):
         editor = FlowDash(
             components=self._registry,
             breakpoints=self.breakpoints,
+            notifications=self.notifications,
             store=self.store,
             toolbar_extra=[self._share_button],
             user=self._user_id,

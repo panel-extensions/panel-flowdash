@@ -130,6 +130,13 @@ class FlowDash(Viewer):
         for the tile grid.""",
     )
 
+    notifications = param.Boolean(
+        default=True,
+        doc="""
+        Whether to surface user-facing messages as Panel notifications. When
+        disabled (or when no notification area exists) messages are logged.""",
+    )
+
     preview = param.Boolean(
         default=False,
         doc="""
@@ -291,7 +298,7 @@ class FlowDash(Viewer):
 
     def _notify(self, severity: str, message: str, duration: int = 3000):
         """Surface a message to the user, or log it when notifications are unavailable."""
-        notify(severity, message, duration=duration)
+        notify(severity, message, duration=duration, enabled=self.notifications)
 
     def _on_wiring_error(self, source_id, source_port, target_id, target_port, exc):
         logger.error(
