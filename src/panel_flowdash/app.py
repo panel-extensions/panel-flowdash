@@ -198,7 +198,7 @@ class FlowDashApp(Viewer):
         if self.auth_config is None:
             self.auth_config = AuthConfig()
 
-        if not registry:
+        if registry is None:
             registry = build_registry(pathlib.Path(self.project_dir))
         page_entries = {k: v for k, v in registry.items() if v.metadata.page}
         component_entries = {k: v for k, v in registry.items() if v.metadata.component}
@@ -261,6 +261,11 @@ class FlowDashApp(Viewer):
             "contextbar_open": self.param.contextbar_open,
             **self.page_options,
         }
+        overflow_patch = {".main-content": {"overflow-x": "hidden"}}
+        if "sx" in page_kwargs:
+            page_kwargs["sx"].update(**overflow_patch)
+        else:
+            page_kwargs["sx"] = {".main-content": {"overflow-x": "hidden"}}
         if self._menu_bar is not None:
             page_kwargs.setdefault("header", [self._menu_bar])
         self._page = pmui.Page(**page_kwargs)
@@ -293,7 +298,7 @@ class FlowDashApp(Viewer):
         """
         if self._menubar_mode:
             return content
-        return pn.Row(content, self._nav_drawer)
+        return pn.Row(content, self._nav_drawer, sizing_mode="stretch_both")
 
     def _resolve_user_id(self) -> str:
         return self._identity.user
@@ -690,7 +695,7 @@ class FlowDashApp(Viewer):
         self._share_button = pmui.Button(
             icon="share", color="primary", variant="outlined", visible=False
         )
-        self._add_button.on_click(lambda _event: self._add_component_to_graph())
+        self._add_button.on_click(self._add_component_to_graph)
         self._clear_button.on_click(lambda _event: self._clear_components())
         self._save_button.on_click(lambda _event: self._save_current_dashboard())
         self._share_button.on_click(lambda _event: self._share_current_dashboard())
@@ -787,15 +792,24 @@ class FlowDashApp(Viewer):
             duration=5000,
         )
 
-    def _add_component_to_graph(self):
+    async def _add_component_to_graph(self, _event=None):
         component_id = self._component_picker.value
         entry = self._component_entries.get(component_id)
         if entry is None:
             pn.state.notifications.warning("Select a valid component first.", duration=3000)
             return
 
+        # The editor can be entered in-session (dashboard create/edit) without a
+        # navigation, so the specs may not be built yet.
+        if not self._components_loaded:
+            async with self._loading_screen():
+                await self._ensure_components_loaded()
+
         spec = self._component_specs.get(component_id)
         if spec is None:
+            pn.state.notifications.error(
+                f"Component '{component_id}' could not be loaded.", duration=5000
+            )
             return
 
         type_key = component_id.replace("/", "__")
@@ -966,6 +980,7 @@ class FlowDashApp(Viewer):
         self._flow.edges = []
 
     async def _load_dashboard(self, dashboard_id: str, edit: bool = False):
+        await self._ensure_components_loaded()
         with pn.io.hold():
             self._load_dashboard_sync(dashboard_id, edit=edit)
 
@@ -1414,8 +1429,9 @@ class FlowDashApp(Viewer):
         if len(key) == 2 and self._entry_from_key(key):
             content = await self._render_page(key)
             self._apply_layout_config(content, pathname)
+            wrapper = pmui.Column(content, sizing_mode="stretch_width")
             self._page.main = [
-                self._nav_content(content),
+                self._nav_content(wrapper),
                 self._dialog,
                 self._unsaved_dialog,
             ]
