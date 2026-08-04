@@ -12,7 +12,7 @@ import param
 import pytest
 
 from panel_flowdash.app import DASH_ROUTE_PREFIX, FlowDashApp
-from panel_flowdash.dashboard_store import DashboardStore
+from panel_flowdash.dashboard_store import DashboardItem, DashboardStore
 
 
 class FakeLocation(param.Parameterized):
@@ -357,3 +357,120 @@ class TestMenuBarVariant:
             "action": "delete",
             "dashboard_id": dash.dashboard_id,
         }
+
+
+class ScopedProject:
+    """A served project whose components record the fact of their own import.
+
+    Each instance gets its own section name, because importing a module caches it
+    under that name for the rest of the session: a shared section would leave
+    later tests unable to observe an import at all.
+    """
+
+    def __init__(self, app, tmp_path, section):
+        self.app = app
+        self.tmp_path = tmp_path
+        self.section = section
+        self.used = f"{section}/used"
+        self.unused = f"{section}/unused"
+
+    def imported(self, name):
+        return (self.tmp_path / f"{name}.imported").exists()
+
+    @property
+    def any_imported(self):
+        return self.imported("used") or self.imported("unused")
+
+    def seed(self, component_ids):
+        """Persist a dashboard placing *component_ids* and return it."""
+        dash = self.app.store.create_dashboard(self.app._user_id, "Dash A")
+        dash.items = [
+            DashboardItem(instance_id=f"n{i}", component_id=cid)
+            for i, cid in enumerate(component_ids)
+        ]
+        self.app.store.save_dashboard(dash)
+        return dash
+
+
+@pytest.fixture
+async def scoped(tmp_path, request):
+    """A FlowDashApp over a project that records which components get imported."""
+    section = "Scoped_" + request.node.name.replace("[", "_").replace("]", "")
+    directory = tmp_path / section
+    directory.mkdir()
+    (directory / "__init__.py").write_text("")
+    for name in ("used", "unused"):
+        (directory / f"{name}.py").write_text(
+            "import pathlib\n"
+            "from panel_flowdash import register\n\n"
+            f"pathlib.Path({str(tmp_path)!r}, '{name}.imported').touch()\n\n"
+            "@register(page=False, component=True, provides=['company'])\n"
+            "def app(config):\n"
+            f"    return '{name}'\n"
+        )
+
+    sys.path.insert(0, str(tmp_path))
+    previous = pn.state._location
+    pn.state._location = FakeLocation()
+    try:
+        store = DashboardStore(tmp_path / "test.db")
+        app = FlowDashApp(project_dir=tmp_path, store=store)
+        yield ScopedProject(app, tmp_path, section)
+    finally:
+        pn.state._location = previous
+        sys.path.remove(str(tmp_path))
+
+
+class TestScopedRouteLoading:
+    """Routing to a dashboard must import only the components it places.
+
+    Importing a module runs its top-level code, so a component doing I/O at
+    import time would otherwise tax every dashboard and the editor route.
+    """
+
+    async def test_serving_app_imports_nothing(self, scoped):
+        """Construction only scans; no component module is imported."""
+        assert not scoped.any_imported
+
+    async def test_dashboard_route_imports_only_placed_components(self, scoped):
+        dash = scoped.seed([scoped.used])
+
+        pn.state.location.pathname = f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}"
+        await scoped.app._load_page_layout()
+
+        assert scoped.imported("used")
+        assert not scoped.imported("unused")
+        assert scoped.app._current_dashboard.dashboard_id == dash.dashboard_id
+
+    async def test_view_mode_imports_only_placed_components(self, scoped):
+        """View mode ran the full-catalog load before the fix, not just edit mode."""
+        dash = scoped.seed([scoped.used])
+
+        await scoped.app._load_dashboard(dash.dashboard_id, edit=False)
+
+        assert scoped.app._editor.editable is False
+        assert scoped.imported("used")
+        assert not scoped.imported("unused")
+
+    async def test_empty_dashboard_route_imports_nothing(self, scoped):
+        dash = scoped.seed([])
+
+        await scoped.app._load_dashboard(dash.dashboard_id, edit=False)
+
+        assert not scoped.any_imported
+
+    async def test_editor_route_imports_nothing_until_a_component_is_added(self, scoped):
+        pn.state.location.pathname = "/components"
+        await scoped.app._load_page_layout()
+
+        assert not scoped.any_imported
+
+        scoped.app._editor.add_component(scoped.used)
+
+        assert scoped.imported("used")
+        assert not scoped.imported("unused")
+
+    async def test_missing_dashboard_route_imports_nothing(self, scoped):
+        await scoped.app._load_dashboard("no-such-dashboard", edit=False)
+
+        assert not scoped.any_imported

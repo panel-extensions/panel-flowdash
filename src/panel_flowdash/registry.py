@@ -206,6 +206,11 @@ class RegistryEntry:
     metadata: PanelAppMetadata
     module_path: pathlib.Path | None = None
     app: Any = None
+    # Cache for the entry's ComponentSpec, populated by build_component_spec.
+    # Registry entries are shared across sessions, so a spec is introspected
+    # once per process rather than once per session. Untyped to avoid a circular
+    # import with component_spec.
+    spec: Any = field(default=None, repr=False, compare=False)
 
     @property
     def title(self) -> str:

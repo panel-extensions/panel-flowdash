@@ -479,9 +479,13 @@ class FlowDashApp(Viewer):
         self._editor._reset_canvas()
         self._sidebar_container.objects = []
 
-    async def _ensure_components_loaded(self):
-        """Load all component modules and build their specs, if not done yet."""
-        await self._editor.ensure_components_loaded_async()
+    async def _ensure_components_loaded(self, component_ids: t.Iterable[str] | None = None):
+        """Load component modules and build their specs, if not done yet.
+
+        Defaults to the whole catalog, which is what the editor palette needs.
+        Dashboard routes pass the components the dashboard places instead.
+        """
+        await self._editor.ensure_components_loaded_async(component_ids)
 
     def _save_current_dashboard(self):
         """Save the loaded dashboard, refusing when the user only has read access."""
@@ -507,14 +511,28 @@ class FlowDashApp(Viewer):
         )
 
     async def _load_dashboard(self, dashboard_id: str, edit: bool = False):
-        await self._ensure_components_loaded()
-        with pn.io.hold():
-            self._load_dashboard_sync(dashboard_id, edit=edit)
-
-    def _load_dashboard_sync(self, dashboard_id: str, edit: bool = False):
         dashboard = self.store.load_for_access(
             self._identity, dashboard_id, default_allow=self._default_allow()
         )
+        if dashboard is not None:
+            # Only the components this dashboard places, imported off the event
+            # loop. The editor palette needs no imports (it is built from the
+            # scanned metadata) and `add_component` imports on demand, so even
+            # edit mode does not pay for the whole catalog.
+            await self._ensure_components_loaded({item.component_id for item in dashboard.items})
+        with pn.io.hold():
+            self._load_dashboard_sync(dashboard_id, edit=edit, dashboard=dashboard)
+
+    def _load_dashboard_sync(
+        self,
+        dashboard_id: str,
+        edit: bool = False,
+        dashboard: DashboardModel | None = None,
+    ):
+        if dashboard is None:
+            dashboard = self.store.load_for_access(
+                self._identity, dashboard_id, default_allow=self._default_allow()
+            )
         if edit and dashboard is not None and not self._can_administer_dashboard(dashboard_id):
             # A viewer with read access followed an edit link; downgrade to view.
             edit = False
@@ -799,7 +817,6 @@ class FlowDashApp(Viewer):
         ):
             return False
         async with self._loading_screen():
-            await self._ensure_components_loaded()
             await self._load_dashboard(model.dashboard_id, edit=False)
         return True
 
@@ -826,8 +843,9 @@ class FlowDashApp(Viewer):
         if pathname == COMPONENTS_ROUTE:
             self._current_dashboard = None
             self._sidebar_container.objects = []
-            async with self._loading_screen():
-                await self._ensure_components_loaded()
+            # No preload: the component picker is built from the scanned metadata
+            # and `add_component` imports the one component being placed, so an
+            # empty editor costs no imports.
             self._show_edit_mode()
             self._apply_layout_config(self._component_view, pathname)
             self._page.main = [
@@ -843,7 +861,6 @@ class FlowDashApp(Viewer):
                 search = pn.state.location.search or ""
                 edit_requested = "edit=true" in search
                 async with self._loading_screen():
-                    await self._ensure_components_loaded()
                     await self._load_dashboard(dashboard_id, edit=edit_requested)
                 return
 
