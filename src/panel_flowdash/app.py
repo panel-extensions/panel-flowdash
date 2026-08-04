@@ -27,7 +27,7 @@ from panel_flowdash.dashboard_store import DashboardModel, DashboardStore
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.registry import RegistryEntry, build_registry
 from panel_flowdash.session_state import build_session_state_class, check_requirements
-from panel_flowdash.util import notify
+from panel_flowdash.util import notify, panel_call, panel_viewer
 
 logger = logging.getLogger("panel_flowdash")
 
@@ -388,9 +388,16 @@ class FlowDashApp(Viewer):
         if not callable(app):
             return pn.panel(app)
         kwargs = self._add_kwargs_dict(app, context=context, instance_config=instance_config)
+        if inspect.isasyncgenfunction(app):
+            # Cannot be awaited to a single value, so defer it to a ParamFunction
+            # that iterates it on the event loop as the page renders.
+            return panel_call(app, **kwargs)
         if inspect.iscoroutinefunction(app):
             return await app(**kwargs)
-        return await asyncio.to_thread(lambda: pn.panel(app(**kwargs)))
+        result = await asyncio.to_thread(app, **kwargs)
+        if isinstance(result, pn.viewable.Viewer):
+            return panel_viewer(result)
+        return pn.panel(result)
 
     async def _render_page(self, key):
         entry = self._entry_from_key(key)
