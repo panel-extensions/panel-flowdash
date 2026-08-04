@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import typing as t
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
@@ -204,8 +205,11 @@ def _ports_from_viewer_class(
     exclude: set[str] | None = None,
 ) -> tuple[list[OutputPort], list[InputPort]]:
     exclude = exclude or set()
-    instance = viewer_cls()
-    output_info = instance.param.outputs()
+    # Introspected off the class rather than an instance: constructing every
+    # registered Viewer just to read its ports would run each component's
+    # __init__ on every session, so one component doing work there would slow
+    # down dashboards that never place it.
+    output_info = viewer_cls.param.outputs()
     mro_dicts = [cls.__dict__ for cls in viewer_cls.__mro__]
 
     outputs = []
@@ -241,7 +245,15 @@ def _ports_from_viewer_class(
 
 
 def build_component_spec(entry: RegistryEntry) -> ComponentSpec:
-    """Build a ComponentSpec from a registry entry."""
+    """Build a ComponentSpec from a registry entry, caching it on the entry.
+
+    A spec is derived purely from the component's class/metadata, so it does not
+    vary between sessions. Registry entries are shared across sessions, which
+    makes the cache process-wide.
+    """
+    if entry.spec is not None:
+        return entry.spec
+
     app = entry.app
     metadata = entry.metadata
 
@@ -262,7 +274,7 @@ def build_component_spec(entry: RegistryEntry) -> ComponentSpec:
         outputs, inputs = _ports_from_metadata(metadata)
         inputs = [p for p in inputs if p.name not in config_names]
 
-    return ComponentSpec(
+    spec = ComponentSpec(
         component_id=entry.app_id,
         title=entry.title,
         description=metadata.description,
@@ -275,14 +287,30 @@ def build_component_spec(entry: RegistryEntry) -> ComponentSpec:
         config_state_class=config_state_class,
         config_editor=metadata.config_editor,
     )
+    entry.spec = spec
+    return spec
 
 
 def build_component_specs(
     registry: dict[str, RegistryEntry],
+    component_ids: t.Iterable[str] | None = None,
 ) -> dict[str, ComponentSpec]:
-    """Build specs for all component-enabled entries in a registry."""
+    """Build specs for component-enabled entries in a registry.
+
+    Parameters
+    ----------
+    registry
+        Registry entries keyed by component id.
+    component_ids
+        Restrict spec building to these ids. Entries outside the set are skipped
+        without being introspected, so an unloaded component costs nothing.
+    """
+    wanted = None if component_ids is None else set(component_ids)
     specs = {}
     for app_id, entry in registry.items():
-        if entry.metadata.component:
-            specs[app_id] = build_component_spec(entry)
+        if not entry.metadata.component:
+            continue
+        if wanted is not None and app_id not in wanted:
+            continue
+        specs[app_id] = build_component_spec(entry)
     return specs

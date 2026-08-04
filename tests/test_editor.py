@@ -14,7 +14,13 @@ import pytest
 from panel.viewable import Viewer
 
 from panel_flowdash import register
-from panel_flowdash.dashboard_store import DashboardItem, DashboardModel, MemoryDashboardStore
+from panel_flowdash.component_library import normalize_components
+from panel_flowdash.dashboard_store import (
+    DashboardEdge,
+    DashboardItem,
+    DashboardModel,
+    MemoryDashboardStore,
+)
 from panel_flowdash.editor import FlowDash
 
 
@@ -639,3 +645,208 @@ def _write_project(tmp_path, section="Analytics"):
         "def app(config):\n"
         "    return 'selector'\n"
     )
+
+
+def _write_marker_project(tmp_path, section):
+    """Write a two-component project where each module records its own import.
+
+    A module touches ``<tmp_path>/<name>.imported`` at import time, so a test can
+    assert which components were actually imported rather than merely which
+    specs exist.
+    """
+    directory = tmp_path / section
+    directory.mkdir()
+    (directory / "__init__.py").write_text("")
+    for name in ("used", "unused"):
+        (directory / f"{name}.py").write_text(
+            "import pathlib\n"
+            "from panel_flowdash import register\n\n"
+            f"pathlib.Path({str(tmp_path)!r}, '{name}.imported').touch()\n\n"
+            "@register(page=False, component=True, provides=['company'])\n"
+            "def app(config):\n"
+            f"    return '{name}'\n"
+        )
+    return f"{section}/used", f"{section}/unused"
+
+
+def _imported(tmp_path, name):
+    return (tmp_path / f"{name}.imported").exists()
+
+
+class TestScopedLoading:
+    """Loading a dashboard must not import components it does not place.
+
+    Importing a module runs its top-level code, so a component doing I/O at
+    import time would otherwise tax every dashboard in the project.
+    """
+
+    async def test_load_model_imports_only_placed_components(self, tmp_path):
+        used, _ = _write_marker_project(tmp_path, "ScopedLoad")
+        editor = FlowDash(tmp_path, notifications=False)
+        model = DashboardModel(
+            dashboard_id="d1",
+            user_id="alice",
+            title="Only used",
+            items=[DashboardItem(instance_id="n1", component_id=used)],
+        )
+
+        editor.load_model(model)
+
+        assert _imported(tmp_path, "used")
+        assert not _imported(tmp_path, "unused")
+        assert [n["id"] for n in editor._flow.nodes] == ["n1"]
+
+    async def test_load_model_async_imports_only_placed_components(self, tmp_path):
+        used, _ = _write_marker_project(tmp_path, "ScopedLoadAsync")
+        editor = FlowDash(tmp_path, notifications=False)
+        model = DashboardModel(
+            dashboard_id="d1",
+            user_id="alice",
+            title="Only used",
+            items=[DashboardItem(instance_id="n1", component_id=used)],
+        )
+
+        await editor.load_model_async(model)
+
+        assert _imported(tmp_path, "used")
+        assert not _imported(tmp_path, "unused")
+        assert [n["id"] for n in editor._flow.nodes] == ["n1"]
+
+    async def test_empty_dashboard_imports_nothing(self, tmp_path):
+        _write_marker_project(tmp_path, "ScopedEmpty")
+        editor = FlowDash(tmp_path, notifications=False)
+
+        editor.load_model(DashboardModel(dashboard_id="d1", user_id="alice", title="Empty"))
+
+        assert not _imported(tmp_path, "used")
+        assert not _imported(tmp_path, "unused")
+
+    async def test_add_component_imports_only_that_component(self, tmp_path):
+        used, _ = _write_marker_project(tmp_path, "ScopedAdd")
+        editor = FlowDash(tmp_path, notifications=False)
+
+        editor.add_component(used)
+
+        assert _imported(tmp_path, "used")
+        assert not _imported(tmp_path, "unused")
+
+    async def test_add_component_unknown_id_imports_nothing(self, tmp_path):
+        _write_marker_project(tmp_path, "ScopedUnknown")
+        editor = FlowDash(tmp_path, notifications=False)
+
+        with pytest.raises(KeyError, match="Unknown component"):
+            editor.add_component("No/Such")
+
+        assert not _imported(tmp_path, "used")
+        assert not _imported(tmp_path, "unused")
+
+    async def test_scoped_load_keeps_full_catalog_available(self, tmp_path):
+        """A scoped load must not make the unloaded components unreachable."""
+        used, unused = _write_marker_project(tmp_path, "ScopedThenAll")
+        editor = FlowDash(tmp_path, notifications=False)
+        editor.load_model(
+            DashboardModel(
+                dashboard_id="d1",
+                user_id="alice",
+                title="Only used",
+                items=[DashboardItem(instance_id="n1", component_id=used)],
+            )
+        )
+
+        instance_id = editor.add_component(unused)
+
+        assert _imported(tmp_path, "unused")
+        assert set(editor.component_specs) == {used, unused}
+        assert instance_id in editor.graph.node_ids
+        # The node placed by the scoped load survives the later spec registration.
+        assert "n1" in editor.graph.node_ids
+
+    async def test_scoped_load_preserves_edges(self, tmp_path):
+        """Registering specs later must not tear down existing wiring."""
+        directory = tmp_path / "ScopedEdges"
+        directory.mkdir()
+        (directory / "__init__.py").write_text("")
+        (directory / "src.py").write_text(
+            "from panel_flowdash import register\n\n"
+            "@register(page=False, component=True, provides=[{'key': 'ticker', 'type': 'str'}])\n"
+            "def app(config):\n"
+            "    return 'src'\n"
+        )
+        (directory / "dst.py").write_text(
+            "from panel_flowdash import register\n\n"
+            "@register(page=False, component=True, requires=[{'key': 'ticker', 'type': 'str'}])\n"
+            "def app(config):\n"
+            "    return 'dst'\n"
+        )
+        (directory / "other.py").write_text(
+            "from panel_flowdash import register\n\n"
+            "@register(page=False, component=True, provides=['company'])\n"
+            "def app(config):\n"
+            "    return 'other'\n"
+        )
+        editor = FlowDash(tmp_path, notifications=False)
+        editor.load_model(
+            DashboardModel(
+                dashboard_id="d1",
+                user_id="alice",
+                title="Wired",
+                items=[
+                    DashboardItem(instance_id="a", component_id="ScopedEdges/src"),
+                    DashboardItem(instance_id="b", component_id="ScopedEdges/dst"),
+                ],
+                edges=[
+                    DashboardEdge(
+                        source="a", source_port="ticker", target="b", target_port="ticker"
+                    )
+                ],
+            )
+        )
+        assert len(list(editor.graph.edges)) == 1
+
+        editor.add_component("ScopedEdges/other")
+
+        assert len(list(editor.graph.edges)) == 1
+        assert set(editor.graph.node_ids) >= {"a", "b"}
+
+
+class TestSpecCaching:
+    async def test_viewer_specs_do_not_construct_the_component(self):
+        """Spec introspection reads the class, so a Viewer's __init__ never runs.
+
+        Constructing every registered Viewer to read its ports would run each
+        component's __init__ on every session.
+        """
+        constructed = []
+
+        class Exploding(Viewer):
+            ticker = param.String(default="")
+
+            def __init__(self, **params):
+                constructed.append(1)
+                super().__init__(**params)
+
+            @param.output(param.String)
+            def shouted(self):
+                return self.ticker.upper()
+
+            def __panel__(self):
+                return self.ticker
+
+        editor = FlowDash({"Demo/exploding": Exploding}, notifications=False)
+        spec = editor.component_specs["Demo/exploding"]
+
+        assert not constructed
+        assert [p.name for p in spec.outputs] == ["shouted"]
+        assert "ticker" in [p.name for p in spec.inputs]
+
+    async def test_spec_is_cached_on_the_registry_entry(self, tmp_path):
+        """Entries are shared between sessions, so specs are built once per process."""
+        _write_project(tmp_path, section="CachedSpecs")
+        registry = normalize_components(tmp_path)
+
+        first = FlowDash(registry, notifications=False)
+        spec = first.component_specs["CachedSpecs/selector"]
+
+        second = FlowDash(registry, notifications=False)
+
+        assert second.component_specs["CachedSpecs/selector"] is spec

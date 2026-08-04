@@ -196,6 +196,7 @@ class FlowDash(Viewer):
         self._component_entries = {k: v for k, v in self._registry.items() if v.metadata.component}
         self._component_specs: dict[str, ComponentSpec] = {}
         self._components_loaded = False
+        self._failed_components: set[str] = set()
 
         self._muted = False
         self._grid_populated = False
@@ -217,7 +218,7 @@ class FlowDash(Viewer):
         # constructed. Directory-scanned entries are imported lazily instead,
         # off the event loop, by `ensure_components_loaded_async`.
         if all(entry.app is not None for entry in self._component_entries.values()):
-            self._build_specs()
+            self.ensure_components_loaded()
 
         self._apply_mode_state()
         if dashboard is not None:
@@ -239,47 +240,90 @@ class FlowDash(Viewer):
     # Component loading
     # ------------------------------------------------------------------
 
-    def _load_entries(self) -> list[str]:
-        """Import every component module, collecting failures rather than raising."""
+    def _wanted_ids(self, component_ids: t.Iterable[str] | None) -> list[str]:
+        """Resolve a requested id set against the registry, in registry order.
+
+        Ids naming no registered component are dropped; reporting them is the
+        caller's job, since a saved dashboard referencing a component the editor
+        does not offer is a warning rather than a load failure.
+        """
+        if component_ids is None:
+            return list(self._component_entries)
+        wanted = set(component_ids)
+        return [cid for cid in self._component_entries if cid in wanted]
+
+    def _unimported_ids(self, wanted: list[str]) -> list[str]:
+        """Of *wanted*, the ids whose module has not been imported yet.
+
+        Components that already failed to import are excluded, so a broken module
+        is not retried (and re-reported) on every load.
+        """
+        return [
+            cid
+            for cid in wanted
+            if self._component_entries[cid].app is None and cid not in self._failed_components
+        ]
+
+    def _load_entries(self, component_ids: list[str]) -> list[str]:
+        """Import the named component modules, collecting failures rather than raising."""
         errors: list[str] = []
-        for entry in self._component_entries.values():
+        for component_id in component_ids:
             try:
-                entry.load()
+                self._component_entries[component_id].load()
             except Exception as exc:
-                errors.append(f"{entry.app_id}: {exc}")
+                self._failed_components.add(component_id)
+                errors.append(f"{component_id}: {exc}")
         return errors
 
-    def _build_specs(self, errors: list[str] | None = None):
-        """Introspect the loaded components and rebuild the graph and canvas.
+    def _register_specs(self, wanted: list[str], errors: list[str] | None = None):
+        """Introspect the loaded components in *wanted* and register their specs.
 
-        Replaces the dataflow graph wholesale, so this must run before any node
-        is placed.
+        Specs are added to the graph incrementally, so this is safe to call after
+        nodes have been placed: an existing graph keeps its nodes and edges.
         """
         for msg in errors or []:
             logger.warning("Failed to load component: %s", msg)
             self._notify("warning", f"Component load failed: {msg}", duration=6000)
-        self._component_specs = build_component_specs(self._registry)
-        self._dataflow_graph = DataflowGraph(self._component_specs, on_error=self._on_wiring_error)
+        new = [
+            cid
+            for cid in wanted
+            if cid not in self._component_specs and self._component_entries[cid].app is not None
+        ]
+        if not new:
+            return
+        specs = build_component_specs(self._registry, component_ids=new)
+        self._component_specs.update(specs)
+        self._dataflow_graph.register_specs(specs)
         self._rebuild_flow_canvas()
-        self._components_loaded = True
 
-    def ensure_components_loaded(self):
-        """Import all component modules and build their specs, if not done already.
+    def ensure_components_loaded(self, component_ids: t.Iterable[str] | None = None):
+        """Import component modules and build their specs, if not done already.
 
         Called automatically whenever specs are needed. On a live server prefer
         :meth:`ensure_components_loaded_async`, which imports off the event loop.
-        """
-        if self._components_loaded:
-            return
-        self._build_specs(self._load_entries())
 
-    async def ensure_components_loaded_async(self):
+        Parameters
+        ----------
+        component_ids
+            Import only these components. Defaults to the whole catalog, which is
+            what the editor palette needs; viewing a dashboard passes just the
+            components it places, so an unrelated component doing work at import
+            time cannot slow it down.
+        """
+        wanted = self._wanted_ids(component_ids)
+        errors = self._load_entries(self._unimported_ids(wanted))
+        self._register_specs(wanted, errors)
+        if component_ids is None:
+            self._components_loaded = True
+
+    async def ensure_components_loaded_async(self, component_ids: t.Iterable[str] | None = None):
         """Async :meth:`ensure_components_loaded`, importing off the event loop."""
-        if self._components_loaded:
-            return
-        already_loaded = all(e.app is not None for e in self._component_entries.values())
-        errors = [] if already_loaded else await asyncio.to_thread(self._load_entries)
-        self._build_specs(errors)
+        wanted = self._wanted_ids(component_ids)
+        unimported = self._unimported_ids(wanted)
+        errors = await asyncio.to_thread(self._load_entries, unimported) if unimported else []
+        self._register_specs(wanted, errors)
+        if component_ids is None:
+            self._components_loaded = True
 
     @property
     def component_specs(self) -> dict[str, ComponentSpec]:
@@ -782,11 +826,13 @@ class FlowDash(Viewer):
         KeyError
             If *component_id* is not a registered component.
         """
-        self.ensure_components_loaded()
-        if component_id not in self._component_specs:
+        if component_id not in self._component_entries:
             raise KeyError(
-                f"Unknown component '{component_id}'. Available: {sorted(self._component_specs)}"
+                f"Unknown component '{component_id}'. Available: {sorted(self._component_entries)}"
             )
+        self.ensure_components_loaded([component_id])
+        if component_id not in self._component_specs:
+            raise KeyError(f"Component '{component_id}' failed to load.")
         type_key = component_id.replace("/", "__")
         instance_id = self._place(
             component_id,
@@ -970,14 +1016,33 @@ class FlowDash(Viewer):
             model.responsive_layouts = dict(self._pending_responsive_layouts)
         return model
 
-    @pn.io.hold()
     def load_model(self, model: DashboardModel):
         """Hydrate the canvas from a :class:`DashboardModel`.
 
         Components the model references but this editor does not offer are
         skipped with a warning rather than aborting the load.
+
+        Only the components the model places are imported, so a component that
+        does work at import time cannot slow down dashboards that do not use it.
+        On a live server prefer :meth:`load_model_async`, which imports off the
+        event loop.
         """
-        self.ensure_components_loaded()
+        self.ensure_components_loaded(self._model_component_ids(model))
+        self._hydrate_model(model)
+
+    async def load_model_async(self, model: DashboardModel):
+        """Async :meth:`load_model`, importing the model's components off the event loop."""
+        await self.ensure_components_loaded_async(self._model_component_ids(model))
+        self._hydrate_model(model)
+
+    @staticmethod
+    def _model_component_ids(model: DashboardModel) -> set[str]:
+        """Return the ids of the components a dashboard model places."""
+        return {item.component_id for item in model.items}
+
+    @pn.io.hold()
+    def _hydrate_model(self, model: DashboardModel):
+        """Populate the canvas from *model*, assuming its components are loaded."""
         self.dashboard = model
         with self._muted_canvas():
             self._reset_canvas()

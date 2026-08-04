@@ -71,7 +71,7 @@ class DataflowGraph:
             Callback invoked when a runtime value assignment fails.
             Signature: (source_id, source_port, target_id, target_port, exception)
         """
-        self._specs = specs
+        self._specs = dict(specs)
         self._state_classes: dict[str, type[param.Parameterized]] = {}
         self._nodes: dict[str, param.Parameterized] = {}
         self._config_states: dict[str, param.Parameterized] = {}
@@ -81,6 +81,19 @@ class DataflowGraph:
         self._on_error = on_error
 
         for comp_id, spec in specs.items():
+            self._state_classes[comp_id] = build_node_state_class(spec)
+
+    def register_specs(self, specs: dict[str, ComponentSpec]):
+        """Add component specs to the graph, keeping existing nodes intact.
+
+        Components are imported on demand, so specs arrive after the graph is
+        constructed. Registering them incrementally avoids rebuilding the graph
+        and losing the nodes and edges already placed on it.
+        """
+        for comp_id, spec in specs.items():
+            if comp_id in self._state_classes:
+                continue
+            self._specs[comp_id] = spec
             self._state_classes[comp_id] = build_node_state_class(spec)
 
     def add_node(self, instance_id: str, component_id: str) -> param.Parameterized:
