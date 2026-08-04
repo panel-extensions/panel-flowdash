@@ -35,7 +35,7 @@ from panel_flowdash.dashboard_store import (
 )
 from panel_flowdash.dataflow_engine import DataflowGraph
 from panel_flowdash.registry import RegistryEntry
-from panel_flowdash.util import notify
+from panel_flowdash.util import is_async, is_async_gen, notify, panel_call, panel_viewer
 
 if t.TYPE_CHECKING:
     from panel.viewable import Viewable
@@ -541,8 +541,7 @@ class FlowDash(Viewer):
         if "context" in sig.parameters:
             kwargs["context"] = "component"
 
-        result = app_fn(**kwargs)
-        return pn.panel(result)
+        return panel_call(app_fn, **kwargs)
 
     def _instantiate_viewer_for_node(self, viewer_cls, entry, node_state, config_state=None):
         """Instantiate a Viewer and wire its params to the node_state."""
@@ -570,22 +569,46 @@ class FlowDash(Viewer):
             deps = instance.param.method_dependencies(method_name)
             dep_names = [d.name for d in deps if d.name != "name"]
 
-            def _propagate_output(event, _method=method, _name=name):
+            def _resolve_output(_method=method, _name=name):
+                """Compute an output and publish it, awaiting async output methods.
+
+                An async output cannot be published inline, so it is scheduled on
+                the event loop; downstream nodes update when it resolves. Async
+                generators publish every value they yield.
+                """
+                fn = _method if callable(_method) else getattr(instance, _method)
+                if not is_async(fn):
+                    setattr(node_state, _name, fn())
+                    return
+
+                is_gen = is_async_gen(fn)
+
+                async def _publish():
+                    try:
+                        if is_gen:
+                            async for value in fn():
+                                setattr(node_state, _name, value)
+                        else:
+                            setattr(node_state, _name, await fn())
+                    except Exception as exc:
+                        logger.error("Output '%s' failed: %s", _name, exc, exc_info=exc)
+
+                param.parameterized.async_executor(_publish)
+
+            def _propagate_output(event, _resolve=_resolve_output, _name=name):
                 try:
-                    val = _method() if callable(_method) else getattr(instance, _method)()
-                    setattr(node_state, _name, val)
+                    _resolve()
                 except Exception as exc:
                     logger.error("Output '%s' failed: %s", _name, exc, exc_info=exc)
 
             if dep_names:
                 instance.param.watch(_propagate_output, dep_names)
             try:
-                val = method() if callable(method) else getattr(instance, method)()
-                setattr(node_state, name, val)
+                _resolve_output()
             except Exception:
                 pass
 
-        return pn.panel(instance)
+        return panel_viewer(instance)
 
     # ------------------------------------------------------------------
     # Layout

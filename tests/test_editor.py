@@ -5,6 +5,9 @@ existing separately from ``FlowDashApp``: constructing it from live component
 objects, wiring them, and round-tripping through a store, all without a server.
 """
 
+import asyncio
+
+import panel as pn
 import panel_material_ui as pmui
 import param
 import pytest
@@ -487,6 +490,138 @@ class TestSidebarPublishing:
         sidebar_editor.add_component(SIDE)
         sidebar_editor.clear()
         assert sidebar_editor.sidebar == []
+
+
+@register(page=False, component=True, title="Async", provides=[{"key": "ticker", "type": "str"}])
+async def async_select(config):
+    await asyncio.sleep(0)
+    return pn.pane.Markdown("async selector")
+
+
+@register(page=False, component=True, title="Gen", provides=[{"key": "ticker", "type": "str"}])
+async def gen_select(config):
+    yield pn.pane.Markdown("first")
+    yield pn.pane.Markdown("second")
+
+
+class AsyncShouter(Viewer):
+    """A Viewer whose output method and ``__panel__`` are both async."""
+
+    ticker = param.String(default="")
+
+    @param.output(param.String)
+    async def shouted(self):
+        await asyncio.sleep(0)
+        return self.ticker.upper()
+
+    async def __panel__(self):
+        return pn.pane.Markdown(self.ticker)
+
+
+class GenShouter(Viewer):
+    """A Viewer whose output method is an async generator."""
+
+    ticker = param.String(default="")
+
+    @param.output(param.String)
+    async def shouted(self):
+        yield self.ticker.upper()
+        yield f"{self.ticker.upper()}!"
+
+    def __panel__(self):
+        return self.ticker
+
+
+ASYNC = "Demo/async"
+GEN = "Demo/gen"
+ASYNC_SHOUTER = "Demo/async_shouter"
+GEN_SHOUTER = "Demo/gen_shouter"
+
+ASYNC_COMPONENTS = {
+    ASYNC: async_select,
+    GEN: gen_select,
+    ASYNC_SHOUTER: AsyncShouter,
+    GEN_SHOUTER: GenShouter,
+    CHART: price_chart,
+}
+
+
+@pytest.fixture
+def async_editor():
+    return FlowDash(ASYNC_COMPONENTS, notifications=False)
+
+
+def _tile_content(view):
+    """Resolve the object a tile actually renders, through any deferred pane."""
+    return getattr(view, "_pane", view)
+
+
+class TestAsyncComponents:
+    """An ``async def app`` must render as a tile, not leak an un-awaited coroutine.
+
+    A coroutine handed to ``pn.panel`` becomes a ``Str`` pane of its repr and the
+    body never runs, so the tile renders blank. These assert the async paths are
+    deferred to Panel instead of being called inline.
+    """
+
+    async def test_async_component_is_awaited(self, async_editor, recwarn):
+        async_editor.add_component(ASYNC)
+        view = async_editor._tile_objects[0]
+        await asyncio.sleep(0.05)
+
+        assert isinstance(_tile_content(view), pn.pane.Markdown)
+        assert _tile_content(view).object == "async selector"
+        assert not [w for w in recwarn if "never awaited" in str(w.message)]
+
+    async def test_async_generator_component_is_iterated(self, async_editor):
+        async_editor.add_component(GEN)
+        view = async_editor._tile_objects[0]
+        await asyncio.sleep(0.05)
+
+        assert _tile_content(view).object == "second"
+
+    async def test_async_component_is_not_wrapped_as_a_string(self, async_editor):
+        """The exact symptom of the bug: a ``Str`` pane holding a coroutine repr."""
+        async_editor.add_component(ASYNC)
+        view = async_editor._tile_objects[0]
+        await asyncio.sleep(0.05)
+
+        assert "coroutine" not in str(_tile_content(view).object)
+
+    async def test_async_viewer_panel_is_awaited(self, async_editor):
+        async_editor.add_component(ASYNC_SHOUTER)
+        view = async_editor._tile_objects[0]
+        await asyncio.sleep(0.05)
+
+        assert isinstance(_tile_content(view), pn.pane.Markdown)
+
+    async def test_async_output_publishes_a_value_not_a_coroutine(self, async_editor):
+        instance_id = async_editor.add_component(ASYNC_SHOUTER)
+        async_editor.graph.get_state(instance_id).ticker = "msft"
+        await asyncio.sleep(0.05)
+
+        assert async_editor.graph.get_state(instance_id).shouted == "MSFT"
+
+    async def test_async_output_propagates_downstream(self, async_editor):
+        src = async_editor.add_component(ASYNC_SHOUTER)
+        dst = async_editor.add_component(ASYNC_SHOUTER)
+        assert async_editor.connect(src, "shouted", dst, "ticker") is True
+
+        async_editor.graph.get_state(src).ticker = "aapl"
+        await asyncio.sleep(0.05)
+
+        assert async_editor.graph.get_state(dst).ticker == "AAPL"
+
+    async def test_async_generator_output_publishes_every_value(self, async_editor):
+        instance_id = async_editor.add_component(GEN_SHOUTER)
+        state = async_editor.graph.get_state(instance_id)
+        seen = []
+        state.param.watch(lambda event: seen.append(event.new), "shouted")
+
+        state.ticker = "msft"
+        await asyncio.sleep(0.05)
+
+        assert seen[-2:] == ["MSFT", "MSFT!"]
 
 
 def _write_project(tmp_path, section="Analytics"):
