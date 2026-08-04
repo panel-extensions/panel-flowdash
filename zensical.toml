@@ -18,6 +18,7 @@ nav = [
     {"Layout & Sizing" = "how-to/layout-and-sizing.md"},
     {"Persist Dashboards" = "how-to/persist-dashboards.md"},
     {"Serve a Project" = "how-to/serve-project.md"},
+    {"Embed the Editor" = "how-to/embed-the-editor.md"},
     {"Manage Permissions" = "how-to/manage-permissions.md"}
   ]},
   {"Examples" = [

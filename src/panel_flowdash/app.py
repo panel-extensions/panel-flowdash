@@ -8,17 +8,14 @@ import logging
 import pathlib
 import traceback
 import typing as t
-import uuid
 from contextlib import asynccontextmanager
 from functools import cache, partial
 from html import escape
 
 import panel as pn
 import panel_material_ui as pmui
-import panel_reactflow as pr
 import param
 from panel.viewable import Children, Viewer
-from panel_tiles import TileGrid
 
 from panel_flowdash.auth import (
     AuthConfig,
@@ -26,23 +23,15 @@ from panel_flowdash.auth import (
     is_authorized,
     resolve_identity,
 )
-from panel_flowdash.component_spec import build_component_specs
-from panel_flowdash.dashboard_store import (
-    DashboardEdge,
-    DashboardItem,
-    DashboardModel,
-    DashboardStore,
-)
-from panel_flowdash.dataflow_engine import DataflowGraph
+from panel_flowdash.dashboard_store import DashboardModel, DashboardStore
+from panel_flowdash.editor import FlowDash
 from panel_flowdash.registry import RegistryEntry, build_registry
 from panel_flowdash.session_state import build_session_state_class, check_requirements
-
-pn.extension(notifications=True)
+from panel_flowdash.util import notify
 
 logger = logging.getLogger("panel_flowdash")
 
 if t.TYPE_CHECKING:
-    from panel.viewable import Viewable
 
     class _DASHBOARD_ACTION_TYPE(t.TypedDict):
         label: str
@@ -173,6 +162,13 @@ class FlowDashApp(Viewer):
         quick-action icons alongside it.""",
     )
 
+    notifications = param.Boolean(
+        default=True,
+        doc="""
+        Whether to surface user-facing messages as Panel notifications. When
+        disabled (or when no notification area exists) messages are logged.""",
+    )
+
     page_options = param.Dict(
         default={},
         doc="""
@@ -195,38 +191,32 @@ class FlowDashApp(Viewer):
     def __init__(self, registry: dict[str, RegistryEntry] | None = None, **params):
         super().__init__(**params)
 
+        if self.notifications:
+            pn.config.notifications = True
+
         if self.auth_config is None:
             self.auth_config = AuthConfig()
 
         if registry is None:
             registry = build_registry(pathlib.Path(self.project_dir))
         page_entries = {k: v for k, v in registry.items() if v.metadata.page}
-        component_entries = {k: v for k, v in registry.items() if v.metadata.component}
         # Session state is built from AST metadata — no imports needed.
         session_state_class = build_session_state_class(registry)
         self._registry = registry
         self._page_entries = page_entries
-        self._component_entries = component_entries
-        # Component specs and dataflow graph are built lazily on first editor visit.
-        self._component_specs: dict = {}
         self._session_state_class = session_state_class
 
         self._session_state = self._session_state_class()
         self._identity = resolve_identity(self.auth_config)
         self._user_id = self._resolve_user_id()
-        self._loading = False
-        self._dirty = False
-        self._components_loaded = False
-        self._edge_id_map: dict[str, tuple[str, str, str, str]] = {}
-        self._current_dashboard: DashboardModel | None = None
-        self._tile_items: list[dict] = []
-        self._tile_objects: list[Viewable] = []
-        self._sidebar_views: list[Viewable] = []
         self._sidebar_container = pn.Column(sizing_mode="stretch_width")
-        self._component_picker = self._make_component_picker()
-        self._dataflow_graph = DataflowGraph({}, on_error=self._on_wiring_error)
-        self._flow_canvas = self._build_flow_canvas()
-        self._component_view = self._build_component_view()
+        self._share_button = pmui.Button(
+            icon="share", color="primary", variant="outlined", visible=False
+        )
+        self._share_button.on_click(lambda _event: self._share_current_dashboard())
+        # The editor owns the canvas, tile grid and persistence; this class adds
+        # routing, navigation, pages and authorization on top of it.
+        self._editor = self._build_editor()
         self._menu_bar = None
         self._nav_menu = self._build_nav_menu()
         self._nav_drawer = pmui.Drawer(
@@ -429,555 +419,85 @@ class FlowDashApp(Viewer):
                 styles={"color": "black"},
             )
 
-    def _make_component_picker(self):
-        groups: dict[str, dict[str, str]] = {}
-        for app_id, entry in self._component_entries.items():
-            section = entry.section.replace("_", " ")
-            groups.setdefault(section, {})[entry.title] = app_id
-        value = next(iter(self._component_entries), None)
-        return pmui.Select(
-            label="Component",
-            groups=groups,
-            value=value,
-            searchable=True,
-            filter_on_search=True,
-            size="small",
+    def _build_editor(self) -> FlowDash:
+        """Construct the embedded editor and wire it into the app shell."""
+        editor = FlowDash(
+            components=self._registry,
+            breakpoints=self.breakpoints,
+            notifications=self.notifications,
+            store=self.store,
+            toolbar_extra=[self._share_button],
+            user=self._user_id,
         )
+        editor.param.watch(self._on_editor_sidebar, "sidebar")
+        return editor
 
-    def _node_types_from_specs(self):
-        node_types = {}
-        node_editors = {}
-        for comp_id, spec in self._component_specs.items():
-            type_key = comp_id.replace("/", "__")
-            node_types[type_key] = pr.NodeType(
-                type=type_key,
-                label=spec.title,
-                schema=spec.config_state_class,
-                inputs=[
-                    {"id": port.name, "label": port.label or port.name} for port in spec.inputs
-                ],
-                outputs=[
-                    {"id": port.name, "label": port.label or port.name} for port in spec.outputs
-                ],
-            )
-            if spec.config_editor is not None:
-                node_editors[type_key] = spec.config_editor
-        return node_types, node_editors
+    def _on_editor_sidebar(self, event):
+        """Mirror the editor's sidebar views into the page sidebar."""
+        self._sidebar_container.objects = list(event.new)
+        self._page.sidebar_open = bool(event.new)
 
-    def _rebuild_flow_canvas(self):
-        """Update node_types on the live ReactFlow canvas after component load."""
-        node_types, node_editors = self._node_types_from_specs()
-        self._flow.param.update(node_types=node_types, node_editors=node_editors)
-
-    def _build_flow_canvas(self):
-        node_types, node_editors = self._node_types_from_specs()
-
-        flow = pr.ReactFlow(
-            nodes=[],
-            edges=[],
-            node_types=node_types,
-            node_editors=node_editors,
-            editable=True,
-            enable_connect=True,
-            show_minimap=True,
-            sizing_mode="stretch_both",
-            min_height=600,
-            stylesheets=[
-                """\
-            .react-flow__node {
-              padding: 0;
-              border-radius: 6px;
-              border: 1px solid var(--xy-node-border, var(--panel-border-color));
-              background-color: var(--xy-node-background-color, var(--panel-background-color));
-              box-shadow: 0 1px 2px var(--panel-shadow-color);
-              color: var(--xy-node-color, var(--panel-on-background-color));
-              font-size: 13px;
-              min-width: 140px;
-            }
-            .react-flow__handle {
-              width: 14px;
-              height: 14px;
-              border: 1px solid black;
-              background: transparent;
-            }"""
-            ],
-        )
-
-        def _on_edge_added(event):
-            if self._loading:
-                return
-            edge = event.get("edge", event) if isinstance(event, dict) else {}
-            src_id = edge.get("source", "")
-            tgt_id = edge.get("target", "")
-            src_handle = edge.get("sourceHandle", "")
-            tgt_handle = edge.get("targetHandle", "")
-            if src_id and tgt_id and src_handle and tgt_handle:
-                result = self._dataflow_graph.add_edge(src_id, src_handle, tgt_id, tgt_handle)
-                if result is True:
-                    edge_id = edge.get("id", "")
-                    if edge_id:
-                        self._edge_id_map[edge_id] = (src_id, src_handle, tgt_id, tgt_handle)
-                    self._dirty = True
-                    pn.state.notifications.success(
-                        f"Wired: {src_handle} → {tgt_handle}", duration=3000
-                    )
-                else:
-                    logger.warning("Edge rejected: %s", result)
-                    pn.state.notifications.error(result, duration=5000)
-                    flow.remove_edge(edge.get("id", ""))
-
-        def _on_edge_deleted(event):
-            if self._loading:
-                return
-            edge_id = event.get("edge_id", "") if isinstance(event, dict) else ""
-            if not edge_id:
-                return
-            mapping = self._edge_id_map.pop(edge_id, None)
-            if mapping:
-                self._dataflow_graph.remove_edge(*mapping)
-                self._dirty = True
-
-        def _on_node_data_changed(event):
-            if self._loading:
-                return
-            node_id = event.get("node_id", "") if isinstance(event, dict) else ""
-            patch = event.get("patch", {}) if isinstance(event, dict) else {}
-            if not node_id or not patch:
-                return
-            self._apply_config_patch(node_id, patch)
-
-        def _on_node_deleted(event):
-            node_id = event.get("node_id", "") if isinstance(event, dict) else ""
-            if node_id:
-                self._dataflow_graph.remove_node(node_id)
-                idx = next(
-                    (
-                        i
-                        for i, item in enumerate(self._tile_items)
-                        if item["instance_id"] == node_id
-                    ),
-                    None,
-                )
-                if idx is not None:
-                    self._tile_items.pop(idx)
-                    self._tile_objects.pop(idx)
-                self._dirty = True
-
-        flow.on("edge_added", _on_edge_added)
-        flow.on("edge_deleted", _on_edge_deleted)
-        flow.on("node_data_changed", _on_node_data_changed)
-        flow.on("node_deleted", _on_node_deleted)
-
-        self._flow = flow
-        return flow
-
-    def _apply_config_patch(self, node_id, patch):
-        """Apply an editor patch to a node's config state and persist it."""
-        config_state = self._dataflow_graph.get_config_state(node_id)
-        applied = {}
-        for key, value in patch.items():
-            if config_state is not None and hasattr(config_state.param, key):
-                try:
-                    setattr(config_state, key, value)
-                except Exception as exc:
-                    logger.warning("Config '%s' rejected on %s: %s", key, node_id, exc)
-                    continue
-            applied[key] = value
-        if not applied:
-            return
-        for item in self._tile_items:
-            if item["instance_id"] == node_id:
-                item.setdefault("config", {}).update(applied)
-                break
-        self._dirty = True
-
-    def _seed_config_state(self, instance_id, config):
-        """Overlay saved config onto a node's config state and return node data seed."""
-        config_state = self._dataflow_graph.get_config_state(instance_id)
-        if config_state is None:
-            return {}
-        for key, value in (config or {}).items():
-            if hasattr(config_state.param, key):
-                try:
-                    setattr(config_state, key, value)
-                except Exception as exc:
-                    logger.warning("Saved config '%s' rejected on %s: %s", key, instance_id, exc)
-        return {name: getattr(config_state, name) for name in config_state.param if name != "name"}
-
-    def _bind_config_to_viewer(self, instance, config_state):
-        """Sync config-state params onto a Viewer instance, live."""
-        for name in config_state.param:
-            if name == "name" or not hasattr(instance.param, name):
-                continue
-            try:
-                setattr(instance, name, getattr(config_state, name))
-            except Exception as exc:
-                logger.warning("Config '%s' could not be set: %s", name, exc)
-                continue
-
-            def _propagate(event, _name=name):
-                try:
-                    setattr(instance, _name, event.new)
-                except Exception as exc:
-                    logger.warning("Config '%s' update failed: %s", _name, exc)
-
-            config_state.param.watch(_propagate, name)
-
-    def _instantiate_for_node(self, entry, node_state, config_state=None):
-        """Create a live component view wired to the node_state."""
-        app_fn = entry.load()
-
-        if not callable(app_fn):
-            return pn.panel(app_fn)
-
-        if inspect.isclass(app_fn) and issubclass(app_fn, pn.viewable.Viewer):
-            return self._instantiate_viewer_for_node(app_fn, entry, node_state, config_state)
-
-        sig = inspect.signature(app_fn)
-        kwargs = {}
-        if "config" in sig.parameters:
-            kwargs["config"] = node_state
-        if "instance_config" in sig.parameters and config_state is not None:
-            kwargs["instance_config"] = config_state
-        if "context" in sig.parameters:
-            kwargs["context"] = "component"
-
-        result = app_fn(**kwargs)
-        return pn.panel(result)
-
-    def _instantiate_viewer_for_node(self, viewer_cls, entry, node_state, config_state=None):
-        """Instantiate a Viewer and wire its params to the node_state."""
-        spec = self._component_specs.get(entry.app_id)
-        instance = viewer_cls()
-
-        if config_state is not None:
-            self._bind_config_to_viewer(instance, config_state)
-
-        input_names = [p.name for p in spec.inputs] if spec else []
-        for name in input_names:
-            if not hasattr(instance.param, name):
-                continue
-
-            def _propagate_input(event, _name=name):
-                setattr(instance, _name, event.new)
-
-            node_state.param.watch(_propagate_input, name)
-
-        output_info = instance.param.outputs()
-        for name, (_, method, _) in output_info.items():
-            if not hasattr(node_state.param, name):
-                continue
-            method_name = method.__name__ if callable(method) else method
-            deps = instance.param.method_dependencies(method_name)
-            dep_names = [d.name for d in deps if d.name != "name"]
-
-            def _propagate_output(event, _method=method, _name=name):
-                try:
-                    val = _method() if callable(_method) else getattr(instance, _method)()
-                    setattr(node_state, _name, val)
-                except Exception as exc:
-                    logger.error("Output '%s' failed: %s", _name, exc, exc_info=exc)
-
-            if dep_names:
-                instance.param.watch(_propagate_output, dep_names)
-            try:
-                val = method() if callable(method) else getattr(instance, method)()
-                setattr(node_state, name, val)
-            except Exception:
-                pass
-
-        return pn.panel(instance)
-
-    def _build_component_view(self):
-        self._add_button = pmui.Button(icon="add", color="primary", variant="outlined")
-        self._clear_button = pmui.Button(icon="delete_sweep", color="danger", variant="outlined")
-        self._save_button = pmui.Button(icon="save", color="primary", variant="outlined")
-        self._share_button = pmui.Button(
-            icon="share", color="primary", variant="outlined", visible=False
-        )
-        self._add_button.on_click(self._add_component_to_graph)
-        self._clear_button.on_click(lambda _event: self._clear_components())
-        self._save_button.on_click(lambda _event: self._save_current_dashboard())
-        self._share_button.on_click(lambda _event: self._share_current_dashboard())
-
-        no_components = len(self._component_entries) == 0
-        self._component_picker.disabled = no_components
-        self._add_button.disabled = no_components
-
-        self._preview_switch = pmui.Switch(
-            label="Preview",
-            value=False,
-            align="center",
-            margin=(0, 10),
-        )
-        self._preview_switch.param.watch(
-            lambda e: self._tile_grid.param.update(editable=not e.new, card=not e.new), "value"
-        )
-        self._mode_toggle = pmui.RadioButtonGroup(
-            options={":material/cable:": "wiring", ":material/dashboard:": "dashboard"},
-            value="wiring",
-        )
-        self._workspace_area = pn.Column(
-            self._flow_canvas, sizing_mode="stretch_both", scroll="y-auto"
-        )
-
-        self._preview_switch.visible = False
-
-        @pn.io.hold()
-        def _on_mode_change(event):
-            if event.new == "dashboard":
-                self._workspace_area[:] = [self._tile_grid]
-                self._rebuild_tile_grid()
-                self._preview_switch.visible = True
-            else:
-                self._pending_tile_layout = self._tile_grid.layout
-                self._pending_breakpoints = self._tile_grid.breakpoints
-                self._pending_responsive_layouts = self._tile_grid.responsive_layouts
-                self._workspace_area[:] = [self._flow_canvas]
-                self._preview_switch.visible = False
-                self._preview_switch.value = False
-
-        self._mode_toggle.param.watch(_on_mode_change, "value")
-
-        self._controls_row = pn.Row(
-            self._component_picker,
-            self._add_button,
-            self._clear_button,
-            self._save_button,
-            self._share_button,
-            pn.layout.HSpacer(),
-            self._preview_switch,
-            self._mode_toggle,
-            sizing_mode="stretch_width",
-            align="center",
-        )
-        return pn.Column(
-            self._controls_row,
-            self._workspace_area,
-            sizing_mode="stretch_both",
-        )
+    def _notify(self, severity: str, message: str, duration: int = 3000):
+        """Surface a message to the user, or log it when notifications are unavailable."""
+        notify(severity, message, duration=duration, enabled=self.notifications)
 
     @property
-    def _tile_grid(self):
-        if not hasattr(self, "_tile__grid"):
-            self._tile__grid = TileGrid(
-                breakpoints=list(self.breakpoints),
-                card=False,
-                close_action="hide",
-                editable=False,
-                local_save=False,
-                min_height=320,
-                sizing_mode="stretch_both",
-            )
-        return self._tile__grid
+    def _component_entries(self) -> dict[str, RegistryEntry]:
+        """Component entries offered by the editor."""
+        return self._editor._component_entries
 
-    def _apply_responsive_config(self, breakpoints, responsive_layouts):
-        if breakpoints:
-            self._tile_grid.breakpoints = breakpoints
-        if responsive_layouts:
-            self._tile_grid.responsive_layouts = responsive_layouts
+    @property
+    def _component_view(self):
+        """The editor view, mounted into `_page.main` for editor routes."""
+        return self._editor
 
-    def _on_wiring_error(self, source_id, source_port, target_id, target_port, exc):
-        logger.error(
-            "Runtime wiring error (%s.%s -> %s.%s): %s",
-            source_id,
-            source_port,
-            target_id,
-            target_port,
-            exc,
-            exc_info=exc,
-        )
-        pn.state.notifications.error(
-            f"Runtime wiring error ({source_port} → {target_port}): {exc}",
-            duration=5000,
-        )
+    @property
+    def _current_dashboard(self) -> DashboardModel | None:
+        return self._editor.dashboard
 
-    async def _add_component_to_graph(self, _event=None):
-        component_id = self._component_picker.value
-        entry = self._component_entries.get(component_id)
-        if entry is None:
-            pn.state.notifications.warning("Select a valid component first.", duration=3000)
-            return
+    @_current_dashboard.setter
+    def _current_dashboard(self, value):
+        self._editor.dashboard = value
 
-        # The editor can be entered in-session (dashboard create/edit) without a
-        # navigation, so the specs may not be built yet.
-        if not self._components_loaded:
-            async with self._loading_screen():
-                await self._ensure_components_loaded()
+    @property
+    def _dirty(self) -> bool:
+        return self._editor.dirty
 
-        spec = self._component_specs.get(component_id)
-        if spec is None:
-            pn.state.notifications.error(
-                f"Component '{component_id}' could not be loaded.", duration=5000
-            )
-            return
+    @_dirty.setter
+    def _dirty(self, value):
+        self._editor.dirty = value
 
-        type_key = component_id.replace("/", "__")
-        instance_id = f"{type_key}_{uuid.uuid4().hex[:6]}"
+    def _reset_canvas(self):
+        """Clear the editor canvas and the mirrored page sidebar."""
+        self._editor._reset_canvas()
+        self._sidebar_container.objects = []
 
-        node_state = self._dataflow_graph.add_node(instance_id, component_id)
-        config_state = self._dataflow_graph.get_config_state(instance_id)
-        config_data = self._seed_config_state(instance_id, {})
-
-        try:
-            view = self._instantiate_for_node(entry, node_state, config_state)
-        except Exception as e:
-            logger.exception("Failed to add component '%s'", component_id)
-            self._dataflow_graph.remove_node(instance_id)
-            pn.state.notifications.error(f"Failed to add component: {e}", duration=5000)
-            return
-
-        node_count = len(self._tile_items)
-        col = node_count % 3
-        row = node_count // 3
-        position = {"x": col * 350, "y": row * 250}
-
-        node = pr.NodeSpec(
-            id=instance_id,
-            type=type_key,
-            position=position,
-            label=spec.title,
-            data=config_data,
-        )
-        node_dict = node.to_dict()
-        node_dict["view"] = view
-        self._flow.add_node(node_dict)
-
-        self._tile_items.append(
-            {"instance_id": instance_id, "component_id": component_id, "config": {}}
-        )
-        self._tile_objects.append(view)
-        self._dirty = True
-
-        pn.state.notifications.success(f"Added component: {entry.title}", duration=3000)
-
-    def _rebuild_sidebar(self):
-        """Populate the page sidebar from tiles whose component opts into it.
-
-        The sidebar is independent of the wiring/dashboard toggle, so this runs
-        whenever a dashboard is shown, not only when the tile grid is visible.
-        """
-        sidebar_views = []
-        for i, item in enumerate(self._tile_items):
-            component_id = item["component_id"]
-            entry = self._component_entries.get(component_id)
-            if entry is None or not entry.metadata.sidebar:
-                continue
-            view = self._tile_objects[i] if i < len(self._tile_objects) else None
-            if view is None:
-                view = pn.pane.Markdown(f"*{entry.title}*")
-            sidebar_views.append(view)
-        self._sidebar_views = sidebar_views
-        self._sidebar_container.objects = sidebar_views
-        self._page.sidebar_open = bool(sidebar_views)
-
-    @pn.io.hold()
-    def _rebuild_tile_grid(self):
-        grid_views = []
-        for i, item in enumerate(self._tile_items):
-            component_id = item["component_id"]
-            entry = self._component_entries.get(component_id)
-            if entry is None:
-                continue
-            if entry.metadata.sidebar:
-                continue
-            view = self._tile_objects[i] if i < len(self._tile_objects) else None
-            if view is None:
-                view = pn.pane.Markdown(f"*{entry.title}*")
-            grid_views.append(view)
-        self._tile_grid[:] = grid_views
-        self._rebuild_sidebar()
-        pending = getattr(self, "_pending_tile_layout", [])
-        if pending:
-            self._tile_grid.layout = pending
-            self._pending_tile_layout = []
-        pending_bp = getattr(self, "_pending_breakpoints", [])
-        pending_rl = getattr(self, "_pending_responsive_layouts", {})
-        if pending_bp or pending_rl:
-            self._apply_responsive_config(pending_bp, pending_rl)
-            self._pending_breakpoints = []
-            self._pending_responsive_layouts = {}
-
-    @pn.io.hold()
-    def _clear_components(self):
-        had_items = bool(self._tile_items)
-        self._reset_canvas()
-        if had_items:
-            self._dirty = True
-        pn.state.notifications.info("Cleared all component tiles.", duration=3000)
+    async def _ensure_components_loaded(self):
+        """Load all component modules and build their specs, if not done yet."""
+        await self._editor.ensure_components_loaded_async()
 
     def _save_current_dashboard(self):
-        if self._current_dashboard is None:
-            pn.state.notifications.warning(
-                "No dashboard loaded. Create one from the sidebar.", duration=4000
+        """Save the loaded dashboard, refusing when the user only has read access."""
+        current = self._current_dashboard
+        if current is None:
+            self._notify(
+                "warning", "No dashboard loaded. Create one from the sidebar.", duration=4000
             )
             return
-
-        if not self._can_administer_dashboard(self._current_dashboard.dashboard_id):
-            pn.state.notifications.error(
-                "You have view-only access to this dashboard.", duration=4000
-            )
+        if not self._can_administer_dashboard(current.dashboard_id):
+            self._editor.read_only = True
+            self._notify("error", "You have view-only access to this dashboard.", duration=4000)
             return
-
-        positions = {}
-        for node in self._flow.nodes:
-            node_id = node.get("id", "")
-            pos = node.get("position", {})
-            positions[node_id] = (pos.get("x", 0), pos.get("y", 0))
-
-        self._current_dashboard.items = [
-            DashboardItem(
-                instance_id=item["instance_id"],
-                component_id=item["component_id"],
-                x=positions.get(item["instance_id"], (0, 0))[0],
-                y=positions.get(item["instance_id"], (0, 0))[1],
-                config=item.get("config", {}),
-            )
-            for item in self._tile_items
-        ]
-        self._current_dashboard.edges = [
-            DashboardEdge(
-                source=edge["source"],
-                source_port=edge["source_port"],
-                target=edge["target"],
-                target_port=edge["target_port"],
-            )
-            for edge in self._dataflow_graph.edges
-        ]
-        self._current_dashboard.tile_layout = self._tile_grid.layout
-        self._current_dashboard.breakpoints = self._tile_grid.breakpoints
-        self._current_dashboard.responsive_layouts = self._tile_grid.responsive_layouts
-
-        try:
-            self.store.save_dashboard(self._current_dashboard)
-        except Exception as exc:
-            logger.exception("Failed to save dashboard")
-            pn.state.notifications.error(f"Save failed: {exc}", duration=5000)
-            return
-        self._dirty = False
-        pn.state.notifications.success(
-            f'Dashboard "{self._current_dashboard.title}" saved.', duration=3000
-        )
+        self._editor.read_only = False
+        self._editor._on_save_clicked()
 
     def _share_current_dashboard(self):
         if self._current_dashboard is None:
-            pn.state.notifications.warning("No dashboard loaded.", duration=3000)
+            self._notify("warning", "No dashboard loaded.", duration=3000)
             return
         self._open_share_dialog(
             self._current_dashboard.dashboard_id, self._current_dashboard.title
         )
-
-    def _reset_canvas(self):
-        """Tear down all node/edge state and clear the ReactFlow canvas."""
-        for node_id in list(self._dataflow_graph.node_ids):
-            self._dataflow_graph.remove_node(node_id)
-        self._tile_items = []
-        self._tile_objects = []
-        self._edge_id_map.clear()
-        self._sidebar_views = []
-        self._sidebar_container.objects = []
-        self._flow.nodes = []
-        self._flow.edges = []
 
     async def _load_dashboard(self, dashboard_id: str, edit: bool = False):
         await self._ensure_components_loaded()
@@ -1001,81 +521,11 @@ class FlowDashApp(Viewer):
                 self._share_dialog,
             ]
             return
-        self._current_dashboard = dashboard
-        self._loading = True
 
-        self._reset_canvas()
-
-        for item in dashboard.items:
-            component_id = item.component_id
-            entry = self._component_entries.get(component_id)
-            if entry is None:
-                continue
-            spec = self._component_specs.get(component_id)
-            if spec is None:
-                continue
-
-            instance_id = item.instance_id
-            type_key = component_id.replace("/", "__")
-            node_state = self._dataflow_graph.add_node(instance_id, component_id)
-            config_state = self._dataflow_graph.get_config_state(instance_id)
-            config_data = self._seed_config_state(instance_id, item.config)
-
-            try:
-                view = self._instantiate_for_node(entry, node_state, config_state)
-            except Exception:
-                logger.exception("Error loading component '%s' (%s)", component_id, instance_id)
-                self._dataflow_graph.remove_node(instance_id)
-                continue
-
-            position = {"x": item.x, "y": item.y}
-            node = pr.NodeSpec(
-                id=instance_id,
-                type=type_key,
-                position=position,
-                label=spec.title,
-                data=config_data,
-            )
-            node_dict = node.to_dict()
-            node_dict["view"] = view
-            self._flow.add_node(node_dict)
-
-            self._tile_items.append(item.to_dict())
-            self._tile_objects.append(view)
-
-        edge_counter = 0
-        for edge in dashboard.edges:
-            success = self._dataflow_graph.add_edge(
-                edge.source, edge.source_port, edge.target, edge.target_port
-            )
-            if success is True:
-                edge_counter += 1
-                edge_id = f"e{edge_counter}"
-                self._edge_id_map[edge_id] = (
-                    edge.source,
-                    edge.source_port,
-                    edge.target,
-                    edge.target_port,
-                )
-                self._flow.add_edge(
-                    {
-                        "id": edge_id,
-                        "source": edge.source,
-                        "target": edge.target,
-                        "sourceHandle": edge.source_port,
-                        "targetHandle": edge.target_port,
-                        "markerEnd": {"type": "arrowclosed"},
-                    }
-                )
-
-        self._loading = False
-        self._dirty = False
-        self._pending_tile_layout = dashboard.tile_layout or []
-        self._pending_breakpoints = dashboard.breakpoints or []
-        self._pending_responsive_layouts = dashboard.responsive_layouts or {}
-
-        pn.state.notifications.info(
-            f'Loaded dashboard "{dashboard.title}" with {len(self._tile_items)} tiles.',
+        self._editor.load_model(dashboard)
+        self._notify(
+            "info",
+            f'Loaded dashboard "{dashboard.title}" with {len(dashboard.items)} tiles.',
             duration=3000,
         )
         if edit:
@@ -1094,16 +544,12 @@ class FlowDashApp(Viewer):
     def _create_new_dashboard(self, title_str: str):
         title_str = title_str.strip()
         if not title_str:
-            pn.state.notifications.warning("Dashboard title cannot be empty.", duration=3000)
+            self._notify("warning", "Dashboard title cannot be empty.", duration=3000)
             return
-        dashboard = self.store.create_dashboard(self._user_id, title_str)
-        self._current_dashboard = dashboard
-        self._reset_canvas()
-        self._dirty = False
+        dashboard = self._editor.new_dashboard(title_str)
+        self._sidebar_container.objects = []
 
-        pn.state.notifications.success(
-            f'Created new dashboard "{dashboard.title}".', duration=3000
-        )
+        self._notify("success", f'Created new dashboard "{dashboard.title}".', duration=3000)
         self._refresh_sidebar_dashboards()
         if pn.state.location:
             pn.state.location.param.update(
@@ -1124,7 +570,7 @@ class FlowDashApp(Viewer):
 
     def _delete_dashboard(self, dashboard_id: str):
         if not self._can_administer_dashboard(dashboard_id):
-            pn.state.notifications.error("You are not allowed to delete this dashboard.")
+            self._notify("error", "You are not allowed to delete this dashboard.")
             return
         was_current = bool(
             self._current_dashboard and self._current_dashboard.dashboard_id == dashboard_id
@@ -1137,7 +583,7 @@ class FlowDashApp(Viewer):
             self._dirty = False
 
         self._refresh_sidebar_dashboards()
-        pn.state.notifications.info("Dashboard deleted.", duration=3000)
+        self._notify("info", "Dashboard deleted.", duration=3000)
 
         if was_current:
             self._navigate_to("/")
@@ -1154,7 +600,7 @@ class FlowDashApp(Viewer):
         if not new_title:
             return
         if not self._can_administer_dashboard(dashboard_id):
-            pn.state.notifications.error("You are not allowed to rename this dashboard.")
+            self._notify("error", "You are not allowed to rename this dashboard.")
             return
         owner = self.store.get_owner(dashboard_id) or self._user_id
         self.store.rename_dashboard(owner, dashboard_id, new_title)
@@ -1318,34 +764,6 @@ class FlowDashApp(Viewer):
             self._dialog.title = "Delete Dashboard"
             self._dialog.open = True
 
-    async def _ensure_components_loaded(self):
-        """Load all component modules and rebuild the dataflow canvas if not done yet."""
-        if self._components_loaded:
-            return
-
-        already_loaded = all(e.app is not None for e in self._component_entries.values())
-
-        if not already_loaded:
-            errors: list[str] = []
-
-            def _load_all():
-                for entry in self._component_entries.values():
-                    try:
-                        entry.load()
-                    except Exception as exc:
-                        errors.append(f"{entry.app_id}: {exc}")
-
-            await asyncio.to_thread(_load_all)
-
-            for msg in errors:
-                logger.warning("Failed to load component: %s", msg)
-                pn.state.notifications.warning(f"Component load failed: {msg}", duration=6000)
-
-        self._component_specs = build_component_specs(self._registry)
-        self._dataflow_graph = DataflowGraph(self._component_specs, on_error=self._on_wiring_error)
-        self._rebuild_flow_canvas()
-        self._components_loaded = True
-
     def _apply_layout_config(self, content, route):
         """Run the ``configure_layout`` hook for the current navigation, if any."""
         if self.configure_layout is None:
@@ -1448,27 +866,17 @@ class FlowDashApp(Viewer):
 
     @pn.io.hold()
     def _show_edit_mode(self):
-        self._controls_row.visible = True
-        self._share_button.visible = (
-            self._current_dashboard is not None
-            and self._can_administer_dashboard(self._current_dashboard.dashboard_id)
-        )
-        self._tile_grid.param.update(editable=True, card=True)
-        if self._mode_toggle.value == "wiring":
-            self._workspace_area[:] = [self._flow_canvas]
-            self._rebuild_sidebar()
-        else:
-            self._workspace_area[:] = [self._tile_grid]
-            self._rebuild_tile_grid()
+        current = self._current_dashboard
+        can_admin = current is not None and self._can_administer_dashboard(current.dashboard_id)
+        self._share_button.visible = can_admin
+        self._editor.param.update(editable=True, read_only=not can_admin)
         if pn.state.location is not None:
             pn.state.location.param.update(search="?edit=true")
 
     @pn.io.hold()
     def _show_view_mode(self):
-        self._controls_row.visible = False
-        self._tile_grid.param.update(card=False, editable=False)
-        self._workspace_area[:] = [self._tile_grid]
-        self._rebuild_tile_grid()
+        self._share_button.visible = False
+        self._editor.editable = False
         if pn.state.location is not None:
             pn.state.location.param.update(search="")
 
@@ -1713,7 +1121,7 @@ class FlowDashApp(Viewer):
     @pn.io.hold()
     def _open_share_dialog(self, dashboard_id: str, title: str):
         if not self._can_administer_dashboard(dashboard_id):
-            pn.state.notifications.error("You are not allowed to share this dashboard.")
+            self._notify("error", "You are not allowed to share this dashboard.")
             return
         model = self.store.load_for_access(
             self._identity, dashboard_id, default_allow=self._default_allow()
@@ -1747,7 +1155,7 @@ class FlowDashApp(Viewer):
         if not dashboard_id:
             return
         if not self._can_administer_dashboard(dashboard_id):
-            pn.state.notifications.error("You are not allowed to share this dashboard.")
+            self._notify("error", "You are not allowed to share this dashboard.")
             self._share_dialog.open = False
             return
         permission = Permission.from_spec(
@@ -1762,7 +1170,7 @@ class FlowDashApp(Viewer):
         self._share_dialog.open = False
         self._share_context = {}
         self._refresh_sidebar_dashboards()
-        pn.state.notifications.success("Sharing updated.", duration=3000)
+        self._notify("success", "Sharing updated.", duration=3000)
 
     def _build_unsaved_dialog(self):
         self._pending_navigation: str | None = None

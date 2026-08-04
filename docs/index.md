@@ -16,6 +16,7 @@ layouts to SQLite.
 - **Visual wiring**: connect components in a node editor, with cycle detection and single-source enforcement.
 - **Persistence**: dashboard layouts, edges, and grid positions are stored in SQLite.
 - **One command to serve**: `flowdash serve my_project/` scans, registers, and launches.
+- **Or no command at all**: embed the `FlowDash` editor in an app you are already building.
 
 ## Quickstart
 
@@ -41,6 +42,7 @@ flowdash serve my_project/ --port 5006
 - [Layout & Sizing](how-to/layout-and-sizing.md) - dashboard mode, sidebar components, and responsive tiles
 - [Persist Dashboards](how-to/persist-dashboards.md) - SQLite storage for layouts and edges
 - [Serve a Project](how-to/serve-project.md) - the `flowdash serve` CLI
+- [Embed the Editor](how-to/embed-the-editor.md) - using `FlowDash` programmatically, without the routing
 
 ## Examples
 

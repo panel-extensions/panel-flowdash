@@ -1,10 +1,12 @@
-"""SQLite-backed persistence for dashboard graphs."""
+"""Persistence for dashboard graphs, backed by SQLite or an in-memory dict."""
 
 from __future__ import annotations
 
+import copy
 import json
 import sqlite3
 import uuid
+from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -124,7 +126,188 @@ class DashboardModel:
         )
 
 
-class DashboardStore:
+class BaseDashboardStore(ABC):
+    """The persistence interface the editor and app shell depend on.
+
+    Subclasses implement the six storage primitives below; the access-control
+    and lookup helpers are backend-independent and inherited. Implement this to
+    back dashboards with something other than SQLite.
+    """
+
+    @abstractmethod
+    def save_dashboard(self, dashboard: DashboardModel) -> None:
+        """Insert or update a dashboard."""
+
+    @abstractmethod
+    def _load_any(self, dashboard_id: str) -> DashboardModel | None:
+        """Load a dashboard by id regardless of owner (for access checks)."""
+
+    @abstractmethod
+    def _all_dashboards(self) -> list[DashboardModel]:
+        """Every stored dashboard, most recently updated first."""
+
+    @abstractmethod
+    def delete_dashboard(self, user_id: str, dashboard_id: str) -> bool:
+        """Delete a dashboard owned by *user_id*. Returns whether one was removed."""
+
+    @abstractmethod
+    def rename_dashboard(self, user_id: str, dashboard_id: str, new_title: str) -> bool:
+        """Retitle a dashboard owned by *user_id*. Returns whether one was updated."""
+
+    @abstractmethod
+    def set_permission(self, dashboard_id: str, permission: Permission) -> bool:
+        """Persist a new permission set on a dashboard. Returns success."""
+
+    def load_dashboard(self, user_id: str, dashboard_id: str) -> DashboardModel | None:
+        """Load a dashboard, but only if *user_id* owns it."""
+        model = self._load_any(dashboard_id)
+        if model is None or model.user_id != user_id:
+            return None
+        return model
+
+    def list_dashboards(self, user_id: str) -> list[DashboardModel]:
+        """Dashboards owned by *user_id*, most recently updated first."""
+        return [m for m in self._all_dashboards() if m.user_id == user_id]
+
+    def title_exists(self, user_id: str, title: str, exclude_id: str | None = None) -> bool:
+        """Check if a dashboard with the given title already exists for this user."""
+        return any(
+            m.title == title and m.dashboard_id != exclude_id
+            for m in self.list_dashboards(user_id)
+        )
+
+    def create_dashboard(self, user_id: str, title: str) -> DashboardModel:
+        """Create, persist and return a new empty dashboard."""
+        dashboard = DashboardModel(
+            dashboard_id=uuid.uuid4().hex[:12],
+            user_id=user_id,
+            title=title,
+        )
+        self.save_dashboard(dashboard)
+        return dashboard
+
+    def list_accessible(
+        self, identity: Identity, *, default_allow: bool = True
+    ) -> list[DashboardModel]:
+        """List dashboards the *identity* owns or has been granted access to.
+
+        Owned dashboards sort first (both groups by recency), so a user's own
+        dashboards stay visually grouped ahead of ones shared with them.
+        """
+        owned: list[DashboardModel] = []
+        shared: list[DashboardModel] = []
+        for model in self._all_dashboards():
+            if model.owner in identity.user_names:
+                owned.append(model)
+            elif is_authorized(
+                model.permission,
+                identity,
+                default_allow=default_allow,
+                owner=model.owner,
+            ):
+                shared.append(model)
+        return owned + shared
+
+    def load_for_access(
+        self, identity: Identity, dashboard_id: str, *, default_allow: bool = True
+    ) -> DashboardModel | None:
+        """Load a dashboard if *identity* is authorized, else ``None``.
+
+        Returns ``None`` both when the dashboard does not exist and when access
+        is denied, so callers render a single "not found / denied" view.
+        """
+        model = self._load_any(dashboard_id)
+        if model is None:
+            return None
+        if is_authorized(
+            model.permission,
+            identity,
+            default_allow=default_allow,
+            owner=model.owner,
+        ):
+            return model
+        return None
+
+    def find_by_id_or_title(self, ref: str) -> DashboardModel | None:
+        """Resolve a dashboard by its id first, then by title.
+
+        Titles are only unique per user, so a title match returns the most
+        recently updated dashboard. Used to resolve the operator-configured
+        home dashboard, which may be given as either an id or a title.
+        """
+        model = self._load_any(ref)
+        if model is not None:
+            return model
+        return next((m for m in self._all_dashboards() if m.title == ref), None)
+
+    def get_owner(self, dashboard_id: str) -> str | None:
+        """Return the owner (user_id) of a dashboard, or ``None`` if missing."""
+        model = self._load_any(dashboard_id)
+        return model.owner if model else None
+
+    def can_administer(
+        self, identity: Identity, dashboard_id: str, admin_groups: frozenset[str] = frozenset()
+    ) -> bool:
+        """Whether *identity* may administer (edit/delete/share) the dashboard."""
+        model = self._load_any(dashboard_id)
+        if model is None:
+            return False
+        return can_administer(identity, model.owner, admin_groups)
+
+
+class MemoryDashboardStore(BaseDashboardStore):
+    """Dict-backed store for notebooks, scripts and tests.
+
+    Dashboards live for as long as the store does and are never written to disk.
+    Models are deep-copied in and out so a caller mutating a dashboard it saved
+    (or loaded) cannot retroactively change what is stored, matching how the
+    SQLite store behaves.
+    """
+
+    def __init__(self, dashboards: dict[str, DashboardModel] | None = None):
+        self._dashboards: dict[str, DashboardModel] = {}
+        self._order: list[str] = []
+        for dashboard in (dashboards or {}).values():
+            self.save_dashboard(dashboard)
+
+    def save_dashboard(self, dashboard: DashboardModel) -> None:
+        self._dashboards[dashboard.dashboard_id] = copy.deepcopy(dashboard)
+        # Re-inserting moves the dashboard to the front of the recency order.
+        if dashboard.dashboard_id in self._order:
+            self._order.remove(dashboard.dashboard_id)
+        self._order.insert(0, dashboard.dashboard_id)
+
+    def _load_any(self, dashboard_id: str) -> DashboardModel | None:
+        model = self._dashboards.get(dashboard_id)
+        return copy.deepcopy(model) if model is not None else None
+
+    def _all_dashboards(self) -> list[DashboardModel]:
+        return [copy.deepcopy(self._dashboards[did]) for did in self._order]
+
+    def delete_dashboard(self, user_id: str, dashboard_id: str) -> bool:
+        model = self._dashboards.get(dashboard_id)
+        if model is None or model.user_id != user_id:
+            return False
+        del self._dashboards[dashboard_id]
+        self._order.remove(dashboard_id)
+        return True
+
+    def rename_dashboard(self, user_id: str, dashboard_id: str, new_title: str) -> bool:
+        model = self._dashboards.get(dashboard_id)
+        if model is None or model.user_id != user_id:
+            return False
+        model.title = new_title
+        return True
+
+    def set_permission(self, dashboard_id: str, permission: Permission) -> bool:
+        model = self._dashboards.get(dashboard_id)
+        if model is None:
+            return False
+        model.permission = copy.deepcopy(permission)
+        return True
+
+
+class DashboardStore(BaseDashboardStore):
     """SQLite-backed store for dashboard models."""
 
     def __init__(self, db_path: str | Path):
@@ -223,52 +406,12 @@ class DashboardStore:
             return None
         return self._row_to_model(row)
 
-    def list_accessible(
-        self, identity: Identity, *, default_allow: bool = True
-    ) -> list[DashboardModel]:
-        """List dashboards the *identity* owns or has been granted access to.
-
-        Owned dashboards sort first (both groups by recency), so a user's own
-        dashboards stay visually grouped ahead of ones shared with them.
-        """
+    def _all_dashboards(self) -> list[DashboardModel]:
         with self._get_conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM dashboards ORDER BY updated_at DESC",
             ).fetchall()
-        owned: list[DashboardModel] = []
-        shared: list[DashboardModel] = []
-        for row in rows:
-            model = self._row_to_model(row)
-            if model.owner in identity.user_names:
-                owned.append(model)
-            elif is_authorized(
-                model.permission,
-                identity,
-                default_allow=default_allow,
-                owner=model.owner,
-            ):
-                shared.append(model)
-        return owned + shared
-
-    def load_for_access(
-        self, identity: Identity, dashboard_id: str, *, default_allow: bool = True
-    ) -> DashboardModel | None:
-        """Load a dashboard if *identity* is authorized, else ``None``.
-
-        Returns ``None`` both when the dashboard does not exist and when access
-        is denied, so callers render a single "not found / denied" view.
-        """
-        model = self._load_any(dashboard_id)
-        if model is None:
-            return None
-        if is_authorized(
-            model.permission,
-            identity,
-            default_allow=default_allow,
-            owner=model.owner,
-        ):
-            return model
-        return None
+        return [self._row_to_model(row) for row in rows]
 
     def find_by_id_or_title(self, ref: str) -> DashboardModel | None:
         """Resolve a dashboard by its id first, then by title.
@@ -288,20 +431,6 @@ class DashboardStore:
         if row is None:
             return None
         return self._row_to_model(row)
-
-    def get_owner(self, dashboard_id: str) -> str | None:
-        """Return the owner (user_id) of a dashboard, or ``None`` if missing."""
-        model = self._load_any(dashboard_id)
-        return model.owner if model else None
-
-    def can_administer(
-        self, identity: Identity, dashboard_id: str, admin_groups: frozenset[str] = frozenset()
-    ) -> bool:
-        """Whether *identity* may administer (edit/delete/share) the dashboard."""
-        model = self._load_any(dashboard_id)
-        if model is None:
-            return False
-        return can_administer(identity, model.owner, admin_groups)
 
     def set_permission(self, dashboard_id: str, permission: Permission) -> bool:
         """Persist a new permission set on a dashboard. Returns success."""
@@ -356,15 +485,6 @@ class DashboardStore:
                 (dashboard_id, user_id),
             )
         return cursor.rowcount > 0
-
-    def create_dashboard(self, user_id: str, title: str) -> DashboardModel:
-        dashboard = DashboardModel(
-            dashboard_id=uuid.uuid4().hex[:12],
-            user_id=user_id,
-            title=title,
-        )
-        self.save_dashboard(dashboard)
-        return dashboard
 
     def rename_dashboard(self, user_id: str, dashboard_id: str, new_title: str) -> bool:
         with self._get_conn() as conn:
