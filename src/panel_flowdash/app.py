@@ -154,12 +154,12 @@ class FlowDashApp(Viewer):
     )
 
     nav_variant = param.Selector(
-        default="drawer",
-        objects=["drawer", "menubar"],
+        default="right",
+        objects=["left", "right", "menubar"],
         doc="""
-        Where the navigation menu is rendered. 'drawer' docks a MenuList in a
-        right-hand drawer; 'menubar' places a MenuBar in the page header with
-        quick-action icons alongside it.""",
+        Where the navigation menu is rendered. 'left' and 'right' dock a
+        MenuList in a drawer on that side of the page; 'menubar' places a
+        MenuBar in the page header with quick-action icons alongside it.""",
     )
 
     notifications = param.Boolean(
@@ -228,7 +228,7 @@ class FlowDashApp(Viewer):
             ),
             pmui.Divider(margin=(4, 0, 4, 0)),
             self._nav_menu,
-            anchor="right",
+            anchor="left" if self.nav_variant == "left" else "right",
             inline=True,
             variant="docked",
             width_policy="fixed",
@@ -284,11 +284,16 @@ class FlowDashApp(Viewer):
         """Wrap page content with the docked nav drawer, unless in menubar mode.
 
         In menubar mode navigation lives in the page header, so the content is
-        returned as-is; in drawer mode it is paired with the docked drawer.
+        returned as-is; in the 'left'/'right' variants it is paired with the
+        docked drawer on that side.
         """
         if self._menubar_mode:
             return content
-        return pn.Row(content, self._nav_drawer, sizing_mode="stretch_both")
+        if self.nav_variant == "left":
+            objects = [self._nav_drawer, content]
+        else:
+            objects = [content, self._nav_drawer]
+        return pn.Row(*objects, sizing_mode="stretch_both")
 
     def _resolve_user_id(self) -> str:
         return self._identity.user

@@ -359,6 +359,41 @@ class TestMenuBarVariant:
         }
 
 
+@pytest.fixture
+async def left_nav_app(tmp_path):
+    """A FlowDashApp with the navigation drawer docked on the left."""
+    _create_project(tmp_path)
+    sys.path.insert(0, str(tmp_path))
+    previous = pn.state._location
+    pn.state._location = FakeLocation()
+    try:
+        store = DashboardStore(tmp_path / "test.db")
+        instance = FlowDashApp(project_dir=tmp_path, store=store, nav_variant="left")
+        await instance._ensure_components_loaded()
+        yield instance
+    finally:
+        pn.state._location = previous
+        sys.path.remove(str(tmp_path))
+
+
+class TestNavSide:
+    async def test_default_anchors_drawer_right(self, app):
+        assert app._nav_drawer.anchor == "right"
+
+    async def test_default_places_drawer_after_content(self, app):
+        content = pn.pane.Markdown("x")
+        wrapped = app._nav_content(content)
+        assert list(wrapped) == [content, app._nav_drawer]
+
+    async def test_left_anchors_drawer_left(self, left_nav_app):
+        assert left_nav_app._nav_drawer.anchor == "left"
+
+    async def test_left_places_drawer_before_content(self, left_nav_app):
+        content = pn.pane.Markdown("x")
+        wrapped = left_nav_app._nav_content(content)
+        assert list(wrapped) == [left_nav_app._nav_drawer, content]
+
+
 class ScopedProject:
     """A served project whose components record the fact of their own import.
 
