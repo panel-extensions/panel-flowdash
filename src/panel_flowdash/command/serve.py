@@ -75,11 +75,12 @@ class Serve(_PanelServe):
             Argument(
                 action="store",
                 type=str,
-                default="drawer",
-                choices=("drawer", "menubar"),
+                default="right",
+                choices=("left", "right", "menubar"),
                 help=(
-                    "Where to render the navigation menu: 'drawer' (docked "
-                    "right-hand drawer) or 'menubar' (in the page header)."
+                    "Where to render the navigation menu: 'left' or 'right' "
+                    "(docked drawer on that side) or 'menubar' (in the page "
+                    "header)."
                 ),
             ),
         ),
