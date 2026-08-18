@@ -33,7 +33,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check for code changes
-        uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
         id: filter
         with:
           filters: |
@@ -86,7 +86,7 @@ jobs:
     name: Pixi lock
     runs-on: ubuntu-latest
     steps:
-      - uses: holoviz-dev/holoviz_tasks/pixi-lock@1a9884850782b0b80ba2e91b573e7d63d9d3c3dc # v1
+      - uses: holoviz-dev/holoviz_tasks/pixi-lock@11eb638302f76ec64217e2eeddfb11df1f788b54 # v1
         with:
           cache: ${{ github.event.inputs.cache == 'true' || github.event.inputs.cache == '' }}
 
@@ -97,7 +97,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: holoviz-dev/holoviz_tasks/pre-commit@1a9884850782b0b80ba2e91b573e7d63d9d3c3dc # v1
+      - uses: holoviz-dev/holoviz_tasks/pre-commit@11eb638302f76ec64217e2eeddfb11df1f788b54 # v1
       - name: Set git credentials
         if: needs.setup.outputs.img_change == 'true'
         run: git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git
@@ -105,7 +105,7 @@ jobs:
         if: needs.setup.outputs.img_change == 'true'
         with:
           extra_args: -a --hook-stage manual oxipng || true --
-      - uses: stefanzweifel/git-auto-commit-action@04702edda442b2e678b25b537cec683a1493fcb9 # v7
+      - uses: stefanzweifel/git-auto-commit-action@4a55954c782fc1ea30b9056cd3e7a2b40ca8887d # v7
         if: needs.setup.outputs.img_change == 'true'
         with:
           commit_message: "Optimize PNG images (lossless)"
