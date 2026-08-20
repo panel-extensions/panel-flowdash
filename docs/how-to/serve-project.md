@@ -46,6 +46,12 @@ flowdash serve <directory> [options]
 | `--num-threads` | auto | Thread pool size. |
 | `--allow-websocket-origin` | all | Restrict allowed websocket origins. |
 | `--no-notifications` | off | Disable Panel notifications. |
+| `--static-dirs` | none | Serve extra static file directories, e.g. `--static-dirs assets=/path/to/assets`. Paths are resolved relative to the project directory. |
+| `--plugins` | none | Register extra Tornado routes from an importable module exposing a `ROUTES` list, e.g. `--plugins my_plugin` for `<project>/my_plugin.py`. Repeatable. |
+
+`flowdash serve` is built on Panel's `serve` command and inherits its full
+set of CLI options (OAuth, REST providers, session options, and more).
+Run `flowdash serve --help` for the complete, up-to-date list.
 
 ---
 
