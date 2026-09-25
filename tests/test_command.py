@@ -120,8 +120,17 @@ class TestFlowDashApp:
 
         assert app.title == "Test App"
         assert app.home_dashboard is None
-        assert len(app._component_entries) == 2
+        assert len(app._component_entries) == 5
         assert len(app._page_entries) == 2
+
+    async def test_builtin_widgets_can_be_disabled(self, tmp_path):
+        _create_project(tmp_path)
+        app = FlowDashApp(
+            project_dir=tmp_path,
+            store=DashboardStore(tmp_path / "widgets.db"),
+            include_builtin_components=False,
+        )
+        assert len(app._component_entries) == 2
 
     async def test_home_dashboard_param_passthrough(self, tmp_path):
         _create_project(tmp_path)

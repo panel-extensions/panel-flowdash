@@ -22,6 +22,7 @@ from panel_flowdash.dashboard_store import (
     MemoryDashboardStore,
 )
 from panel_flowdash.editor import FlowDash
+from panel_flowdash.widgets import BUILTIN_COMPONENTS
 
 
 @register(page=False, component=True, title="Ticker", provides=[{"key": "ticker", "type": "str"}])
@@ -79,21 +80,34 @@ class TestConstruction:
     async def test_specs_built_eagerly_for_live_components(self, editor):
         """Live objects need no import, so the editor is usable immediately."""
         assert editor._components_loaded
-        assert set(editor.component_specs) == {SELECTOR, CHART, SHOUTER}
+        assert set(editor.component_specs) == (
+            {SELECTOR, CHART, SHOUTER} | BUILTIN_COMPONENTS.keys()
+        )
 
     async def test_components_positional(self):
         editor = FlowDash({SELECTOR: ticker_select}, notifications=False)
-        assert set(editor.component_specs) == {SELECTOR}
+        assert set(editor.component_specs) == ({SELECTOR} | BUILTIN_COMPONENTS.keys())
 
     async def test_ids_default_to_the_defining_module(self):
         editor = FlowDash(ticker_select, notifications=False)
-        assert set(editor.component_specs) == {"test_editor/ticker_select"}
+        assert set(editor.component_specs) == (
+            {"test_editor/ticker_select"} | BUILTIN_COMPONENTS.keys()
+        )
 
     async def test_no_components_disables_add(self):
-        editor = FlowDash(notifications=False)
+        editor = FlowDash(notifications=False, include_builtin_components=False)
         assert editor.component_specs == {}
         assert editor._add_button.disabled
         assert editor._component_picker.disabled
+
+    async def test_builtins_are_available_without_project_components(self):
+        editor = FlowDash(notifications=False)
+        assert set(editor.component_specs) == set(BUILTIN_COMPONENTS)
+        assert not editor._add_button.disabled
+
+    async def test_explicit_component_overrides_builtin_id(self):
+        editor = FlowDash({"Widgets/Select": ticker_select}, notifications=False)
+        assert editor._component_entries["Widgets/Select"].app is ticker_select
 
     async def test_directory_components_load_lazily(self, tmp_path):
         _write_project(tmp_path, section="LazySection")
@@ -133,6 +147,121 @@ class TestConstruction:
             COMPONENTS, notifications=False, store=store, dashboard=saved.dashboard_id
         )
         assert editor.dashboard.title == "Stored"
+
+
+@register(page=False, component=True, provides=[{"key": "values", "type": "List"}])
+def option_source(config):
+    return None
+
+
+@register(page=False, component=True, provides=[{"key": "bound", "type": "Number"}])
+def bound_source(config):
+    return None
+
+
+class TestBuiltinWidgets:
+    def test_select_options_port_and_output(self):
+        editor = FlowDash({"Test/options": option_source}, notifications=False)
+        src = editor.add_component("Test/options")
+        dst = editor.add_component("Widgets/Select", config={"default_options": ["A", "B"]})
+        widget = editor._tile_objects[-1]
+
+        assert widget.options == ["A", "B"]
+        assert editor.graph.get_state(dst).selected == "A"
+        widget.value = "B"
+        assert editor.graph.get_state(dst).selected == "B"
+
+        editor.graph.get_state(src).values = ["X", "Y"]
+        assert editor.connect(src, "values", dst, "options") is True
+        assert widget.options == ["X", "Y"]
+        assert editor.graph.get_state(dst).options == ["X", "Y"]
+        assert editor.graph.get_state(dst).selected == "X"
+
+        editor.disconnect(src, "values", dst, "options")
+        assert widget.options == ["A", "B"]
+        assert editor.graph.get_state(dst).selected == "A"
+
+    def test_multichoice_filters_selection_when_options_change(self):
+        editor = FlowDash({"Test/options": option_source}, notifications=False)
+        src = editor.add_component("Test/options")
+        dst = editor.add_component("Widgets/MultiChoice")
+        widget = editor._tile_objects[-1]
+        widget.value = ["A", "B"]
+        assert editor.graph.get_state(dst).selected == ["A", "B"]
+
+        editor.graph.get_state(src).values = ["B", "C"]
+        assert editor.connect(src, "values", dst, "options") is True
+        assert widget.value == ["B"]
+        assert editor.graph.get_state(dst).selected == ["B"]
+        assert editor.connect(src, "values", dst, "options") == "Connection already exists."
+
+    def test_select_accepts_numeric_options_and_wires_to_string_input(self):
+        editor = FlowDash(
+            {"Test/options": option_source, "Test/string": Shouter}, notifications=False
+        )
+        options = editor.add_component("Test/options")
+        select = editor.add_component("Widgets/Select")
+        shouter = editor.add_component("Test/string")
+        editor.graph.get_state(options).values = [1, 2]
+
+        assert editor.connect(options, "values", select, "options") is True
+        widget = editor._tile_objects[1]
+        assert widget.options == [1, 2]
+        assert editor.graph.get_state(select).selected == 1
+        assert editor.connect(select, "selected", shouter, "ticker") is True
+
+        editor.graph.get_state(options).values = ["X", "Y"]
+        assert editor.graph.get_state(select).selected == "X"
+        assert editor.graph.get_state(shouter).ticker == "X"
+
+    def test_multichoice_accepts_numeric_options(self):
+        editor = FlowDash({"Test/options": option_source}, notifications=False)
+        options = editor.add_component("Test/options")
+        multi = editor.add_component("Widgets/MultiChoice")
+        editor.graph.get_state(options).values = [1, 2]
+        assert editor.connect(options, "values", multi, "options") is True
+        editor._tile_objects[1].value = [2]
+        assert editor.graph.get_state(multi).selected == [2]
+
+    def test_slider_bounds_follow_config_and_ports(self):
+        editor = FlowDash({"Test/bound": bound_source}, notifications=False)
+        src_start = editor.add_component("Test/bound")
+        src_end = editor.add_component("Test/bound")
+        dst = editor.add_component(
+            "Widgets/Slider", config={"default_start": 10, "default_end": 30, "step": 2}
+        )
+        widget = editor._tile_objects[-1]
+        assert (widget.start, widget.end, widget.step, widget.value) == (10, 30, 2, 10)
+
+        editor.graph.get_state(src_start).bound = 15
+        editor.graph.get_state(src_end).bound = 25
+        assert editor.connect(src_start, "bound", dst, "start") is True
+        assert editor.connect(src_end, "bound", dst, "end") is True
+        assert (widget.start, widget.end, widget.value) == (15, 25, 15)
+        widget.value = 20
+        assert editor.graph.get_state(dst).selected == 20
+
+        editor.graph.get_state(src_start).bound = 26
+        assert widget.disabled
+        editor.graph.get_config_state(dst).param.update(label="Range", step=0.5)
+        assert (widget.label, widget.step) == ("Range", 0.5)
+        editor.graph.get_state(src_start).bound = 18
+        assert not widget.disabled
+
+        editor.disconnect(src_start, "bound", dst, "start")
+        assert widget.start == 10
+
+    def test_builtin_config_roundtrips(self):
+        editor = FlowDash({}, notifications=False)
+        editor.add_component(
+            "Widgets/Select", config={"label": "Region", "default_options": ["US", "EU"]}
+        )
+        restored = FlowDash({}, notifications=False)
+        restored.load_model(editor.to_model(title="Widgets"))
+
+        assert restored._tile_items[0]["component_id"] == "Widgets/Select"
+        assert restored._tile_objects[0].label == "Region"
+        assert restored._tile_objects[0].options == ["US", "EU"]
 
 
 class TestAddRemove:
@@ -955,7 +1084,7 @@ class TestScopedLoading:
         instance_id = editor.add_component(unused)
 
         assert _imported(tmp_path, "unused")
-        assert set(editor.component_specs) == {used, unused}
+        assert set(editor.component_specs) == ({used, unused} | BUILTIN_COMPONENTS.keys())
         assert instance_id in editor.graph.node_ids
         # The node placed by the scoped load survives the later spec registration.
         assert "n1" in editor.graph.node_ids

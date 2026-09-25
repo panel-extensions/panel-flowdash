@@ -154,3 +154,17 @@ class TestConfigStateInGraph:
         graph = DataflowGraph({"test/plain": spec})
         graph.add_node("n1", "test/plain")
         assert graph.get_config_state("n1") is None
+
+    async def test_single_connection_list_input_keeps_list_value(self):
+        @register(component=True, requires=[{"key": "options", "type": "List", "multiple": False}])
+        def app(config):
+            return config.options
+
+        spec = build_component_spec(make_entry(app))
+        graph = DataflowGraph({"test/comp": spec})
+        state = graph.add_node("n1", "test/comp")
+
+        assert spec.inputs[0].multiple is False
+        assert state.options is None
+        state.options = ["A", "B"]
+        assert state.options == ["A", "B"]

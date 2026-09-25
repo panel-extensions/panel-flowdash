@@ -33,6 +33,7 @@ class InputPort:
     required: bool = True
     blocking: bool = True
     default: Any = None
+    multiple: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -194,6 +195,7 @@ def _ports_from_metadata(
                     required=item.get("required", True),
                     blocking=item.get("blocking", True),
                     default=item.get("fallback"),
+                    multiple=item.get("multiple"),
                 )
             )
 
