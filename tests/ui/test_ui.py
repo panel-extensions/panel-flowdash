@@ -78,3 +78,15 @@ def test_editor_drag_validation_rejects_occupied_input(page):
     assert len(editor.graph.edges) == 1
     assert editor.graph.edges[0]["source"] == source_a
     assert source_b not in [edge["source"] for edge in editor.graph.edges]
+
+
+def test_builtin_widget_selection_reaches_graph(page):
+    editor = FlowDash({}, notifications=False)
+    node = editor.add_component("Widgets/Select", config={"default_options": ["A", "B"]})
+    editor.mode = "dashboard"
+    serve_component(page, editor)
+
+    selection = page.get_by_role("combobox", name="Select")
+    selection.click()
+    wait_until(lambda: editor._tile_objects[0].dropdown_open, timeout=8000)
+    assert editor.graph.get_state(node).selected == "A"
