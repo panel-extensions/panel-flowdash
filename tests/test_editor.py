@@ -52,6 +52,16 @@ class Shouter(Viewer):
         return self.ticker
 
 
+class SplitShouter(Shouter):
+    def __init__(self, **params):
+        super().__init__(**params)
+        self.label = pn.pane.Markdown("Label")
+        self.chart = pn.pane.Markdown("Chart")
+
+    def __flowdash__(self):
+        return {"label": self.label, "chart": self.chart}
+
+
 SELECTOR = "Demo/selector"
 CHART = "Demo/chart"
 SHOUTER = "Demo/shouter"
@@ -695,6 +705,155 @@ class TestSidebarPublishing:
         sidebar_editor.add_component(SIDE)
         sidebar_editor.clear()
         assert sidebar_editor.sidebar == []
+
+
+class TestFlowdashParts:
+    async def test_parts_share_one_node_and_remain_wired(self):
+        editor = FlowDash({SHOUTER: SplitShouter}, notifications=False)
+        source = editor.add_component(SHOUTER)
+        target = editor.add_component(SHOUTER)
+        editor.connect(source, "shouted", target, "ticker")
+        editor.mode = "dashboard"
+
+        assert len(editor._flow.nodes) == 2
+        assert len(editor._tile_grid.objects) == 4
+        assert list(editor._tile_parts[0]) == ["label", "chart"]
+        editor.graph.get_state(source).ticker = "aapl"
+        assert editor.graph.get_state(target).ticker == "AAPL"
+
+        editor.remove_component(source)
+        assert len(editor._tile_grid.objects) == 2
+        assert len(editor.graph.node_ids) == 1
+
+    async def test_callable_result_and_sidebar(self):
+        @register(page=False, component=True, sidebar=True)
+        def side(config):
+            return SplitShouter()
+
+        editor = FlowDash({"Demo/side_split": side}, notifications=False)
+        editor.add_component("Demo/side_split")
+        editor.mode = "dashboard"
+        assert len(editor.sidebar) == 1
+        assert len(editor._tile_grid.objects) == 0
+
+        @register(page=False, component=True)
+        def factory(config):
+            return SplitShouter()
+
+        tiles = FlowDash({"Demo/factory": factory}, notifications=False)
+        tiles.add_component("Demo/factory")
+        tiles.mode = "dashboard"
+        assert len(tiles._tile_grid.objects) == 2
+
+    async def test_callable_viewer_parts_receive_graph_inputs(self):
+        instances = []
+
+        @register(page=False, component=True, requires=[{"key": "ticker", "type": "str"}])
+        def factory(config):
+            instance = SplitShouter()
+            instances.append(instance)
+            return instance
+
+        editor = FlowDash({"Demo/factory": factory}, notifications=False)
+        node = editor.add_component("Demo/factory")
+        editor.graph.get_state(node).ticker = "MSFT"
+        assert instances[0].ticker == "MSFT"
+
+    @pytest.mark.parametrize("parts", [{}, {1: "view"}, {"": "view"}, ["view"]])
+    async def test_invalid_parts_rejected(self, parts):
+        class Invalid(Shouter):
+            def __flowdash__(self):
+                return parts
+
+        editor = FlowDash({SHOUTER: Invalid}, notifications=False)
+        with pytest.raises(ValueError, match="__flowdash__"):
+            editor.add_component(SHOUTER)
+        assert editor.graph.node_ids == []
+
+    async def test_part_layout_round_trip_and_reordered_keys(self):
+        store = MemoryDashboardStore()
+        editor = FlowDash({SHOUTER: SplitShouter}, store=store, notifications=False)
+        editor.new_dashboard("Split")
+        node = editor.add_component(SHOUTER)
+        editor.mode = "dashboard"
+        layout = [
+            {"index": 1, "width": 40, "height": 150, "visible": True},
+            {"index": 0, "width": 60, "height": 300, "visible": False},
+        ]
+        editor._tile_grid.layout = layout
+        editor._tile_grid.responsive_layouts = {"sm": layout}
+        editor.mode = "wiring"
+        saved = editor.save()
+        assert [tile["flowdash_id"] for tile in saved.tile_layout] == [
+            [node, "label"],
+            [node, "chart"],
+        ]
+
+        class Reordered(SplitShouter):
+            def __flowdash__(self):
+                return {"chart": self.chart, "label": self.label, "new": "New"}
+
+        fresh = FlowDash({SHOUTER: Reordered}, store=store, notifications=False)
+        fresh.load(saved.dashboard_id)
+        assert fresh.to_model().tile_layout == saved.tile_layout
+        fresh.mode = "dashboard"
+        assert [tile["flowdash_id"][1] for tile in fresh.layout] == ["chart", "label", "new"]
+        assert [tile["height"] for tile in fresh.layout] == [300, 150, 250]
+        assert [tile["visible"] for tile in fresh.layout] == [False, True, True]
+        assert [tile["height"] for tile in fresh._tile_grid.responsive_layouts["sm"]] == [
+            300,
+            150,
+            250,
+        ]
+
+    async def test_adding_and_removing_nodes_keeps_existing_tile_layouts(self):
+        editor = FlowDash({SHOUTER: SplitShouter}, notifications=False)
+        first = editor.add_component(SHOUTER)
+        editor.mode = "dashboard"
+        editor._tile_grid.layout = [
+            {"index": 0, "width": 30, "height": 180, "visible": True},
+            {"index": 1, "width": 70, "height": 280, "visible": True},
+        ]
+        second = editor.add_component(SHOUTER)
+        assert [tile["height"] for tile in editor.layout] == [180, 280, 250, 250]
+
+        editor.remove_component(first)
+        assert len(editor._tile_grid.objects) == 2
+        assert [tile["flowdash_id"] for tile in editor.to_model().tile_layout] == [
+            [second, "label"],
+            [second, "chart"],
+        ]
+
+    async def test_legacy_layout_keeps_later_component_tile(self):
+        editor = FlowDash({SHOUTER: SplitShouter, CHART: price_chart}, notifications=False)
+        editor.load_model(
+            DashboardModel(
+                dashboard_id="old",
+                user_id="alice",
+                title="Old",
+                items=[
+                    DashboardItem(instance_id="split", component_id=SHOUTER),
+                    DashboardItem(instance_id="other", component_id=CHART),
+                ],
+                tile_layout=[
+                    {"index": 0, "width": 40, "height": 111, "visible": True},
+                    {"index": 1, "width": 60, "height": 222, "visible": False},
+                ],
+            )
+        )
+        editor.mode = "dashboard"
+        assert [tile["height"] for tile in editor.layout] == [111, 250, 222]
+        assert [tile["visible"] for tile in editor.layout] == [True, True, False]
+
+    async def test_new_dashboard_does_not_reuse_previous_layout(self):
+        editor = FlowDash({SHOUTER: SplitShouter}, notifications=False)
+        editor.add_component(SHOUTER)
+        editor.mode = "dashboard"
+        editor._tile_grid.layout = [{"index": 0, "width": 34, "height": 111, "visible": False}]
+        editor.new_dashboard("Fresh")
+        editor.add_component(SHOUTER)
+        assert editor._tile_grid.layout == []
+        assert editor.to_model().tile_layout == []
 
 
 @register(page=False, component=True, title="Async", provides=[{"key": "ticker", "type": "str"}])

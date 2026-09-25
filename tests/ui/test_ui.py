@@ -1,6 +1,7 @@
 """UI Test Module."""
 # import time
 
+import panel as pn
 import pytest
 from panel.tests.util import serve_component, wait_until
 
@@ -8,6 +9,7 @@ from panel_flowdash import register
 from panel_flowdash.editor import FlowDash
 
 pytest.importorskip("playwright")
+from playwright.sync_api import expect
 
 # from panel.pane import panel
 # from panel.tests.util import serve_component
@@ -78,3 +80,29 @@ def test_editor_drag_validation_rejects_occupied_input(page):
     assert len(editor.graph.edges) == 1
     assert editor.graph.edges[0]["source"] == source_a
     assert source_b not in [edge["source"] for edge in editor.graph.edges]
+
+
+@register(page=False, component=True)
+class SplitView(pn.viewable.Viewer):
+    def __init__(self, **params):
+        super().__init__(**params)
+        self.first = pn.pane.Markdown("First part")
+        self.second = pn.pane.Markdown("Second part")
+
+    def __panel__(self):
+        return pn.Column(self.first, self.second)
+
+    def __flowdash__(self):
+        return {"first": self.first, "second": self.second}
+
+
+def test_editor_renders_parts_as_separate_tiles(page):
+    editor = FlowDash({"Test/split": SplitView}, notifications=False)
+    editor.add_component("Test/split")
+    editor.mode = "dashboard"
+    serve_component(page, editor)
+
+    tiles = page.locator(".muuri-item")
+    expect(tiles).to_have_count(2)
+    expect(tiles.nth(0)).to_contain_text("First part")
+    expect(tiles.nth(1)).to_contain_text("Second part")

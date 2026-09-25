@@ -15,6 +15,7 @@ import logging
 import pathlib
 import typing as t
 import uuid
+from collections.abc import Mapping
 from contextlib import contextmanager
 
 import panel as pn
@@ -222,6 +223,7 @@ class FlowDash(Viewer):
         self._edge_id_map: dict[str, tuple[str, str, str, str]] = {}
         self._tile_items: list[dict] = []
         self._tile_objects: list[Viewable] = []
+        self._tile_parts: list[dict[str, Viewable] | None] = []
         self._pending_tile_layout: list[dict] = []
         self._pending_breakpoints: list[int] = []
         self._pending_responsive_layouts: dict = {}
@@ -564,8 +566,15 @@ class FlowDash(Viewer):
             None,
         )
         if idx is not None:
+            if self._grid_populated and (self.mode == "dashboard" or not self.editable):
+                self._stash_tile_layout()
             self._tile_items.pop(idx)
             self._tile_objects.pop(idx)
+            self._tile_parts.pop(idx)
+            self._grid_populated = False
+            self._prune_pending_layout()
+            if self.mode == "dashboard" or not self.editable:
+                self._rebuild_tile_grid()
         for edge_id, mapping in list(self._edge_id_map.items()):
             if node_id in (mapping[0], mapping[2]):
                 del self._edge_id_map[edge_id]
@@ -762,7 +771,7 @@ class FlowDash(Viewer):
         app_fn = entry.load()
 
         if not callable(app_fn):
-            return pn.panel(app_fn)
+            return pn.panel(app_fn), self._flowdash_parts(app_fn)
 
         if inspect.isclass(app_fn) and issubclass(app_fn, pn.viewable.Viewer):
             return self._instantiate_viewer_for_node(app_fn, entry, node_state, config_state)
@@ -776,12 +785,37 @@ class FlowDash(Viewer):
         if "context" in sig.parameters:
             kwargs["context"] = "component"
 
-        return panel_call(app_fn, **kwargs)
+        if is_async(app_fn):
+            return panel_call(app_fn, **kwargs), None
+        result = app_fn(**kwargs)
+        if inspect.isawaitable(result) or inspect.isasyncgen(result):
+            return panel_call(lambda: result), None
+        if isinstance(result, Viewer):
+            return self._bind_viewer_for_node(result, entry, node_state, config_state)
+        return pn.panel(result), self._flowdash_parts(result)
+
+    @staticmethod
+    def _flowdash_parts(instance):
+        hook = getattr(instance, "__flowdash__", None)
+        if hook is None:
+            return None
+        parts = hook()
+        if not isinstance(parts, Mapping) or not parts:
+            raise ValueError("__flowdash__ must return a non-empty mapping of named views")
+        if any(not isinstance(key, str) or not key for key in parts):
+            raise ValueError("__flowdash__ part names must be non-empty strings")
+        return {
+            key: panel_viewer(view) if isinstance(view, Viewer) else pn.panel(view)
+            for key, view in parts.items()
+        }
 
     def _instantiate_viewer_for_node(self, viewer_cls, entry, node_state, config_state=None):
         """Instantiate a Viewer and wire its params to the node_state."""
-        spec = self._component_specs.get(entry.app_id)
         instance = viewer_cls()
+        return self._bind_viewer_for_node(instance, entry, node_state, config_state)
+
+    def _bind_viewer_for_node(self, instance, entry, node_state, config_state=None):
+        spec = self._component_specs.get(entry.app_id)
 
         if config_state is not None:
             self._bind_config_to_viewer(instance, config_state)
@@ -843,7 +877,7 @@ class FlowDash(Viewer):
             except Exception:
                 pass
 
-        return panel_viewer(instance)
+        return panel_viewer(instance), self._flowdash_parts(instance)
 
     # ------------------------------------------------------------------
     # Layout
@@ -933,9 +967,87 @@ class FlowDash(Viewer):
         """Remember the grid's layout before the grid leaves the workspace."""
         if not self._grid_populated:
             return
-        self._pending_tile_layout = self._tile_grid.layout
-        self._pending_breakpoints = self._tile_grid.breakpoints
-        self._pending_responsive_layouts = self._tile_grid.responsive_layouts
+        self._pending_tile_layout = self._named_layout(self._tile_grid.layout)
+        self._pending_breakpoints = list(self._tile_grid.breakpoints)
+        self._pending_responsive_layouts = {
+            band: self._named_layout(layout)
+            for band, layout in self._tile_grid.responsive_layouts.items()
+        }
+
+    def _grid_keys(self):
+        return [
+            [item["instance_id"], name]
+            for item, parts in zip(self._tile_items, self._tile_parts, strict=True)
+            if not self._component_entries[item["component_id"]].metadata.sidebar
+            for name in (parts if parts is not None else (None,))
+        ]
+
+    def _named_layout(self, layout):
+        keys = self._grid_keys()
+        return [
+            {**tile, "flowdash_id": keys[i]}
+            if i < len(keys) and "flowdash_id" not in tile
+            else dict(tile)
+            for i, tile in enumerate(layout)
+        ]
+
+    def _prune_pending_layout(self):
+        keys = self._grid_keys()
+        for layout in [self._pending_tile_layout, *self._pending_responsive_layouts.values()]:
+            if not any("flowdash_id" in tile for tile in layout):
+                continue
+            kept = [dict(tile) for tile in layout if tile.get("flowdash_id") in keys]
+            if all("index" in tile for tile in kept):
+                for index, tile in enumerate(sorted(kept, key=lambda item: item["index"])):
+                    tile["index"] = index
+            layout[:] = kept
+
+    def _ordered_layout(self, layout):
+        if not layout:
+            return layout
+        if not any("flowdash_id" in tile for tile in layout):
+            old_keys = [
+                [item["instance_id"], None]
+                for item in self._tile_items
+                if not self._component_entries[item["component_id"]].metadata.sidebar
+            ]
+            layout = [
+                {**tile, "flowdash_id": old_keys[i]}
+                for i, tile in enumerate(layout)
+                if i < len(old_keys)
+            ]
+            if not layout:
+                return []
+        if any("index" not in tile for tile in layout):
+            return layout
+        by_key = {tuple(tile["flowdash_id"]): tile for tile in layout if "flowdash_id" in tile}
+        for item, parts in zip(self._tile_items, self._tile_parts, strict=True):
+            if parts is None or self._component_entries[item["component_id"]].metadata.sidebar:
+                continue
+            old_key = (item["instance_id"], None)
+            first_key = (item["instance_id"], next(iter(parts)))
+            if old_key in by_key and first_key not in by_key:
+                by_key[first_key] = {**by_key.pop(old_key), "flowdash_id": list(first_key)}
+        ordered = []
+        existing = max((tile["index"] for tile in by_key.values()), default=-1) + 1
+        for key in self._grid_keys():
+            tile = by_key.get(tuple(key))
+            ordered.append(
+                dict(tile)
+                if tile is not None
+                else {
+                    "index": existing + len(ordered),
+                    "width": 100,
+                    "height": 250,
+                    "visible": True,
+                    "flowdash_id": key,
+                }
+            )
+        # TileGrid indexes visual order independently of its object order.
+        visual_order = sorted(range(len(ordered)), key=lambda i: ordered[i]["index"])
+        for index, item_index in enumerate(visual_order):
+            ordered[item_index]["index"] = index
+        return ordered
 
     def _rebuild_sidebar(self):
         """Publish views of the placed components that opted into sidebar placement.
@@ -964,16 +1076,21 @@ class FlowDash(Viewer):
             view = self._tile_objects[i] if i < len(self._tile_objects) else None
             if view is None:
                 view = pn.pane.Markdown(f"*{entry.title}*")
-            grid_views.append(view)
+            parts = self._tile_parts[i]
+            grid_views.extend(parts.values() if parts is not None else [view])
         self._tile_grid[:] = grid_views
         self._grid_populated = True
         self._rebuild_sidebar()
         if self._pending_tile_layout:
-            self._tile_grid.layout = self._pending_tile_layout
+            self._tile_grid.layout = self._ordered_layout(self._pending_tile_layout)
             self._pending_tile_layout = []
         if self._pending_breakpoints or self._pending_responsive_layouts:
             self._apply_responsive_config(
-                self._pending_breakpoints, self._pending_responsive_layouts
+                self._pending_breakpoints,
+                {
+                    band: self._ordered_layout(layout)
+                    for band, layout in self._pending_responsive_layouts.items()
+                },
             )
             self._pending_breakpoints = []
             self._pending_responsive_layouts = {}
@@ -1044,7 +1161,7 @@ class FlowDash(Viewer):
         config_state = self._dataflow_graph.get_config_state(instance_id)
         config_data = self._seed_config_state(instance_id, config)
         try:
-            view = self._instantiate_for_node(entry, node_state, config_state)
+            view, parts = self._instantiate_for_node(entry, node_state, config_state)
         except Exception:
             self._dataflow_graph.remove_node(instance_id)
             raise
@@ -1067,6 +1184,8 @@ class FlowDash(Viewer):
         with self._muted_canvas():
             self._flow.add_node(node_dict)
 
+        if self._grid_populated and (self.mode == "dashboard" or not self.editable):
+            self._stash_tile_layout()
         self._tile_items.append(
             {
                 "instance_id": instance_id,
@@ -1075,6 +1194,10 @@ class FlowDash(Viewer):
             }
         )
         self._tile_objects.append(view)
+        self._tile_parts.append(parts)
+        self._grid_populated = False
+        if self.mode == "dashboard" or not self.editable:
+            self._rebuild_tile_grid()
         return instance_id
 
     def remove_component(self, instance_id: str):
@@ -1138,17 +1261,19 @@ class FlowDash(Viewer):
 
     def _reset_canvas(self):
         """Tear down all node/edge state and clear the ReactFlow canvas."""
+        self._grid_populated = False
         for node_id in list(self._dataflow_graph.node_ids):
             self._dataflow_graph.remove_node(node_id)
         self._tile_items = []
         self._tile_objects = []
+        self._tile_parts = []
         self._edge_id_map.clear()
         self._edge_count = 0
         self.sidebar = []
         with self._muted_canvas():
             self._flow.param.update(nodes=[], edges=[])
-        if self._grid_populated:
-            self._tile_grid[:] = []
+        self._tile_grid[:] = []
+        self._tile_grid.param.update(layout=[], responsive_layouts={})
 
     # ------------------------------------------------------------------
     # Persistence
@@ -1198,10 +1323,17 @@ class FlowDash(Viewer):
         # Read the layout through `layout` and the pending-config fields so that
         # saving from wiring mode, where the grid is off screen, cannot clobber a
         # layout that was loaded from storage but never rendered.
-        model.tile_layout = self.layout
+        model.tile_layout = (
+            self._named_layout(self.layout)
+            if self._grid_populated
+            else list(self._pending_tile_layout)
+        )
         if self._grid_populated:
             model.breakpoints = self._tile_grid.breakpoints
-            model.responsive_layouts = self._tile_grid.responsive_layouts
+            model.responsive_layouts = {
+                band: self._named_layout(layout)
+                for band, layout in self._tile_grid.responsive_layouts.items()
+            }
         else:
             model.breakpoints = list(self._pending_breakpoints)
             model.responsive_layouts = dict(self._pending_responsive_layouts)

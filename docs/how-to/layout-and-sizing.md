@@ -51,6 +51,39 @@ filters, keeping the main grid for the table, chart, and map.
 
 ---
 
+## Layout a component's views separately
+
+A `Viewer` can expose multiple dashboard tiles while remaining a single wiring
+node. Return a dictionary of stable part names and Panel views from `__flowdash__`:
+
+```python
+import panel as pn
+from panel_flowdash import register
+
+@register(component=True, title="Sales")
+class app(pn.viewable.Viewer):
+    def __init__(self, **params):
+        super().__init__(**params)
+        self.summary = pn.pane.Markdown("Sales summary")
+        self.chart = pn.pane.Markdown("Sales chart")
+
+    def __panel__(self):
+        return pn.Column(self.summary, self.chart)
+
+    def __flowdash__(self):
+        return {"summary": self.summary, "chart": self.chart}
+```
+
+The editor shows `__panel__` on the wiring node and puts each returned view
+in its own draggable, resizable dashboard tile. A component with no
+`__flowdash__` still gets one tile. Saved tile layouts identify each view by
+its component instance and part name, so reordering the dictionary does not
+swap saved sizes or visibility. New part names receive a default tile; removed
+parts are no longer rendered. `sidebar=True` continues to put the whole
+`__panel__` view in the sidebar, rather than splitting it into tiles.
+
+---
+
 ## Tile sizing hints
 
 Components can declare their preferred size on the grid through `@register`:
