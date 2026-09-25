@@ -92,6 +92,65 @@ class TestBasicWiring:
         assert isinstance(result, str)
         assert "does not exist" in result
 
+    async def test_validation_is_pure_and_add_edge_uses_it(self):
+        """Previewing a connection leaves values, watchers and edges untouched."""
+        source = self.graph.get_state("p1")
+        target = self.graph.get_state("c1")
+        source.value = "ready"
+
+        assert self.graph.validate_connection("p1", "value", "c1", "value") is None
+        assert self.graph.validate_connection("p1", "value", "c1", "value") is None
+        assert target.value is None
+        assert self.graph.edges == []
+        assert self.graph._watchers == {}
+
+        assert self.graph.add_edge("p1", "value", "c1", "value") is True
+        assert target.value == "ready"
+        assert (
+            self.graph.validate_connection("p1", "value", "c1", "value")
+            == "Connection already exists."
+        )
+        assert len(self.graph.edges) == len(self.graph._watchers) == 1
+
+    @pytest.mark.parametrize(
+        ("source_id", "source_port", "target_id", "target_port", "invalid_port"),
+        [
+            ("c1", "value", "p1", "value", "Output port"),
+            ("p1", "value", "p1", "value", "Input port"),
+        ],
+    )
+    async def test_declared_port_direction_is_required(
+        self, source_id, source_port, target_id, target_port, invalid_port
+    ):
+        """A Param state field is not necessarily a connectable port in that direction."""
+        reason = self.graph.validate_connection(source_id, source_port, target_id, target_port)
+        assert invalid_port in reason
+        assert self.graph.add_edge(source_id, source_port, target_id, target_port) == reason
+        assert self.graph.edges == []
+
+
+class TestListConnections:
+    async def test_list_aggregates_distinct_sources_but_rejects_duplicates(self):
+        """List inputs accept scalar sources but not repeated identical wiring."""
+        specs = {
+            "src": make_spec("src", outputs=[OutputPort(name="value", type="str")]),
+            "tgt": make_spec("tgt", inputs=[InputPort(name="items", type="List")]),
+        }
+        graph = DataflowGraph(specs)
+        graph.add_node("a", "src").value = "first"
+        graph.add_node("b", "src").value = "second"
+        graph.add_node("c", "tgt")
+
+        assert graph.add_edge("a", "value", "c", "items") is True
+        assert graph.validate_connection("b", "value", "c", "items") is None
+        assert (
+            graph.validate_connection("a", "value", "c", "items") == "Connection already exists."
+        )
+        assert graph.add_edge("a", "value", "c", "items") == "Connection already exists."
+        assert graph.add_edge("b", "value", "c", "items") is True
+        assert graph.get_state("c").items == ["first", "second"]
+        assert len(graph.edges) == len(graph._watchers) == 2
+
 
 class TestSingleSourcePerInput:
     async def test_rejects_second_edge_to_same_input(self):
