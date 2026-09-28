@@ -27,7 +27,7 @@ panel_flowdash = { path = "." }
 
 [pypi-dependencies]
 # TODO: Add these to conda-forge / pyviz
-panel_reactflow = "*"
+panel_reactflow = ">=0.5.0b0"
 panel_tiles = "*"
 
 [feature.test.dependencies]
