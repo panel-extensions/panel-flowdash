@@ -1,8 +1,10 @@
 """UI Test Module."""
 # import time
 
+import param
 import pytest
 from panel.tests.util import serve_component, wait_until
+from panel.viewable import Viewer
 
 from panel_flowdash import register
 from panel_flowdash.editor import FlowDash
@@ -78,6 +80,53 @@ def test_editor_drag_validation_rejects_occupied_input(page):
     assert len(editor.graph.edges) == 1
     assert editor.graph.edges[0]["source"] == source_a
     assert source_b not in [edge["source"] for edge in editor.graph.edges]
+
+
+@register(page=False, component=True, provides=[{"key": "picked"}])
+class Picker(Viewer):
+    value = param.Parameter(default="A")
+
+    @param.output(param.Parameter)
+    @param.depends("value")
+    def picked(self):
+        return self.value
+
+    def __panel__(self):
+        return "picker"
+
+
+class YearRange(Viewer):
+    start_year = param.Integer(default=2000)
+
+    def __panel__(self):
+        return "years"
+
+
+def test_editor_drag_validation_rejects_untyped_value_of_wrong_type(page):
+    editor = FlowDash({"Test/picker": Picker, "Test/years": YearRange}, notifications=False)
+    editor.add_component("Test/picker", position=(0, 0))
+    editor.add_component("Test/years", position=(420, 0))
+    serve_component(page, editor)
+
+    output = page.locator(".react-flow__handle-right[data-handleid='picked']")
+    input_handle = page.locator(".react-flow__handle-left[data-handleid='start_year']")
+    origin = output.bounding_box()
+    page.mouse.move(origin["x"] + origin["width"] / 2, origin["y"] + origin["height"] / 2)
+    page.mouse.down()
+    page.mouse.move(origin["x"] + origin["width"] / 2 + 25, origin["y"] + origin["height"] / 2)
+    wait_until(
+        lambda: "rf-handle-invalid" in (input_handle.get_attribute("class") or ""), timeout=8000
+    )
+    assert "must be an integer" in input_handle.get_attribute("data-tooltip")
+    destination = input_handle.bounding_box()
+    page.mouse.move(
+        destination["x"] + destination["width"] / 2, destination["y"] + destination["height"] / 2
+    )
+    page.mouse.up()
+    page.wait_for_timeout(500)
+
+    assert editor.graph.edges == []
+    assert editor._flow.edges == []
 
 
 def test_builtin_widget_selection_reaches_graph(page):

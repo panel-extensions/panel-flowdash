@@ -201,6 +201,13 @@ class DataflowGraph:
             )
             if error:
                 return error
+            # Untyped outputs pass the static check, so test what they hold now.
+            port = next(p for p in target_spec.inputs if p.name == target_port)
+            reason = port.check_value(getattr(self._nodes[source_id], source_port, None))
+            if reason:
+                return (
+                    f"Input '{target_port}' rejects the current value of '{source_port}': {reason}"
+                )
         return None
 
     def add_edge(
@@ -264,14 +271,22 @@ class DataflowGraph:
 
         if is_list:
             self._rebuild_list_port(target_id, target_port)
-        else:
-            current = getattr(source_state, source_port)
-            if current is not None:
-                try:
-                    setattr(target_state, target_port, current)
-                except Exception as exc:
-                    if self._on_error:
-                        self._on_error(source_id, source_port, target_id, target_port, exc)
+            return True
+
+        current = getattr(source_state, source_port)
+        if current is None:
+            return True
+        previous = getattr(target_state, target_port)
+        try:
+            setattr(target_state, target_port, current)
+        except Exception as exc:
+            # A connection whose first value is rejected would sit wired but
+            # broken, so undo it and report the reason as a rejection.
+            source_state.param.unwatch(self._watchers.pop(edge_key))
+            self._edges.pop()
+            with param.parameterized.discard_events(target_state):
+                setattr(target_state, target_port, previous)
+            return f"Connection rejected: {exc}"
 
         return True
 

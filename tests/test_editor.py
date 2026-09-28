@@ -53,6 +53,31 @@ class Shouter(Viewer):
         return self.ticker
 
 
+# Registered like the built-in Select: `provides` without a type leaves the output untyped.
+@register(page=False, component=True, provides=[{"key": "picked"}])
+class Picker(Viewer):
+    """A Viewer whose output is untyped, like a generic selection widget."""
+
+    value = param.Parameter(default="A")
+
+    @param.output(param.Parameter)
+    @param.depends("value")
+    def picked(self):
+        return self.value
+
+    def __panel__(self):
+        return str(self.value)
+
+
+class YearRange(Viewer):
+    """A Viewer with a typed Integer input."""
+
+    start_year = param.Integer(default=2000, bounds=(1980, 2025))
+
+    def __panel__(self):
+        return str(self.start_year)
+
+
 SELECTOR = "Demo/selector"
 CHART = "Demo/chart"
 SHOUTER = "Demo/shouter"
@@ -208,10 +233,12 @@ class TestBuiltinWidgets:
         widget = editor._tile_objects[1]
         assert widget.options == [1, 2]
         assert editor.graph.get_state(select).selected == 1
-        assert editor.connect(select, "selected", shouter, "ticker") is True
+        # `selected` is untyped, so its current value decides the connection.
+        assert "rejects the current value" in editor.connect(select, "selected", shouter, "ticker")
 
         editor.graph.get_state(options).values = ["X", "Y"]
         assert editor.graph.get_state(select).selected == "X"
+        assert editor.connect(select, "selected", shouter, "ticker") is True
         assert editor.graph.get_state(shouter).ticker == "X"
 
     def test_multichoice_accepts_numeric_options(self):
@@ -413,6 +440,52 @@ class TestConnect:
             in next(r for r in messages[-1]["results"] if r["node_id"] == dst)["reason"]
         )
         assert len(editor.graph.edges) == 1
+
+    async def test_untyped_output_with_rejected_value_is_refused(self, monkeypatch):
+        """An untyped output cannot be wired into an Integer input while it holds a string."""
+        editor = FlowDash({"Test/picker": Picker, "Test/years": YearRange}, notifications=False)
+        picker = editor.add_component("Test/picker")
+        years = editor.add_component("Test/years")
+        messages = []
+        monkeypatch.setattr(editor._flow, "_send_msg", messages.append)
+
+        editor._flow._handle_msg(
+            {
+                "type": "connection_validation_requested",
+                "request_id": 1,
+                "node_id": picker,
+                "handle_id": "picked",
+                "handle_type": "source",
+            }
+        )
+        reason = next(
+            r["reason"]
+            for r in messages[-1]["results"]
+            if r["node_id"] == years and r["handle_id"] == "start_year"
+        )
+        assert "must be an integer" in reason
+
+        editor._flow.add_edge(
+            {
+                "id": "bad",
+                "source": picker,
+                "target": years,
+                "sourceHandle": "picked",
+                "targetHandle": "start_year",
+            }
+        )
+        assert editor._flow.edges == []
+        assert editor.graph.edges == []
+        assert editor.graph.get_state(years).start_year == 2000
+
+    async def test_untyped_output_connects_once_its_value_fits(self):
+        editor = FlowDash({"Test/picker": Picker, "Test/years": YearRange}, notifications=False)
+        picker = editor.add_component("Test/picker")
+        years = editor.add_component("Test/years")
+
+        editor.graph.get_state(picker).picked = 2010
+        assert editor.connect(picker, "picked", years, "start_year") is True
+        assert editor.graph.get_state(years).start_year == 2010
 
     async def test_stale_edge_event_is_rolled_back(self, editor):
         """Server validation rejects a stale client edge even after drag validation."""

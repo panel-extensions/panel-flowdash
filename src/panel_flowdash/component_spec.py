@@ -34,6 +34,19 @@ class InputPort:
     blocking: bool = True
     default: Any = None
     multiple: bool | None = None
+    # The component's own param, when introspected, so a connection can be
+    # checked against the value the component would actually accept.
+    parameter: param.Parameter | None = field(default=None, compare=False, repr=False)
+
+    def check_value(self, value: Any) -> str | None:
+        """Return why *value* would be rejected by this input, or None."""
+        if self.parameter is None or value is None:
+            return None
+        try:
+            self.parameter._validate(value)
+        except Exception as exc:
+            return str(exc)
+        return None
 
 
 @dataclass(frozen=True)
@@ -240,6 +253,7 @@ def _ports_from_viewer_class(
                 # Carried through so that disconnecting an edge resets the port
                 # to a value the target param will actually accept.
                 default=p.default,
+                parameter=p,
             )
         )
 
