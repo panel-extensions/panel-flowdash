@@ -9,6 +9,7 @@ assigned to the target port inside a try/except so that runtime type errors
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable
 
 import param
@@ -154,6 +155,46 @@ class DataflowGraph:
             if self._on_error:
                 self._on_error("", "", target_id, target_port, exc)
 
+    def validate_connection(
+        self,
+        source_id: str,
+        source_port: str,
+        target_id: str,
+        target_port: str,
+    ) -> str | None:
+        """Return a rejection reason without changing graph state, or None if allowed."""
+        source_spec = self._node_specs.get(source_id)
+        target_spec = self._node_specs.get(target_id)
+        if source_id not in self._nodes or target_id not in self._nodes:
+            return "Source or target node not found."
+        if not source_spec or not any(port.name == source_port for port in source_spec.outputs):
+            return f"Output port '{source_port}' does not exist on source node."
+        if not target_spec or not any(port.name == target_port for port in target_spec.inputs):
+            return f"Input port '{target_port}' does not exist on target node."
+
+        is_list = self._is_list_input(target_id, target_port)
+        for e in self._edges:
+            if e == {
+                "source": source_id,
+                "source_port": source_port,
+                "target": target_id,
+                "target_port": target_port,
+            }:
+                return "Connection already exists."
+            if not is_list and e["target"] == target_id and e["target_port"] == target_port:
+                return f"Input '{target_port}' already has a connection. Disconnect it first."
+
+        if self._would_create_cycle(source_id, target_id):
+            return "Connection rejected: would create a cycle."
+
+        if not is_list:
+            error = self._check_type_compatibility(
+                source_spec, source_port, target_spec, target_port
+            )
+            if error:
+                return error
+        return None
+
     def add_edge(
         self,
         source_id: str,
@@ -161,37 +202,14 @@ class DataflowGraph:
         target_id: str,
         target_port: str,
     ) -> bool | str:
-        """Wire an edge between two ports.
+        """Wire an edge, returning True on success or a rejection reason."""
+        error = self.validate_connection(source_id, source_port, target_id, target_port)
+        if error is not None:
+            return error
 
-        Returns True on success, or an error message string on failure.
-        """
-        source_state = self._nodes.get(source_id)
-        target_state = self._nodes.get(target_id)
-        if source_state is None or target_state is None:
-            return "Source or target node not found."
-        if not hasattr(source_state.param, source_port):
-            return f"Output port '{source_port}' does not exist on source node."
-        if not hasattr(target_state.param, target_port):
-            return f"Input port '{target_port}' does not exist on target node."
-
+        source_state = self._nodes[source_id]
+        target_state = self._nodes[target_id]
         is_list = self._is_list_input(target_id, target_port)
-
-        if not is_list:
-            for e in self._edges:
-                if e["target"] == target_id and e["target_port"] == target_port:
-                    return f"Input '{target_port}' already has a connection. Disconnect it first."
-
-        if self._would_create_cycle(source_id, target_id):
-            return "Connection rejected: would create a cycle."
-
-        source_spec = self._node_specs.get(source_id)
-        target_spec = self._node_specs.get(target_id)
-        if source_spec and target_spec and not is_list:
-            error = self._check_type_compatibility(
-                source_spec, source_port, target_spec, target_port
-            )
-            if error:
-                return error
 
         if is_list:
 
@@ -253,18 +271,19 @@ class DataflowGraph:
         """Return True if adding an edge from source to target would create a cycle."""
         if source_id == target_id:
             return True
+        successors = {}
+        for edge in self._edges:
+            successors.setdefault(edge["source"], []).append(edge["target"])
         visited = set()
-        queue = [target_id]
+        queue = deque([target_id])
         while queue:
-            node = queue.pop(0)
+            node = queue.popleft()
             if node == source_id:
                 return True
             if node in visited:
                 continue
             visited.add(node)
-            for e in self._edges:
-                if e["source"] == node:
-                    queue.append(e["target"])
+            queue.extend(successors.get(node, []))
         return False
 
     def _check_type_compatibility(

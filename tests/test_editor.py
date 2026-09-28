@@ -34,6 +34,11 @@ def price_chart(config):
     return "chart"
 
 
+@register(page=False, component=True, requires=[{"key": "tickers", "type": "List"}])
+def ticker_list(config):
+    return "list"
+
+
 class Shouter(Viewer):
     """A Viewer component with a real input param and output method."""
 
@@ -222,6 +227,99 @@ class TestConnect:
         dst = editor.add_component(CHART)
         assert editor.connect(src, "nope", dst, "ticker") is not True
 
+    async def test_connection_policy_and_handle_capacity(self, editor):
+        """Browser policies omit types so scalar outputs may feed List inputs."""
+        assert editor._flow.connection_validation == {
+            "direction": True,
+            "cycles": True,
+            "duplicates": True,
+            "capacity": True,
+        }
+        assert editor._flow.has_connection_validators
+        chart_type = editor._flow.node_types[CHART.replace("/", "__")]
+        assert chart_type["inputs"][0]["maxConnections"] == 1
+
+        list_editor = FlowDash(
+            {SELECTOR: ticker_select, "Demo/list": ticker_list}, notifications=False
+        )
+        list_type = list_editor._flow.node_types["Demo__list"]
+        assert "maxConnections" not in list_type["inputs"][0]
+        src = list_editor.add_component(SELECTOR)
+        dst = list_editor.add_component("Demo/list")
+        assert list_editor.graph.validate_connection(src, "ticker", dst, "tickers") is None
+
+    async def test_drag_validation_reports_graph_reasons(self, editor, monkeypatch):
+        """ReactFlow drag requests receive graph reasons for each candidate handle."""
+        src = editor.add_component(SHOUTER)
+        dst = editor.add_component(SHOUTER)
+        messages = []
+        monkeypatch.setattr(editor._flow, "_send_msg", messages.append)
+
+        editor._flow._handle_msg(
+            {
+                "type": "connection_validation_requested",
+                "request_id": 1,
+                "node_id": src,
+                "handle_id": "shouted",
+                "handle_type": "source",
+            }
+        )
+        results = messages[-1]["results"]
+        assert messages[-1]["request_id"] == 1
+        assert next(r for r in results if r["node_id"] == dst)["reason"] is None
+        assert "cycle" in next(r for r in results if r["node_id"] == src)["reason"]
+
+        assert editor.connect(src, "shouted", dst, "ticker") is True
+        editor._flow._handle_msg(
+            {
+                "type": "connection_validation_requested",
+                "request_id": 2,
+                "node_id": src,
+                "handle_id": "shouted",
+                "handle_type": "source",
+            }
+        )
+        assert (
+            "already exists"
+            in next(r for r in messages[-1]["results"] if r["node_id"] == dst)["reason"]
+        )
+        assert len(editor.graph.edges) == 1
+
+    async def test_stale_edge_event_is_rolled_back(self, editor):
+        """Server validation rejects a stale client edge even after drag validation."""
+        src = editor.add_component(SELECTOR)
+        dst = editor.add_component(CHART)
+        assert editor.connect(src, "ticker", dst, "ticker") is True
+        editor.dirty = False
+        original_edge = editor._flow.edges[0].copy()
+
+        editor._flow.add_edge(
+            {
+                "id": "stale",
+                "source": src,
+                "target": dst,
+                "sourceHandle": "ticker",
+                "targetHandle": "ticker",
+            }
+        )
+
+        assert editor._flow.edges == [original_edge]
+        assert len(editor.graph.edges) == 1
+        assert editor._edge_id_map == {original_edge["id"]: (src, "ticker", dst, "ticker")}
+        assert not editor.dirty
+
+    async def test_edge_without_handle_is_rolled_back(self, editor):
+        """A client edge without declared handles cannot remain only on the canvas."""
+        src = editor.add_component(SELECTOR)
+        dst = editor.add_component(CHART)
+        editor.dirty = False
+
+        editor._flow.add_edge({"id": "missing-port", "source": src, "target": dst})
+
+        assert editor._flow.edges == []
+        assert editor.graph.edges == []
+        assert not editor.dirty
+
     async def test_disconnect_removes_edge(self, editor):
         src = editor.add_component(SELECTOR)
         dst = editor.add_component(CHART)
@@ -241,6 +339,107 @@ class TestConnect:
         editor.disconnect(a, "ticker", dst, "ticker")
 
         assert editor.connect(b, "ticker", dst, "ticker") is True
+
+
+class TestValuePopup:
+    """Handle and edge previews look up live values."""
+
+    async def test_hover_is_default_and_popup_has_no_inner_paper(self, editor):
+        assert editor.popup_trigger == editor._flow.popup_trigger == "hover"
+        popup = editor._build_value_popup("Value", None, "sample")
+        assert isinstance(popup, pn.Column)
+        assert popup[0].object == "**Value**"
+
+    async def test_hover_unhover_only_closes_matching_inspection(self, editor):
+        src = editor.add_component(SELECTOR)
+        editor.graph.get_state(src).ticker = "aapl"
+        editor._on_handle_hovered(
+            {
+                "node_id": src,
+                "handle_id": "ticker",
+                "direction": "output",
+                "position": {"x": 1, "y": 2},
+            },
+            editor._flow,
+        )
+        editor._inspection_key = ("handle", f"{src}:ticker")
+        editor._on_inspection_unhovered({"node_id": "other", "handle_id": "ticker"}, editor._flow)
+        assert editor._flow._value_popup is not None
+
+    async def test_handle_click_on_output_shows_current_value(self, editor):
+        src = editor.add_component(SELECTOR)
+        editor.graph.get_state(src).ticker = "aapl"
+
+        editor._on_handle_clicked(
+            {
+                "node_id": src,
+                "handle_id": "ticker",
+                "direction": "output",
+                "position": {"x": 1, "y": 2},
+            },
+            editor._flow,
+        )
+
+        assert editor._flow._value_popup is not None
+        assert editor._flow._value_popup_position == {"x": 1, "y": 2}
+
+    async def test_custom_value_repr_is_used(self, editor):
+        editor.value_repr = lambda value: f"custom: {value}"
+        src = editor.add_component(SELECTOR)
+        editor.graph.get_state(src).ticker = "aapl"
+
+        preview = editor._value_preview("aapl")
+
+        assert preview.object == "custom: aapl"
+
+    async def test_handle_click_on_input_with_no_value_shows_placeholder(self, editor):
+        dst = editor.add_component(CHART)
+
+        editor._on_handle_clicked(
+            {
+                "node_id": dst,
+                "handle_id": "ticker",
+                "direction": "input",
+                "position": {"x": 1, "y": 2},
+            },
+            editor._flow,
+        )
+
+        assert editor._flow._value_popup is not None
+
+    async def test_handle_click_ignored_without_position(self, editor):
+        src = editor.add_component(SELECTOR)
+
+        editor._on_handle_clicked(
+            {"node_id": src, "handle_id": "ticker", "direction": "output"}, editor._flow
+        )
+
+        assert editor._flow._value_popup is None
+
+    async def test_edge_click_shows_source_value(self, editor):
+        src = editor.add_component(SELECTOR)
+        dst = editor.add_component(CHART)
+        editor.connect(src, "ticker", dst, "ticker")
+        editor.graph.get_state(src).ticker = "msft"
+        edge_id = editor._flow.edges[0]["id"]
+
+        editor._on_edge_clicked({"edge_id": edge_id, "position": {"x": 3, "y": 4}}, editor._flow)
+
+        assert editor._flow._value_popup is not None
+        assert editor._flow._value_popup_position == {"x": 3, "y": 4}
+
+    async def test_edge_click_unknown_edge_is_ignored(self, editor):
+        editor._on_edge_clicked({"edge_id": "nope", "position": {"x": 1, "y": 1}}, editor._flow)
+
+        assert editor._flow._value_popup is None
+
+    async def test_port_spec_reports_declared_type(self, editor):
+        src = editor.add_component(SELECTOR)
+
+        port = editor._port_spec(src, "ticker", output=True)
+
+        assert port is not None
+        assert port.type == "str"
 
 
 class TestDataflowPropagation:

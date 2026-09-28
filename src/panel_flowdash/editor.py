@@ -40,7 +40,7 @@ from panel_flowdash.util import is_async, is_async_gen, notify, panel_call, pane
 if t.TYPE_CHECKING:
     from panel.viewable import Viewable
 
-    from panel_flowdash.component_spec import ComponentSpec
+    from panel_flowdash.component_spec import ComponentSpec, InputPort, OutputPort
 
 logger = logging.getLogger("panel_flowdash")
 
@@ -174,6 +174,24 @@ class FlowDash(Viewer):
         default=True, doc="Whether to render the editor toolbar above the workspace."
     )
 
+    popup_trigger = param.ObjectSelector(
+        default="hover",
+        objects=["click", "hover", "none"],
+        doc="Whether live port values open on click, hover, or not automatically.",
+    )
+
+    popup_hover_delay = param.Integer(
+        default=500,
+        bounds=(0, None),
+        doc="Delay in milliseconds before a hover value preview opens.",
+    )
+
+    value_repr = param.Callable(
+        default=None,
+        allow_None=True,
+        doc="Optional callable converting a live port value to a Panel viewable or displayable value.",
+    )
+
     toolbar_extra = Children(
         default=[], doc="Additional items appended to the right of the toolbar."
     )
@@ -207,10 +225,15 @@ class FlowDash(Viewer):
         self._pending_tile_layout: list[dict] = []
         self._pending_breakpoints: list[int] = []
         self._pending_responsive_layouts: dict = {}
+        self._inspection_key: tuple[str, str] | None = None
 
         self._dataflow_graph = DataflowGraph({}, on_error=self._on_wiring_error)
         self._component_picker = self._make_component_picker()
         self._flow = self._build_flow_canvas()
+        self.param.watch(
+            self._update_value_popup_config,
+            ["popup_trigger", "popup_hover_delay"],
+        )
         self._view = self._build_component_view()
 
         # Components handed over as live objects need no import, so their specs
@@ -389,10 +412,17 @@ class FlowDash(Viewer):
                 label=spec.title,
                 schema=spec.config_state_class,
                 inputs=[
-                    {"id": port.name, "label": port.label or port.name} for port in spec.inputs
+                    {
+                        "id": port.name,
+                        "label": port.label or port.name,
+                        "type": port.type,
+                        **({"maxConnections": 1} if (port.type or "").lower() != "list" else {}),
+                    }
+                    for port in spec.inputs
                 ],
                 outputs=[
-                    {"id": port.name, "label": port.label or port.name} for port in spec.outputs
+                    {"id": port.name, "label": port.label or port.name, "type": port.type}
+                    for port in spec.outputs
                 ],
             )
             if spec.config_editor is not None:
@@ -403,6 +433,15 @@ class FlowDash(Viewer):
         """Update node_types on the live ReactFlow canvas after component load."""
         node_types, node_editors = self._node_types_from_specs()
         self._flow.param.update(node_types=node_types, node_editors=node_editors)
+
+    def _update_value_popup_config(self, event):
+        self._flow.param.update(
+            popup_trigger=self.popup_trigger,
+            popup_hover_delay=self.popup_hover_delay,
+        )
+        if self.popup_trigger != "hover":
+            self._inspection_key = None
+            self._flow.close_popup()
 
     def _build_flow_canvas(self):
         node_types, node_editors = self._node_types_from_specs()
@@ -418,6 +457,22 @@ class FlowDash(Viewer):
             sizing_mode="stretch_both",
             min_height=600,
             stylesheets=[_FLOW_STYLESHEET],
+            popup_trigger=self.popup_trigger,
+            popup_hover_delay=self.popup_hover_delay,
+            connection_validation={
+                "direction": True,
+                "cycles": True,
+                "duplicates": True,
+                "capacity": True,
+            },
+        )
+        flow.add_connection_validator(
+            lambda payload, _flow: self._dataflow_graph.validate_connection(
+                payload["source"],
+                payload["sourceHandle"],
+                payload["target"],
+                payload["targetHandle"],
+            )
         )
 
         def _on_edge_added(event):
@@ -430,15 +485,18 @@ class FlowDash(Viewer):
             tgt_handle = edge.get("targetHandle", "")
             if src_id and tgt_id and src_handle and tgt_handle:
                 result = self._dataflow_graph.add_edge(src_id, src_handle, tgt_id, tgt_handle)
-                if result is True:
-                    edge_id = edge.get("id", "")
-                    if edge_id:
-                        self._edge_id_map[edge_id] = (src_id, src_handle, tgt_id, tgt_handle)
-                    self.dirty = True
-                    self._notify("success", f"Wired: {src_handle} → {tgt_handle}", duration=3000)
-                else:
-                    logger.warning("Edge rejected: %s", result)
-                    self._notify("error", result, duration=5000)
+            else:
+                result = "Connection requires source and target ports."
+            if result is True:
+                edge_id = edge.get("id", "")
+                if edge_id:
+                    self._edge_id_map[edge_id] = (src_id, src_handle, tgt_id, tgt_handle)
+                self.dirty = True
+                self._notify("success", f"Wired: {src_handle} → {tgt_handle}", duration=3000)
+            else:
+                logger.warning("Edge rejected: %s", result)
+                self._notify("error", result, duration=5000)
+                with self._muted_canvas():
                     flow.remove_edge(edge.get("id", ""))
 
         def _on_edge_deleted(event):
@@ -474,6 +532,12 @@ class FlowDash(Viewer):
         flow.on("edge_deleted", _on_edge_deleted)
         flow.on("node_data_changed", _on_node_data_changed)
         flow.on("node_deleted", _on_node_deleted)
+        flow.on("handle_clicked", self._on_handle_clicked)
+        flow.on("edge_clicked", self._on_edge_clicked)
+        flow.on("handle_hovered", self._on_handle_hovered)
+        flow.on("edge_hovered", self._on_edge_hovered)
+        flow.on("handle_unhovered", self._on_inspection_unhovered)
+        flow.on("edge_unhovered", self._on_inspection_unhovered)
 
         return flow
 
@@ -505,6 +569,133 @@ class FlowDash(Viewer):
         for edge_id, mapping in list(self._edge_id_map.items()):
             if node_id in (mapping[0], mapping[2]):
                 del self._edge_id_map[edge_id]
+
+    # ------------------------------------------------------------------
+    # Value inspection
+    # ------------------------------------------------------------------
+
+    def _component_id_for_instance(self, instance_id: str) -> str | None:
+        return next(
+            (
+                item["component_id"]
+                for item in self._tile_items
+                if item["instance_id"] == instance_id
+            ),
+            None,
+        )
+
+    def _port_spec(
+        self, instance_id: str, port_name: str, *, output: bool
+    ) -> InputPort | OutputPort | None:
+        """Look up the OutputPort/InputPort declaration for a placed node's port."""
+        component_id = self._component_id_for_instance(instance_id)
+        spec = self._component_specs.get(component_id) if component_id else None
+        if spec is None:
+            return None
+        ports = spec.outputs if output else spec.inputs
+        return next((p for p in ports if p.name == port_name), None)
+
+    def _value_preview(self, value: t.Any) -> Viewable:
+        """Render a value for the popup, using custom or default formatting."""
+        if self.value_repr is not None:
+            try:
+                rendered = self.value_repr(value)
+                return pn.panel(rendered)
+            except Exception:
+                logger.exception("Value popup representation failed")
+        if value is None:
+            return pn.pane.Markdown("*No value yet*", margin=0)
+        try:
+            import pandas as pd
+
+            if isinstance(value, pd.DataFrame):
+                return pn.Column(
+                    pn.pane.Markdown(
+                        f"DataFrame · {value.shape[0]} rows x {value.shape[1]} cols",
+                        margin=(0, 0, 6, 0),
+                    ),
+                    pn.pane.DataFrame(value.head(10), sizing_mode="stretch_width"),
+                    sizing_mode="stretch_width",
+                )
+        except ImportError:
+            pass
+        if isinstance(value, (pn.viewable.Viewable, Viewer)):
+            return value
+        try:
+            return pn.pane.JSON(value, depth=2, sizing_mode="stretch_width")
+        except Exception:
+            text = repr(value)
+            if len(text) > 2000:
+                text = text[:2000] + "…"
+            return pn.pane.Markdown(f"```\n{text}\n```")
+
+    def _build_value_popup(self, title: str, subtitle: str | None, value: t.Any) -> Viewable:
+        header = f"**{title}**"
+        if subtitle:
+            header += f"  \n*{subtitle}*"
+        return pn.Column(
+            pn.pane.Markdown(header, margin=(0, 0, 6, 0)),
+            self._value_preview(value),
+            sizing_mode="stretch_width",
+        )
+
+    def _show_inspection(self, key, title, value, position, flow):
+        self._inspection_key = key
+        flow.show_popup(self._build_value_popup(title, None, value), position)
+
+    def _on_handle_clicked(self, payload, flow):
+        node_id = payload.get("node_id", "") if isinstance(payload, dict) else ""
+        handle_id = payload.get("handle_id") if isinstance(payload, dict) else None
+        direction = payload.get("direction", "") if isinstance(payload, dict) else ""
+        position = payload.get("position") if isinstance(payload, dict) else None
+        if not node_id or not handle_id or position is None:
+            return
+        port = self._port_spec(node_id, handle_id, output=direction == "output")
+        label = (port.label if port else None) or handle_id
+        subtitle = f"{direction} · {port.type}" if port and port.type else direction
+        state = self._dataflow_graph.get_state(node_id)
+        value = getattr(state, handle_id, None) if state is not None else None
+        self._show_inspection(
+            ("handle", node_id + ":" + str(handle_id)),
+            f"{label} ({subtitle})",
+            value,
+            position,
+            flow,
+        )
+
+    def _on_edge_clicked(self, payload, flow):
+        edge_id = payload.get("edge_id", "") if isinstance(payload, dict) else ""
+        position = payload.get("position") if isinstance(payload, dict) else None
+        mapping = self._edge_id_map.get(edge_id)
+        if not mapping or position is None:
+            return
+        source_id, source_port, _target_id, _target_port = mapping
+        port = self._port_spec(source_id, source_port, output=True)
+        label = (port.label if port else None) or source_port
+        subtitle = f"edge · {port.type}" if port and port.type else "edge"
+        state = self._dataflow_graph.get_state(source_id)
+        value = getattr(state, source_port, None) if state is not None else None
+        self._show_inspection(("edge", edge_id), f"{label} ({subtitle})", value, position, flow)
+
+    def _on_handle_hovered(self, payload, flow):
+        self._on_handle_clicked(payload, flow)
+
+    def _on_edge_hovered(self, payload, flow):
+        self._on_edge_clicked(payload, flow)
+
+    def _on_inspection_unhovered(self, payload, flow):
+        if self.popup_trigger != "hover":
+            return
+        if not isinstance(payload, dict):
+            return
+        if "node_id" in payload:
+            key = ("handle", payload.get("node_id", "") + ":" + str(payload.get("handle_id")))
+        else:
+            key = ("edge", payload.get("edge_id", ""))
+        if key != self._inspection_key:
+            return
+        flow.close_popup()
+        self._inspection_key = None
 
     # ------------------------------------------------------------------
     # Config state
