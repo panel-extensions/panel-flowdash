@@ -699,8 +699,8 @@ class TestRuntimeValidation:
         graph.get_state("s").val = "not_an_int"
         assert typed_state.count == 0
 
-    async def test_error_on_initial_propagation(self):
-        """If source already has a value that the target rejects, on_error fires at wire time."""
+    async def test_initial_propagation_failure_rejects_connection(self):
+        """A value the target rejects at wire time undoes the edge instead of leaving it broken."""
 
         class TypedState(param.Parameterized):
             count = param.Integer(default=0, allow_None=True)
@@ -719,8 +719,53 @@ class TestRuntimeValidation:
 
         graph.get_state("s").val = "bad_value"
 
-        graph.add_edge("s", "val", "t", "count")
-        assert len(errors) == 1
+        result = graph.add_edge("s", "val", "t", "count")
+        assert result.startswith("Connection rejected:")
+        assert graph.edges == []
+        assert errors == []
+        assert typed_state.count == 0
+
+        graph.get_state("s").val = "still_bad"
+        assert typed_state.count == 0
+        assert errors == []
+
+    async def test_current_value_checked_against_input_parameter(self):
+        """An untyped output passes the static check but not a value its target rejects."""
+        specs = {
+            "src": make_spec("src", outputs=[OutputPort(name="val")]),
+            "tgt": make_spec(
+                "tgt",
+                inputs=[
+                    InputPort(name="count", type="Integer", parameter=param.Integer(default=0))
+                ],
+            ),
+        }
+        graph = DataflowGraph(specs)
+        graph.add_node("s", "src")
+        graph.add_node("t", "tgt")
+
+        graph.get_state("s").val = "A"
+        reason = graph.validate_connection("s", "val", "t", "count")
+        assert "rejects the current value of 'val'" in reason
+        assert graph.add_edge("s", "val", "t", "count") == reason
+
+        graph.get_state("s").val = 3
+        assert graph.validate_connection("s", "val", "t", "count") is None
+        assert graph.add_edge("s", "val", "t", "count") is True
+        assert graph.get_state("t").count == 3
+
+    async def test_unset_output_is_not_value_checked(self):
+        specs = {
+            "src": make_spec("src", outputs=[OutputPort(name="val")]),
+            "tgt": make_spec(
+                "tgt",
+                inputs=[InputPort(name="count", parameter=param.Integer(default=0))],
+            ),
+        }
+        graph = DataflowGraph(specs)
+        graph.add_node("s", "src")
+        graph.add_node("t", "tgt")
+        assert graph.validate_connection("s", "val", "t", "count") is None
 
     async def test_watcher_removed_on_edge_disconnect(self):
         """After removing an edge, source changes no longer propagate."""
