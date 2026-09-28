@@ -21,6 +21,8 @@ _RESERVED_PARAMS = set(param.Parameterized.param)
 
 def _is_list_port(port) -> bool:
     """Return True if a port's declared type indicates a list/multi-connection input."""
+    if port.multiple is not None:
+        return port.multiple
     if port.type is None:
         return False
     return port.type.lower() in ("list", "List")
@@ -33,8 +35,14 @@ def build_node_state_class(spec: ComponentSpec) -> type[param.Parameterized]:
     for port in spec.inputs:
         if port.name in _RESERVED_PARAMS:
             continue
-        if _is_list_port(port):
-            params[port.name] = param.List(default=port.default or [], allow_refs=True)
+        if (port.type or "").lower() == "list":
+            params[port.name] = param.List(
+                default=port.default
+                if port.default is not None
+                else ([] if _is_list_port(port) else None),
+                allow_None=not _is_list_port(port),
+                allow_refs=True,
+            )
         else:
             params[port.name] = param.Parameter(
                 default=port.default, allow_None=True, allow_refs=True

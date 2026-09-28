@@ -36,6 +36,7 @@ from panel_flowdash.dashboard_store import (
 from panel_flowdash.dataflow_engine import DataflowGraph
 from panel_flowdash.registry import RegistryEntry
 from panel_flowdash.util import is_async, is_async_gen, notify, panel_call, panel_viewer
+from panel_flowdash.widgets import BUILTIN_COMPONENTS
 
 if t.TYPE_CHECKING:
     from panel.viewable import Viewable
@@ -97,6 +98,10 @@ class FlowDash(Viewer):
         The components to offer in the editor. A decorated function, a Viewer
         subclass, a mapping of explicit component ids, a project directory, or a
         list mixing any of those. Read at construction time.""",
+    )
+
+    include_builtin_components = param.Boolean(
+        default=True, doc="Include Select, MultiChoice and Slider in the component palette."
     )
 
     dashboard = param.ClassSelector(
@@ -211,6 +216,9 @@ class FlowDash(Viewer):
         super().__init__(**params)
 
         self._registry: dict[str, RegistryEntry] = normalize_components(self.components)
+        if self.include_builtin_components:
+            for app_id, entry in normalize_components(BUILTIN_COMPONENTS).items():
+                self._registry.setdefault(app_id, entry)
         self._component_entries = {k: v for k, v in self._registry.items() if v.metadata.component}
         self._component_specs: dict[str, ComponentSpec] = {}
         self._components_loaded = False
@@ -416,7 +424,12 @@ class FlowDash(Viewer):
                         "id": port.name,
                         "label": port.label or port.name,
                         "type": port.type,
-                        **({"maxConnections": 1} if (port.type or "").lower() != "list" else {}),
+                        **(
+                            {"maxConnections": 1}
+                            if port.multiple is False
+                            or (port.multiple is None and (port.type or "").lower() != "list")
+                            else {}
+                        ),
                     }
                     for port in spec.inputs
                 ],

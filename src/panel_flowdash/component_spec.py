@@ -33,6 +33,7 @@ class InputPort:
     required: bool = True
     blocking: bool = True
     default: Any = None
+    multiple: bool | None = None
     # The component's own param, when introspected, so a connection can be
     # checked against the value the component would actually accept.
     parameter: param.Parameter | None = field(default=None, compare=False, repr=False)
@@ -207,6 +208,7 @@ def _ports_from_metadata(
                     required=item.get("required", True),
                     blocking=item.get("blocking", True),
                     default=item.get("fallback"),
+                    multiple=item.get("multiple"),
                 )
             )
 

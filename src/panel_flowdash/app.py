@@ -153,6 +153,10 @@ class FlowDashApp(Viewer):
         title. When unset, the homepage shows the dashboard grid launcher.""",
     )
 
+    include_builtin_components = param.Boolean(
+        default=True, doc="Include built-in widget components in the dashboard editor."
+    )
+
     nav_variant = param.Selector(
         default="right",
         objects=["left", "right", "menubar"],
@@ -435,6 +439,7 @@ class FlowDashApp(Viewer):
         """Construct the embedded editor and wire it into the app shell."""
         editor = FlowDash(
             components=self._registry,
+            include_builtin_components=self.include_builtin_components,
             breakpoints=self.breakpoints,
             notifications=self.notifications,
             store=self.store,
