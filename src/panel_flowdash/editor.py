@@ -11,8 +11,11 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import io
+import json
 import logging
 import pathlib
+import re
 import typing as t
 import uuid
 from contextlib import contextmanager
@@ -46,6 +49,8 @@ if t.TYPE_CHECKING:
 
 logger = logging.getLogger("panel_flowdash")
 
+_EMPTY_GRID_CONFIG = {"breakpoints": [], "responsive_layouts": {}, "reference_width": None}
+
 # Screen pixels between the visible canvas edge and an auto-placed node.
 _PLACEMENT_MARGIN = 40
 # Flow units each repeated auto-placement shifts, so nodes don't stack exactly.
@@ -54,6 +59,11 @@ _PLACEMENT_CASCADE = 40
 _DROP_WIRE_OFFSET = 360
 # The canvas accepts only this drag type, so drags from unrelated lists are ignored.
 _PALETTE_DRAG_TYPE = "application/x-flowdash-component"
+# The DataTransfer type of files dragged in from the OS.
+_FILES_DROP_TYPE = "Files"
+# Left out of exports: they tie a dashboard to one store, owner and audience, and
+# importing a file must not let it claim another dashboard's id or sharing rules.
+_IDENTITY_FIELDS = ("dashboard_id", "user_id", "permission")
 _SIDE_PANEL_WIDTH = 250
 _PALETTE_SX = {
     "& .MuiListItemButton-root": {"py": 0.25, "minHeight": 0},
@@ -203,8 +213,9 @@ class FlowDash(Viewer):
     toolbar = param.Boolean(
         default=True,
         doc="""
-        Whether to render the mode toggle and the save and clear actions at the
-        top of the side panel. The component palette is shown regardless.""",
+        Whether to render the toolbar with the mode toggle and the save,
+        download and clear actions. It floats over the wiring canvas and sits
+        above the tile grid. The component palette is shown regardless.""",
     )
 
     popup_trigger = param.ObjectSelector(
@@ -226,7 +237,7 @@ class FlowDash(Viewer):
     )
 
     toolbar_extra = Children(
-        default=[], doc="Additional items placed between the Save and Clear actions."
+        default=[], doc="Additional items placed between the Download and Clear actions."
     )
 
     user = param.String(
@@ -259,8 +270,9 @@ class FlowDash(Viewer):
         self._tile_items: list[dict] = []
         self._tile_objects: list[Viewable] = []
         self._pending_tile_layout: list[dict] = []
-        self._pending_breakpoints: list[int] = []
-        self._pending_responsive_layouts: dict = {}
+        # Responsive grid settings waiting to be applied; empty values must also be
+        # applied so a loaded dashboard doesn't inherit the previous one's overrides.
+        self._pending_grid_config: dict | None = None
         self._inspection_key: tuple[str, str] | None = None
 
         self._dataflow_graph = DataflowGraph({}, on_error=self._on_wiring_error)
@@ -541,7 +553,7 @@ class FlowDash(Viewer):
             stylesheets=[_FLOW_STYLESHEET],
             popup_trigger=self.popup_trigger,
             popup_hover_delay=self.popup_hover_delay,
-            drop_types=[_PALETTE_DRAG_TYPE],
+            drop_types=[_PALETTE_DRAG_TYPE, _FILES_DROP_TYPE],
             connection_validation={
                 "direction": True,
                 "cycles": True,
@@ -936,19 +948,26 @@ class FlowDash(Viewer):
 
     def _build_component_view(self):
         self._save_button = pmui.Button(
-            label="Save", icon="save", variant="outlined", size="small", margin=(5, 4, 5, 10)
+            label="Save", icon="save", variant="text", size="small", margin=(5, 2)
         )
         self._clear_button = pmui.Button(
-            label="Clear",
-            icon="delete_sweep",
-            color="danger",
+            label="Clear", icon="delete_sweep", variant="text", size="small", margin=(5, 2)
+        )
+        self._download_button = pmui.FileDownload(
+            callback=self._download_callback,
+            filename="dashboard.json",
+            label="Download",
+            icon="download",
             variant="text",
             size="small",
-            margin=(5, 4),
+            margin=(5, 2),
         )
         self._save_button.on_click(lambda _event: self._on_save_clicked())
         self._clear_button.on_click(lambda _event: self._clear_dialog.param.update(open=True))
         self._clear_dialog = self._build_clear_dialog()
+        self._pending_import: DashboardModel | None = None
+        self._import_message = pn.pane.Markdown()
+        self._import_dialog = self._build_import_dialog()
 
         self._mode_toggle = pmui.RadioButtonGroup(
             options={
@@ -957,17 +976,32 @@ class FlowDash(Viewer):
             },
             value=self.mode,
             size="small",
-            sizing_mode="stretch_width",
+            margin=(5, 10, 5, 5),
+            align="center",
         )
         self._mode_toggle.link(self, value="mode", bidirectional=True)
-        self._preview_switch = pmui.Switch(label="Preview", size="small")
+        self._preview_switch = pmui.Switch(
+            label="Preview",
+            size="small",
+            margin=(5, 10),
+            align="center",
+            # `sx` styles the switch itself; match the label to the button text.
+            stylesheets=[":host .MuiFormControlLabel-label { font-size: 0.8125rem; }"],
+        )
         self._preview_switch.link(self, value="preview", bidirectional=True)
-        self._actions_row = pn.FlexBox(flex_wrap="wrap", align_items="center")
-        self._controls = pn.Column(
+        self._actions_row = pn.Row(margin=0, align="center")
+        # One toolbar for both modes: it floats over the canvas in wiring mode and
+        # moves above the tile grid in dashboard mode, where there is no canvas.
+        self._controls = pmui.Paper(
             self._mode_toggle,
             self._preview_switch,
+            pmui.Divider(orientation="vertical", height=24, margin=(0, 6), align="center"),
             self._actions_row,
-            sizing_mode="stretch_width",
+            align="center",
+            direction="row",
+            elevation=2,
+            margin=10,
+            sx={"alignItems": "center", "borderRadius": 2, "px": 0.5},
         )
         self._palette_section = pn.Column(
             pmui.Typography(
@@ -980,17 +1014,20 @@ class FlowDash(Viewer):
             sizing_mode="stretch_width",
         )
         self._side_panel = pmui.Column(
-            self._controls,
             self._palette_section,
-            # A Row would reserve flex space for the dialog and squeeze the canvas.
-            self._clear_dialog,
             width=_SIDE_PANEL_WIDTH,
             sizing_mode="stretch_height",
             scroll="y-auto",
             margin=0,
             sx={"borderRight": 1, "borderColor": "divider"},
         )
-        self._workspace_area = pn.Column(self._flow, sizing_mode="stretch_both", scroll="y-auto")
+        self._empty_hint = pmui.Typography(
+            "Drag components here from the palette, or drop a downloaded dashboard file.",
+            variant="body2",
+            sx={"color": "text.secondary"},
+            margin=(0, 0, 24, 0),
+        )
+        self._workspace_area = pn.Column(sizing_mode="stretch_both", scroll="y-auto")
 
         self._sync_toolbar_extra()
         self._sync_toolbar_state()
@@ -1019,15 +1056,45 @@ class FlowDash(Viewer):
             min_width=400,
         )
 
+    def _build_import_dialog(self):
+        cancel = pmui.Button(label="Cancel", variant="text")
+        confirm = pmui.Button(label="Replace canvas", color="danger")
+
+        def _on_confirm(_event):
+            self._import_dialog.open = False
+            model, self._pending_import = self._pending_import, None
+            if model is not None:
+                self._apply_import(model)
+
+        def _on_cancel(_event):
+            self._import_dialog.open = False
+            self._pending_import = None
+
+        cancel.on_click(_on_cancel)
+        confirm.on_click(_on_confirm)
+        return pmui.Dialog(
+            objects=[
+                self._import_message,
+                pn.Row(pn.layout.HSpacer(), cancel, confirm, sizing_mode="stretch_width"),
+            ],
+            title="Load dashboard file",
+            open=False,
+            min_width=400,
+        )
+
     @param.depends("dirty", "read_only", watch=True)
     def _sync_toolbar_state(self):
-        """Reflect canvas contents and save state in the side panel controls."""
-        variant = "contained" if self.dirty else "outlined"
+        """Reflect canvas contents and save state in the toolbar and palette."""
+        # Save is the only emphasized action, and only while there is something to save.
+        variant = "contained" if self.dirty else "text"
         # panel-material-ui <0.15 resets `variant` to `button_style`, so set both.
         self._save_button.param.update(
             button_style=variant, variant=variant, disabled=self.read_only
         )
         self._clear_button.disabled = not self._tile_items
+        hint = [] if self._tile_items else [self._empty_hint]
+        if self._flow.bottom_panel != hint:
+            self._flow.bottom_panel = hint
 
         items = self._palette_items()
         if items != self._palette.items:
@@ -1050,34 +1117,54 @@ class FlowDash(Viewer):
             )
         return self._tile__grid
 
-    def _apply_responsive_config(self, breakpoints, responsive_layouts):
-        if breakpoints:
-            self._tile_grid.breakpoints = breakpoints
-        if responsive_layouts:
-            self._tile_grid.responsive_layouts = responsive_layouts
+    def _grid_config(self) -> dict:
+        """Return the responsive settings to persist, whether or not the grid is on screen."""
+        if self._grid_populated:
+            grid = self._tile_grid
+            return {
+                "breakpoints": list(grid.breakpoints),
+                "responsive_layouts": dict(grid.responsive_layouts),
+                "reference_width": grid.reference_width,
+            }
+        return dict(self._pending_grid_config or _EMPTY_GRID_CONFIG)
+
+    def _apply_grid_config(self, config: dict):
+        self._tile_grid.param.update(
+            breakpoints=list(config["breakpoints"] or self.breakpoints),
+            responsive_layouts=dict(config["responsive_layouts"]),
+            reference_width=config["reference_width"],
+        )
 
     @param.depends("toolbar_extra", watch=True)
     def _sync_toolbar_extra(self):
         """Re-seat caller-supplied toolbar items around the built-in actions."""
-        self._actions_row[:] = [self._save_button, *self.toolbar_extra, self._clear_button]
+        self._actions_row[:] = [
+            self._save_button,
+            self._download_button,
+            *self.toolbar_extra,
+            self._clear_button,
+        ]
 
     @pn.io.hold()
     @param.depends("editable", "mode", "preview", "toolbar", watch=True)
     def _apply_mode_state(self):
-        """Reconcile the side panel and the workspace with the display params."""
+        """Reconcile the toolbar, side panel and workspace with the display params."""
         interactive = self.editable and not self.preview
         showing_grid = self.mode == "dashboard" or not self.editable
-        self._controls.visible = self.toolbar and self.editable
+        toolbar = [self._controls] if self.toolbar and self.editable else []
         self._preview_switch.visible = self.editable and self.mode == "dashboard"
-        self._palette_section.visible = not showing_grid
-        self._side_panel.visible = self._controls.visible or self._palette_section.visible
+        self._side_panel.visible = not showing_grid
         self._tile_grid.param.update(editable=interactive, card=interactive)
+        # Column children rather than Row children, so the dialogs take no flex space.
+        dialogs = [self._clear_dialog, self._import_dialog]
         if showing_grid:
-            self._workspace_area[:] = [self._tile_grid]
+            self._flow.top_panel = []
+            self._workspace_area[:] = [*toolbar, self._tile_grid, *dialogs]
             self._rebuild_tile_grid()
         else:
             self._stash_tile_layout()
-            self._workspace_area[:] = [self._flow]
+            self._workspace_area[:] = [self._flow, *dialogs]
+            self._flow.top_panel = toolbar
             self._rebuild_sidebar()
 
     def _stash_tile_layout(self):
@@ -1085,8 +1172,7 @@ class FlowDash(Viewer):
         if not self._grid_populated:
             return
         self._pending_tile_layout = self._tile_grid.layout
-        self._pending_breakpoints = self._tile_grid.breakpoints
-        self._pending_responsive_layouts = self._tile_grid.responsive_layouts
+        self._pending_grid_config = self._grid_config()
 
     def _rebuild_sidebar(self):
         """Publish views of the placed components that opted into sidebar placement.
@@ -1122,12 +1208,9 @@ class FlowDash(Viewer):
         if self._pending_tile_layout:
             self._tile_grid.layout = self._pending_tile_layout
             self._pending_tile_layout = []
-        if self._pending_breakpoints or self._pending_responsive_layouts:
-            self._apply_responsive_config(
-                self._pending_breakpoints, self._pending_responsive_layouts
-            )
-            self._pending_breakpoints = []
-            self._pending_responsive_layouts = {}
+        if self._pending_grid_config is not None:
+            self._apply_grid_config(self._pending_grid_config)
+            self._pending_grid_config = None
 
     @property
     def layout(self) -> list[dict]:
@@ -1379,12 +1462,10 @@ class FlowDash(Viewer):
         # saving from wiring mode, where the grid is off screen, cannot clobber a
         # layout that was loaded from storage but never rendered.
         model.tile_layout = self.layout
-        if self._grid_populated:
-            model.breakpoints = self._tile_grid.breakpoints
-            model.responsive_layouts = self._tile_grid.responsive_layouts
-        else:
-            model.breakpoints = list(self._pending_breakpoints)
-            model.responsive_layouts = dict(self._pending_responsive_layouts)
+        config = self._grid_config()
+        model.breakpoints = config["breakpoints"]
+        model.responsive_layouts = config["responsive_layouts"]
+        model.reference_width = config["reference_width"]
         return model
 
     def load_model(self, model: DashboardModel):
@@ -1452,8 +1533,11 @@ class FlowDash(Viewer):
 
         self._grid_populated = False
         self._pending_tile_layout = model.tile_layout or []
-        self._pending_breakpoints = model.breakpoints or []
-        self._pending_responsive_layouts = model.responsive_layouts or {}
+        self._pending_grid_config = {
+            "breakpoints": list(model.breakpoints or []),
+            "responsive_layouts": dict(model.responsive_layouts or {}),
+            "reference_width": model.reference_width,
+        }
         self.dirty = False
         self._apply_mode_state()
 
@@ -1476,8 +1560,7 @@ class FlowDash(Viewer):
             )
         self._reset_canvas()
         self._pending_tile_layout = []
-        self._pending_breakpoints = []
-        self._pending_responsive_layouts = {}
+        self._pending_grid_config = dict(_EMPTY_GRID_CONFIG)
         self.dashboard = model
         self.dirty = False
         return model
@@ -1501,6 +1584,61 @@ class FlowDash(Viewer):
         self.dashboard = model
         self.dirty = False
         self.param.trigger("saved")
+        return model
+
+    def export_dashboard(self) -> dict:
+        """Return the canvas as a JSON-serializable dict, as the Download button writes it.
+
+        The dashboard id, owner and sharing rules are omitted, so the file can
+        be loaded into any dashboard with :meth:`import_dashboard`.
+        """
+        data = self.to_model().to_dict()
+        for key in _IDENTITY_FIELDS:
+            del data[key]
+        return data
+
+    def import_dashboard(self, data: dict | str | bytes) -> DashboardModel:
+        """Replace the canvas with an exported dashboard, as dropping its file does.
+
+        The loaded dashboard keeps its id, owner, title and sharing rules, so
+        saving writes the imported contents to it. Without a loaded dashboard
+        the file's title is used and saving creates a new one. The canvas is
+        marked dirty.
+
+        Raises
+        ------
+        ValueError
+            If *data* is not valid JSON or not a dashboard export.
+        """
+        model = self._imported_model(data)
+        self.load_model(model)
+        self.dirty = True
+        return model
+
+    def _imported_model(self, data: dict | str | bytes) -> DashboardModel:
+        """Parse an export into a model that takes the loaded dashboard's identity."""
+        if isinstance(data, (str, bytes)):
+            try:
+                data = json.loads(data)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Not valid JSON: {exc}") from exc
+        if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+            raise ValueError("Not a FlowDash dashboard export.")
+        current = self.dashboard
+        try:
+            model = DashboardModel.from_dict(
+                {
+                    **data,
+                    "dashboard_id": current.dashboard_id if current else uuid.uuid4().hex[:12],
+                    "user_id": current.user_id if current else self.user,
+                    "title": current.title if current else data.get("title") or "Untitled",
+                    "permission": None,
+                }
+            )
+        except (AttributeError, KeyError, TypeError) as exc:
+            raise ValueError(f"Malformed dashboard export: {exc!r}") from exc
+        if current is not None:
+            model.permission = current.permission
         return model
 
     # ------------------------------------------------------------------
@@ -1532,10 +1670,61 @@ class FlowDash(Viewer):
             self._add_from_ui(component_id)
 
     def _on_component_dropped(self, payload):
+        if payload.get("drop_type") == _FILES_DROP_TYPE:
+            self._on_files_dropped(payload.get("data") or [])
+            return
         # panel-reactflow handles frontend messages inside `hold()`. On Panel
         # 1.10 a held patch that adds node views blanks the views already on
         # the canvas, so apply the drop on the next tick like a button click.
         pn.state.execute(partial(self._add_dropped, payload), schedule=True)
+
+    def _download_callback(self):
+        data = self.export_dashboard()
+        stem = re.sub(r"[^\w-]+", "_", data["title"]).strip("_") or "dashboard"
+        self._download_button.filename = f"{stem}.json"
+        return io.StringIO(json.dumps(data, indent=2))
+
+    def _on_files_dropped(self, files: list[dict]):
+        file = next((f for f in files if f.get("name", "").lower().endswith(".json")), None)
+        if file is None:
+            self._notify("warning", "Drop a downloaded dashboard .json file to load it.")
+            return
+        try:
+            model = self._imported_model(file.get("content", ""))
+        except ValueError as exc:
+            self._notify("error", f"Could not load {file['name']}: {exc}", duration=5000)
+            return
+        if not self._tile_items:
+            self._apply_import(model)
+            return
+        self._pending_import = model
+        self._import_message.object = (
+            f"Replace the canvas with the {len(model.items)} components in "
+            f"**{file['name']}**? Unsaved work will be lost."
+        )
+        self._import_dialog.open = True
+
+    def _apply_import(self, model: DashboardModel):
+        # Scheduled for the same reason as palette drops (see `_on_component_dropped`).
+        pn.state.execute(partial(self._import_from_ui, model), schedule=True)
+
+    async def _import_from_ui(self, model: DashboardModel):
+        try:
+            await self.load_model_async(model)
+        except Exception as exc:
+            logger.exception("Failed to load dropped dashboard")
+            self._notify("error", f"Could not load the dashboard: {exc}", duration=5000)
+            return
+        self.dirty = True
+        missing = sorted(
+            {item.component_id for item in model.items} - self._component_specs.keys()
+        )
+        if missing:
+            self._notify(
+                "warning", f"Skipped unavailable components: {', '.join(missing)}", duration=6000
+            )
+        else:
+            self._notify("success", f"Loaded {len(model.items)} components.", duration=3000)
 
     def _add_dropped(self, payload):
         """Add a component dropped from the palette, wiring it to the port it landed on."""

@@ -187,15 +187,12 @@ per-dashboard permissions.
 
 ## Fitting it into your own layout
 
-The mode toggle and the *Save* and *Clear* actions at the top of the side panel
-can be hidden with `toolbar=False`, leaving only the component palette, or
-extended with your own controls through `toolbar_extra`, which places them
-between *Save* and *Clear*:
+The toolbar holds the mode toggle and the *Save*, *Download* and *Clear* actions. It floats at the top of the wiring canvas and sits above the tile grid in dashboard mode. Hide it with `toolbar=False`, leaving only the component palette, or extend it with your own controls through `toolbar_extra`, which places them between *Download* and *Clear*. Small text buttons match the built-in actions:
 
 ```python
 import panel_material_ui as pmui
 
-share = pmui.Button(label="Share", icon="share", variant="outlined", size="small")
+share = pmui.Button(label="Share", icon="share", variant="text", size="small")
 editor = FlowDash(components, toolbar_extra=[share])
 ```
 

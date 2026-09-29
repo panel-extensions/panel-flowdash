@@ -217,9 +217,9 @@ class FlowDashApp(Viewer):
         self._share_button = pmui.Button(
             label="Share",
             icon="share",
-            variant="outlined",
+            variant="text",
             size="small",
-            margin=(5, 4),
+            margin=(5, 2),
             visible=False,
         )
         self._share_button.on_click(lambda _event: self._share_current_dashboard())

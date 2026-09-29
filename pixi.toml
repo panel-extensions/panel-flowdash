@@ -20,15 +20,15 @@ hatch-vcs = "*"
 python = ">=3.10"
 python-gil = '*'
 panel = ">=1.9.0"
-panel-material-ui = ">=0.14.0"
+panel-material-ui = ">=0.16.0"
 
 [dependencies]
 panel_flowdash = { path = "." }
 
 [pypi-dependencies]
 # TODO: Add these to conda-forge / pyviz
-panel_reactflow = ">=0.5.0b0"
-panel_tiles = "*"
+panel_reactflow = ">=0.5.1"
+panel_tiles = ">=0.4.0"
 
 [feature.test.dependencies]
 pytest = ">=6"

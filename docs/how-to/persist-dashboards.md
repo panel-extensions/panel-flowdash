@@ -79,6 +79,7 @@ model = DashboardModel(
 
 The `tile_layout` list stores the grid positions and sizes for the rendered
 dashboard view (separate from the node editor canvas positions in items).
+`reference_width`, `breakpoints` and `responsive_layouts` store how that layout adapts to other screen sizes; see [Layout & sizing](layout-and-sizing.md#responsive-layouts).
 
 ---
 
@@ -131,3 +132,20 @@ store.delete_dashboard("user1", "abc123")
 ```
 
 Returns `True` if a row was deleted, `False` if not found.
+
+---
+
+## Export and import dashboard files
+
+In edit mode, **Download** in the side panel saves the canvas as a JSON file named after the dashboard. Dropping that file onto the wiring canvas recreates its components, connections and tile layout. If the canvas already has components, the editor asks before replacing them. Components the editor doesn't offer are skipped with a warning.
+
+The file holds the dashboard contents but not its `dashboard_id`, `user_id` or `permission`. An imported file takes the identity of the dashboard currently loaded, so saving writes the imported contents to that dashboard and cannot overwrite another one or change who it is shared with.
+
+The same round trip is available from Python:
+
+```python
+data = editor.export_dashboard()  # a JSON-serializable dict
+other_editor.import_dashboard(data)  # also accepts the JSON string
+```
+
+`import_dashboard` raises `ValueError` for anything that isn't a dashboard export and marks the canvas dirty.

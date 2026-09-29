@@ -6,15 +6,18 @@ objects, wiring them, and round-tripping through a store, all without a server.
 """
 
 import asyncio
+import json
 
 import panel as pn
 import panel_material_ui as pmui
 import panel_reactflow as pr
 import param
 import pytest
+from panel.tests.util import async_wait_until
 from panel.viewable import Viewer
 
 from panel_flowdash import register
+from panel_flowdash.auth import Permission
 from panel_flowdash.component_library import normalize_components
 from panel_flowdash.dashboard_store import (
     DashboardEdge,
@@ -497,11 +500,11 @@ class TestToolbar:
         assert len(editor._tile_items) == 1
 
     async def test_save_button_highlights_unsaved_changes(self, store_editor):
-        assert store_editor._save_button.variant == "outlined"
+        assert store_editor._save_button.variant == "text"
         store_editor.add_component(SELECTOR)
         assert store_editor._save_button.variant == "contained"
         store_editor.save(title="Demo")
-        assert store_editor._save_button.variant == "outlined"
+        assert store_editor._save_button.variant == "text"
 
     async def test_save_button_disabled_when_read_only(self, editor):
         editor.read_only = True
@@ -941,6 +944,68 @@ class TestModelRoundTrip:
         assert editor.mode == "wiring"
         assert editor.to_model().tile_layout == layout
 
+    async def test_reference_width_survives_wiring_and_dashboard_modes(self, editor):
+        editor.load_model(
+            DashboardModel(
+                dashboard_id="d1",
+                user_id="alice",
+                title="Laid Out",
+                items=[DashboardItem(instance_id="n1", component_id=SELECTOR)],
+                reference_width=1400,
+            )
+        )
+        assert editor.to_model().reference_width == 1400
+
+        editor.mode = "dashboard"
+        assert editor._tile_grid.reference_width == 1400
+
+        editor._tile_grid.reference_width = 1100
+        editor.mode = "wiring"
+        assert editor.to_model().reference_width == 1100
+
+        editor.mode = "dashboard"
+        assert editor._tile_grid.reference_width == 1100
+
+    async def test_loading_dashboard_without_reference_width_clears_it(self, editor):
+        items = [DashboardItem(instance_id="n1", component_id=SELECTOR)]
+        editor.load_model(
+            DashboardModel(
+                dashboard_id="d1", user_id="alice", title="A", items=items, reference_width=1400
+            )
+        )
+        editor.mode = "dashboard"
+        editor.load_model(
+            DashboardModel(dashboard_id="d2", user_id="alice", title="B", items=items)
+        )
+        editor.mode = "dashboard"
+        assert editor._tile_grid.reference_width is None
+        assert editor.to_model().reference_width is None
+
+    async def test_loading_dashboard_clears_previous_custom_layouts(self, editor):
+        """Stale overrides would stop the next dashboard's layouts from being generated."""
+        items = [DashboardItem(instance_id="n1", component_id=SELECTOR)]
+        xs = [{"index": 0, "width": 100, "height": 80, "visible": True}]
+        editor.load_model(
+            DashboardModel(
+                dashboard_id="d1",
+                user_id="alice",
+                title="A",
+                items=items,
+                breakpoints=[600],
+                responsive_layouts={"xs": xs},
+            )
+        )
+        editor.mode = "dashboard"
+        assert editor._tile_grid.responsive_layouts == {"xs": xs}
+        assert editor._tile_grid.breakpoints == [600]
+
+        editor.load_model(
+            DashboardModel(dashboard_id="d2", user_id="alice", title="B", items=items)
+        )
+        editor.mode = "dashboard"
+        assert editor._tile_grid.responsive_layouts == {}
+        assert editor._tile_grid.breakpoints == [768, 1200]
+
 
 class TestPersistence:
     async def test_new_dashboard_persists_and_resets(self, store_editor):
@@ -1027,40 +1092,61 @@ class TestPersistence:
 
 
 class TestDisplayModes:
-    async def test_wiring_mode_shows_the_flow_canvas(self, editor):
+    async def test_wiring_mode_floats_the_toolbar_over_the_canvas(self, editor):
         assert editor.mode == "wiring"
-        assert editor._workspace_area.objects == [editor._flow]
+        assert editor._workspace_area.objects[0] is editor._flow
+        assert editor._flow.top_panel == [editor._controls]
         assert editor._side_panel.visible
-        assert editor._palette_section.visible
 
-    async def test_dashboard_mode_shows_the_tile_grid(self, editor):
+    async def test_dashboard_mode_puts_the_toolbar_above_the_grid(self, editor):
         editor.mode = "dashboard"
-        assert editor._workspace_area.objects == [editor._tile_grid]
-        assert editor._controls.visible
-        assert not editor._palette_section.visible
+        assert editor._workspace_area.objects[:2] == [editor._controls, editor._tile_grid]
+        assert editor._flow.top_panel == []
+        assert not editor._side_panel.visible
+
+    async def test_toolbar_returns_to_the_canvas(self, editor):
+        editor.mode = "dashboard"
+        editor.mode = "wiring"
+        assert editor._controls not in editor._workspace_area.objects
+        assert editor._flow.top_panel == [editor._controls]
+
+    async def test_dialogs_stay_mounted_in_both_modes(self, editor):
+        dialogs = [editor._clear_dialog, editor._import_dialog]
+        assert editor._workspace_area.objects[-2:] == dialogs
+        editor.mode = "dashboard"
+        assert editor._workspace_area.objects[-2:] == dialogs
 
     async def test_non_editable_always_shows_the_grid(self, editor):
         editor.editable = False
-        assert editor._workspace_area.objects == [editor._tile_grid]
+        assert editor._tile_grid in editor._workspace_area.objects
+        assert editor._controls not in editor._workspace_area.objects
         assert not editor._side_panel.visible
 
     async def test_toolbar_can_be_hidden(self):
         editor = FlowDash(COMPONENTS, notifications=False, toolbar=False)
-        assert not editor._controls.visible
-        assert editor._palette_section.visible
+        assert editor._flow.top_panel == []
+        assert editor._side_panel.visible
         editor.mode = "dashboard"
-        assert not editor._side_panel.visible
+        assert editor._controls not in editor._workspace_area.objects
+
+    async def test_empty_canvas_shows_drop_hint(self, editor):
+        assert editor._flow.bottom_panel == [editor._empty_hint]
+        instance_id = editor.add_component(SELECTOR)
+        assert editor._flow.bottom_panel == []
+        editor.remove_component(instance_id)
+        assert editor._flow.bottom_panel == [editor._empty_hint]
 
     async def test_preview_locks_the_grid(self, editor):
         editor.param.update(mode="dashboard", preview=True)
         assert not editor._tile_grid.editable
         assert not editor._tile_grid.card
 
-    async def test_toolbar_extra_is_seated_between_save_and_clear(self):
+    async def test_toolbar_extra_is_seated_between_download_and_clear(self):
         button = pmui.Button(label="Share")
         editor = FlowDash(COMPONENTS, notifications=False, toolbar_extra=[button])
         assert editor._actions_row.objects == [
             editor._save_button,
+            editor._download_button,
             button,
             editor._clear_button,
         ]
@@ -1578,3 +1664,167 @@ class TestPalette:
         editor.add_component(SINGLETON)
         _drop(editor, SINGLETON)
         assert len(editor._tile_items) == 1
+
+
+def _file_drop(editor, *files):
+    editor._flow._handle_msg(
+        {
+            "type": "drop",
+            "drop_type": "Files",
+            "data": [
+                {
+                    "name": name,
+                    "type": "application/json",
+                    "size": len(content),
+                    "content": content,
+                }
+                for name, content in files
+            ],
+            "position": {"x": 0, "y": 0},
+            "target": None,
+        }
+    )
+
+
+def _wired_export():
+    source = FlowDash(COMPONENTS, notifications=False)
+    src = source.add_component(SELECTOR, position=(10, 20))
+    dst = source.add_component(CHART, position=(400, 20))
+    source.connect(src, "ticker", dst, "ticker")
+    data = source.export_dashboard()
+    data["title"] = "Exported"
+    data["reference_width"] = 1300
+    return data, src, dst
+
+
+class TestExportImport:
+    async def test_export_omits_identity_and_keeps_contents(self, store_editor):
+        store_editor.new_dashboard("Mine")
+        src = store_editor.add_component(SELECTOR)
+        dst = store_editor.add_component(CHART)
+        store_editor.connect(src, "ticker", dst, "ticker")
+
+        data = store_editor.export_dashboard()
+
+        assert not {"dashboard_id", "user_id", "permission"} & data.keys()
+        assert data["title"] == "Mine"
+        assert [i["instance_id"] for i in data["items"]] == [src, dst]
+        assert data["edges"] == [
+            {"source": src, "source_port": "ticker", "target": dst, "target_port": "ticker"}
+        ]
+        json.dumps(data)
+
+    async def test_import_recreates_canvas(self, editor):
+        data, src, dst = _wired_export()
+        editor.add_component(SHOUTER)
+
+        editor.import_dashboard(json.dumps(data))
+
+        assert [i["instance_id"] for i in editor._tile_items] == [src, dst]
+        assert [(e["source"], e["target"]) for e in editor.graph.edges] == [(src, dst)]
+        assert {n["id"]: n["position"] for n in editor._flow.nodes}[dst] == {"x": 400, "y": 20}
+        assert editor.to_model().reference_width == 1300
+        assert editor.dirty
+
+    async def test_import_keeps_loaded_dashboard_identity(self, store_editor):
+        target = store_editor.new_dashboard("Target")
+        store_editor.dashboard.permission = Permission.from_spec(allow_users=["bob"])
+        data, src, _dst = _wired_export()
+        data.update(dashboard_id="other", user_id="mallory", permission={"allow_users": ["x"]})
+
+        model = store_editor.import_dashboard(data)
+        store_editor.save()
+
+        assert (model.dashboard_id, model.user_id, model.title) == (
+            target.dashboard_id,
+            "alice",
+            "Target",
+        )
+        saved = store_editor.store.load_dashboard("alice", target.dashboard_id)
+        assert saved.items[0].instance_id == src
+        assert saved.permission.allow_users == frozenset({"bob"})
+        assert store_editor.store.load_dashboard("mallory", "other") is None
+
+    async def test_import_without_dashboard_uses_file_title(self, editor):
+        data, _src, _dst = _wired_export()
+        model = editor.import_dashboard(data)
+        assert (model.title, model.user_id) == ("Exported", editor.user)
+
+    @pytest.mark.parametrize(
+        ("data", "match"),
+        [
+            ("{not json", "Not valid JSON"),
+            ('["items"]', "Not a FlowDash dashboard"),
+            ({"title": "No items"}, "Not a FlowDash dashboard"),
+            ({"items": [{"component_id": SELECTOR}]}, "Malformed"),
+        ],
+    )
+    async def test_import_rejects_invalid_data(self, editor, data, match):
+        instance = editor.add_component(SELECTOR)
+        with pytest.raises(ValueError, match=match):
+            editor.import_dashboard(data)
+        assert [i["instance_id"] for i in editor._tile_items] == [instance]
+
+    async def test_download_writes_export_under_dashboard_title(self, editor):
+        editor.new_dashboard("Sales / Q3 report")
+        editor.add_component(SELECTOR)
+
+        content = json.loads(editor._download_callback().read())
+
+        assert content == editor.export_dashboard()
+        assert editor._download_button.filename == "Sales_Q3_report.json"
+
+
+class TestFileDrop:
+    async def test_canvas_accepts_file_drops(self, editor):
+        assert "Files" in editor._flow.drop_types
+
+    async def test_drop_on_empty_canvas_loads_file(self, editor):
+        data, src, dst = _wired_export()
+        _file_drop(editor, ("notes.txt", "hi"), ("dash.json", json.dumps(data)))
+        await async_wait_until(lambda: len(editor._tile_items) == 2)
+        assert [(e["source"], e["target"]) for e in editor.graph.edges] == [(src, dst)]
+        assert editor.dirty
+        assert not editor._import_dialog.open
+
+    async def test_drop_on_populated_canvas_asks_first(self, editor):
+        existing = editor.add_component(SHOUTER)
+        data, src, _dst = _wired_export()
+        _file_drop(editor, ("dash.json", json.dumps(data)))
+        await asyncio.sleep(0.05)
+
+        assert editor._import_dialog.open
+        assert "dash.json" in editor._import_message.object
+        assert [i["instance_id"] for i in editor._tile_items] == [existing]
+
+        confirm = editor._import_dialog.objects[1][-1]
+        confirm.clicks += 1
+        await async_wait_until(lambda: editor._tile_items[0]["instance_id"] == src)
+        assert not editor._import_dialog.open
+
+    async def test_cancelled_drop_keeps_canvas(self, editor):
+        existing = editor.add_component(SHOUTER)
+        data, _src, _dst = _wired_export()
+        _file_drop(editor, ("dash.json", json.dumps(data)))
+        cancel = editor._import_dialog.objects[1][-2]
+        cancel.clicks += 1
+        await asyncio.sleep(0.05)
+        assert not editor._import_dialog.open
+        assert editor._pending_import is None
+        assert [i["instance_id"] for i in editor._tile_items] == [existing]
+
+    @pytest.mark.parametrize("files", [[("notes.txt", "{}")], [("dash.json", "{broken")]])
+    async def test_unusable_drop_is_ignored(self, editor, files):
+        existing = editor.add_component(SHOUTER)
+        _file_drop(editor, *files)
+        await asyncio.sleep(0.05)
+        assert not editor._import_dialog.open
+        assert [i["instance_id"] for i in editor._tile_items] == [existing]
+
+    async def test_drop_skips_components_the_editor_lacks(self):
+        data, src, _dst = _wired_export()
+        editor = FlowDash({SELECTOR: ticker_select}, notifications=False)
+        _file_drop(editor, ("dash.json", json.dumps(data)))
+        await async_wait_until(lambda: len(editor._tile_items) == 1)
+        assert editor._tile_items[0]["instance_id"] == src
+        assert editor.graph.edges == []

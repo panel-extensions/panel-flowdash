@@ -1,6 +1,8 @@
 """UI Test Module."""
 # import time
 
+import json
+
 import param
 import pytest
 from panel.tests.util import serve_component, wait_until
@@ -212,3 +214,71 @@ def test_palette_drag_adds_and_wires_components(page):
     palette.filter(has_text="Sink").drag_to(pane, target_position={"x": 40, "y": 40})
     wait_until(lambda: len(editor._tile_items) == 3, timeout=8000)
     assert len(editor.graph.edges) == 1
+
+
+def _drop_file(locator, name, content):
+    """Drop *content* on *locator* as an OS file, returning whether the canvas accepted it."""
+    return locator.evaluate(
+        """(el, [name, content]) => {
+          const rect = el.getBoundingClientRect()
+          const dt = new DataTransfer()
+          dt.items.add(new File([content], name, { type: "application/json" }))
+          const init = {
+            dataTransfer: dt, bubbles: true, cancelable: true, composed: true,
+            clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
+          }
+          const over = new DragEvent("dragover", init)
+          el.dispatchEvent(over)
+          el.dispatchEvent(new DragEvent("drop", init))
+          return over.defaultPrevented
+        }""",
+        [name, content],
+    )
+
+
+def test_downloaded_dashboard_recreated_by_dropping_it(page, tmp_path):
+    components = {"Test/source": source_component, "Test/sink": sink_component}
+    editor = FlowDash(components, notifications=False, include_builtin_components=False)
+    editor.new_dashboard("Wired pair")
+    src = editor.add_component("Test/source", position=(0, 0))
+    dst = editor.add_component("Test/sink", position=(300, 0))
+    editor.connect(src, "value", dst, "value")
+    serve_component(page, editor)
+
+    with page.expect_download() as download:
+        page.get_by_role("button", name="Download").click()
+    assert download.value.suggested_filename == "Wired_pair.json"
+    path = tmp_path / "export.json"
+    download.value.save_as(path)
+    content = path.read_text()
+    assert json.loads(content)["edges"][0]["source"] == src
+
+    page.get_by_role("button", name="Clear", exact=True).click()
+    page.get_by_role("dialog").get_by_role("button", name="Clear canvas").click()
+    wait_until(lambda: editor._tile_items == [], timeout=8000)
+
+    pane = page.locator(".react-flow__pane")
+    assert _drop_file(pane, "export.json", content)
+    wait_until(lambda: len(editor.graph.edges) == 1, timeout=8000)
+    assert [i["instance_id"] for i in editor._tile_items] == [src, dst]
+    wait_until(lambda: page.locator(".react-flow__node").count() == 2, timeout=8000)
+    wait_until(lambda: page.locator(".react-flow__edge").count() == 1, timeout=8000)
+
+
+def test_dropping_file_on_populated_canvas_asks_first(page):
+    editor = FlowDash({"Test/source": source_component}, notifications=False)
+    existing = editor.add_component("Test/source")
+    export = FlowDash({"Test/source": source_component}, notifications=False)
+    replacement = export.add_component("Test/source")
+    serve_component(page, editor)
+
+    pane = page.locator(".react-flow__pane")
+    assert _drop_file(pane, "other.json", json.dumps(export.export_dashboard()))
+    dialog = page.get_by_role("dialog")
+    dialog.get_by_role("button", name="Cancel").click()
+    wait_until(lambda: not editor._import_dialog.open, timeout=8000)
+    assert editor._tile_items[0]["instance_id"] == existing
+
+    assert _drop_file(pane, "other.json", json.dumps(export.export_dashboard()))
+    page.get_by_role("dialog").get_by_role("button", name="Replace canvas").click()
+    wait_until(lambda: editor._tile_items[0]["instance_id"] == replacement, timeout=8000)
