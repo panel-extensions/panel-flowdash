@@ -274,6 +274,29 @@ class TestResponsiveLayoutPersistence:
             "xs": [{"width": 100, "height": 200, "visible": True}]
         }
 
+    async def test_reference_width_round_trip(self, store):
+        dashboard = DashboardModel(
+            dashboard_id="d8", user_id="user1", title="Reference", reference_width=1400
+        )
+        store.save_dashboard(dashboard)
+        loaded = store.load_dashboard("user1", "d8")
+        assert loaded.reference_width == 1400
+
+        loaded.reference_width = None
+        store.save_dashboard(loaded)
+        assert store.load_dashboard("user1", "d8").reference_width is None
+
+    async def test_reference_width_defaults_to_none(self, store):
+        dashboard = store.create_dashboard("user1", "No Reference")
+        assert store.load_dashboard("user1", dashboard.dashboard_id).reference_width is None
+
+    async def test_reference_width_in_dict_round_trip(self):
+        dashboard = DashboardModel(dashboard_id="d9", user_id="u", title="T", reference_width=900)
+        assert DashboardModel.from_dict(dashboard.to_dict()).reference_width == 900
+        legacy = dashboard.to_dict()
+        del legacy["reference_width"]
+        assert DashboardModel.from_dict(legacy).reference_width is None
+
 
 class TestPermissionPersistence:
     async def test_permission_round_trip(self, store):

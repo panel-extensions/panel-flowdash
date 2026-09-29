@@ -24,6 +24,7 @@ class PanelAppMetadata:
     icon: str | None = None
     description: str | None = None
     tags: list[str] = field(default_factory=list)
+    extensions: list[str] = field(default_factory=list)
     default_size: dict[str, Any] | None = None
     min_size: dict[str, Any] | None = None
     max_size: dict[str, Any] | None = None
@@ -76,6 +77,7 @@ def register(
     icon: str | None = None,
     description: str | None = None,
     tags: list[str] | None = None,
+    extensions: list[str] | None = None,
     default_size: dict[str, Any] | None = None,
     min_size: dict[str, Any] | None = None,
     max_size: dict[str, Any] | None = None,
@@ -103,6 +105,11 @@ def register(
     ``config_editor`` to supply a custom editor callable instead of the
     auto-generated form.
 
+    The ``extensions`` argument names the Panel extensions (e.g.
+    ``["tabulator"]``) the app's output needs. Components are imported lazily,
+    after the page has loaded its JavaScript, so an editor loads every declared
+    extension up front; an undeclared one fails to render in the browser.
+
     The ``allow_users``, ``allow_groups``, ``deny_users`` and ``deny_groups``
     arguments declare page-level authorization rules. Users are matched against
     either the OAuth login or the system user; groups against the identity's
@@ -119,6 +126,7 @@ def register(
         icon=icon,
         description=description,
         tags=list(tags or []),
+        extensions=list(extensions or []),
         default_size=default_size,
         min_size=min_size,
         max_size=max_size,
@@ -300,6 +308,7 @@ _LITERAL_KEYS = {
     "requires",
     "config",
     "tags",
+    "extensions",
     "default_size",
     "min_size",
     "max_size",
@@ -397,6 +406,7 @@ def build_registry(project_dir: Path) -> dict[str, RegistryEntry]:
                 icon=kwargs.get("icon"),
                 description=kwargs.get("description"),
                 tags=list(kwargs.get("tags") or []),
+                extensions=list(kwargs.get("extensions") or []),
                 default_size=kwargs.get("default_size"),
                 min_size=kwargs.get("min_size"),
                 max_size=kwargs.get("max_size"),

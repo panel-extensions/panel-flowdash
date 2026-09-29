@@ -89,6 +89,8 @@ class DashboardModel:
     tile_layout: list[dict[str, Any]] = field(default_factory=list)
     breakpoints: list[int] = field(default_factory=list)
     responsive_layouts: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    # Container width the tile layout was authored at; narrower screens derive from it.
+    reference_width: int | None = None
     permission: Permission = field(default_factory=Permission)
 
     @property
@@ -107,6 +109,7 @@ class DashboardModel:
             "tile_layout": self.tile_layout,
             "breakpoints": self.breakpoints,
             "responsive_layouts": self.responsive_layouts,
+            "reference_width": self.reference_width,
             "permission": self.permission.to_dict(),
         }
 
@@ -122,6 +125,7 @@ class DashboardModel:
             tile_layout=data.get("tile_layout", []),
             breakpoints=data.get("breakpoints", []),
             responsive_layouts=data.get("responsive_layouts", {}),
+            reference_width=data.get("reference_width"),
             permission=Permission.from_dict(data.get("permission")),
         )
 
@@ -353,6 +357,7 @@ class DashboardStore(BaseDashboardStore):
                 ("breakpoints_json", "'[]'"),
                 ("responsive_layouts_json", "'{}'"),
                 ("permission_json", "'{}'"),
+                ("reference_width_json", "'null'"),
             ]
             for col, default in migrations:
                 try:
@@ -447,12 +452,13 @@ class DashboardStore(BaseDashboardStore):
         tile_layout_json = json.dumps(dashboard.tile_layout)
         breakpoints_json = json.dumps(dashboard.breakpoints)
         responsive_layouts_json = json.dumps(dashboard.responsive_layouts)
+        reference_width_json = json.dumps(dashboard.reference_width)
         permission_json = json.dumps(dashboard.permission.to_dict())
         with self._get_conn() as conn:
             conn.execute(
                 """
-                INSERT INTO dashboards (dashboard_id, user_id, title, version, items_json, edges_json, tile_layout_json, breakpoints_json, responsive_layouts_json, permission_json, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                INSERT INTO dashboards (dashboard_id, user_id, title, version, items_json, edges_json, tile_layout_json, breakpoints_json, responsive_layouts_json, reference_width_json, permission_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(dashboard_id) DO UPDATE SET
                     title = excluded.title,
                     version = excluded.version,
@@ -461,6 +467,7 @@ class DashboardStore(BaseDashboardStore):
                     tile_layout_json = excluded.tile_layout_json,
                     breakpoints_json = excluded.breakpoints_json,
                     responsive_layouts_json = excluded.responsive_layouts_json,
+                    reference_width_json = excluded.reference_width_json,
                     permission_json = excluded.permission_json,
                     updated_at = datetime('now')
                 """,
@@ -474,6 +481,7 @@ class DashboardStore(BaseDashboardStore):
                     tile_layout_json,
                     breakpoints_json,
                     responsive_layouts_json,
+                    reference_width_json,
                     permission_json,
                 ),
             )
@@ -504,6 +512,7 @@ class DashboardStore(BaseDashboardStore):
             row["responsive_layouts_json"] if "responsive_layouts_json" in keys else "{}"
         )
         permission_raw = row["permission_json"] if "permission_json" in keys else "{}"
+        reference_raw = row["reference_width_json"] if "reference_width_json" in keys else "null"
         edges = json.loads(edges_raw)
         tile_layout = json.loads(tile_layout_raw)
         breakpoints = json.loads(breakpoints_raw)
@@ -519,5 +528,6 @@ class DashboardStore(BaseDashboardStore):
             tile_layout=tile_layout,
             breakpoints=breakpoints,
             responsive_layouts=responsive_layouts,
+            reference_width=json.loads(reference_raw),
             permission=permission,
         )

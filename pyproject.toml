@@ -42,9 +42,9 @@ classifiers = [
 dependencies = [
     "packaging",
     "panel >=1.9.3",
-    "panel-material-ui >=0.14.0",
-    "panel-reactflow >=0.5.0b0",
-    "panel-tiles >=0.3.0",
+    "panel-material-ui >=0.16.0",
+    "panel-reactflow >=0.5.1",
+    "panel-tiles >=0.4.0",
 ]
 
 [project.scripts]
@@ -114,6 +114,7 @@ convention = "numpy"
 "tests/**" = ["D"]
 "*_test.py" = ["D"]
 "examples/**" = ["D"]
+"manual_tests/**" = ["D", "T201"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["panel_flowdash"]

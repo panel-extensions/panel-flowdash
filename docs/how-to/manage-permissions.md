@@ -104,8 +104,8 @@ identity may not see from the launcher and navigation menu.
 ## Restricting dashboards
 
 Saved dashboards start out accessible only to their owner (the user who created
-them). To share one, open it in the editor and click the **share** button in the
-toolbar next to *Save*. The button is only shown when you are allowed to
+them). To share one, open it in the editor and click **Share** in the
+editor's side panel next to *Save*. The button is only shown when you are allowed to
 administer that dashboard.
 
 The share dialog exposes the same four rule fields as allow/deny lists of groups

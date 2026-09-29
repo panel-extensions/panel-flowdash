@@ -6,7 +6,9 @@ import param
 from panel_flowdash import register
 
 
-@register(component=True, title="Data Table", config=["title", "page_size"])
+@register(
+    component=True, title="Data Table", config=["title", "page_size"], extensions=["tabulator"]
+)
 class app(pn.viewable.Viewer):
     """Renders a DataFrame as an interactive Tabulator table.
 
