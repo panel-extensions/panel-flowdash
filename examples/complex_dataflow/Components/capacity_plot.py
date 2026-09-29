@@ -6,7 +6,9 @@ import param
 from panel_flowdash import register
 
 
-@register(component=True, title="Capacity by Year", config=["title", "color_scheme"])
+@register(
+    component=True, title="Capacity by Year", config=["title", "color_scheme"], extensions=["vega"]
+)
 class app(pn.viewable.Viewer):
     """Bar chart showing total installed capacity per year using Vega-Lite.
 

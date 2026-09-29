@@ -9,6 +9,7 @@ import asyncio
 
 import panel as pn
 import panel_material_ui as pmui
+import panel_reactflow as pr
 import param
 import pytest
 from panel.viewable import Viewer
@@ -38,6 +39,11 @@ def price_chart(config):
 @register(page=False, component=True, requires=[{"key": "tickers", "type": "List"}])
 def ticker_list(config):
     return "list"
+
+
+@register(page=False, component=True, title="Header", singleton=True)
+def page_header(config):
+    return "header"
 
 
 class Shouter(Viewer):
@@ -81,6 +87,7 @@ class YearRange(Viewer):
 SELECTOR = "Demo/selector"
 CHART = "Demo/chart"
 SHOUTER = "Demo/shouter"
+SINGLETON = "Demo/header"
 
 # Explicit ids, so the tests do not depend on how ids are derived from modules.
 COMPONENTS = {SELECTOR: ticker_select, CHART: price_chart, SHOUTER: Shouter}
@@ -119,16 +126,15 @@ class TestConstruction:
             {"test_editor/ticker_select"} | BUILTIN_COMPONENTS.keys()
         )
 
-    async def test_no_components_disables_add(self):
+    async def test_no_components_leaves_the_palette_empty(self):
         editor = FlowDash(notifications=False, include_builtin_components=False)
         assert editor.component_specs == {}
-        assert editor._add_button.disabled
-        assert editor._component_picker.disabled
+        assert editor._palette.items == []
 
     async def test_builtins_are_available_without_project_components(self):
         editor = FlowDash(notifications=False)
         assert set(editor.component_specs) == set(BUILTIN_COMPONENTS)
-        assert not editor._add_button.disabled
+        assert editor._palette.items
 
     async def test_explicit_component_overrides_builtin_id(self):
         editor = FlowDash({"Widgets/Select": ticker_select}, notifications=False)
@@ -278,6 +284,99 @@ class TestBuiltinWidgets:
         editor.disconnect(src_start, "bound", dst, "start")
         assert widget.start == 10
 
+    @pytest.mark.parametrize(
+        "component_id", ["Widgets/Select", "Widgets/MultiChoice", "Widgets/Slider"]
+    )
+    def test_widgets_have_a_minimum_width_for_the_canvas(self, component_id):
+        editor = FlowDash({}, notifications=False)
+        instance_id = editor.add_component(component_id)
+        widget = editor._tile_objects[-1]
+        assert (widget.min_width, widget.sizing_mode) == (240, "stretch_width")
+
+        editor.graph.get_config_state(instance_id).min_widget_width = 320
+        assert widget.min_width == 320
+
+    # panel-reactflow's form passes both `name` and `label` to its widgets, which
+    # Panel 1.9 warns about; warnings-as-errors would force the JSON fallback.
+    @pytest.mark.filterwarnings("ignore:Both 'name' and 'label':PendingDeprecationWarning")
+    @pytest.mark.parametrize(
+        "component_id", ["Widgets/Select", "Widgets/MultiChoice", "Widgets/Slider"]
+    )
+    def test_widget_config_renders_a_schema_form(self, component_id):
+        editor = FlowDash({}, notifications=False)
+        instance_id = editor.add_component(component_id)
+        node = next(n for n in editor._flow.nodes if n["id"] == instance_id)
+        schema = editor._flow.node_types[node["type"]]["schema"]
+        form = pr.SchemaEditor(node["data"], schema)
+        # A property the form cannot render makes it fall back to raw JSON.
+        assert set(form._form._widgets) == set(schema["properties"])
+
+    def test_select_and_multichoice_config_reaches_the_widget(self):
+        editor = FlowDash({}, notifications=False)
+        editor.add_component(
+            "Widgets/Select",
+            config={
+                "description": "Pick one",
+                "searchable": True,
+                "variant": "filled",
+                "size": "small",
+            },
+        )
+        select = editor._tile_objects[-1]
+        assert (select.description, select.searchable, select.variant, select.size) == (
+            "Pick one",
+            True,
+            "filled",
+            "small",
+        )
+
+        multi_id = editor.add_component(
+            "Widgets/MultiChoice", config={"placeholder": "Any", "max_items": 2}
+        )
+        multi = editor._tile_objects[-1]
+        assert (multi.placeholder, multi.max_items) == ("Any", 2)
+        editor.graph.get_config_state(multi_id).max_items = 0
+        assert multi.max_items is None
+
+    def test_slider_default_value_and_format(self):
+        editor = FlowDash({}, notifications=False)
+        instance_id = editor.add_component(
+            "Widgets/Slider", config={"default_value": 30, "format": "0.0", "show_value": False}
+        )
+        widget = editor._tile_objects[-1]
+        assert (widget.value, widget.format, widget.show_value) == (30, "0.0", False)
+        assert editor.graph.get_state(instance_id).selected == 30
+
+        config = editor.graph.get_config_state(instance_id)
+        config.param.update(default_value=200, format="")
+        assert widget.value == 100
+        assert widget.format == "0"
+
+    def test_slider_number_type_follows_config_and_ports(self):
+        editor = FlowDash({"Test/bound": bound_source}, notifications=False)
+        src = editor.add_component("Test/bound")
+        dst = editor.add_component("Widgets/Slider", config={"default_value": 10})
+        widget = editor._tile_objects[-1]
+        state = editor.graph.get_state(dst)
+        assert (widget.format, widget.step) == ("0", 1)
+        assert type(state.selected) is int
+
+        editor.graph.get_state(src).bound = 0.5
+        assert editor.connect(src, "bound", dst, "start") is True
+        assert widget.format == pmui.FloatSlider.param.format.default
+        assert type(state.selected) is float
+
+        editor.graph.get_config_state(dst).number_type = "integer"
+        assert (widget.start, widget.step, widget.format) == (1, 1, "0")
+        assert state.selected == 10
+        assert type(state.selected) is int
+
+    def test_slider_explicit_float_keeps_whole_number_bounds_float(self):
+        editor = FlowDash({}, notifications=False)
+        dst = editor.add_component("Widgets/Slider", config={"number_type": "float"})
+        assert type(editor.graph.get_state(dst).selected) is float
+        assert editor._tile_objects[-1].format == pmui.FloatSlider.param.format.default
+
     def test_builtin_config_roundtrips(self):
         editor = FlowDash({}, notifications=False)
         editor.add_component(
@@ -318,6 +417,28 @@ class TestAddRemove:
         positions = {n["id"]: tuple(n["position"].values()) for n in editor._flow.nodes}
         assert len({positions[i] for i in ids}) == 4
 
+    async def test_default_position_follows_viewport(self, editor):
+        editor._flow.viewport = {"x": -1000, "y": -500, "zoom": 2}
+        instance_id = editor.add_component(SELECTOR)
+        node = next(n for n in editor._flow.nodes if n["id"] == instance_id)
+        assert node["position"] == {"x": 520, "y": 270}
+
+    async def test_default_position_cascades_within_viewport(self, editor):
+        editor._flow.viewport = {"x": 0, "y": 0, "zoom": 1}
+        ids = [editor.add_component(SELECTOR) for _ in range(3)]
+        positions = {n["id"]: n["position"] for n in editor._flow.nodes}
+        assert [positions[i] for i in ids] == [
+            {"x": 40, "y": 40},
+            {"x": 80, "y": 80},
+            {"x": 120, "y": 120},
+        ]
+
+    async def test_singleton_can_only_be_added_once(self):
+        editor = FlowDash({SINGLETON: page_header}, notifications=False)
+        editor.add_component(SINGLETON)
+        with pytest.raises(ValueError, match="only be placed once"):
+            editor.add_component(SINGLETON)
+
     async def test_remove_component_drops_node_and_tile(self, editor):
         instance_id = editor.add_component(SELECTOR)
         editor.remove_component(instance_id)
@@ -343,6 +464,48 @@ class TestAddRemove:
         assert editor._flow.nodes == []
         assert editor._tile_items == []
         assert list(editor.graph.node_ids) == []
+
+
+class TestToolbar:
+    async def test_clear_disabled_on_empty_canvas(self, editor):
+        assert editor._clear_button.disabled
+        instance_id = editor.add_component(SELECTOR)
+        assert not editor._clear_button.disabled
+        editor.remove_component(instance_id)
+        assert editor._clear_button.disabled
+
+    async def test_clear_button_asks_for_confirmation(self, editor):
+        editor.add_component(SELECTOR)
+        editor._clear_button.clicks += 1
+        assert editor._clear_dialog.open
+        assert len(editor._tile_items) == 1
+
+    async def test_clear_confirmation_clears_canvas(self, editor):
+        editor.add_component(SELECTOR)
+        editor._clear_button.clicks += 1
+        confirm = editor._clear_dialog.objects[1][-1]
+        confirm.clicks += 1
+        assert not editor._clear_dialog.open
+        assert editor._tile_items == []
+
+    async def test_clear_cancel_keeps_canvas(self, editor):
+        editor.add_component(SELECTOR)
+        editor._clear_button.clicks += 1
+        cancel = editor._clear_dialog.objects[1][-2]
+        cancel.clicks += 1
+        assert not editor._clear_dialog.open
+        assert len(editor._tile_items) == 1
+
+    async def test_save_button_highlights_unsaved_changes(self, store_editor):
+        assert store_editor._save_button.variant == "outlined"
+        store_editor.add_component(SELECTOR)
+        assert store_editor._save_button.variant == "contained"
+        store_editor.save(title="Demo")
+        assert store_editor._save_button.variant == "outlined"
+
+    async def test_save_button_disabled_when_read_only(self, editor):
+        editor.read_only = True
+        assert editor._save_button.disabled
 
 
 class TestConnect:
@@ -509,6 +672,43 @@ class TestConnect:
         assert len(editor.graph.edges) == 1
         assert editor._edge_id_map == {original_edge["id"]: (src, "ticker", dst, "ticker")}
         assert not editor.dirty
+
+    async def test_select_output_with_rejected_value_is_refused(self, monkeypatch):
+        """Select's untyped output cannot be wired into an Integer input while it holds a string."""
+        editor = FlowDash({"Test/years": YearRange}, notifications=False)
+        select = editor.add_component("Widgets/Select")
+        years = editor.add_component("Test/years")
+        messages = []
+        monkeypatch.setattr(editor._flow, "_send_msg", messages.append)
+
+        editor._flow._handle_msg(
+            {
+                "type": "connection_validation_requested",
+                "request_id": 1,
+                "node_id": select,
+                "handle_id": "selected",
+                "handle_type": "source",
+            }
+        )
+        reason = next(
+            r["reason"]
+            for r in messages[-1]["results"]
+            if r["node_id"] == years and r["handle_id"] == "start_year"
+        )
+        assert "must be an integer" in reason
+
+        editor._flow.add_edge(
+            {
+                "id": "bad",
+                "source": select,
+                "target": years,
+                "sourceHandle": "selected",
+                "targetHandle": "start_year",
+            }
+        )
+        assert editor._flow.edges == []
+        assert editor.graph.edges == []
+        assert editor.graph.get_state(years).start_year == 2000
 
     async def test_edge_without_handle_is_rolled_back(self, editor):
         """A client edge without declared handles cannot remain only on the canvas."""
@@ -830,34 +1030,45 @@ class TestDisplayModes:
     async def test_wiring_mode_shows_the_flow_canvas(self, editor):
         assert editor.mode == "wiring"
         assert editor._workspace_area.objects == [editor._flow]
+        assert editor._side_panel.visible
+        assert editor._palette_section.visible
 
     async def test_dashboard_mode_shows_the_tile_grid(self, editor):
         editor.mode = "dashboard"
         assert editor._workspace_area.objects == [editor._tile_grid]
+        assert editor._controls.visible
+        assert not editor._palette_section.visible
 
     async def test_non_editable_always_shows_the_grid(self, editor):
         editor.editable = False
         assert editor._workspace_area.objects == [editor._tile_grid]
-        assert not editor._controls_row.visible
+        assert not editor._side_panel.visible
 
     async def test_toolbar_can_be_hidden(self):
         editor = FlowDash(COMPONENTS, notifications=False, toolbar=False)
-        assert not editor._controls_row.visible
+        assert not editor._controls.visible
+        assert editor._palette_section.visible
+        editor.mode = "dashboard"
+        assert not editor._side_panel.visible
 
     async def test_preview_locks_the_grid(self, editor):
         editor.param.update(mode="dashboard", preview=True)
         assert not editor._tile_grid.editable
         assert not editor._tile_grid.card
 
-    async def test_toolbar_extra_is_seated_in_the_toolbar(self):
+    async def test_toolbar_extra_is_seated_between_save_and_clear(self):
         button = pmui.Button(label="Share")
         editor = FlowDash(COMPONENTS, notifications=False, toolbar_extra=[button])
-        assert button in editor._controls_row.objects
+        assert editor._actions_row.objects == [
+            editor._save_button,
+            button,
+            editor._clear_button,
+        ]
 
     async def test_toolbar_extra_updates_reactively(self, editor):
         button = pmui.Button(label="Later")
         editor.toolbar_extra = [button]
-        assert button in editor._controls_row.objects
+        assert button in editor._actions_row.objects
 
     async def test_switching_out_of_dashboard_mode_stashes_layout(self, editor):
         editor.add_component(SELECTOR)
@@ -1251,3 +1462,119 @@ class TestSpecCaching:
         second = FlowDash(registry, notifications=False)
 
         assert second.component_specs["CachedSpecs/selector"] is spec
+
+
+def _palette_path(editor, component_id):
+    for i, section in enumerate(editor._palette.items):
+        for j, item in enumerate(section["items"]):
+            if item["component_id"] == component_id:
+                return [i, j]
+    raise AssertionError(f"{component_id} not in palette")
+
+
+def _drop(editor, component_id=None, *, path=None, position=(10, 20), target=None):
+    editor._flow._handle_msg(
+        {
+            "type": "drop",
+            "drop_type": "application/x-flowdash-component",
+            "data": {"path": path or _palette_path(editor, component_id), "label": ""},
+            "position": {"x": position[0], "y": position[1]},
+            "target": target,
+        }
+    )
+
+
+class TestPalette:
+    async def test_palette_groups_components_by_section(self, editor):
+        sections = {s["label"]: s for s in editor._palette.items}
+        assert {"Demo", "Widgets"} <= set(sections)
+        demo = sections["Demo"]
+        assert demo["draggable"] is False
+        assert [i["component_id"] for i in demo["items"]] == [SELECTOR, CHART, SHOUTER]
+        assert all(i["draggable"] for i in demo["items"])
+        assert editor._palette.drag_type in editor._flow.drop_types
+
+    async def test_placed_singleton_is_not_draggable(self):
+        editor = FlowDash({SINGLETON: page_header}, notifications=False)
+        editor.add_component(SINGLETON)
+        (item,) = next(s for s in editor._palette.items if s["label"] == "Demo")["items"]
+        assert item["draggable"] is False
+
+    async def test_clicking_placed_singleton_does_not_add_it_again(self):
+        editor = FlowDash({SINGLETON: page_header}, notifications=False)
+        editor.add_component(SINGLETON)
+        path = _palette_path(editor, SINGLETON)
+        item = editor._palette.items[path[0]]["items"][path[1]]
+        editor._palette._process_click({}, tuple(path), item)
+        assert len(editor._tile_items) == 1
+
+    async def test_clicking_palette_item_adds_component(self, editor):
+        path = _palette_path(editor, CHART)
+        item = editor._palette.items[path[0]]["items"][path[1]]
+        editor._palette._process_click({}, tuple(path), item)
+        assert [i["component_id"] for i in editor._tile_items] == [CHART]
+
+    async def test_drop_on_canvas_adds_component_at_position(self, editor):
+        _drop(editor, CHART, position=(120, 80))
+        (node,) = editor._flow.nodes
+        assert editor._tile_items[0]["component_id"] == CHART
+        assert node["position"] == {"x": 120, "y": 80}
+        assert editor.graph.edges == []
+
+    async def test_drop_on_input_wires_new_output(self, editor):
+        chart = editor.add_component(CHART, position=(500, 100))
+        _drop(
+            editor,
+            SELECTOR,
+            target={"node_id": chart, "handle_id": "ticker", "direction": "input"},
+        )
+        selector = editor._tile_items[1]["instance_id"]
+        assert [(e["source"], e["target"]) for e in editor.graph.edges] == [(selector, chart)]
+        node = next(n for n in editor._flow.nodes if n["id"] == selector)
+        assert node["position"] == {"x": 140, "y": 100}
+
+    async def test_drop_on_output_wires_new_input(self, editor):
+        selector = editor.add_component(SELECTOR, position=(0, 0))
+        _drop(
+            editor,
+            CHART,
+            target={"node_id": selector, "handle_id": "ticker", "direction": "output"},
+        )
+        chart = editor._tile_items[1]["instance_id"]
+        assert [(e["source"], e["target"]) for e in editor.graph.edges] == [(selector, chart)]
+        node = next(n for n in editor._flow.nodes if n["id"] == chart)
+        assert node["position"] == {"x": 360, "y": 0}
+
+    async def test_drop_on_incompatible_port_keeps_node_unwired(self):
+        @register(page=False, component=True, requires=[{"key": "count", "type": "int"}])
+        def counter(config):
+            return "counter"
+
+        editor = FlowDash({SELECTOR: ticker_select, "Demo/counter": counter}, notifications=False)
+        count = editor.add_component("Demo/counter", position=(500, 0))
+        _drop(
+            editor, SELECTOR, target={"node_id": count, "handle_id": "count", "direction": "input"}
+        )
+        assert len(editor._tile_items) == 2
+        assert editor.graph.edges == []
+
+    async def test_drop_on_node_body_adds_without_wiring(self, editor):
+        chart = editor.add_component(CHART, position=(500, 100))
+        _drop(
+            editor,
+            SELECTOR,
+            position=(510, 110),
+            target={"node_id": chart, "handle_id": None, "direction": None},
+        )
+        assert len(editor._tile_items) == 2
+        assert editor.graph.edges == []
+
+    async def test_drop_of_section_header_is_ignored(self, editor):
+        _drop(editor, path=[0])
+        assert editor._tile_items == []
+
+    async def test_dropped_singleton_is_refused_once_placed(self):
+        editor = FlowDash({SINGLETON: page_header}, notifications=False)
+        editor.add_component(SINGLETON)
+        _drop(editor, SINGLETON)
+        assert len(editor._tile_items) == 1

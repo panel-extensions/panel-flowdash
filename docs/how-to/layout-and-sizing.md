@@ -8,14 +8,14 @@ nodes:
 - **Dashboard mode** (`:material/dashboard:`) - a responsive tile grid that
   renders each component's live view, the layout your users actually see.
 
-Toggle between them with the mode switch in the editor toolbar. In dashboard
+Toggle between them with the mode switch at the top of the editor's side panel. In dashboard
 mode a **Preview** switch turns the drag/resize handles off so you can see the
 dashboard exactly as it will appear when served.
 
 ![Dashboard mode showing tiles in the grid, sidebar filters, and the breakpoint toolbar](../assets/images/dashboard-mode.png)
 
-The breakpoint toolbar (XS / SM / MD / AUTO) and the **Preview** switch appear at
-the top of dashboard mode; the sidebar filters on the left are the components
+The breakpoint toolbar (XS / SM / MD / AUTO) appears at the top of dashboard
+mode and the **Preview** switch below the mode toggle; the sidebar filters on the left are the components
 marked `sidebar=True`, described next.
 
 ---

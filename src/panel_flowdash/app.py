@@ -215,7 +215,12 @@ class FlowDashApp(Viewer):
         self._user_id = self._resolve_user_id()
         self._sidebar_container = pn.Column(sizing_mode="stretch_width")
         self._share_button = pmui.Button(
-            icon="share", color="primary", variant="outlined", visible=False
+            label="Share",
+            icon="share",
+            variant="outlined",
+            size="small",
+            margin=(5, 4),
+            visible=False,
         )
         self._share_button.on_click(lambda _event: self._share_current_dashboard())
         # The editor owns the canvas, tile grid and persistence; this class adds

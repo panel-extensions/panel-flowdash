@@ -6,7 +6,9 @@ import param
 from panel_flowdash import register
 
 
-@register(component=True, title="Location Map", config=["zoom", "radius_scale"])
+@register(
+    component=True, title="Location Map", config=["zoom", "radius_scale"], extensions=["deckgl"]
+)
 class app(pn.viewable.Viewer):
     """Scatter plot of turbine lat/lon colored by capacity using DeckGL.
 

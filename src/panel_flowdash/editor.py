@@ -16,6 +16,7 @@ import pathlib
 import typing as t
 import uuid
 from contextlib import contextmanager
+from functools import partial
 
 import panel as pn
 import panel_material_ui as pmui
@@ -44,6 +45,30 @@ if t.TYPE_CHECKING:
     from panel_flowdash.component_spec import ComponentSpec, InputPort, OutputPort
 
 logger = logging.getLogger("panel_flowdash")
+
+# Screen pixels between the visible canvas edge and an auto-placed node.
+_PLACEMENT_MARGIN = 40
+# Flow units each repeated auto-placement shifts, so nodes don't stack exactly.
+_PLACEMENT_CASCADE = 40
+# Horizontal gap, in flow units, between a node dropped on a port and the node it wires to.
+_DROP_WIRE_OFFSET = 360
+# The canvas accepts only this drag type, so drags from unrelated lists are ignored.
+_PALETTE_DRAG_TYPE = "application/x-flowdash-component"
+_SIDE_PANEL_WIDTH = 250
+_PALETTE_SX = {
+    "& .MuiListItemButton-root": {"py": 0.25, "minHeight": 0},
+    "& .MuiListItemText-root": {"my": 0},
+    "& .MuiListItemText-primary": {"fontSize": "0.85rem"},
+    "& .MuiListItemIcon-root .MuiIcon-root": {"fontSize": "1.1rem"},
+    # Section headers are the list's direct children; components sit in their collapses.
+    "& > .MuiListItemButton-root .MuiListItemText-primary": {
+        "fontSize": "0.72rem",
+        "fontWeight": 600,
+        "letterSpacing": "0.06em",
+        "textTransform": "uppercase",
+        "color": "text.secondary",
+    },
+}
 
 _FLOW_STYLESHEET = """\
 .react-flow__node {
@@ -123,7 +148,7 @@ class FlowDash(Viewer):
     editable = param.Boolean(
         default=True,
         doc="""
-        Whether the dashboard can be edited. When False the toolbar is hidden
+        Whether the dashboard can be edited. When False the side panel is hidden
         and the tile grid is shown locked, giving a pure view of the dashboard.""",
     )
 
@@ -176,7 +201,10 @@ class FlowDash(Viewer):
     )
 
     toolbar = param.Boolean(
-        default=True, doc="Whether to render the editor toolbar above the workspace."
+        default=True,
+        doc="""
+        Whether to render the mode toggle and the save and clear actions at the
+        top of the side panel. The component palette is shown regardless.""",
     )
 
     popup_trigger = param.ObjectSelector(
@@ -198,7 +226,7 @@ class FlowDash(Viewer):
     )
 
     toolbar_extra = Children(
-        default=[], doc="Additional items appended to the right of the toolbar."
+        default=[], doc="Additional items placed between the Save and Clear actions."
     )
 
     user = param.String(
@@ -236,7 +264,8 @@ class FlowDash(Viewer):
         self._inspection_key: tuple[str, str] | None = None
 
         self._dataflow_graph = DataflowGraph({}, on_error=self._on_wiring_error)
-        self._component_picker = self._make_component_picker()
+        self._load_component_extensions()
+        self._palette = self._make_palette()
         self._flow = self._build_flow_canvas()
         self.param.watch(
             self._update_value_popup_config,
@@ -395,20 +424,60 @@ class FlowDash(Viewer):
     # Canvas construction
     # ------------------------------------------------------------------
 
-    def _make_component_picker(self):
-        groups: dict[str, dict[str, str]] = {}
-        for app_id, entry in self._component_entries.items():
-            section = entry.section.replace("_", " ")
-            groups.setdefault(section, {})[entry.title] = app_id
-        value = next(iter(self._component_entries), None)
-        return pmui.Select(
-            label="Component",
-            groups=groups,
-            value=value,
-            searchable=True,
-            filter_on_search=True,
-            size="small",
+    def _load_component_extensions(self):
+        """Load the Panel extensions every offered component declares.
+
+        Components are imported lazily, after the page has fetched its
+        JavaScript, so an extension first loaded by a dropped component would
+        never reach the browser and its view would break the canvas.
+        """
+        extensions = sorted(
+            {
+                ext
+                for entry in self._component_entries.values()
+                for ext in entry.metadata.extensions
+            }
         )
+        if extensions:
+            pn.extension(*extensions)
+
+    def _make_palette(self):
+        palette = pmui.MenuList(
+            draggable=True,
+            drag_type=_PALETTE_DRAG_TYPE,
+            highlight=False,
+            level_indent=8,
+            sizing_mode="stretch_width",
+            margin=0,
+            sx=_PALETTE_SX,
+        )
+        palette.on_click(self._on_palette_clicked)
+        return palette
+
+    def _palette_items(self) -> list[dict]:
+        placed = self._placed_singletons()
+        sections: dict[str, list[dict]] = {}
+        for app_id, entry in self._component_entries.items():
+            meta = entry.metadata
+            sections.setdefault(entry.section.replace("_", " "), []).append(
+                {
+                    "label": entry.title,
+                    "icon": meta.icon,
+                    "tooltip": meta.description,
+                    "component_id": app_id,
+                    "draggable": app_id not in placed,
+                }
+            )
+        return [
+            {
+                "label": section,
+                "icon": None,
+                "draggable": False,
+                "selectable": False,
+                "items": items,
+            }
+            for section, items in sections.items()
+        ]
 
     def _node_types_from_specs(self):
         node_types = {}
@@ -472,6 +541,7 @@ class FlowDash(Viewer):
             stylesheets=[_FLOW_STYLESHEET],
             popup_trigger=self.popup_trigger,
             popup_hover_delay=self.popup_hover_delay,
+            drop_types=[_PALETTE_DRAG_TYPE],
             connection_validation={
                 "direction": True,
                 "cycles": True,
@@ -479,6 +549,7 @@ class FlowDash(Viewer):
                 "capacity": True,
             },
         )
+        flow.on("drop", self._on_component_dropped)
         flow.add_connection_validator(
             lambda payload, _flow: self._dataflow_graph.validate_connection(
                 payload["source"],
@@ -582,6 +653,7 @@ class FlowDash(Viewer):
         for edge_id, mapping in list(self._edge_id_map.items()):
             if node_id in (mapping[0], mapping[2]):
                 del self._edge_id_map[edge_id]
+        self._sync_toolbar_state()
 
     # ------------------------------------------------------------------
     # Value inspection
@@ -863,33 +935,106 @@ class FlowDash(Viewer):
     # ------------------------------------------------------------------
 
     def _build_component_view(self):
-        self._add_button = pmui.Button(icon="add", color="primary", variant="outlined")
-        self._clear_button = pmui.Button(icon="delete_sweep", color="danger", variant="outlined")
-        self._save_button = pmui.Button(icon="save", color="primary", variant="outlined")
-        self._add_button.on_click(lambda _event: self._on_add_clicked())
-        self._clear_button.on_click(lambda _event: self.clear())
+        self._save_button = pmui.Button(
+            label="Save", icon="save", variant="outlined", size="small", margin=(5, 4, 5, 10)
+        )
+        self._clear_button = pmui.Button(
+            label="Clear",
+            icon="delete_sweep",
+            color="danger",
+            variant="text",
+            size="small",
+            margin=(5, 4),
+        )
         self._save_button.on_click(lambda _event: self._on_save_clicked())
+        self._clear_button.on_click(lambda _event: self._clear_dialog.param.update(open=True))
+        self._clear_dialog = self._build_clear_dialog()
 
-        no_components = len(self._component_entries) == 0
-        self._component_picker.disabled = no_components
-        self._add_button.disabled = no_components
-
-        self._preview_switch = pmui.Switch(label="Preview", align="center", margin=(0, 10))
-        self._preview_switch.link(self, value="preview", bidirectional=True)
         self._mode_toggle = pmui.RadioButtonGroup(
-            options={":material/cable:": "wiring", ":material/dashboard:": "dashboard"},
+            options={
+                ":material/cable: Wiring": "wiring",
+                ":material/dashboard: Dashboard": "dashboard",
+            },
             value=self.mode,
+            size="small",
+            sizing_mode="stretch_width",
         )
         self._mode_toggle.link(self, value="mode", bidirectional=True)
+        self._preview_switch = pmui.Switch(label="Preview", size="small")
+        self._preview_switch.link(self, value="preview", bidirectional=True)
+        self._actions_row = pn.FlexBox(flex_wrap="wrap", align_items="center")
+        self._controls = pn.Column(
+            self._mode_toggle,
+            self._preview_switch,
+            self._actions_row,
+            sizing_mode="stretch_width",
+        )
+        self._palette_section = pn.Column(
+            pmui.Typography(
+                "Drag a component onto the canvas, or onto a port to connect it.",
+                variant="caption",
+                sx={"color": "text.secondary"},
+                margin=(10, 10, 0, 10),
+            ),
+            self._palette,
+            sizing_mode="stretch_width",
+        )
+        self._side_panel = pmui.Column(
+            self._controls,
+            self._palette_section,
+            # A Row would reserve flex space for the dialog and squeeze the canvas.
+            self._clear_dialog,
+            width=_SIDE_PANEL_WIDTH,
+            sizing_mode="stretch_height",
+            scroll="y-auto",
+            margin=0,
+            sx={"borderRight": 1, "borderColor": "divider"},
+        )
         self._workspace_area = pn.Column(self._flow, sizing_mode="stretch_both", scroll="y-auto")
 
-        self._controls_row = pn.Row(sizing_mode="stretch_width", align="center")
         self._sync_toolbar_extra()
-        return pn.Column(
-            self._controls_row,
-            self._workspace_area,
-            sizing_mode="stretch_both",
+        self._sync_toolbar_state()
+        return pn.Row(self._side_panel, self._workspace_area, sizing_mode="stretch_both")
+
+    def _build_clear_dialog(self):
+        cancel = pmui.Button(label="Cancel", variant="text")
+        confirm = pmui.Button(label="Clear canvas", color="danger")
+
+        def _on_confirm(_event):
+            self._clear_dialog.open = False
+            self.clear()
+
+        cancel.on_click(lambda _event: self._clear_dialog.param.update(open=False))
+        confirm.on_click(_on_confirm)
+        return pmui.Dialog(
+            objects=[
+                pn.pane.Markdown(
+                    "Remove every component and connection from the canvas? "
+                    "Unsaved work will be lost."
+                ),
+                pn.Row(pn.layout.HSpacer(), cancel, confirm, sizing_mode="stretch_width"),
+            ],
+            title="Clear canvas",
+            open=False,
+            min_width=400,
         )
+
+    @param.depends("dirty", "read_only", watch=True)
+    def _sync_toolbar_state(self):
+        """Reflect canvas contents and save state in the side panel controls."""
+        variant = "contained" if self.dirty else "outlined"
+        # panel-material-ui <0.15 resets `variant` to `button_style`, so set both.
+        self._save_button.param.update(
+            button_style=variant, variant=variant, disabled=self.read_only
+        )
+        self._clear_button.disabled = not self._tile_items
+
+        items = self._palette_items()
+        if items != self._palette.items:
+            # MenuList remaps `expanded` onto new items, which would override an
+            # `expanded` set in the same update.
+            self._palette.items = items
+            self._palette.expanded = [(i,) for i in range(len(items))]
 
     @property
     def _tile_grid(self):
@@ -913,26 +1058,19 @@ class FlowDash(Viewer):
 
     @param.depends("toolbar_extra", watch=True)
     def _sync_toolbar_extra(self):
-        """Re-seat caller-supplied toolbar items around the built-in controls."""
-        self._controls_row[:] = [
-            self._component_picker,
-            self._add_button,
-            self._clear_button,
-            self._save_button,
-            pn.layout.HSpacer(),
-            *self.toolbar_extra,
-            self._preview_switch,
-            self._mode_toggle,
-        ]
+        """Re-seat caller-supplied toolbar items around the built-in actions."""
+        self._actions_row[:] = [self._save_button, *self.toolbar_extra, self._clear_button]
 
     @pn.io.hold()
     @param.depends("editable", "mode", "preview", "toolbar", watch=True)
     def _apply_mode_state(self):
-        """Reconcile the toolbar and the workspace with the display params."""
+        """Reconcile the side panel and the workspace with the display params."""
         interactive = self.editable and not self.preview
         showing_grid = self.mode == "dashboard" or not self.editable
-        self._controls_row.visible = self.toolbar and self.editable
+        self._controls.visible = self.toolbar and self.editable
         self._preview_switch.visible = self.editable and self.mode == "dashboard"
+        self._palette_section.visible = not showing_grid
+        self._side_panel.visible = self._controls.visible or self._palette_section.visible
         self._tile_grid.param.update(editable=interactive, card=interactive)
         if showing_grid:
             self._workspace_area[:] = [self._tile_grid]
@@ -1034,6 +1172,9 @@ class FlowDash(Viewer):
             raise KeyError(
                 f"Unknown component '{component_id}'. Available: {sorted(self._component_entries)}"
             )
+        if component_id in self._placed_singletons():
+            title = self._component_entries[component_id].title
+            raise ValueError(f"'{title}' can only be placed once per dashboard.")
         self.ensure_components_loaded([component_id])
         if component_id not in self._component_specs:
             raise KeyError(f"Component '{component_id}' failed to load.")
@@ -1063,8 +1204,7 @@ class FlowDash(Viewer):
             raise
 
         if position is None:
-            count = len(self._tile_items)
-            position = {"x": (count % 3) * 350, "y": (count // 3) * 250}
+            position = self._default_position()
         elif isinstance(position, tuple):
             position = {"x": position[0], "y": position[1]}
 
@@ -1088,7 +1228,33 @@ class FlowDash(Viewer):
             }
         )
         self._tile_objects.append(view)
+        self._sync_toolbar_state()
         return instance_id
+
+    def _default_position(self) -> dict:
+        """Pick a free spot near the top-left of the visible canvas."""
+        viewport = self._flow.viewport
+        if viewport:
+            # The server never learns the canvas size, so anchor to the visible
+            # top-left corner rather than the centre.
+            zoom = viewport.get("zoom") or 1
+            x = (_PLACEMENT_MARGIN - viewport.get("x", 0)) / zoom
+            y = (_PLACEMENT_MARGIN - viewport.get("y", 0)) / zoom
+        else:
+            count = len(self._tile_items)
+            x, y = (count % 3) * 350, (count // 3) * 250
+        taken = {(round(n["position"]["x"]), round(n["position"]["y"])) for n in self._flow.nodes}
+        while (round(x), round(y)) in taken:
+            x += _PLACEMENT_CASCADE
+            y += _PLACEMENT_CASCADE
+        return {"x": x, "y": y}
+
+    def _placed_singletons(self) -> set[str]:
+        return {
+            item["component_id"]
+            for item in self._tile_items
+            if self._component_entries[item["component_id"]].metadata.singleton
+        }
 
     def remove_component(self, instance_id: str):
         """Remove a placed component along with its edges and its tile."""
@@ -1162,6 +1328,7 @@ class FlowDash(Viewer):
             self._flow.param.update(nodes=[], edges=[])
         if self._grid_populated:
             self._tile_grid[:] = []
+        self._sync_toolbar_state()
 
     # ------------------------------------------------------------------
     # Persistence
@@ -1340,10 +1507,14 @@ class FlowDash(Viewer):
     # Toolbar handlers
     # ------------------------------------------------------------------
 
-    def _on_add_clicked(self):
-        component_id = self._component_picker.value
+    def _add_from_ui(self, component_id, position=None) -> str | None:
+        """Add *component_id*, reporting failures as notifications instead of raising."""
+        if component_id in self._placed_singletons():
+            title = self._component_entries[component_id].title
+            self._notify("warning", f"'{title}' is already on the canvas.", duration=3000)
+            return None
         try:
-            self.add_component(component_id)
+            instance_id = self.add_component(component_id, position=position)
         except KeyError:
             self._notify("warning", "Select a valid component first.", duration=3000)
         except Exception as exc:
@@ -1352,6 +1523,62 @@ class FlowDash(Viewer):
         else:
             entry = self._component_entries[component_id]
             self._notify("success", f"Added component: {entry.title}", duration=3000)
+            return instance_id
+        return None
+
+    def _on_palette_clicked(self, item):
+        component_id = item.get("component_id") if isinstance(item, dict) else None
+        if component_id is not None:
+            self._add_from_ui(component_id)
+
+    def _on_component_dropped(self, payload):
+        # panel-reactflow handles frontend messages inside `hold()`. On Panel
+        # 1.10 a held patch that adds node views blanks the views already on
+        # the canvas, so apply the drop on the next tick like a button click.
+        pn.state.execute(partial(self._add_dropped, payload), schedule=True)
+
+    def _add_dropped(self, payload):
+        """Add a component dropped from the palette, wiring it to the port it landed on."""
+        item = {"items": self._palette.items}
+        try:
+            for index in payload["data"]["path"]:
+                item = item["items"][index]
+        except (KeyError, IndexError, TypeError):
+            return
+        component_id = item.get("component_id")
+        if component_id is None:
+            return
+        target = payload.get("target") or {}
+        wire = target.get("direction") in ("input", "output") and target.get("handle_id")
+        position = payload["position"]
+        if wire:
+            anchor = next(n for n in self._flow.nodes if n["id"] == target["node_id"])["position"]
+            offset = -_DROP_WIRE_OFFSET if target["direction"] == "input" else _DROP_WIRE_OFFSET
+            position = {"x": anchor["x"] + offset, "y": anchor["y"]}
+        instance_id = self._add_from_ui(component_id, position=position)
+        if instance_id is not None and wire:
+            self._wire_dropped(instance_id, component_id, target)
+
+    def _wire_dropped(self, instance_id, component_id, target):
+        """Connect a dropped node to the port it was dropped on, via its first fitting port."""
+        spec = self.component_specs[component_id]
+        node_id, handle_id = target["node_id"], target["handle_id"]
+        if target["direction"] == "input":
+            candidates = [(instance_id, port.name, node_id, handle_id) for port in spec.outputs]
+        else:
+            candidates = [(node_id, handle_id, instance_id, port.name) for port in spec.inputs]
+        reasons = []
+        for candidate in candidates:
+            reason = self._dataflow_graph.validate_connection(*candidate)
+            if reason is None:
+                result = self.connect(*candidate)
+                if result is True:
+                    return
+                reason = result
+            reasons.append(reason)
+        title = self._component_entries[component_id].title
+        detail = f": {reasons[0]}" if reasons else ""
+        self._notify("warning", f"Added '{title}' but could not connect it{detail}", duration=5000)
 
     def _on_save_clicked(self):
         try:

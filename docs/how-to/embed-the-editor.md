@@ -166,7 +166,7 @@ Three params control what the user sees:
 | Param | Default | Effect |
 |-------|---------|--------|
 | `mode` | `"wiring"` | `"wiring"` shows the ReactFlow canvas, `"dashboard"` the tile grid. |
-| `editable` | `True` | When `False` the toolbar is hidden and the grid is locked, giving a pure dashboard view. |
+| `editable` | `True` | When `False` the side panel is hidden and the grid is locked, giving a pure dashboard view. |
 | `preview` | `False` | Locks the grid without leaving edit mode, to see the dashboard as an end user does. |
 
 So a read-only dashboard viewer is just:
@@ -187,13 +187,15 @@ per-dashboard permissions.
 
 ## Fitting it into your own layout
 
-The built-in toolbar can be hidden with `toolbar=False`, or extended with your
-own controls through `toolbar_extra`:
+The mode toggle and the *Save* and *Clear* actions at the top of the side panel
+can be hidden with `toolbar=False`, leaving only the component palette, or
+extended with your own controls through `toolbar_extra`, which places them
+between *Save* and *Clear*:
 
 ```python
 import panel_material_ui as pmui
 
-share = pmui.Button(icon="share", variant="outlined")
+share = pmui.Button(label="Share", icon="share", variant="outlined", size="small")
 editor = FlowDash(components, toolbar_extra=[share])
 ```
 
