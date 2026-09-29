@@ -958,10 +958,12 @@ class FlowDash(Viewer):
             filename="dashboard.json",
             label="Download",
             icon="download",
-            variant="text",
             size="small",
             margin=(5, 2),
         )
+        # Released Panel warns about `button_style` when a Material FileDownload is
+        # constructed with `variant`; drop once holoviz/panel#8752 is the minimum.
+        self._download_button.variant = "text"
         self._save_button.on_click(lambda _event: self._on_save_clicked())
         self._clear_button.on_click(lambda _event: self._clear_dialog.param.update(open=True))
         self._clear_dialog = self._build_clear_dialog()
@@ -1087,10 +1089,7 @@ class FlowDash(Viewer):
         """Reflect canvas contents and save state in the toolbar and palette."""
         # Save is the only emphasized action, and only while there is something to save.
         variant = "contained" if self.dirty else "text"
-        # panel-material-ui <0.15 resets `variant` to `button_style`, so set both.
-        self._save_button.param.update(
-            button_style=variant, variant=variant, disabled=self.read_only
-        )
+        self._save_button.param.update(variant=variant, disabled=self.read_only)
         self._clear_button.disabled = not self._tile_items
         hint = [] if self._tile_items else [self._empty_hint]
         if self._flow.bottom_panel != hint:

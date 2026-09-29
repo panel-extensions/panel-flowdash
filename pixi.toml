@@ -1,6 +1,6 @@
 [workspace]
 name = "panel-flowdash"
-channels = ["conda-forge"]
+channels = ["conda-forge", "pyviz"]
 platforms = ["osx-arm64", "linux-64", "win-64"]
 preview = ["pixi-build"]
 requires-pixi = ">=0.68.1"
@@ -24,6 +24,8 @@ panel-material-ui = ">=0.16.0"
 
 [dependencies]
 panel_flowdash = { path = "." }
+# TODO: Drop the channel pin once conda-forge has panel-material-ui >=0.16.0
+panel-material-ui = { version = ">=0.16.0", channel = "pyviz" }
 
 [pypi-dependencies]
 # TODO: Add these to conda-forge / pyviz
