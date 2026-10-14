@@ -2,9 +2,11 @@
 
 Each node in the graph gets a NodeState (a dynamic Parameterized subclass)
 whose parameters correspond to the node's declared input and output ports.
-Edges are wired via param.watch: when a source port changes, the value is
-assigned to the target port inside a try/except so that runtime type errors
-(e.g. param validation failures) are caught and reported via an error callback.
+Every edge is a ``param.rx`` expression on its source port, and a connected
+input is bound to the expressions feeding it as a param reference, so param
+itself propagates values. The binding checks each value against the target
+first; a rejected value is reported via the error callback and skipped, which
+leaves the target on its last good value.
 """
 
 from __future__ import annotations
@@ -17,6 +19,8 @@ import param
 from panel_flowdash.component_spec import ComponentSpec
 
 _RESERVED_PARAMS = set(param.Parameterized.param)
+
+EdgeKey = tuple[str, str, str, str]
 
 
 def _is_list_port(port) -> bool:
@@ -85,8 +89,7 @@ class DataflowGraph:
         self._nodes: dict[str, param.Parameterized] = {}
         self._config_states: dict[str, param.Parameterized] = {}
         self._node_specs: dict[str, ComponentSpec] = {}
-        self._edges: list[dict[str, str]] = []
-        self._watchers: dict[tuple, param.parameterized.Watcher] = {}
+        self._edges: dict[EdgeKey, param.rx] = {}
         self._on_error = on_error
 
         for comp_id, spec in specs.items():
@@ -120,48 +123,81 @@ class DataflowGraph:
 
     def remove_node(self, instance_id: str):
         """Remove a node and any edges connected to it."""
-        keys_to_remove = [k for k in self._watchers if k[0] == instance_id or k[2] == instance_id]
-        for key in keys_to_remove:
-            watcher = self._watchers.pop(key)
-            src = self._nodes.get(key[0])
-            if src is not None:
-                src.param.unwatch(watcher)
+        removed = [key for key in self._edges if instance_id in (key[0], key[2])]
+        for key in removed:
+            del self._edges[key]
+        for target_id, target_port in {key[2:] for key in removed}:
+            if target_id == instance_id:
+                continue
+            if self._is_list_input(target_id, target_port):
+                self._bind_input(target_id, target_port)
+            else:
+                # Releases the binding to the removed node but keeps its last value.
+                target = self._nodes[target_id]
+                setattr(target, target_port, getattr(target, target_port))
 
-        self._edges = [
-            e for e in self._edges if e["source"] != instance_id and e["target"] != instance_id
-        ]
         self._nodes.pop(instance_id, None)
         self._config_states.pop(instance_id, None)
         self._node_specs.pop(instance_id, None)
 
-    def _is_list_input(self, target_id: str, target_port: str) -> bool:
-        """Return True if the target port is a List-typed multi-connection input."""
+    def _input_port(self, target_id: str, target_port: str):
         spec = self._node_specs.get(target_id)
         if not spec:
-            return False
-        for port in spec.inputs:
-            if port.name == target_port:
-                return _is_list_port(port)
-        return False
+            return None
+        return next((port for port in spec.inputs if port.name == target_port), None)
 
-    def _rebuild_list_port(self, target_id: str, target_port: str):
-        """Recompute the list value for a multi-connection port from all sources."""
-        target_state = self._nodes.get(target_id)
-        if target_state is None:
+    def _is_list_input(self, target_id: str, target_port: str) -> bool:
+        """Return True if the target port is a List-typed multi-connection input."""
+        port = self._input_port(target_id, target_port)
+        return port is not None and _is_list_port(port)
+
+    def _check_target_value(self, target_id: str, target_port: str, value):
+        """Raise if the target state or the component behind it would reject *value*."""
+        if value is None:
             return
-        values = []
-        for e in self._edges:
-            if e["target"] == target_id and e["target_port"] == target_port:
-                src_state = self._nodes.get(e["source"])
-                if src_state is not None:
-                    val = getattr(src_state, e["source_port"], None)
-                    if val is not None:
-                        values.append(val)
-        try:
-            setattr(target_state, target_port, values)
-        except Exception as exc:
-            if self._on_error:
-                self._on_error("", "", target_id, target_port, exc)
+        self._nodes[target_id].param[target_port]._validate(value)
+        port = self._input_port(target_id, target_port)
+        if port is not None and port.parameter is not None:
+            port.parameter._validate(value)
+
+    def _incoming(self, target_id: str, target_port: str) -> dict[EdgeKey, param.rx]:
+        return {
+            key: expr for key, expr in self._edges.items() if key[2:] == (target_id, target_port)
+        }
+
+    def _bind_input(self, target_id: str, target_port: str, skip_initial_none: bool = False):
+        """Bind an input port to the expressions of every edge feeding it.
+
+        A list input collects the non-None values of all its edges; any other
+        input follows its single edge. A list input left without edges is reset
+        to empty, which also releases its previous binding.
+        """
+        target = self._nodes[target_id]
+        incoming = self._incoming(target_id, target_port)
+        is_list = self._is_list_input(target_id, target_port)
+        if is_list and not incoming:
+            setattr(target, target_port, [])
+            return
+
+        error_source = ("", "") if is_list else next(iter(incoming))[:2]
+        first_call = [skip_initial_none]
+
+        def _guard(*values):
+            value = [v for v in values if v is not None] if is_list else values[0]
+            if first_call and first_call.pop() and value is None:
+                raise param.Skip
+            try:
+                self._check_target_value(target_id, target_port, value)
+            except Exception as exc:
+                if self._on_error:
+                    self._on_error(*error_source, target_id, target_port, exc)
+                raise param.Skip from exc
+            return value
+
+        # Set on the instance's own copy of the param, so states this graph did
+        # not build can be wired too.
+        target.param[target_port].allow_refs = True
+        setattr(target, target_port, param.bind(_guard, *incoming.values()))
 
     def validate_connection(
         self,
@@ -180,17 +216,11 @@ class DataflowGraph:
         if not target_spec or not any(port.name == target_port for port in target_spec.inputs):
             return f"Input port '{target_port}' does not exist on target node."
 
+        if (source_id, source_port, target_id, target_port) in self._edges:
+            return "Connection already exists."
         is_list = self._is_list_input(target_id, target_port)
-        for e in self._edges:
-            if e == {
-                "source": source_id,
-                "source_port": source_port,
-                "target": target_id,
-                "target_port": target_port,
-            }:
-                return "Connection already exists."
-            if not is_list and e["target"] == target_id and e["target_port"] == target_port:
-                return f"Input '{target_port}' already has a connection. Disconnect it first."
+        if not is_list and self._incoming(target_id, target_port):
+            return f"Input '{target_port}' already has a connection. Disconnect it first."
 
         if self._would_create_cycle(source_id, target_id):
             return "Connection rejected: would create a cycle."
@@ -223,71 +253,21 @@ class DataflowGraph:
             return error
 
         source_state = self._nodes[source_id]
-        target_state = self._nodes[target_id]
         is_list = self._is_list_input(target_id, target_port)
-
-        if is_list:
-
-            def _propagate(
-                event,
-                _src_id=source_id,
-                _src_port=source_port,
-                _tgt_id=target_id,
-                _tgt_port=target_port,
-            ):
-                try:
-                    self._rebuild_list_port(_tgt_id, _tgt_port)
-                except Exception as exc:
-                    if self._on_error:
-                        self._on_error(_src_id, _src_port, _tgt_id, _tgt_port, exc)
-        else:
-
-            def _propagate(
-                event,
-                _src_id=source_id,
-                _src_port=source_port,
-                _tgt_id=target_id,
-                _tgt_port=target_port,
-                _target=target_state,
-            ):
-                try:
-                    setattr(_target, _tgt_port, event.new)
-                except Exception as exc:
-                    if self._on_error:
-                        self._on_error(_src_id, _src_port, _tgt_id, _tgt_port, exc)
-
-        watcher = source_state.param.watch(_propagate, source_port)
-        edge_key = (source_id, source_port, target_id, target_port)
-        self._watchers[edge_key] = watcher
-
-        self._edges.append(
-            {
-                "source": source_id,
-                "source_port": source_port,
-                "target": target_id,
-                "target_port": target_port,
-            }
-        )
-
-        if is_list:
-            self._rebuild_list_port(target_id, target_port)
-            return True
-
-        current = getattr(source_state, source_port)
-        if current is None:
-            return True
-        previous = getattr(target_state, target_port)
-        try:
-            setattr(target_state, target_port, current)
-        except Exception as exc:
+        if not is_list:
             # A connection whose first value is rejected would sit wired but
-            # broken, so undo it and report the reason as a rejection.
-            source_state.param.unwatch(self._watchers.pop(edge_key))
-            self._edges.pop()
-            with param.parameterized.discard_events(target_state):
-                setattr(target_state, target_port, previous)
-            return f"Connection rejected: {exc}"
+            # broken, so refuse it instead.
+            try:
+                self._check_target_value(
+                    target_id, target_port, getattr(source_state, source_port)
+                )
+            except Exception as exc:
+                return f"Connection rejected: {exc}"
 
+        key = (source_id, source_port, target_id, target_port)
+        self._edges[key] = source_state.param[source_port].rx()
+        # An output nothing has set yet should not wipe the input's default.
+        self._bind_input(target_id, target_port, skip_initial_none=not is_list)
         return True
 
     def _would_create_cycle(self, source_id: str, target_id: str) -> bool:
@@ -295,8 +275,8 @@ class DataflowGraph:
         if source_id == target_id:
             return True
         successors = {}
-        for edge in self._edges:
-            successors.setdefault(edge["source"], []).append(edge["target"])
+        for src, _, tgt, _ in self._edges:
+            successors.setdefault(src, []).append(tgt)
         visited = set()
         queue = deque([target_id])
         while queue:
@@ -341,40 +321,16 @@ class DataflowGraph:
         )
 
     def remove_edge(self, source_id: str, source_port: str, target_id: str, target_port: str):
-        """Remove an edge, unsubscribe the watcher, and reset target to default."""
-        is_list = self._is_list_input(target_id, target_port)
-
-        self._edges = [
-            e
-            for e in self._edges
-            if not (
-                e["source"] == source_id
-                and e["source_port"] == source_port
-                and e["target"] == target_id
-                and e["target_port"] == target_port
-            )
-        ]
-
-        edge_key = (source_id, source_port, target_id, target_port)
-        watcher = self._watchers.pop(edge_key, None)
-        if watcher is not None:
-            source_state = self._nodes.get(source_id)
-            if source_state is not None:
-                source_state.param.unwatch(watcher)
-
-        if is_list:
-            self._rebuild_list_port(target_id, target_port)
+        """Remove an edge and reset the target input to its default."""
+        self._edges.pop((source_id, source_port, target_id, target_port), None)
+        target_state = self._nodes.get(target_id)
+        if target_state is None or not hasattr(target_state, target_port):
+            return
+        if self._is_list_input(target_id, target_port):
+            self._bind_input(target_id, target_port)
         else:
-            target_state = self._nodes.get(target_id)
-            if target_state is not None and hasattr(target_state, target_port):
-                spec = self._node_specs.get(target_id)
-                default = None
-                if spec:
-                    for port in spec.inputs:
-                        if port.name == target_port:
-                            default = port.default
-                            break
-                setattr(target_state, target_port, default)
+            port = self._input_port(target_id, target_port)
+            setattr(target_state, target_port, port.default if port else None)
 
     def get_state(self, instance_id: str) -> param.Parameterized | None:
         """Get the state instance for a node."""
@@ -384,10 +340,19 @@ class DataflowGraph:
         """Get the config state instance for a node, if it has config."""
         return self._config_states.get(instance_id)
 
+    def get_edge_expression(
+        self, source_id: str, source_port: str, target_id: str, target_port: str
+    ) -> param.rx | None:
+        """Return the reactive expression carrying values along an edge, if it is wired."""
+        return self._edges.get((source_id, source_port, target_id, target_port))
+
     @property
     def edges(self) -> list[dict[str, str]]:
         """All current edges."""
-        return list(self._edges)
+        return [
+            {"source": src, "source_port": src_port, "target": tgt, "target_port": tgt_port}
+            for src, src_port, tgt, tgt_port in self._edges
+        ]
 
     @property
     def node_ids(self) -> list[str]:

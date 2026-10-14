@@ -893,54 +893,66 @@ class FlowDash(Viewer):
 
             node_state.param.watch(_propagate_input, name)
 
-        output_info = instance.param.outputs()
-        for name, (_, method, _) in output_info.items():
-            if not hasattr(node_state.param, name):
-                continue
-            method_name = method.__name__ if callable(method) else method
-            deps = instance.param.method_dependencies(method_name)
-            dep_names = [d.name for d in deps if d.name != "name"]
-
-            def _resolve_output(_method=method, _name=name):
-                """Compute an output and publish it, awaiting async output methods.
-
-                An async output cannot be published inline, so it is scheduled on
-                the event loop; downstream nodes update when it resolves. Async
-                generators publish every value they yield.
-                """
-                fn = _method if callable(_method) else getattr(instance, _method)
-                if not is_async(fn):
-                    setattr(node_state, _name, fn())
-                    return
-
-                is_gen = is_async_gen(fn)
-
-                async def _publish():
-                    try:
-                        if is_gen:
-                            async for value in fn():
-                                setattr(node_state, _name, value)
-                        else:
-                            setattr(node_state, _name, await fn())
-                    except Exception as exc:
-                        logger.error("Output '%s' failed: %s", _name, exc, exc_info=exc)
-
-                param.parameterized.async_executor(_publish)
-
-            def _propagate_output(event, _resolve=_resolve_output, _name=name):
-                try:
-                    _resolve()
-                except Exception as exc:
-                    logger.error("Output '%s' failed: %s", _name, exc, exc_info=exc)
-
-            if dep_names:
-                instance.param.watch(_propagate_output, dep_names)
-            try:
-                _resolve_output()
-            except Exception:
-                pass
+        for name, (_, method, _) in instance.param.outputs().items():
+            if hasattr(node_state.param, name):
+                setattr(node_state, name, self._output_reference(instance, name, method))
 
         return panel_viewer(instance)
+
+    @staticmethod
+    def _output_reference(instance, name, method):
+        """Bind an output method to its dependencies, as a reference for a node port.
+
+        Param resolves the reference whenever a dependency changes, awaiting
+        async outputs on the event loop and publishing every value an async
+        generator yields. A failing output is skipped, so the port keeps its
+        last value. The first evaluation runs before any input is wired, so a
+        sync output failing there is not reported.
+        """
+        fn = method if callable(method) else getattr(instance, method)
+        deps = [
+            (dep.inst or instance).param[dep.name]
+            for dep in instance.param.method_dependencies(fn.__name__)
+            if dep.name != "name"
+        ]
+        # A bind without arguments is not a reference; `name` never changes, so
+        # depending on it evaluates the output once and keeps it bound.
+        deps = deps or [instance.param.name]
+
+        def _failed(exc):
+            logger.error("Output '%s' failed: %s", name, exc, exc_info=exc)
+            raise param.Skip from exc
+
+        if is_async_gen(fn):
+
+            async def _output(*_):
+                try:
+                    async for value in fn():
+                        yield value
+                except Exception as exc:
+                    _failed(exc)
+
+        elif is_async(fn):
+
+            async def _output(*_):
+                try:
+                    return await fn()
+                except Exception as exc:
+                    _failed(exc)
+
+        else:
+            initial = [True]
+
+            def _output(*_):
+                quiet = bool(initial) and initial.pop()
+                try:
+                    return fn()
+                except Exception as exc:
+                    if quiet:
+                        raise param.Skip from exc
+                    _failed(exc)
+
+        return param.bind(_output, *deps)
 
     # ------------------------------------------------------------------
     # Layout
