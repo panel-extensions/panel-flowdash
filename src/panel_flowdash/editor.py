@@ -39,6 +39,8 @@ from panel_flowdash.dashboard_store import (
 )
 from panel_flowdash.dataflow_engine import DataflowGraph
 from panel_flowdash.registry import RegistryEntry
+from panel_flowdash.transform_editor import TransformEditor
+from panel_flowdash.transforms import parse_transform, summarize_transform
 from panel_flowdash.util import is_async, is_async_gen, notify, panel_call, panel_viewer
 from panel_flowdash.widgets import BUILTIN_COMPONENTS
 
@@ -96,7 +98,24 @@ _FLOW_STYLESHEET = """\
   height: 14px;
   border: 1px solid black;
   background: transparent;
+}
+.react-flow__edge-textbg {
+  fill: var(--panel-background-color, #fff);
+  stroke: var(--panel-primary-color, #0072b5);
+  stroke-width: 1px;
+}
+.react-flow__edge-text {
+  fill: var(--panel-on-background-color, #222);
+  font-size: 11px;
+  font-family: monospace;
 }"""
+
+# A transformed edge is dashed in the accent color, so it reads as derived at a glance.
+_TRANSFORMED_EDGE_STYLE = {
+    "stroke": "var(--panel-primary-color, #0072b5)",
+    "strokeDasharray": "6 3",
+    "strokeWidth": 2,
+}
 
 
 class FlowDash(Viewer):
@@ -276,6 +295,7 @@ class FlowDash(Viewer):
         self._inspection_key: tuple[str, str] | None = None
 
         self._dataflow_graph = DataflowGraph({}, on_error=self._on_wiring_error)
+        self._transform_editors: dict[str, TransformEditor] = {}
         self._load_component_extensions()
         self._palette = self._make_palette()
         self._flow = self._build_flow_canvas()
@@ -545,6 +565,7 @@ class FlowDash(Viewer):
             edges=[],
             node_types=node_types,
             node_editors=node_editors,
+            default_edge_editor=self._make_edge_editor,
             editable=True,
             enable_connect=True,
             show_minimap=True,
@@ -602,6 +623,7 @@ class FlowDash(Viewer):
             if not edge_id:
                 return
             mapping = self._edge_id_map.pop(edge_id, None)
+            self._drop_edge_editor(edge_id)
             if mapping:
                 self._dataflow_graph.remove_edge(*mapping)
                 self.dirty = True
@@ -624,6 +646,7 @@ class FlowDash(Viewer):
                 self.dirty = True
                 self._rebuild_sidebar()
 
+        flow.param.watch(self._on_selection_changed, "selection")
         flow.on("edge_added", _on_edge_added)
         flow.on("edge_deleted", _on_edge_deleted)
         flow.on("node_data_changed", _on_node_data_changed)
@@ -665,6 +688,7 @@ class FlowDash(Viewer):
         for edge_id, mapping in list(self._edge_id_map.items()):
             if node_id in (mapping[0], mapping[2]):
                 del self._edge_id_map[edge_id]
+                self._drop_edge_editor(edge_id)
         self._sync_toolbar_state()
 
     # ------------------------------------------------------------------
@@ -769,9 +793,12 @@ class FlowDash(Viewer):
         source_id, source_port, _target_id, _target_port = mapping
         port = self._port_spec(source_id, source_port, output=True)
         label = (port.label if port else None) or source_port
-        subtitle = f"edge · {port.type}" if port and port.type else "edge"
-        state = self._dataflow_graph.get_state(source_id)
-        value = getattr(state, source_port, None) if state is not None else None
+        if self._dataflow_graph.get_edge_transform(*mapping):
+            subtitle = "edge · transformed"
+        else:
+            subtitle = f"edge · {port.type}" if port and port.type else "edge"
+        expr = self._dataflow_graph.get_edge_expression(*mapping)
+        value = expr.rx.value if expr is not None else None
         self._show_inspection(("edge", edge_id), f"{label} ({subtitle})", value, position, flow)
 
     def _on_handle_hovered(self, payload, flow):
@@ -1359,17 +1386,31 @@ class FlowDash(Viewer):
         self._rebuild_sidebar()
 
     def connect(
-        self, source_id: str, source_port: str, target_id: str, target_port: str
+        self,
+        source_id: str,
+        source_port: str,
+        target_id: str,
+        target_port: str,
+        transform: list[dict[str, t.Any]] | None = None,
     ) -> bool | str:
         """Wire an output port to an input port.
+
+        Parameters
+        ----------
+        transform
+            Steps applied to the values carried along the edge, see
+            :meth:`set_edge_transform`.
 
         Returns
         -------
         bool or str
             ``True`` on success, or a message explaining the rejection (unknown
-            port, type mismatch, cycle, or an input that is already connected).
+            port, type mismatch, cycle, an input that is already connected, or
+            an invalid transform).
         """
-        result = self._dataflow_graph.add_edge(source_id, source_port, target_id, target_port)
+        result = self._dataflow_graph.add_edge(
+            source_id, source_port, target_id, target_port, transform
+        )
         if result is not True:
             return result
         self._edge_count += 1
@@ -1384,10 +1425,74 @@ class FlowDash(Viewer):
                     "sourceHandle": source_port,
                     "targetHandle": target_port,
                     "markerEnd": {"type": "arrowclosed"},
+                    **(self._edge_chip(self._edge_id_map[edge_id]) if transform else {}),
                 }
             )
         self.dirty = True
         return True
+
+    def set_edge_transform(
+        self,
+        source_id: str,
+        source_port: str,
+        target_id: str,
+        target_port: str,
+        transform: list[dict[str, t.Any]] | None,
+    ) -> bool | str:
+        """Replace the transform applied along an edge.
+
+        Each step is a dict naming an ``op`` from
+        :data:`panel_flowdash.transforms.TRANSFORMS` plus its arguments, for
+        example ``[{"op": "column", "column": "capacity"}, {"op": "aggregate",
+        "how": "sum"}]``. Pass an empty list to remove the transform.
+
+        Returns
+        -------
+        bool or str
+            ``True`` on success, or a message explaining the rejection. A
+            rejected transform leaves the edge on its previous one.
+        """
+        mapping = (source_id, source_port, target_id, target_port)
+        result = self._dataflow_graph.set_edge_transform(*mapping, transform)
+        if result is not True:
+            return result
+        self.dirty = True
+        chip = self._edge_chip(mapping)
+        for edge_id, existing in self._edge_id_map.items():
+            if existing == mapping:
+                self._flow.patch_edge_props(edge_id, chip)
+        return True
+
+    def _edge_chip(self, mapping) -> dict[str, t.Any]:
+        """Edge props summarizing an edge's transform, clearing them when it has none."""
+        steps = parse_transform(self._dataflow_graph.get_edge_transform(*mapping))
+        label = summarize_transform(steps)
+        return {"label": label, "style": _TRANSFORMED_EDGE_STYLE if label else None}
+
+    def _make_edge_editor(self, data, schema, *, id, type, on_patch):
+        """Create the transform editor ReactFlow shows when an edge is selected.
+
+        The edge may not be in the edge map yet, since the canvas can report a
+        drawn edge before the graph has wired it, so the editor looks it up
+        whenever it is opened.
+        """
+        editor = self._transform_editors.get(id)
+        if editor is None:
+            editor = self._transform_editors[id] = TransformEditor(self, id)
+        return editor
+
+    def _on_selection_changed(self, event):
+        """Reload an edge's transform editor when the edge is newly selected."""
+        previous = set((event.old or {}).get("edges", []))
+        for edge_id in (event.new or {}).get("edges", []):
+            editor = self._transform_editors.get(edge_id)
+            if edge_id not in previous and editor is not None:
+                editor.reset()
+
+    def _drop_edge_editor(self, edge_id: str):
+        editor = self._transform_editors.pop(edge_id, None)
+        if editor is not None:
+            editor.dispose()
 
     def disconnect(self, source_id: str, source_port: str, target_id: str, target_port: str):
         """Remove the edge between two ports."""
@@ -1396,6 +1501,7 @@ class FlowDash(Viewer):
         for edge_id, existing in list(self._edge_id_map.items()):
             if existing == mapping:
                 del self._edge_id_map[edge_id]
+                self._drop_edge_editor(edge_id)
                 with self._muted_canvas():
                     self._flow.remove_edge(edge_id)
         self.dirty = True
@@ -1416,6 +1522,8 @@ class FlowDash(Viewer):
         self._tile_items = []
         self._tile_objects = []
         self._edge_id_map.clear()
+        for edge_id in list(self._transform_editors):
+            self._drop_edge_editor(edge_id)
         self._edge_count = 0
         self.sidebar = []
         with self._muted_canvas():
@@ -1466,6 +1574,7 @@ class FlowDash(Viewer):
                 source_port=edge["source_port"],
                 target=edge["target"],
                 target_port=edge["target_port"],
+                transform=edge["transform"],
             )
             for edge in self._dataflow_graph.edges
         ]
@@ -1531,7 +1640,9 @@ class FlowDash(Viewer):
                         item.instance_id,
                     )
             for edge in model.edges:
-                result = self.connect(edge.source, edge.source_port, edge.target, edge.target_port)
+                result = self.connect(
+                    edge.source, edge.source_port, edge.target, edge.target_port, edge.transform
+                )
                 if result is not True:
                     logger.warning(
                         "Skipping saved edge %s.%s -> %s.%s: %s",

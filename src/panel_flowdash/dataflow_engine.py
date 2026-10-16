@@ -2,25 +2,45 @@
 
 Each node in the graph gets a NodeState (a dynamic Parameterized subclass)
 whose parameters correspond to the node's declared input and output ports.
-Every edge is a ``param.rx`` expression on its source port, and a connected
-input is bound to the expressions feeding it as a param reference, so param
-itself propagates values. The binding checks each value against the target
-first; a rejected value is reported via the error callback and skipped, which
-leaves the target on its last good value.
+Every edge is a ``param.rx`` expression on its source port, extended by one
+pipe per step of the edge's transform, and a connected input is bound to the
+expressions feeding it as a param reference, so param itself propagates
+values. The binding checks each value against the target first; a rejected
+value, like a failing transform step, is reported via the error callback and
+skipped, which leaves the target on its last good value.
 """
 
 from __future__ import annotations
 
 from collections import deque
 from collections.abc import Callable
+from dataclasses import dataclass
+from typing import Any
 
 import param
 
 from panel_flowdash.component_spec import ComponentSpec
+from panel_flowdash.transforms import Transform, apply_transform, parse_transform
 
 _RESERVED_PARAMS = set(param.Parameterized.param)
 
 EdgeKey = tuple[str, str, str, str]
+
+
+@dataclass
+class Edge:
+    """The transform steps of an edge and the expression after each of them.
+
+    ``stages[0]`` is the source port itself, so ``stages[i]`` is the value
+    after ``i`` steps and ``stages[-1]`` is what the target receives.
+    """
+
+    steps: list[Transform]
+    stages: list[param.rx]
+
+    @property
+    def expr(self) -> param.rx:
+        return self.stages[-1]
 
 
 def _is_list_port(port) -> bool:
@@ -89,7 +109,7 @@ class DataflowGraph:
         self._nodes: dict[str, param.Parameterized] = {}
         self._config_states: dict[str, param.Parameterized] = {}
         self._node_specs: dict[str, ComponentSpec] = {}
-        self._edges: dict[EdgeKey, param.rx] = {}
+        self._edges: dict[EdgeKey, Edge] = {}
         self._on_error = on_error
 
         for comp_id, spec in specs.items():
@@ -160,10 +180,37 @@ class DataflowGraph:
         if port is not None and port.parameter is not None:
             port.parameter._validate(value)
 
-    def _incoming(self, target_id: str, target_port: str) -> dict[EdgeKey, param.rx]:
+    def _incoming(self, target_id: str, target_port: str) -> dict[EdgeKey, Edge]:
         return {
-            key: expr for key, expr in self._edges.items() if key[2:] == (target_id, target_port)
+            key: edge for key, edge in self._edges.items() if key[2:] == (target_id, target_port)
         }
+
+    def _build_edge(self, key: EdgeKey, steps: list[Transform]) -> Edge:
+        stage = self._nodes[key[0]].param[key[1]].rx()
+        stages = [stage]
+        for step in steps:
+            stage = stage.rx.pipe(self._run_step, step, key)
+            stages.append(stage)
+        return Edge(steps, stages)
+
+    def _run_step(self, value, step: Transform, key: EdgeKey):
+        try:
+            return step(value)
+        except Exception as exc:
+            if self._on_error:
+                self._on_error(*key, exc)
+            raise param.Skip from exc
+
+    @staticmethod
+    def _parse(transform) -> tuple[list[Transform], str | None]:
+        try:
+            return parse_transform(transform), None
+        except ValueError as exc:
+            return [], f"Invalid transform: {exc}"
+
+    def _edge_value(self, key: EdgeKey, steps: list[Transform]):
+        """Return the source's current value run through *steps*, raising if a step fails."""
+        return apply_transform(steps, getattr(self._nodes[key[0]], key[1], None))
 
     def _bind_input(self, target_id: str, target_port: str, skip_initial_none: bool = False):
         """Bind an input port to the expressions of every edge feeding it.
@@ -197,7 +244,7 @@ class DataflowGraph:
         # Set on the instance's own copy of the param, so states this graph did
         # not build can be wired too.
         target.param[target_port].allow_refs = True
-        setattr(target, target_port, param.bind(_guard, *incoming.values()))
+        setattr(target, target_port, param.bind(_guard, *(e.expr for e in incoming.values())))
 
     def validate_connection(
         self,
@@ -205,6 +252,7 @@ class DataflowGraph:
         source_port: str,
         target_id: str,
         target_port: str,
+        transform: list[dict[str, Any]] | None = None,
     ) -> str | None:
         """Return a rejection reason without changing graph state, or None if allowed."""
         source_spec = self._node_specs.get(source_id)
@@ -225,19 +273,28 @@ class DataflowGraph:
         if self._would_create_cycle(source_id, target_id):
             return "Connection rejected: would create a cycle."
 
-        if not is_list:
+        steps, error = self._parse(transform)
+        if error:
+            return error
+        if is_list:
+            return None
+        # A transform changes what the edge carries, so the declared output type
+        # no longer applies and only the transformed value can be checked.
+        if not steps:
             error = self._check_type_compatibility(
                 source_spec, source_port, target_spec, target_port
             )
             if error:
                 return error
-            # Untyped outputs pass the static check, so test what they hold now.
-            port = next(p for p in target_spec.inputs if p.name == target_port)
-            reason = port.check_value(getattr(self._nodes[source_id], source_port, None))
-            if reason:
-                return (
-                    f"Input '{target_port}' rejects the current value of '{source_port}': {reason}"
-                )
+        # Untyped outputs pass the static check, so test what they hold now.
+        try:
+            value = self._edge_value((source_id, source_port, target_id, target_port), steps)
+        except Exception as exc:
+            return f"Transform fails on the current value of '{source_port}': {exc}"
+        port = next(p for p in target_spec.inputs if p.name == target_port)
+        reason = port.check_value(value)
+        if reason:
+            return f"Input '{target_port}' rejects the current value of '{source_port}': {reason}"
         return None
 
     def add_edge(
@@ -246,26 +303,55 @@ class DataflowGraph:
         source_port: str,
         target_id: str,
         target_port: str,
+        transform: list[dict[str, Any]] | None = None,
     ) -> bool | str:
-        """Wire an edge, returning True on success or a rejection reason."""
-        error = self.validate_connection(source_id, source_port, target_id, target_port)
+        """Wire an edge, returning True on success or a rejection reason.
+
+        Parameters
+        ----------
+        transform
+            Steps applied to every value carried along the edge, each a dict
+            naming an ``op`` from :data:`panel_flowdash.transforms.TRANSFORMS`
+            plus its arguments.
+        """
+        error = self.validate_connection(source_id, source_port, target_id, target_port, transform)
         if error is not None:
             return error
+        key = (source_id, source_port, target_id, target_port)
+        return self._wire(key, parse_transform(transform))
 
-        source_state = self._nodes[source_id]
+    def set_edge_transform(
+        self,
+        source_id: str,
+        source_port: str,
+        target_id: str,
+        target_port: str,
+        transform: list[dict[str, Any]] | None,
+    ) -> bool | str:
+        """Replace the transform of an existing edge, returning True or a rejection reason.
+
+        A rejected transform leaves the edge on its previous one.
+        """
+        key = (source_id, source_port, target_id, target_port)
+        if key not in self._edges:
+            return "Edge not found."
+        steps, error = self._parse(transform)
+        if error:
+            return error
+        return self._wire(key, steps)
+
+    def _wire(self, key: EdgeKey, steps: list[Transform]) -> bool | str:
+        _, _, target_id, target_port = key
         is_list = self._is_list_input(target_id, target_port)
         if not is_list:
             # A connection whose first value is rejected would sit wired but
             # broken, so refuse it instead.
             try:
-                self._check_target_value(
-                    target_id, target_port, getattr(source_state, source_port)
-                )
+                self._check_target_value(target_id, target_port, self._edge_value(key, steps))
             except Exception as exc:
                 return f"Connection rejected: {exc}"
 
-        key = (source_id, source_port, target_id, target_port)
-        self._edges[key] = source_state.param[source_port].rx()
+        self._edges[key] = self._build_edge(key, steps)
         # An output nothing has set yet should not wipe the input's default.
         self._bind_input(target_id, target_port, skip_initial_none=not is_list)
         return True
@@ -341,17 +427,43 @@ class DataflowGraph:
         return self._config_states.get(instance_id)
 
     def get_edge_expression(
-        self, source_id: str, source_port: str, target_id: str, target_port: str
+        self,
+        source_id: str,
+        source_port: str,
+        target_id: str,
+        target_port: str,
+        stage: int = -1,
     ) -> param.rx | None:
-        """Return the reactive expression carrying values along an edge, if it is wired."""
-        return self._edges.get((source_id, source_port, target_id, target_port))
+        """Return the reactive expression carrying values along an edge, if it is wired.
+
+        Parameters
+        ----------
+        stage
+            Number of transform steps applied: 0 is the source port's own value,
+            the default -1 is what the target receives.
+        """
+        edge = self._edges.get((source_id, source_port, target_id, target_port))
+        return None if edge is None else edge.stages[stage]
+
+    def get_edge_transform(
+        self, source_id: str, source_port: str, target_id: str, target_port: str
+    ) -> list[dict[str, Any]] | None:
+        """Return the transform steps of an edge as stored, or None if it is not wired."""
+        edge = self._edges.get((source_id, source_port, target_id, target_port))
+        return None if edge is None else [step.to_dict() for step in edge.steps]
 
     @property
-    def edges(self) -> list[dict[str, str]]:
+    def edges(self) -> list[dict[str, Any]]:
         """All current edges."""
         return [
-            {"source": src, "source_port": src_port, "target": tgt, "target_port": tgt_port}
-            for src, src_port, tgt, tgt_port in self._edges
+            {
+                "source": src,
+                "source_port": src_port,
+                "target": tgt,
+                "target_port": tgt_port,
+                "transform": [step.to_dict() for step in edge.steps],
+            }
+            for (src, src_port, tgt, tgt_port), edge in self._edges.items()
         ]
 
     @property

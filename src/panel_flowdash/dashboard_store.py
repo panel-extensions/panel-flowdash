@@ -51,28 +51,33 @@ class DashboardItem:
 
 @dataclass
 class DashboardEdge:
-    """A connection between two component ports."""
+    """A connection between two component ports, with the transform steps it applies."""
 
     source: str
     source_port: str
     target: str
     target_port: str
+    transform: list[dict[str, Any]] = field(default_factory=list)
 
-    def to_dict(self) -> dict[str, str]:
-        return {
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
             "source": self.source,
             "source_port": self.source_port,
             "target": self.target,
             "target_port": self.target_port,
         }
+        if self.transform:
+            data["transform"] = copy.deepcopy(self.transform)
+        return data
 
     @classmethod
-    def from_dict(cls, data: dict[str, str]) -> DashboardEdge:
+    def from_dict(cls, data: dict[str, Any]) -> DashboardEdge:
         return cls(
             source=data["source"],
             source_port=data["source_port"],
             target=data["target"],
             target_port=data["target_port"],
+            transform=copy.deepcopy(data.get("transform") or []),
         )
 
 
