@@ -102,7 +102,7 @@ class TestBasicWiring:
         assert self.graph.validate_connection("p1", "value", "c1", "value") is None
         assert target.value is None
         assert self.graph.edges == []
-        assert self.graph._watchers == {}
+        assert self.graph._edges == {}
 
         assert self.graph.add_edge("p1", "value", "c1", "value") is True
         assert target.value == "ready"
@@ -110,7 +110,7 @@ class TestBasicWiring:
             self.graph.validate_connection("p1", "value", "c1", "value")
             == "Connection already exists."
         )
-        assert len(self.graph.edges) == len(self.graph._watchers) == 1
+        assert len(self.graph.edges) == len(self.graph._edges) == 1
 
     @pytest.mark.parametrize(
         ("source_id", "source_port", "target_id", "target_port", "invalid_port"),
@@ -149,7 +149,7 @@ class TestListConnections:
         assert graph.add_edge("a", "value", "c", "items") == "Connection already exists."
         assert graph.add_edge("b", "value", "c", "items") is True
         assert graph.get_state("c").items == ["first", "second"]
-        assert len(graph.edges) == len(graph._watchers) == 2
+        assert len(graph.edges) == len(graph._edges) == 2
 
 
 class TestSingleSourcePerInput:
@@ -394,6 +394,37 @@ class TestEdgeRemoval:
         graph.remove_node("s")
         assert len(graph.edges) == 0
         assert "s" not in graph.node_ids
+
+    async def test_remove_source_node_keeps_last_value_and_releases_target(self):
+        specs = {
+            "src": make_spec("src", outputs=[OutputPort(name="val")]),
+            "tgt": make_spec("tgt", inputs=[InputPort(name="val")]),
+        }
+        graph = DataflowGraph(specs)
+        source = graph.add_node("s", "src")
+        target = graph.add_node("t", "tgt")
+        graph.add_edge("s", "val", "t", "val")
+        source.val = "last"
+
+        graph.remove_node("s")
+        source.val = "orphaned"
+        assert target.val == "last"
+
+    async def test_remove_source_node_drops_it_from_list_input(self):
+        specs = {
+            "src": make_spec("src", outputs=[OutputPort(name="value")]),
+            "sink": make_spec("sink", inputs=[InputPort(name="items", type="List")]),
+        }
+        graph = DataflowGraph(specs)
+        graph.add_node("a", "src").value = "first"
+        graph.add_node("b", "src").value = "second"
+        sink = graph.add_node("c", "sink")
+        graph.add_edge("a", "value", "c", "items")
+        graph.add_edge("b", "value", "c", "items")
+        assert sink.items == ["first", "second"]
+
+        graph.remove_node("a")
+        assert sink.items == ["second"]
 
 
 class TestViewerComponents:
@@ -786,3 +817,83 @@ class TestRuntimeValidation:
 
         graph.get_state("s").val = "after_disconnect"
         assert graph.get_state("t").val == "default"
+
+    async def test_rejected_value_is_skipped_without_raising_in_source(self):
+        """The source keeps working and the target recovers on the next valid value."""
+
+        class TypedState(param.Parameterized):
+            count = param.Integer(default=0, allow_None=True)
+
+        specs = {
+            "src": make_spec("src", outputs=[OutputPort(name="val")]),
+            "tgt": make_spec("tgt", inputs=[InputPort(name="count")]),
+        }
+        errors = []
+        graph = DataflowGraph(specs, on_error=lambda *args: errors.append(args))
+        source = graph.add_node("s", "src")
+        typed_state = TypedState(name="t")
+        graph._nodes["t"] = typed_state
+        graph._node_specs["t"] = specs["tgt"]
+        graph.add_edge("s", "val", "t", "count")
+
+        source.val = 1
+        source.val = "bad"
+        assert source.val == "bad"
+        assert typed_state.count == 1
+        assert len(errors) == 1
+
+        source.val = 2
+        assert typed_state.count == 2
+
+    async def test_component_parameter_rejection_is_reported(self):
+        """A value the component behind the port refuses never reaches the node state."""
+        specs = {
+            "src": make_spec("src", outputs=[OutputPort(name="val")]),
+            "tgt": make_spec(
+                "tgt",
+                inputs=[InputPort(name="count", parameter=param.Integer(default=0))],
+            ),
+        }
+        errors = []
+        graph = DataflowGraph(specs, on_error=lambda *args: errors.append(args))
+        source = graph.add_node("s", "src")
+        target = graph.add_node("t", "tgt")
+        graph.add_edge("s", "val", "t", "count")
+
+        source.val = 3
+        source.val = "three"
+        assert target.count == 3
+        assert [e[:4] for e in errors] == [("s", "val", "t", "count")]
+
+
+class TestEdgeExpressions:
+    async def test_edge_expression_tracks_source_port(self):
+        specs = {
+            "src": make_spec("src", outputs=[OutputPort(name="val")]),
+            "tgt": make_spec("tgt", inputs=[InputPort(name="val")]),
+        }
+        graph = DataflowGraph(specs)
+        source = graph.add_node("s", "src")
+        graph.add_node("t", "tgt")
+        assert graph.get_edge_expression("s", "val", "t", "val") is None
+
+        graph.add_edge("s", "val", "t", "val")
+        source.val = "flowing"
+        assert graph.get_edge_expression("s", "val", "t", "val").rx.value == "flowing"
+
+        graph.remove_edge("s", "val", "t", "val")
+        assert graph.get_edge_expression("s", "val", "t", "val") is None
+
+    async def test_unset_output_keeps_input_default_on_connect(self):
+        specs = {
+            "src": make_spec("src", outputs=[OutputPort(name="val")]),
+            "tgt": make_spec("tgt", inputs=[InputPort(name="val", default="fallback")]),
+        }
+        graph = DataflowGraph(specs)
+        source = graph.add_node("s", "src")
+        target = graph.add_node("t", "tgt")
+        graph.add_edge("s", "val", "t", "val")
+        assert target.val == "fallback"
+
+        source.val = "set"
+        assert target.val == "set"

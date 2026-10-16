@@ -1328,6 +1328,36 @@ class TestAsyncComponents:
         assert seen[-2:] == ["MSFT", "MSFT!"]
 
 
+class Inverse(Viewer):
+    """A Viewer whose output raises for some inputs."""
+
+    value = param.Number(default=1)
+
+    @param.output(param.Number)
+    @param.depends("value")
+    def inverse(self):
+        return 1 / self.value
+
+    def __panel__(self):
+        return str(self.value)
+
+
+class TestOutputFailures:
+    async def test_failing_output_keeps_last_value_downstream(self, caplog):
+        editor = FlowDash({"Demo/inverse": Inverse}, notifications=False)
+        src = editor.add_component("Demo/inverse")
+        dst = editor.add_component("Demo/inverse")
+        assert editor.connect(src, "inverse", dst, "value") is True
+
+        editor.graph.get_state(src).value = 4
+        assert editor.graph.get_state(dst).value == 0.25
+
+        editor.graph.get_state(src).value = 0
+        assert editor.graph.get_state(src).inverse == 0.25
+        assert editor.graph.get_state(dst).value == 0.25
+        assert "Output 'inverse' failed" in caplog.text
+
+
 def _write_project(tmp_path, section="Analytics"):
     """Write a one-component project.
 
