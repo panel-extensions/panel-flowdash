@@ -282,3 +282,58 @@ def test_dropping_file_on_populated_canvas_asks_first(page):
     assert _drop_file(pane, "other.json", json.dumps(export.export_dashboard()))
     page.get_by_role("dialog").get_by_role("button", name="Replace canvas").click()
     wait_until(lambda: editor._tile_items[0]["instance_id"] == replacement, timeout=8000)
+
+
+class FrameSource(Viewer):
+    frame = param.DataFrame(default=None, allow_None=True)
+
+    @param.output(param.DataFrame)
+    @param.depends("frame")
+    def rows(self):
+        return self.frame
+
+    def __panel__(self):
+        return "frame source"
+
+
+class TotalSink(Viewer):
+    total = param.Number(default=0)
+
+    def __panel__(self):
+        return "total sink"
+
+
+# panel-material-ui buttons report clicks as DOM events carrying their model;
+# a click on a widget the editor has just re-rendered can reach Bokeh as a
+# definition of a model it already knows. That only warns, but this suite
+# turns warnings into errors, which would drop the click.
+@pytest.mark.filterwarnings("ignore:reference already known")
+def test_edge_transform_editor_applies_changes(page):
+    import pandas as pd
+
+    editor = FlowDash({"Test/frame": FrameSource, "Test/total": TotalSink}, notifications=False)
+    src = editor.add_component("Test/frame", position=(0, 0))
+    dst = editor.add_component("Test/total", position=(400, 120))
+    editor.graph.get_state(src).rows = pd.DataFrame({"mw": [10, 30]})
+    transform = [{"op": "column", "column": "mw"}, {"op": "aggregate", "how": "sum"}]
+    assert editor.connect(src, "rows", dst, "total", transform) is True
+    serve_component(page, editor)
+
+    page.locator(".react-flow__edge-text").filter(has_text="sum").wait_for()
+    page.locator(".react-flow__edge").first.click(force=True)
+    page.get_by_text("int · 40").wait_for()
+
+    page.get_by_role("button", name="Add step").click()
+    page.get_by_role("menuitem", name="Format").click()
+
+    wait_until(lambda: editor.graph.get_state(dst).total == 40, page)
+    page.get_by_text("Not applied: total does not accept", exact=False).wait_for()
+    assert editor.graph.get_edge_transform(src, "rows", dst, "total") == transform
+
+    page.get_by_role("button", name="Remove step").nth(2).click()
+    page.get_by_text("✓ Applied to total").wait_for()
+
+    page.get_by_role("combobox", name="How").click()
+    page.get_by_text("max", exact=True).click()
+    wait_until(lambda: editor.graph.get_state(dst).total == 30, page)
+    page.locator(".react-flow__edge-text").filter(has_text="max").wait_for()

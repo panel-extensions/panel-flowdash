@@ -159,6 +159,32 @@ class TestEdgePersistence:
         loaded = store.load_dashboard("user1", "d3")
         assert loaded.edges == []
 
+    async def test_edge_transform_round_trips(self, store):
+        transform = [{"op": "column", "column": "mw"}, {"op": "aggregate", "how": "sum"}]
+        dashboard = DashboardModel(
+            dashboard_id="d4",
+            user_id="user1",
+            title="Transformed",
+            edges=[
+                DashboardEdge(
+                    source="a",
+                    source_port="out",
+                    target="b",
+                    target_port="in",
+                    transform=transform,
+                ),
+                DashboardEdge(source="a", source_port="out", target="c", target_port="in"),
+            ],
+        )
+        store.save_dashboard(dashboard)
+        loaded = store.load_dashboard("user1", "d4")
+        assert loaded.edges[0].transform == transform
+        assert loaded.edges[1].transform == []
+
+    async def test_untransformed_edge_is_stored_without_a_transform_key(self):
+        edge = DashboardEdge(source="a", source_port="out", target="b", target_port="in")
+        assert "transform" not in edge.to_dict()
+
 
 class TestTitleUniqueness:
     async def test_title_exists_returns_true_for_duplicate(self, store):
