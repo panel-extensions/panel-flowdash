@@ -83,6 +83,29 @@ class MyComponent(pn.viewable.Viewer):
 Each `@param.output` becomes an `OutputPort` with its type derived from the
 param type class name (e.g. `"Number"`, `"DataFrame"`).
 
+### Outputs from Parameters
+
+A Viewer that already holds the value on a Parameter does not need a method to
+publish it. Name the Parameter in `provides`:
+
+```python
+@register(component=True, provides=["selection"])
+class Picker(pn.viewable.Viewer):
+    selection = param.List(default=[])
+
+    def __panel__(self):
+        return self._table
+```
+
+Whatever the component assigns to `self.selection` flows to every connected
+input. The port is typed after the Parameter (`"List"` here) unless `provides`
+gives a `type`; a plain `param.Parameter` leaves the port untyped so it can
+connect to any input.
+
+A Parameter published this way is an output only, so it is left out of the
+component's input ports. `provides` replaces the outputs introspected from
+`@param.output`, so list those methods in it too if the component has both.
+
 ### Inputs from param declarations
 
 ```python

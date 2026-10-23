@@ -920,9 +920,19 @@ class FlowDash(Viewer):
 
             node_state.param.watch(_propagate_input, name)
 
-        for name, (_, method, _) in instance.param.outputs().items():
+        methods = instance.param.outputs()
+        for name, (_, method, _) in methods.items():
             if hasattr(node_state.param, name):
                 setattr(node_state, name, self._output_reference(instance, name, method))
+
+        # An output named after a Parameter is that Parameter, with no method to wrap.
+        for port in spec.outputs if spec else ():
+            if (
+                port.name not in methods
+                and port.name in instance.param
+                and hasattr(node_state.param, port.name)
+            ):
+                setattr(node_state, port.name, instance.param[port.name])
 
         return panel_viewer(instance)
 

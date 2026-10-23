@@ -181,6 +181,75 @@ class TestViewerSubclass:
         assert "_hidden" not in input_names
 
 
+class TestParameterOutputs:
+    """Viewer Parameters named in ``provides`` are ports, with no output method."""
+
+    async def test_output_is_typed_after_its_parameter(self):
+        @register(component=True, provides=["picks"])
+        class MyComponent(Viewer):
+            picks = param.List(default=[])
+
+            def __panel__(self):
+                return "test"
+
+        spec = build_component_spec(make_entry(MyComponent))
+        assert [(o.name, o.type) for o in spec.outputs] == [("picks", "List")]
+
+    async def test_declared_type_and_label_win(self):
+        @register(component=True, provides=[{"key": "picks", "type": "Items", "label": "Picks"}])
+        class MyComponent(Viewer):
+            picks = param.List(default=[])
+
+            def __panel__(self):
+                return "test"
+
+        (output,) = build_component_spec(make_entry(MyComponent)).outputs
+        assert (output.type, output.label) == ("Items", "Picks")
+
+    async def test_base_parameter_leaves_the_port_untyped(self):
+        @register(component=True, provides=["picked"])
+        class MyComponent(Viewer):
+            picked = param.Parameter()
+
+            def __panel__(self):
+                return "test"
+
+        (output,) = build_component_spec(make_entry(MyComponent)).outputs
+        assert output.type is None
+
+    async def test_output_parameter_is_not_also_an_input(self):
+        @register(component=True, provides=["picks"])
+        class MyComponent(Viewer):
+            picks = param.List(default=[])
+            threshold = param.Number(default=0)
+
+            def __panel__(self):
+                return "test"
+
+        spec = build_component_spec(make_entry(MyComponent))
+        assert [i.name for i in spec.inputs] == ["threshold"]
+
+    async def test_explicit_requires_are_left_alone(self):
+        @register(component=True, provides=["picks"], requires=["picks"])
+        class MyComponent(Viewer):
+            picks = param.List(default=[])
+
+            def __panel__(self):
+                return "test"
+
+        spec = build_component_spec(make_entry(MyComponent))
+        assert [i.name for i in spec.inputs] == ["picks"]
+
+    async def test_name_that_is_no_parameter_stays_untyped(self):
+        @register(component=True, provides=["custom_output"])
+        class MyComponent(Viewer):
+            def __panel__(self):
+                return "test"
+
+        (output,) = build_component_spec(make_entry(MyComponent)).outputs
+        assert (output.name, output.type) == ("custom_output", None)
+
+
 class TestViewerWithDecoratorOverride:
     """Viewer subclass where decorator metadata overrides introspected ports."""
 
