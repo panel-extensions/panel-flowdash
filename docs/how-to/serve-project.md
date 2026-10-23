@@ -38,7 +38,7 @@ flowdash serve <directory> [options]
 | `--address` | `0.0.0.0` | Address to bind to. |
 | `--title` | `FlowDash` | Application title in the browser tab. |
 | `--home-dashboard` | none | Dashboard (id or title) to show on the homepage instead of the grid. |
-| `--db-path` | `<dir>/dashboards.db` | Path to the SQLite database. |
+| `--db-path` | `<dir>/dashboards.db` | Path to the SQLite database. Conflicts with a `store` defined in the project. |
 | `--warm` | off | Import all modules at startup instead of lazily on first visit. |
 | `--dev` | off | Enable autoreload for development. |
 | `--admin` | off | Enable the Panel admin interface. |
@@ -73,6 +73,27 @@ Override this for shared deployments:
 ```bash
 flowdash serve my_project/ --db-path /var/data/flowdash.db
 ```
+
+---
+
+## Custom dashboard store
+
+To keep dashboards somewhere other than SQLite, define `store` in the project's
+`__init__.py`. It can be any `BaseDashboardStore`, such as a folder of JSON
+files that lives with the project:
+
+```python
+# my_project/__init__.py
+from pathlib import Path
+
+from panel_flowdash import JSONFolderDashboardStore
+
+store = JSONFolderDashboardStore(Path(__file__).parent / "dashboards")
+```
+
+See [Persist dashboards](persist-dashboards.md) for the available stores.
+Passing `--db-path` as well is an error, since the two would disagree about
+where dashboards live.
 
 ---
 

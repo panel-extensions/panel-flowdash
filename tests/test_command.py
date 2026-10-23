@@ -2,11 +2,15 @@
 
 import subprocess
 import sys
+import types
 from pathlib import Path
 
+import pytest
+
 from panel_flowdash.app import FlowDashApp, build_registry
-from panel_flowdash.command.serve import Serve
-from panel_flowdash.dashboard_store import DashboardStore
+from panel_flowdash.command.serve import Serve, _resolve_store
+from panel_flowdash.dashboard_store import DashboardStore, MemoryDashboardStore
+from panel_flowdash.json_store import JSONFolderDashboardStore
 
 
 def _create_project(tmp_path: Path):
@@ -132,6 +136,16 @@ class TestFlowDashApp:
         )
         assert len(app._component_entries) == 2
 
+    @pytest.mark.parametrize("backend", [MemoryDashboardStore, JSONFolderDashboardStore])
+    async def test_accepts_any_store_backend(self, tmp_path, backend):
+        _create_project(tmp_path)
+        store = backend() if backend is MemoryDashboardStore else backend(tmp_path / "json")
+        store.create_dashboard("local", "Sales")
+        app = FlowDashApp(project_dir=tmp_path, store=store)
+
+        assert app.store is store
+        assert [d.title for d in app.store.list_accessible(app._identity)] == ["Sales"]
+
     async def test_home_dashboard_param_passthrough(self, tmp_path):
         _create_project(tmp_path)
         sys.path.insert(0, str(tmp_path))
@@ -163,6 +177,38 @@ class TestFlowDashApp:
         db_path = tmp_path / "dashboards.db"
         DashboardStore(db_path)
         assert db_path.exists()
+
+
+class TestResolveStore:
+    def test_defaults_to_sqlite_in_project_dir(self, tmp_path):
+        store, description = _resolve_store(None, tmp_path, None)
+        assert isinstance(store, DashboardStore)
+        assert (tmp_path / "dashboards.db").exists()
+        assert str(tmp_path / "dashboards.db") in description
+
+    def test_db_path_overrides_the_default_location(self, tmp_path):
+        db_path = tmp_path / "elsewhere.db"
+        store, _ = _resolve_store(types.SimpleNamespace(), tmp_path, str(db_path))
+        assert isinstance(store, DashboardStore)
+        assert db_path.exists()
+
+    def test_project_store_is_used(self, tmp_path):
+        mine = JSONFolderDashboardStore(tmp_path / "dashboards")
+        store, description = _resolve_store(types.SimpleNamespace(store=mine), tmp_path, None)
+        assert store is mine
+        assert "JSONFolderDashboardStore" in description
+        assert not (tmp_path / "dashboards.db").exists()
+
+    def test_project_store_must_be_a_store(self, tmp_path, capsys):
+        with pytest.raises(SystemExit):
+            _resolve_store(types.SimpleNamespace(store="dashboards.db"), tmp_path, None)
+        assert "must be a BaseDashboardStore" in capsys.readouterr().err
+
+    def test_db_path_conflicts_with_project_store(self, tmp_path, capsys):
+        init_mod = types.SimpleNamespace(store=MemoryDashboardStore())
+        with pytest.raises(SystemExit):
+            _resolve_store(init_mod, tmp_path, str(tmp_path / "x.db"))
+        assert "--db-path conflicts" in capsys.readouterr().err
 
 
 class TestCLI:
