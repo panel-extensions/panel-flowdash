@@ -50,7 +50,7 @@ To ship a fixed set of dashboards, open the folder read-only:
 store = JSONFolderDashboardStore("dashboards", read_only=True)
 ```
 
-Writes then raise `PermissionError`, and nobody can administer a dashboard, so
+Writes then raise `PermissionError` (also a `DashboardStoreError`, see below), and nobody can administer a dashboard, so
 the editor offers no way to modify, rename, share or delete one.
 
 Files are written atomically. Several server processes can share one folder, but
@@ -171,6 +171,32 @@ store.delete_dashboard("user1", "abc123")
 ```
 
 Returns `True` if a dashboard was deleted, `False` if not found.
+
+---
+
+## Refuse an operation from a custom store
+
+A store of your own can turn down a request, for example a duplicate title, a
+name the backend cannot hold or a user without write access, by raising
+`DashboardStoreError` from `create_dashboard`, `save_dashboard`,
+`rename_dashboard`, `delete_dashboard` or `set_permission`:
+
+```python
+from panel_flowdash import DashboardStoreError, MemoryDashboardStore
+
+
+class UniqueTitleStore(MemoryDashboardStore):
+    def create_dashboard(self, user_id, title):
+        if any(m.title == title for m in self._all_dashboards()):
+            raise DashboardStoreError(f'A dashboard called "{title}" already exists.')
+        return super().create_dashboard(user_id, title)
+```
+
+The app shows the message to the user as written and leaves the open dashboard,
+canvas and menu as they were, so phrase it for an end user. Returning `False`
+from `rename_dashboard`, `delete_dashboard` or `set_permission` is reported as a
+generic failure. Any other exception is treated as a bug or an infrastructure
+fault: it is logged with its traceback and the user sees a short error.
 
 ---
 

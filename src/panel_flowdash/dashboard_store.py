@@ -15,6 +15,18 @@ from typing import Any
 from panel_flowdash.auth import Identity, Permission, can_administer, is_authorized
 
 
+class DashboardStoreError(Exception):
+    """A store refused an operation for a reason the user should see.
+
+    Raise it from a :class:`BaseDashboardStore` method to reject a request, for
+    example a duplicate title, a name the backend cannot store or a missing
+    permission. The app shows the message to the user as written and leaves
+    its state unchanged, so phrase it for an end user. Any other exception is
+    treated as a bug or an infrastructure failure and is logged with its
+    traceback.
+    """
+
+
 @dataclass
 class DashboardItem:
     """A component instance on the dashboard.
@@ -141,6 +153,9 @@ class BaseDashboardStore(ABC):
     Subclasses implement the six storage primitives below; the access-control
     and lookup helpers are backend-independent and inherited. Implement this to
     back dashboards with something other than SQLite.
+
+    To refuse a create, save, rename, delete or permission change, raise
+    :class:`DashboardStoreError` with a message for the user.
     """
 
     @abstractmethod
