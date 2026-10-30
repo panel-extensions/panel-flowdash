@@ -1,5 +1,6 @@
 """Tests for the CLI and app builder."""
 
+import importlib
 import subprocess
 import sys
 import types
@@ -8,9 +9,10 @@ from pathlib import Path
 import pytest
 
 from panel_flowdash.app import FlowDashApp, build_registry
-from panel_flowdash.command.serve import Serve, _resolve_store
+from panel_flowdash.command.serve import Serve, _load_project_init, _resolve_store
 from panel_flowdash.dashboard_store import DashboardStore, MemoryDashboardStore
 from panel_flowdash.json_store import JSONFolderDashboardStore
+from panel_flowdash.registry import RegistryEntry
 
 
 def _create_project(tmp_path: Path):
@@ -109,6 +111,103 @@ class TestBuildRegistry:
             sys.path.remove(str(tmp_path))
 
         assert not any(".hidden" in k for k in registry)
+
+
+@pytest.fixture
+def package_project(tmp_path, monkeypatch):
+    """A project laid out as an importable package, its parent already on sys.path.
+
+    Package and section names are unique to this fixture so modules cached in
+    ``sys.modules`` by other tests cannot shadow it.
+    """
+    package = "flowdash_pkg_catalogue"
+    project_dir = tmp_path / "src" / package
+    section = project_dir / "PkgSection"
+    section.mkdir(parents=True)
+    (project_dir / "__init__.py").write_text(
+        "from panel_flowdash import MemoryDashboardStore\n\nstore = MemoryDashboardStore()\n"
+    )
+    (section / "__init__.py").write_text("")
+    (section / "chart.py").write_text(
+        "from panel_flowdash import register\n\n"
+        "@register(page=False, component=True, requires=['company'])\n"
+        "def app(config):\n"
+        "    return 'chart'\n"
+    )
+    (section / "overview.py").write_text(
+        "from panel_flowdash import register\n\n"
+        "@register(page=True, title='Overview')\n"
+        "def app():\n"
+        "    return 'page content'\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path / "src"))
+    yield package, project_dir
+    for name in [m for m in sys.modules if m == package or m.startswith(f"{package}.")]:
+        del sys.modules[name]
+
+
+class TestBuildRegistryPackage:
+    async def test_default_names_modules_relative_to_project_dir(self, tmp_path):
+        _create_project(tmp_path)
+        registry = build_registry(tmp_path)
+        assert registry["Analytics/chart"].module_name == "Analytics.chart"
+
+    async def test_names_modules_under_package(self, package_project):
+        package, project_dir = package_project
+        registry = build_registry(project_dir, package=package)
+
+        assert set(registry) == {"PkgSection/chart", "PkgSection/overview"}
+        entry = registry["PkgSection/chart"]
+        assert entry.module_name == f"{package}.PkgSection.chart"
+        assert entry.section == "PkgSection"
+        assert entry.name == "chart"
+
+    async def test_load_shares_the_module_with_the_package(self, package_project):
+        package, project_dir = package_project
+        sys_path = list(sys.path)
+        entry = build_registry(project_dir, package=package)["PkgSection/chart"]
+        app = entry.load()
+
+        module = importlib.import_module(f"{package}.PkgSection.chart")
+        assert app is module.app
+        assert "PkgSection.chart" not in sys.modules
+        assert sys.path == sys_path
+
+    async def test_live_app_maps_to_the_scanned_id(self, package_project):
+        package, project_dir = package_project
+        registry = build_registry(project_dir, package=package)
+        module = importlib.import_module(f"{package}.PkgSection.chart")
+
+        assert RegistryEntry.from_app(module.app).app_id in registry
+
+    async def test_package_resolving_elsewhere_is_rejected(self, package_project):
+        _, project_dir = package_project
+        with pytest.raises(ValueError, match="not to the project directory"):
+            build_registry(project_dir, package="json")
+
+    async def test_unimportable_package_is_rejected(self, package_project):
+        _, project_dir = package_project
+        with pytest.raises(ValueError, match="not importable"):
+            build_registry(project_dir, package="flowdash_no_such_package")
+
+    async def test_app_threads_package_to_the_registry(self, package_project):
+        package, project_dir = package_project
+        app = FlowDashApp(project_dir=project_dir, package=package, store=MemoryDashboardStore())
+        assert app._registry["PkgSection/chart"].module_name == f"{package}.PkgSection.chart"
+
+    async def test_build_routes_threads_package_to_the_registry(self, package_project):
+        package, project_dir = package_project
+        routes = FlowDashApp.build_routes(
+            project_dir=project_dir, package=package, store=MemoryDashboardStore()
+        )
+        assert "/PkgSection/overview" in routes
+
+    async def test_serve_imports_project_init_as_the_package(self, package_project):
+        package, project_dir = package_project
+        init_mod = _load_project_init(project_dir, package)
+
+        assert init_mod is importlib.import_module(package)
+        assert isinstance(init_mod.store, MemoryDashboardStore)
 
 
 class TestFlowDashApp:
@@ -219,7 +318,7 @@ class TestCLI:
 
     def test_has_flowdash_args(self):
         arg_names = {name for name, _ in Serve.args}
-        for expected in ("directory", "--db-path", "--title", "--home-dashboard"):
+        for expected in ("directory", "--db-path", "--package", "--title", "--home-dashboard"):
             assert expected in arg_names, f"missing FlowDash arg: {expected}"
 
     def test_version(self):
@@ -249,6 +348,17 @@ class TestCLI:
         assert "--num-threads" in result.stdout
         assert "--allow-websocket-origin" in result.stdout
         assert "--oauth-provider" in result.stdout
+
+    def test_package_mismatch_fails_before_serving(self, tmp_path):
+        _create_project(tmp_path)
+        result = subprocess.run(
+            [sys.executable, "-m", "panel_flowdash", "serve", str(tmp_path), "--package", "json"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        assert result.returncode == 1
+        assert "not to the project directory" in result.stderr
 
     def test_missing_directory(self):
         result = subprocess.run(
