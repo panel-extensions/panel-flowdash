@@ -5,11 +5,13 @@ import sys
 import types
 from pathlib import Path
 
+import panel_material_ui as pmui
 import pytest
 
 from panel_flowdash.app import FlowDashApp, build_registry
 from panel_flowdash.command.serve import Serve, _resolve_store
 from panel_flowdash.dashboard_store import DashboardStore, MemoryDashboardStore
+from panel_flowdash.editor import FlowDash
 from panel_flowdash.json_store import JSONFolderDashboardStore
 
 
@@ -135,6 +137,54 @@ class TestFlowDashApp:
             include_builtin_components=False,
         )
         assert len(app._component_entries) == 2
+
+    async def test_editor_options_reach_editor(self, tmp_path):
+        _create_project(tmp_path)
+
+        def value_repr(value):
+            return f"custom: {value}"
+
+        extra = pmui.Button(label="Extra")
+        app = FlowDashApp(
+            project_dir=tmp_path,
+            store=MemoryDashboardStore(),
+            editor_options={
+                "value_repr": value_repr,
+                "breakpoints": [600],
+                "toolbar_extra": [extra],
+            },
+        )
+
+        assert app._editor.value_repr is value_repr
+        assert app._editor.breakpoints == [600]
+        assert app._editor.toolbar_extra == [app._share_button, extra]
+
+    @pytest.mark.parametrize("key", ["components", "store", "user"])
+    async def test_editor_options_reject_app_owned_keys(self, tmp_path, key):
+        _create_project(tmp_path)
+        with pytest.raises(ValueError, match=f"editor_options may not set '{key}'"):
+            FlowDashApp(
+                project_dir=tmp_path,
+                store=MemoryDashboardStore(),
+                editor_options={key: None},
+            )
+
+    async def test_editor_class_substitution(self, tmp_path):
+        _create_project(tmp_path)
+
+        class CustomFlowDash(FlowDash):
+            pass
+
+        app = FlowDashApp(
+            project_dir=tmp_path,
+            store=MemoryDashboardStore(),
+            editor_class=CustomFlowDash,
+            editor_options={"popup_trigger": "click"},
+        )
+
+        assert type(app._editor) is CustomFlowDash
+        assert app._editor.popup_trigger == "click"
+        assert len(app._component_entries) == 5
 
     @pytest.mark.parametrize("backend", [MemoryDashboardStore, JSONFolderDashboardStore])
     async def test_accepts_any_store_backend(self, tmp_path, backend):
