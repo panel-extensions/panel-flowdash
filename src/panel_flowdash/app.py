@@ -146,6 +146,30 @@ class FlowDashApp(Viewer):
 
     contextbar_open = param.Boolean(default=False, doc="Whether the contextbar is open.")
 
+    editor_class = param.ClassSelector(
+        class_=FlowDash,
+        default=FlowDash,
+        is_instance=False,
+        doc="""
+        The `FlowDash` subclass instantiated as the app's editor. Read once at
+        construction; the same editor is reused for every dashboard.""",
+    )
+
+    editor_options = param.Dict(
+        default={},
+        doc="""
+        Extra keyword arguments passed through to the `editor_class`
+        constructor, e.g. `value_repr` or `popup_trigger`. Entries override
+        the defaults the app derives from its own parameters (such as
+        `breakpoints` and `notifications`), and `toolbar_extra` items are
+        placed after the app's Share button. `components`, `store` and `user`
+        are supplied by the app and raise a ValueError if given here.
+        `dashboard`, `editable` and `read_only` are accepted but then managed
+        by the app's routing and authorization. Read once at construction;
+        the same editor is reused for every dashboard, so later changes have
+        no effect.""",
+    )
+
     home_dashboard = param.String(
         default=None,
         doc="""
@@ -440,16 +464,30 @@ class FlowDashApp(Viewer):
                 styles={"color": "black"},
             )
 
+    _RESERVED_EDITOR_OPTIONS = ("components", "store", "user")
+
     def _build_editor(self) -> FlowDash:
         """Construct the embedded editor and wire it into the app shell."""
-        editor = FlowDash(
+        options = dict(self.editor_options)
+        reserved = sorted(set(options) & set(self._RESERVED_EDITOR_OPTIONS))
+        if reserved:
+            raise ValueError(
+                f"editor_options may not set {', '.join(map(repr, reserved))}; "
+                "the app supplies these to the editor. Configure the registry, "
+                "store and identity on FlowDashApp itself."
+            )
+        toolbar_extra = [self._share_button, *options.pop("toolbar_extra", [])]
+        editor = self.editor_class(
             components=self._registry,
-            include_builtin_components=self.include_builtin_components,
-            breakpoints=self.breakpoints,
-            notifications=self.notifications,
             store=self.store,
-            toolbar_extra=[self._share_button],
             user=self._user_id,
+            **{
+                "include_builtin_components": self.include_builtin_components,
+                "breakpoints": self.breakpoints,
+                "notifications": self.notifications,
+                **options,
+                "toolbar_extra": toolbar_extra,
+            },
         )
         editor.param.watch(self._on_editor_sidebar, "sidebar")
         return editor
