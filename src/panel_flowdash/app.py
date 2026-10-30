@@ -697,11 +697,13 @@ class FlowDashApp(Viewer):
         )
         dash_cards = []
         for d in dashboards:
-            can_admin = self._can_administer_dashboard(d.dashboard_id)
+            speed_items = self._dashboard_speed_dial_items(
+                self._can_administer_dashboard(d.dashboard_id)
+            )
             speed_dial = None
-            if can_admin:
+            if speed_items:
                 speed_dial = pmui.SpeedDial(
-                    items=self._dashboard_speed_dial_items(can_admin),
+                    items=speed_items,
                     icon="more_vert",
                     direction="down",
                     color="default",
@@ -785,24 +787,7 @@ class FlowDashApp(Viewer):
     def _on_launcher_dash_action(self, dashboard_id, title, event):
         value = event.new if hasattr(event, "new") else event
         label = value.get("label") if isinstance(value, dict) else value
-        if label == "Edit":
-            if pn.state.location:
-                pn.state.location.param.update(
-                    pathname=f"{DASH_ROUTE_PREFIX}{dashboard_id}",
-                    search="?edit=true",
-                )
-            pn.state.execute(partial(self._load_dashboard_edit, dashboard_id))
-        elif label == "Rename":
-            self._dialog_name_input.param.update(
-                value=title, disabled=False, error_state=False, helper_text=""
-            )
-            self._dialog_context = {"action": "rename", "dashboard_id": dashboard_id}
-            self._dialog.param.update(title="Rename Dashboard", open=True)
-        elif label == "Delete":
-            self._dialog_name_input.param.update(value=title, disabled=True)
-            self._dialog_context = {"action": "delete", "dashboard_id": dashboard_id}
-            self._dialog.title = "Delete Dashboard"
-            self._dialog.open = True
+        self._on_dashboard_action(label, dashboard_id, title)
 
     def _apply_layout_config(self, content, route):
         """Run the ``configure_layout`` hook for the current navigation, if any."""
@@ -968,30 +953,39 @@ class FlowDashApp(Viewer):
             return path[len(DASH_ROUTE_PREFIX) :].strip("/")
         return None
 
-    def _on_action_edit(self, item):
+    def _on_dashboard_action(self, label: str, dashboard_id: str, title: str):
+        """Run the dashboard action *label* on a dashboard.
+
+        Every entry point (launcher card, nav drawer, header MenuBar) decodes its
+        event and calls this, so a subclass adding an action to
+        ``_ADMIN_DASHBOARD_ACTIONS`` or ``_VIEWER_DASHBOARD_ACTIONS`` handles it
+        by overriding this method and calling ``super()`` for the other labels.
+        """
+        if label == "Edit":
+            self._edit_dashboard(dashboard_id)
+        elif label == "Rename":
+            self._open_rename_dialog(dashboard_id, title)
+        elif label == "Delete":
+            self._open_delete_dialog(dashboard_id, title)
+
+    def _edit_dashboard(self, dashboard_id: str):
         self._nav_drawer.open = False
-        path = item.get("path", "")
-        dashboard_id = self._dashboard_id_from_path(path)
-        if not dashboard_id:
-            return
         target_path = f"{DASH_ROUTE_PREFIX}{dashboard_id}"
         if self._dirty and self._current_dashboard is not None:
             self._pending_navigation = target_path
             self._unsaved_dialog.open = True
-        else:
-            pn.state.execute(partial(self._load_dashboard_edit, dashboard_id))
+            return
+        if pn.state.location:
+            pn.state.location.param.update(pathname=target_path, search="?edit=true")
+        pn.state.execute(partial(self._load_dashboard_edit, dashboard_id))
 
     async def _load_dashboard_edit(self, dashboard_id: str):
         await self._load_dashboard(dashboard_id, edit=True)
 
     @pn.io.hold()
-    def _on_action_rename(self, item):
-        path = item.get("path", "")
-        dashboard_id = self._dashboard_id_from_path(path)
-        if not dashboard_id:
-            return
+    def _open_rename_dialog(self, dashboard_id: str, title: str):
         self._dialog_name_input.param.update(
-            value=item.get("label", ""), disabled=False, error_state=False, helper_text=""
+            value=title, disabled=False, error_state=False, helper_text=""
         )
         self._dialog_context = {"action": "rename", "dashboard_id": dashboard_id}
         self._dialog.title = "Rename Dashboard"
@@ -999,20 +993,23 @@ class FlowDashApp(Viewer):
         self._dialog.open = True
 
     @pn.io.hold()
-    def _on_action_delete(self, item):
-        path = item.get("path", "")
-        dashboard_id = self._dashboard_id_from_path(path)
-        if not dashboard_id:
-            return
-        self._dialog_name_input.param.update(value=item.get("label", ""), disabled=True)
+    def _open_delete_dialog(self, dashboard_id: str, title: str):
+        self._dialog_name_input.param.update(value=title, disabled=True)
         self._dialog_context = {"action": "delete", "dashboard_id": dashboard_id}
         self._dialog.title = "Delete Dashboard"
         self._nav_drawer.open = False
         self._dialog.open = True
 
-    @pn.io.hold()
-    def _on_action_create(self, item):
-        self._open_create_dialog()
+    def _on_nav_menu_action(self, label: str, item: dict):
+        """Decode a nav drawer action into a dashboard id and dispatch it."""
+        path = item.get("path", "")
+        if path == "__new_dashboard__":
+            if label == "Create":
+                self._open_create_dialog()
+            return
+        dashboard_id = self._dashboard_id_from_path(path)
+        if dashboard_id:
+            self._on_dashboard_action(label, dashboard_id, item.get("label", ""))
 
     @pn.io.hold()
     def _open_create_dialog(self):
@@ -1372,10 +1369,10 @@ class FlowDashApp(Viewer):
             width_policy="max",
         )
 
-        self._menu_list.on_action("Edit", self._on_action_edit)
-        self._menu_list.on_action("Rename", self._on_action_rename)
-        self._menu_list.on_action("Delete", self._on_action_delete)
-        self._menu_list.on_action("Create", self._on_action_create)
+        actions = (*self._dashboard_actions(True), *self._dashboard_actions(False))
+        labels = dict.fromkeys([*(action["label"] for action in actions), "Create"])
+        for label in labels:
+            self._menu_list.on_action(label, partial(self._on_nav_menu_action, label))
 
         return self._menu_list
 
@@ -1383,8 +1380,8 @@ class FlowDashApp(Viewer):
         """MenuBar equivalent of the nav tree, with dashboard management submenus.
 
         MenuBar has no inline action buttons, so each dashboard is exposed as a
-        submenu (Open plus, for administrators, Edit/Rename/Delete) and the
-        management verbs are encoded via a ``nav_action`` key routed in
+        submenu (Open plus the actions from :meth:`_dashboard_actions`) and the
+        action label is encoded via a ``nav_action`` key routed in
         :meth:`_on_menu_bar_click`.
         """
         sections: dict[str, list[RegistryEntry]] = {}
@@ -1415,24 +1412,15 @@ class FlowDashApp(Viewer):
         for d in dashboards:
             path = f"{DASH_ROUTE_PREFIX}{d.dashboard_id}"
             entries = [{"label": "Open", "icon": "open_in_new", "path": path}]
-            if self._can_administer_dashboard(d.dashboard_id):
-                entries += [
-                    {"label": "Edit", "icon": "edit", "path": path, "nav_action": "edit"},
+            for action in self._dashboard_actions(self._can_administer_dashboard(d.dashboard_id)):
+                entries.append(
                     {
-                        "label": "Rename",
-                        "icon": "drive_file_rename_outline",
+                        **action,
                         "path": path,
-                        "nav_action": "rename",
+                        "nav_action": action["label"],
                         "title": d.title,
-                    },
-                    {
-                        "label": "Delete",
-                        "icon": "delete",
-                        "path": path,
-                        "nav_action": "delete",
-                        "title": d.title,
-                    },
-                ]
+                    }
+                )
             dash_items.append({"label": d.title, "icon": "dashboard", "items": entries})
 
         return [
@@ -1446,13 +1434,9 @@ class FlowDashApp(Viewer):
         if action is None:
             self._on_nav_click(item)
             return
-        synthetic = {"path": item.get("path", ""), "label": item.get("title", "")}
-        if action == "edit":
-            self._on_action_edit(synthetic)
-        elif action == "rename":
-            self._on_action_rename(synthetic)
-        elif action == "delete":
-            self._on_action_delete(synthetic)
+        dashboard_id = self._dashboard_id_from_path(item.get("path", ""))
+        if dashboard_id:
+            self._on_dashboard_action(action, dashboard_id, item.get("title", ""))
 
     def _build_nav_bar(self):
         """Build the header MenuBar and its quick-action icons (menubar variant)."""
