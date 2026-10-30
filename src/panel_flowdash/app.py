@@ -23,7 +23,7 @@ from panel_flowdash.auth import (
     is_authorized,
     resolve_identity,
 )
-from panel_flowdash.dashboard_store import DashboardModel, DashboardStore
+from panel_flowdash.dashboard_store import BaseDashboardStore, DashboardModel
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.registry import RegistryEntry, build_registry
 from panel_flowdash.session_state import build_session_state_class, check_requirements
@@ -185,7 +185,7 @@ class FlowDashApp(Viewer):
     sidebar = Children(default=[], doc="Items prepended to the sidebar.")
 
     store = param.ClassSelector(
-        class_=DashboardStore, doc="DashboardStore instance for persistence."
+        class_=BaseDashboardStore, doc="Dashboard store instance for persistence."
     )
 
     title = param.String(default="FlowDash", doc="Application title shown in the browser tab.")

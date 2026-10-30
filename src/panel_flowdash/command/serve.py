@@ -18,12 +18,41 @@ from panel.io.application import build_applications
 
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.auth import AuthConfig, make_authorize_callback
-from panel_flowdash.dashboard_store import DashboardStore
+from panel_flowdash.dashboard_store import BaseDashboardStore, DashboardStore
 from panel_flowdash.registry import build_registry
 
 log = logging.getLogger(__name__)
 
 _EXCLUDED_ARGS = ("files", "--args")
+
+
+def _resolve_store(
+    init_mod, project_dir: Path, db_path: str | None
+) -> tuple[BaseDashboardStore, str]:
+    """Return the project's dashboard store and a description for the log.
+
+    A project ``__init__.py`` selects the backend by defining ``store``;
+    otherwise a SQLite database is used, at *db_path* if given.
+    """
+    store = getattr(init_mod, "store", None)
+    if store is None:
+        db_path = db_path or str(project_dir / "dashboards.db")
+        return DashboardStore(db_path), f"SQLite database {db_path}"
+    if not isinstance(store, BaseDashboardStore):
+        print(  # noqa: T201
+            f"ERROR: `store` in {project_dir / '__init__.py'} must be a BaseDashboardStore, "
+            f"not {type(store).__name__}.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    if db_path:
+        print(  # noqa: T201
+            f"ERROR: --db-path conflicts with the `store` defined in "
+            f"{project_dir / '__init__.py'}.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    return store, type(store).__name__
 
 
 class Serve(_PanelServe):
@@ -46,7 +75,10 @@ class Serve(_PanelServe):
                 action="store",
                 type=str,
                 default=None,
-                help="Path to the SQLite database file. Defaults to <directory>/dashboards.db.",
+                help=(
+                    "Path to the SQLite database file. Defaults to <directory>/dashboards.db. "
+                    "Ignored by projects whose __init__.py defines `store`."
+                ),
             ),
         ),
         (
@@ -93,8 +125,6 @@ class Serve(_PanelServe):
             print(f"ERROR: '{args.directory}' is not a directory.", file=sys.stderr)  # noqa: T201
             raise SystemExit(1)
 
-        db_path = args.db_path or str(project_dir / "dashboards.db")
-
         sys.path.insert(0, str(project_dir))
         os.chdir(str(project_dir))
 
@@ -110,7 +140,7 @@ class Serve(_PanelServe):
 
         auth_config = AuthConfig.from_module(init_mod)
 
-        store = DashboardStore(db_path)
+        store, store_description = _resolve_store(init_mod, project_dir, args.db_path)
 
         registry = build_registry(project_dir)
 
@@ -137,7 +167,7 @@ class Serve(_PanelServe):
         )
 
         log.info(f"Serving FlowDash from '{project_dir}' on port {args.port}")
-        log.info(f"Database: {db_path}")
+        log.info(f"Dashboard store: {store_description}")
 
         self._apps = build_applications(routes, title=args.title, location=True)
 

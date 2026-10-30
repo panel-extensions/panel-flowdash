@@ -1,8 +1,11 @@
 # Persist Dashboards
 
-FlowDash uses SQLite to store dashboard configurations: which components are
-placed, how they are connected, and their grid layout. The `DashboardStore`
-handles all CRUD operations.
+FlowDash stores dashboard configurations: which components are placed, how they
+are connected, and their grid layout. A store handles all CRUD operations.
+Three backends are provided: `DashboardStore` (SQLite, the default),
+`JSONFolderDashboardStore` (one JSON file per dashboard) and
+`MemoryDashboardStore` (nothing persisted, for notebooks and tests). They all
+implement `BaseDashboardStore`, so you can also bring your own.
 
 ---
 
@@ -16,6 +19,42 @@ store = DashboardStore("path/to/dashboards.db")
 
 The database file is created automatically with the required schema. WAL mode
 is enabled for concurrent read access.
+
+---
+
+## Keep dashboards as JSON files
+
+```python
+from panel_flowdash import JSONFolderDashboardStore
+
+store = JSONFolderDashboardStore("path/to/dashboards")
+```
+
+Each dashboard is saved as `<dashboard_id>.json` in the folder. The files are
+indented, human-readable JSON, so you can review changes in a pull request, keep
+them in version control next to the project that serves them, or edit them by
+hand. The folder is read on every request, so files added or changed outside the
+application appear without a restart.
+
+Dashboards created through the store get an id derived from their title
+(`Sales Overview` becomes `sales-overview`, then `sales-overview-2`), which keeps
+file names and `/dash/<id>` URLs readable. Ids must be usable as file names:
+letters, digits, `.`, `_` and `-`, starting with a letter or digit.
+
+A file that cannot be parsed, or whose `dashboard_id` differs from its file name,
+is skipped and logged once, so one bad file does not take the others down.
+
+To ship a fixed set of dashboards, open the folder read-only:
+
+```python
+store = JSONFolderDashboardStore("dashboards", read_only=True)
+```
+
+Writes then raise `PermissionError`, and nobody can administer a dashboard, so
+the editor offers no way to modify, rename, share or delete one.
+
+Files are written atomically. Several server processes can share one folder, but
+two saving the same dashboard at the same moment resolve last-writer-wins.
 
 ---
 
@@ -91,7 +130,7 @@ dashboard view (separate from the node editor canvas positions in items).
 dashboard = store.create_dashboard(user_id="user1", title="Sales Overview")
 ```
 
-Generates a random dashboard ID and persists an empty dashboard.
+Generates a dashboard ID and persists an empty dashboard.
 
 ### Load
 
@@ -117,7 +156,7 @@ dashboard.edges.append(new_edge)
 store.save_dashboard(dashboard)
 ```
 
-Uses upsert semantics (INSERT ... ON CONFLICT DO UPDATE).
+Inserts the dashboard or replaces the stored one with the same id.
 
 ### Rename
 
@@ -131,7 +170,7 @@ store.rename_dashboard("user1", "abc123", "New Title")
 store.delete_dashboard("user1", "abc123")
 ```
 
-Returns `True` if a row was deleted, `False` if not found.
+Returns `True` if a dashboard was deleted, `False` if not found.
 
 ---
 
