@@ -426,6 +426,39 @@ class TestEdgeRemoval:
         graph.remove_node("a")
         assert sink.items == ["second"]
 
+    async def test_remove_target_node_stops_following_its_source(self):
+        specs = {
+            "src": make_spec("src", outputs=[OutputPort(name="val")]),
+            "tgt": make_spec("tgt", inputs=[InputPort(name="val")]),
+        }
+        errors = []
+        graph = DataflowGraph(specs, on_error=lambda *args: errors.append(args))
+        source = graph.add_node("s", "src")
+        target = graph.add_node("t", "tgt")
+        graph.add_edge("s", "val", "t", "val")
+        source.val = "last"
+
+        graph.remove_node("t")
+        source.val = "after"
+
+        assert target.val == "last"
+        assert errors == []
+
+    async def test_remove_node_releases_output_references(self):
+        class Driver(param.Parameterized):
+            value = param.String(default="a")
+
+        specs = {"src": make_spec("src", outputs=[OutputPort(name="val")])}
+        graph = DataflowGraph(specs)
+        driver = Driver()
+        state = graph.add_node("s", "src")
+        state.val = driver.param.value
+
+        graph.remove_node("s")
+        driver.value = "b"
+
+        assert state.val == "a"
+
 
 class TestViewerComponents:
     """End-to-end tests using real Viewer subclasses through spec extraction and wiring."""

@@ -8,6 +8,7 @@ Initial release of panel-flowdash.
 - Typed port model (`InputPort`, `OutputPort`, `ComponentSpec`)
 - Port introspection from Viewer subclasses (`param.output`, param inputs)
 - A Viewer can publish a Parameter as an output by naming it in `provides`, without wrapping it in a `@param.output` method
+- A Viewer component can define `dispose()` to release its resources; FlowDash calls it once when the node is removed, the canvas is cleared or replaced, or the session ends
 - `DataflowGraph` engine with cycle detection, type checking, single-source validation
 - Runtime validation via `param.watch` with error callbacks
 - SQLite persistence (`DashboardStore`, `DashboardModel`)

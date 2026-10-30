@@ -52,6 +52,16 @@ def _is_list_port(port) -> bool:
     return port.type.lower() in ("list", "List")
 
 
+def _release_refs(state: param.Parameterized):
+    """Replace every reference a state follows with the value it currently resolves to."""
+    # A bound input would otherwise keep firing its guard for a node the graph
+    # no longer knows, and an output would keep following its component.
+    with param.discard_events(state):
+        for name in state.param:
+            if name != "name":
+                setattr(state, name, getattr(state, name))
+
+
 def build_node_state_class(spec: ComponentSpec) -> type[param.Parameterized]:
     """Create a Parameterized subclass with one param per port (inputs + outputs)."""
     params: dict[str, param.Parameter] = {}
@@ -142,7 +152,12 @@ class DataflowGraph:
         return state
 
     def remove_node(self, instance_id: str):
-        """Remove a node and any edges connected to it."""
+        """Remove a node and any edges connected to it.
+
+        The node's state is detached from everything it was bound to, both the
+        edges feeding its inputs and any references its outputs follow, so it
+        stops receiving values but keeps the ones it last held.
+        """
         removed = [key for key in self._edges if instance_id in (key[0], key[2])]
         for key in removed:
             del self._edges[key]
@@ -156,9 +171,11 @@ class DataflowGraph:
                 target = self._nodes[target_id]
                 setattr(target, target_port, getattr(target, target_port))
 
-        self._nodes.pop(instance_id, None)
+        state = self._nodes.pop(instance_id, None)
         self._config_states.pop(instance_id, None)
         self._node_specs.pop(instance_id, None)
+        if state is not None:
+            _release_refs(state)
 
     def _input_port(self, target_id: str, target_port: str):
         spec = self._node_specs.get(target_id)

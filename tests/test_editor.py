@@ -7,6 +7,7 @@ objects, wiring them, and round-tripping through a store, all without a server.
 
 import asyncio
 import json
+from types import SimpleNamespace
 from typing import ClassVar
 
 import panel as pn
@@ -14,6 +15,8 @@ import panel_material_ui as pmui
 import panel_reactflow as pr
 import param
 import pytest
+from bokeh.document import Document
+from panel.io.state import set_curdoc
 from panel.tests.util import async_wait_until
 from panel.viewable import Viewer
 
@@ -871,6 +874,235 @@ class TestDataflowPropagation:
         # ...and further source changes no longer reach it.
         editor.graph.get_state(src).ticker = "msft"
         assert editor.graph.get_state(dst).ticker == ""
+
+
+class Disposable(Viewer):
+    """A Viewer that counts how often its dispose hook runs."""
+
+    ticker = param.String(default="")
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        self.disposals = 0
+
+    @param.output(param.String)
+    def shouted(self):
+        return self.ticker.upper()
+
+    def dispose(self):
+        self.disposals += 1
+        self.ticker = "disposed"
+
+    def __panel__(self):
+        return self.ticker
+
+
+class FailingDispose(Disposable):
+    def dispose(self):
+        super().dispose()
+        raise RuntimeError("teardown broke")
+
+
+class AsyncDispose(Disposable):
+    async def dispose(self):
+        await asyncio.sleep(0)
+        super().dispose()
+
+
+class BrokenView(Disposable):
+    disposed: ClassVar[list] = []
+
+    def dispose(self):
+        super().dispose()
+        self.disposed.append(self)
+
+    def __panel__(self):
+        raise RuntimeError("cannot render")
+
+
+DISPOSABLE = "Demo/disposable"
+
+
+@pytest.fixture
+def disposal_editor():
+    return FlowDash(
+        {
+            **COMPONENTS,
+            DISPOSABLE: Disposable,
+            "Demo/failing": FailingDispose,
+            "Demo/async": AsyncDispose,
+            "Demo/broken": BrokenView,
+        },
+        notifications=False,
+    )
+
+
+def _place_disposable(editor, component_id=DISPOSABLE):
+    instance_id = editor.add_component(component_id)
+    return instance_id, editor._component_instances[instance_id]
+
+
+class TestComponentDisposal:
+    async def test_remove_component_disposes_once(self, disposal_editor):
+        instance_id, instance = _place_disposable(disposal_editor)
+
+        disposal_editor.remove_component(instance_id)
+
+        assert instance.disposals == 1
+        assert disposal_editor._component_instances == {}
+
+    async def test_deleting_node_on_canvas_disposes_it(self, disposal_editor):
+        instance_id, instance = _place_disposable(disposal_editor)
+
+        disposal_editor._flow._handle_msg({"type": "node_deleted", "node_id": instance_id})
+
+        assert instance.disposals == 1
+        assert disposal_editor._tile_items == []
+
+    async def test_hook_runs_after_the_node_left_the_graph(self, disposal_editor):
+        src, source = _place_disposable(disposal_editor)
+        dst = disposal_editor.add_component(SHOUTER)
+        disposal_editor.connect(src, "shouted", dst, "ticker")
+        source.ticker = "aapl"
+
+        disposal_editor.remove_component(src)
+
+        assert source.ticker == "disposed"
+        assert disposal_editor.graph.get_state(dst).ticker == "AAPL"
+
+    async def test_removed_component_stops_receiving_inputs(self, disposal_editor):
+        src = disposal_editor.add_component(SHOUTER)
+        dst, target = _place_disposable(disposal_editor)
+        disposal_editor.connect(src, "shouted", dst, "ticker")
+        disposal_editor.graph.get_state(src).ticker = "aapl"
+
+        disposal_editor.remove_component(dst)
+        disposal_editor.graph.get_state(src).ticker = "msft"
+
+        assert target.ticker == "disposed"
+
+    async def test_clear_disposes_every_component(self, disposal_editor):
+        placed = [_place_disposable(disposal_editor)[1] for _ in range(3)]
+        disposal_editor.add_component(SELECTOR)
+
+        disposal_editor.clear()
+
+        assert [p.disposals for p in placed] == [1, 1, 1]
+
+    async def test_new_dashboard_disposes_previous_components(self, disposal_editor):
+        _, instance = _place_disposable(disposal_editor)
+
+        disposal_editor.new_dashboard("Fresh")
+
+        assert instance.disposals == 1
+
+    async def test_loading_a_dashboard_disposes_previous_components(self, disposal_editor):
+        _, instance = _place_disposable(disposal_editor)
+        model = disposal_editor.to_model()
+
+        disposal_editor.load_model(model)
+
+        assert instance.disposals == 1
+        reloaded = next(iter(disposal_editor._component_instances.values()))
+        assert reloaded is not instance
+        assert reloaded.disposals == 0
+
+    async def test_import_disposes_previous_components(self, disposal_editor):
+        _, instance = _place_disposable(disposal_editor)
+        data, _src, _dst = _wired_export()
+
+        disposal_editor.import_dashboard(data)
+
+        assert instance.disposals == 1
+
+    async def test_config_change_does_not_dispose(self):
+        editor = FlowDash({}, notifications=False)
+        instance_id = editor.add_component("Widgets/Slider")
+        calls = []
+        editor._component_instances[instance_id].dispose = lambda: calls.append(instance_id)
+
+        editor._apply_config_patch(instance_id, {"label": "Range"})
+        assert calls == []
+
+        editor.remove_component(instance_id)
+        assert calls == [instance_id]
+
+    async def test_disposed_once_across_removal_paths(self, disposal_editor):
+        _, instance = _place_disposable(disposal_editor)
+
+        disposal_editor.clear()
+        disposal_editor.clear()
+        disposal_editor.dispose()
+
+        assert instance.disposals == 1
+
+    async def test_failing_hook_is_logged_and_removal_completes(self, disposal_editor, caplog):
+        instance_id, instance = _place_disposable(disposal_editor, "Demo/failing")
+        _, other = _place_disposable(disposal_editor)
+
+        disposal_editor.remove_component(instance_id)
+
+        assert instance.disposals == 1
+        assert f"dispose() of component '{instance_id}' failed" in caplog.text
+        assert "teardown broke" in caplog.text
+        assert [i["instance_id"] for i in disposal_editor._tile_items] != [instance_id]
+        assert instance_id not in disposal_editor.graph.node_ids
+        assert other.disposals == 0
+
+    async def test_failing_hook_does_not_stop_clear(self, disposal_editor, caplog):
+        _, failing = _place_disposable(disposal_editor, "Demo/failing")
+        _, other = _place_disposable(disposal_editor)
+
+        disposal_editor.clear()
+
+        assert (failing.disposals, other.disposals) == (1, 1)
+        assert disposal_editor._tile_items == []
+
+    async def test_async_hook_is_awaited(self, disposal_editor):
+        instance_id, instance = _place_disposable(disposal_editor, "Demo/async")
+
+        disposal_editor.remove_component(instance_id)
+
+        await async_wait_until(lambda: instance.disposals == 1)
+
+    async def test_components_without_hook_are_removed(self, disposal_editor):
+        ids = [disposal_editor.add_component(c) for c in (SELECTOR, SHOUTER)]
+
+        for instance_id in ids:
+            disposal_editor.remove_component(instance_id)
+
+        assert disposal_editor._tile_items == []
+        assert disposal_editor._component_instances == {}
+
+    async def test_failed_placement_disposes_the_half_built_component(
+        self, disposal_editor, monkeypatch
+    ):
+        monkeypatch.setattr(BrokenView, "disposed", [])
+
+        with pytest.raises(RuntimeError, match="cannot render"):
+            disposal_editor.add_component("Demo/broken")
+
+        (instance,) = BrokenView.disposed
+        assert instance.disposals == 1
+        assert disposal_editor._component_instances == {}
+
+    async def test_session_end_disposes_components(self):
+        doc = Document()
+        session_context = SimpleNamespace(id="session", request=SimpleNamespace(arguments={}))
+        doc._session_context = lambda: session_context
+        with set_curdoc(doc):
+            editor = FlowDash({DISPOSABLE: Disposable}, notifications=False)
+            _, instance = _place_disposable(editor)
+
+        for callback in doc.session_destroyed_callbacks:
+            callback(session_context)
+
+        assert instance.disposals == 1
+
+    async def test_editor_outside_a_session_registers_no_session_callback(self):
+        FlowDash({DISPOSABLE: Disposable}, notifications=False)
+
+        assert pn.state._on_session_destroyed == []
 
 
 class TestModelRoundTrip:

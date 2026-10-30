@@ -110,6 +110,54 @@ sole output, regardless of any other `@param.output` decorators.
 
 ---
 
+## Releasing resources when a component is removed
+
+FlowDash creates one instance of a Viewer component per node. When that node
+goes away, FlowDash calls the instance's `dispose()` method if it defines one,
+so a component holding a periodic callback, a connection or a watcher on some
+long-lived object can let go of it:
+
+```python
+@register(component=True)
+class LivePrice(pn.viewable.Viewer):
+    ticker = param.String(default="AAPL")
+    price = param.Number()
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        self._poll = pn.state.add_periodic_callback(self._refresh, period=1000)
+
+    def _refresh(self):
+        self.price = fetch_price(self.ticker)
+
+    def dispose(self):
+        self._poll.stop()
+
+    def __panel__(self):
+        return pn.indicators.Number.from_param(self.param.price, name=self.ticker)
+```
+
+`dispose()` is called once per instance, whichever way the node leaves:
+
+- it is deleted on the canvas or removed with `FlowDash.remove_component()`
+- the canvas is cleared, or replaced by loading, importing or creating a dashboard
+- the server session the editor belongs to ends, or `FlowDash.dispose()` is called
+- placing the node fails after the instance was created, e.g. because
+  `__panel__` raised
+
+By the time it runs, the node is already disconnected from the dataflow graph:
+its inputs no longer receive values and anything it sets on its outputs no
+longer reaches downstream nodes. It may be `async`, in which case it is awaited
+on the event loop. An exception raised by `dispose()` is logged and does not
+stop the node, or any other node, from being removed.
+
+Changing a node's configuration updates the existing instance rather than
+replacing it, so it does not trigger `dispose()`. The hook only applies to
+Viewer components; a decorated function is called rather than instantiated, so
+FlowDash holds no object of its own to dispose.
+
+---
+
 ## Project directory layout
 
 FlowDash scans one level of subdirectories as "sections":

@@ -295,6 +295,7 @@ class FlowDash(Viewer):
         self._inspection_key: tuple[str, str] | None = None
 
         self._dataflow_graph = DataflowGraph({}, on_error=self._on_wiring_error)
+        self._component_instances: dict[str, Viewer] = {}
         self._transform_editors: dict[str, TransformEditor] = {}
         self._load_component_extensions()
         self._palette = self._make_palette()
@@ -315,6 +316,53 @@ class FlowDash(Viewer):
         self._apply_mode_state()
         if dashboard is not None:
             self._init_dashboard(dashboard)
+
+        # Without a session, Panel would register the callback for every future
+        # session instead, and an editor shared between sessions must outlive each.
+        doc = pn.state.curdoc
+        if doc is not None and doc.session_context is not None:
+            pn.state.on_session_destroyed(self._on_session_destroyed)
+
+    def _on_session_destroyed(self, session_context):
+        self.dispose()
+
+    def dispose(self):
+        """Dispose every placed component, as when the session serving the editor ends.
+
+        Each component is detached from the dataflow graph and then has its
+        ``dispose`` hook called, once. Called automatically when the editor was
+        created inside a server session. The canvas is not updated, so the
+        editor should not be used afterwards.
+        """
+        for node_id in list(self._dataflow_graph.node_ids):
+            self._dataflow_graph.remove_node(node_id)
+        for instance_id in list(self._component_instances):
+            self._dispose_component(instance_id)
+
+    def _dispose_component(self, instance_id: str):
+        """Call the ``dispose`` hook of the component placed as *instance_id*, if it has one.
+
+        Popping the instance first makes this a no-op on any later call, so a
+        component is disposed at most once however it leaves the editor.
+        """
+        instance = self._component_instances.pop(instance_id, None)
+        hook = getattr(instance, "dispose", None)
+        if not callable(hook):
+            return
+        try:
+            result = hook()
+        except Exception:
+            logger.exception("dispose() of component '%s' failed", instance_id)
+            return
+        if inspect.isawaitable(result):
+            pn.state.execute(partial(self._await_dispose, instance_id, result), schedule=True)
+
+    @staticmethod
+    async def _await_dispose(instance_id: str, awaitable):
+        try:
+            await awaitable
+        except Exception:
+            logger.exception("dispose() of component '%s' failed", instance_id)
 
     def _init_dashboard(self, dashboard):
         """Resolve the ``dashboard`` constructor argument to a loaded model."""
@@ -676,7 +724,7 @@ class FlowDash(Viewer):
             self._muted = previous
 
     def _forget_node(self, node_id: str):
-        """Drop a node from the graph, the tile bookkeeping and the edge map."""
+        """Drop a node from the graph, the tile bookkeeping and the edge map, then dispose it."""
         self._dataflow_graph.remove_node(node_id)
         idx = next(
             (i for i, item in enumerate(self._tile_items) if item["instance_id"] == node_id),
@@ -690,6 +738,7 @@ class FlowDash(Viewer):
                 del self._edge_id_map[edge_id]
                 self._drop_edge_editor(edge_id)
         self._sync_toolbar_state()
+        self._dispose_component(node_id)
 
     # ------------------------------------------------------------------
     # Value inspection
@@ -906,6 +955,7 @@ class FlowDash(Viewer):
         """Instantiate a Viewer and wire its params to the node_state."""
         spec = self._component_specs.get(entry.app_id)
         instance = viewer_cls()
+        self._component_instances[node_state.name] = instance
 
         if config_state is not None:
             self._bind_config_to_viewer(instance, config_state)
@@ -1332,6 +1382,7 @@ class FlowDash(Viewer):
             view = self._instantiate_for_node(entry, node_state, config_state)
         except Exception:
             self._dataflow_graph.remove_node(instance_id)
+            self._dispose_component(instance_id)
             raise
 
         if position is None:
@@ -1529,6 +1580,8 @@ class FlowDash(Viewer):
         """Tear down all node/edge state and clear the ReactFlow canvas."""
         for node_id in list(self._dataflow_graph.node_ids):
             self._dataflow_graph.remove_node(node_id)
+        for instance_id in list(self._component_instances):
+            self._dispose_component(instance_id)
         self._tile_items = []
         self._tile_objects = []
         self._edge_id_map.clear()
