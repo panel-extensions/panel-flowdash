@@ -36,6 +36,7 @@ from panel_flowdash.dashboard_store import (
     DashboardItem,
     DashboardModel,
     DashboardStore,
+    DashboardStoreError,
 )
 from panel_flowdash.dataflow_engine import DataflowGraph
 from panel_flowdash.registry import RegistryEntry
@@ -1901,9 +1902,11 @@ class FlowDash(Viewer):
         detail = f": {reasons[0]}" if reasons else ""
         self._notify("warning", f"Added '{title}' but could not connect it{detail}", duration=5000)
 
-    def _on_save_clicked(self):
+    def _on_save_clicked(self) -> bool:
         try:
             model = self.save()
+        except DashboardStoreError as exc:
+            self._notify("error", str(exc), duration=5000)
         except RuntimeError:
             self._notify("error", "This dashboard is read-only.", duration=4000)
         except Exception as exc:
@@ -1911,6 +1914,8 @@ class FlowDash(Viewer):
             self._notify("error", f"Save failed: {exc}", duration=5000)
         else:
             self._notify("success", f'Dashboard "{model.title}" saved.', duration=3000)
+            return True
+        return False
 
     def __panel__(self):
         """Render the editor."""

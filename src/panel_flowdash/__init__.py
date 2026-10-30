@@ -26,6 +26,7 @@ from panel_flowdash.dashboard_store import (
     DashboardItem,
     DashboardModel,
     DashboardStore,
+    DashboardStoreError,
     MemoryDashboardStore,
 )
 from panel_flowdash.dataflow_engine import DataflowGraph, build_node_state_class
@@ -50,6 +51,7 @@ __all__: list[str] = [
     "DashboardItem",
     "DashboardModel",
     "DashboardStore",
+    "DashboardStoreError",
     "DataflowGraph",
     "FlowDash",
     "Identity",

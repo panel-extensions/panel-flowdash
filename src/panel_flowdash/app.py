@@ -23,7 +23,11 @@ from panel_flowdash.auth import (
     is_authorized,
     resolve_identity,
 )
-from panel_flowdash.dashboard_store import BaseDashboardStore, DashboardModel
+from panel_flowdash.dashboard_store import (
+    BaseDashboardStore,
+    DashboardModel,
+    DashboardStoreError,
+)
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.registry import RegistryEntry, build_registry
 from panel_flowdash.session_state import build_session_state_class, check_requirements
@@ -463,6 +467,14 @@ class FlowDashApp(Viewer):
         """Surface a message to the user, or log it when notifications are unavailable."""
         notify(severity, message, duration=duration, enabled=self.notifications)
 
+    def _notify_store_failure(self, action: str, exc: Exception):
+        """Report a failed store operation; call from the ``except`` block that caught *exc*."""
+        if isinstance(exc, DashboardStoreError):
+            self._notify("error", str(exc), duration=5000)
+            return
+        logger.exception("Failed to %s dashboard", action)
+        self._notify("error", f"Could not {action} the dashboard: {exc}", duration=5000)
+
     @property
     def _component_entries(self) -> dict[str, RegistryEntry]:
         """Component entries offered by the editor."""
@@ -502,20 +514,23 @@ class FlowDashApp(Viewer):
         """
         await self._editor.ensure_components_loaded_async(component_ids)
 
-    def _save_current_dashboard(self):
-        """Save the loaded dashboard, refusing when the user only has read access."""
+    def _save_current_dashboard(self) -> bool:
+        """Save the loaded dashboard, refusing when the user only has read access.
+
+        Returns whether the dashboard was saved.
+        """
         current = self._current_dashboard
         if current is None:
             self._notify(
                 "warning", "No dashboard loaded. Create one from the sidebar.", duration=4000
             )
-            return
+            return False
         if not self._can_administer_dashboard(current.dashboard_id):
             self._editor.read_only = True
             self._notify("error", "You have view-only access to this dashboard.", duration=4000)
-            return
+            return False
         self._editor.read_only = False
-        self._editor._on_save_clicked()
+        return self._editor._on_save_clicked()
 
     def _share_current_dashboard(self):
         if self._current_dashboard is None:
@@ -586,7 +601,11 @@ class FlowDashApp(Viewer):
         if not title_str:
             self._notify("warning", "Dashboard title cannot be empty.", duration=3000)
             return
-        dashboard = self._editor.new_dashboard(title_str)
+        try:
+            dashboard = self._editor.new_dashboard(title_str)
+        except Exception as exc:
+            self._notify_store_failure("create", exc)
+            return
         self._sidebar_container.objects = []
 
         self._notify("success", f'Created new dashboard "{dashboard.title}".', duration=3000)
@@ -616,7 +635,14 @@ class FlowDashApp(Viewer):
             self._current_dashboard and self._current_dashboard.dashboard_id == dashboard_id
         )
         owner = self.store.get_owner(dashboard_id) or self._user_id
-        self.store.delete_dashboard(owner, dashboard_id)
+        try:
+            deleted = self.store.delete_dashboard(owner, dashboard_id)
+        except Exception as exc:
+            self._notify_store_failure("delete", exc)
+            return
+        if not deleted:
+            self._notify("error", "The dashboard could not be deleted.", duration=5000)
+            return
         if was_current:
             self._current_dashboard = None
             self._reset_canvas()
@@ -643,7 +669,14 @@ class FlowDashApp(Viewer):
             self._notify("error", "You are not allowed to rename this dashboard.")
             return
         owner = self.store.get_owner(dashboard_id) or self._user_id
-        self.store.rename_dashboard(owner, dashboard_id, new_title)
+        try:
+            renamed = self.store.rename_dashboard(owner, dashboard_id, new_title)
+        except Exception as exc:
+            self._notify_store_failure("rename", exc)
+            return
+        if not renamed:
+            self._notify("error", "The dashboard could not be renamed.", duration=5000)
+            return
         if self._current_dashboard and self._current_dashboard.dashboard_id == dashboard_id:
             self._current_dashboard.title = new_title
         self._refresh_sidebar_dashboards()
@@ -1203,7 +1236,14 @@ class FlowDashApp(Viewer):
             deny_groups=self._share_deny_groups.value,
             deny_users=self._share_deny_users.value,
         )
-        self.store.set_permission(dashboard_id, permission)
+        try:
+            updated = self.store.set_permission(dashboard_id, permission)
+        except Exception as exc:
+            self._notify_store_failure("share", exc)
+            return
+        if not updated:
+            self._notify("error", "Sharing could not be updated.", duration=5000)
+            return
         if self._current_dashboard and self._current_dashboard.dashboard_id == dashboard_id:
             self._current_dashboard.permission = permission
         self._share_dialog.open = False
@@ -1228,7 +1268,9 @@ class FlowDashApp(Viewer):
 
         def _on_save(_event):
             self._unsaved_dialog.open = False
-            self._save_current_dashboard()
+            if not self._save_current_dashboard():
+                self._pending_navigation = None
+                return
             path = self._pending_navigation
             self._pending_navigation = None
             if path:

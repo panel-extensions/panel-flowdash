@@ -14,7 +14,11 @@ import time
 from pathlib import Path
 
 from panel_flowdash.auth import Identity, Permission
-from panel_flowdash.dashboard_store import BaseDashboardStore, DashboardModel
+from panel_flowdash.dashboard_store import (
+    BaseDashboardStore,
+    DashboardModel,
+    DashboardStoreError,
+)
 
 log = logging.getLogger(__name__)
 
@@ -28,6 +32,10 @@ _MALFORMED = (KeyError, TypeError, ValueError, AttributeError)
 # on Windows, which makes ``os.replace`` raise ``PermissionError``.
 _REPLACE_TRIES = 5
 _REPLACE_PAUSE = 0.02
+
+
+class _ReadOnlyError(DashboardStoreError, PermissionError):
+    pass
 
 
 def _slug(title: str) -> str:
@@ -70,7 +78,7 @@ class JSONFolderDashboardStore(BaseDashboardStore):
         *read_only* is set.
     read_only
         Serve the dashboards without allowing changes. Writes raise
-        ``PermissionError`` and nobody may administer a dashboard, so the editor
+        ``PermissionError`` (also a ``DashboardStoreError``) and nobody may administer a dashboard, so the editor
         offers no way to modify, rename, share or delete one.
     """
 
@@ -154,7 +162,7 @@ class JSONFolderDashboardStore(BaseDashboardStore):
 
     def _check_writable(self) -> None:
         if self.read_only:
-            raise PermissionError(f"The dashboard folder {self.path} is read-only.")
+            raise _ReadOnlyError("Dashboards are read-only on this server.")
 
     def _read(self, path: Path) -> tuple[DashboardModel, int] | None:
         """Parse one file, returning the model and its mtime, or None if unusable."""
