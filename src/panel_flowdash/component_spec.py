@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import typing as t
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import param
@@ -215,6 +215,18 @@ def _ports_from_metadata(
     return outputs, inputs
 
 
+def _type_from_parameter(viewer_cls: type, port: OutputPort) -> OutputPort:
+    """Type an untyped output after the Parameter of the same name on the viewer.
+
+    The base ``param.Parameter`` accepts anything, so it leaves the port untyped
+    rather than refusing to connect to every typed input.
+    """
+    p = viewer_cls.param.objects("existing").get(port.name)
+    if port.type is not None or p is None or type(p) is param.Parameter:
+        return port
+    return replace(port, type=type(p).__name__)
+
+
 def _ports_from_viewer_class(
     viewer_cls: type,
     exclude: set[str] | None = None,
@@ -283,7 +295,11 @@ def build_component_spec(entry: RegistryEntry) -> ComponentSpec:
         outputs, inputs = _ports_from_viewer_class(app, exclude=config_names)
         dec_outputs, dec_inputs = _ports_from_metadata(metadata)
         if dec_outputs:
-            outputs = dec_outputs
+            outputs = [_type_from_parameter(app, port) for port in dec_outputs]
+            # A node has one state param per port name, so a Parameter that is
+            # produced as an output cannot also be consumed as an input.
+            output_names = {port.name for port in outputs}
+            inputs = [port for port in inputs if port.name not in output_names]
         if dec_inputs:
             inputs = [p for p in dec_inputs if p.name not in config_names]
     else:

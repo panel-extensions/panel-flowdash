@@ -7,6 +7,7 @@ objects, wiring them, and round-tripping through a store, all without a server.
 
 import asyncio
 import json
+from typing import ClassVar
 
 import panel as pn
 import panel_material_ui as pmui
@@ -1340,6 +1341,96 @@ class Inverse(Viewer):
 
     def __panel__(self):
         return str(self.value)
+
+
+@register(page=False, component=True, provides=["pick", "doubled"])
+class Collector(Viewer):
+    """A Viewer exposing a Parameter and a method as outputs."""
+
+    instances: ClassVar[list] = []
+
+    pick = param.String(default="seed")
+    scale = param.Integer(default=2)
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        Collector.instances.append(self)
+
+    @param.output(param.Integer)
+    @param.depends("pick", "scale")
+    def doubled(self):
+        return len(self.pick) * self.scale
+
+    def __panel__(self):
+        return self.pick
+
+
+class Receiver(Viewer):
+    """A Viewer with a String input."""
+
+    text = param.String(default="")
+
+    def __panel__(self):
+        return self.text
+
+
+class TestParameterOutputs:
+    @pytest.fixture
+    def editor(self):
+        Collector.instances.clear()
+        return FlowDash(
+            {"Demo/collector": Collector, "Demo/receiver": Receiver}, notifications=False
+        )
+
+    async def test_output_publishes_the_parameter(self, editor):
+        source = editor.add_component("Demo/collector")
+        (collector,) = Collector.instances
+
+        collector.pick = "ab"
+
+        assert editor.graph.get_state(source).pick == "ab"
+
+    async def test_output_starts_from_the_parameters_value(self, editor):
+        source = editor.add_component("Demo/collector")
+        assert editor.graph.get_state(source).pick == "seed"
+
+    async def test_output_feeds_a_connected_input(self, editor):
+        source = editor.add_component("Demo/collector")
+        target = editor.add_component("Demo/receiver")
+        (collector,) = Collector.instances
+        assert editor.connect(source, "pick", target, "text") is True
+
+        collector.pick = "ab"
+
+        assert editor.graph.get_state(target).text == "ab"
+
+    async def test_output_cannot_be_written_from_the_canvas(self, editor):
+        source = editor.add_component("Demo/collector")
+        (collector,) = Collector.instances
+        assert "pick" not in [p.name for p in editor.component_specs["Demo/collector"].inputs]
+
+        editor.graph.get_state(source).pick = "x"
+
+        assert collector.pick == "seed"
+
+    async def test_method_output_still_works_beside_a_parameter_output(self, editor):
+        source = editor.add_component("Demo/collector")
+        (collector,) = Collector.instances
+
+        collector.pick = "abc"
+
+        assert editor.graph.get_state(source).doubled == 6
+
+    async def test_disconnecting_stops_publishing(self, editor):
+        source = editor.add_component("Demo/collector")
+        target = editor.add_component("Demo/receiver")
+        (collector,) = Collector.instances
+        editor.connect(source, "pick", target, "text")
+        editor.disconnect(source, "pick", target, "text")
+
+        collector.pick = "a"
+
+        assert editor.graph.get_state(target).text == ""
 
 
 class TestOutputFailures:
