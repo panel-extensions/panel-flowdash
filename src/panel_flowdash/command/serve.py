@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import importlib.util
 import logging
 import os
@@ -55,6 +56,23 @@ def _resolve_store(
     return store, type(store).__name__
 
 
+def _load_project_init(project_dir: Path, package: str | None):
+    """Execute the project's ``__init__.py`` and return it as a module, if any.
+
+    With *package* the file is the package's own ``__init__``, so it is imported
+    under that name instead of being executed a second time as a separate module.
+    """
+    if package is not None:
+        return importlib.import_module(package)
+    init_file = project_dir / "__init__.py"
+    if not init_file.exists():
+        return None
+    spec = importlib.util.spec_from_file_location("__init__", init_file)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 class Serve(_PanelServe):
     """Serve a flowdash dashboard application from a project directory."""
 
@@ -78,6 +96,19 @@ class Serve(_PanelServe):
                 help=(
                     "Path to the SQLite database file. Defaults to <directory>/dashboards.db. "
                     "Ignored by projects whose __init__.py defines `store`."
+                ),
+            ),
+        ),
+        (
+            "--package",
+            Argument(
+                action="store",
+                type=str,
+                default=None,
+                help=(
+                    "Import the project as this installed or importable package, naming "
+                    "modules <package>.<Section>.<name>, instead of adding DIRECTORY to "
+                    "sys.path. The package must resolve to DIRECTORY."
                 ),
             ),
         ),
@@ -125,24 +156,23 @@ class Serve(_PanelServe):
             print(f"ERROR: '{args.directory}' is not a directory.", file=sys.stderr)  # noqa: T201
             raise SystemExit(1)
 
-        sys.path.insert(0, str(project_dir))
+        package = args.package
+        if package is None:
+            sys.path.insert(0, str(project_dir))
         os.chdir(str(project_dir))
 
-        configure_layout = None
-        init_mod = None
-        init_file = project_dir / "__init__.py"
-        if init_file.exists():
-            spec = importlib.util.spec_from_file_location("__init__", init_file)
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            init_mod = mod
-            configure_layout = getattr(mod, "configure_layout", None)
+        try:
+            registry = build_registry(project_dir, package=package)
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)  # noqa: T201
+            raise SystemExit(1) from None
+
+        init_mod = _load_project_init(project_dir, package)
+        configure_layout = getattr(init_mod, "configure_layout", None)
 
         auth_config = AuthConfig.from_module(init_mod)
 
         store, store_description = _resolve_store(init_mod, project_dir, args.db_path)
-
-        registry = build_registry(project_dir)
 
         # Install the HTTP-boundary authorization callback for page routes.
         # SPA and dashboard routes are gated in-app by FlowDashApp.
@@ -157,6 +187,7 @@ class Serve(_PanelServe):
 
         routes = FlowDashApp.build_routes(
             project_dir=project_dir,
+            package=package,
             store=store,
             title=args.title,
             home_dashboard=args.home_dashboard,

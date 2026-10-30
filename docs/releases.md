@@ -15,3 +15,4 @@ Initial release of panel-flowdash.
 - Responsive tile grid that wraps the authored layout on narrower screens, with optional per-breakpoint custom layouts; `DashboardModel.reference_width` records the width the layout was authored at
 - Download a dashboard as JSON from the editor and drop the file onto the canvas to recreate it; `FlowDash.export_dashboard()` and `FlowDash.import_dashboard()` do the same from Python
 - CLI: `flowdash serve <project-dir>` with Panel-compatible options
+- `flowdash serve --package` (and `build_registry(..., package=...)`) serves a project that is an importable package under its own module names, so FlowDash and the project's code share one module object per file
