@@ -185,6 +185,54 @@ per-dashboard permissions.
 
 ---
 
+## Inspecting outputs
+
+On the wiring canvas, clicking or hovering a port opens a popup with the value it currently carries. A viewer of a dashboard has no canvas, which is when someone asks where a number comes from. Set `inspect_outputs=True` to give each tile in the dashboard grid a small info button in its top-right corner:
+
+```python
+editor = FlowDash(components, dashboard="Sales Overview", editable=False, inspect_outputs=True)
+```
+
+`FlowDashApp` takes the same param and passes it to the editor it builds. It is off by default, so existing dashboards look the same.
+
+The button appears on tiles whose component has at least one output port, and opens one dialog per editor, titled with the component's title. The dialog lists every output with its label, type and current value. The values are read when the button is clicked, so the dialog is a snapshot; click again to refresh it. Values are rendered exactly as in the port popups: through `value_repr` when you set one, otherwise as a table preview for a DataFrame, as JSON for other values, and as a placeholder when nothing has been published yet.
+
+```python
+editor = FlowDash(
+    components,
+    inspect_outputs=True,
+    value_repr=lambda value: f"{value:,.2f}" if isinstance(value, float) else value,
+)
+```
+
+The button is hidden while tiles are being arranged, because it would sit under the tile's close handle, and shown in view mode and in preview. Edit mode keeps its port popups. Components marked `sidebar=True` are not tiles and get no button.
+
+### Explaining an output
+
+A `Viewer` component can add its own explanation, such as the inputs and the function that produced a value, by defining `__flowdash_inspect__`:
+
+```python
+class Total(pn.viewable.Viewer):
+    rows = param.DataFrame()
+
+    @param.output(param.Number)
+    @param.depends("rows")
+    def total(self):
+        return self.rows["amount"].sum()
+
+    def __flowdash_inspect__(self, port):
+        if port == "total":
+            return f"Sum of `amount` over {len(self.rows)} rows."
+        return None
+
+    def __panel__(self):
+        ...
+```
+
+The hook is called once per output port while the dialog is built, on the live component instance. Return anything `pn.panel` accepts, or `None` for an output you have nothing to add to. The result is shown below the value, which always stays visible. If the hook raises, the error is logged and a short error line replaces the explanation for that output, without affecting the others. Function components have no instance and so no hook.
+
+---
+
 ## Fitting it into your own layout
 
 The toolbar holds the mode toggle and the *Save*, *Download* and *Clear* actions. It floats at the top of the wiring canvas and sits above the tile grid in dashboard mode. Hide it with `toolbar=False`, leaving only the component palette, or extend it with your own controls through `toolbar_extra`, which places them between *Download* and *Clear*. Small text buttons match the built-in actions:

@@ -67,6 +67,8 @@ _FILES_DROP_TYPE = "Files"
 # importing a file must not let it claim another dashboard's id or sharing rules.
 _IDENTITY_FIELDS = ("dashboard_id", "user_id", "permission")
 _SIDE_PANEL_WIDTH = 250
+# Sits where the tile's close handle does in edit mode, which hides the button.
+_INSPECT_BUTTON_STYLES = {"position": "absolute", "top": "4px", "right": "4px", "z-index": "5"}
 _PALETTE_SX = {
     "& .MuiListItemButton-root": {"py": 0.25, "minHeight": 0},
     "& .MuiListItemText-root": {"my": 0},
@@ -156,6 +158,16 @@ class FlowDash(Viewer):
 
     include_builtin_components = param.Boolean(
         default=True, doc="Include Select, MultiChoice and Slider in the component palette."
+    )
+
+    inspect_outputs = param.Boolean(
+        default=False,
+        doc="""
+        Whether each tile in the dashboard grid gets an info button that opens
+        a dialog with the current value of every output the component
+        publishes. The button is shown to viewers and in preview, not while
+        arranging tiles. A component can add its own explanation per output by
+        defining ``__flowdash_inspect__(self, port)``.""",
     )
 
     dashboard = param.ClassSelector(
@@ -288,6 +300,10 @@ class FlowDash(Viewer):
         self._edge_id_map: dict[str, tuple[str, str, str, str]] = {}
         self._tile_items: list[dict] = []
         self._tile_objects: list[Viewable] = []
+        # Live Viewer instances and the inspect-button wrappers of their tiles, by
+        # instance id. Wrappers are kept so a grid rebuild does not re-render tiles.
+        self._viewers: dict[str, Viewer] = {}
+        self._inspect_tiles: dict[str, pn.Column] = {}
         self._pending_tile_layout: list[dict] = []
         # Responsive grid settings waiting to be applied; empty values must also be
         # applied so a loaded dashboard doesn't inherit the previous one's overrides.
@@ -678,6 +694,8 @@ class FlowDash(Viewer):
     def _forget_node(self, node_id: str):
         """Drop a node from the graph, the tile bookkeeping and the edge map."""
         self._dataflow_graph.remove_node(node_id)
+        self._viewers.pop(node_id, None)
+        self._inspect_tiles.pop(node_id, None)
         idx = next(
             (i for i, item in enumerate(self._tile_items) if item["instance_id"] == node_id),
             None,
@@ -759,6 +777,67 @@ class FlowDash(Viewer):
             self._value_preview(value),
             sizing_mode="stretch_width",
         )
+
+    def _inspect_hook_content(self, instance_id: str, port_name: str) -> Viewable | None:
+        """Ask the live component to explain an output, or None to keep the default alone."""
+        hook = getattr(self._viewers.get(instance_id), "__flowdash_inspect__", None)
+        if hook is None:
+            return None
+        try:
+            content = hook(port_name)
+            return None if content is None else pn.panel(content)
+        except Exception as exc:
+            logger.exception("Inspecting output '%s' of %s failed", port_name, instance_id)
+            return pmui.Alert(
+                f"Could not describe this output: {exc}", severity="error", margin=(6, 0, 0, 0)
+            )
+
+    def _inspection_sections(self, instance_id: str, spec: ComponentSpec) -> list[Viewable]:
+        """One section per output, reading each current value now rather than at build time."""
+        state = self._dataflow_graph.get_state(instance_id)
+        sections = []
+        for port in spec.outputs:
+            value = getattr(state, port.name, None)
+            section = self._build_value_popup(port.label or port.name, port.type, value)
+            extra = self._inspect_hook_content(instance_id, port.name)
+            if extra is not None:
+                section.append(extra)
+            sections.append(section)
+        return sections
+
+    def _on_inspect_clicked(self, instance_id: str, _event):
+        spec = self._component_specs[self._component_id_for_instance(instance_id)]
+        self._inspect_dialog.param.update(
+            title=spec.title,
+            objects=self._inspection_sections(instance_id, spec),
+            open=True,
+        )
+
+    def _grid_view(self, item: dict, view: Viewable) -> Viewable:
+        """Return the tile's view, with an inspect button over it when it has outputs to show."""
+        instance_id = item["instance_id"]
+        spec = self._component_specs.get(item["component_id"])
+        if not self.inspect_outputs or not spec or not spec.outputs:
+            return view
+        tile = self._inspect_tiles.get(instance_id)
+        if tile is None:
+            button = pmui.IconButton(
+                icon="info_outlined",
+                description="Inspect outputs",
+                size="small",
+                margin=0,
+                styles=_INSPECT_BUTTON_STYLES,
+            )
+            button.on_click(partial(self._on_inspect_clicked, instance_id))
+            tile = self._inspect_tiles[instance_id] = pn.Column(
+                view,
+                button,
+                margin=0,
+                sizing_mode="stretch_both",
+                stylesheets=[":host { position: relative; }"],
+            )
+        tile[1].visible = not self._tile_grid.editable
+        return tile
 
     def _show_inspection(self, key, title, value, position, flow):
         self._inspection_key = key
@@ -881,7 +960,7 @@ class FlowDash(Viewer):
     # Component instantiation
     # ------------------------------------------------------------------
 
-    def _instantiate_for_node(self, entry, node_state, config_state=None):
+    def _instantiate_for_node(self, entry, node_state, config_state=None, *, instance_id):
         """Create a live component view wired to the node_state."""
         app_fn = entry.load()
 
@@ -889,7 +968,9 @@ class FlowDash(Viewer):
             return pn.panel(app_fn)
 
         if inspect.isclass(app_fn) and issubclass(app_fn, pn.viewable.Viewer):
-            return self._instantiate_viewer_for_node(app_fn, entry, node_state, config_state)
+            return self._instantiate_viewer_for_node(
+                app_fn, entry, node_state, config_state, instance_id=instance_id
+            )
 
         sig = inspect.signature(app_fn)
         kwargs = {}
@@ -902,10 +983,13 @@ class FlowDash(Viewer):
 
         return panel_call(app_fn, **kwargs)
 
-    def _instantiate_viewer_for_node(self, viewer_cls, entry, node_state, config_state=None):
+    def _instantiate_viewer_for_node(
+        self, viewer_cls, entry, node_state, config_state=None, *, instance_id
+    ):
         """Instantiate a Viewer and wire its params to the node_state."""
         spec = self._component_specs.get(entry.app_id)
         instance = viewer_cls()
+        self._viewers[instance_id] = instance
 
         if config_state is not None:
             self._bind_config_to_viewer(instance, config_state)
@@ -1019,6 +1103,14 @@ class FlowDash(Viewer):
         self._pending_import: DashboardModel | None = None
         self._import_message = pn.pane.Markdown()
         self._import_dialog = self._build_import_dialog()
+        # `width_option` only caps the width; without a floor a short value yields a sliver.
+        self._inspect_dialog = pmui.Dialog(
+            open=False,
+            close_on_click=True,
+            show_close_button=True,
+            width_option="md",
+            sx={"& .MuiDialog-paper": {"minWidth": "min(480px, 100%)"}},
+        )
 
         self._mode_toggle = pmui.RadioButtonGroup(
             options={
@@ -1194,7 +1286,7 @@ class FlowDash(Viewer):
         ]
 
     @pn.io.hold()
-    @param.depends("editable", "mode", "preview", "toolbar", watch=True)
+    @param.depends("editable", "inspect_outputs", "mode", "preview", "toolbar", watch=True)
     def _apply_mode_state(self):
         """Reconcile the toolbar, side panel and workspace with the display params."""
         interactive = self.editable and not self.preview
@@ -1205,6 +1297,8 @@ class FlowDash(Viewer):
         self._tile_grid.param.update(editable=interactive, card=interactive)
         # Column children rather than Row children, so the dialogs take no flex space.
         dialogs = [self._clear_dialog, self._import_dialog]
+        if self.inspect_outputs:
+            dialogs.insert(0, self._inspect_dialog)
         if showing_grid:
             self._flow.top_panel = []
             self._workspace_area[:] = [*toolbar, self._tile_grid, *dialogs]
@@ -1249,7 +1343,7 @@ class FlowDash(Viewer):
             view = self._tile_objects[i] if i < len(self._tile_objects) else None
             if view is None:
                 view = pn.pane.Markdown(f"*{entry.title}*")
-            grid_views.append(view)
+            grid_views.append(self._grid_view(item, view))
         self._tile_grid[:] = grid_views
         self._grid_populated = True
         self._rebuild_sidebar()
@@ -1329,9 +1423,12 @@ class FlowDash(Viewer):
         config_state = self._dataflow_graph.get_config_state(instance_id)
         config_data = self._seed_config_state(instance_id, config)
         try:
-            view = self._instantiate_for_node(entry, node_state, config_state)
+            view = self._instantiate_for_node(
+                entry, node_state, config_state, instance_id=instance_id
+            )
         except Exception:
             self._dataflow_graph.remove_node(instance_id)
+            self._viewers.pop(instance_id, None)
             raise
 
         if position is None:
@@ -1531,6 +1628,8 @@ class FlowDash(Viewer):
             self._dataflow_graph.remove_node(node_id)
         self._tile_items = []
         self._tile_objects = []
+        self._viewers.clear()
+        self._inspect_tiles.clear()
         self._edge_id_map.clear()
         for edge_id in list(self._transform_editors):
             self._drop_edge_editor(edge_id)

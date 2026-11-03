@@ -157,6 +157,14 @@ class FlowDashApp(Viewer):
         default=True, doc="Include built-in widget components in the dashboard editor."
     )
 
+    inspect_outputs = param.Boolean(
+        default=False,
+        doc="""
+        Whether each tile of a viewed dashboard gets an info button that opens
+        a dialog with the current value of the component's outputs. Passed to
+        the editor, see `FlowDash.inspect_outputs`.""",
+    )
+
     nav_variant = param.Selector(
         default="right",
         objects=["left", "right", "menubar"],
@@ -445,6 +453,7 @@ class FlowDashApp(Viewer):
         editor = FlowDash(
             components=self._registry,
             include_builtin_components=self.include_builtin_components,
+            inspect_outputs=self.inspect_outputs,
             breakpoints=self.breakpoints,
             notifications=self.notifications,
             store=self.store,

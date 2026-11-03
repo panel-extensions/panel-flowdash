@@ -1433,6 +1433,250 @@ class TestParameterOutputs:
         assert editor.graph.get_state(target).text == ""
 
 
+@register(page=False, component=True, title="Explained Totals")
+class Explained(Viewer):
+    """A Viewer that explains one of its two outputs through the inspect hook."""
+
+    value = param.Integer(default=2)
+
+    @param.output(param.Integer)
+    @param.depends("value")
+    def doubled(self):
+        return self.value * 2
+
+    @param.output(param.String)
+    def label(self):
+        return "fixed"
+
+    def __flowdash_inspect__(self, port):
+        if port == "doubled":
+            return f"value * 2, with value = {self.value}"
+        return None
+
+    def __panel__(self):
+        return str(self.value)
+
+
+class BrokenExplanation(Explained):
+    def __flowdash_inspect__(self, port):
+        raise RuntimeError("no explanation today")
+
+
+EXPLAINED = "Demo/explained"
+BROKEN = "Demo/broken"
+
+
+def _texts(dialog):
+    """The text of every pane in the dialog, in document order."""
+    return [str(pane.object) for pane in dialog.select(pn.pane.base.PaneBase)]
+
+
+def _tile(editor, index=0):
+    """The grid's view of a tile, as an inspect wrapper when it has one."""
+    editor.editable = False
+    return editor._tile_grid.objects[index]
+
+
+class TestInspectOutputs:
+    @pytest.fixture
+    def editor(self):
+        return FlowDash(
+            {
+                **COMPONENTS,
+                EXPLAINED: Explained,
+                BROKEN: BrokenExplanation,
+            },
+            notifications=False,
+            inspect_outputs=True,
+        )
+
+    def _click(self, editor, instance_id):
+        editor._inspect_tiles[instance_id][1].clicks += 1
+
+    async def test_off_by_default_leaves_tiles_untouched(self):
+        editor = FlowDash(COMPONENTS, notifications=False)
+        editor.add_component(SELECTOR)
+        editor.editable = False
+
+        assert editor._tile_grid.objects == editor._tile_objects
+        assert editor._inspect_dialog not in editor._workspace_area.objects
+
+    async def test_button_only_on_components_with_outputs(self, editor):
+        editor.add_component(SELECTOR)
+        editor.add_component(CHART)
+        editor.editable = False
+
+        with_outputs, without = editor._tile_grid.objects
+        assert isinstance(with_outputs, pn.Column)
+        assert isinstance(with_outputs[1], pmui.IconButton)
+        assert without is editor._tile_objects[1]
+
+    async def test_button_is_hidden_while_arranging_tiles(self, editor):
+        instance_id = editor.add_component(SELECTOR)
+        editor.mode = "dashboard"
+        button = editor._inspect_tiles[instance_id][1]
+        assert not button.visible
+
+        editor.preview = True
+        assert button.visible
+
+        editor.param.update(preview=False, editable=False)
+        assert button.visible
+
+    async def test_tiles_are_not_rebuilt_across_mode_switches(self, editor):
+        editor.add_component(SELECTOR)
+        first = _tile(editor)
+        editor.editable = True
+        editor.mode = "wiring"
+        editor.mode = "dashboard"
+        editor.editable = False
+
+        assert editor._tile_grid.objects[0] is first
+
+    async def test_enabling_at_runtime_wraps_the_tiles(self):
+        editor = FlowDash(COMPONENTS, notifications=False)
+        instance_id = editor.add_component(SELECTOR)
+        editor.editable = False
+        assert editor._tile_grid.objects == editor._tile_objects
+
+        editor.inspect_outputs = True
+
+        assert editor._tile_grid.objects == [editor._inspect_tiles[instance_id]]
+        assert editor._inspect_dialog in editor._workspace_area.objects
+
+    async def test_dialog_is_mounted_for_both_modes(self, editor):
+        assert editor._inspect_dialog in editor._workspace_area.objects
+        editor.mode = "dashboard"
+        assert editor._inspect_dialog in editor._workspace_area.objects
+
+    async def test_dialog_lists_outputs_with_current_values(self, editor):
+        instance_id = editor.add_component(EXPLAINED)
+        editor.graph.get_state(instance_id).value = 5
+        _tile(editor)
+
+        self._click(editor, instance_id)
+
+        dialog = editor._inspect_dialog
+        assert dialog.open
+        assert dialog.title == "Explained Totals"
+        texts = _texts(dialog)
+        assert "**doubled**  \n*Integer*" in texts
+        assert "**label**  \n*String*" in texts
+        assert 10 in [pane.object for pane in dialog.select(pn.pane.JSON)]
+        assert "fixed" in [pane.object for pane in dialog.select(pn.pane.JSON)]
+
+    async def test_unset_output_shows_the_placeholder(self, editor):
+        instance_id = editor.add_component(SELECTOR)
+        _tile(editor)
+
+        self._click(editor, instance_id)
+
+        assert "*No value yet*" in _texts(editor._inspect_dialog)
+
+    async def test_value_repr_renders_every_value(self, editor):
+        editor.value_repr = lambda value: f"custom: {value}"
+        instance_id = editor.add_component(EXPLAINED)
+        _tile(editor)
+
+        self._click(editor, instance_id)
+
+        texts = _texts(editor._inspect_dialog)
+        assert "custom: 4" in texts
+        assert "custom: fixed" in texts
+
+    async def test_dialog_is_a_snapshot_taken_at_click_time(self, editor):
+        instance_id = editor.add_component(EXPLAINED)
+        state = editor.graph.get_state(instance_id)
+        _tile(editor)
+
+        self._click(editor, instance_id)
+        shown = list(editor._inspect_dialog.objects)
+        state.value = 50
+
+        assert [p.object for p in shown[0].select(pn.pane.JSON)] == [4]
+        self._click(editor, instance_id)
+        assert 100 in [p.object for p in editor._inspect_dialog.select(pn.pane.JSON)]
+
+    async def test_one_dialog_serves_every_tile(self, editor):
+        a = editor.add_component(EXPLAINED)
+        b = editor.add_component(SELECTOR)
+        _tile(editor)
+        dialog = editor._inspect_dialog
+
+        self._click(editor, a)
+        assert dialog.title == "Explained Totals"
+        self._click(editor, b)
+
+        assert dialog.title == "Ticker"
+        assert editor._workspace_area.objects.count(dialog) == 1
+
+    async def test_hook_content_follows_the_default_rendering(self, editor):
+        instance_id = editor.add_component(EXPLAINED)
+        _tile(editor)
+
+        self._click(editor, instance_id)
+
+        section = editor._inspect_dialog.objects[0]
+        assert isinstance(section[-1], pn.pane.Markdown)
+        assert section[-1].object == "value * 2, with value = 2"
+        assert isinstance(section[1], pn.pane.JSON)
+
+    async def test_hook_returning_none_keeps_only_the_default(self, editor):
+        instance_id = editor.add_component(EXPLAINED)
+        _tile(editor)
+
+        self._click(editor, instance_id)
+
+        label_section = editor._inspect_dialog.objects[1]
+        assert len(label_section) == 2
+
+    async def test_hook_error_is_logged_and_shown_without_propagating(self, editor, caplog):
+        instance_id = editor.add_component(BROKEN)
+        _tile(editor)
+
+        with caplog.at_level("ERROR", logger="panel_flowdash"):
+            self._click(editor, instance_id)
+
+        dialog = editor._inspect_dialog
+        assert dialog.open
+        alerts = dialog.select(pmui.Alert)
+        assert len(alerts) == 2
+        assert "no explanation today" in alerts[0].objects[0].object
+        assert alerts[0].severity == "error"
+        assert "Inspecting output 'doubled'" in caplog.text
+        assert any(isinstance(p, pn.pane.JSON) for p in dialog.select())
+
+    async def test_function_components_have_no_hook_and_still_inspect(self, editor):
+        instance_id = editor.add_component(SELECTOR)
+        _tile(editor)
+
+        self._click(editor, instance_id)
+
+        assert editor._inspect_dialog.open
+        assert len(editor._inspect_dialog.objects[0]) == 2
+
+    async def test_removing_a_component_forgets_its_button(self, editor):
+        instance_id = editor.add_component(SELECTOR)
+        _tile(editor)
+        assert instance_id in editor._inspect_tiles
+
+        editor.remove_component(instance_id)
+
+        assert editor._inspect_tiles == {}
+        assert editor._viewers == {}
+
+    async def test_app_passes_the_switch_to_its_editor(self):
+        from panel_flowdash.app import FlowDashApp
+        from panel_flowdash.dashboard_store import MemoryDashboardStore
+
+        registry = normalize_components(COMPONENTS)
+        on = FlowDashApp(registry=registry, store=MemoryDashboardStore(), inspect_outputs=True)
+        off = FlowDashApp(registry=registry, store=MemoryDashboardStore())
+
+        assert on._editor.inspect_outputs
+        assert not off._editor.inspect_outputs
+
+
 class TestOutputFailures:
     async def test_failing_output_keeps_last_value_downstream(self, caplog):
         editor = FlowDash({"Demo/inverse": Inverse}, notifications=False)
