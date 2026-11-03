@@ -41,7 +41,14 @@ from panel_flowdash.dataflow_engine import DataflowGraph
 from panel_flowdash.registry import RegistryEntry
 from panel_flowdash.transform_editor import TransformEditor
 from panel_flowdash.transforms import parse_transform, summarize_transform
-from panel_flowdash.util import is_async, is_async_gen, notify, panel_call, panel_viewer
+from panel_flowdash.util import (
+    is_async,
+    is_async_gen,
+    notify,
+    page_dialog,
+    panel_call,
+    panel_viewer,
+)
 from panel_flowdash.widgets import BUILTIN_COMPONENTS
 
 if t.TYPE_CHECKING:
@@ -156,6 +163,16 @@ class FlowDash(Viewer):
 
     include_builtin_components = param.Boolean(
         default=True, doc="Include Select, MultiChoice and Slider in the component palette."
+    )
+
+    include_page_dialog = param.Boolean(
+        default=True,
+        doc="""
+        Whether the editor lays out the session's page dialog, the one
+        `open_dialog` and `confirm` use. Set it to False when the surrounding
+        page already places `page_dialog()` itself, as `FlowDashApp` does; the
+        dialog must appear in only one layout. Read when the workspace is built,
+        so it needs a served session to take effect.""",
     )
 
     dashboard = param.ClassSelector(
@@ -1194,7 +1211,7 @@ class FlowDash(Viewer):
         ]
 
     @pn.io.hold()
-    @param.depends("editable", "mode", "preview", "toolbar", watch=True)
+    @param.depends("editable", "include_page_dialog", "mode", "preview", "toolbar", watch=True)
     def _apply_mode_state(self):
         """Reconcile the toolbar, side panel and workspace with the display params."""
         interactive = self.editable and not self.preview
@@ -1205,6 +1222,9 @@ class FlowDash(Viewer):
         self._tile_grid.param.update(editable=interactive, card=interactive)
         # Column children rather than Row children, so the dialogs take no flex space.
         dialogs = [self._clear_dialog, self._import_dialog]
+        shared_dialog = page_dialog() if self.include_page_dialog else None
+        if shared_dialog is not None:
+            dialogs.append(shared_dialog)
         if showing_grid:
             self._flow.top_panel = []
             self._workspace_area[:] = [*toolbar, self._tile_grid, *dialogs]

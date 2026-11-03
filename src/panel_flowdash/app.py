@@ -27,7 +27,7 @@ from panel_flowdash.dashboard_store import BaseDashboardStore, DashboardModel
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.registry import RegistryEntry, build_registry
 from panel_flowdash.session_state import build_session_state_class, check_requirements
-from panel_flowdash.util import notify, panel_call, panel_viewer
+from panel_flowdash.util import notify, page_dialog, panel_call, panel_viewer
 
 logger = logging.getLogger("panel_flowdash")
 
@@ -248,6 +248,10 @@ class FlowDashApp(Viewer):
         self._build_dialog()
         self._build_unsaved_dialog()
         self._build_share_dialog()
+        # Not in the page header: Material UI gives header children an inverted
+        # palette, which would turn the dialog into a header-coloured box.
+        shared_dialog = page_dialog()
+        self._page_dialogs = [] if shared_dialog is None else [shared_dialog]
         # The share dialog is a portaled overlay; mount it once inside the
         # always-present nav drawer rather than in each _page.main layout.
         page_kwargs = {
@@ -280,6 +284,7 @@ class FlowDashApp(Viewer):
                 pmui.LinearProgress(sizing_mode="stretch_width"),
                 self._dialog,
                 self._unsaved_dialog,
+                *self._page_dialogs,
                 self._share_dialog,
             ]
 
@@ -446,6 +451,7 @@ class FlowDashApp(Viewer):
             components=self._registry,
             include_builtin_components=self.include_builtin_components,
             breakpoints=self.breakpoints,
+            include_page_dialog=False,
             notifications=self.notifications,
             store=self.store,
             toolbar_extra=[self._share_button],
@@ -558,6 +564,7 @@ class FlowDashApp(Viewer):
                 ),
                 self._dialog,
                 self._unsaved_dialog,
+                *self._page_dialogs,
                 self._share_dialog,
             ]
             return
@@ -578,6 +585,7 @@ class FlowDashApp(Viewer):
             self._nav_content(self._component_view),
             self._dialog,
             self._unsaved_dialog,
+            *self._page_dialogs,
             self._share_dialog,
         ]
 
@@ -605,6 +613,7 @@ class FlowDashApp(Viewer):
             self._nav_content(self._component_view),
             self._dialog,
             self._unsaved_dialog,
+            *self._page_dialogs,
             self._share_dialog,
         ]
 
@@ -632,6 +641,7 @@ class FlowDashApp(Viewer):
                 self._nav_content(self._build_launcher()),
                 self._dialog,
                 self._unsaved_dialog,
+                *self._page_dialogs,
                 self._share_dialog,
             ]
 
@@ -852,6 +862,7 @@ class FlowDashApp(Viewer):
                 self._nav_content(launcher),
                 self._dialog,
                 self._unsaved_dialog,
+                *self._page_dialogs,
             ]
             return
 
@@ -867,6 +878,7 @@ class FlowDashApp(Viewer):
                 self._nav_content(self._component_view),
                 self._dialog,
                 self._unsaved_dialog,
+                *self._page_dialogs,
             ]
             return
 
@@ -891,6 +903,7 @@ class FlowDashApp(Viewer):
                 self._nav_content(wrapper),
                 self._dialog,
                 self._unsaved_dialog,
+                *self._page_dialogs,
             ]
         else:
             self._apply_layout_config(None, pathname)
@@ -898,6 +911,7 @@ class FlowDashApp(Viewer):
                 f"Invalid URL: {pathname}",
                 self._dialog,
                 self._unsaved_dialog,
+                *self._page_dialogs,
             ]
             if not self._menubar_mode:
                 main.append(self._nav_drawer)
