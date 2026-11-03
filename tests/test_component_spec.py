@@ -1,6 +1,7 @@
 """Tests for ComponentSpec port extraction from different component styles."""
 
 import param
+import pytest
 from panel.viewable import Viewer
 
 from panel_flowdash import (
@@ -281,6 +282,73 @@ class TestViewerWithDecoratorOverride:
         spec = build_component_spec(make_entry(MyComponent))
         input_names = [i.name for i in spec.inputs]
         assert input_names == ["company"]
+
+
+class TestRequiredInputMetadata:
+    """Viewer params declare required/blocking inputs through ``metadata["flowdash"]``."""
+
+    @staticmethod
+    def _port(viewer_cls, name):
+        spec = build_component_spec(make_entry(viewer_cls))
+        return next(p for p in spec.inputs if p.name == name)
+
+    @pytest.mark.parametrize(
+        ("metadata", "required", "blocking"),
+        [
+            (None, False, False),
+            ({}, False, False),
+            ({"other": 1}, False, False),
+            ({"flowdash": {"required": True}}, True, True),
+            ({"flowdash": {"required": True, "blocking": False}}, True, False),
+            ({"flowdash": {"blocking": True}}, False, True),
+            ({"flowdash": {"required": False}}, False, False),
+        ],
+        ids=[
+            "no_metadata",
+            "empty_metadata",
+            "foreign_metadata",
+            "required_implies_blocking",
+            "required_not_blocking",
+            "blocking_alone",
+            "explicitly_optional",
+        ],
+    )
+    async def test_introspected_flags(self, metadata, required, blocking):
+        class Needy(Viewer):
+            company = param.String(default=None, allow_None=True, metadata=metadata)
+
+            def __panel__(self):
+                return "test"
+
+        port = self._port(Needy, "company")
+        assert (port.required, port.blocking) == (required, blocking)
+
+    async def test_register_requires_override_introspection(self):
+        @register(component=True, requires=[{"key": "company", "required": False}])
+        class Needy(Viewer):
+            company = param.String(metadata={"flowdash": {"required": True}})
+
+            def __panel__(self):
+                return "test"
+
+        port = self._port(Needy, "company")
+        assert (port.required, port.blocking) == (False, True)
+
+
+class TestPlaceholderMetadata:
+    async def test_defaults_to_none(self):
+        @register(component=True)
+        def app():
+            pass
+
+        assert PanelAppMetadata.from_app(app).placeholder is None
+
+    async def test_register_stores_placeholder(self):
+        @register(component=True, placeholder="Pick a company to start")
+        def app():
+            pass
+
+        assert PanelAppMetadata.from_app(app).placeholder == "Pick a company to start"
 
 
 class TestEmptyPorts:

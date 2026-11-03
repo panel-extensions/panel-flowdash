@@ -77,6 +77,19 @@ class TestBuildRegistry:
         assert page.metadata.page is True
         assert page.title == "Overview"
 
+    async def test_placeholder_captured_by_ast(self, tmp_path):
+        section = tmp_path / "Analytics"
+        section.mkdir()
+        (section / "chart.py").write_text(
+            "from panel_flowdash import register\n\n"
+            "@register(component=True, placeholder='Pick a company')\n"
+            "def app(): pass\n"
+        )
+
+        registry = build_registry(tmp_path)
+
+        assert registry["Analytics/chart"].metadata.placeholder == "Pick a company"
+
     async def test_permission_fields_captured_by_ast(self, tmp_path):
         _create_project(tmp_path)
         sys.path.insert(0, str(tmp_path))

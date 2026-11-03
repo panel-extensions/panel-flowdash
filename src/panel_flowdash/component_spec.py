@@ -256,12 +256,15 @@ def _ports_from_viewer_class(
         if pname in _BASE_PARAMS or pname.startswith("_") or pname in exclude:
             continue
         type_str = type(p).__name__ if p else None
+        # Param leaves `metadata` as None unless one was passed.
+        flowdash = (p.metadata or {}).get("flowdash", {})
+        required = bool(flowdash.get("required", False))
         inputs.append(
             InputPort(
                 name=pname,
                 type=type_str,
-                required=False,
-                blocking=False,
+                required=required,
+                blocking=bool(flowdash.get("blocking", required)),
                 # Carried through so that disconnecting an edge resets the port
                 # to a value the target param will actually accept.
                 default=p.default,
