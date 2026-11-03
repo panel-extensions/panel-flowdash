@@ -427,3 +427,63 @@ def test_legacy_layout_skips_slot_of_component_that_no_longer_loads(page):
     serve_component(page, editor)
 
     wait_until(lambda: _tile_widths(page) == [[40, True], [60, False]], page=page, timeout=8000)
+
+
+@register(page=False, component=True, provides=["company"])
+class CompanyPicker(Viewer):
+    company = param.String(default=None, allow_None=True)
+
+    def __panel__(self):
+        choose = pmui.Button(label="Choose ACME")
+        reset = pmui.Button(label="Reset company")
+        choose.on_click(lambda _: setattr(self, "company", "ACME"))
+        reset.on_click(lambda _: setattr(self, "company", None))
+        return pn.Row(choose, reset)
+
+
+class CompanyReport(Viewer):
+    company = param.String(
+        default=None, allow_None=True, metadata={"flowdash": {"required": True}}
+    )
+
+    def __panel__(self):
+        return pn.pane.Markdown(pn.bind("Report for {}".format, self.param.company))
+
+
+@register(page=False, component=True, placeholder="Pick a company to start")
+class CustomMessageReport(CompanyReport):
+    pass
+
+
+@pytest.mark.filterwarnings("ignore:reference already known")
+@pytest.mark.parametrize(
+    ("report", "message"),
+    [(CompanyReport, "Waiting for Company"), (CustomMessageReport, "Pick a company to start")],
+    ids=["default", "custom"],
+)
+@pytest.mark.parametrize("mode", ["dashboard", "wiring"])
+def test_component_waits_for_required_input(page, report, message, mode):
+    """A component shows its placeholder until the wired input holds a value, and again after a reset."""
+    editor = FlowDash(
+        {"Test/picker": CompanyPicker, "Test/report": report},
+        notifications=False,
+        include_builtin_components=False,
+    )
+    picker = editor.add_component("Test/picker", position=(0, 0))
+    target = editor.add_component("Test/report", position=(600, 0))
+    assert editor.connect(picker, "company", target, "company") is True
+    editor.mode = mode
+    serve_component(page, editor)
+
+    waiting = page.get_by_text(message)
+    result = page.get_by_text("Report for ACME")
+    waiting.wait_for()
+    assert not result.is_visible()
+
+    page.get_by_role("button", name="Choose ACME").click()
+    result.wait_for()
+    assert not waiting.is_visible()
+
+    page.get_by_role("button", name="Reset company").click()
+    waiting.wait_for()
+    assert not result.is_visible()

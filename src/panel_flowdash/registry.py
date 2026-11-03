@@ -47,6 +47,7 @@ class PanelAppMetadata:
     singleton: bool = False
     provides: list[str] = field(default_factory=list)
     requires: list[Any] = field(default_factory=list)
+    placeholder: str | None = None
     config_schema: Any = None
     config: list[str] = field(default_factory=list)
     config_editor: Callable | None = None
@@ -108,6 +109,7 @@ def register(
     singleton: bool = False,
     provides: list[str] | None = None,
     requires: list[Any] | None = None,
+    placeholder: str | None = None,
     config_schema: Any = None,
     config: list[str] | None = None,
     config_editor: Callable | None = None,
@@ -128,6 +130,10 @@ def register(
     of a Viewer's own params are configuration rather than input ports. Pass
     ``config_editor`` to supply a custom editor callable instead of the
     auto-generated form.
+
+    The ``placeholder`` argument sets the message a dashboard tile shows while a
+    blocking input of the component is unset, in place of the default
+    "Waiting for <inputs>" text.
 
     The ``extensions`` argument names the Panel extensions (e.g.
     ``["tabulator"]``) the app's output needs. Components are imported lazily,
@@ -157,6 +163,7 @@ def register(
         singleton=singleton,
         provides=list(provides or []),
         requires=list(requires or []),
+        placeholder=placeholder,
         config_schema=config_schema,
         config=list(config or []),
         config_editor=config_editor,
@@ -343,6 +350,7 @@ _LITERAL_KEYS = {
     "singleton",
     "provides",
     "requires",
+    "placeholder",
     "config",
     "tags",
     "extensions",
@@ -529,6 +537,7 @@ def build_registry(project_dir: Path, *, package: str | None = None) -> dict[str
                 singleton=bool(kwargs.get("singleton", False)),
                 provides=list(kwargs.get("provides") or []),
                 requires=list(kwargs.get("requires") or []),
+                placeholder=kwargs.get("placeholder"),
                 config=list(kwargs.get("config") or []),
                 allow_users=_name_list(kwargs.get("allow_users")),
                 allow_groups=_name_list(kwargs.get("allow_groups")),

@@ -43,7 +43,14 @@ from panel_flowdash.dataflow_engine import DataflowGraph, _release_refs
 from panel_flowdash.registry import RegistryEntry
 from panel_flowdash.transform_editor import TransformEditor
 from panel_flowdash.transforms import parse_transform, summarize_transform
-from panel_flowdash.util import is_async, is_async_gen, notify, panel_call, panel_viewer
+from panel_flowdash.util import (
+    gate_view,
+    is_async,
+    is_async_gen,
+    notify,
+    panel_call,
+    panel_viewer,
+)
 from panel_flowdash.widgets import BUILTIN_COMPONENTS
 
 try:
@@ -1634,6 +1641,9 @@ class FlowDash(Viewer):
             self._dataflow_graph.remove_node(instance_id)
             self._dispose_component(instance_id)
             raise
+        # The component is instantiated even while blocked, so it can subscribe
+        # and publish outputs; only what the tile displays is gated.
+        view = gate_view(view, node_state, spec.inputs, entry.metadata.placeholder)
 
         if position is None:
             position = self._default_position()

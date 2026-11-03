@@ -7,11 +7,17 @@ import logging
 import typing as t
 
 import panel as pn
+import panel_material_ui as pmui
+import param
+
+from panel_flowdash.session_state import check_requirements
 
 if t.TYPE_CHECKING:
     from collections.abc import Callable
 
     from panel.viewable import Viewable
+
+    from panel_flowdash.component_spec import InputPort
 
 logger = logging.getLogger("panel_flowdash")
 
@@ -102,6 +108,66 @@ def panel_viewer(instance) -> Viewable:
     if is_async(instance.__panel__):
         return pn.pane.ParamMethod(instance.__panel__)
     return pn.panel(instance)
+
+
+def _input_label(port: InputPort) -> str:
+    if port.label:
+        return port.label
+    return port.parameter.label if port.parameter is not None else port.name
+
+
+def gate_view(
+    view: Viewable,
+    state: param.Parameterized,
+    inputs: t.Iterable[InputPort],
+    message: str | None = None,
+) -> Viewable:
+    """Show a placeholder instead of *view* while a blocking input of *state* is None.
+
+    Blocking follows :func:`~panel_flowdash.session_state.check_requirements`.
+    Returns *view* itself when no input can block. Otherwise *view* is built once
+    and only its container is hidden, so toggling neither re-renders the view nor
+    recreates its models.
+    """
+    ports = [p for p in inputs if p.required and p.blocking and p.name in state.param]
+    if not ports:
+        return view
+
+    requires = [{"key": p.name, "required": True, "blocking": True} for p in ports]
+    labels = {p.name: _input_label(p) for p in ports}
+
+    def missing(*_):
+        return [labels[u["key"]] for u in check_requirements(state, requires)]
+
+    missing_ref = param.bind(missing, *(state.param[p.name] for p in ports))
+    text = message or param.bind(lambda names: f"Waiting for {', '.join(names)}", missing_ref)
+    placeholder = pmui.Typography(
+        text,
+        variant="body2",
+        visible=param.bind(bool, missing_ref),
+        sizing_mode="stretch_both",
+        # Canvas nodes shrink to their content, so a stretching placeholder
+        # needs its own minimum size to leave the node any room.
+        min_height=64,
+        min_width=200,
+        sx={
+            "alignItems": "center",
+            "color": "text.secondary",
+            "display": "flex",
+            "justifyContent": "center",
+            "p": 1,
+            "textAlign": "center",
+        },
+    )
+    # The view is wrapped rather than toggled itself, since a component may
+    # manage the `visible` of the objects it returns.
+    body = pn.Column(
+        view,
+        visible=param.bind(lambda names: not names, missing_ref),
+        margin=0,
+        sizing_mode="stretch_both",
+    )
+    return pn.Column(placeholder, body, margin=0, sizing_mode="stretch_both")
 
 
 def notify(
