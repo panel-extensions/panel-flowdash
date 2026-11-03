@@ -27,6 +27,7 @@ from panel_flowdash.dashboard_store import BaseDashboardStore, DashboardModel
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.registry import RegistryEntry, build_registry
 from panel_flowdash.session_state import build_session_state_class, check_requirements
+from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.util import notify, panel_call, panel_viewer
 
 logger = logging.getLogger("panel_flowdash")
@@ -181,6 +182,16 @@ class FlowDashApp(Viewer):
     )
 
     project_dir = param.Path(doc="Path to the project directory.")
+
+    settings_class = param.ClassSelector(
+        class_=DashboardSettings,
+        default=DashboardSettings,
+        is_instance=False,
+        doc="""
+        The dashboard-wide settings class handed to the editor. Subclass
+        `DashboardSettings` to persist application-specific values with each
+        dashboard.""",
+    )
 
     sidebar = Children(default=[], doc="Items prepended to the sidebar.")
 
@@ -447,6 +458,7 @@ class FlowDashApp(Viewer):
             include_builtin_components=self.include_builtin_components,
             breakpoints=self.breakpoints,
             notifications=self.notifications,
+            settings_class=self.settings_class,
             store=self.store,
             toolbar_extra=[self._share_button],
             user=self._user_id,

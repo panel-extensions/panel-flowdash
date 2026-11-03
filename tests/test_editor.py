@@ -7,6 +7,8 @@ objects, wiring them, and round-tripping through a store, all without a server.
 
 import asyncio
 import json
+import logging
+import re
 from typing import ClassVar
 
 import panel as pn
@@ -14,10 +16,11 @@ import panel_material_ui as pmui
 import panel_reactflow as pr
 import param
 import pytest
+from bokeh.document import Document
 from panel.tests.util import async_wait_until
 from panel.viewable import Viewer
 
-from panel_flowdash import register
+from panel_flowdash import DashboardSettings, current_dashboard, register
 from panel_flowdash.auth import Permission
 from panel_flowdash.component_library import normalize_components
 from panel_flowdash.dashboard_store import (
@@ -1112,10 +1115,10 @@ class TestDisplayModes:
         assert editor._flow.top_panel == [editor._controls]
 
     async def test_dialogs_stay_mounted_in_both_modes(self, editor):
-        dialogs = [editor._clear_dialog, editor._import_dialog]
-        assert editor._workspace_area.objects[-2:] == dialogs
+        dialogs = [editor._clear_dialog, editor._import_dialog, editor._settings_dialog]
+        assert editor._workspace_area.objects[-3:] == dialogs
         editor.mode = "dashboard"
-        assert editor._workspace_area.objects[-2:] == dialogs
+        assert editor._workspace_area.objects[-3:] == dialogs
 
     async def test_non_editable_always_shows_the_grid(self, editor):
         editor.editable = False
@@ -1949,3 +1952,499 @@ class TestFileDrop:
         await async_wait_until(lambda: len(editor._tile_items) == 1)
         assert editor._tile_items[0]["instance_id"] == src
         assert editor.graph.edges == []
+
+
+class BrandSettings(DashboardSettings):
+    """An application's own dashboard-wide values."""
+
+    accent = param.String(default="blue")
+    density = param.Integer(default=1, bounds=(0, 3))
+
+
+class FakeTimer:
+    """Stands in for the object ``pn.state.add_periodic_callback`` returns."""
+
+    def __init__(self, callback, period):
+        self.callback = callback
+        self.period = period
+        self.stopped = False
+
+    def stop(self):
+        self.stopped = True
+
+
+@pytest.fixture
+def timers(monkeypatch):
+    created = []
+
+    def add_periodic_callback(callback, period=500, **_):
+        created.append(FakeTimer(callback, period))
+        return created[-1]
+
+    monkeypatch.setattr(pn.state, "add_periodic_callback", add_periodic_callback)
+    return created
+
+
+def _dashboard(settings=None, dashboard_id="d1"):
+    return DashboardModel(
+        dashboard_id=dashboard_id, user_id="alice", title=dashboard_id, settings=settings or {}
+    )
+
+
+class TestDashboardSettings:
+    async def test_defaults(self, editor):
+        assert isinstance(editor.settings, DashboardSettings)
+        assert editor.settings.refresh_period == 0
+
+    async def test_period_is_bounded(self, editor):
+        with pytest.raises(ValueError, match="at least 0"):
+            editor.settings.refresh_period = -1
+
+    async def test_settings_class_extends_the_settings(self):
+        editor = FlowDash(COMPONENTS, notifications=False, settings_class=BrandSettings)
+        assert isinstance(editor.settings, BrandSettings)
+        assert editor.settings.accent == "blue"
+        assert editor.settings.refresh_period == 0
+
+    async def test_settings_class_must_extend_the_builtin_one(self):
+        with pytest.raises(ValueError, match="subclass of DashboardSettings"):
+            FlowDash(COMPONENTS, notifications=False, settings_class=dict)
+
+    async def test_editors_do_not_share_settings(self):
+        first, second = FlowDash(notifications=False), FlowDash(notifications=False)
+        first.settings.refresh_period = 7
+        assert second.settings.refresh_period == 0
+
+    async def test_loading_applies_stored_values(self):
+        editor = FlowDash(COMPONENTS, notifications=False, settings_class=BrandSettings)
+        editor.load_model(_dashboard({"refresh_period": 15, "accent": "red", "density": 2}))
+        assert editor.settings.refresh_period == 15
+        assert editor.settings.accent == "red"
+        assert editor.settings.density == 2
+
+    async def test_missing_keys_take_the_default_not_the_previous_dashboards_value(self):
+        editor = FlowDash(COMPONENTS, notifications=False, settings_class=BrandSettings)
+        editor.load_model(_dashboard({"refresh_period": 15, "accent": "red"}, "a"))
+        editor.load_model(_dashboard({"accent": "green"}, "b"))
+        assert editor.settings.refresh_period == 0
+        assert editor.settings.accent == "green"
+
+    async def test_unknown_keys_are_ignored_with_a_debug_log(self, editor, caplog):
+        with caplog.at_level(logging.DEBUG, logger="panel_flowdash"):
+            editor.load_model(_dashboard({"refresh_period": 3, "retired": True, "name": "x"}))
+        assert editor.settings.refresh_period == 3
+        assert "unknown dashboard setting 'retired'" in caplog.text
+        assert "unknown dashboard setting 'name'" in caplog.text
+        assert not hasattr(editor.settings, "retired")
+
+    async def test_unknown_keys_survive_a_save(self, editor):
+        editor.load_model(_dashboard({"refresh_period": 3, "retired": True}))
+        assert editor.save().settings == {"refresh_period": 3, "retired": True}
+
+    async def test_rejected_value_falls_back_to_the_default(self, editor, caplog):
+        editor.load_model(_dashboard({"refresh_period": 9}, "a"))
+        with caplog.at_level(logging.WARNING, logger="panel_flowdash"):
+            editor.load_model(_dashboard({"refresh_period": -5}, "b"))
+        assert editor.settings.refresh_period == 0
+        assert "refresh_period" in caplog.text
+
+    async def test_loading_does_not_mark_the_dashboard_dirty(self, editor):
+        editor.load_model(_dashboard({"refresh_period": 15}))
+        assert not editor.dirty
+
+    async def test_changing_a_setting_marks_the_dashboard_dirty(self, editor):
+        editor.load_model(_dashboard())
+        editor.settings.refresh_period = 20
+        assert editor.dirty
+
+    async def test_saving_writes_the_current_values(self):
+        editor = FlowDash(
+            COMPONENTS,
+            notifications=False,
+            store=MemoryDashboardStore(),
+            user="alice",
+            settings_class=BrandSettings,
+        )
+        model = editor.new_dashboard("Live")
+        editor.settings.param.update(refresh_period=45, accent="red")
+        saved = editor.save()
+        assert saved.settings == {"refresh_period": 45, "accent": "red", "density": 1}
+        assert editor.store.load_dashboard("alice", model.dashboard_id).settings == saved.settings
+        assert not editor.dirty
+
+    async def test_settings_round_trip_through_a_store(self):
+        store = MemoryDashboardStore()
+        writer = FlowDash(notifications=False, store=store, user="alice")
+        model = writer.new_dashboard("Live")
+        writer.settings.refresh_period = 60
+        writer.save()
+        reader = FlowDash(notifications=False, store=store, user="alice")
+        reader.load(model.dashboard_id)
+        assert reader.settings.refresh_period == 60
+
+    async def test_new_dashboard_starts_from_defaults(self, store_editor):
+        store_editor.load_model(_dashboard({"refresh_period": 15}))
+        store_editor.new_dashboard("Fresh")
+        assert store_editor.settings.refresh_period == 0
+        assert not store_editor.dirty
+
+    async def test_export_and_import_carry_the_settings(self, editor):
+        editor.load_model(_dashboard({"refresh_period": 15}))
+        data = editor.export_dashboard()
+        assert data["settings"] == {"refresh_period": 15}
+        other = FlowDash(COMPONENTS, notifications=False)
+        other.import_dashboard(data)
+        assert other.settings.refresh_period == 15
+        assert other.dirty
+
+    async def test_settings_are_in_place_before_components_are_created(self):
+        seen = []
+
+        @register(page=False, component=True)
+        class ReadsSettings(Viewer):
+            def __init__(self, **params):
+                super().__init__(**params)
+                seen.append(current_dashboard().settings.refresh_period)
+
+            def __panel__(self):
+                return "x"
+
+        editor = FlowDash({"Demo/reads": ReadsSettings}, notifications=False)
+        model = _dashboard({"refresh_period": 8})
+        model.items = [DashboardItem(instance_id="n1", component_id="Demo/reads")]
+        editor.load_model(model)
+        assert seen == [8]
+
+
+class TestSettingsForm:
+    async def test_form_is_generated_from_the_settings(self):
+        editor = FlowDash(COMPONENTS, notifications=False, settings_class=BrandSettings)
+        form = editor._settings_dialog.objects[0]
+        assert set(form._widgets) == {"refresh_period", "accent", "density"}
+
+    async def test_form_edits_the_settings_and_marks_dirty(self, editor):
+        form = editor._settings_dialog.objects[0]
+        form._widgets["refresh_period"].value = 12
+        assert editor.settings.refresh_period == 12
+        assert editor.dirty
+
+    async def test_form_follows_a_loaded_dashboard(self, editor):
+        editor.load_model(_dashboard({"refresh_period": 33}))
+        assert editor._settings_dialog.objects[0]._widgets["refresh_period"].value == 33
+
+    async def test_button_opens_the_dialog(self, editor):
+        assert not editor._settings_dialog.open
+        editor._settings_button.clicks += 1
+        assert editor._settings_dialog.open
+
+    async def test_button_is_in_the_toolbar(self, editor):
+        assert editor._settings_button in editor._controls.objects
+
+    async def test_button_is_disabled_when_the_dashboard_cannot_be_saved(self, editor):
+        assert not editor._settings_button.disabled
+        editor.read_only = True
+        assert editor._settings_button.disabled
+
+    async def test_non_editable_view_has_no_settings_access(self, editor):
+        editor.editable = False
+        assert editor._controls not in editor._workspace_area.objects
+
+
+class TestRefreshTimer:
+    async def test_starts_for_a_dashboard_with_a_period(self, editor, timers):
+        editor.load_model(_dashboard({"refresh_period": 5}))
+        assert [t.period for t in timers] == [5000]
+
+    async def test_not_started_without_a_period(self, editor, timers):
+        editor.load_model(_dashboard())
+        assert timers == []
+
+    async def test_not_started_without_a_dashboard(self, editor, timers):
+        editor.settings.refresh_period = 5
+        assert timers == []
+
+    async def test_tick_triggers_refresh(self, editor, timers):
+        fired = []
+        editor.param.watch(fired.append, "refresh")
+        editor.load_model(_dashboard({"refresh_period": 5}))
+        timers[0].callback()
+        timers[0].callback()
+        assert len(fired) == 2
+
+    async def test_period_change_restarts_the_callback(self, editor, timers):
+        editor.load_model(_dashboard({"refresh_period": 5}))
+        editor.settings.refresh_period = 2.5
+        assert [t.period for t in timers] == [5000, 2500]
+        assert [t.stopped for t in timers] == [True, False]
+
+    async def test_zero_stops_it(self, editor, timers):
+        editor.load_model(_dashboard({"refresh_period": 5}))
+        editor.settings.refresh_period = 0
+        assert [t.stopped for t in timers] == [True]
+        editor.settings.refresh_period = 3
+        assert [t.period for t in timers] == [5000, 3000]
+
+    async def test_reloading_with_the_same_period_keeps_one_callback(self, editor, timers):
+        editor.load_model(_dashboard({"refresh_period": 5}, "a"))
+        editor.load_model(_dashboard({"refresh_period": 5}, "b"))
+        assert len(timers) == 1
+        assert not timers[0].stopped
+
+    async def test_loading_a_dashboard_with_another_period_restarts(self, editor, timers):
+        editor.load_model(_dashboard({"refresh_period": 5}, "a"))
+        editor.load_model(_dashboard({"refresh_period": 9}, "b"))
+        assert [t.period for t in timers] == [5000, 9000]
+        assert [t.stopped for t in timers] == [True, False]
+
+    async def test_loading_a_dashboard_without_a_period_stops_it(self, editor, timers):
+        editor.load_model(_dashboard({"refresh_period": 5}, "a"))
+        editor.load_model(_dashboard({}, "b"))
+        assert [t.stopped for t in timers] == [True]
+
+    async def test_leaving_the_dashboard_stops_it(self, editor, timers):
+        editor.load_model(_dashboard({"refresh_period": 5}))
+        editor.dashboard = None
+        assert timers[0].stopped
+
+    async def test_new_dashboard_stops_it(self, store_editor, timers):
+        store_editor.load_model(_dashboard({"refresh_period": 5}))
+        store_editor.new_dashboard("Fresh")
+        assert timers[0].stopped
+
+    async def test_ending_the_session_stops_it(self, timers):
+        doc = Document()
+        pn.state.curdoc = doc
+        try:
+            editor = FlowDash(COMPONENTS, notifications=False)
+            editor.dashboard = _dashboard()
+            editor.settings.refresh_period = 5
+            editor._sync_refresh_timer()
+            assert len(timers) == 1
+            for callback in doc.session_destroyed_callbacks:
+                callback(None)
+        finally:
+            pn.state.curdoc = None
+        assert timers[0].stopped
+
+    async def test_waits_for_the_page_to_load(self, editor, timers, monkeypatch):
+        deferred = []
+        monkeypatch.setattr(pn.state, "onload", deferred.append)
+        editor.load_model(_dashboard({"refresh_period": 5}))
+        assert timers == []
+        for callback in deferred:
+            callback()
+        assert len(timers) == 1
+
+
+class TestRefreshButton:
+    async def test_click_fires_refresh(self, editor):
+        fired = []
+        editor.param.watch(fired.append, "refresh")
+        editor._refresh_button.clicks += 1
+        assert len(fired) == 1
+
+    async def test_click_updates_the_indicator(self, editor):
+        editor._refresh_label.object = ""
+        editor._refresh_button.clicks += 1
+        assert re.fullmatch(r"Refreshed \d\d:\d\d:\d\d", editor._refresh_label.object)
+
+    async def test_loading_a_dashboard_stamps_the_indicator(self, editor):
+        editor._refresh_label.object = ""
+        editor.load_model(_dashboard())
+        assert editor._refresh_label.object.startswith("Refreshed ")
+
+    async def test_view_mode_shows_the_bar_above_the_grid(self, editor):
+        editor.editable = False
+        assert editor._workspace_area.objects[:2] == [editor._refresh_bar, editor._tile_grid]
+
+    async def test_preview_shows_the_bar(self, editor):
+        editor.param.update(mode="dashboard", preview=True)
+        assert editor._refresh_bar in editor._workspace_area.objects
+
+    @pytest.mark.parametrize("mode", ["wiring", "dashboard"])
+    async def test_edit_mode_has_no_bar(self, editor, mode):
+        editor.mode = mode
+        assert editor._refresh_bar not in editor._workspace_area.objects
+
+    async def test_bar_returns_to_view_mode_after_editing(self, editor):
+        editor.editable = False
+        editor.editable = True
+        editor.editable = False
+        assert editor._workspace_area.objects.count(editor._refresh_bar) == 1
+
+
+class Subscriber(Viewer):
+    """A Viewer re-fetching when the dashboard refreshes."""
+
+    calls: ClassVar[list] = []
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        dashboard = current_dashboard()
+        self._text = pn.pane.Markdown(pn.bind(self._fetch, dashboard.param.refresh))
+
+    def _fetch(self, _refresh):
+        Subscriber.calls.append(_refresh)
+        return f"fetch {len(Subscriber.calls)}"
+
+    def __panel__(self):
+        return self._text
+
+
+def make_function_component():
+    captured = []
+
+    def func_component():
+        captured.append(current_dashboard())
+        return "func"
+
+    return func_component, captured
+
+
+class TestCurrentDashboard:
+    async def test_none_outside_a_dashboard(self):
+        assert current_dashboard() is None
+
+    async def test_viewer_sees_its_editor_while_it_is_created(self):
+        seen = []
+
+        class Probe(Viewer):
+            def __init__(self, **params):
+                super().__init__(**params)
+                seen.append(current_dashboard())
+
+            def __panel__(self):
+                return "probe"
+
+        editor = FlowDash({"Demo/probe": Probe}, notifications=False)
+        editor.add_component("Demo/probe")
+        assert seen == [editor]
+        assert seen[0].settings is editor.settings
+        assert current_dashboard() is None
+
+    async def test_function_component_sees_its_editor(self):
+        func, captured = make_function_component()
+        editor = FlowDash({"Demo/func": func}, notifications=False)
+        editor.add_component("Demo/func")
+        assert captured == [editor]
+
+    async def test_each_editor_gives_its_own_components_their_own_context(self):
+        func, captured = make_function_component()
+        first = FlowDash({"Demo/func": func}, notifications=False)
+        second = FlowDash({"Demo/func": func}, notifications=False)
+        second.add_component("Demo/func")
+        first.add_component("Demo/func")
+        assert captured == [second, first]
+
+    async def test_context_is_released_when_creation_fails(self):
+        class Broken(Viewer):
+            def __init__(self, **params):
+                raise RuntimeError("boom")
+
+        editor = FlowDash({"Demo/broken": Broken}, notifications=False)
+        with pytest.raises(RuntimeError, match="boom"):
+            editor.add_component("Demo/broken")
+        assert current_dashboard() is None
+
+    async def test_later_calls_in_a_session_find_the_sessions_editor(self):
+        doc = Document()
+        pn.state.curdoc = doc
+        try:
+            editor = FlowDash(notifications=False)
+            assert current_dashboard() is editor
+        finally:
+            pn.state.curdoc = None
+        assert current_dashboard() is None
+
+    async def test_viewer_rebinds_on_refresh(self):
+        Subscriber.calls.clear()
+        editor = FlowDash({"Demo/sub": Subscriber}, notifications=False)
+        editor.add_component("Demo/sub")
+        pane = editor._tile_objects[0]
+        assert pane.object == "fetch 1"
+        editor._refresh_button.clicks += 1
+        assert pane.object == "fetch 2"
+        editor.param.trigger("refresh")
+        assert pane.object == "fetch 3"
+
+
+class Watcher(Viewer):
+    """A Viewer subscribing with explicit watchers on the editor and its settings."""
+
+    refreshes: ClassVar[list] = []
+    changes: ClassVar[list] = []
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        dashboard = current_dashboard()
+        dashboard.param.watch(lambda event: Watcher.refreshes.append(event.new), "refresh")
+        dashboard.settings.param.watch(
+            lambda event: Watcher.changes.append(event.new), "refresh_period"
+        )
+
+    def __panel__(self):
+        return "watcher"
+
+
+class TestSubscriptionLifetime:
+    @pytest.fixture
+    def editor(self):
+        Watcher.refreshes.clear()
+        Watcher.changes.clear()
+        Subscriber.calls.clear()
+        return FlowDash({"Demo/watch": Watcher, "Demo/sub": Subscriber}, notifications=False)
+
+    async def test_subscriptions_stay_while_the_component_is_placed(self, editor):
+        editor.add_component("Demo/watch")
+        editor.param.trigger("refresh")
+        editor.settings.refresh_period = 4
+        assert (len(Watcher.refreshes), len(Watcher.changes)) == (1, 1)
+
+    async def test_removing_a_component_ends_its_subscriptions(self, editor):
+        node = editor.add_component("Demo/watch")
+        sub = editor.add_component("Demo/sub")
+        editor.remove_component(node)
+        editor.remove_component(sub)
+        editor.param.trigger("refresh")
+        editor.settings.refresh_period = 4
+        assert Watcher.refreshes == []
+        assert Watcher.changes == []
+        assert len(Subscriber.calls) == 1  # the fetch when it was created
+
+    async def test_only_the_removed_components_subscriptions_end(self, editor):
+        gone = editor.add_component("Demo/watch")
+        editor.add_component("Demo/watch")
+        editor.remove_component(gone)
+        editor.param.trigger("refresh")
+        assert len(Watcher.refreshes) == 1
+
+    async def test_switching_dashboard_ends_the_previous_ones_subscriptions(self, editor):
+        editor.add_component("Demo/watch")
+        editor.load_model(_dashboard())
+        editor.param.trigger("refresh")
+        assert Watcher.refreshes == []
+
+    async def test_clearing_the_canvas_ends_subscriptions(self, editor):
+        editor.add_component("Demo/watch")
+        editor.clear()
+        editor.param.trigger("refresh")
+        assert Watcher.refreshes == []
+
+    async def test_a_component_that_fails_to_load_leaves_nothing_behind(self, editor):
+        class Failing(Viewer):
+            def __init__(self, **params):
+                super().__init__(**params)
+                current_dashboard().param.watch(
+                    lambda event: Watcher.refreshes.append(1), "refresh"
+                )
+                raise RuntimeError("boom")
+
+        editor._registry["Demo/failing"] = normalize_components({"Demo/failing": Failing})[
+            "Demo/failing"
+        ]
+        editor._component_entries["Demo/failing"] = editor._registry["Demo/failing"]
+        editor.ensure_components_loaded(["Demo/failing"])
+        with pytest.raises(RuntimeError, match="boom"):
+            editor.add_component("Demo/failing")
+        editor.param.trigger("refresh")
+        assert Watcher.refreshes == []

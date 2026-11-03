@@ -3,12 +3,20 @@
 
 import json
 
+import panel as pn
 import param
 import pytest
 from panel.tests.util import serve_component, wait_until
 from panel.viewable import Viewer
+from playwright.sync_api import expect
 
-from panel_flowdash import register
+from panel_flowdash import (
+    DashboardItem,
+    DashboardModel,
+    MemoryDashboardStore,
+    current_dashboard,
+    register,
+)
 from panel_flowdash.editor import FlowDash
 
 pytest.importorskip("playwright")
@@ -337,3 +345,113 @@ def test_edge_transform_editor_applies_changes(page):
     page.get_by_text("max", exact=True).click()
     wait_until(lambda: editor.graph.get_state(dst).total == 30, page)
     page.locator(".react-flow__edge-text").filter(has_text="max").wait_for()
+
+
+@register(page=False, component=True, title="Live count")
+class LiveCount(Viewer):
+    """Counts how many times the dashboard asked it to refresh."""
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        self._count = 0
+        self._text = pn.pane.Markdown(pn.bind(self._fetch, current_dashboard().param.refresh))
+
+    def _fetch(self, _refresh):
+        self._count += 1
+        return f"fetches: {self._count}"
+
+    def __panel__(self):
+        return self._text
+
+
+def _serve_live_dashboard(page, *, refresh_period=0, view=False):
+    """Serve one stored dashboard holding a LiveCount, as the editor or as a viewer would see it."""
+    store = MemoryDashboardStore(
+        {
+            "live": DashboardModel(
+                dashboard_id="live",
+                user_id="alice",
+                title="Live",
+                items=[DashboardItem(instance_id="count", component_id="Test/count")],
+                settings={"refresh_period": refresh_period},
+            )
+        }
+    )
+    editors = []
+
+    def app():
+        editor = FlowDash(
+            {"Test/count": LiveCount},
+            notifications=False,
+            store=store,
+            user="alice",
+            dashboard="live",
+            editable=not view,
+            mode="dashboard",
+        )
+        editors.append(editor)
+        return editor
+
+    serve_component(page, app)
+    return store, editors
+
+
+def _enter_period(field, text):
+    """Type into the number input and blur it; `fill` garbles values it already holds."""
+    field.click()
+    field.press("ControlOrMeta+a")
+    field.press_sequentially(text)
+    field.press("Tab")
+
+
+def test_refresh_period_set_in_the_settings_form_persists(page):
+    store, editors = _serve_live_dashboard(page)
+
+    page.get_by_role("button", name="Settings").click()
+    period = page.get_by_role("dialog").get_by_label("Refresh period (s)")
+    _enter_period(period, "15")
+    wait_until(lambda: editors[-1].settings.refresh_period == 15, page)
+    assert editors[-1].dirty
+
+    page.get_by_role("button", name="Close").click()
+    page.get_by_role("button", name="Save", exact=True).click()
+    wait_until(
+        lambda: store.load_dashboard("alice", "live").settings["refresh_period"] == 15, page
+    )
+
+    page.reload()
+    wait_until(lambda: len(editors) == 2, page)
+    assert editors[-1].settings.refresh_period == 15
+    page.get_by_role("button", name="Settings").click()
+    expect(page.get_by_role("dialog").get_by_label("Refresh period (s)")).to_have_value("15.0")
+
+
+def test_refresh_button_updates_listening_components_in_view_mode(page):
+    _serve_live_dashboard(page, view=True)
+
+    page.get_by_text("fetches: 1").wait_for()
+    assert page.get_by_role("button", name="Settings").count() == 0
+    page.get_by_role("button", name="Refresh").click()
+    page.get_by_text("fetches: 2").wait_for()
+    page.get_by_role("button", name="Refresh").click()
+    page.get_by_text("fetches: 3").wait_for()
+    expect(page.get_by_text("Refreshed ")).to_be_visible()
+
+
+def test_refresh_period_refreshes_without_interaction(page):
+    _serve_live_dashboard(page, refresh_period=1, view=True)
+
+    page.get_by_text("fetches: 3", exact=False).wait_for(timeout=10000)
+
+
+def test_period_change_applies_to_the_running_page(page):
+    _store, editors = _serve_live_dashboard(page)
+
+    page.get_by_text("fetches: 1").wait_for()
+    page.get_by_role("button", name="Settings").click()
+    period = page.get_by_role("dialog").get_by_label("Refresh period (s)")
+    _enter_period(period, "1")
+    page.get_by_text("fetches: 3", exact=False).wait_for(timeout=10000)
+
+    _enter_period(period, "0")
+    wait_until(lambda: editors[-1]._refresh_timer is None, page)
