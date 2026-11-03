@@ -14,6 +14,7 @@ Initial release of panel-flowdash.
 - `FlowDash(inspect_outputs=True)` adds an info button to each dashboard tile that opens a dialog with the current value of the component's outputs, optionally explained by a `__flowdash_inspect__(self, port)` method on the component; `FlowDashApp` turns it on through `editor_options`
 - `DataflowGraph` engine with cycle detection, type checking, single-source validation
 - Runtime validation via `param.watch` with error callbacks
+- `FlowDash(propagate_failures=True)`, also a `FlowDashApp` parameter, carries a failing output or edge transform downstream as a `param.ReactiveError` instead of leaving connected inputs on stale values. Inputs listed in `@register(handles_failures=[...])` receive the failure; any other input keeps its last value, its tile shows a message naming the upstream port and exception, and the failed node and edge are outlined on the canvas. Needs Param 2.5 or later
 - SQLite persistence (`DashboardStore`, `DashboardModel`)
 - `JSONFolderDashboardStore` keeps each dashboard as a readable JSON file in a folder, optionally read-only; `FlowDashApp` accepts any `BaseDashboardStore`, and a project's `__init__.py` selects one for `flowdash serve` by defining `store`
 - A store refuses a create, save, rename, delete or sharing change by raising `DashboardStoreError`; the app shows its message and leaves the dashboard as it was, and logs any other store failure with its traceback

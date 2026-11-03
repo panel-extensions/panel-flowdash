@@ -16,6 +16,8 @@ import typing as t
 import pandas as pd
 import param
 
+from panel_flowdash.util import is_failure
+
 TRANSFORMS: dict[str, type[Transform]] = {}
 
 
@@ -94,9 +96,13 @@ class Transform(param.Parameterized):
         raise NotImplementedError
 
     def __call__(self, value):
-        """Apply the step, refusing values it does not accept; an unset value stays unset."""
-        if value is None:
-            return None
+        """Apply the step, refusing values it does not accept.
+
+        An unset value stays unset, and a failure is passed on untouched since
+        there is no value for the step to work on.
+        """
+        if value is None or is_failure(value):
+            return value
         if not self.accepts(value):
             raise StepInputError(f"{self.label} cannot be applied to a {type(value).__name__}.")
         return self.apply(value)

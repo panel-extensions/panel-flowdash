@@ -29,6 +29,15 @@ _LOG_LEVELS = {
     "error": logging.ERROR,
 }
 
+# param.ReactiveError, rx(error_mode=...) and bind(process_failures=...) arrived
+# together in param 2.5, so failures can only be carried along edges from there.
+ReactiveError: type[Exception] | None = getattr(param, "ReactiveError", None)
+
+
+def is_failure(value: t.Any) -> bool:
+    """Whether *value* is a failure carried along an edge as a ``param.ReactiveError``."""
+    return ReactiveError is not None and isinstance(value, ReactiveError)
+
 
 def is_async_gen(obj: t.Any) -> bool:
     """Whether *obj* is an async generator function, seen through decorators.
