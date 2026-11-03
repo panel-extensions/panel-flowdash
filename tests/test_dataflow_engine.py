@@ -897,3 +897,234 @@ class TestEdgeExpressions:
 
         source.val = "set"
         assert target.val == "set"
+
+
+def _failure(message="boom"):
+    return param.ReactiveError(ValueError(message))
+
+
+ROUND = [{"op": "round"}]
+
+
+def _failure_specs():
+    return {
+        "src": make_spec("src", outputs=[OutputPort(name="val")]),
+        "typed": make_spec(
+            "typed",
+            inputs=[InputPort(name="n", parameter=param.Integer(default=0))],
+            outputs=[OutputPort(name="out")],
+        ),
+        "handler": make_spec("handler", inputs=[InputPort(name="n", handles_failures=True)]),
+        "items": make_spec("items", inputs=[InputPort(name="values", type="List")]),
+        "item_handler": make_spec(
+            "item_handler",
+            inputs=[InputPort(name="values", type="List", handles_failures=True)],
+        ),
+    }
+
+
+@pytest.fixture
+def failing_graph():
+    graph = DataflowGraph(_failure_specs(), propagate_failures=True)
+    graph.errors = []
+    graph._on_error = lambda *args: graph.errors.append(args)
+    return graph
+
+
+class TestFailurePropagation:
+    async def test_off_by_default_skips_a_failing_step(self):
+        """Without the switch a failing transform leaves the target on its last value, as before."""
+        graph = DataflowGraph(_failure_specs())
+        source = graph.add_node("s", "src")
+        target = graph.add_node("t", "typed")
+        source.val = 2.6
+        graph.add_edge("s", "val", "t", "n", ROUND)
+        assert target.n == 3
+
+        source.val = "text"
+        assert target.n == 3
+        assert graph.get_failures("t").failed == {}
+        assert not graph.propagate_failures
+
+    async def test_failing_step_marks_the_input_and_keeps_the_last_value(self, failing_graph):
+        source = failing_graph.add_node("s", "src")
+        target = failing_graph.add_node("t", "typed")
+        source.val = 2.6
+        failing_graph.add_edge("s", "val", "t", "n", ROUND)
+
+        source.val = "text"
+
+        assert target.n == 3
+        failure = failing_graph.get_failures("t").failed["n"]
+        assert (failure.source_id, failure.source_port) == ("s", "val")
+        assert isinstance(failure.error.exception, Exception)
+        assert failure.text.startswith("StepInputError")
+        assert len(failing_graph.errors) == 1
+
+    async def test_recovery_clears_the_failure(self, failing_graph):
+        source = failing_graph.add_node("s", "src")
+        target = failing_graph.add_node("t", "typed")
+        failing_graph.add_edge("s", "val", "t", "n", ROUND)
+        source.val = "text"
+        assert "n" in failing_graph.get_failures("t").failed
+
+        source.val = 4.2
+
+        assert target.n == 4
+        assert failing_graph.get_failures("t").failed == {}
+
+    async def test_recovery_to_the_value_already_held_clears_the_failure(self, failing_graph):
+        source = failing_graph.add_node("s", "src")
+        failing_graph.add_node("t", "typed")
+        source.val = 5
+        failing_graph.add_edge("s", "val", "t", "n")
+        source.val = _failure()
+        assert "n" in failing_graph.get_failures("t").failed
+
+        source.val = 5
+
+        assert failing_graph.get_failures("t").failed == {}
+        assert failing_graph.get_state("t").n == 5
+
+    async def test_failed_source_does_not_corrupt_a_typed_input(self, failing_graph):
+        source = failing_graph.add_node("s", "src")
+        target = failing_graph.add_node("t", "typed")
+        source.val = 7
+        failing_graph.add_edge("s", "val", "t", "n")
+
+        source.val = _failure("feed down")
+
+        assert target.n == 7
+        assert str(failing_graph.get_failures("t").failed["n"].error) == "feed down"
+        assert failing_graph.errors == []
+
+    async def test_input_that_handles_failures_receives_them(self, failing_graph):
+        source = failing_graph.add_node("s", "src")
+        handler = failing_graph.add_node("h", "handler")
+        source.val = 1
+        failing_graph.add_edge("s", "val", "h", "n")
+
+        error = _failure()
+        source.val = error
+        assert handler.n is error
+        assert failing_graph.get_failures("h").failed == {}
+
+        source.val = 2
+        assert handler.n == 2
+
+    async def test_step_failure_reaches_a_handling_input(self, failing_graph):
+        source = failing_graph.add_node("s", "src")
+        handler = failing_graph.add_node("h", "handler")
+        source.val = 1.5
+        failing_graph.add_edge("s", "val", "h", "n", ROUND)
+
+        source.val = "text"
+
+        assert isinstance(handler.n, param.ReactiveError)
+        assert len(failing_graph.errors) == 1
+
+    async def test_failure_travels_through_a_node_that_does_not_handle_it(self, failing_graph):
+        """A node showing stale input cannot vouch for its outputs, so they carry the failure on."""
+        source = failing_graph.add_node("s", "src")
+        middle = failing_graph.add_node("m", "typed")
+        end = failing_graph.add_node("e", "typed")
+        handler = failing_graph.add_node("h", "handler")
+        source.val = 1
+        middle.out = 10
+        failing_graph.add_edge("s", "val", "m", "n")
+        failing_graph.add_edge("m", "out", "e", "n")
+        failing_graph.add_edge("m", "out", "h", "n")
+        assert handler.n == 10
+
+        source.val = _failure("root cause")
+
+        assert str(failing_graph.get_failures("e").failed["n"].error) == "root cause"
+        assert failing_graph.get_failures("e").failed["n"].source_id == "m"
+        assert str(handler.n) == "root cause"
+        assert end.n == 10
+
+        source.val = 2
+        assert failing_graph.get_failures("m").failed == {}
+        assert failing_graph.get_failures("e").failed == {}
+        assert handler.n == 10
+
+    async def test_connecting_a_failed_output_marks_the_input_at_once(self, failing_graph):
+        source = failing_graph.add_node("s", "src")
+        failing_graph.add_node("t", "typed")
+        source.val = _failure()
+
+        assert failing_graph.add_edge("s", "val", "t", "n") is True
+
+        assert "n" in failing_graph.get_failures("t").failed
+
+    async def test_validation_skips_failures(self, failing_graph):
+        """A failure is no value to check, so it can neither pass nor fail a connection."""
+        source = failing_graph.add_node("s", "src")
+        failing_graph.add_node("t", "typed")
+        source.val = _failure()
+
+        assert failing_graph.validate_connection("s", "val", "t", "n") is None
+        assert failing_graph.validate_connection("s", "val", "t", "n", ROUND) is None
+        failing_graph._check_target_value("t", "n", source.val)
+
+    async def test_list_input_fails_as_a_whole(self, failing_graph):
+        a = failing_graph.add_node("a", "src")
+        b = failing_graph.add_node("b", "src")
+        target = failing_graph.add_node("l", "items")
+        a.val, b.val = "x", "y"
+        failing_graph.add_edge("a", "val", "l", "values")
+        failing_graph.add_edge("b", "val", "l", "values")
+        assert target.values == ["x", "y"]
+
+        b.val = _failure("b down")
+
+        assert target.values == ["x", "y"]
+        failure = failing_graph.get_failures("l").failed["values"]
+        assert failure.source_id == "b"
+
+        b.val = "z"
+        assert target.values == ["x", "z"]
+        assert failing_graph.get_failures("l").failed == {}
+
+    async def test_list_input_that_handles_failures_receives_one(self, failing_graph):
+        a = failing_graph.add_node("a", "src")
+        target = failing_graph.add_node("l", "item_handler")
+        a.val = "x"
+        failing_graph.add_edge("a", "val", "l", "values")
+
+        a.val = _failure()
+        assert isinstance(target.values, param.ReactiveError)
+
+        a.val = "y"
+        assert target.values == ["y"]
+
+    async def test_removing_the_edge_clears_the_failure(self, failing_graph):
+        source = failing_graph.add_node("s", "src")
+        failing_graph.add_node("t", "typed")
+        source.val = _failure()
+        failing_graph.add_edge("s", "val", "t", "n")
+
+        failing_graph.remove_edge("s", "val", "t", "n")
+
+        assert failing_graph.get_failures("t").failed == {}
+
+    async def test_removing_the_source_clears_the_failure(self, failing_graph):
+        source = failing_graph.add_node("s", "src")
+        failing_graph.add_node("t", "typed")
+        source.val = _failure()
+        failing_graph.add_edge("s", "val", "t", "n")
+
+        failing_graph.remove_node("s")
+
+        assert failing_graph.get_failures("t").failed == {}
+        assert failing_graph.get_failures("s") is None
+
+    async def test_edge_expression_carries_the_failure(self, failing_graph):
+        source = failing_graph.add_node("s", "src")
+        failing_graph.add_node("t", "typed")
+        failing_graph.add_edge("s", "val", "t", "n")
+
+        source.val = _failure()
+
+        expr = failing_graph.get_edge_expression("s", "val", "t", "n")
+        assert isinstance(expr.rx.value, param.ReactiveError)

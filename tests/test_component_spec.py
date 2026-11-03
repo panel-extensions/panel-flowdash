@@ -1,6 +1,7 @@
 """Tests for ComponentSpec port extraction from different component styles."""
 
 import param
+import pytest
 from panel.viewable import Viewer
 
 from panel_flowdash import (
@@ -320,3 +321,56 @@ class TestSpecMetadata:
         spec = build_component_spec(make_entry(app))
         assert spec.tags == ["analytics", "kpi"]
         assert spec.icon == "bar_chart"
+
+
+class TestHandlesFailures:
+    """``handles_failures`` marks the inputs that can receive an upstream failure."""
+
+    async def test_defaults_to_no_input_handling_failures(self):
+        @register(component=True, requires=["a"])
+        def app(config):
+            pass
+
+        spec = build_component_spec(make_entry(app))
+        assert [p.handles_failures for p in spec.inputs] == [False]
+
+    async def test_marks_declared_inputs_of_a_function(self):
+        @register(component=True, requires=["a", "b"], handles_failures=["b"])
+        def app(config):
+            pass
+
+        spec = build_component_spec(make_entry(app))
+        assert {p.name: p.handles_failures for p in spec.inputs} == {"a": False, "b": True}
+
+    async def test_marks_introspected_viewer_inputs(self):
+        @register(component=True, handles_failures=["data"])
+        class Table(Viewer):
+            data = param.Parameter()
+            limit = param.Integer(default=5)
+
+            def __panel__(self):
+                return "table"
+
+        spec = build_component_spec(make_entry(Table))
+        assert {p.name: p.handles_failures for p in spec.inputs} == {"data": True, "limit": False}
+
+    async def test_unknown_input_is_rejected(self):
+        @register(component=True, requires=["a"], handles_failures=["b"])
+        def app(config):
+            pass
+
+        with pytest.raises(ValueError, match="unknown inputs: b"):
+            build_component_spec(make_entry(app))
+
+    async def test_typed_parameter_that_rejects_failures_is_refused(self):
+        """A typed param would raise on the failure, so declaring it is a mistake."""
+
+        @register(component=True, handles_failures=["limit"])
+        class Table(Viewer):
+            limit = param.Integer(default=5)
+
+            def __panel__(self):
+                return "table"
+
+        with pytest.raises(ValueError, match="'limit' of 'test/comp' declares handles_failures"):
+            build_component_spec(make_entry(Table))

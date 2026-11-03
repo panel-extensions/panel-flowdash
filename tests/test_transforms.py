@@ -467,3 +467,10 @@ class TestTransformEditor:
         assert transformed["label"] == "mw › sum"  # noqa: RUF001
         assert transformed["style"]["strokeDasharray"]
         assert not plain.get("label")
+
+
+class TestFailureValues:
+    async def test_failure_passes_through_every_step(self):
+        """A failure has no value for a step to work on, so steps hand it on unchanged."""
+        failure = param.ReactiveError(ValueError("upstream"))
+        assert run(TOTAL_MW, failure) is failure

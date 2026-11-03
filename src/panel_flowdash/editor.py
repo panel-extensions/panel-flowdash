@@ -37,7 +37,8 @@ from panel_flowdash.dashboard_store import (
     DashboardModel,
     DashboardStore,
 )
-from panel_flowdash.dataflow_engine import DataflowGraph
+from panel_flowdash.dataflow_engine import DataflowGraph, InputFailure, failure_text
+from panel_flowdash.failure_overlay import with_failure_overlay
 from panel_flowdash.registry import RegistryEntry
 from panel_flowdash.transform_editor import TransformEditor
 from panel_flowdash.transforms import parse_transform, summarize_transform
@@ -115,6 +116,12 @@ _TRANSFORMED_EDGE_STYLE = {
     "stroke": "var(--panel-primary-color, #0072b5)",
     "strokeDasharray": "6 3",
     "strokeWidth": 2,
+}
+# A failed edge or node is red, over any transform styling, so a failure is the first thing seen.
+_FAILED_EDGE_STYLE = {"stroke": "var(--panel-danger-color, #d32f2f)", "strokeWidth": 2}
+_FAILED_NODE_STYLE = {
+    "borderColor": "var(--panel-danger-color, #d32f2f)",
+    "boxShadow": "0 0 0 1px var(--panel-danger-color, #d32f2f)",
 }
 
 
@@ -201,6 +208,17 @@ class FlowDash(Viewer):
         doc="""
         Preview the dashboard as an end user sees it without leaving edit mode.
         Only meaningful while `editable` and in 'dashboard' mode.""",
+    )
+
+    propagate_failures = param.Boolean(
+        default=False,
+        doc="""
+        Carry a failing output or edge transform downstream instead of leaving
+        the connected inputs on their last value. An input declared in
+        `handles_failures` receives the failure as a `param.ReactiveError`; the
+        tile of a component with any other failed input is covered by a message
+        naming the failure, and its outputs pass the failure on. Read at
+        construction time.""",
     )
 
     read_only = param.Boolean(
@@ -294,7 +312,9 @@ class FlowDash(Viewer):
         self._pending_grid_config: dict | None = None
         self._inspection_key: tuple[str, str] | None = None
 
-        self._dataflow_graph = DataflowGraph({}, on_error=self._on_wiring_error)
+        self._dataflow_graph = DataflowGraph(
+            {}, on_error=self._on_wiring_error, propagate_failures=self.propagate_failures
+        )
         self._transform_editors: dict[str, TransformEditor] = {}
         self._load_component_extensions()
         self._palette = self._make_palette()
@@ -607,7 +627,10 @@ class FlowDash(Viewer):
             if result is True:
                 edge_id = edge.get("id", "")
                 if edge_id:
-                    self._edge_id_map[edge_id] = (src_id, src_handle, tgt_id, tgt_handle)
+                    mapping = (src_id, src_handle, tgt_id, tgt_handle)
+                    self._edge_id_map[edge_id] = mapping
+                    if self._edge_failed(mapping):
+                        flow.patch_edge_props(edge_id, self._edge_chip(mapping))
                 self.dirty = True
                 self._notify("success", f"Wired: {src_handle} → {tgt_handle}", duration=3000)
             else:
@@ -692,6 +715,35 @@ class FlowDash(Viewer):
         self._sync_toolbar_state()
 
     # ------------------------------------------------------------------
+    # Failures
+    # ------------------------------------------------------------------
+
+    def _describe_failures(self, instance_id: str, failed: dict[str, InputFailure]) -> str:
+        """Phrase the failed inputs of a node in terms of the ports the user sees."""
+        lines = []
+        for port_name, failure in failed.items():
+            port = self._port_spec(instance_id, port_name, output=False)
+            source = self._port_spec(failure.source_id, failure.source_port, output=True)
+            source_id = self._component_id_for_instance(failure.source_id)
+            source_spec = self._component_specs.get(source_id) if source_id else None
+            lines.append(
+                f"Input '{(port.label if port else None) or port_name}' is stale: "
+                f"'{(source.label if source else None) or failure.source_port}' of "
+                f"'{source_spec.title if source_spec else failure.source_id}' "
+                f"failed ({failure.text})"
+            )
+        return "\n".join(lines)
+
+    def _sync_failure_marks(self, instance_id: str, event):
+        """Outline a node and its failed edges in red while its inputs hold a failure."""
+        self._flow.patch_node_props(
+            instance_id, {"style": _FAILED_NODE_STYLE if event.new else None}
+        )
+        for edge_id, mapping in self._edge_id_map.items():
+            if mapping[2] == instance_id:
+                self._flow.patch_edge_props(edge_id, self._edge_chip(mapping))
+
+    # ------------------------------------------------------------------
     # Value inspection
     # ------------------------------------------------------------------
 
@@ -726,6 +778,13 @@ class FlowDash(Viewer):
                 logger.exception("Value popup representation failed")
         if value is None:
             return pn.pane.Markdown("*No value yet*", margin=0)
+        if isinstance(value, param.ReactiveError):
+            return pmui.Alert(
+                pmui.Typography(failure_text(value), variant="body2", margin=0),
+                severity="error",
+                variant="outlined",
+                margin=0,
+            )
         try:
             import pandas as pd
 
@@ -776,6 +835,9 @@ class FlowDash(Viewer):
         subtitle = f"{direction} · {port.type}" if port and port.type else direction
         state = self._dataflow_graph.get_state(node_id)
         value = getattr(state, handle_id, None) if state is not None else None
+        failures = self._dataflow_graph.get_failures(node_id)
+        if direction == "input" and failures is not None and handle_id in failures.failed:
+            value = failures.failed[handle_id].error
         self._show_inspection(
             ("handle", node_id + ":" + str(handle_id)),
             f"{label} ({subtitle})",
@@ -923,7 +985,11 @@ class FlowDash(Viewer):
         methods = instance.param.outputs()
         for name, (_, method, _) in methods.items():
             if hasattr(node_state.param, name):
-                setattr(node_state, name, self._output_reference(instance, name, method))
+                setattr(
+                    node_state,
+                    name,
+                    self._output_reference(instance, name, method, self.propagate_failures),
+                )
 
         # An output named after a Parameter is that Parameter, with no method to wrap.
         for port in spec.outputs if spec else ():
@@ -937,14 +1003,15 @@ class FlowDash(Viewer):
         return panel_viewer(instance)
 
     @staticmethod
-    def _output_reference(instance, name, method):
+    def _output_reference(instance, name, method, propagate_failures=False):
         """Bind an output method to its dependencies, as a reference for a node port.
 
         Param resolves the reference whenever a dependency changes, awaiting
         async outputs on the event loop and publishing every value an async
         generator yields. A failing output is skipped, so the port keeps its
-        last value. The first evaluation runs before any input is wired, so a
-        sync output failing there is not reported.
+        last value, unless *propagate_failures* publishes the failure on the
+        port instead. The first evaluation runs before any input is wired, so a
+        sync output failing there is skipped and not reported either way.
         """
         fn = method if callable(method) else getattr(instance, method)
         deps = [
@@ -958,6 +1025,8 @@ class FlowDash(Viewer):
 
         def _failed(exc):
             logger.error("Output '%s' failed: %s", name, exc, exc_info=exc)
+            if propagate_failures:
+                return param.ReactiveError(exc)
             raise param.Skip from exc
 
         if is_async_gen(fn):
@@ -967,7 +1036,7 @@ class FlowDash(Viewer):
                     async for value in fn():
                         yield value
                 except Exception as exc:
-                    _failed(exc)
+                    yield _failed(exc)
 
         elif is_async(fn):
 
@@ -975,7 +1044,7 @@ class FlowDash(Viewer):
                 try:
                     return await fn()
                 except Exception as exc:
-                    _failed(exc)
+                    return _failed(exc)
 
         else:
             initial = [True]
@@ -987,7 +1056,7 @@ class FlowDash(Viewer):
                 except Exception as exc:
                     if quiet:
                         raise param.Skip from exc
-                    _failed(exc)
+                    return _failed(exc)
 
         return param.bind(_output, *deps)
 
@@ -1333,6 +1402,11 @@ class FlowDash(Viewer):
         except Exception:
             self._dataflow_graph.remove_node(instance_id)
             raise
+        failures = self._dataflow_graph.get_failures(instance_id)
+        if self.propagate_failures:
+            view = with_failure_overlay(
+                view, failures, partial(self._describe_failures, instance_id)
+            )
 
         if position is None:
             position = self._default_position()
@@ -1359,6 +1433,8 @@ class FlowDash(Viewer):
             }
         )
         self._tile_objects.append(view)
+        if self.propagate_failures:
+            failures.param.watch(partial(self._sync_failure_marks, instance_id), "failed")
         self._sync_toolbar_state()
         return instance_id
 
@@ -1435,7 +1511,11 @@ class FlowDash(Viewer):
                     "sourceHandle": source_port,
                     "targetHandle": target_port,
                     "markerEnd": {"type": "arrowclosed"},
-                    **(self._edge_chip(self._edge_id_map[edge_id]) if transform else {}),
+                    **(
+                        self._edge_chip(self._edge_id_map[edge_id])
+                        if transform or self._edge_failed(self._edge_id_map[edge_id])
+                        else {}
+                    ),
                 }
             )
         self.dirty = True
@@ -1474,10 +1554,19 @@ class FlowDash(Viewer):
         return True
 
     def _edge_chip(self, mapping) -> dict[str, t.Any]:
-        """Edge props summarizing an edge's transform, clearing them when it has none."""
+        """Edge props summarizing an edge's transform and failure, clearing them when it has none."""
         steps = parse_transform(self._dataflow_graph.get_edge_transform(*mapping))
         label = summarize_transform(steps)
-        return {"label": label, "style": _TRANSFORMED_EDGE_STYLE if label else None}
+        style = _TRANSFORMED_EDGE_STYLE if label else None
+        if self._edge_failed(mapping):
+            style = {**(style or {}), **_FAILED_EDGE_STYLE}
+        return {"label": label, "style": style}
+
+    def _edge_failed(self, mapping) -> bool:
+        """Whether the failure held by the edge's target input arrived over this edge."""
+        failures = self._dataflow_graph.get_failures(mapping[2])
+        failure = failures.failed.get(mapping[3]) if failures is not None else None
+        return failure is not None and (failure.source_id, failure.source_port) == mapping[:2]
 
     def _make_edge_editor(self, data, schema, *, id, type, on_patch):
         """Create the transform editor ReactFlow shows when an edge is selected.
