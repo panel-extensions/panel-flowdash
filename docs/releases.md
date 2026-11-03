@@ -8,6 +8,7 @@ Initial release of panel-flowdash.
 - Typed port model (`InputPort`, `OutputPort`, `ComponentSpec`)
 - Port introspection from Viewer subclasses (`param.output`, param inputs)
 - A Viewer can publish a Parameter as an output by naming it in `provides`, without wrapping it in a `@param.output` method
+- A Viewer declares a Parameter as an output port with `metadata={"flowdash": {"output": True, "label": ...}}`, so class factories need not repeat output names in `@register(provides=...)`; requires `param>=2.3`
 - `DataflowGraph` engine with cycle detection, type checking, single-source validation
 - Runtime validation via `param.watch` with error callbacks
 - SQLite persistence (`DashboardStore`, `DashboardModel`)

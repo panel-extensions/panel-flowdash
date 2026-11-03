@@ -227,6 +227,31 @@ def _type_from_parameter(viewer_cls: type, port: OutputPort) -> OutputPort:
     return replace(port, type=type(p).__name__)
 
 
+def _flowdash_metadata(p: param.Parameter) -> dict[str, Any]:
+    """Return the ``"flowdash"`` namespace of a Parameter's metadata, or an empty dict."""
+    namespace = (p.metadata or {}).get("flowdash")
+    return namespace if isinstance(namespace, dict) else {}
+
+
+def _parameter_outputs(viewer_cls: type) -> list[OutputPort]:
+    """List the Parameters a viewer class declares as outputs through metadata."""
+    outputs = []
+    for pname, p in viewer_cls.param.objects("existing").items():
+        declared = _flowdash_metadata(p)
+        if not declared.get("output"):
+            continue
+        if pname in _BASE_PARAMS or pname.startswith("_"):
+            raise ValueError(
+                f"Parameter {pname!r} on {viewer_cls.__name__} is declared as a flowdash "
+                "output but cannot be a port: base Viewable parameters and names "
+                "starting with an underscore are not ports. Rename the Parameter."
+            )
+        outputs.append(
+            _type_from_parameter(viewer_cls, OutputPort(pname, label=declared.get("label")))
+        )
+    return outputs
+
+
 def _ports_from_viewer_class(
     viewer_cls: type,
     exclude: set[str] | None = None,
@@ -251,9 +276,17 @@ def _ports_from_viewer_class(
             type_str = type(ptype).__name__
         outputs.append(OutputPort(name=name, type=type_str))
 
+    outputs += _parameter_outputs(viewer_cls)
+    output_names = {port.name for port in outputs}
+
     inputs = []
     for pname, p in viewer_cls.param.objects("existing").items():
-        if pname in _BASE_PARAMS or pname.startswith("_") or pname in exclude:
+        if (
+            pname in _BASE_PARAMS
+            or pname.startswith("_")
+            or pname in exclude
+            or pname in output_names
+        ):
             continue
         type_str = type(p).__name__ if p else None
         inputs.append(

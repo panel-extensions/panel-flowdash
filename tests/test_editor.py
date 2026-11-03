@@ -1433,6 +1433,148 @@ class TestParameterOutputs:
         assert editor.graph.get_state(target).text == ""
 
 
+class MetadataSource(Viewer):
+    """A Viewer publishing Parameters through metadata, one set during ``__init__``."""
+
+    instances: ClassVar[list] = []
+
+    company = param.String(default="seed", metadata={"flowdash": {"output": True}})
+    count = param.Integer(default=0, metadata={"flowdash": {"output": True, "label": "Count"}})
+    scale = param.Integer(default=2)
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        self.company = "from-init"
+        MetadataSource.instances.append(self)
+
+    @param.output(param.Integer)
+    @param.depends("company", "scale")
+    def size(self):
+        return len(self.company) * self.scale
+
+    def __panel__(self):
+        return self.company
+
+
+class CountReceiver(Viewer):
+    """A Viewer with an Integer input."""
+
+    amount = param.Integer(default=0)
+
+    def __panel__(self):
+        return str(self.amount)
+
+
+class TestMetadataOutputs:
+    @pytest.fixture
+    def editor(self):
+        MetadataSource.instances.clear()
+        return FlowDash(
+            {
+                "Demo/source": MetadataSource,
+                "Demo/text": Receiver,
+                "Demo/count": CountReceiver,
+            },
+            notifications=False,
+        )
+
+    async def test_value_set_in_init_reaches_a_connected_input(self, editor):
+        source = editor.add_component("Demo/source")
+        target = editor.add_component("Demo/text")
+
+        assert editor.connect(source, "company", target, "text") is True
+
+        assert editor.graph.get_state(target).text == "from-init"
+
+    async def test_later_change_reaches_a_connected_input(self, editor):
+        source = editor.add_component("Demo/source")
+        target = editor.add_component("Demo/text")
+        (instance,) = MetadataSource.instances
+        editor.connect(source, "company", target, "text")
+
+        instance.company = "changed"
+
+        assert editor.graph.get_state(target).text == "changed"
+
+    async def test_node_state_follows_the_parameter_before_any_connection(self, editor):
+        source = editor.add_component("Demo/source")
+        (instance,) = MetadataSource.instances
+        assert editor.graph.get_state(source).company == "from-init"
+
+        instance.company = "later"
+
+        assert editor.graph.get_state(source).company == "later"
+
+    async def test_typed_output_connects_to_a_matching_input_only(self, editor):
+        source = editor.add_component("Demo/source")
+        count_target = editor.add_component("Demo/count")
+        text_target = editor.add_component("Demo/text")
+        (instance,) = MetadataSource.instances
+
+        assert "produces 'Integer'" in editor.connect(source, "count", text_target, "text")
+        assert editor.connect(source, "count", count_target, "amount") is True
+        instance.count = 3
+
+        assert editor.graph.get_state(count_target).amount == 3
+
+    async def test_method_output_works_beside_metadata_outputs(self, editor):
+        source = editor.add_component("Demo/source")
+        (instance,) = MetadataSource.instances
+        assert editor.graph.get_state(source).size == len("from-init") * 2
+
+        instance.company = "abc"
+
+        assert editor.graph.get_state(source).size == 6
+
+    async def test_output_is_not_an_input_and_cannot_be_written_from_the_canvas(self, editor):
+        source = editor.add_component("Demo/source")
+        (instance,) = MetadataSource.instances
+        assert [p.name for p in editor.component_specs["Demo/source"].inputs] == ["scale"]
+
+        editor.graph.get_state(source).company = "x"
+
+        assert instance.company == "from-init"
+
+    async def test_class_factory_output_is_wired(self):
+        instances = []
+
+        def init(self, **params):
+            Viewer.__init__(self, **params)
+            self.company = "factory"
+            instances.append(self)
+
+        Factory = type(
+            "Factory",
+            (Viewer,),
+            {
+                "company": param.String(default="", metadata={"flowdash": {"output": True}}),
+                "__init__": init,
+                "__panel__": lambda self: self.company,
+            },
+        )
+        editor = FlowDash({"Demo/factory": Factory, "Demo/text": Receiver}, notifications=False)
+        source = editor.add_component("Demo/factory")
+        target = editor.add_component("Demo/text")
+        editor.connect(source, "company", target, "text")
+        assert editor.graph.get_state(target).text == "factory"
+
+        instances[0].company = "updated"
+
+        assert editor.graph.get_state(target).text == "updated"
+
+    async def test_provides_replaces_metadata_outputs_in_the_editor(self):
+        @register(page=False, component=True, provides=["scale"])
+        class Replaced(Viewer):
+            company = param.String(default="seed", metadata={"flowdash": {"output": True}})
+            scale = param.Integer(default=2)
+
+        editor = FlowDash({"Demo/replaced": Replaced}, notifications=False)
+        spec = editor.component_specs["Demo/replaced"]
+
+        assert [o.name for o in spec.outputs] == ["scale"]
+        assert spec.inputs == []
+
+
 class TestOutputFailures:
     async def test_failing_output_keeps_last_value_downstream(self, caplog):
         editor = FlowDash({"Demo/inverse": Inverse}, notifications=False)

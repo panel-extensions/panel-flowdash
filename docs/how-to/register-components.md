@@ -83,6 +83,11 @@ In this example:
 Base Parameterized and Viewable params (`name`, `loading`, etc.) are excluded
 automatically.
 
+A Parameter can also be an output. Mark it with
+`metadata={"flowdash": {"output": True}}` and it is published as an output port
+instead of listed as an input. See
+[Outputs from Parameters](define-ports.md#outputs-from-parameters).
+
 ---
 
 ## Decorator overrides on Viewer classes
@@ -106,7 +111,8 @@ class QueryRunner(pn.viewable.Viewer):
 ```
 
 Here only `query` is exposed as an input (not `timeout`), and `result` is the
-sole output, regardless of any other `@param.output` decorators.
+sole output, regardless of any other `@param.output` decorators or Parameters
+declared as outputs in metadata.
 
 ---
 
