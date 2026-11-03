@@ -169,6 +169,8 @@ _NODE_DEFAULTS = {
     "deletable": True,
 }
 _SIDE_PANEL_WIDTH = 250
+# Sits where the tile's close handle does in edit mode, which hides the button.
+_INSPECT_BUTTON_STYLES = {"position": "absolute", "top": "4px", "right": "4px", "z-index": "5"}
 _PALETTE_SX = {
     "& .MuiListItemButton-root": {"py": 0.25, "minHeight": 0},
     "& .MuiListItemText-root": {"my": 0},
@@ -274,6 +276,18 @@ class FlowDash(Viewer):
 
     include_builtin_components = param.Boolean(
         default=True, doc="Include Select, MultiChoice and Slider in the component palette."
+    )
+
+    inspect_outputs = param.Boolean(
+        default=False,
+        doc="""
+        Whether each tile in the dashboard grid gets an info button that opens
+        a dialog with the current value of every output the component
+        publishes. The button is shown to viewers and in preview, not while
+        arranging tiles. Anyone who can view the dashboard can read these
+        values, including outputs the tile itself does not display. A
+        component can add its own explanation per output by defining
+        ``__flowdash_inspect__(self, port)``.""",
     )
 
     dashboard = param.ClassSelector(
@@ -411,6 +425,9 @@ class FlowDash(Viewer):
         self._pending_tile_layout: list[dict] = []
         # Instance ids of the tiles currently in the grid, in grid order.
         self._grid_ids: list[str] = []
+        # Inspect-button wrappers of the tiles, by instance id, kept so a grid
+        # rebuild does not re-render the tiles.
+        self._inspect_tiles: dict[str, pn.Column] = {}
         # Responsive grid settings waiting to be applied; empty values must also be
         # applied so a loaded dashboard doesn't inherit the previous one's overrides.
         self._pending_grid_config: dict | None = None
@@ -470,6 +487,7 @@ class FlowDash(Viewer):
         """
         for node_id in list(self._dataflow_graph.node_ids):
             self._dataflow_graph.remove_node(node_id)
+        self._inspect_tiles.clear()
         for instance_id in [*self._component_instances, *self._component_wiring]:
             self._dispose_component(instance_id)
 
@@ -922,6 +940,7 @@ class FlowDash(Viewer):
     def _forget_node(self, node_id: str):
         """Drop a node from the graph, the tile bookkeeping and the edge map."""
         self._dataflow_graph.remove_node(node_id)
+        self._inspect_tiles.pop(node_id, None)
         idx = next(
             (i for i, item in enumerate(self._tile_items) if item["instance_id"] == node_id),
             None,
@@ -1003,6 +1022,71 @@ class FlowDash(Viewer):
             self._value_preview(value),
             sizing_mode="stretch_width",
         )
+
+    def _inspect_hook_content(self, instance_id: str, port_name: str) -> Viewable | None:
+        """Ask the live component to explain an output, or None to keep the default alone."""
+        hook = getattr(self._component_instances.get(instance_id), "__flowdash_inspect__", None)
+        if hook is None:
+            return None
+        try:
+            content = hook(port_name)
+            return None if content is None else pn.panel(content)
+        except Exception as exc:
+            logger.exception("Inspecting output '%s' of %s failed", port_name, instance_id)
+            return pmui.Alert(
+                f"Could not describe this output: {exc}", severity="error", margin=(6, 0, 0, 0)
+            )
+
+    def _inspection_sections(self, instance_id: str, spec: ComponentSpec) -> list[Viewable]:
+        """One section per output, reading each current value now rather than at build time."""
+        state = self._dataflow_graph.get_state(instance_id)
+        sections = []
+        for port in spec.outputs:
+            value = getattr(state, port.name, None)
+            section = self._build_value_popup(port.label or port.name, port.type, value)
+            extra = self._inspect_hook_content(instance_id, port.name)
+            if extra is not None:
+                section.append(extra)
+            sections.append(section)
+        return sections
+
+    def _on_inspect_clicked(self, instance_id: str, tile: pn.Column, _event):
+        # A click can arrive after the tile left the grid, e.g. after navigating
+        # to another dashboard that reuses the instance id; it belongs to no tile now.
+        if self._inspect_tiles.get(instance_id) is not tile:
+            return
+        spec = self._component_specs[self._component_id_for_instance(instance_id)]
+        self._inspect_dialog.param.update(
+            title=spec.title,
+            objects=self._inspection_sections(instance_id, spec),
+            open=True,
+        )
+
+    def _grid_view(self, item: dict, view: Viewable) -> Viewable:
+        """Return the tile's view, with an inspect button over it when it has outputs to show."""
+        instance_id = item["instance_id"]
+        spec = self._component_specs.get(item["component_id"])
+        if not self.inspect_outputs or not spec or not spec.outputs:
+            return view
+        tile = self._inspect_tiles.get(instance_id)
+        if tile is None or tile[0] is not view:
+            button = pmui.IconButton(
+                icon="info_outlined",
+                description="Inspect outputs",
+                size="small",
+                margin=0,
+                styles=_INSPECT_BUTTON_STYLES,
+            )
+            tile = self._inspect_tiles[instance_id] = pn.Column(
+                view,
+                button,
+                margin=0,
+                sizing_mode="stretch_both",
+                stylesheets=[":host { position: relative; }"],
+            )
+            button.on_click(partial(self._on_inspect_clicked, instance_id, tile))
+        tile[1].visible = not self._tile_grid.editable
+        return tile
 
     def _show_inspection(self, key, title, value, position, flow):
         self._inspection_key = key
@@ -1300,6 +1384,14 @@ class FlowDash(Viewer):
         self._pending_import: DashboardModel | None = None
         self._import_message = pn.pane.Markdown()
         self._import_dialog = self._build_import_dialog()
+        # `width_option` only caps the width; without a floor a short value yields a sliver.
+        self._inspect_dialog = pmui.Dialog(
+            open=False,
+            close_on_click=True,
+            show_close_button=True,
+            width_option="md",
+            sx={"& .MuiDialog-paper": {"minWidth": "min(480px, 100%)"}},
+        )
 
         self._mode_toggle = pmui.RadioButtonGroup(
             options={
@@ -1486,7 +1578,7 @@ class FlowDash(Viewer):
         ]
 
     @pn.io.hold()
-    @param.depends("editable", "mode", "preview", "toolbar", watch=True)
+    @param.depends("editable", "inspect_outputs", "mode", "preview", "toolbar", watch=True)
     def _apply_mode_state(self):
         """Reconcile the toolbar, side panel and workspace with the display params."""
         interactive = self.editable and not self.preview
@@ -1497,6 +1589,8 @@ class FlowDash(Viewer):
         self._tile_grid.param.update(editable=interactive, card=interactive)
         # Column children rather than Row children, so the dialogs take no flex space.
         dialogs = [self._clear_dialog, self._import_dialog]
+        if self.inspect_outputs:
+            dialogs.insert(0, self._inspect_dialog)
         if showing_grid:
             self._flow.top_panel = []
             self._workspace_area[:] = [*toolbar, self._tile_grid, *dialogs]
@@ -1547,7 +1641,7 @@ class FlowDash(Viewer):
             view = self._tile_objects[i] if i < len(self._tile_objects) else None
             if view is None:
                 view = pn.pane.Markdown(f"*{entry.title}*")
-            grid_views.append(view)
+            grid_views.append(self._grid_view(item, view))
             grid_ids.append(item["instance_id"])
         self._tile_grid[:] = grid_views
         self._grid_ids = grid_ids
@@ -1843,6 +1937,7 @@ class FlowDash(Viewer):
             self._dataflow_graph.remove_node(node_id)
         self._tile_items = []
         self._tile_objects = []
+        self._inspect_tiles.clear()
         self._edge_id_map.clear()
         for edge_id in list(self._transform_editors):
             self._drop_edge_editor(edge_id)
