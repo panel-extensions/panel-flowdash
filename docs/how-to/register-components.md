@@ -110,6 +110,44 @@ sole output, regardless of any other `@param.output` decorators.
 
 ---
 
+## Opening a dialog from a component
+
+A component that needs a modal, such as a confirmation before saving or a details view, should not create a `Dialog` inside its own tile. `panel_flowdash.util` provides one dialog per session instead, shared by every component on the page:
+
+```python
+import panel as pn
+import panel_material_ui as pmui
+from panel_flowdash import register
+from panel_flowdash.util import confirm, open_dialog
+
+
+@register(component=True, page=False)
+def editor(config):
+    def save(_event):
+        ...
+
+    def ask_to_save(_event):
+        confirm("Save changes?", pn.pane.Markdown("This overwrites the stored copy."), on_confirm=save)
+
+    def show_details(_event):
+        open_dialog("Details", pn.Column(...))
+
+    return pn.Row(
+        pmui.Button(label="Save", on_click=ask_to_save),
+        pmui.Button(label="Details", on_click=show_details),
+    )
+```
+
+`open_dialog(title, content)` shows `content` and replaces whatever the dialog showed before. The user can dismiss it with the close button, the Escape key or a click outside it, and `close_dialog()` dismisses it from code.
+
+`confirm(title, content=None, *, on_confirm, on_cancel=None)` asks a question. Opening it never runs anything. *Confirm* closes the dialog and then calls `on_confirm(event)`, so the handler can open another dialog. *Cancel* closes it and calls `on_cancel(event)` if given. A confirmation can only be answered with its buttons, and only the first click counts, so a double click does not run the action twice. Handlers may be coroutine functions. Set `confirm_label` and `cancel_label` to rename the buttons, and `width` (`"xs"` to `"xl"`) on either function to change the dialog's maximum width.
+
+If a second `open_dialog` or `confirm` replaces an unanswered confirmation, neither of its handlers is called.
+
+`FlowDashApp` places the dialog on every page. Outside a served session (a plain script, a unit test, a notebook) there is no dialog to show: `open_dialog` and `confirm` log a warning and do nothing, as `notify` falls back to the logger, so a `confirm` handler never runs without an answer. To embed the editor in your own page, see [Embed the Editor](embed-the-editor.md#where-the-page-dialog-goes).
+
+---
+
 ## Project directory layout
 
 FlowDash scans one level of subdirectories as "sections":

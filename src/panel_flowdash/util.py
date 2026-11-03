@@ -5,12 +5,15 @@ from __future__ import annotations
 import inspect
 import logging
 import typing as t
+import weakref
 
 import panel as pn
+import panel_material_ui as pmui
 
 if t.TYPE_CHECKING:
     from collections.abc import Callable
 
+    from bokeh.document import Document
     from panel.viewable import Viewable
 
 logger = logging.getLogger("panel_flowdash")
@@ -21,6 +24,11 @@ _LOG_LEVELS = {
     "warning": logging.WARNING,
     "error": logging.ERROR,
 }
+
+# One dialog per served session. Once rendered, the dialog's models reference their
+# document, which would keep a weak key alive forever, so the entry is also dropped
+# explicitly when the session is destroyed.
+_dialogs: weakref.WeakKeyDictionary[Document, pmui.Dialog] = weakref.WeakKeyDictionary()
 
 
 def is_async_gen(obj: t.Any) -> bool:
@@ -125,3 +133,142 @@ def notify(
         logger.log(_LOG_LEVELS.get(severity, logging.INFO), message)
         return
     getattr(notifications, severity)(message, duration=duration)
+
+
+def page_dialog() -> pmui.Dialog | None:
+    """Return the dialog shared by every component of the current session.
+
+    The dialog is created on first use and released with the session. It must
+    be laid out once to be visible: ``FlowDashApp`` places it in the page header
+    and ``FlowDash`` in its workspace, so only code that builds its own page
+    around a ``FlowDash(include_page_dialog=False)`` needs to call this.
+
+    Returns ``None`` outside a served session, where there is no document to
+    own it.
+    """
+    doc = pn.state.curdoc
+    if doc is None:
+        return None
+    dialog = _dialogs.get(doc)
+    if dialog is None:
+        dialog = _dialogs[doc] = pmui.Dialog(open=False)
+        pn.state.on_session_destroyed(lambda _context: _dialogs.pop(doc, None))
+    return dialog
+
+
+def _session_dialog(title: str) -> pmui.Dialog | None:
+    dialog = page_dialog()
+    if dialog is None:
+        logger.warning("Cannot show the dialog %r outside a served session.", title)
+    return dialog
+
+
+def open_dialog(title: str, content: t.Any, *, width: str | bool = "sm") -> None:
+    """Show *content* in the session's page dialog, replacing whatever it shows.
+
+    The user can dismiss the dialog with its close button, the Escape key or a
+    click outside it. Use :func:`close_dialog` to dismiss it from code.
+
+    Outside a served session there is nowhere to show a dialog, so a warning is
+    logged and nothing happens, as with :func:`notify`.
+
+    Parameters
+    ----------
+    title
+        Heading of the dialog.
+    content
+        Anything Panel can render.
+    width
+        Maximum width of the dialog, one of ``"xs"``, ``"sm"``, ``"md"``,
+        ``"lg"``, ``"xl"``, or ``False`` for no limit.
+    """
+    dialog = _session_dialog(title)
+    if dialog is None:
+        return
+    dialog.param.update(
+        title=title,
+        objects=[content],
+        open=True,
+        close_on_click=True,
+        show_close_button=True,
+        width_option=width,
+    )
+
+
+def close_dialog() -> None:
+    """Close the session's page dialog. Does nothing when it is not open."""
+    doc = pn.state.curdoc
+    dialog = None if doc is None else _dialogs.get(doc)
+    if dialog is not None:
+        dialog.open = False
+
+
+def confirm(
+    title: str,
+    content: t.Any = None,
+    *,
+    on_confirm: Callable[[t.Any], t.Any],
+    on_cancel: Callable[[t.Any], t.Any] | None = None,
+    confirm_label: str = "Confirm",
+    cancel_label: str = "Cancel",
+    width: str | bool = "sm",
+) -> None:
+    """Ask the user to confirm an action in the session's page dialog.
+
+    Opening the dialog never runs anything. Clicking *Confirm* closes the
+    dialog and then calls ``on_confirm(event)``; clicking *Cancel* closes it and
+    calls ``on_cancel(event)`` if one is given. Either handler may be a
+    coroutine function, which Panel schedules. Only the first click counts, so
+    a double click cannot run the action twice. The buttons are the only way
+    out: a confirmation cannot be dismissed with Escape or a click outside.
+
+    Replacing the dialog (another :func:`open_dialog` or :func:`confirm`) before
+    the user answers drops the question without calling either handler.
+
+    Outside a served session a warning is logged and neither handler runs.
+
+    Parameters
+    ----------
+    title
+        Heading of the dialog, usually the question.
+    content
+        Anything Panel can render, such as a diff of what will change.
+    on_confirm
+        Called with the click event after the dialog has closed.
+    on_cancel
+        Called with the click event after the dialog has closed.
+    confirm_label, cancel_label
+        Button labels.
+    width
+        See :func:`open_dialog`.
+    """
+    dialog = _session_dialog(title)
+    if dialog is None:
+        return
+    cancel = pmui.Button(label=cancel_label, variant="text")
+    accept = pmui.Button(label=confirm_label, color="primary")
+    watchers = []
+
+    def dismiss(_event):
+        dialog.open = False
+        for button, watcher in watchers:
+            button.param.unwatch(watcher)
+
+    # The handler is registered on the button itself, behind the dismissal, because
+    # Panel only schedules a coroutine function when param is given the function.
+    for button, handler in ((cancel, on_cancel), (accept, on_confirm)):
+        watchers.append((button, button.on_click(dismiss)))
+        if handler is not None:
+            watchers.append((button, button.on_click(handler)))
+
+    dialog.param.update(
+        title=title,
+        objects=[
+            *([] if content is None else [content]),
+            pn.Row(pn.layout.HSpacer(), cancel, accept, sizing_mode="stretch_width"),
+        ],
+        open=True,
+        close_on_click=False,
+        show_close_button=False,
+        width_option=width,
+    )

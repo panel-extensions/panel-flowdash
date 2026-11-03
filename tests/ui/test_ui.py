@@ -3,13 +3,19 @@
 
 import json
 
+import panel_material_ui as pmui
 import param
 import pytest
 from panel.tests.util import serve_component, wait_until
 from panel.viewable import Viewer
+from playwright.sync_api import expect
 
 from panel_flowdash import register
+from panel_flowdash.app import FlowDashApp
+from panel_flowdash.auth import AuthConfig, resolve_identity
+from panel_flowdash.dashboard_store import DashboardItem, DashboardStore
 from panel_flowdash.editor import FlowDash
+from panel_flowdash.util import confirm
 
 pytest.importorskip("playwright")
 
@@ -337,3 +343,103 @@ def test_edge_transform_editor_applies_changes(page):
     page.get_by_text("max", exact=True).click()
     wait_until(lambda: editor.graph.get_state(dst).total == 30, page)
     page.locator(".react-flow__edge-text").filter(has_text="max").wait_for()
+
+
+_CONFIRMING_COMPONENT = """
+import pathlib
+
+import panel_material_ui as pmui
+
+from panel_flowdash import register
+from panel_flowdash.util import confirm
+
+
+def record(text):
+    with pathlib.Path({marker!r}).open("a") as f:
+        f.write(text + "\\n")
+
+
+@register(page=False, component=True, title="Saver")
+def app(config):
+    def ask(_event):
+        confirm(
+            "Save changes?",
+            "This overwrites the stored copy.",
+            on_confirm=lambda _e: record("confirmed"),
+            on_cancel=lambda _e: record("cancelled"),
+        )
+
+    return pmui.Button(label="Save", on_click=ask)
+"""
+
+
+def _serve_dashboard_with_confirm(page, tmp_path, monkeypatch):
+    section = tmp_path / "Confirming"
+    section.mkdir()
+    (section / "__init__.py").write_text("")
+    marker = tmp_path / "marker.txt"
+    (section / "saver.py").write_text(_CONFIRMING_COMPONENT.format(marker=str(marker)))
+    monkeypatch.syspath_prepend(str(tmp_path))
+    store = DashboardStore(tmp_path / "test.db")
+    dashboard = store.create_dashboard(resolve_identity(AuthConfig()).user, "Confirming")
+    dashboard.items = [DashboardItem(instance_id="n0", component_id="Confirming/saver")]
+    store.save_dashboard(dashboard)
+    routes = FlowDashApp.build_routes(tmp_path, store=store)
+    serve_component(page, routes, suffix=f"/dash/{dashboard.dashboard_id}")
+    return marker
+
+
+@pytest.mark.filterwarnings("ignore:reference already known:bokeh.util.warnings.BokehUserWarning")
+def test_component_confirm_dialog_in_app(page, tmp_path, monkeypatch):
+    marker = _serve_dashboard_with_confirm(page, tmp_path, monkeypatch)
+
+    for label, outcome in [("Cancel", "cancelled"), ("Confirm", "confirmed")]:
+        page.get_by_role("button", name="Save", exact=True).click()
+        dialog = page.get_by_role("dialog")
+        expect(dialog.get_by_text("Save changes?")).to_be_visible()
+        expect(dialog.get_by_text("This overwrites the stored copy.")).to_be_visible()
+        assert not marker.exists() or outcome not in marker.read_text()
+
+        dialog.get_by_role("button", name=label).click()
+
+        expect(page.get_by_role("dialog")).to_have_count(0)
+        wait_until(
+            lambda outcome=outcome: marker.exists() and outcome in marker.read_text(), timeout=8000
+        )
+
+    assert marker.read_text() == "cancelled\nconfirmed\n"
+
+
+_asked = []
+
+
+@register(page=False, component=True, title="Asker")
+def asker(config):
+    def ask(_event):
+        confirm("Proceed?", on_confirm=_asked.append)
+
+    return pmui.Button(label="Ask", on_click=ask)
+
+
+@pytest.mark.filterwarnings("ignore:reference already known:bokeh.util.warnings.BokehUserWarning")
+def test_standalone_editor_hosts_the_page_dialog(page):
+    """An embedded `FlowDash` lays out the dialog itself, once."""
+    _asked.clear()
+
+    def app():
+        editor = FlowDash({"Test/asker": asker}, notifications=False)
+        editor.add_component("Test/asker")
+        editor.mode = "dashboard"
+        return editor
+
+    serve_component(page, app)
+
+    page.get_by_role("button", name="Ask", exact=True).click()
+    dialog = page.get_by_role("dialog")
+    expect(dialog.get_by_text("Proceed?")).to_be_visible()
+    assert not _asked
+
+    dialog.get_by_role("button", name="Confirm").click()
+
+    expect(page.get_by_role("dialog")).to_have_count(0)
+    wait_until(lambda: len(_asked) == 1, timeout=8000)

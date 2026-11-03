@@ -211,6 +211,23 @@ Set `notifications=False` to route the editor's user-facing messages to the
 logger instead of Panel notifications, which is what you want in a notebook or
 under test.
 
+### Where the page dialog goes
+
+Components open modals with `open_dialog` and `confirm` from `panel_flowdash.util` (see [Register Components](register-components.md#opening-a-dialog-from-a-component)). Both use one `Dialog` per session, which `FlowDash` lays out in its own workspace, so an embedded editor needs nothing more.
+
+If your page already shows the dialog, or you want it somewhere else, pass `include_page_dialog=False` to the editor and place `page_dialog()` yourself. A dialog can appear in only one layout, so do this for all but one editor on a page. Keep it out of a `Page` header, where Material UI recolors its children for the header:
+
+```python
+from panel_flowdash.util import page_dialog
+
+
+def app():
+    editor = FlowDash(components, include_page_dialog=False)
+    return pmui.Page(main=[editor, page_dialog()])
+```
+
+The dialog belongs to the session that is current when the editor is built, so construct `FlowDash` inside the function Panel calls per session, not at import time.
+
 ---
 
 ## Loading components off the event loop
