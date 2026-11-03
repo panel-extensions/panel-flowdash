@@ -123,6 +123,19 @@ etc.) becomes an `InputPort`. The type is the param class name (e.g. `"Number"`,
     treated as design-time configuration and excluded from the input ports. See
     [Configure nodes](configure-nodes.md).
 
+### Inputs that receive failures
+
+With `propagate_failures=True` on the editor, an upstream failure normally leaves
+an input on its last value and covers the tile with a message. Name an input in
+`handles_failures` to receive the `param.ReactiveError` instead, see
+[Wire the dataflow](wire-dataflow.md#carry-failures-downstream):
+
+```python
+@register(component=True, handles_failures=["data"])
+class Table(pn.viewable.Viewer):
+    data = param.Parameter()
+```
+
 ---
 
 ## Type compatibility rules

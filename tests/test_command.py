@@ -136,6 +136,15 @@ class TestFlowDashApp:
         )
         assert len(app._component_entries) == 2
 
+    async def test_propagate_failures_reaches_the_editor(self, tmp_path):
+        _create_project(tmp_path)
+        store = DashboardStore(tmp_path / "failures.db")
+
+        assert FlowDashApp(project_dir=tmp_path, store=store)._editor.propagate_failures is False
+        app = FlowDashApp(project_dir=tmp_path, store=store, propagate_failures=True)
+        assert app._editor.propagate_failures is True
+        assert app._editor.graph.propagate_failures is True
+
     @pytest.mark.parametrize("backend", [MemoryDashboardStore, JSONFolderDashboardStore])
     async def test_accepts_any_store_backend(self, tmp_path, backend):
         _create_project(tmp_path)

@@ -8,6 +8,12 @@ expressions feeding it as a param reference, so param itself propagates
 values. The binding checks each value against the target first; a rejected
 value, like a failing transform step, is reported via the error callback and
 skipped, which leaves the target on its last good value.
+
+With ``propagate_failures`` a failure is carried along the edge instead, as a
+``param.ReactiveError`` value. An input that handles failures receives it on
+its port; any other input keeps its last good value, records the failure in the
+node's :class:`InputFailures`, and its node passes the failure on to every
+output so that nothing downstream keeps presenting stale data as current.
 """
 
 from __future__ import annotations
@@ -31,16 +37,49 @@ EdgeKey = tuple[str, str, str, str]
 class Edge:
     """The transform steps of an edge and the expression after each of them.
 
-    ``stages[0]`` is the source port itself, so ``stages[i]`` is the value
-    after ``i`` steps and ``stages[-1]`` is what the target receives.
+    ``stages[0]`` is the source port itself and ``stages[i]`` is the value after
+    ``i`` steps. ``expr`` is what the target receives, which is ``stages[-1]``
+    unless failures propagate, when ``carried`` replaces it with the source
+    node's failure.
     """
 
     steps: list[Transform]
     stages: list[param.rx]
+    carried: param.rx | None = None
 
     @property
     def expr(self) -> param.rx:
-        return self.stages[-1]
+        return self.stages[-1] if self.carried is None else self.carried
+
+
+def failure_text(error: param.ReactiveError) -> str:
+    """Describe a failure as ``Type: message``."""
+    exc = error.exception
+    return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+
+
+@dataclass(frozen=True)
+class InputFailure:
+    """A failure that reached an input which does not handle failures."""
+
+    source_id: str
+    source_port: str
+    error: param.ReactiveError
+
+    @property
+    def text(self) -> str:
+        return failure_text(self.error)
+
+
+class InputFailures(param.Parameterized):
+    """The inputs of one node that currently hold a failure, keyed by port name."""
+
+    failed = param.Dict(
+        default={},
+        doc="""
+        Failures that reached inputs which do not handle them, by input port.
+        Replaced, never mutated, so a watcher sees every change.""",
+    )
 
 
 def _is_list_port(port) -> bool:
@@ -59,7 +98,17 @@ def build_node_state_class(spec: ComponentSpec) -> type[param.Parameterized]:
     for port in spec.inputs:
         if port.name in _RESERVED_PARAMS:
             continue
-        if (port.type or "").lower() == "list":
+        if (port.type or "").lower() == "list" and port.handles_failures:
+            # A List param would reject the failure this port is meant to receive.
+            params[port.name] = param.Parameter(
+                default=port.default
+                if port.default is not None
+                else ([] if _is_list_port(port) else None),
+                allow_None=True,
+                allow_refs=True,
+                instantiate=True,
+            )
+        elif (port.type or "").lower() == "list":
             params[port.name] = param.List(
                 default=port.default
                 if port.default is not None
@@ -93,6 +142,7 @@ class DataflowGraph:
         self,
         specs: dict[str, ComponentSpec],
         on_error: Callable[[str, str, str, str, Exception], None] | None = None,
+        propagate_failures: bool = False,
     ):
         """Initialize the dataflow graph.
 
@@ -103,6 +153,10 @@ class DataflowGraph:
         on_error
             Callback invoked when a runtime value assignment fails.
             Signature: (source_id, source_port, target_id, target_port, exception)
+        propagate_failures
+            Carry a failing output or edge transform downstream as a
+            ``param.ReactiveError`` instead of skipping it. Applies to edges
+            wired after construction, so set it here rather than later.
         """
         self._specs = dict(specs)
         self._state_classes: dict[str, type[param.Parameterized]] = {}
@@ -111,6 +165,8 @@ class DataflowGraph:
         self._node_specs: dict[str, ComponentSpec] = {}
         self._edges: dict[EdgeKey, Edge] = {}
         self._on_error = on_error
+        self._failures: dict[str, InputFailures] = {}
+        self.propagate_failures = propagate_failures
 
         for comp_id, spec in specs.items():
             self._state_classes[comp_id] = build_node_state_class(spec)
@@ -135,6 +191,7 @@ class DataflowGraph:
         state = cls(name=instance_id)
         self._nodes[instance_id] = state
         self._node_specs[instance_id] = spec
+        self._failures[instance_id] = InputFailures()
         if spec.config_state_class is not None:
             self._config_states[instance_id] = spec.config_state_class(
                 name=f"{instance_id}_config"
@@ -149,6 +206,7 @@ class DataflowGraph:
         for target_id, target_port in {key[2:] for key in removed}:
             if target_id == instance_id:
                 continue
+            self._set_failure(target_id, target_port, None)
             if self._is_list_input(target_id, target_port):
                 self._bind_input(target_id, target_port)
             else:
@@ -157,6 +215,7 @@ class DataflowGraph:
                 setattr(target, target_port, getattr(target, target_port))
 
         self._nodes.pop(instance_id, None)
+        self._failures.pop(instance_id, None)
         self._config_states.pop(instance_id, None)
         self._node_specs.pop(instance_id, None)
 
@@ -171,9 +230,21 @@ class DataflowGraph:
         port = self._input_port(target_id, target_port)
         return port is not None and _is_list_port(port)
 
+    def _handles_failures(self, target_id: str, target_port: str) -> bool:
+        port = self._input_port(target_id, target_port)
+        return port is not None and port.handles_failures
+
+    def _set_failure(self, node_id: str, port: str, failure: InputFailure | None):
+        """Record or clear the failure held by a node's input."""
+        holder = self._failures.setdefault(node_id, InputFailures())
+        if failure is not None:
+            holder.failed = {**holder.failed, port: failure}
+        elif port in holder.failed:
+            holder.failed = {k: v for k, v in holder.failed.items() if k != port}
+
     def _check_target_value(self, target_id: str, target_port: str, value):
         """Raise if the target state or the component behind it would reject *value*."""
-        if value is None:
+        if value is None or isinstance(value, param.ReactiveError):
             return
         self._nodes[target_id].param[target_port]._validate(value)
         port = self._input_port(target_id, target_port)
@@ -186,12 +257,18 @@ class DataflowGraph:
         }
 
     def _build_edge(self, key: EdgeKey, steps: list[Transform]) -> Edge:
-        stage = self._nodes[key[0]].param[key[1]].rx()
+        stage = param.rx(
+            self._nodes[key[0]].param[key[1]],
+            error_mode="propagate" if self.propagate_failures else "raise",
+        )
         stages = [stage]
         for step in steps:
             stage = stage.rx.pipe(self._run_step, step, key)
             stages.append(stage)
-        return Edge(steps, stages)
+        carried = None
+        if self.propagate_failures:
+            carried = stage.rx.pipe(self._carry_failure, self._failures[key[0]].param.failed)
+        return Edge(steps, stages, carried)
 
     def _run_step(self, value, step: Transform, key: EdgeKey):
         try:
@@ -199,7 +276,19 @@ class DataflowGraph:
         except Exception as exc:
             if self._on_error:
                 self._on_error(*key, exc)
+            if self.propagate_failures:
+                # The rx node turns the exception into the edge's failure.
+                raise
             raise param.Skip from exc
+
+    @staticmethod
+    def _carry_failure(value, failed: dict[str, InputFailure]):
+        """Replace *value* with the node's failure while one of its inputs holds one.
+
+        The node presents stale data for as long as an input is failed, and every
+        output is derived from its inputs, so no output can be trusted.
+        """
+        return next(iter(failed.values())).error if failed else value
 
     @staticmethod
     def _parse(transform) -> tuple[list[Transform], str | None]:
@@ -228,10 +317,22 @@ class DataflowGraph:
 
         error_source = ("", "") if is_list else next(iter(incoming))[:2]
         first_call = [skip_initial_none]
+        keys = list(incoming)
 
         def _guard(*values):
+            initial = bool(first_call) and first_call.pop()
+            failure = next(
+                (
+                    (key, v)
+                    for key, v in zip(keys, values, strict=True)
+                    if isinstance(v, param.ReactiveError)
+                ),
+                None,
+            )
+            if failure is not None:
+                return self._receive_failure(target_id, target_port, *failure)
             value = [v for v in values if v is not None] if is_list else values[0]
-            if first_call and first_call.pop() and value is None:
+            if initial and value is None:
                 raise param.Skip
             try:
                 self._check_target_value(target_id, target_port, value)
@@ -239,12 +340,32 @@ class DataflowGraph:
                 if self._on_error:
                     self._on_error(*error_source, target_id, target_port, exc)
                 raise param.Skip from exc
+            self._set_failure(target_id, target_port, None)
             return value
 
         # Set on the instance's own copy of the param, so states this graph did
         # not build can be wired too.
         target.param[target_port].allow_refs = True
-        setattr(target, target_port, param.bind(_guard, *(e.expr for e in incoming.values())))
+        setattr(
+            target,
+            target_port,
+            param.bind(
+                _guard,
+                *(e.expr for e in incoming.values()),
+                process_failures=self.propagate_failures,
+            ),
+        )
+
+    def _receive_failure(self, target_id: str, target_port: str, key: EdgeKey, error):
+        """Hand a failure to an input that handles it, or hold it for the node otherwise.
+
+        A list input fails as a whole: showing the members that still work would
+        pass off a partial result as the full one.
+        """
+        if self._handles_failures(target_id, target_port):
+            return error
+        self._set_failure(target_id, target_port, InputFailure(key[0], key[1], error))
+        raise param.Skip
 
     def validate_connection(
         self,
@@ -409,6 +530,7 @@ class DataflowGraph:
     def remove_edge(self, source_id: str, source_port: str, target_id: str, target_port: str):
         """Remove an edge and reset the target input to its default."""
         self._edges.pop((source_id, source_port, target_id, target_port), None)
+        self._set_failure(target_id, target_port, None)
         target_state = self._nodes.get(target_id)
         if target_state is None or not hasattr(target_state, target_port):
             return
@@ -421,6 +543,10 @@ class DataflowGraph:
     def get_state(self, instance_id: str) -> param.Parameterized | None:
         """Get the state instance for a node."""
         return self._nodes.get(instance_id)
+
+    def get_failures(self, instance_id: str) -> InputFailures | None:
+        """Get the failures held by a node's inputs, if the node exists."""
+        return self._failures.get(instance_id)
 
     def get_config_state(self, instance_id: str) -> param.Parameterized | None:
         """Get the config state instance for a node, if it has config."""
@@ -439,11 +565,15 @@ class DataflowGraph:
         Parameters
         ----------
         stage
-            Number of transform steps applied: 0 is the source port's own value,
-            the default -1 is what the target receives.
+            Number of transform steps applied: 0 is the source port's own value.
+            The default -1 is what the target receives, which with
+            ``propagate_failures`` is the failure of the source node while one
+            of its inputs holds one.
         """
         edge = self._edges.get((source_id, source_port, target_id, target_port))
-        return None if edge is None else edge.stages[stage]
+        if edge is None:
+            return None
+        return edge.expr if stage == -1 else edge.stages[stage]
 
     def get_edge_transform(
         self, source_id: str, source_port: str, target_id: str, target_port: str

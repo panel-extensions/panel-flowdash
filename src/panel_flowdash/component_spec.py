@@ -34,13 +34,14 @@ class InputPort:
     blocking: bool = True
     default: Any = None
     multiple: bool | None = None
+    handles_failures: bool = False
     # The component's own param, when introspected, so a connection can be
     # checked against the value the component would actually accept.
     parameter: param.Parameter | None = field(default=None, compare=False, repr=False)
 
     def check_value(self, value: Any) -> str | None:
         """Return why *value* would be rejected by this input, or None."""
-        if self.parameter is None or value is None:
+        if self.parameter is None or value is None or isinstance(value, param.ReactiveError):
             return None
         try:
             self.parameter._validate(value)
@@ -272,6 +273,32 @@ def _ports_from_viewer_class(
     return outputs, inputs
 
 
+def _mark_failure_handlers(
+    component_id: str, inputs: list[InputPort], names: list[str]
+) -> list[InputPort]:
+    """Flag the inputs a component declares it can receive a failure on."""
+    unknown = set(names) - {port.name for port in inputs}
+    if unknown:
+        raise ValueError(
+            f"'{component_id}' declares handles_failures for unknown inputs: "
+            f"{', '.join(sorted(unknown))}."
+        )
+    marked = []
+    for port in inputs:
+        if port.name in names:
+            if port.parameter is not None:
+                try:
+                    port.parameter._validate(param.ReactiveError(Exception()))
+                except Exception as exc:
+                    raise ValueError(
+                        f"Input '{port.name}' of '{component_id}' declares handles_failures, "
+                        f"but its parameter would reject a failure: {exc}"
+                    ) from exc
+            port = replace(port, handles_failures=True)
+        marked.append(port)
+    return marked
+
+
 def build_component_spec(entry: RegistryEntry) -> ComponentSpec:
     """Build a ComponentSpec from a registry entry, caching it on the entry.
 
@@ -305,6 +332,9 @@ def build_component_spec(entry: RegistryEntry) -> ComponentSpec:
     else:
         outputs, inputs = _ports_from_metadata(metadata)
         inputs = [p for p in inputs if p.name not in config_names]
+
+    if metadata.handles_failures:
+        inputs = _mark_failure_handlers(entry.app_id, inputs, metadata.handles_failures)
 
     spec = ComponentSpec(
         component_id=entry.app_id,

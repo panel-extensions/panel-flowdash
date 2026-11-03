@@ -182,6 +182,14 @@ class FlowDashApp(Viewer):
 
     project_dir = param.Path(doc="Path to the project directory.")
 
+    propagate_failures = param.Boolean(
+        default=False,
+        doc="""
+        Carry a failing output or edge transform downstream instead of leaving
+        the connected inputs on their last value. Passed to the embedded
+        editor, see `FlowDash.propagate_failures`.""",
+    )
+
     sidebar = Children(default=[], doc="Items prepended to the sidebar.")
 
     store = param.ClassSelector(
@@ -447,6 +455,7 @@ class FlowDashApp(Viewer):
             include_builtin_components=self.include_builtin_components,
             breakpoints=self.breakpoints,
             notifications=self.notifications,
+            propagate_failures=self.propagate_failures,
             store=self.store,
             toolbar_extra=[self._share_button],
             user=self._user_id,

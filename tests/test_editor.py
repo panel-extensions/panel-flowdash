@@ -1449,6 +1449,289 @@ class TestOutputFailures:
         assert "Output 'inverse' failed" in caplog.text
 
 
+class AsyncInverse(Viewer):
+    """A Viewer whose async output raises for some inputs."""
+
+    value = param.Number(default=1)
+
+    @param.output(param.Number)
+    async def inverse(self):
+        return 1 / self.value
+
+    def __panel__(self):
+        return str(self.value)
+
+
+class GenInverse(Viewer):
+    """A Viewer whose async generator output raises after its first value."""
+
+    value = param.Number(default=1)
+
+    @param.output(param.Number)
+    async def inverse(self):
+        yield self.value
+        yield 1 / self.value
+
+    def __panel__(self):
+        return str(self.value)
+
+
+@register(
+    page=False,
+    component=True,
+    requires=["value"],
+    provides=["echo"],
+    handles_failures=["value"],
+)
+class Tolerant(Viewer):
+    """A Viewer that takes failures on an untyped input and forwards its value."""
+
+    value = param.Parameter(default=None)
+
+    @param.output(param.Parameter)
+    @param.depends("value")
+    def echo(self):
+        return self.value
+
+    def __panel__(self):
+        return str(self.value)
+
+
+FAILING_COMPONENTS = {
+    "Demo/inverse": Inverse,
+    "Demo/async_inverse": AsyncInverse,
+    "Demo/gen_inverse": GenInverse,
+    "Demo/tolerant": Tolerant,
+    "Demo/list": ticker_list,
+}
+
+
+def _overlay_text(view):
+    """The message of a tile's failure overlay and whether it is showing."""
+    overlay = next(obj for obj in view.select(pn.Column) if "flowdash-failure" in obj.css_classes)
+    (message,) = overlay.select(pmui.Typography)
+    return message.object, overlay.visible
+
+
+def _edge_style(editor, edge_id):
+    edge = next(e for e in editor._flow.edges if e["id"] == edge_id)
+    return edge.get("style")
+
+
+class TestFailurePropagation:
+    @pytest.fixture
+    def editor(self):
+        return FlowDash(FAILING_COMPONENTS, notifications=False, propagate_failures=True)
+
+    def _chain(self, editor, source="Demo/inverse", target="Demo/inverse"):
+        src = editor.add_component(source)
+        dst = editor.add_component(target)
+        assert editor.connect(src, "inverse", dst, "value") is True
+        editor.graph.get_state(src).value = 4
+        return src, dst
+
+    async def test_default_is_off_and_adds_no_overlay(self):
+        editor = FlowDash({"Demo/inverse": Inverse}, notifications=False)
+        assert editor.propagate_failures is False
+        assert editor.graph.propagate_failures is False
+
+        editor.add_component("Demo/inverse")
+
+        assert isinstance(editor._tile_objects[0], pn.pane.Markdown)
+
+    async def test_failing_output_reaches_downstream_and_logs_once(self, editor, caplog):
+        src, dst = self._chain(editor)
+        assert editor.graph.get_state(dst).value == 0.25
+
+        editor.graph.get_state(src).value = 0
+
+        assert isinstance(editor.graph.get_state(src).inverse, param.ReactiveError)
+        failed = editor.graph.get_failures(dst).failed
+        assert failed["value"].text == "ZeroDivisionError: division by zero"
+        assert caplog.text.count("Output 'inverse' failed") == 1
+
+    async def test_typed_input_keeps_its_last_value(self, editor):
+        src, dst = self._chain(editor)
+
+        editor.graph.get_state(src).value = 0
+
+        assert editor.graph.get_state(dst).value == 0.25
+        assert editor._tile_items and dst in editor.graph.node_ids
+
+    async def test_recovery_replaces_the_failure(self, editor):
+        src, dst = self._chain(editor)
+        editor.graph.get_state(src).value = 0
+
+        editor.graph.get_state(src).value = 2
+
+        assert editor.graph.get_state(src).inverse == 0.5
+        assert editor.graph.get_state(dst).value == 0.5
+        assert editor.graph.get_failures(dst).failed == {}
+
+    async def test_async_output_failure_reaches_downstream(self, editor):
+        src, dst = self._chain(editor, "Demo/async_inverse")
+        await asyncio.sleep(0.05)
+        assert editor.graph.get_state(dst).value == 0.25
+
+        editor.graph.get_state(src).value = 0
+        await asyncio.sleep(0.05)
+
+        assert "ZeroDivisionError" in editor.graph.get_failures(dst).failed["value"].text
+        assert editor.graph.get_state(dst).value == 0.25
+
+        editor.graph.get_state(src).value = 5
+        await asyncio.sleep(0.05)
+        assert editor.graph.get_state(dst).value == 0.2
+        assert editor.graph.get_failures(dst).failed == {}
+
+    async def test_async_generator_failure_reaches_downstream(self, editor):
+        src, dst = self._chain(editor, "Demo/gen_inverse")
+        await asyncio.sleep(0.05)
+
+        editor.graph.get_state(src).value = 0
+        await asyncio.sleep(0.05)
+
+        assert "ZeroDivisionError" in editor.graph.get_failures(dst).failed["value"].text
+
+        editor.graph.get_state(src).value = 4
+        await asyncio.sleep(0.05)
+        assert editor.graph.get_failures(dst).failed == {}
+
+    async def test_opted_in_component_receives_the_failure(self, editor):
+        src, dst = self._chain(editor, target="Demo/tolerant")
+
+        editor.graph.get_state(src).value = 0
+
+        received = editor.graph.get_state(dst).value
+        assert isinstance(received, param.ReactiveError)
+        assert editor.graph.get_failures(dst).failed == {}
+
+    async def test_opted_in_component_passes_the_failure_on_through_its_outputs(self, editor):
+        src, dst = self._chain(editor, target="Demo/tolerant")
+        after = editor.add_component("Demo/inverse")
+        assert editor.connect(dst, "echo", after, "value") is True
+        assert editor.graph.get_state(after).value == 0.25
+
+        editor.graph.get_state(src).value = 0
+
+        assert editor.graph.get_failures(after).failed["value"].source_id == dst
+
+    async def test_tile_is_covered_by_a_message_naming_the_failure(self, editor):
+        src, _ = self._chain(editor)
+        view = editor._tile_objects[1]
+        assert _overlay_text(view) == ("", False)
+
+        editor.graph.get_state(src).value = 0
+
+        text, visible = _overlay_text(view)
+        assert visible
+        assert text == (
+            "Input 'value' is stale: 'inverse' of 'inverse' failed "
+            "(ZeroDivisionError: division by zero)"
+        )
+
+        editor.graph.get_state(src).value = 1
+        assert _overlay_text(view) == ("", False)
+
+    async def test_opted_in_tile_has_no_message(self, editor):
+        src, _ = self._chain(editor, target="Demo/tolerant")
+        view = editor._tile_objects[1]
+
+        editor.graph.get_state(src).value = 0
+
+        assert _overlay_text(view)[1] is False
+
+    async def test_failed_edge_and_node_are_marked_on_the_canvas(self, editor):
+        src, dst = self._chain(editor)
+        (edge_id,) = editor._edge_id_map
+        assert _edge_style(editor, edge_id) is None
+
+        editor.graph.get_state(src).value = 0
+
+        assert "danger" in _edge_style(editor, edge_id)["stroke"]
+        node = next(n for n in editor._flow.nodes if n["id"] == dst)
+        assert "danger" in node["style"]["borderColor"]
+
+        editor.graph.get_state(src).value = 1
+        assert _edge_style(editor, edge_id) is None
+        node = next(n for n in editor._flow.nodes if n["id"] == dst)
+        assert not node.get("style")
+
+    async def test_edge_wired_while_failed_is_marked_at_once(self, editor):
+        src = editor.add_component("Demo/inverse")
+        dst = editor.add_component("Demo/inverse")
+        editor.graph.get_state(src).value = 0
+
+        editor.connect(src, "inverse", dst, "value")
+
+        (edge_id,) = editor._edge_id_map
+        assert "danger" in _edge_style(editor, edge_id)["stroke"]
+
+    async def test_transformed_failed_edge_stays_dashed(self, editor):
+        src, dst = self._chain(editor)
+        steps = [{"op": "round", "digits": 2}]
+        assert editor.set_edge_transform(src, "inverse", dst, "value", steps) is True
+        (edge_id,) = editor._edge_id_map
+
+        editor.graph.get_state(src).value = 0
+
+        style = _edge_style(editor, edge_id)
+        assert "danger" in style["stroke"]
+        assert style["strokeDasharray"] == "6 3"
+
+    async def test_failing_edge_transform_reaches_the_target(self, editor):
+        src = editor.add_component("Demo/inverse")
+        dst = editor.add_component("Demo/inverse")
+        editor.graph.get_state(src).value = 4
+        assert editor.connect(src, "inverse", dst, "value", [{"op": "round", "digits": 1}]) is True
+        assert editor.graph.get_state(dst).value == 0.2
+
+        editor.graph.get_state(src).inverse = "text"
+
+        assert "StepInputError" in editor.graph.get_failures(dst).failed["value"].text
+        assert editor.graph.get_state(dst).value == 0.2
+
+    async def test_list_input_fails_as_a_whole(self, editor):
+        a = editor.add_component("Demo/inverse")
+        b = editor.add_component("Demo/inverse")
+        lst = editor.add_component("Demo/list")
+        editor.connect(a, "inverse", lst, "tickers")
+        editor.connect(b, "inverse", lst, "tickers")
+        assert editor.graph.get_state(lst).tickers == [1, 1]
+
+        editor.graph.get_state(b).value = 0
+
+        assert editor.graph.get_state(lst).tickers == [1, 1]
+        assert editor.graph.get_failures(lst).failed["tickers"].source_id == b
+
+    async def test_failed_handle_shows_the_failure_in_the_value_popup(self, editor):
+        src, dst = self._chain(editor)
+        editor.graph.get_state(src).value = 0
+        shown = []
+        editor._show_inspection = lambda key, title, value, position, flow: shown.append(value)
+
+        editor._on_handle_clicked(
+            {
+                "node_id": dst,
+                "handle_id": "value",
+                "direction": "input",
+                "position": {"x": 0, "y": 0},
+            },
+            editor._flow,
+        )
+
+        assert isinstance(shown[0], param.ReactiveError)
+        assert isinstance(editor._value_preview(shown[0]), pmui.Alert)
+
+    async def test_unknown_handles_failures_input_is_rejected(self):
+        @register(page=False, component=True, handles_failures=["nope"])
+        class Typo(Viewer):
+            value = param.Parameter()
+
+        with pytest.raises(ValueError, match="unknown inputs: nope"):
+            FlowDash({"Demo/typo": Typo}, notifications=False)
+
+
 def _write_project(tmp_path, section="Analytics"):
     """Write a one-component project.
 
