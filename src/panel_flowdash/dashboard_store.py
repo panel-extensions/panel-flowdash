@@ -97,6 +97,8 @@ class DashboardModel:
     # Container width the tile layout was authored at; narrower screens derive from it.
     reference_width: int | None = None
     permission: Permission = field(default_factory=Permission)
+    # Dashboard-wide values, keyed by the parameter names of the editor's settings object.
+    settings: dict[str, Any] = field(default_factory=dict)
 
     @property
     def owner(self) -> str:
@@ -116,6 +118,7 @@ class DashboardModel:
             "responsive_layouts": self.responsive_layouts,
             "reference_width": self.reference_width,
             "permission": self.permission.to_dict(),
+            "settings": copy.deepcopy(self.settings),
         }
 
     @classmethod
@@ -132,6 +135,7 @@ class DashboardModel:
             responsive_layouts=data.get("responsive_layouts", {}),
             reference_width=data.get("reference_width"),
             permission=Permission.from_dict(data.get("permission")),
+            settings=copy.deepcopy(dict(data.get("settings") or {})),
         )
 
 
@@ -363,6 +367,7 @@ class DashboardStore(BaseDashboardStore):
                 ("responsive_layouts_json", "'{}'"),
                 ("permission_json", "'{}'"),
                 ("reference_width_json", "'null'"),
+                ("settings_json", "'{}'"),
             ]
             for col, default in migrations:
                 try:
@@ -459,11 +464,12 @@ class DashboardStore(BaseDashboardStore):
         responsive_layouts_json = json.dumps(dashboard.responsive_layouts)
         reference_width_json = json.dumps(dashboard.reference_width)
         permission_json = json.dumps(dashboard.permission.to_dict())
+        settings_json = json.dumps(dashboard.settings)
         with self._get_conn() as conn:
             conn.execute(
                 """
-                INSERT INTO dashboards (dashboard_id, user_id, title, version, items_json, edges_json, tile_layout_json, breakpoints_json, responsive_layouts_json, reference_width_json, permission_json, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                INSERT INTO dashboards (dashboard_id, user_id, title, version, items_json, edges_json, tile_layout_json, breakpoints_json, responsive_layouts_json, reference_width_json, permission_json, settings_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(dashboard_id) DO UPDATE SET
                     title = excluded.title,
                     version = excluded.version,
@@ -474,6 +480,7 @@ class DashboardStore(BaseDashboardStore):
                     responsive_layouts_json = excluded.responsive_layouts_json,
                     reference_width_json = excluded.reference_width_json,
                     permission_json = excluded.permission_json,
+                    settings_json = excluded.settings_json,
                     updated_at = datetime('now')
                 """,
                 (
@@ -488,6 +495,7 @@ class DashboardStore(BaseDashboardStore):
                     responsive_layouts_json,
                     reference_width_json,
                     permission_json,
+                    settings_json,
                 ),
             )
 
@@ -518,6 +526,7 @@ class DashboardStore(BaseDashboardStore):
         )
         permission_raw = row["permission_json"] if "permission_json" in keys else "{}"
         reference_raw = row["reference_width_json"] if "reference_width_json" in keys else "null"
+        settings_raw = row["settings_json"] if "settings_json" in keys else "{}"
         edges = json.loads(edges_raw)
         tile_layout = json.loads(tile_layout_raw)
         breakpoints = json.loads(breakpoints_raw)
@@ -535,4 +544,5 @@ class DashboardStore(BaseDashboardStore):
             responsive_layouts=responsive_layouts,
             reference_width=json.loads(reference_raw),
             permission=permission,
+            settings=json.loads(settings_raw),
         )

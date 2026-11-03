@@ -120,6 +120,11 @@ The `tile_layout` list stores the grid positions and sizes for the rendered
 dashboard view (separate from the node editor canvas positions in items).
 `reference_width`, `breakpoints` and `responsive_layouts` store how that layout adapts to other screen sizes; see [Layout & sizing](layout-and-sizing.md#responsive-layouts).
 
+`settings` is a dictionary of dashboard-wide values, such as `{"refresh_period": 30}`. Every
+store persists it, and a dashboard saved before settings existed loads with an empty
+dictionary. An existing SQLite database gains the column the first time it is opened. See
+[Dashboard settings and refresh](dashboard-settings.md).
+
 ---
 
 ## CRUD operations

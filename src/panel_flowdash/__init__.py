@@ -29,10 +29,11 @@ from panel_flowdash.dashboard_store import (
     MemoryDashboardStore,
 )
 from panel_flowdash.dataflow_engine import DataflowGraph, build_node_state_class
-from panel_flowdash.editor import FlowDash
+from panel_flowdash.editor import FlowDash, current_dashboard
 from panel_flowdash.json_store import JSONFolderDashboardStore
 from panel_flowdash.registry import PanelAppMetadata, RegistryEntry, panel_app, register
 from panel_flowdash.session_state import build_session_state_class, check_requirements
+from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transforms import Transform
 
 try:
@@ -49,6 +50,7 @@ __all__: list[str] = [
     "DashboardEdge",
     "DashboardItem",
     "DashboardModel",
+    "DashboardSettings",
     "DashboardStore",
     "DataflowGraph",
     "FlowDash",
@@ -68,6 +70,7 @@ __all__: list[str] = [
     "build_session_state_class",
     "can_administer",
     "check_requirements",
+    "current_dashboard",
     "is_authorized",
     "normalize_components",
     "panel_app",

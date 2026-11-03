@@ -91,6 +91,32 @@ class TestFiles:
         assert store.load_dashboard("u", "d1").title == "T"
 
 
+class TestSettings:
+    def test_file_without_the_key_loads_empty_settings(self, tmp_path):
+        """Files written before settings existed, or by hand, still load."""
+        data = DashboardModel(dashboard_id="old", user_id="u", title="Old").to_dict()
+        del data["settings"]
+        (tmp_path / "old.json").write_text(json.dumps(data))
+        assert JSONFolderDashboardStore(tmp_path).load_dashboard("u", "old").settings == {}
+
+    def test_settings_are_readable_in_the_file(self, tmp_path):
+        store = JSONFolderDashboardStore(tmp_path)
+        store.save_dashboard(
+            DashboardModel(
+                dashboard_id="d1", user_id="u", title="D", settings={"refresh_period": 30}
+            )
+        )
+        assert json.loads((tmp_path / "d1.json").read_text())["settings"] == {"refresh_period": 30}
+
+    def test_settings_that_are_not_a_mapping_skip_the_file(self, tmp_path, caplog):
+        data = DashboardModel(dashboard_id="bad", user_id="u", title="Bad").to_dict()
+        data["settings"] = "oops"
+        (tmp_path / "bad.json").write_text(json.dumps(data))
+        with caplog.at_level(logging.WARNING):
+            assert JSONFolderDashboardStore(tmp_path).list_dashboards("u") == []
+        assert "malformed" in caplog.text
+
+
 class TestIds:
     def test_create_derives_the_id_from_the_title(self, tmp_path):
         store = JSONFolderDashboardStore(tmp_path)
