@@ -38,6 +38,7 @@ def app(config):
 | `tags` | `list[str]` | `[]` | Tags for filtering in the component palette. |
 | `provides` | `list` | `[]` | Output port declarations. See [Define ports](define-ports.md). |
 | `requires` | `list` | `[]` | Input port declarations. See [Define ports](define-ports.md). |
+| `placeholder` | `str` | `None` | Message a tile shows while a blocking input is unset, replacing "Waiting for ...". See [Define ports](define-ports.md#required-inputs). |
 | `default_size` | `dict` | `None` | Default tile size hint, e.g. `{"w": 4, "h": 3}`. See [Layout & sizing](layout-and-sizing.md). |
 | `min_size` | `dict` | `None` | Minimum tile size hint. |
 | `max_size` | `dict` | `None` | Maximum tile size hint. |

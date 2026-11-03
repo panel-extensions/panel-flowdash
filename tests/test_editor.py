@@ -1433,6 +1433,210 @@ class TestParameterOutputs:
         assert editor.graph.get_state(target).text == ""
 
 
+@register(page=False, component=True, provides=[{"key": "company"}])
+def company_source(config):
+    return "source"
+
+
+@register(
+    page=False,
+    component=True,
+    requires=[
+        {"key": "company", "label": "Company"},
+        {"key": "region", "label": "Region"},
+        {"key": "note", "required": False},
+        {"key": "hint", "blocking": False},
+    ],
+)
+def report_function(config):
+    return pn.pane.Markdown("function report")
+
+
+@register(page=False, component=True, requires=[{"key": "company", "fallback": "ACME"}])
+def report_with_fallback(config):
+    return "fallback report"
+
+
+class RequiredReport(Viewer):
+    """A Viewer that cannot render without a company."""
+
+    instances: ClassVar[list] = []
+
+    company = param.String(
+        default=None, allow_None=True, metadata={"flowdash": {"required": True}}
+    )
+    notes = param.String(default="")
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        RequiredReport.instances.append(self)
+
+    def __panel__(self):
+        return pn.pane.Markdown(pn.bind("report for {}".format, self.param.company))
+
+
+@register(page=False, component=True, placeholder="Pick a company to start")
+class MessageReport(RequiredReport):
+    pass
+
+
+REPORT = "Demo/report"
+
+
+class TestRequiredInputPlaceholder:
+    @pytest.fixture
+    def editor(self):
+        RequiredReport.instances.clear()
+        return FlowDash(
+            {
+                "Demo/source": company_source,
+                "Demo/viewer": RequiredReport,
+                "Demo/message": MessageReport,
+                "Demo/function": report_function,
+                "Demo/fallback": report_with_fallback,
+                "Demo/receiver": Receiver,
+            },
+            notifications=False,
+            include_builtin_components=False,
+        )
+
+    @staticmethod
+    def _shown(view):
+        placeholder, body = view
+        return placeholder.visible, body.visible
+
+    @pytest.mark.parametrize("component", ["Demo/viewer", "Demo/function"])
+    async def test_placeholder_swaps_with_view_as_input_changes(self, editor, component):
+        source = editor.add_component("Demo/source")
+        target = editor.add_component(component)
+        view = editor._tile_objects[1]
+        assert editor.connect(source, "company", target, "company") is True
+        state = editor.graph.get_state(source)
+        if component == "Demo/function":
+            editor.graph.get_state(target).region = "EU"
+
+        assert self._shown(view) == (True, False)
+
+        state.company = "ACME"
+        assert self._shown(view) == (False, True)
+
+        state.company = None
+        assert self._shown(view) == (True, False)
+
+    async def test_disconnecting_returns_the_placeholder(self, editor):
+        source = editor.add_component("Demo/source")
+        target = editor.add_component("Demo/viewer")
+        view = editor._tile_objects[1]
+        editor.connect(source, "company", target, "company")
+        editor.graph.get_state(source).company = "ACME"
+        assert self._shown(view) == (False, True)
+
+        editor.disconnect(source, "company", target, "company")
+
+        assert self._shown(view) == (True, False)
+
+    async def test_setting_an_unconnected_input_directly_shows_the_view(self, editor):
+        target = editor.add_component("Demo/viewer")
+        view = editor._tile_objects[0]
+        assert self._shown(view) == (True, False)
+
+        editor.graph.get_state(target).company = "ACME"
+
+        assert self._shown(view) == (False, True)
+
+    async def test_default_message_names_only_the_missing_inputs(self, editor):
+        target = editor.add_component("Demo/function")
+        view = editor._tile_objects[0]
+        placeholder, _ = view
+        assert placeholder.object == "Waiting for Company, Region"
+
+        editor.graph.get_state(target).company = "ACME"
+
+        assert placeholder.object == "Waiting for Region"
+
+    async def test_viewer_message_uses_the_param_label(self, editor):
+        editor.add_component("Demo/viewer")
+        placeholder, _ = editor._tile_objects[0]
+        assert placeholder.object == "Waiting for Company"
+
+    async def test_registered_message_replaces_the_default(self, editor):
+        target = editor.add_component("Demo/message")
+        view = editor._tile_objects[0]
+        placeholder, _ = view
+        assert placeholder.object == "Pick a company to start"
+
+        editor.graph.get_state(target).company = "ACME"
+        assert self._shown(view) == (False, True)
+        assert placeholder.object == "Pick a company to start"
+
+    async def test_component_is_instantiated_while_blocked(self, editor):
+        editor.add_component("Demo/viewer")
+        assert len(RequiredReport.instances) == 1
+
+    async def test_view_is_not_rebuilt_when_toggling(self, editor):
+        source = editor.add_component("Demo/source")
+        target = editor.add_component("Demo/viewer")
+        editor.connect(source, "company", target, "company")
+        view = editor._tile_objects[1]
+        _, body = view
+        (inner,) = body
+        root = view.get_root()
+        model = inner._models[root.ref["id"]][0]
+        state = editor.graph.get_state(source)
+
+        for value in ("ACME", None, "Globex", None):
+            state.company = value
+
+        assert editor._tile_objects[1] is view
+        assert list(body) == [inner]
+        assert inner._models[root.ref["id"]][0] is model
+        assert len(RequiredReport.instances) == 1
+
+    @pytest.mark.parametrize(
+        "component", ["Demo/receiver", "Demo/source"], ids=["optional_param", "no_inputs"]
+    )
+    async def test_components_without_blocking_inputs_are_not_gated(self, editor, component):
+        editor.add_component(component)
+        view = editor._tile_objects[0]
+        assert not isinstance(view, pn.Column)
+
+    async def test_required_but_non_blocking_inputs_do_not_gate(self, editor):
+        editor.add_component("Demo/function")
+        placeholder, _ = editor._tile_objects[0]
+        assert placeholder.object == "Waiting for Company, Region"
+
+    async def test_fallback_satisfies_a_blocking_input(self, editor):
+        target = editor.add_component("Demo/fallback")
+        view = editor._tile_objects[0]
+        assert editor.graph.get_state(target).company == "ACME"
+        assert self._shown(view) == (False, True)
+
+    async def test_builtin_widgets_are_not_gated(self):
+        editor = FlowDash({}, notifications=False)
+        for component_id in BUILTIN_COMPONENTS:
+            editor.add_component(component_id)
+
+        assert not any(isinstance(view, pn.Column) for view in editor._tile_objects)
+
+    async def test_gated_view_reaches_the_tile_grid(self, editor):
+        editor.add_component("Demo/viewer")
+        editor.mode = "dashboard"
+        assert editor._tile_grid[0] is editor._tile_objects[0]
+
+    async def test_saved_dashboard_loads_gated(self, editor):
+        source = editor.add_component("Demo/source")
+        target = editor.add_component("Demo/viewer")
+        editor.connect(source, "company", target, "company")
+        model = editor.to_model("Gated")
+
+        editor.load_model(model)
+
+        view = editor._tile_objects[1]
+        assert self._shown(view) == (True, False)
+        editor.graph.get_state(source).company = "ACME"
+        assert self._shown(view) == (False, True)
+
+
 class TestOutputFailures:
     async def test_failing_output_keeps_last_value_downstream(self, caplog):
         editor = FlowDash({"Demo/inverse": Inverse}, notifications=False)
