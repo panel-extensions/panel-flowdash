@@ -337,3 +337,80 @@ def test_edge_transform_editor_applies_changes(page):
     page.get_by_text("max", exact=True).click()
     wait_until(lambda: editor.graph.get_state(dst).total == 30, page)
     page.locator(".react-flow__edge-text").filter(has_text="max").wait_for()
+
+
+@register(page=False, component=True, title="Gauge")
+class Gauge(Viewer):
+    reading = param.Integer(default=7)
+
+    @param.output(param.Integer)
+    @param.depends("reading")
+    def doubled(self):
+        return self.reading * 2
+
+    def __flowdash_inspect__(self, port):
+        return f"{port} is reading * 2"
+
+    def __panel__(self):
+        return "gauge tile"
+
+
+def test_inspect_button_opens_dialog_with_current_value(page):
+    editor = FlowDash({"Test/gauge": Gauge}, notifications=False, inspect_outputs=True)
+    instance_id = editor.add_component("Test/gauge")
+    editor.editable = False
+    serve_component(page, editor)
+
+    page.get_by_role("button", name="Inspect outputs").click()
+
+    dialog = page.get_by_role("dialog")
+    dialog.get_by_text("Gauge", exact=True).wait_for()
+    dialog.get_by_text("doubled is reading * 2").wait_for()
+    assert dialog.get_by_text("14").is_visible()
+
+    editor.graph.get_state(instance_id).reading = 8
+    page.keyboard.press("Escape")
+    page.get_by_role("dialog").wait_for(state="hidden")
+    page.get_by_role("button", name="Inspect outputs").click()
+    page.get_by_role("dialog").get_by_text("16").wait_for()
+
+
+def test_inspect_button_is_absent_by_default(page):
+    editor = FlowDash({"Test/gauge": Gauge}, notifications=False)
+    editor.add_component("Test/gauge")
+    editor.editable = False
+    serve_component(page, editor)
+
+    page.get_by_text("gauge tile").wait_for()
+    assert page.get_by_role("button", name="Inspect outputs").count() == 0
+
+
+# The app re-renders the editor as it loads the dashboard, so the click reaches
+# Bokeh as a model it already knows; see `test_edge_transform_editor_applies_changes`.
+@pytest.mark.filterwarnings("ignore:reference already known")
+def test_inspect_button_in_app_dashboard_page(page):
+    from panel_flowdash.app import FlowDashApp
+    from panel_flowdash.component_library import normalize_components
+    from panel_flowdash.dashboard_store import DashboardItem, MemoryDashboardStore
+
+    store = MemoryDashboardStore()
+
+    # Built per session, since the app loads its page when the session does.
+    def app():
+        app = FlowDashApp(
+            registry=normalize_components({"Test/gauge": Gauge}),
+            store=store,
+            home_dashboard="Plant",
+            inspect_outputs=True,
+            notifications=False,
+        )
+        model = store.create_dashboard(app._user_id, "Plant")
+        model.items = [DashboardItem(instance_id="g1", component_id="Test/gauge", x=0, y=0)]
+        store.save_dashboard(model)
+        return app
+
+    serve_component(page, app)
+
+    page.get_by_role("button", name="Inspect outputs").click()
+
+    page.get_by_role("dialog").get_by_text("14").wait_for()
