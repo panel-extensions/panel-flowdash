@@ -45,6 +45,8 @@ dependencies = [
     "panel-material-ui >=0.16.0",
     "panel-reactflow >=0.5.1",
     "panel-tiles >=0.4.0",
+    # Parameter.metadata, read for output port declarations, arrived in 2.3.
+    "param >=2.3.0",
 ]
 
 [project.scripts]
