@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import importlib
 import pathlib
+import weakref
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -55,7 +56,10 @@ class PanelAppMetadata:
         """Extract metadata from an app object."""
         metadata = getattr(app, "__panel_app_metadata__", None)
         if metadata is None:
-            metadata = _APP_METADATA_BY_ID.get(id(app))
+            ref, metadata = _APP_METADATA_BY_ID.get(id(app), (None, None))
+            target = ref() if isinstance(ref, weakref.ref) else ref
+            if target is not app:
+                metadata = None
         if metadata is None:
             return cls()
         if isinstance(metadata, cls):
@@ -65,7 +69,9 @@ class PanelAppMetadata:
         raise TypeError("Unsupported panel app metadata type.")
 
 
-_APP_METADATA_BY_ID: dict[int, PanelAppMetadata] = {}
+# Keyed by id() for apps that refuse the attribute; the reference lets a lookup
+# reject an id that a collected app has passed on to a new object.
+_APP_METADATA_BY_ID: dict[int, tuple[Any, PanelAppMetadata]] = {}
 
 
 def register(
@@ -144,7 +150,11 @@ def register(
     )
 
     def _decorator(app):
-        _APP_METADATA_BY_ID[id(app)] = metadata
+        try:
+            ref = weakref.ref(app)
+        except TypeError:
+            ref = app
+        _APP_METADATA_BY_ID[id(app)] = (ref, metadata)
         try:
             app.__panel_app_metadata__ = metadata
         except Exception:
