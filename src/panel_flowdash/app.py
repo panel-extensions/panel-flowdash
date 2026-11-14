@@ -216,6 +216,8 @@ class FlowDashApp(Viewer):
 
     _main_task: asyncio.Task | None = None
 
+    _RESERVED_EDITOR_OPTIONS = ("components", "store", "user")
+
     def __init__(self, registry: dict[str, RegistryEntry] | None = None, **params):
         super().__init__(**params)
 
@@ -464,8 +466,6 @@ class FlowDashApp(Viewer):
                 styles={"color": "black"},
             )
 
-    _RESERVED_EDITOR_OPTIONS = ("components", "store", "user")
-
     def _build_editor(self) -> FlowDash:
         """Construct the embedded editor and wire it into the app shell."""
         options = dict(self.editor_options)
@@ -476,7 +476,7 @@ class FlowDashApp(Viewer):
                 "the app supplies these to the editor. Configure the registry, "
                 "store and identity on FlowDashApp itself."
             )
-        toolbar_extra = [self._share_button, *options.pop("toolbar_extra", [])]
+        toolbar_extra = [self._share_button, *(options.pop("toolbar_extra", None) or [])]
         editor = self.editor_class(
             components=self._registry,
             store=self.store,

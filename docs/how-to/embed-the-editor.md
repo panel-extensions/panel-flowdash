@@ -250,10 +250,22 @@ are always supplied by the app and raise a `ValueError` if given here, while
 app's routing and permissions. Both options are read once at construction, so
 changing them afterwards has no effect.
 
+Set `notifications` and `include_builtin_components` on `FlowDashApp` rather
+than in `editor_options`: the app reads its own values too, and overriding them
+only on the editor leaves the two out of sync. When the app is served through
+`build_routes`, every session receives the same `editor_options` dict, so any
+Panel object in it (for example a `toolbar_extra` button) would be shared by
+all sessions; create such objects in an `editor_class` subclass instead, as
+shown below.
+
 To substitute your own editor, subclass `FlowDash` and pass it as
 `editor_class`; `editor_options` is then passed to that class:
 
 ```python
+from panel_flowdash import FlowDash
+from panel_flowdash.app import FlowDashApp
+
+
 class MyFlowDash(FlowDash):
     ...
 
