@@ -18,6 +18,7 @@ import pathlib
 import re
 import typing as t
 import uuid
+import weakref
 from contextlib import contextmanager
 from functools import partial
 
@@ -36,6 +37,7 @@ from panel_flowdash.dashboard_store import (
     DashboardItem,
     DashboardModel,
     DashboardStore,
+    DashboardStoreError,
 )
 from panel_flowdash.dataflow_engine import DataflowGraph
 from panel_flowdash.registry import RegistryEntry
@@ -50,6 +52,11 @@ if t.TYPE_CHECKING:
     from panel_flowdash.component_spec import ComponentSpec, InputPort, OutputPort
 
 logger = logging.getLogger("panel_flowdash")
+
+
+class _ReadOnlyEditorError(DashboardStoreError, RuntimeError):
+    pass
+
 
 _EMPTY_GRID_CONFIG = {"breakpoints": [], "responsive_layouts": {}, "reference_width": None}
 
@@ -116,6 +123,12 @@ _TRANSFORMED_EDGE_STYLE = {
     "strokeDasharray": "6 3",
     "strokeWidth": 2,
 }
+
+
+def _dispose_on_session_end(editor_ref: weakref.ref[FlowDash], session_context):
+    editor = editor_ref()
+    if editor is not None:
+        editor._dispose_components()
 
 
 class FlowDash(Viewer):
@@ -295,6 +308,7 @@ class FlowDash(Viewer):
         self._inspection_key: tuple[str, str] | None = None
 
         self._dataflow_graph = DataflowGraph({}, on_error=self._on_wiring_error)
+        self._component_instances: dict[str, Viewer] = {}
         self._transform_editors: dict[str, TransformEditor] = {}
         self._load_component_extensions()
         self._palette = self._make_palette()
@@ -315,6 +329,64 @@ class FlowDash(Viewer):
         self._apply_mode_state()
         if dashboard is not None:
             self._init_dashboard(dashboard)
+
+        # Without a session, Panel would register the callback for every future
+        # session instead. An editor built inside a session is tied to it, so one
+        # shared from there (e.g. through ``pn.state.as_cached``) is disposed when
+        # that session ends. The weakref lets an app discard and rebuild editors
+        # within a session without keeping the old ones alive until it ends.
+        doc = pn.state.curdoc
+        if doc is not None and doc.session_context is not None:
+            pn.state.on_session_destroyed(partial(_dispose_on_session_end, weakref.ref(self)))
+
+    def dispose(self):
+        """Tear down the editor, disposing every placed component.
+
+        Empties the dataflow graph, the canvas and the tile grid, then calls the
+        ``dispose`` hook of each component that was placed, once. The editor is
+        left empty and consistent, so it can still be used afterwards.
+
+        An editor created inside a server session disposes its components
+        automatically when that session ends. In a notebook, under pyodide or
+        for an editor created outside a session, call this yourself.
+        """
+        self._reset_canvas()
+
+    def _dispose_components(self):
+        """Detach and dispose every placed component without touching the UI.
+
+        Used once the session's Document is already destroyed, when pushing
+        model updates would be pointless.
+        """
+        for node_id in list(self._dataflow_graph.node_ids):
+            self._dataflow_graph.remove_node(node_id)
+        for instance_id in list(self._component_instances):
+            self._dispose_component(instance_id)
+
+    def _dispose_component(self, instance_id: str):
+        """Call the ``dispose`` hook of the component placed as *instance_id*, if it has one.
+
+        Popping the instance first makes this a no-op on any later call, so a
+        component is disposed at most once however it leaves the editor.
+        """
+        instance = self._component_instances.pop(instance_id, None)
+        hook = getattr(instance, "dispose", None)
+        if not callable(hook):
+            return
+        try:
+            result = hook()
+        except Exception:
+            logger.exception("dispose() of component '%s' failed", instance_id)
+            return
+        if inspect.isawaitable(result):
+            pn.state.execute(partial(self._await_dispose, instance_id, result), schedule=True)
+
+    @staticmethod
+    async def _await_dispose(instance_id: str, awaitable):
+        try:
+            await awaitable
+        except Exception:
+            logger.exception("dispose() of component '%s' failed", instance_id)
 
     def _init_dashboard(self, dashboard):
         """Resolve the ``dashboard`` constructor argument to a loaded model."""
@@ -643,6 +715,7 @@ class FlowDash(Viewer):
             node_id = event.get("node_id", "") if isinstance(event, dict) else ""
             if node_id:
                 self._forget_node(node_id)
+                self._dispose_component(node_id)
                 self.dirty = True
                 self._rebuild_sidebar()
 
@@ -906,6 +979,8 @@ class FlowDash(Viewer):
         """Instantiate a Viewer and wire its params to the node_state."""
         spec = self._component_specs.get(entry.app_id)
         instance = viewer_cls()
+        self._dispose_component(node_state.name)
+        self._component_instances[node_state.name] = instance
 
         if config_state is not None:
             self._bind_config_to_viewer(instance, config_state)
@@ -1332,6 +1407,7 @@ class FlowDash(Viewer):
             view = self._instantiate_for_node(entry, node_state, config_state)
         except Exception:
             self._dataflow_graph.remove_node(instance_id)
+            self._dispose_component(instance_id)
             raise
 
         if position is None:
@@ -1392,6 +1468,7 @@ class FlowDash(Viewer):
         self._forget_node(instance_id)
         with self._muted_canvas():
             self._flow.remove_node(instance_id)
+        self._dispose_component(instance_id)
         self.dirty = True
         self._rebuild_sidebar()
 
@@ -1526,7 +1603,7 @@ class FlowDash(Viewer):
         self._notify("info", "Cleared all component tiles.", duration=3000)
 
     def _reset_canvas(self):
-        """Tear down all node/edge state and clear the ReactFlow canvas."""
+        """Tear down all node/edge state, clear the ReactFlow canvas and dispose the components."""
         for node_id in list(self._dataflow_graph.node_ids):
             self._dataflow_graph.remove_node(node_id)
         self._tile_items = []
@@ -1541,6 +1618,8 @@ class FlowDash(Viewer):
         if self._grid_populated:
             self._tile_grid[:] = []
         self._sync_toolbar_state()
+        for instance_id in list(self._component_instances):
+            self._dispose_component(instance_id)
 
     # ------------------------------------------------------------------
     # Persistence
@@ -1690,12 +1769,16 @@ class FlowDash(Viewer):
             model = DashboardModel(
                 dashboard_id=uuid.uuid4().hex[:12], user_id=self.user, title=title
             )
+        self._start_dashboard(model)
+        return model
+
+    def _start_dashboard(self, model: DashboardModel):
+        """Show an empty canvas for a newly created *model*."""
         self._reset_canvas()
         self._pending_tile_layout = []
         self._pending_grid_config = dict(_EMPTY_GRID_CONFIG)
         self.dashboard = model
         self.dirty = False
-        return model
 
     def save(self, title: str | None = None) -> DashboardModel:
         """Persist the current canvas and return the saved model.
@@ -1709,7 +1792,7 @@ class FlowDash(Viewer):
             If :attr:`read_only` is set.
         """
         if self.read_only:
-            raise RuntimeError("This dashboard is read-only.")
+            raise _ReadOnlyEditorError("This dashboard is read-only.")
         model = self.to_model(title=title)
         if self.store is not None:
             self.store.save_dashboard(model)
@@ -1901,16 +1984,21 @@ class FlowDash(Viewer):
         detail = f": {reasons[0]}" if reasons else ""
         self._notify("warning", f"Added '{title}' but could not connect it{detail}", duration=5000)
 
-    def _on_save_clicked(self):
+    def _on_save_clicked(self) -> bool:
         try:
             model = self.save()
-        except RuntimeError:
-            self._notify("error", "This dashboard is read-only.", duration=4000)
-        except Exception as exc:
+        except DashboardStoreError as exc:
+            logger.info("Store refused to save dashboard: %s", exc)
+            self._notify("error", str(exc), duration=5000)
+        except Exception:
             logger.exception("Failed to save dashboard")
-            self._notify("error", f"Save failed: {exc}", duration=5000)
+            self._notify(
+                "error", "Could not save the dashboard. The error has been logged.", duration=5000
+            )
         else:
             self._notify("success", f'Dashboard "{model.title}" saved.', duration=3000)
+            return True
+        return False
 
     def __panel__(self):
         """Render the editor."""

@@ -736,7 +736,7 @@ class TestDashboardActionDispatch:
         app._current_dashboard = app.store.create_dashboard(app._user_id, "Dirty")
         app._dirty = True
         saved = []
-        app._save_current_dashboard = lambda: saved.append(True)
+        app._save_current_dashboard = lambda: saved.append(True) or True
         app._load_page_layout = lambda: None
         _fire_action(app, "Edit", {"path": f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}"})
 

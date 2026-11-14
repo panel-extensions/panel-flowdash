@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import importlib
+import importlib.util
 import pathlib
 import weakref
 from collections.abc import Callable
@@ -379,13 +380,51 @@ def _extract_register_kwargs(source: str) -> dict[str, Any] | None:
     return None
 
 
-def build_registry(project_dir: Path) -> dict[str, RegistryEntry]:
+class PackageResolutionError(ValueError):
+    """The package passed to ``build_registry`` does not resolve to the project directory."""
+
+
+def _check_package(package: str, project_dir: Path) -> None:
+    """Raise unless importing *package* resolves to *project_dir*.
+
+    ``find_spec`` on a dotted name imports its parent packages, so validating
+    ``a.b`` executes ``a/__init__.py``.
+    """
+    try:
+        spec = importlib.util.find_spec(package)
+    except (ImportError, ValueError) as exc:
+        raise PackageResolutionError(f"Cannot resolve package '{package}': {exc}") from exc
+    if spec is None or spec.submodule_search_locations is None:
+        raise PackageResolutionError(
+            f"Package '{package}' is not importable as a package. Install it or put its "
+            f"parent directory on sys.path so that it resolves to '{project_dir}'."
+        )
+    locations = [Path(location).resolve() for location in spec.submodule_search_locations]
+    if project_dir.resolve() not in locations:
+        found = ", ".join(f"'{location}'" for location in locations)
+        raise PackageResolutionError(
+            f"Package '{package}' resolves to {found}, not to the project directory "
+            f"'{project_dir.resolve()}'."
+        )
+
+
+def build_registry(project_dir: Path, *, package: str | None = None) -> dict[str, RegistryEntry]:
     """Scan *project_dir* for page/component modules without importing them.
 
     Reads each ``.py`` file with the AST to extract ``@register`` metadata.
     Modules are **not** imported at this stage; each ``RegistryEntry.app`` is
     ``None`` until ``RegistryEntry.load()`` is called.
+
+    By default modules are named relative to *project_dir*
+    (``<Section>.<name>``), so the directory itself must be on ``sys.path``.
+    Pass ``package`` when *project_dir* is an importable package: modules are
+    then named ``<package>.<Section>.<name>``, so the project's own imports and
+    flowdash's lazy imports share one module object. Raises
+    ``PackageResolutionError`` (a ``ValueError``) if ``package`` does not
+    resolve to *project_dir*.
     """
+    if package is not None:
+        _check_package(package, project_dir)
     registry: dict[str, RegistryEntry] = {}
 
     for section_dir in sorted(project_dir.glob("*")):
@@ -430,7 +469,8 @@ def build_registry(project_dir: Path) -> dict[str, RegistryEntry]:
                 deny_groups=list(kwargs.get("deny_groups") or []),
             )
 
-            module_name = ".".join(module_path.relative_to(project_dir).with_suffix("").parts)
+            parts = module_path.relative_to(project_dir).with_suffix("").parts
+            module_name = ".".join((package, *parts) if package is not None else parts)
             app_id = f"{section}/{module_path.stem}"
             registry[app_id] = RegistryEntry(
                 app_id=app_id,
