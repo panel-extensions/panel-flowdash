@@ -229,3 +229,51 @@ Await them explicitly during startup instead:
 editor = FlowDash("my_project")
 pn.state.onload(editor.ensure_components_loaded_async)
 ```
+
+---
+
+## Configuring the editor inside FlowDashApp
+
+`FlowDashApp` builds one `FlowDash` per session and reuses it for every
+dashboard. Pass any `FlowDash` parameter to it through `editor_options`, the
+editor counterpart of `page_options`:
+
+```python
+from panel_flowdash.app import FlowDashApp
+
+app = FlowDashApp(
+    project_dir="my_project",
+    editor_options={"value_repr": summarize, "popup_trigger": "click"},
+)
+```
+
+Entries override the defaults the app derives from its own parameters, such as
+`breakpoints` and `notifications`. `toolbar_extra` items are placed after the
+app's *Share* button rather than replacing it. `components`, `store` and `user`
+are always supplied by the app and raise a `ValueError` if given here, while
+`dashboard`, `editable` and `read_only` are accepted but then driven by the
+app's routing and permissions. Both options are read once at construction, so
+changing them afterwards has no effect.
+
+Set `notifications` and `include_builtin_components` on `FlowDashApp` rather
+than in `editor_options`: the app reads its own values too, and overriding them
+only on the editor leaves the two out of sync. When the app is served through
+`build_routes`, every session receives the same `editor_options` dict, so any
+Panel object in it (for example a `toolbar_extra` button) would be shared by
+all sessions; create such objects in an `editor_class` subclass instead, as
+shown below.
+
+To substitute your own editor, subclass `FlowDash` and pass it as
+`editor_class`; `editor_options` is then passed to that class:
+
+```python
+from panel_flowdash import FlowDash
+from panel_flowdash.app import FlowDashApp
+
+
+class MyFlowDash(FlowDash):
+    ...
+
+
+app = FlowDashApp(project_dir="my_project", editor_class=MyFlowDash)
+```
