@@ -283,6 +283,26 @@ class TestViewerWithDecoratorOverride:
         assert input_names == ["company"]
 
 
+class TestMetadataLookup:
+    async def test_reused_id_does_not_inherit_metadata(self, monkeypatch):
+        from panel_flowdash import registry
+
+        @register(component=True, provides=["picks"])
+        class Registered(Viewer):
+            def __panel__(self):
+                return "test"
+
+        class Bare(Viewer):
+            def __panel__(self):
+                return "test"
+
+        # Simulate CPython handing a collected class's id to a new class.
+        monkeypatch.setitem(
+            registry._APP_METADATA_BY_ID, id(Bare), registry._APP_METADATA_BY_ID[id(Registered)]
+        )
+        assert PanelAppMetadata.from_app(Bare) == PanelAppMetadata()
+
+
 class TestEmptyPorts:
     async def test_no_provides_no_requires(self):
         @register(component=True)
