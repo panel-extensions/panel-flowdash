@@ -786,8 +786,8 @@ class FlowDashApp(Viewer):
 
     def _on_launcher_dash_action(self, dashboard_id, title, event):
         value = event.new if hasattr(event, "new") else event
-        label = value.get("label") if isinstance(value, dict) else value
-        self._on_dashboard_action(label, dashboard_id, title)
+        action = self._action_key(value) if isinstance(value, dict) else value
+        self._on_dashboard_action(action, dashboard_id, title)
 
     def _apply_layout_config(self, content, route):
         """Run the ``configure_layout`` hook for the current navigation, if any."""
@@ -916,6 +916,11 @@ class FlowDashApp(Viewer):
         """Menu actions for a dashboard, gated by administration rights."""
         return self._ADMIN_DASHBOARD_ACTIONS if can_admin else self._VIEWER_DASHBOARD_ACTIONS
 
+    @staticmethod
+    def _action_key(action: dict) -> str:
+        """Return the key an action dispatches under, matching pmui's ``on_action`` lookup."""
+        return action.get("action", action["label"])
+
     def _dashboard_speed_dial_items(self, can_admin: bool) -> list[dict]:
         """SpeedDial items for a launcher dashboard card, gated by admin rights."""
         return [dict(action) for action in self._dashboard_actions(can_admin)]
@@ -953,27 +958,32 @@ class FlowDashApp(Viewer):
             return path[len(DASH_ROUTE_PREFIX) :].strip("/")
         return None
 
-    def _on_dashboard_action(self, label: str, dashboard_id: str, title: str):
-        """Run the dashboard action *label* on a dashboard.
+    def _on_dashboard_action(self, action: str, dashboard_id: str, title: str):
+        """Run the dashboard *action* on a dashboard.
 
         Every entry point (launcher card, nav drawer, header MenuBar) decodes its
-        event and calls this, so a subclass adding an action to
-        ``_ADMIN_DASHBOARD_ACTIONS`` or ``_VIEWER_DASHBOARD_ACTIONS`` handles it
-        by overriding this method and calling ``super()`` for the other labels.
+        event and calls this. A subclass adds an action by extending
+        ``_ADMIN_DASHBOARD_ACTIONS`` or ``_VIEWER_DASHBOARD_ACTIONS``, then
+        overrides this method to handle it and calls ``super()`` for the rest.
+        The nav drawer registers a handler for every action in
+        ``_dashboard_actions(True)`` and ``_dashboard_actions(False)``.
+
+        *action* is the key from :meth:`_action_key`: the action dict's
+        ``"action"`` entry if it has one, otherwise its ``"label"``. That is the
+        same lookup pmui's ``MenuList.on_action`` uses.
         """
-        if label == "Edit":
+        if action == "Edit":
             self._edit_dashboard(dashboard_id)
-        elif label == "Rename":
+        elif action == "Rename":
             self._open_rename_dialog(dashboard_id, title)
-        elif label == "Delete":
+        elif action == "Delete":
             self._open_delete_dialog(dashboard_id, title)
 
     def _edit_dashboard(self, dashboard_id: str):
         self._nav_drawer.open = False
         target_path = f"{DASH_ROUTE_PREFIX}{dashboard_id}"
         if self._dirty and self._current_dashboard is not None:
-            self._pending_navigation = target_path
-            self._unsaved_dialog.open = True
+            self._request_navigation(target_path, search="?edit=true")
             return
         if pn.state.location:
             pn.state.location.param.update(pathname=target_path, search="?edit=true")
@@ -1000,16 +1010,16 @@ class FlowDashApp(Viewer):
         self._nav_drawer.open = False
         self._dialog.open = True
 
-    def _on_nav_menu_action(self, label: str, item: dict):
+    def _on_nav_menu_action(self, action: str, item: dict):
         """Decode a nav drawer action into a dashboard id and dispatch it."""
         path = item.get("path", "")
         if path == "__new_dashboard__":
-            if label == "Create":
+            if action == "Create":
                 self._open_create_dialog()
             return
         dashboard_id = self._dashboard_id_from_path(path)
         if dashboard_id:
-            self._on_dashboard_action(label, dashboard_id, item.get("label", ""))
+            self._on_dashboard_action(action, dashboard_id, item.get("label", ""))
 
     @pn.io.hold()
     def _open_create_dialog(self):
@@ -1209,7 +1219,7 @@ class FlowDashApp(Viewer):
         self._notify("success", "Sharing updated.", duration=3000)
 
     def _build_unsaved_dialog(self):
-        self._pending_navigation: str | None = None
+        self._pending_navigation: tuple[str, str] | None = None
 
         discard_btn = pmui.Button(label="Discard", color="danger", variant="outlined")
         save_btn = pmui.Button(label="Save & Continue", color="primary")
@@ -1218,18 +1228,18 @@ class FlowDashApp(Viewer):
         def _on_discard(_event):
             self._unsaved_dialog.open = False
             self._dirty = False
-            path = self._pending_navigation
+            pending = self._pending_navigation
             self._pending_navigation = None
-            if path:
-                self._navigate_to(path)
+            if pending:
+                self._navigate_to(*pending)
 
         def _on_save(_event):
             self._unsaved_dialog.open = False
             self._save_current_dashboard()
-            path = self._pending_navigation
+            pending = self._pending_navigation
             self._pending_navigation = None
-            if path:
-                self._navigate_to(path)
+            if pending:
+                self._navigate_to(*pending)
 
         def _on_stay(_event):
             self._unsaved_dialog.open = False
@@ -1253,10 +1263,10 @@ class FlowDashApp(Viewer):
         )
         return self._unsaved_dialog
 
-    def _navigate_to(self, path: str):
+    def _navigate_to(self, path: str, search: str = ""):
         if pn.state.location is None:
             return
-        pn.state.location.param.update(pathname=path, search="")
+        pn.state.location.param.update(pathname=path, search=search)
         self._sync_menu_active(path)
         pn.state.execute(self._load_page_layout)
 
@@ -1272,12 +1282,12 @@ class FlowDashApp(Viewer):
                     return
         self._menu_list.active = None
 
-    def _request_navigation(self, path: str):
+    def _request_navigation(self, path: str, search: str = ""):
         if self._dirty and self._current_dashboard is not None:
-            self._pending_navigation = path
+            self._pending_navigation = (path, search)
             self._unsaved_dialog.open = True
         else:
-            self._navigate_to(path)
+            self._navigate_to(path, search)
 
     _SECTION_ICONS: t.ClassVar[dict[str, str]] = {
         "components": "widgets",
@@ -1370,9 +1380,10 @@ class FlowDashApp(Viewer):
         )
 
         actions = (*self._dashboard_actions(True), *self._dashboard_actions(False))
-        labels = dict.fromkeys([*(action["label"] for action in actions), "Create"])
-        for label in labels:
-            self._menu_list.on_action(label, partial(self._on_nav_menu_action, label))
+        # "Create" lives on the fixed "New Dashboard" row, not in the action tuples.
+        keys = dict.fromkeys([*(self._action_key(action) for action in actions), "Create"])
+        for key in keys:
+            self._menu_list.on_action(key, partial(self._on_nav_menu_action, key))
 
         return self._menu_list
 
@@ -1381,7 +1392,7 @@ class FlowDashApp(Viewer):
 
         MenuBar has no inline action buttons, so each dashboard is exposed as a
         submenu (Open plus the actions from :meth:`_dashboard_actions`) and the
-        action label is encoded via a ``nav_action`` key routed in
+        action key is encoded via a ``nav_action`` key routed in
         :meth:`_on_menu_bar_click`.
         """
         sections: dict[str, list[RegistryEntry]] = {}
@@ -1415,9 +1426,9 @@ class FlowDashApp(Viewer):
             for action in self._dashboard_actions(self._can_administer_dashboard(d.dashboard_id)):
                 entries.append(
                     {
-                        **action,
+                        **{key: action[key] for key in ("label", "icon") if key in action},
                         "path": path,
-                        "nav_action": action["label"],
+                        "nav_action": self._action_key(action),
                         "title": d.title,
                     }
                 )
