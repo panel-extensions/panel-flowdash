@@ -48,7 +48,7 @@ flowdash serve <directory> [options]
 | `--allow-websocket-origin` | all | Restrict allowed websocket origins. |
 | `--no-notifications` | off | Disable Panel notifications. |
 | `--static-dirs` | none | Serve extra static file directories, e.g. `--static-dirs assets=/path/to/assets`. Paths are resolved relative to the project directory. |
-| `--plugins` | none | Register extra Tornado routes from an importable module exposing a `ROUTES` list, e.g. `--plugins my_plugin` for `<project>/my_plugin.py`. Repeatable. |
+| `--plugins` | none | Register extra Tornado routes from an importable module exposing a `ROUTES` list, e.g. `--plugins my_plugin` for `<project>/my_plugin.py`. With `--package`, pass the dotted name, e.g. `--plugins catalogue.my_plugin`. Repeatable. |
 
 `flowdash serve` is built on Panel's `serve` command and inherits its full
 set of CLI options (OAuth, REST providers, session options, and more).
@@ -197,6 +197,17 @@ importable, or imports from somewhere else (a stale install, say), `flowdash
 serve` exits with an error naming both locations before starting the server.
 Each section directory needs an `__init__.py` unless you rely on namespace
 packages.
+
+Plugins that live in the package are passed by their dotted name too:
+
+```bash
+flowdash serve path/to/catalogue/ --package catalogue --plugins catalogue.my_plugin
+```
+
+A bare `--plugins my_plugin` still imports, because Panel looks for plugins in
+the working directory and `flowdash serve` changes into the project directory,
+but it becomes a separate top-level `my_plugin` module rather than the
+`catalogue.my_plugin` the rest of your code imports.
 
 Programmatically, pass the same option to `FlowDashApp(project_dir=...,
 package="catalogue")` or to `panel_flowdash.registry.build_registry(project_dir,

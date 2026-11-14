@@ -20,7 +20,7 @@ from panel.io.application import build_applications
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.auth import AuthConfig, make_authorize_callback
 from panel_flowdash.dashboard_store import BaseDashboardStore, DashboardStore
-from panel_flowdash.registry import build_registry
+from panel_flowdash.registry import PackageResolutionError, build_registry
 
 log = logging.getLogger(__name__)
 
@@ -163,7 +163,7 @@ class Serve(_PanelServe):
 
         try:
             registry = build_registry(project_dir, package=package)
-        except ValueError as exc:
+        except PackageResolutionError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)  # noqa: T201
             raise SystemExit(1) from None
 

@@ -1,12 +1,15 @@
 """Tests for the CLI and app builder."""
 
+import argparse
 import importlib
 import subprocess
 import sys
 import types
 from pathlib import Path
 
+import panel as pn
 import pytest
+from panel.command.serve import Serve as PanelServe
 
 from panel_flowdash.app import FlowDashApp, build_registry
 from panel_flowdash.command.serve import Serve, _load_project_init, _resolve_store
@@ -208,6 +211,38 @@ class TestBuildRegistryPackage:
 
         assert init_mod is importlib.import_module(package)
         assert isinstance(init_mod.store, MemoryDashboardStore)
+
+    def test_serve_invoke_uses_the_package(self, package_project, monkeypatch):
+        package, project_dir = package_project
+        with (project_dir / "__init__.py").open("a") as f:
+            f.write("\ndef configure_layout(app):\n    pass\n")
+
+        build_routes = FlowDashApp.build_routes
+        route_kwargs = {}
+
+        def record_build_routes(**kwargs):
+            route_kwargs.update(kwargs)
+            return build_routes(**kwargs)
+
+        monkeypatch.setattr(FlowDashApp, "build_routes", record_build_routes)
+        monkeypatch.setattr(PanelServe, "invoke", lambda self, args: None)
+        monkeypatch.setattr(pn.config, "authorize_callback", None)
+        monkeypatch.chdir(project_dir.parent)
+
+        parser = argparse.ArgumentParser()
+        serve = Serve(parser)
+        args = parser.parse_args([str(project_dir), "--package", package])
+        sys_path = list(sys.path)
+        serve.invoke(args)
+
+        assert sys.path == sys_path
+        assert route_kwargs["package"] == package
+        assert route_kwargs["registry"]["PkgSection/chart"].module_name == (
+            f"{package}.PkgSection.chart"
+        )
+        init_mod = importlib.import_module(package)
+        assert route_kwargs["store"] is init_mod.store
+        assert route_kwargs["configure_layout"] is init_mod.configure_layout
 
 
 class TestFlowDashApp:

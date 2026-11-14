@@ -370,21 +370,29 @@ def _extract_register_kwargs(source: str) -> dict[str, Any] | None:
     return None
 
 
+class PackageResolutionError(ValueError):
+    """The package passed to ``build_registry`` does not resolve to the project directory."""
+
+
 def _check_package(package: str, project_dir: Path) -> None:
-    """Raise unless importing *package* resolves to *project_dir*."""
+    """Raise unless importing *package* resolves to *project_dir*.
+
+    ``find_spec`` on a dotted name imports its parent packages, so validating
+    ``a.b`` executes ``a/__init__.py``.
+    """
     try:
         spec = importlib.util.find_spec(package)
     except (ImportError, ValueError) as exc:
-        raise ValueError(f"Cannot resolve package '{package}': {exc}") from exc
+        raise PackageResolutionError(f"Cannot resolve package '{package}': {exc}") from exc
     if spec is None or spec.submodule_search_locations is None:
-        raise ValueError(
+        raise PackageResolutionError(
             f"Package '{package}' is not importable as a package. Install it or put its "
             f"parent directory on sys.path so that it resolves to '{project_dir}'."
         )
     locations = [Path(location).resolve() for location in spec.submodule_search_locations]
     if project_dir.resolve() not in locations:
         found = ", ".join(f"'{location}'" for location in locations)
-        raise ValueError(
+        raise PackageResolutionError(
             f"Package '{package}' resolves to {found}, not to the project directory "
             f"'{project_dir.resolve()}'."
         )
@@ -401,8 +409,9 @@ def build_registry(project_dir: Path, *, package: str | None = None) -> dict[str
     (``<Section>.<name>``), so the directory itself must be on ``sys.path``.
     Pass ``package`` when *project_dir* is an importable package: modules are
     then named ``<package>.<Section>.<name>``, so the project's own imports and
-    flowdash's lazy imports share one module object. Raises ``ValueError`` if
-    ``package`` does not resolve to *project_dir*.
+    flowdash's lazy imports share one module object. Raises
+    ``PackageResolutionError`` (a ``ValueError``) if ``package`` does not
+    resolve to *project_dir*.
     """
     if package is not None:
         _check_package(package, project_dir)
@@ -451,7 +460,7 @@ def build_registry(project_dir: Path, *, package: str | None = None) -> dict[str
             )
 
             parts = module_path.relative_to(project_dir).with_suffix("").parts
-            module_name = ".".join((package, *parts) if package else parts)
+            module_name = ".".join((package, *parts) if package is not None else parts)
             app_id = f"{section}/{module_path.stem}"
             registry[app_id] = RegistryEntry(
                 app_id=app_id,
