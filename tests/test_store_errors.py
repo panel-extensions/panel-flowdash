@@ -9,9 +9,11 @@ import pytest
 from panel_flowdash import DashboardStoreError, JSONFolderDashboardStore, Permission
 from panel_flowdash.app import DASH_ROUTE_PREFIX, FlowDashApp
 from panel_flowdash.dashboard_store import MemoryDashboardStore
+from panel_flowdash.editor import FlowDash
 from tests.test_navigation import FakeLocation, _create_project
 
 REFUSAL = "Dashboards cannot be changed right now."
+LOGGED = "Could not {} the dashboard. The error has been logged."
 
 
 class RefusingStore(MemoryDashboardStore):
@@ -25,6 +27,10 @@ class RefusingStore(MemoryDashboardStore):
     def _check(self, operation):
         if operation in self.refuse:
             raise self.error
+
+    def get_owner(self, dashboard_id):
+        self._check("get_owner")
+        return super().get_owner(dashboard_id)
 
     def create_dashboard(self, user_id, title):
         self._check("create")
@@ -57,6 +63,18 @@ class DecliningStore(MemoryDashboardStore):
         return False
 
     def set_permission(self, dashboard_id, permission):
+        return False
+
+
+class VanishingStore(MemoryDashboardStore):
+    """Loses the dashboard to another session between the access check and the write."""
+
+    def delete_dashboard(self, user_id, dashboard_id):
+        super().delete_dashboard(user_id, dashboard_id)
+        return False
+
+    def rename_dashboard(self, user_id, dashboard_id, new_title):
+        super().delete_dashboard(user_id, dashboard_id)
         return False
 
 
@@ -100,6 +118,10 @@ async def _app_with_dashboard(make_app, store, title="Sales"):
     return app, model
 
 
+def _menu_labels(app):
+    return [item["label"] for item in app._menu_list.items[-1]["items"]]
+
+
 class TestCreateRefused:
     async def test_refusal_is_shown_and_state_is_kept(self, make_app, location):
         store = RefusingStore()
@@ -130,22 +152,25 @@ class TestCreateRefused:
         app = await make_app(store)
 
         with caplog.at_level(logging.ERROR, logger="panel_flowdash"):
-            app._create_new_dashboard("Fresh")
+            assert app._create_new_dashboard("Fresh") is False
 
-        assert app.notices == [("error", "Could not create the dashboard: disk full")]
+        assert app.notices == [("error", LOGGED.format("create"))]
+        assert "disk full" not in app.notices[0][1]
         record = next(r for r in caplog.records if r.message == "Failed to create dashboard")
         assert record.exc_info[1] is store.error
         assert app._current_dashboard is None
 
-    async def test_refusal_is_not_logged_as_an_error(self, make_app, caplog):
+    async def test_refusal_is_logged_at_info_only(self, make_app, caplog):
         store = RefusingStore()
         store.refuse.add("create")
         app = await make_app(store)
 
-        with caplog.at_level(logging.ERROR, logger="panel_flowdash"):
+        with caplog.at_level(logging.INFO, logger="panel_flowdash"):
             app._create_new_dashboard("Fresh")
 
-        assert not caplog.records
+        assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+            (logging.INFO, f"Store refused to create dashboard: {REFUSAL}")
+        ]
 
     async def test_read_only_json_folder_refusal_is_shown(self, make_app, tmp_path):
         app = await make_app(JSONFolderDashboardStore(tmp_path / "dashboards", read_only=True))
@@ -154,6 +179,77 @@ class TestCreateRefused:
 
         assert app.notices == [("error", "Dashboards are read-only on this server.")]
         assert app._current_dashboard is None
+
+
+class TestDashboardDialog:
+    async def test_create_refusal_keeps_dialog_open_with_inline_error(self, make_app):
+        store = RefusingStore()
+        app = await make_app(store)
+        app._open_create_dialog()
+        app._dialog_name_input.value = "Fresh"
+        store.refuse.add("create")
+
+        app._on_dialog_confirm(None)
+
+        assert app.notices == [("error", REFUSAL)]
+        assert app._dialog.open
+        assert app._dialog_context == {"action": "create"}
+        assert app._dialog_name_input.error_state
+        assert app._dialog_name_input.helper_text == REFUSAL
+
+    async def test_create_closes_dialog_on_success(self, make_app):
+        app = await make_app(RefusingStore())
+        app._open_create_dialog()
+        app._dialog_name_input.value = "Fresh"
+
+        app._on_dialog_confirm(None)
+
+        assert not app._dialog.open
+        assert app._dialog_context == {}
+        assert app._current_dashboard.title == "Fresh"
+
+    async def test_rename_refusal_keeps_dialog_open_with_inline_error(self, make_app):
+        store = RefusingStore()
+        app, model = await _app_with_dashboard(make_app, store)
+        app._on_action_rename(
+            {"path": f"{DASH_ROUTE_PREFIX}{model.dashboard_id}", "label": "Sales"}
+        )
+        app._dialog_name_input.value = "Renamed"
+        store.refuse.add("rename")
+
+        app._on_dialog_confirm(None)
+
+        assert app._dialog.open
+        assert app._dialog_context == {"action": "rename", "dashboard_id": model.dashboard_id}
+        assert app._dialog_name_input.error_state
+        assert app._dialog_name_input.helper_text == REFUSAL
+
+    async def test_rename_closes_dialog_on_success(self, make_app):
+        app, model = await _app_with_dashboard(make_app, RefusingStore())
+        app._on_action_rename(
+            {"path": f"{DASH_ROUTE_PREFIX}{model.dashboard_id}", "label": "Sales"}
+        )
+        app._dialog_name_input.value = "Renamed"
+
+        app._on_dialog_confirm(None)
+
+        assert not app._dialog.open
+        assert app._dialog_context == {}
+        assert app._current_dashboard.title == "Renamed"
+
+    async def test_delete_refusal_keeps_dialog_open(self, make_app):
+        store = RefusingStore()
+        app, model = await _app_with_dashboard(make_app, store)
+        app._on_action_delete(
+            {"path": f"{DASH_ROUTE_PREFIX}{model.dashboard_id}", "label": "Sales"}
+        )
+        store.refuse.add("delete")
+
+        app._on_dialog_confirm(None)
+
+        assert app.notices == [("error", REFUSAL)]
+        assert app._dialog.open
+        assert app._dialog_context == {"action": "delete", "dashboard_id": model.dashboard_id}
 
 
 class TestRenameRefused:
@@ -176,6 +272,28 @@ class TestRenameRefused:
         app._rename_dashboard(model.dashboard_id, "Renamed")
 
         assert app.notices == [("error", "The dashboard could not be renamed.")]
+        assert app._current_dashboard.title == "Sales"
+
+    async def test_vanished_dashboard_leaves_the_menu(self, make_app):
+        app, model = await _app_with_dashboard(make_app, VanishingStore())
+        app._refresh_sidebar_dashboards()
+        assert "Sales" in _menu_labels(app)
+
+        assert app._rename_dashboard(model.dashboard_id, "Renamed") is False
+
+        assert "Sales" not in _menu_labels(app)
+
+    async def test_owner_lookup_failure_is_handled(self, make_app, caplog):
+        store = RefusingStore()
+        app, model = await _app_with_dashboard(make_app, store)
+        store.refuse.add("get_owner")
+        store.error = OSError("connection lost")
+
+        with caplog.at_level(logging.ERROR, logger="panel_flowdash"):
+            assert app._rename_dashboard(model.dashboard_id, "Renamed") is False
+
+        assert app.notices == [("error", LOGGED.format("rename"))]
+        assert any(r.message == "Failed to rename dashboard" for r in caplog.records)
         assert app._current_dashboard.title == "Sales"
 
 
@@ -203,6 +321,25 @@ class TestDeleteRefused:
 
         assert app.notices == [("error", "The dashboard could not be deleted.")]
         assert app._current_dashboard.dashboard_id == model.dashboard_id
+
+    async def test_vanished_dashboard_leaves_the_menu(self, make_app):
+        app, model = await _app_with_dashboard(make_app, VanishingStore())
+        app._refresh_sidebar_dashboards()
+        assert "Sales" in _menu_labels(app)
+
+        assert app._delete_dashboard(model.dashboard_id) is False
+
+        assert "Sales" not in _menu_labels(app)
+
+    async def test_owner_lookup_failure_is_handled(self, make_app):
+        store = RefusingStore()
+        app, model = await _app_with_dashboard(make_app, store)
+        store.refuse.add("get_owner")
+
+        assert app._delete_dashboard(model.dashboard_id) is False
+
+        assert app.notices == [("error", REFUSAL)]
+        assert store.load_dashboard(app._user_id, model.dashboard_id) is not None
 
 
 class TestShareRefused:
@@ -278,3 +415,36 @@ class TestSaveRefused:
 
         assert navigated == ["/"]
         assert not app._dirty
+
+
+class TestEditorSave:
+    @pytest.fixture
+    def editor(self):
+        store = RefusingStore()
+        editor = FlowDash({}, notifications=False, store=store, user="alice")
+        editor.new_dashboard("Sales")
+        editor.notices = []
+        editor._notify = lambda severity, message, duration=3000: editor.notices.append(
+            (severity, message)
+        )
+        return editor
+
+    def test_runtime_error_from_store_is_logged_not_read_only(self, editor, caplog):
+        editor.store.refuse.add("save")
+        editor.store.error = RuntimeError("database is locked")
+
+        with caplog.at_level(logging.ERROR, logger="panel_flowdash"):
+            assert editor._on_save_clicked() is False
+
+        assert editor.notices == [("error", LOGGED.format("save"))]
+        record = next(r for r in caplog.records if r.message == "Failed to save dashboard")
+        assert record.exc_info[1] is editor.store.error
+
+    def test_read_only_shows_read_only_message(self, editor, caplog):
+        editor.read_only = True
+
+        with caplog.at_level(logging.ERROR, logger="panel_flowdash"):
+            assert editor._on_save_clicked() is False
+
+        assert editor.notices == [("error", "This dashboard is read-only.")]
+        assert not caplog.records

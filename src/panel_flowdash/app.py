@@ -467,13 +467,22 @@ class FlowDashApp(Viewer):
         """Surface a message to the user, or log it when notifications are unavailable."""
         notify(severity, message, duration=duration, enabled=self.notifications)
 
-    def _notify_store_failure(self, action: str, exc: Exception):
-        """Report a failed store operation; call from the ``except`` block that caught *exc*."""
+    def _notify_store_failure(self, action: str, exc: Exception) -> str:
+        """Report a failed store operation and return the message shown to the user.
+
+        Call it from the ``except`` block that caught *exc*.
+        """
         if isinstance(exc, DashboardStoreError):
-            self._notify("error", str(exc), duration=5000)
-            return
-        logger.exception("Failed to %s dashboard", action)
-        self._notify("error", f"Could not {action} the dashboard: {exc}", duration=5000)
+            logger.info("Store refused to %s dashboard: %s", action, exc)
+            message = str(exc)
+        else:
+            logger.exception("Failed to %s dashboard", action)
+            message = f"Could not {action} the dashboard. The error has been logged."
+        self._notify("error", message, duration=5000)
+        return message
+
+    def _show_dialog_name_error(self, message: str):
+        self._dialog_name_input.param.update(error_state=True, helper_text=message)
 
     @property
     def _component_entries(self) -> dict[str, RegistryEntry]:
@@ -596,16 +605,18 @@ class FlowDashApp(Viewer):
             self._share_dialog,
         ]
 
-    def _create_new_dashboard(self, title_str: str):
+    def _create_new_dashboard(self, title_str: str) -> bool:
+        """Create a dashboard and open it for editing, returning whether it was created."""
         title_str = title_str.strip()
         if not title_str:
             self._notify("warning", "Dashboard title cannot be empty.", duration=3000)
-            return
+            return False
         try:
-            dashboard = self._editor.new_dashboard(title_str)
+            dashboard = self.store.create_dashboard(self._editor.user, title_str)
         except Exception as exc:
-            self._notify_store_failure("create", exc)
-            return
+            self._show_dialog_name_error(self._notify_store_failure("create", exc))
+            return False
+        self._editor._start_dashboard(dashboard)
         self._sidebar_container.objects = []
 
         self._notify("success", f'Created new dashboard "{dashboard.title}".', duration=3000)
@@ -626,23 +637,26 @@ class FlowDashApp(Viewer):
             self._unsaved_dialog,
             self._share_dialog,
         ]
+        return True
 
-    def _delete_dashboard(self, dashboard_id: str):
+    def _delete_dashboard(self, dashboard_id: str) -> bool:
+        """Delete a dashboard, returning whether it was deleted."""
         if not self._can_administer_dashboard(dashboard_id):
             self._notify("error", "You are not allowed to delete this dashboard.")
-            return
+            return False
         was_current = bool(
             self._current_dashboard and self._current_dashboard.dashboard_id == dashboard_id
         )
-        owner = self.store.get_owner(dashboard_id) or self._user_id
         try:
+            owner = self.store.get_owner(dashboard_id) or self._user_id
             deleted = self.store.delete_dashboard(owner, dashboard_id)
         except Exception as exc:
             self._notify_store_failure("delete", exc)
-            return
+            return False
         if not deleted:
             self._notify("error", "The dashboard could not be deleted.", duration=5000)
-            return
+            self._refresh_sidebar_dashboards()
+            return False
         if was_current:
             self._current_dashboard = None
             self._reset_canvas()
@@ -660,26 +674,32 @@ class FlowDashApp(Viewer):
                 self._unsaved_dialog,
                 self._share_dialog,
             ]
+        return True
 
-    def _rename_dashboard(self, dashboard_id: str, new_title: str):
+    def _rename_dashboard(self, dashboard_id: str, new_title: str) -> bool:
+        """Rename a dashboard, returning whether it was renamed."""
         new_title = new_title.strip()
         if not new_title:
-            return
+            return False
         if not self._can_administer_dashboard(dashboard_id):
             self._notify("error", "You are not allowed to rename this dashboard.")
-            return
-        owner = self.store.get_owner(dashboard_id) or self._user_id
+            return False
         try:
+            owner = self.store.get_owner(dashboard_id) or self._user_id
             renamed = self.store.rename_dashboard(owner, dashboard_id, new_title)
         except Exception as exc:
-            self._notify_store_failure("rename", exc)
-            return
+            self._show_dialog_name_error(self._notify_store_failure("rename", exc))
+            return False
         if not renamed:
-            self._notify("error", "The dashboard could not be renamed.", duration=5000)
-            return
+            message = "The dashboard could not be renamed."
+            self._notify("error", message, duration=5000)
+            self._show_dialog_name_error(message)
+            self._refresh_sidebar_dashboards()
+            return False
         if self._current_dashboard and self._current_dashboard.dashboard_id == dashboard_id:
             self._current_dashboard.title = new_title
         self._refresh_sidebar_dashboards()
+        return True
 
     def _refresh_sidebar_dashboards(self):
         dash_items = self._get_dashboard_menu_items()
@@ -832,7 +852,9 @@ class FlowDashApp(Viewer):
             self._dialog_context = {"action": "rename", "dashboard_id": dashboard_id}
             self._dialog.param.update(title="Rename Dashboard", open=True)
         elif label == "Delete":
-            self._dialog_name_input.param.update(value=title, disabled=True)
+            self._dialog_name_input.param.update(
+                value=title, disabled=True, error_state=False, helper_text=""
+            )
             self._dialog_context = {"action": "delete", "dashboard_id": dashboard_id}
             self._dialog.title = "Delete Dashboard"
             self._dialog.open = True
@@ -1037,7 +1059,9 @@ class FlowDashApp(Viewer):
         dashboard_id = self._dashboard_id_from_path(path)
         if not dashboard_id:
             return
-        self._dialog_name_input.param.update(value=item.get("label", ""), disabled=True)
+        self._dialog_name_input.param.update(
+            value=item.get("label", ""), disabled=True, error_state=False, helper_text=""
+        )
         self._dialog_context = {"action": "delete", "dashboard_id": dashboard_id}
         self._dialog.title = "Delete Dashboard"
         self._nav_drawer.open = False
@@ -1084,20 +1108,20 @@ class FlowDashApp(Viewer):
                 self._dialog_name_input.error_state = True
                 self._dialog_name_input.helper_text = error
                 return
-        self._dialog.open = False
+        done = False
         if action == "create":
             t = self._dialog_name_input.value
-            if t:
-                self._create_new_dashboard(t)
+            done = bool(t) and self._create_new_dashboard(t)
         elif action == "rename":
             new_t = self._dialog_name_input.value
             did = ctx.get("dashboard_id", "")
-            if new_t and did:
-                self._rename_dashboard(did, new_t)
+            done = bool(new_t and did) and self._rename_dashboard(did, new_t)
         elif action == "delete":
             did = ctx.get("dashboard_id", "")
-            if did:
-                self._delete_dashboard(did)
+            done = bool(did) and self._delete_dashboard(did)
+        if not done:
+            return
+        self._dialog.open = False
         self._dialog_name_input.param.update(disabled=False, error_state=False, helper_text="")
         self._dialog_context = {}
 

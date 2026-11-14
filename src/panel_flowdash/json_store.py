@@ -78,8 +78,9 @@ class JSONFolderDashboardStore(BaseDashboardStore):
         *read_only* is set.
     read_only
         Serve the dashboards without allowing changes. Writes raise
-        ``PermissionError`` (also a ``DashboardStoreError``) and nobody may administer a dashboard, so the editor
-        offers no way to modify, rename, share or delete one.
+        ``PermissionError`` (also a ``DashboardStoreError``) and nobody may
+        administer a dashboard, so the editor offers no way to modify, rename,
+        share or delete one.
     """
 
     def __init__(self, path: str | Path, *, read_only: bool = False):

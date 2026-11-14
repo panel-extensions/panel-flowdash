@@ -52,6 +52,11 @@ if t.TYPE_CHECKING:
 
 logger = logging.getLogger("panel_flowdash")
 
+
+class _ReadOnlyEditorError(DashboardStoreError, RuntimeError):
+    pass
+
+
 _EMPTY_GRID_CONFIG = {"breakpoints": [], "responsive_layouts": {}, "reference_width": None}
 
 # Screen pixels between the visible canvas edge and an auto-placed node.
@@ -1691,12 +1696,16 @@ class FlowDash(Viewer):
             model = DashboardModel(
                 dashboard_id=uuid.uuid4().hex[:12], user_id=self.user, title=title
             )
+        self._start_dashboard(model)
+        return model
+
+    def _start_dashboard(self, model: DashboardModel):
+        """Show an empty canvas for a newly created *model*."""
         self._reset_canvas()
         self._pending_tile_layout = []
         self._pending_grid_config = dict(_EMPTY_GRID_CONFIG)
         self.dashboard = model
         self.dirty = False
-        return model
 
     def save(self, title: str | None = None) -> DashboardModel:
         """Persist the current canvas and return the saved model.
@@ -1710,7 +1719,7 @@ class FlowDash(Viewer):
             If :attr:`read_only` is set.
         """
         if self.read_only:
-            raise RuntimeError("This dashboard is read-only.")
+            raise _ReadOnlyEditorError("This dashboard is read-only.")
         model = self.to_model(title=title)
         if self.store is not None:
             self.store.save_dashboard(model)
@@ -1906,12 +1915,13 @@ class FlowDash(Viewer):
         try:
             model = self.save()
         except DashboardStoreError as exc:
+            logger.info("Store refused to save dashboard: %s", exc)
             self._notify("error", str(exc), duration=5000)
-        except RuntimeError:
-            self._notify("error", "This dashboard is read-only.", duration=4000)
-        except Exception as exc:
+        except Exception:
             logger.exception("Failed to save dashboard")
-            self._notify("error", f"Save failed: {exc}", duration=5000)
+            self._notify(
+                "error", "Could not save the dashboard. The error has been logged.", duration=5000
+            )
         else:
             self._notify("success", f'Dashboard "{model.title}" saved.', duration=3000)
             return True

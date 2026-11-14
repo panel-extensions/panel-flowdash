@@ -50,8 +50,9 @@ To ship a fixed set of dashboards, open the folder read-only:
 store = JSONFolderDashboardStore("dashboards", read_only=True)
 ```
 
-Writes then raise `PermissionError` (also a `DashboardStoreError`, see below), and nobody can administer a dashboard, so
-the editor offers no way to modify, rename, share or delete one.
+Writes then raise `PermissionError` (also a `DashboardStoreError`, see below),
+and nobody can administer a dashboard, so the editor offers no way to modify,
+rename, share or delete one.
 
 Files are written atomically. Several server processes can share one folder, but
 two saving the same dashboard at the same moment resolve last-writer-wins.
@@ -192,11 +193,14 @@ class UniqueTitleStore(MemoryDashboardStore):
         return super().create_dashboard(user_id, title)
 ```
 
-The app shows the message to the user as written and leaves the open dashboard,
-canvas and menu as they were, so phrase it for an end user. Returning `False`
-from `rename_dashboard`, `delete_dashboard` or `set_permission` is reported as a
-generic failure. Any other exception is treated as a bug or an infrastructure
-fault: it is logged with its traceback and the user sees a short error.
+The app shows the message to the user as written, logs it at `INFO` and leaves
+the open dashboard, canvas and menu as they were, so phrase it for an end user.
+The create and rename dialogs stay open with the message under the name field.
+Returning `False` from `rename_dashboard`, `delete_dashboard` or
+`set_permission` is reported as a generic failure. Any other exception is
+treated as a bug or an infrastructure fault: it is logged with its traceback and
+the user sees a generic message such as "Could not save the dashboard. The error
+has been logged.", never the exception text.
 
 ---
 
