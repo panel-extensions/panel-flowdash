@@ -132,7 +132,9 @@ default value.
 graph.remove_node("filter_1")
 ```
 
-Removing a node clears all connected edges automatically.
+Removing a node clears all connected edges automatically and detaches its
+state from everything it was bound to, so it keeps its last values but no
+longer receives new ones.
 
 ---
 

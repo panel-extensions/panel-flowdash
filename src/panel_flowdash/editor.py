@@ -18,6 +18,7 @@ import pathlib
 import re
 import typing as t
 import uuid
+import weakref
 from contextlib import contextmanager
 from functools import partial
 
@@ -116,6 +117,12 @@ _TRANSFORMED_EDGE_STYLE = {
     "strokeDasharray": "6 3",
     "strokeWidth": 2,
 }
+
+
+def _dispose_on_session_end(editor_ref: weakref.ref[FlowDash], session_context):
+    editor = editor_ref()
+    if editor is not None:
+        editor._dispose_components()
 
 
 class FlowDash(Viewer):
@@ -295,6 +302,7 @@ class FlowDash(Viewer):
         self._inspection_key: tuple[str, str] | None = None
 
         self._dataflow_graph = DataflowGraph({}, on_error=self._on_wiring_error)
+        self._component_instances: dict[str, Viewer] = {}
         self._transform_editors: dict[str, TransformEditor] = {}
         self._load_component_extensions()
         self._palette = self._make_palette()
@@ -315,6 +323,64 @@ class FlowDash(Viewer):
         self._apply_mode_state()
         if dashboard is not None:
             self._init_dashboard(dashboard)
+
+        # Without a session, Panel would register the callback for every future
+        # session instead. An editor built inside a session is tied to it, so one
+        # shared from there (e.g. through ``pn.state.as_cached``) is disposed when
+        # that session ends. The weakref lets an app discard and rebuild editors
+        # within a session without keeping the old ones alive until it ends.
+        doc = pn.state.curdoc
+        if doc is not None and doc.session_context is not None:
+            pn.state.on_session_destroyed(partial(_dispose_on_session_end, weakref.ref(self)))
+
+    def dispose(self):
+        """Tear down the editor, disposing every placed component.
+
+        Empties the dataflow graph, the canvas and the tile grid, then calls the
+        ``dispose`` hook of each component that was placed, once. The editor is
+        left empty and consistent, so it can still be used afterwards.
+
+        An editor created inside a server session disposes its components
+        automatically when that session ends. In a notebook, under pyodide or
+        for an editor created outside a session, call this yourself.
+        """
+        self._reset_canvas()
+
+    def _dispose_components(self):
+        """Detach and dispose every placed component without touching the UI.
+
+        Used once the session's Document is already destroyed, when pushing
+        model updates would be pointless.
+        """
+        for node_id in list(self._dataflow_graph.node_ids):
+            self._dataflow_graph.remove_node(node_id)
+        for instance_id in list(self._component_instances):
+            self._dispose_component(instance_id)
+
+    def _dispose_component(self, instance_id: str):
+        """Call the ``dispose`` hook of the component placed as *instance_id*, if it has one.
+
+        Popping the instance first makes this a no-op on any later call, so a
+        component is disposed at most once however it leaves the editor.
+        """
+        instance = self._component_instances.pop(instance_id, None)
+        hook = getattr(instance, "dispose", None)
+        if not callable(hook):
+            return
+        try:
+            result = hook()
+        except Exception:
+            logger.exception("dispose() of component '%s' failed", instance_id)
+            return
+        if inspect.isawaitable(result):
+            pn.state.execute(partial(self._await_dispose, instance_id, result), schedule=True)
+
+    @staticmethod
+    async def _await_dispose(instance_id: str, awaitable):
+        try:
+            await awaitable
+        except Exception:
+            logger.exception("dispose() of component '%s' failed", instance_id)
 
     def _init_dashboard(self, dashboard):
         """Resolve the ``dashboard`` constructor argument to a loaded model."""
@@ -643,6 +709,7 @@ class FlowDash(Viewer):
             node_id = event.get("node_id", "") if isinstance(event, dict) else ""
             if node_id:
                 self._forget_node(node_id)
+                self._dispose_component(node_id)
                 self.dirty = True
                 self._rebuild_sidebar()
 
@@ -906,6 +973,8 @@ class FlowDash(Viewer):
         """Instantiate a Viewer and wire its params to the node_state."""
         spec = self._component_specs.get(entry.app_id)
         instance = viewer_cls()
+        self._dispose_component(node_state.name)
+        self._component_instances[node_state.name] = instance
 
         if config_state is not None:
             self._bind_config_to_viewer(instance, config_state)
@@ -1332,6 +1401,7 @@ class FlowDash(Viewer):
             view = self._instantiate_for_node(entry, node_state, config_state)
         except Exception:
             self._dataflow_graph.remove_node(instance_id)
+            self._dispose_component(instance_id)
             raise
 
         if position is None:
@@ -1392,6 +1462,7 @@ class FlowDash(Viewer):
         self._forget_node(instance_id)
         with self._muted_canvas():
             self._flow.remove_node(instance_id)
+        self._dispose_component(instance_id)
         self.dirty = True
         self._rebuild_sidebar()
 
@@ -1526,7 +1597,7 @@ class FlowDash(Viewer):
         self._notify("info", "Cleared all component tiles.", duration=3000)
 
     def _reset_canvas(self):
-        """Tear down all node/edge state and clear the ReactFlow canvas."""
+        """Tear down all node/edge state, clear the ReactFlow canvas and dispose the components."""
         for node_id in list(self._dataflow_graph.node_ids):
             self._dataflow_graph.remove_node(node_id)
         self._tile_items = []
@@ -1541,6 +1612,8 @@ class FlowDash(Viewer):
         if self._grid_populated:
             self._tile_grid[:] = []
         self._sync_toolbar_state()
+        for instance_id in list(self._component_instances):
+            self._dispose_component(instance_id)
 
     # ------------------------------------------------------------------
     # Persistence

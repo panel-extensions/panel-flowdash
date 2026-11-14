@@ -46,6 +46,11 @@ FlowDash({"Market/ticker": ticker_select, "Market/chart": price_chart})
 # A project directory, scanned the way `flowdash serve` scans it
 FlowDash("my_project")
 
+# A project directory that is also an importable package
+from pathlib import Path
+from panel_flowdash.registry import build_registry
+FlowDash(build_registry(Path("catalogue"), package="catalogue"))
+
 # Any mix of the above
 FlowDash(["my_project", ticker_select, {"Market/chart": price_chart}])
 ```

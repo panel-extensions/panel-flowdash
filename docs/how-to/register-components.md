@@ -110,6 +110,75 @@ sole output, regardless of any other `@param.output` decorators.
 
 ---
 
+## Releasing resources when a component is removed
+
+FlowDash creates one instance of a Viewer component per node. When that node
+goes away, FlowDash calls the instance's `dispose()` method if it defines one,
+so a component holding a periodic callback, a connection or a watcher on some
+long-lived object can let go of it:
+
+```python
+@register(component=True)
+class LivePrice(pn.viewable.Viewer):
+    ticker = param.String(default="AAPL")
+    price = param.Number()
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        self._poll = pn.state.add_periodic_callback(self._refresh, period=1000)
+
+    def _refresh(self):
+        self.price = fetch_price(self.ticker)
+
+    def dispose(self):
+        self._poll.stop()
+
+    def __panel__(self):
+        return pn.indicators.Number.from_param(self.param.price, name=self.ticker)
+```
+
+`dispose()` is called once per instance, whichever way the node leaves:
+
+- it is deleted on the canvas or removed with `FlowDash.remove_component()`
+- the canvas is cleared, or replaced by loading, importing or creating a dashboard
+- the server session the editor was created in ends, or `FlowDash.dispose()`
+  is called
+- placing the node fails after the instance was created, e.g. because
+  `__panel__` raised
+
+By the time it runs, the node's view has left the canvas and the tile grid, and
+the node is disconnected from the dataflow graph: its inputs no longer receive
+values and anything it sets on its outputs no longer reaches downstream nodes. It may be `async`, in which case it is awaited
+on the event loop. An exception raised by `dispose()` is logged and does not
+stop the node, or any other node, from being removed.
+
+Changing a node's configuration updates the existing instance rather than
+replacing it, so it does not trigger `dispose()`. The hook only applies to
+Viewer components; a decorated function is called rather than instantiated, so
+FlowDash holds no object of its own to dispose.
+
+### When the session ends
+
+An editor created inside a server session registers itself with that session
+and disposes its components when the session ends. At that point Bokeh has
+already destroyed the session's Document and `pn.state.curdoc` is `None`, so
+`dispose()` should only release resources and not touch the UI. Periodic
+callbacks registered with the document through `pn.state.add_periodic_callback`
+have already been stopped by Panel by then.
+
+The editor is tied to the session it was created in. An editor built inside one
+session and shared with others, e.g. through `pn.state.as_cached`, has its
+components disposed when that first session ends. An editor meant to be shared
+across sessions must be built outside a session, or its owner must call
+`FlowDash.dispose()`.
+
+Nothing is disposed automatically in a notebook, under pyodide, or for an editor
+built outside a server session. Call `FlowDash.dispose()` yourself there when
+the editor is no longer needed; it clears the canvas and disposes every placed
+component, and leaves an empty editor that can still be used.
+
+---
+
 ## Project directory layout
 
 FlowDash scans one level of subdirectories as "sections":
@@ -130,3 +199,6 @@ Rules:
 - Files starting with `_` are skipped.
 - Each module must export an `app` attribute.
 - The `app_id` is `"Section/module_name"` (e.g. `"Section_A/component1"`).
+- Modules are imported as `Section.module_name`, or as
+  `package.Section.module_name` when the project is served as an importable
+  package (see [Serving a package](serve-project.md#serving-a-package)).
