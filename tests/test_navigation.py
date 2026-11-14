@@ -6,8 +6,10 @@ and driving the registered callbacks the way the frontend would.
 """
 
 import sys
+from contextlib import asynccontextmanager
 
 import panel as pn
+import panel_material_ui as pmui
 import param
 import pytest
 
@@ -126,7 +128,7 @@ class TestCanvasReset:
 class TestMenuClickNavigation:
     async def test_plain_item_click_navigates(self, app):
         calls = []
-        app._navigate_to = lambda path: calls.append(path)
+        app._navigate_to = lambda path, search="": calls.append(path)
 
         _click_item(app, {"path": "/Analytics/page"})
 
@@ -135,7 +137,7 @@ class TestMenuClickNavigation:
     async def test_click_after_action_still_navigates(self, app):
         """Regression: an action must not swallow the next plain nav click."""
         calls = []
-        app._navigate_to = lambda path: calls.append(path)
+        app._navigate_to = lambda path, search="": calls.append(path)
 
         # Enter edit mode via the Edit action on some dashboard.
         dash = app.store.create_dashboard(app._user_id, "Dash A")
@@ -165,7 +167,7 @@ class TestMenuClickNavigation:
 
     async def test_click_without_path_is_ignored(self, app):
         calls = []
-        app._navigate_to = lambda path: calls.append(path)
+        app._navigate_to = lambda path, search="": calls.append(path)
         _click_item(app, {"label": "No path here"})
         assert calls == []
 
@@ -173,7 +175,7 @@ class TestMenuClickNavigation:
 class TestRequestNavigation:
     async def test_clean_state_navigates_directly(self, app):
         calls = []
-        app._navigate_to = lambda path: calls.append(path)
+        app._navigate_to = lambda path, search="": calls.append(path)
         app._dirty = False
 
         app._request_navigation("/Analytics/page")
@@ -183,7 +185,7 @@ class TestRequestNavigation:
 
     async def test_dirty_dashboard_prompts_before_navigating(self, app):
         calls = []
-        app._navigate_to = lambda path: calls.append(path)
+        app._navigate_to = lambda path, search="": calls.append(path)
         app._current_dashboard = app.store.create_dashboard(app._user_id, "Dirty")
         app._dirty = True
 
@@ -191,12 +193,12 @@ class TestRequestNavigation:
 
         assert calls == []
         assert app._unsaved_dialog.open is True
-        assert app._pending_navigation == "/Analytics/page"
+        assert app._pending_navigation == ("/Analytics/page", "")
 
     async def test_dirty_without_current_dashboard_navigates(self, app):
         """A dirty flag without a loaded dashboard should not block navigation."""
         calls = []
-        app._navigate_to = lambda path: calls.append(path)
+        app._navigate_to = lambda path, search="": calls.append(path)
         app._current_dashboard = None
         app._dirty = True
 
@@ -322,7 +324,7 @@ class TestMenuBarVariant:
 
     async def test_menubar_click_navigates(self, menubar_app):
         calls = []
-        menubar_app._navigate_to = lambda path: calls.append(path)
+        menubar_app._navigate_to = lambda path, search="": calls.append(path)
         item = _find_menu_bar_item(menubar_app._menu_bar.items, "Overview")
         assert item is not None
         menubar_app._on_menu_bar_click(item)
@@ -509,3 +511,338 @@ class TestScopedRouteLoading:
         await scoped.app._load_dashboard("no-such-dashboard", edit=False)
 
         assert not scoped.any_imported
+
+
+_COPY_ACTION = {"label": "Copy", "icon": "content_copy"}
+
+
+class CopyFlowDashApp(FlowDashApp):
+    """A subclass adding a "Copy" action through the action tuples alone."""
+
+    _ADMIN_DASHBOARD_ACTIONS = (*FlowDashApp._ADMIN_DASHBOARD_ACTIONS, _COPY_ACTION)
+    _VIEWER_DASHBOARD_ACTIONS = (_COPY_ACTION,)
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        self.copied = []
+
+    def _on_dashboard_action(self, action, dashboard_id, title):
+        if action == "Copy":
+            self.copied.append((dashboard_id, title))
+        else:
+            super()._on_dashboard_action(action, dashboard_id, title)
+
+
+_DUPLICATE_ACTION = {"action": "copy", "label": "Duplicate", "icon": "content_copy"}
+
+
+class KeyedActionFlowDashApp(FlowDashApp):
+    """A subclass whose action key differs from its display label."""
+
+    _ADMIN_DASHBOARD_ACTIONS = (*FlowDashApp._ADMIN_DASHBOARD_ACTIONS, _DUPLICATE_ACTION)
+    _VIEWER_DASHBOARD_ACTIONS = (_DUPLICATE_ACTION,)
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        self.duplicated = []
+
+    def _on_dashboard_action(self, action, dashboard_id, title):
+        if action == "copy":
+            self.duplicated.append((dashboard_id, title))
+        else:
+            super()._on_dashboard_action(action, dashboard_id, title)
+
+
+@asynccontextmanager
+async def _subclass_app(tmp_path, cls, **params):
+    _create_project(tmp_path)
+    sys.path.insert(0, str(tmp_path))
+    previous = pn.state._location
+    pn.state._location = FakeLocation()
+    try:
+        store = DashboardStore(tmp_path / "test.db")
+        instance = cls(project_dir=tmp_path, store=store, **params)
+        await instance._ensure_components_loaded()
+        yield instance
+    finally:
+        pn.state._location = previous
+        sys.path.remove(str(tmp_path))
+
+
+@pytest.fixture
+async def copy_app(tmp_path):
+    async with _subclass_app(tmp_path, CopyFlowDashApp) as instance:
+        yield instance
+
+
+@pytest.fixture
+async def copy_menubar_app(tmp_path):
+    async with _subclass_app(tmp_path, CopyFlowDashApp, nav_variant="menubar") as instance:
+        yield instance
+
+
+@pytest.fixture
+async def keyed_app(tmp_path):
+    async with _subclass_app(tmp_path, KeyedActionFlowDashApp) as instance:
+        yield instance
+
+
+@pytest.fixture
+async def keyed_menubar_app(tmp_path):
+    async with _subclass_app(tmp_path, KeyedActionFlowDashApp, nav_variant="menubar") as instance:
+        yield instance
+
+
+def _launcher_speed_dials(app):
+    """The SpeedDial of each dashboard card in the launcher, ``None`` where absent."""
+    launcher = app._build_launcher()
+    dash_box = next(
+        obj for title, obj in zip(launcher._names, launcher, strict=True) if title == "Custom Apps"
+    )
+    dials = []
+    for wrapper in dash_box:
+        if not isinstance(wrapper, pn.Column):
+            continue
+        dials.append(next((o for o in wrapper if isinstance(o, pmui.SpeedDial)), None))
+    return dials
+
+
+def _menu_bar_path(items, label, path=()):
+    """The index path pmui's MenuBar sends for the item with *label*."""
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        if item.get("label") == label:
+            return [*path, i]
+        found = _menu_bar_path(item.get("items", []), label, (*path, i))
+        if found:
+            return found
+    return None
+
+
+def _click_menu_bar(app, *labels):
+    """Click the MenuBar item at the end of *labels* through pmui's message handler."""
+    items = app._menu_bar.items
+    path = []
+    for label in labels:
+        sub = _menu_bar_path(items, label)
+        for idx in sub:
+            items = items[idx].get("items", [])
+        path += sub
+    app._menu_bar._handle_msg({"type": "click", "path": path})
+
+
+def _record_dispatch(app):
+    calls = []
+    app._on_dashboard_action = lambda label, did, title: calls.append((label, did, title))
+    return calls
+
+
+class TestLauncherSpeedDial:
+    async def test_admin_card_has_admin_actions(self, app):
+        app.store.create_dashboard(app._user_id, "Dash A")
+        (dial,) = _launcher_speed_dials(app)
+        assert [i["label"] for i in dial.items] == ["Edit", "Rename", "Delete"]
+
+    async def test_viewer_without_actions_has_no_speed_dial(self, app):
+        app.store.create_dashboard(app._user_id, "Dash A")
+        app._can_administer_dashboard = lambda dashboard_id: False
+        assert _launcher_speed_dials(app) == [None]
+
+    async def test_viewer_with_viewer_action_gets_speed_dial(self, copy_app):
+        copy_app.store.create_dashboard(copy_app._user_id, "Dash A")
+        copy_app._can_administer_dashboard = lambda dashboard_id: False
+        (dial,) = _launcher_speed_dials(copy_app)
+        assert dial is not None
+        assert [i["label"] for i in dial.items] == ["Copy"]
+
+
+class TestDashboardActionDispatch:
+    async def test_card_routes_through_dispatch(self, app):
+        dash = app.store.create_dashboard(app._user_id, "Dash A")
+        (dial,) = _launcher_speed_dials(app)
+        calls = _record_dispatch(app)
+        dial.value = {"label": "Rename", "icon": "drive_file_rename_outline"}
+        assert calls == [("Rename", dash.dashboard_id, "Dash A")]
+
+    async def test_nav_menu_routes_through_dispatch(self, app):
+        dash = app.store.create_dashboard(app._user_id, "Dash A")
+        calls = _record_dispatch(app)
+        item = {"label": "Dash A", "path": f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}"}
+        for label in ("Edit", "Rename", "Delete"):
+            _fire_action(app, label, item)
+        assert calls == [
+            ("Edit", dash.dashboard_id, "Dash A"),
+            ("Rename", dash.dashboard_id, "Dash A"),
+            ("Delete", dash.dashboard_id, "Dash A"),
+        ]
+
+    async def test_menubar_routes_through_dispatch(self, menubar_app):
+        dash = menubar_app.store.create_dashboard(menubar_app._user_id, "Dash A")
+        menubar_app._refresh_sidebar_dashboards()
+        calls = _record_dispatch(menubar_app)
+        submenu = _find_menu_bar_item(menubar_app._menu_bar.items, "Dash A")
+        menubar_app._on_menu_bar_click(next(i for i in submenu["items"] if i["label"] == "Edit"))
+        assert calls == [("Edit", dash.dashboard_id, "Dash A")]
+
+    async def test_nav_create_opens_dialog_without_dispatch(self, app):
+        calls = _record_dispatch(app)
+        _fire_action(app, "Create", {"label": "New Dashboard", "path": "__new_dashboard__"})
+        assert calls == []
+        assert app._dialog.open is True
+        assert app._dialog_context == {"action": "create"}
+
+    async def test_card_rename_opens_dialog(self, app):
+        dash = app.store.create_dashboard(app._user_id, "Dash A")
+        (dial,) = _launcher_speed_dials(app)
+        dial.value = {"label": "Rename"}
+        assert app._dialog.open is True
+        assert app._dialog.title == "Rename Dashboard"
+        assert app._dialog_name_input.value == "Dash A"
+        assert app._dialog_context == {"action": "rename", "dashboard_id": dash.dashboard_id}
+
+    async def test_nav_delete_opens_dialog(self, app):
+        dash = app.store.create_dashboard(app._user_id, "Dash A")
+        item = {"label": "Dash A", "path": f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}"}
+        _fire_action(app, "Delete", item)
+        assert app._dialog.title == "Delete Dashboard"
+        assert app._dialog_name_input.disabled is True
+        assert app._dialog_context == {"action": "delete", "dashboard_id": dash.dashboard_id}
+
+    async def test_card_edit_loads_dashboard_in_edit_mode(self, app):
+        dash = app.store.create_dashboard(app._user_id, "Dash A")
+        loaded = []
+        app._load_dashboard_edit = lambda did: loaded.append(did)
+        (dial,) = _launcher_speed_dials(app)
+        dial.value = {"label": "Edit"}
+        assert loaded == [dash.dashboard_id]
+        assert pn.state.location.pathname == f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}"
+        assert pn.state.location.search == "?edit=true"
+
+    async def test_edit_with_unsaved_changes_prompts(self, app):
+        dash = app.store.create_dashboard(app._user_id, "Dash A")
+        app._current_dashboard = app.store.create_dashboard(app._user_id, "Dirty")
+        app._dirty = True
+        loaded = []
+        app._load_dashboard_edit = lambda did: loaded.append(did)
+        _fire_action(app, "Edit", {"path": f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}"})
+        assert loaded == []
+        assert app._unsaved_dialog.open is True
+        assert app._pending_navigation == (f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}", "?edit=true")
+
+    @pytest.mark.parametrize("button", ["Discard", "Save & Continue"])
+    async def test_edit_after_unsaved_prompt_opens_edit_mode(self, app, button):
+        dash = app.store.create_dashboard(app._user_id, "Dash A")
+        app._current_dashboard = app.store.create_dashboard(app._user_id, "Dirty")
+        app._dirty = True
+        saved = []
+        app._save_current_dashboard = lambda: saved.append(True) or True
+        app._load_page_layout = lambda: None
+        _fire_action(app, "Edit", {"path": f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}"})
+
+        (row,) = (o for o in app._unsaved_dialog.objects[0] if isinstance(o, pn.Row))
+        next(b for b in row if b.label == button).clicks += 1
+
+        assert saved == ([True] if button == "Save & Continue" else [])
+        assert app._unsaved_dialog.open is False
+        assert pn.state.location.pathname == f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}"
+        assert pn.state.location.search == "?edit=true"
+        await FlowDashApp._load_page_layout(app)
+        assert app._current_dashboard.dashboard_id == dash.dashboard_id
+        assert app._editor.editable is True
+
+
+class TestSubclassAction:
+    async def test_action_in_nav_menu_items(self, copy_app):
+        copy_app.store.create_dashboard(copy_app._user_id, "Dash A")
+        (item,) = [i for i in copy_app._get_dashboard_menu_items() if i["label"] == "Dash A"]
+        assert [a["label"] for a in item["actions"]] == ["Edit", "Rename", "Delete", "Copy"]
+
+    async def test_action_from_card(self, copy_app):
+        dash = copy_app.store.create_dashboard(copy_app._user_id, "Dash A")
+        (dial,) = _launcher_speed_dials(copy_app)
+        dial.value = {"label": "Copy"}
+        assert copy_app.copied == [(dash.dashboard_id, "Dash A")]
+
+    async def test_action_from_nav_menu(self, copy_app):
+        dash = copy_app.store.create_dashboard(copy_app._user_id, "Dash A")
+        item = {"label": "Dash A", "path": f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}"}
+        _fire_action(copy_app, "Copy", item)
+        assert copy_app.copied == [(dash.dashboard_id, "Dash A")]
+
+    async def test_viewer_action_from_card(self, copy_app):
+        dash = copy_app.store.create_dashboard(copy_app._user_id, "Dash A")
+        copy_app._can_administer_dashboard = lambda dashboard_id: False
+        (dial,) = _launcher_speed_dials(copy_app)
+        dial.value = {"label": "Copy"}
+        assert copy_app.copied == [(dash.dashboard_id, "Dash A")]
+
+    async def test_builtin_actions_still_reach_super(self, copy_app):
+        dash = copy_app.store.create_dashboard(copy_app._user_id, "Dash A")
+        item = {"label": "Dash A", "path": f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}"}
+        _fire_action(copy_app, "Rename", item)
+        assert copy_app.copied == []
+        assert copy_app._dialog_context == {
+            "action": "rename",
+            "dashboard_id": dash.dashboard_id,
+        }
+
+    async def test_admin_action_in_menu_bar(self, copy_menubar_app):
+        app = copy_menubar_app
+        dash = app.store.create_dashboard(app._user_id, "Dash A")
+        app._refresh_sidebar_dashboards()
+        submenu = _find_menu_bar_item(app._menu_bar.items, "Dash A")
+        assert [i["label"] for i in submenu["items"]] == [
+            "Open",
+            "Edit",
+            "Rename",
+            "Delete",
+            "Copy",
+        ]
+        _click_menu_bar(app, "Dash A", "Copy")
+        assert app.copied == [(dash.dashboard_id, "Dash A")]
+
+    async def test_viewer_action_in_menu_bar(self, copy_menubar_app):
+        app = copy_menubar_app
+        dash = app.store.create_dashboard(app._user_id, "Dash A")
+        app._can_administer_dashboard = lambda dashboard_id: False
+        app._refresh_sidebar_dashboards()
+        submenu = _find_menu_bar_item(app._menu_bar.items, "Dash A")
+        assert [i["label"] for i in submenu["items"]] == ["Open", "Copy"]
+        _click_menu_bar(app, "Dash A", "Copy")
+        assert app.copied == [(dash.dashboard_id, "Dash A")]
+
+    async def test_menu_bar_entries_drop_action_only_keys(self, copy_menubar_app):
+        app = copy_menubar_app
+        app._ADMIN_DASHBOARD_ACTIONS = (
+            {"label": "Copy", "icon": "content_copy", "inline": True, "toggle": True, "items": []},
+        )
+        app.store.create_dashboard(app._user_id, "Dash A")
+        app._refresh_sidebar_dashboards()
+        submenu = _find_menu_bar_item(app._menu_bar.items, "Dash A")
+        copy = next(i for i in submenu["items"] if i["label"] == "Copy")
+        assert not {"inline", "toggle", "items"} & set(copy)
+
+
+class TestActionKey:
+    """An action with an ``"action"`` key dispatches under that key, as pmui does."""
+
+    async def test_card_dispatches_action_key(self, keyed_app):
+        dash = keyed_app.store.create_dashboard(keyed_app._user_id, "Dash A")
+        (dial,) = _launcher_speed_dials(keyed_app)
+        dial.value = next(i for i in dial.items if i["label"] == "Duplicate")
+        assert keyed_app.duplicated == [(dash.dashboard_id, "Dash A")]
+
+    async def test_drawer_dispatches_action_key(self, keyed_app):
+        dash = keyed_app.store.create_dashboard(keyed_app._user_id, "Dash A")
+        keyed_app._refresh_sidebar_dashboards()
+        index = _menu_index_for_path(keyed_app, f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}")
+        keyed_app._menu_list._handle_msg({"type": "action", "action": "copy", "item": list(index)})
+        assert keyed_app.duplicated == [(dash.dashboard_id, "Dash A")]
+
+    async def test_menu_bar_dispatches_action_key(self, keyed_menubar_app):
+        app = keyed_menubar_app
+        dash = app.store.create_dashboard(app._user_id, "Dash A")
+        app._refresh_sidebar_dashboards()
+        _click_menu_bar(app, "Dash A", "Duplicate")
+        assert app.duplicated == [(dash.dashboard_id, "Dash A")]

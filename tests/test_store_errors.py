@@ -211,9 +211,7 @@ class TestDashboardDialog:
     async def test_rename_refusal_keeps_dialog_open_with_inline_error(self, make_app):
         store = RefusingStore()
         app, model = await _app_with_dashboard(make_app, store)
-        app._on_action_rename(
-            {"path": f"{DASH_ROUTE_PREFIX}{model.dashboard_id}", "label": "Sales"}
-        )
+        app._open_rename_dialog(model.dashboard_id, "Sales")
         app._dialog_name_input.value = "Renamed"
         store.refuse.add("rename")
 
@@ -226,9 +224,7 @@ class TestDashboardDialog:
 
     async def test_rename_closes_dialog_on_success(self, make_app):
         app, model = await _app_with_dashboard(make_app, RefusingStore())
-        app._on_action_rename(
-            {"path": f"{DASH_ROUTE_PREFIX}{model.dashboard_id}", "label": "Sales"}
-        )
+        app._open_rename_dialog(model.dashboard_id, "Sales")
         app._dialog_name_input.value = "Renamed"
 
         app._on_dialog_confirm(None)
@@ -240,9 +236,7 @@ class TestDashboardDialog:
     async def test_delete_refusal_keeps_dialog_open(self, make_app):
         store = RefusingStore()
         app, model = await _app_with_dashboard(make_app, store)
-        app._on_action_delete(
-            {"path": f"{DASH_ROUTE_PREFIX}{model.dashboard_id}", "label": "Sales"}
-        )
+        app._open_delete_dialog(model.dashboard_id, "Sales")
         store.refuse.add("delete")
 
         app._on_dialog_confirm(None)
@@ -388,7 +382,7 @@ class TestSaveRefused:
         app, model = await _app_with_dashboard(make_app, store)
         app._editor.add_component("Analytics/selector")
         navigated = []
-        app._navigate_to = navigated.append
+        app._navigate_to = lambda path, search="": navigated.append(path)
         app._request_navigation("/")
         assert app._unsaved_dialog.open
         store.refuse.add("save")
@@ -407,7 +401,7 @@ class TestSaveRefused:
         app, _ = await _app_with_dashboard(make_app, store)
         app._editor.add_component("Analytics/selector")
         navigated = []
-        app._navigate_to = navigated.append
+        app._navigate_to = lambda path, search="": navigated.append(path)
         app._request_navigation("/")
 
         save_button = app._unsaved_dialog.objects[0].objects[1].objects[0]
