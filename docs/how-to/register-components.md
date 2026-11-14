@@ -130,3 +130,6 @@ Rules:
 - Files starting with `_` are skipped.
 - Each module must export an `app` attribute.
 - The `app_id` is `"Section/module_name"` (e.g. `"Section_A/component1"`).
+- Modules are imported as `Section.module_name`, or as
+  `package.Section.module_name` when the project is served as an importable
+  package (see [Serving a package](serve-project.md#serving-a-package)).
