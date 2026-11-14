@@ -6,7 +6,9 @@ objects, wiring them, and round-tripping through a store, all without a server.
 """
 
 import asyncio
+import gc
 import json
+import weakref
 from types import SimpleNamespace
 from typing import ClassVar
 
@@ -1045,7 +1047,7 @@ class TestComponentDisposal:
         assert instance.disposals == 1
         assert f"dispose() of component '{instance_id}' failed" in caplog.text
         assert "teardown broke" in caplog.text
-        assert [i["instance_id"] for i in disposal_editor._tile_items] != [instance_id]
+        assert instance_id not in [i["instance_id"] for i in disposal_editor._tile_items]
         assert instance_id not in disposal_editor.graph.node_ids
         assert other.disposals == 0
 
@@ -1086,10 +1088,55 @@ class TestComponentDisposal:
         assert instance.disposals == 1
         assert disposal_editor._component_instances == {}
 
+    async def test_hook_runs_after_the_view_left_the_canvas(self, disposal_editor):
+        instance_id, instance = _place_disposable(disposal_editor)
+        seen = []
+        instance.dispose = lambda: seen.append(_placed_ids(disposal_editor))
+
+        disposal_editor.remove_component(instance_id)
+
+        assert seen == [([], [])]
+
+    async def test_reset_disposes_after_the_canvas_is_cleared(self, disposal_editor):
+        placed = [_place_disposable(disposal_editor) for _ in range(2)]
+        seen = []
+        for _, instance in placed:
+            instance.dispose = lambda: seen.append(_placed_ids(disposal_editor))
+
+        disposal_editor.clear()
+
+        assert seen == [([], [])] * 2
+
+    async def test_dispose_tears_down_the_editor(self, disposal_editor):
+        src, source = _place_disposable(disposal_editor)
+        dst = disposal_editor.add_component(SHOUTER)
+        disposal_editor.connect(src, "shouted", dst, "ticker")
+
+        disposal_editor.dispose()
+
+        assert source.disposals == 1
+        assert list(disposal_editor.graph.node_ids) == []
+        assert _placed_ids(disposal_editor) == ([], [])
+        assert disposal_editor._tile_objects == []
+        assert disposal_editor._flow.edges == []
+        assert disposal_editor._component_instances == {}
+
+        _, again = _place_disposable(disposal_editor)
+        assert [n["id"] for n in disposal_editor._flow.nodes] == list(
+            disposal_editor._component_instances
+        )
+        assert again.disposals == 0
+
+    async def test_replacing_an_instance_id_disposes_the_previous_component(self, disposal_editor):
+        instance_id, previous = _place_disposable(disposal_editor)
+
+        disposal_editor._place(DISPOSABLE, instance_id, {})
+
+        assert previous.disposals == 1
+        assert disposal_editor._component_instances[instance_id] is not previous
+
     async def test_session_end_disposes_components(self):
-        doc = Document()
-        session_context = SimpleNamespace(id="session", request=SimpleNamespace(arguments={}))
-        doc._session_context = lambda: session_context
+        doc, session_context = _session_doc()
         with set_curdoc(doc):
             editor = FlowDash({DISPOSABLE: Disposable}, notifications=False)
             _, instance = _place_disposable(editor)
@@ -1098,11 +1145,46 @@ class TestComponentDisposal:
             callback(session_context)
 
         assert instance.disposals == 1
+        assert list(editor.graph.node_ids) == []
+
+    async def test_session_callback_does_not_keep_the_editor_alive(self):
+        doc, session_context = _session_doc()
+        with set_curdoc(doc):
+            editor = FlowDash({DISPOSABLE: Disposable}, notifications=False)
+            _, instance = _place_disposable(editor)
+        ref = weakref.ref(editor)
+
+        del editor
+        gc.collect()
+
+        assert ref() is None
+        for callback in doc.session_destroyed_callbacks:
+            callback(session_context)
+        assert instance.disposals == 0
 
     async def test_editor_outside_a_session_registers_no_session_callback(self):
-        FlowDash({DISPOSABLE: Disposable}, notifications=False)
+        editor = FlowDash({DISPOSABLE: Disposable}, notifications=False)
 
-        assert pn.state._on_session_destroyed == []
+        assert not any(_disposes(cb, editor) for cb in pn.state._on_session_destroyed)
+
+
+def _placed_ids(editor):
+    return (
+        [item["instance_id"] for item in editor._tile_items],
+        [node["id"] for node in editor._flow.nodes],
+    )
+
+
+def _session_doc():
+    doc = Document()
+    session_context = SimpleNamespace(id="session", request=SimpleNamespace(arguments={}))
+    doc._session_context = lambda: session_context
+    return doc, session_context
+
+
+def _disposes(callback, editor):
+    args = getattr(callback, "args", ())
+    return bool(args) and isinstance(args[0], weakref.ref) and args[0]() is editor
 
 
 class TestModelRoundTrip:
