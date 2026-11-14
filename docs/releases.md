@@ -8,6 +8,7 @@ Initial release of panel-flowdash.
 - Typed port model (`InputPort`, `OutputPort`, `ComponentSpec`)
 - Port introspection from Viewer subclasses (`param.output`, param inputs)
 - A Viewer can publish a Parameter as an output by naming it in `provides`, without wrapping it in a `@param.output` method
+- A Viewer component can define `dispose()` to release its resources; FlowDash calls it once when the node is removed, the canvas is cleared or replaced, or the session ends
 - `DataflowGraph` engine with cycle detection, type checking, single-source validation
 - Runtime validation via `param.watch` with error callbacks
 - SQLite persistence (`DashboardStore`, `DashboardModel`)
@@ -16,3 +17,4 @@ Initial release of panel-flowdash.
 - Responsive tile grid that wraps the authored layout on narrower screens, with optional per-breakpoint custom layouts; `DashboardModel.reference_width` records the width the layout was authored at
 - Download a dashboard as JSON from the editor and drop the file onto the canvas to recreate it; `FlowDash.export_dashboard()` and `FlowDash.import_dashboard()` do the same from Python
 - CLI: `flowdash serve <project-dir>` with Panel-compatible options
+- `flowdash serve --package` (and `build_registry(..., package=...)`) serves a project that is an importable package under its own module names, so FlowDash and the project's code share one module object per file

@@ -177,6 +177,13 @@ class FlowDashApp(Viewer):
         disabled (or when no notification area exists) messages are logged.""",
     )
 
+    package = param.String(
+        default=None,
+        doc="""
+        Importable package that `project_dir` is, if any. Modules are then named
+        `<package>.<Section>.<name>` instead of relative to `project_dir`.""",
+    )
+
     page_options = param.Dict(
         default={},
         doc="""
@@ -206,7 +213,7 @@ class FlowDashApp(Viewer):
             self.auth_config = AuthConfig()
 
         if registry is None:
-            registry = build_registry(pathlib.Path(self.project_dir))
+            registry = build_registry(pathlib.Path(self.project_dir), package=self.package)
         page_entries = {k: v for k, v in registry.items() if v.metadata.page}
         # Session state is built from AST metadata — no imports needed.
         session_state_class = build_session_state_class(registry)
@@ -1550,7 +1557,7 @@ class FlowDashApp(Viewer):
     ) -> dict[str, t.Any]:
         """Generate route mapping for pn.serve."""
         if registry is None:
-            registry = build_registry(pathlib.Path(project_dir))
+            registry = build_registry(pathlib.Path(project_dir), package=params.get("package"))
 
         def factory():
             return cls(registry=registry, **params)

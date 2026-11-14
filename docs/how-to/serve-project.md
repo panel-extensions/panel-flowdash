@@ -13,7 +13,7 @@ flowdash serve my_project/
 
 This:
 
-1. Adds `my_project/` to `sys.path`
+1. Adds `my_project/` to `sys.path` (unless it is served with `--package`)
 2. Scans subdirectories for modules with `@register`-decorated `app` exports
 3. Builds the component registry and specs
 4. Creates a `DashboardStore` at `my_project/dashboards.db`
@@ -38,6 +38,7 @@ flowdash serve <directory> [options]
 | `--address` | `0.0.0.0` | Address to bind to. |
 | `--title` | `FlowDash` | Application title in the browser tab. |
 | `--home-dashboard` | none | Dashboard (id or title) to show on the homepage instead of the grid. |
+| `--package` | none | Serve the project as this importable package, naming modules `<package>.<Section>.<name>` instead of adding the directory to `sys.path`. See [Serving a package](#serving-a-package). |
 | `--db-path` | `<dir>/dashboards.db` | Path to the SQLite database. Conflicts with a `store` defined in the project. |
 | `--warm` | off | Import all modules at startup instead of lazily on first visit. |
 | `--dev` | off | Enable autoreload for development. |
@@ -47,7 +48,7 @@ flowdash serve <directory> [options]
 | `--allow-websocket-origin` | all | Restrict allowed websocket origins. |
 | `--no-notifications` | off | Disable Panel notifications. |
 | `--static-dirs` | none | Serve extra static file directories, e.g. `--static-dirs assets=/path/to/assets`. Paths are resolved relative to the project directory. |
-| `--plugins` | none | Register extra Tornado routes from an importable module exposing a `ROUTES` list, e.g. `--plugins my_plugin` for `<project>/my_plugin.py`. Repeatable. |
+| `--plugins` | none | Register extra Tornado routes from an importable module exposing a `ROUTES` list, e.g. `--plugins my_plugin` for `<project>/my_plugin.py`. With `--package`, pass the dotted name, e.g. `--plugins catalogue.my_plugin`. Repeatable. |
 
 `flowdash serve` is built on Panel's `serve` command and inherits its full
 set of CLI options (OAuth, REST providers, session options, and more).
@@ -143,8 +144,8 @@ Import errors are logged as warnings; they do not abort startup.
 
 ## Project initialization file
 
-If `my_project/__init__.py` exists, it is executed during server startup —
-before registry scanning and before Panel launches. Use it for any
+If `my_project/__init__.py` exists, it is executed during server startup,
+before Panel launches. Use it for any
 pre-configuration that the rest of the project depends on:
 
 ```python
@@ -161,7 +162,56 @@ pn.extension("tabulator", "vega", sizing_mode="stretch_width")
 ```
 
 The file runs with `my_project/` already on `sys.path` and as the working
-directory, so local relative imports work normally.
+directory, so local relative imports work normally. A project served with
+`--package` is imported as that package instead, see below.
+
+---
+
+## Serving a package
+
+By default FlowDash imports `my_project/Analytics/chart.py` as the module
+`Analytics.chart`, which only resolves because the project directory is put on
+`sys.path`. If the catalogue is also an importable package, installed or with
+its parent directory already on the path, its own code and tests import the same
+file as `catalogue.Analytics.chart`. Python then holds two separate module
+objects for one file, each with its own classes and module state.
+
+Pass the package name with `--package` to make FlowDash use the package's names:
+
+```bash
+pip install -e .   # or put the directory containing catalogue/ on PYTHONPATH
+flowdash serve path/to/catalogue/ --package catalogue
+```
+
+FlowDash then:
+
+- names every module `catalogue.<Section>.<name>`, both when importing it lazily
+  and on the served component's `__module__`
+- does not add `path/to/catalogue/` to `sys.path`
+- imports the project's `__init__.py` as `catalogue` itself, so `store`,
+  `configure_layout` and the auth settings come from the same module the rest of
+  your code imports
+
+The package must resolve to the directory being served. If `catalogue` is not
+importable, or imports from somewhere else (a stale install, say), `flowdash
+serve` exits with an error naming both locations before starting the server.
+Each section directory needs an `__init__.py` unless you rely on namespace
+packages.
+
+Plugins that live in the package are passed by their dotted name too:
+
+```bash
+flowdash serve path/to/catalogue/ --package catalogue --plugins catalogue.my_plugin
+```
+
+A bare `--plugins my_plugin` still imports, because Panel looks for plugins in
+the working directory and `flowdash serve` changes into the project directory,
+but it becomes a separate top-level `my_plugin` module rather than the
+`catalogue.my_plugin` the rest of your code imports.
+
+Programmatically, pass the same option to `FlowDashApp(project_dir=...,
+package="catalogue")` or to `panel_flowdash.registry.build_registry(project_dir,
+package="catalogue")`.
 
 ---
 
