@@ -65,6 +65,7 @@ from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transform_editor import TransformEditor
 from panel_flowdash.transforms import parse_transform, summarize_transform
 from panel_flowdash.ui.palette import ComponentPalette, palette_entry, palette_items
+from panel_flowdash.ui.dashboard_bar import DashboardBar
 from panel_flowdash.util import (
     close_dialog,
     gate_view,
@@ -459,8 +460,9 @@ class FlowDash(Viewer):
     preview = param.Boolean(
         default=False,
         doc="""
-        Preview the dashboard as an end user sees it without leaving edit mode.
-        Only meaningful while `editable` and in 'dashboard' mode.""",
+        Lock the tile grid as an end user sees it without leaving edit mode.
+        Only meaningful while `editable` and in 'dashboard' mode. The
+        dashboard bar offers no control for it, since view mode is the preview.""",
     )
 
     propagate_failures = param.Boolean(
@@ -496,7 +498,7 @@ class FlowDash(Viewer):
         doc="""
         The dashboard-wide settings, an instance of `settings_class`. Filled
         from the loaded dashboard and written back on save. Edited in edit mode
-        through the toolbar's settings form.""",
+        through the dashboard bar's Settings form.""",
     )
 
     settings_class = param.ClassSelector(
@@ -528,9 +530,10 @@ class FlowDash(Viewer):
     toolbar = param.Boolean(
         default=True,
         doc="""
-        Whether to render the toolbar with the mode toggle and the save,
-        download and clear actions. It floats over the wiring canvas and sits
-        above the tile grid. The component palette is shown regardless.""",
+        Whether to render the dashboard bar above the workspace. In view mode
+        it holds the title, Refresh and the View/Edit control; in edit mode
+        the Dataflow/Layout tabs and the Settings, Discard, Save and Done
+        actions. The component palette is shown regardless.""",
     )
 
     popup_trigger = param.ObjectSelector(
@@ -552,7 +555,10 @@ class FlowDash(Viewer):
     )
 
     toolbar_extra = Children(
-        default=[], doc="Additional items placed between the Download and Clear actions."
+        default=[],
+        doc="""
+        Additional items placed in the dashboard bar's actions, before the
+        View/Edit control in view mode and after Settings in edit mode.""",
     )
 
     user = param.String(
@@ -1683,25 +1689,13 @@ class FlowDash(Viewer):
     # ------------------------------------------------------------------
 
     def _build_component_view(self):
-        self._save_button = pmui.Button(
-            label="Save", icon="save", variant="text", size="small", margin=(5, 2)
-        )
-        self._clear_button = pmui.Button(
-            label="Clear", icon="delete_sweep", variant="text", size="small", margin=(5, 2)
-        )
-        self._download_button = pmui.FileDownload(
-            callback=self._download_callback,
-            filename="dashboard.json",
-            label="Download",
-            icon="download",
-            size="small",
-            margin=(5, 2),
-        )
-        # Released Panel warns about `button_style` when a Material FileDownload is
-        # constructed with `variant`; drop once holoviz/panel#8752 is the minimum.
-        self._download_button.variant = "text"
+        self._dashboard_bar = bar = DashboardBar(editor=self)
+        self._save_button = bar.save_button
+        self._download_button = bar.download_button
+        self._refresh_button = bar.refresh_button
+        self._refresh_label = bar.refresh_label
+        self._settings_button = bar.settings_button
         self._save_button.on_click(lambda _event: self._on_save_clicked())
-        self._clear_button.on_click(lambda _event: self._clear_dialog.param.update(open=True))
         self._clear_dialog = self._build_clear_dialog()
         self._pending_import: DashboardModel | None = None
         self._import_message = pn.pane.Markdown()
@@ -1714,64 +1708,12 @@ class FlowDash(Viewer):
             width_option="md",
             sx={"& .MuiDialog-paper": {"minWidth": "min(480px, 100%)"}},
         )
-
-        self._refresh_button = pmui.Button(
-            label="Refresh", icon="refresh", variant="text", size="small", margin=(5, 2)
-        )
-        self._refresh_label = pmui.Typography(
-            variant="caption", sx={"color": "text.secondary"}, margin=(0, 8, 0, 0), align="center"
-        )
-        self._refresh_bar = pn.Row(
-            self._refresh_label, self._refresh_button, align="end", margin=(4, 8, 0, 8)
-        )
-        self._refresh_button.on_click(lambda _event: self.param.trigger("refresh"))
-        self._settings_button = pmui.Button(
-            label="Settings",
-            icon="tune",
-            variant="text",
-            size="small",
-            margin=(5, 2),
-            align="center",
-        )
+        # Saving is only offered with unsaved changes, and rearranging is a change.
+        self._flow.on("node_moved", lambda _payload: self._mark_rearranged())
+        self._tile_grid.param.watch(self._on_tile_layout_edited, "layout")
         self._settings_dialog = self._build_settings_dialog()
         self._settings_button.on_click(
             lambda _event: self._settings_dialog.param.update(open=True)
-        )
-
-        self._mode_toggle = pmui.RadioButtonGroup(
-            options={
-                ":material/cable: Wiring": "wiring",
-                ":material/dashboard: Dashboard": "dashboard",
-            },
-            value=self.mode,
-            size="small",
-            margin=(5, 10, 5, 5),
-            align="center",
-        )
-        self._mode_toggle.link(self, value="mode", bidirectional=True)
-        self._preview_switch = pmui.Switch(
-            label="Preview",
-            size="small",
-            margin=(5, 10),
-            align="center",
-            # `sx` styles the switch itself; match the label to the button text.
-            stylesheets=[":host .MuiFormControlLabel-label { font-size: 0.8125rem; }"],
-        )
-        self._preview_switch.link(self, value="preview", bidirectional=True)
-        self._actions_row = pn.Row(margin=0, align="center")
-        # One toolbar for both modes: it floats over the canvas in wiring mode and
-        # moves above the tile grid in dashboard mode, where there is no canvas.
-        self._controls = pmui.Paper(
-            self._mode_toggle,
-            self._preview_switch,
-            pmui.Divider(orientation="vertical", height=24, margin=(0, 6), align="center"),
-            self._actions_row,
-            self._settings_button,
-            align="center",
-            direction="row",
-            elevation=2,
-            margin=10,
-            sx={"alignItems": "center", "borderRadius": 2, "px": 0.5},
         )
         self._palette_section = self._palette_panel
         # Specs registered after a lazy import replace the node types, and give
@@ -1796,7 +1738,22 @@ class FlowDash(Viewer):
         self._sync_toolbar_extra()
         self._sync_toolbar_state()
         self._stamp_refresh()
-        return pn.Row(self._side_panel, self._workspace_area, sizing_mode="stretch_both")
+        return pn.Column(
+            bar,
+            pn.Row(self._side_panel, self._workspace_area, sizing_mode="stretch_both"),
+            sizing_mode="stretch_both",
+        )
+
+    def _mark_rearranged(self):
+        if self.editable:
+            self.dirty = True
+
+    def _on_tile_layout_edited(self, event):
+        # Only a layout the browser sent was edited by the user; the editor sets
+        # it itself whenever the grid is rebuilt or sized.
+        from_browser = self._tile_grid._in_process__events.get(pn.state.curdoc, {})
+        if event.name in from_browser:
+            self._mark_rearranged()
 
     def _build_clear_dialog(self):
         cancel = pmui.Button(label="Cancel", variant="text")
@@ -1877,12 +1834,8 @@ class FlowDash(Viewer):
 
     @param.depends("dirty", "read_only", watch=True)
     def _sync_toolbar_state(self):
-        """Reflect canvas contents and save state in the toolbar and palette."""
-        # Save is the only emphasized action, and only while there is something to save.
-        variant = "contained" if self.dirty else "text"
-        self._save_button.param.update(variant=variant, disabled=self.read_only)
-        self._settings_button.disabled = self.read_only
-        self._clear_button.disabled = not self._tile_items
+        """Reflect canvas contents and save state in the dashboard bar and palette."""
+        self._dashboard_bar.sync()
         hint = [] if self._tile_items else [self._empty_hint]
         if self._unresolved_edges:
             hint.append(self._broken_edges_listing())
@@ -1957,13 +1910,8 @@ class FlowDash(Viewer):
 
     @param.depends("toolbar_extra", watch=True)
     def _sync_toolbar_extra(self):
-        """Re-seat caller-supplied toolbar items around the built-in actions."""
-        self._actions_row[:] = [
-            self._save_button,
-            self._download_button,
-            *self.toolbar_extra,
-            self._clear_button,
-        ]
+        """Re-seat caller-supplied toolbar items in the dashboard bar."""
+        self._dashboard_bar.sync()
 
     @pn.io.hold()
     @param.depends(
@@ -1976,11 +1924,11 @@ class FlowDash(Viewer):
         watch=True,
     )
     def _apply_mode_state(self):
-        """Reconcile the toolbar, side panel and workspace with the display params."""
+        """Reconcile the dashboard bar, side panel and workspace with the display params."""
         interactive = self.editable and not self.preview
         showing_grid = self.mode == "dashboard" or not self.editable
-        toolbar = [self._controls] if self.toolbar and self.editable else []
-        self._preview_switch.visible = self.editable and self.mode == "dashboard"
+        self._dashboard_bar.visible = self.toolbar
+        self._dashboard_bar.sync()
         self._side_panel.visible = not showing_grid
         self._tile_grid.param.update(editable=interactive, card=interactive)
         # Column children rather than Row children, so the dialogs take no flex space.
@@ -1991,15 +1939,11 @@ class FlowDash(Viewer):
         if shared_dialog is not None:
             dialogs.append(shared_dialog)
         if showing_grid:
-            self._flow.top_panel = []
-            # Edit mode has its own toolbar; the bar is for what an end user sees.
-            bar = [] if interactive else [self._refresh_bar]
-            self._workspace_area[:] = [*toolbar, *bar, self._tile_grid, *dialogs]
+            self._workspace_area[:] = [self._tile_grid, *dialogs]
             self._rebuild_tile_grid()
         else:
             self._stash_tile_layout()
             self._workspace_area[:] = [self._flow, *dialogs]
-            self._flow.top_panel = toolbar
             self._rebuild_sidebar()
 
     def _stash_tile_layout(self):

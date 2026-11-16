@@ -185,14 +185,15 @@ def test_clear_requires_confirmation(page):
     editor.add_component("Test/source")
     serve_component(page, editor)
 
-    clear = page.get_by_role("button", name="Clear", exact=True)
-    clear.click()
+    page.get_by_role("button", name="More actions").click()
+    page.get_by_role("menuitem", name="Clear canvas").click()
     dialog = page.get_by_role("dialog")
     dialog.get_by_role("button", name="Cancel").click()
     wait_until(lambda: not editor._clear_dialog.open, timeout=8000)
     assert len(editor._tile_items) == 1
 
-    clear.click()
+    page.get_by_role("button", name="More actions").click()
+    page.get_by_role("menuitem", name="Clear canvas").click()
     page.get_by_role("dialog").get_by_role("button", name="Clear canvas").click()
     wait_until(lambda: editor._tile_items == [], timeout=8000)
 
@@ -287,14 +288,16 @@ def test_downloaded_dashboard_recreated_by_dropping_it(page, tmp_path):
     serve_component(page, editor)
 
     with page.expect_download() as download:
-        page.get_by_role("button", name="Download").click()
+        page.get_by_role("button", name="More actions").click()
+        page.get_by_role("menuitem", name="Download").click()
     assert download.value.suggested_filename == "Wired_pair.json"
     path = tmp_path / "export.json"
     download.value.save_as(path)
     content = path.read_text()
     assert json.loads(content)["edges"][0]["source"] == src
 
-    page.get_by_role("button", name="Clear", exact=True).click()
+    page.get_by_role("button", name="More actions").click()
+    page.get_by_role("menuitem", name="Clear canvas").click()
     page.get_by_role("dialog").get_by_role("button", name="Clear canvas").click()
     wait_until(lambda: editor._tile_items == [], timeout=8000)
 

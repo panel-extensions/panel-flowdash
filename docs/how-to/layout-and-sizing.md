@@ -3,19 +3,19 @@
 Once components are wired together, the editor has two views of the same set of
 nodes:
 
-- **Wiring mode** (`:material/cable:`) - the ReactFlow canvas where you add
+- **Dataflow** (`mode="wiring"`) - the ReactFlow canvas where you add
   components and connect ports.
-- **Dashboard mode** (`:material/dashboard:`) - a responsive tile grid that
-  renders each component's live view, the layout your users actually see.
+- **Layout** (`mode="dashboard"`) - a responsive tile grid that renders each
+  component's live view, the layout your users actually see.
 
-Toggle between them with the mode switch at the top of the editor's side panel. In dashboard
-mode a **Preview** switch turns the drag/resize handles off so you can see the
-dashboard exactly as it will appear when served.
+Switch between them with the *Dataflow* and *Layout* tabs in the dashboard bar
+while editing. To see the dashboard exactly as it will appear when served, press
+*Done* (or choose *View*): view mode is the preview.
 
 ![Dashboard mode showing tiles in the grid, sidebar filters, and the breakpoint toolbar](../assets/images/dashboard-mode.png)
 
-The breakpoint toolbar (XS / SM / MD / AUTO) appears at the top of dashboard
-mode and the **Preview** switch below the mode toggle; the sidebar filters on the left are the components
+The breakpoint toolbar (XS / SM / MD / AUTO) appears at the top of the layout
+tab; the sidebar filters on the left are the components
 marked `sidebar=True`, described next.
 
 ---

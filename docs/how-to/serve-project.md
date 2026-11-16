@@ -38,7 +38,7 @@ flowdash serve <directory> [options]
 | `--address` | `0.0.0.0` | Address to bind to. |
 | `--title` | `FlowDash` | Application title in the browser tab. |
 | `--home-dashboard` | none | Dashboard (id or title) to show on the homepage instead of the grid. |
-| `--nav-variant` | `right` | Where the navigation menu goes: `left`, `right` or `menubar`. |
+| `--nav-variant` | `rail` | How navigation is rendered: `rail`, `left`, `right` or `menubar`. See [Navigation](#navigation). |
 | `--package` | none | Serve the project as this importable package, naming modules `<package>.<Section>.<name>` instead of adding the directory to `sys.path`. See [Serving a package](#serving-a-package). |
 | `--db-path` | `<dir>/dashboards.db` | Path to the SQLite database. Conflicts with a `store` defined in the project. |
 | `--warm` | off | Import all modules at startup instead of lazily on first visit. |
@@ -193,7 +193,7 @@ missing or set to `None` keeps its default.
 | `editor_options` | `dict` | Extra keyword arguments for the editor, see [Embed the Editor](embed-the-editor.md#configuring-the-editor-inside-flowdashapp). |
 | `home_dashboard` | `str` | Dashboard id or title shown on the homepage. Overridden by `--home-dashboard`. |
 | `include_builtin_components` | `bool` | Offer the built-in widget components in the editor. Default `True`. |
-| `nav_variant` | `str` | `"left"`, `"right"` or `"menubar"`. Overridden by `--nav-variant`. |
+| `nav_variant` | `str` | `"rail"` (default), `"left"`, `"right"` or `"menubar"`, see [Navigation](#navigation). Overridden by `--nav-variant`. |
 | `notifications` | `bool` | Show user-facing messages as Panel notifications. Default `True`. |
 | `page_options` | `dict` | Extra keyword arguments for the underlying `panel_material_ui.Page`. |
 | `propagate_failures` | `bool` | Carry failures downstream, see [Wire Dataflow](wire-dataflow.md#carry-failures-downstream). |
@@ -280,6 +280,26 @@ package="catalogue")`.
 
 ---
 
+## Navigation
+
+By default (`nav_variant="rail"`) the app shows a navigation rail on the left
+with **Home**, **Dashboards**, **Components**, **Pages** (a menu of the code
+pages the user may open) and **Help**, the item for the current route
+highlighted. The top bar shows where you are as a breadcrumb, for example
+*Dashboards › Sales*, where the dashboard title opens a switcher listing every
+dashboard the user can see, or *Home › Components* on other routes. On screens
+narrower than 600 px the rail moves behind a menu button in the top bar.
+
+The other variants keep the earlier navigation: `left` and `right` dock a
+navigation tree in a drawer on that side of the page, and `menubar` puts
+*Navigate* and *Dashboards* menus in the page header.
+
+The sidebar's menu button only appears when the sidebar has content, such as
+components registered with `sidebar=True` or items set through
+`configure_layout`.
+
+---
+
 ## Page-aware sidebar and contextbar
 
 `FlowDashApp` exposes two `sidebar` and `contextbar` parameters whose contents
@@ -314,6 +334,11 @@ before the main area is rendered, and is responsible for both slots: whatever
 you assign to `app.sidebar` / `app.contextbar` replaces the previous page's
 contribution, so clear a slot by assigning `[]`. Exceptions raised by the hook
 are logged and do not break navigation.
+
+When the app has a contextbar, the top bar gets a button to open and close it.
+It starts closed (`contextbar_open=False`), so an assistant or other side panel
+in the contextbar is there when the user wants it rather than taking space on
+every page. Set `app.contextbar_open` in the hook only to open it deliberately.
 
 The `route` argument distinguishes the built-in routes (`/` for the launcher,
 `/components` for the editor, `/dash/<id>` for a saved dashboard) from page
