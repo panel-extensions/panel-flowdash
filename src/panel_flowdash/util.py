@@ -117,6 +117,18 @@ def _input_label(port: InputPort) -> str:
     return port.parameter.label if port.parameter is not None else port.name
 
 
+def _blocking_ports(state: param.Parameterized, inputs: t.Iterable[InputPort]) -> list[InputPort]:
+    return [p for p in inputs if p.required and p.blocking and p.name in state.param]
+
+
+def missing_inputs(state: param.Parameterized, inputs: t.Iterable[InputPort]) -> list[str]:
+    """Return the labels of the blocking inputs of *state* that are still None."""
+    ports = _blocking_ports(state, inputs)
+    requires = [{"key": p.name, "required": True, "blocking": True} for p in ports]
+    labels = {p.name: _input_label(p) for p in ports}
+    return [labels[u["key"]] for u in check_requirements(state, requires)]
+
+
 def gate_view(
     view: Viewable,
     state: param.Parameterized,
@@ -131,12 +143,10 @@ def gate_view(
     *view* is built once and only its container is hidden, so toggling neither
     re-renders the view nor recreates its models.
     """
-    ports = [p for p in inputs if p.required and p.blocking and p.name in state.param]
+    ports = _blocking_ports(state, inputs)
     if not ports:
         return view, None
 
-    requires = [{"key": p.name, "required": True, "blocking": True} for p in ports]
-    labels = {p.name: _input_label(p) for p in ports}
     placeholder = pmui.Typography(
         variant="body2",
         sizing_mode="stretch_both",
@@ -158,7 +168,7 @@ def gate_view(
     body = pn.Column(view, margin=0, sizing_mode="stretch_both")
 
     def update(*_):
-        missing = [labels[u["key"]] for u in check_requirements(state, requires)]
+        missing = missing_inputs(state, ports)
         with pn.io.hold():
             placeholder.param.update(
                 object=message or f"Waiting for {', '.join(missing)}",
