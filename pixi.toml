@@ -72,6 +72,15 @@ python = "3.13.*"
 [feature.py314.dependencies]
 python = "3.14.*"
 
+[feature.param-pre]
+channels = ["pyviz/label/dev"]
+
+[feature.param-pre.dependencies]
+param = { version = ">=2.5.0b0", channel = "pyviz/label/dev" }
+
+[feature.param-pre.activation.env]
+FLOWDASH_REQUIRE_FAILURES = "1"
+
 [feature.test-ui]
 channels = ["microsoft"]
 
@@ -106,6 +115,7 @@ test-311 = ["py311", "test"]
 test-312 = ["py312", "test"]
 test-313 = ["py313", "test"]
 test-314 = ["py314", "test"]
+test-param-pre = ["py314", "test", "param-pre"]
 test-ui = ["py312", "test", "test-ui"]
 docs = ["docs"]
 build = ["build"]
