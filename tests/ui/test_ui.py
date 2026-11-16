@@ -9,6 +9,7 @@ from panel.tests.util import serve_component, wait_until
 from panel.viewable import Viewer
 
 from panel_flowdash import register
+from panel_flowdash.dashboard_store import DashboardItem, DashboardModel
 from panel_flowdash.editor import FlowDash
 
 pytest.importorskip("playwright")
@@ -340,3 +341,65 @@ def test_edge_transform_editor_applies_changes(page):
     page.get_by_text("max", exact=True).click()
     wait_until(lambda: editor.graph.get_state(dst).total == 30, page)
     page.locator(".react-flow__edge-text").filter(has_text="max").wait_for()
+
+
+@register(page=False, component=True, title="Tile")
+def tile_component(config):
+    return "tile"
+
+
+def _tile_widths(page):
+    """Return [authored width, visible] for each tile, in DOM order."""
+    return page.locator(".muuri-grid-item").evaluate_all(
+        """els => els.map(el => [
+            parseFloat(el.getAttribute('data-width')),
+            getComputedStyle(el).display !== 'none',
+        ])"""
+    )
+
+
+def _spec(index, width, visible=True, **extra):
+    return {"index": index, "width": width, "height": 200, "visible": visible, **extra}
+
+
+def test_reopened_dashboard_keeps_layout_after_tile_removed(page):
+    components = {"Test/tile": tile_component}
+    editor = FlowDash(components, notifications=False, include_builtin_components=False)
+    ids = [editor.add_component("Test/tile") for _ in range(3)]
+    model = editor.to_model()
+    model.tile_layout = [
+        _spec(0, 100, instance_id=ids[0]),
+        _spec(1, 40, instance_id=ids[1]),
+        _spec(2, 60, visible=False, instance_id=ids[2]),
+    ]
+    editor.load_model(model)
+    editor.remove_component(ids[0])
+    saved = editor.to_model()
+
+    reopened = FlowDash(components, notifications=False, include_builtin_components=False)
+    reopened.load_model(saved)
+    reopened.mode = "dashboard"
+    serve_component(page, reopened)
+
+    wait_until(lambda: _tile_widths(page) == [[40, True], [60, False]], page=page, timeout=8000)
+
+
+def test_legacy_layout_skips_slot_of_component_that_no_longer_loads(page):
+    components = {"Test/tile": tile_component}
+    editor = FlowDash(components, notifications=False, include_builtin_components=False)
+    model = DashboardModel(
+        dashboard_id="d1",
+        user_id="u",
+        title="Legacy",
+        items=[
+            DashboardItem(instance_id="gone", component_id="Gone/missing"),
+            DashboardItem(instance_id="k1", component_id="Test/tile"),
+            DashboardItem(instance_id="k2", component_id="Test/tile"),
+        ],
+        tile_layout=[_spec(0, 100), _spec(1, 40), _spec(2, 60, visible=False)],
+    )
+    editor.load_model(model)
+    editor.mode = "dashboard"
+    serve_component(page, editor)
+
+    wait_until(lambda: _tile_widths(page) == [[40, True], [60, False]], page=page, timeout=8000)
