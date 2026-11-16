@@ -39,7 +39,7 @@ from panel_flowdash.dashboard_store import (
     DashboardStore,
     DashboardStoreError,
 )
-from panel_flowdash.dataflow_engine import DataflowGraph
+from panel_flowdash.dataflow_engine import DataflowGraph, _release_refs
 from panel_flowdash.registry import RegistryEntry
 from panel_flowdash.transform_editor import TransformEditor
 from panel_flowdash.transforms import parse_transform, summarize_transform
@@ -129,6 +129,16 @@ def _dispose_on_session_end(editor_ref: weakref.ref[FlowDash], session_context):
     editor = editor_ref()
     if editor is not None:
         editor._dispose_components()
+
+
+class _Outlet(param.Parameterized):
+    """Holds a single async output reference of a component, apart from its node state."""
+
+    # Param re-runs every async reference on an object whenever any of that
+    # object's references fires, so an async output resolved on the node state
+    # would also start each time one of the node's inputs changes, on top of
+    # the run its own dependencies trigger (fixed upstream by holoviz/param#1233).
+    value = param.Parameter(allow_refs=True)
 
 
 class FlowDash(Viewer):
@@ -309,6 +319,7 @@ class FlowDash(Viewer):
 
         self._dataflow_graph = DataflowGraph({}, on_error=self._on_wiring_error)
         self._component_instances: dict[str, Viewer] = {}
+        self._component_wiring: dict[str, list[t.Callable[[], None]]] = {}
         self._transform_editors: dict[str, TransformEditor] = {}
         self._load_component_extensions()
         self._palette = self._make_palette()
@@ -366,9 +377,16 @@ class FlowDash(Viewer):
     def _dispose_component(self, instance_id: str):
         """Call the ``dispose`` hook of the component placed as *instance_id*, if it has one.
 
+        The watchers and output references wiring the component to its node
+        are released first, so nothing flows into or out of it any more.
         Popping the instance first makes this a no-op on any later call, so a
         component is disposed at most once however it leaves the editor.
         """
+        for release in self._component_wiring.pop(instance_id, ()):
+            try:
+                release()
+            except Exception:
+                logger.exception("Releasing the wiring of component '%s' failed", instance_id)
         instance = self._component_instances.pop(instance_id, None)
         hook = getattr(instance, "dispose", None)
         if not callable(hook):
@@ -931,7 +949,7 @@ class FlowDash(Viewer):
                     logger.warning("Saved config '%s' rejected on %s: %s", key, instance_id, exc)
         return {name: getattr(config_state, name) for name in config_state.param if name != "name"}
 
-    def _bind_config_to_viewer(self, instance, config_state):
+    def _bind_config_to_viewer(self, instance, config_state, wiring):
         """Sync config-state params onto a Viewer instance, live."""
         for name in config_state.param:
             if name == "name" or not hasattr(instance.param, name):
@@ -948,7 +966,8 @@ class FlowDash(Viewer):
                 except Exception as exc:
                     logger.warning("Config '%s' update failed: %s", _name, exc)
 
-            config_state.param.watch(_propagate, name)
+            watcher = config_state.param.watch(_propagate, name)
+            wiring.append(partial(config_state.param.unwatch, watcher))
 
     # ------------------------------------------------------------------
     # Component instantiation
@@ -979,26 +998,45 @@ class FlowDash(Viewer):
         """Instantiate a Viewer and wire its params to the node_state."""
         spec = self._component_specs.get(entry.app_id)
         instance = viewer_cls()
-        self._dispose_component(node_state.name)
-        self._component_instances[node_state.name] = instance
+        node_id = node_state.name
+        self._dispose_component(node_id)
+        self._component_instances[node_id] = instance
+        wiring = self._component_wiring[node_id] = []
 
         if config_state is not None:
-            self._bind_config_to_viewer(instance, config_state)
+            self._bind_config_to_viewer(instance, config_state, wiring)
 
+        # Weak, so a component kept by the app does not keep a discarded editor alive.
+        editor = weakref.ref(self)
         input_names = [p.name for p in spec.inputs] if spec else []
         for name in input_names:
             if not hasattr(instance.param, name):
                 continue
 
             def _propagate_input(event, _name=name):
-                setattr(instance, _name, event.new)
+                # A component rejecting a value, or a watcher of its own raising,
+                # must not abort the dispatch to the node's other consumers.
+                try:
+                    setattr(instance, _name, event.new)
+                except Exception as exc:
+                    if (owner := editor()) is not None:
+                        owner._report_input_error(node_id, _name, exc)
 
-            node_state.param.watch(_propagate_input, name)
+            watcher = node_state.param.watch(_propagate_input, name)
+            wiring.append(partial(node_state.param.unwatch, watcher))
 
         methods = instance.param.outputs()
         for name, (_, method, _) in methods.items():
-            if hasattr(node_state.param, name):
-                setattr(node_state, name, self._output_reference(instance, name, method))
+            if not hasattr(node_state.param, name):
+                continue
+            ref = self._output_reference(instance, name, method)
+            if is_async(method if callable(method) else getattr(instance, method)):
+                outlet = _Outlet(name=f"{node_id}_{name}")
+                outlet.value = ref
+                ref = outlet.param.value
+                # Overwriting the reference cancels a pending or still yielding output.
+                wiring.append(partial(_release_refs, outlet))
+            setattr(node_state, name, ref)
 
         # An output named after a Parameter is that Parameter, with no method to wrap.
         for port in spec.outputs if spec else ():
@@ -1010,6 +1048,17 @@ class FlowDash(Viewer):
                 setattr(node_state, port.name, instance.param[port.name])
 
         return panel_viewer(instance)
+
+    def _report_input_error(self, node_id: str, port: str, exc: Exception):
+        source = next(
+            (
+                (edge["source"], edge["source_port"])
+                for edge in self._dataflow_graph.edges
+                if edge["target"] == node_id and edge["target_port"] == port
+            ),
+            ("", ""),
+        )
+        self._on_wiring_error(*source, node_id, port, exc)
 
     @staticmethod
     def _output_reference(instance, name, method):

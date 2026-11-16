@@ -1643,6 +1643,150 @@ class TestAsyncComponents:
         assert seen[-2:] == ["MSFT", "MSFT!"]
 
 
+class Polling(Viewer):
+    """A Viewer whose output is an endless async generator, like a live feed."""
+
+    ticks: ClassVar[list] = []
+
+    @param.output(param.Integer)
+    async def tick(self):
+        i = 0
+        while True:
+            Polling.ticks.append(i)
+            yield i
+            i += 1
+            await asyncio.sleep(0.01)
+
+    def __panel__(self):
+        return "polling"
+
+
+class Counter(Viewer):
+    """A Viewer publishing an Integer."""
+
+    value = param.Integer(default=0)
+
+    @param.output(param.Integer)
+    @param.depends("value")
+    def count(self):
+        return self.value
+
+    def __panel__(self):
+        return str(self.value)
+
+
+class Summing(Viewer):
+    """A Viewer with an async output that records each time it starts."""
+
+    a = param.Integer(default=0)
+    b = param.Integer(default=0)
+    runs: ClassVar[list] = []
+
+    @param.output(param.Integer)
+    @param.depends("a", "b")
+    async def total(self):
+        Summing.runs.append((self.a, self.b))
+        await asyncio.sleep(0)
+        return self.a + self.b
+
+    def __panel__(self):
+        return "summing"
+
+
+class Exploding(Viewer):
+    """A Viewer whose own watcher raises on one particular input."""
+
+    ticker = param.String(default="")
+
+    @param.depends("ticker", watch=True)
+    def _react(self):
+        if self.ticker == "BOOM":
+            raise ValueError("watcher failed")
+
+    def __panel__(self):
+        return self.ticker
+
+
+class TestComponentWiring:
+    @pytest.fixture
+    def editor(self):
+        Polling.ticks = []
+        Summing.runs = []
+        return FlowDash(
+            {
+                SHOUTER: Shouter,
+                "Demo/counter": Counter,
+                "Demo/polling": Polling,
+                "Demo/summing": Summing,
+                "Demo/exploding": Exploding,
+            },
+            notifications=False,
+        )
+
+    async def test_removed_async_generator_output_stops(self, editor):
+        instance_id = editor.add_component("Demo/polling")
+        await async_wait_until(lambda: len(Polling.ticks) >= 3)
+
+        editor.remove_component(instance_id)
+        await asyncio.sleep(0)
+        count = len(Polling.ticks)
+        await asyncio.sleep(0.05)
+
+        assert len(Polling.ticks) == count
+
+    async def test_cleared_async_generator_output_stops(self, editor):
+        editor.add_component("Demo/polling")
+        await async_wait_until(lambda: len(Polling.ticks) >= 3)
+
+        editor.clear()
+        await asyncio.sleep(0)
+        count = len(Polling.ticks)
+        await asyncio.sleep(0.05)
+
+        assert len(Polling.ticks) == count
+
+    async def test_removed_component_is_released(self, editor):
+        src = editor.add_component(SHOUTER)
+        dst = editor.add_component(SHOUTER)
+        editor.connect(src, "shouted", dst, "ticker")
+        state = editor.graph.get_state(dst)
+        instance = weakref.ref(editor._component_instances[dst])
+
+        editor.remove_component(dst)
+        gc.collect()
+
+        assert instance() is None
+        assert not any(w for by_type in state.param.watchers.values() for w in by_type.values())
+
+    async def test_failing_consumer_does_not_stop_its_siblings(self, editor, caplog):
+        src = editor.add_component(SHOUTER)
+        bad = editor.add_component("Demo/exploding")
+        good = editor.add_component(SHOUTER)
+        editor.connect(src, "shouted", bad, "ticker")
+        editor.connect(src, "shouted", good, "ticker")
+
+        editor.graph.get_state(src).ticker = "boom"
+
+        assert editor.graph.get_state(good).ticker == "BOOM"
+        assert editor._component_instances[good].ticker == "BOOM"
+        assert "watcher failed" in caplog.text
+
+    async def test_async_output_runs_once_per_input_change(self, editor):
+        a = editor.add_component("Demo/counter")
+        b = editor.add_component("Demo/counter")
+        total = editor.add_component("Demo/summing")
+        assert editor.connect(a, "count", total, "a") is True
+        assert editor.connect(b, "count", total, "b") is True
+        await asyncio.sleep(0.01)
+        Summing.runs.clear()
+
+        editor._component_instances[a].value = 2
+        await async_wait_until(lambda: editor.graph.get_state(total).total == 2)
+        await asyncio.sleep(0.01)
+
+        assert Summing.runs == [(2, 0)]
+
+
 class Inverse(Viewer):
     """A Viewer whose output raises for some inputs."""
 

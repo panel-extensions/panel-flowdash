@@ -42,6 +42,21 @@ class Edge:
     def expr(self) -> param.rx:
         return self.stages[-1]
 
+    def dispose(self):
+        """Detach the edge's expressions from its source port.
+
+        Called once nothing binds to the edge any more. Param releases without
+        ``rx.dispose`` only let go of the expressions once they are collected.
+        """
+        dispose = getattr(self.expr.rx, "dispose", None)
+        if dispose is None:
+            return
+        try:
+            dispose(cascade=True)
+        except RuntimeError:
+            # Something outside the graph still reads the expression.
+            pass
+
 
 def _is_list_port(port) -> bool:
     """Return True if a port's declared type indicates a list/multi-connection input."""
@@ -52,6 +67,47 @@ def _is_list_port(port) -> bool:
     return port.type.lower() in ("list", "List")
 
 
+# holoviz/param#1232 makes param drop these watchers itself when a reference is
+# overwritten with a plain value.
+_PARAM_RELEASES_REF_WATCHERS = hasattr(param.parameterized.Parameters, "_remove_ref")
+
+
+def _prune_ref_watchers(state: param.Parameterized):
+    """Remove the watchers a state keeps on the sources of references it no longer follows."""
+    # Param releases without holoviz/param#1232 leave them in place when a
+    # reference is overwritten with a plain value, so every source a state was
+    # once bound to keeps it alive and keeps calling into it. This reads param
+    # internals, so if their shape changes it gives up rather than break
+    # removing nodes and edges; the cost is the leak it was working around.
+    if _PARAM_RELEASES_REF_WATCHERS:
+        return
+    try:
+        private = state._param__private
+        refs = private.refs
+        kept, stale = [], []
+        for entry in private.ref_watchers:
+            names, watcher = entry
+            if any(name in refs for name in names):
+                kept.append(entry)
+            else:
+                owner = watcher.cls if watcher.inst is None else watcher.inst
+                stale.append((owner, watcher))
+    except (AttributeError, TypeError, ValueError):
+        return
+    for owner, watcher in stale:
+        try:
+            owner.param.unwatch(watcher)
+        except (AttributeError, TypeError, ValueError):
+            pass
+    private.ref_watchers = kept
+
+
+def _unbind(state: param.Parameterized, name: str, value):
+    """Set *name* to a plain value, releasing any reference it followed."""
+    setattr(state, name, value)
+    _prune_ref_watchers(state)
+
+
 def _release_refs(state: param.Parameterized):
     """Replace every reference a state follows with the value it currently resolves to."""
     # A bound input would otherwise keep firing its guard for a node the graph
@@ -60,6 +116,7 @@ def _release_refs(state: param.Parameterized):
         for name in state.param:
             if name != "name":
                 setattr(state, name, getattr(state, name))
+    _prune_ref_watchers(state)
 
 
 def build_node_state_class(spec: ComponentSpec) -> type[param.Parameterized]:
@@ -159,8 +216,7 @@ class DataflowGraph:
         stops receiving values but keeps the ones it last held.
         """
         removed = [key for key in self._edges if instance_id in (key[0], key[2])]
-        for key in removed:
-            del self._edges[key]
+        edges = [self._edges.pop(key) for key in removed]
         for target_id, target_port in {key[2:] for key in removed}:
             if target_id == instance_id:
                 continue
@@ -169,13 +225,15 @@ class DataflowGraph:
             else:
                 # Releases the binding to the removed node but keeps its last value.
                 target = self._nodes[target_id]
-                setattr(target, target_port, getattr(target, target_port))
+                _unbind(target, target_port, getattr(target, target_port))
 
         state = self._nodes.pop(instance_id, None)
         self._config_states.pop(instance_id, None)
         self._node_specs.pop(instance_id, None)
         if state is not None:
             _release_refs(state)
+        for edge in edges:
+            edge.dispose()
 
     def _input_port(self, target_id: str, target_port: str):
         spec = self._node_specs.get(target_id)
@@ -240,7 +298,7 @@ class DataflowGraph:
         incoming = self._incoming(target_id, target_port)
         is_list = self._is_list_input(target_id, target_port)
         if is_list and not incoming:
-            setattr(target, target_port, [])
+            _unbind(target, target_port, [])
             return
 
         error_source = ("", "") if is_list else next(iter(incoming))[:2]
@@ -368,9 +426,12 @@ class DataflowGraph:
             except Exception as exc:
                 return f"Connection rejected: {exc}"
 
+        previous = self._edges.get(key)
         self._edges[key] = self._build_edge(key, steps)
         # An output nothing has set yet should not wipe the input's default.
         self._bind_input(target_id, target_port, skip_initial_none=not is_list)
+        if previous is not None:
+            previous.dispose()
         return True
 
     def _would_create_cycle(self, source_id: str, target_id: str) -> bool:
@@ -425,15 +486,16 @@ class DataflowGraph:
 
     def remove_edge(self, source_id: str, source_port: str, target_id: str, target_port: str):
         """Remove an edge and reset the target input to its default."""
-        self._edges.pop((source_id, source_port, target_id, target_port), None)
+        edge = self._edges.pop((source_id, source_port, target_id, target_port), None)
         target_state = self._nodes.get(target_id)
-        if target_state is None or not hasattr(target_state, target_port):
-            return
-        if self._is_list_input(target_id, target_port):
-            self._bind_input(target_id, target_port)
-        else:
-            port = self._input_port(target_id, target_port)
-            setattr(target_state, target_port, port.default if port else None)
+        if target_state is not None and hasattr(target_state, target_port):
+            if self._is_list_input(target_id, target_port):
+                self._bind_input(target_id, target_port)
+            else:
+                port = self._input_port(target_id, target_port)
+                _unbind(target_state, target_port, port.default if port else None)
+        if edge is not None:
+            edge.dispose()
 
     def get_state(self, instance_id: str) -> param.Parameterized | None:
         """Get the state instance for a node."""
