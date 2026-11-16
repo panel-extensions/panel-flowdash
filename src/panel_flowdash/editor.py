@@ -381,6 +381,17 @@ class FlowDash(Viewer):
     True
     """
 
+    authorize_component = param.Callable(
+        default=None,
+        doc="""
+        Called with a component's `RegistryEntry` to decide whether this
+        session may use it. Components it refuses are left out of the palette
+        and `add_component` raises `PermissionError` for them. `FlowDashApp`
+        supplies one that evaluates each component's ``allow_*``/``deny_*``
+        rules and ``authorize`` callback against the signed-in user. None
+        allows every component.""",
+    )
+
     breakpoints = param.List(default=[768, 1200], doc="Responsive breakpoints for the tile grid.")
 
     components = param.Parameter(
@@ -918,6 +929,8 @@ class FlowDash(Viewer):
         placed = self._placed_singletons()
         sections: dict[str, list[dict]] = {}
         for app_id, entry in self._component_entries.items():
+            if not self._component_authorized(app_id):
+                continue
             meta = entry.metadata
             sections.setdefault(entry.section.replace("_", " "), []).append(
                 {
@@ -938,6 +951,23 @@ class FlowDash(Viewer):
             }
             for section, items in sections.items()
         ]
+
+    def _component_authorized(self, component_id: str) -> bool:
+        """Whether `authorize_component` lets this session use *component_id*."""
+        entry = self._component_entries.get(component_id)
+        if entry is None:
+            return False
+        if self.authorize_component is None:
+            return True
+        try:
+            return bool(self.authorize_component(entry))
+        except Exception:
+            logger.exception("authorize_component failed for '%s'; denying it", component_id)
+            return False
+
+    @param.depends("authorize_component", watch=True)
+    def _sync_authorized_palette(self):
+        self._sync_toolbar_state()
 
     def _node_types_from_specs(self):
         node_types = {}
@@ -2193,6 +2223,8 @@ class FlowDash(Viewer):
         ------
         KeyError
             If *component_id* is not a registered component.
+        PermissionError
+            If `authorize_component` refuses it.
         """
         if component_id not in self._component_entries:
             raise KeyError(
@@ -2204,6 +2236,10 @@ class FlowDash(Viewer):
         self.ensure_components_loaded([component_id])
         if component_id not in self._component_specs:
             raise KeyError(f"Component '{component_id}' failed to load.")
+        # Checked after loading, which resolves rules the source scan could not read.
+        if not self._component_authorized(component_id):
+            title = self._component_entries[component_id].title
+            raise PermissionError(f"You are not authorized to use '{title}'.")
         type_key = component_id.replace("/", "__")
         instance_id = self._place(
             component_id,
@@ -2945,6 +2981,8 @@ class FlowDash(Viewer):
             instance_id = self.add_component(component_id, position=position)
         except KeyError:
             self._notify("warning", "Select a valid component first.", duration=3000)
+        except PermissionError as exc:
+            self._notify("error", str(exc), duration=5000)
         except Exception as exc:
             logger.exception("Failed to add component '%s'", component_id)
             self._notify("error", f"Failed to add component: {exc}", duration=5000)
