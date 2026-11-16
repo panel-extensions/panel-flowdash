@@ -157,6 +157,61 @@ def _align_layout(keyed: list[dict], instance_ids: list[str]) -> list[dict]:
     return aligned
 
 
+# The width TileGrid assumes a layout was authored at when it records none.
+_DEFAULT_REFERENCE_WIDTH = 1200
+
+
+def _reference_width(reference_width: int | None, breakpoints: list[int]) -> int:
+    """Return the grid width a layout's percentage widths are relative to, as TileGrid does."""
+    if reference_width:
+        return reference_width
+    return max(breakpoints) if breakpoints else _DEFAULT_REFERENCE_WIDTH
+
+
+def _bounded(value: float, low: float | None, high: float | None) -> float:
+    if high is not None:
+        value = min(value, high)
+    if low is not None:
+        value = max(value, low)
+    return value
+
+
+def _size_layout(layout: list[dict], specs: list, reference_width: int) -> list[dict]:
+    """Apply the size hints of the tiles' *specs* to a positional TileGrid layout.
+
+    A tile without an entry starts at its ``default_size``, and every tile's size
+    is kept within its ``min_size`` and ``max_size``. Hints are pixels; layout
+    widths are percentages of *reference_width*, heights are pixels.
+    """
+
+    def percent(pixels):
+        return None if pixels is None else round(min(100.0, pixels * 100 / reference_width), 2)
+
+    sized = []
+    entries = [*layout, *([{}] * (len(specs) - len(layout)))]
+    for i, entry in enumerate(entries):
+        spec = specs[i] if i < len(specs) else None
+        entry = dict(entry)
+        if spec is not None:
+            if not entry and spec.default_size:
+                default = spec.default_size
+                if "width" in default:
+                    entry["width"] = percent(default["width"])
+                if "height" in default:
+                    entry["height"] = default["height"]
+            low, high = spec.min_size or {}, spec.max_size or {}
+            if isinstance(entry.get("width"), (int, float)):
+                entry["width"] = _bounded(
+                    entry["width"], percent(low.get("width")), percent(high.get("width"))
+                )
+            if isinstance(entry.get("height"), (int, float)):
+                entry["height"] = _bounded(entry["height"], low.get("height"), high.get("height"))
+        sized.append(entry)
+    while sized and not sized[-1]:
+        sized.pop()
+    return sized
+
+
 # Screen pixels between the visible canvas edge and an auto-placed node.
 _PLACEMENT_MARGIN = 40
 # Flow units each repeated auto-placement shifts, so nodes don't stack exactly.
@@ -1236,10 +1291,20 @@ class FlowDash(Viewer):
             self._inspect_dialog.param.update(open=False, objects=[])
 
     def _grid_view(self, item: dict, view: Viewable) -> Viewable:
-        """Return the tile's view, with an inspect button over it when it has outputs to show."""
+        """Return the tile's view, with an inspect button over it when it has outputs to show.
+
+        A tile with width bounds is wrapped too, since TileGrid reads a tile's
+        ``min_width`` and ``max_width`` to bound resizing and responsive widths.
+        """
         instance_id = item["instance_id"]
         spec = self._component_specs.get(item["component_id"])
-        if not self.inspect_outputs or not spec or not spec.outputs:
+        inspect = bool(self.inspect_outputs and spec and spec.outputs)
+        bounds = {
+            f"{key}_width": size["width"]
+            for key, size in (("min", spec and spec.min_size), ("max", spec and spec.max_size))
+            if size and "width" in size
+        }
+        if not inspect and not bounds:
             return view
         tile = self._inspect_tiles.get(instance_id)
         if tile is None or tile[0] is not view:
@@ -1256,9 +1321,10 @@ class FlowDash(Viewer):
                 margin=0,
                 sizing_mode="stretch_both",
                 stylesheets=[":host { position: relative; }"],
+                **bounds,
             )
             button.on_click(partial(self._on_inspect_clicked, instance_id, tile))
-        tile[1].visible = not self._tile_grid.editable
+        tile[1].visible = inspect and not self._tile_grid.editable
         return tile
 
     def _show_inspection(self, key, title, value, position, flow):
@@ -1760,7 +1826,23 @@ class FlowDash(Viewer):
                 min_height=320,
                 sizing_mode="stretch_both",
             )
+            self._tile__grid.param.watch(self._on_tile_layout, "layout")
         return self._tile__grid
+
+    def _sized_layout(self, layout: list[dict]) -> list[dict]:
+        """Apply the size hints of the tiles on the grid to its positional *layout*."""
+        components = {item["instance_id"]: item["component_id"] for item in self._tile_items}
+        specs = [self._component_specs.get(components.get(i)) for i in self._grid_ids]
+        grid = self._tile_grid
+        return _size_layout(
+            layout, specs, _reference_width(grid.reference_width, grid.breakpoints)
+        )
+
+    def _on_tile_layout(self, event):
+        # Resizing in the browser bounds only a tile's width, so heights are kept in bounds here.
+        sized = self._sized_layout(event.new)
+        if sized != event.new:
+            self._tile_grid.layout = sized
 
     def _grid_config(self) -> dict:
         """Return the responsive settings to persist, whether or not the grid is on screen."""
@@ -1884,11 +1966,12 @@ class FlowDash(Viewer):
         self._grid_ids = grid_ids
         self._grid_populated = True
         self._rebuild_sidebar()
-        self._tile_grid.layout = _align_layout(layout, grid_ids)
-        self._pending_tile_layout = []
+        # Size hints in pixels convert to the layout's percentages at the restored reference width.
         if config is not None:
             self._apply_grid_config(config)
             self._pending_grid_config = None
+        self._tile_grid.layout = self._sized_layout(_align_layout(layout, grid_ids))
+        self._pending_tile_layout = []
 
     def _placed_layout(self, keyed: list[dict]) -> list[dict]:
         """Drop the layout entries of tiles that are no longer placed."""

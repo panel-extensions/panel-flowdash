@@ -39,9 +39,9 @@ def app(config):
 | `provides` | `list` | `[]` | Output port declarations. See [Define ports](define-ports.md). |
 | `requires` | `list` | `[]` | Input port declarations. See [Define ports](define-ports.md). |
 | `placeholder` | `str` | `None` | Message a tile shows while a blocking input is unset, replacing "Waiting for ...". See [Define ports](define-ports.md#required-inputs). |
-| `default_size` | `dict` | `None` | Default tile size hint, e.g. `{"w": 4, "h": 3}`. See [Layout & sizing](layout-and-sizing.md). |
-| `min_size` | `dict` | `None` | Minimum tile size hint. |
-| `max_size` | `dict` | `None` | Maximum tile size hint. |
+| `default_size` | `dict` | `None` | Size of a new tile in pixels, e.g. `{"width": 600, "height": 400}`. See [Layout & sizing](layout-and-sizing.md#tile-sizing-hints). |
+| `min_size` | `dict` | `None` | Smallest size a tile can be resized to, in pixels. |
+| `max_size` | `dict` | `None` | Largest size a tile can be resized to, in pixels. |
 | `singleton` | `bool` | `False` | Only allow one instance on a dashboard. |
 | `config_schema` | `type \| dict` | `None` | Design-time configuration definition: a `param.Parameterized` subclass, a Pydantic model, or a JSON-Schema-like dict. See [Configure nodes](configure-nodes.md). |
 | `config` | `list[str]` | `[]` | For Viewer components, names the params that are design-time configuration rather than input ports. See [Configure nodes](configure-nodes.md). |

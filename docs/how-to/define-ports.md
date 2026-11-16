@@ -252,7 +252,7 @@ spec = ComponentSpec(
     tags=["data"],
     outputs=[OutputPort(name="filtered", type="DataFrame")],
     inputs=[InputPort(name="source", type="DataFrame", required=True)],
-    default_size={"w": 4, "h": 3},
+    default_size={"width": 400, "height": 300},
 )
 ```
 
