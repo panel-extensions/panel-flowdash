@@ -125,7 +125,7 @@ def test_rail_navigates_and_marks_the_route(page):
     wait_until(lambda: _path(page) == "/components", page, timeout=10000)
     # The rail item and the breadcrumb's current page.
     expect(page.get_by_role("button", name="Components", exact=True)).to_have_count(2)
-    page.get_by_text("Drag components here").wait_for()
+    page.get_by_text("Building blocks for dashboards").wait_for()
     page.get_by_role("button", name="Home", exact=True).last.click()
     wait_until(lambda: _path(page) == "/", page, timeout=10000)
 

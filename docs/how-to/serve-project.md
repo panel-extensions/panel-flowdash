@@ -324,7 +324,7 @@ def configure_layout(app, content, route):
 
     Called on every navigation with:
       app     - the FlowDashApp instance (set app.sidebar / app.contextbar)
-      content - the resolved view for this route (page, editor, or launcher)
+      content - the resolved view for this route (page, editor, gallery or launcher)
       route   - the current pathname, e.g. "/", "/components", "/dash/<id>"
     """
     if route.startswith("/dash/"):
@@ -348,7 +348,7 @@ in the contextbar is there when the user wants it rather than taking space on
 every page. Set `app.contextbar_open` in the hook only to open it deliberately.
 
 The `route` argument distinguishes the built-in routes (`/` for the launcher,
-`/components` for the editor, `/dash/<id>` for a saved dashboard) from page
+`/components` for the component gallery, `/dash/<id>` for a saved dashboard) from page
 routes (`/<Section>/<name>`). Use `content` when the sidebar needs to reach into
 the rendered view itself.
 

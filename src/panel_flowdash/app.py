@@ -32,6 +32,7 @@ from panel_flowdash.editor import FlowDash
 from panel_flowdash.registry import RegistryEntry, build_registry
 from panel_flowdash.session_state import build_session_state_class, check_requirements
 from panel_flowdash.settings import DashboardSettings
+from panel_flowdash.ui.gallery import ComponentGallery
 from panel_flowdash.ui.launcher import (
     Launcher,
     build_downloader,
@@ -973,23 +974,23 @@ class FlowDashApp(Viewer):
             return
 
         if pathname == COMPONENTS_ROUTE:
-            # Navigating here in a session changes the pathname and then, through
-            # `_show_edit_mode`, the search. On Panel 1.10 the page update below
-            # never reaches the browser when it is made in the same tick as those
-            # URL changes, so let the pathname change go out first.
+            # On Panel 1.10 the page update below never reaches the browser when
+            # it is made in the same tick as the pathname change, so let that go
+            # out first.
             await asyncio.sleep(0)
             if not self._is_current_navigation(generation):
                 return
             self._current_dashboard = None
-            # Arriving from a dashboard must not keep its components on the canvas.
+            # Arriving from a dashboard must not keep its components running.
             self._reset_canvas()
-            # No preload: the component picker is built from the scanned metadata
-            # and `add_component` imports the one component being placed, so an
-            # empty editor costs no imports.
-            self._show_edit_mode()
-            self._apply_layout_config(self._component_view, pathname)
+            gallery = ComponentGallery(self)
+            async with self._loading_screen():
+                await self._run_navigation_task(gallery.load())
+            if not self._is_current_navigation(generation):
+                return
+            self._apply_layout_config(gallery, pathname)
             self._page.main = [
-                self._nav_content(self._component_view),
+                self._nav_content(gallery),
                 self._dialog,
                 self._unsaved_dialog,
                 *self._page_dialogs,
