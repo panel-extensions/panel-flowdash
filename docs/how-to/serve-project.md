@@ -19,10 +19,16 @@ This:
 4. Creates a `DashboardStore` at `my_project/dashboards.db`
 5. Serves the app on `http://0.0.0.0:5006`
 
-The landing page lists the project's pages and any saved dashboards. From here
-you can open a dashboard, or jump into the editor to build a new one.
+The landing page lists the saved dashboards you can open as cards, each with a
+thumbnail of its tile layout, when it was last edited and by whom, and how it
+is shared. Filter them to the ones you own or that are shared with you, sort
+them by name or last edit, and switch between a grid and a list. Each card's
+menu opens, edits, renames, duplicates, shares, downloads or deletes the
+dashboard, offering only what your access allows. Below the dashboards are the
+project's pages and its most used components. From here you can also start a
+new dashboard or import a downloaded dashboard file.
 
-![The FlowDash launcher listing saved dashboards under Custom Apps](../assets/images/launcher.png)
+![The FlowDash launcher with its dashboard cards](../assets/images/launcher.png)
 
 ---
 
@@ -105,8 +111,8 @@ where dashboards live.
 
 ## Homepage dashboard
 
-By default the homepage (`/`) shows the launcher grid listing the project's
-pages and saved dashboards. To land users directly on a specific dashboard
+By default the homepage (`/`) shows the launcher listing the saved dashboards
+and the project's pages. To land users directly on a specific dashboard
 instead, pass `--home-dashboard` with either its id or its title:
 
 ```bash
