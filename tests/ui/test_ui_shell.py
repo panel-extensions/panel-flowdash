@@ -255,4 +255,5 @@ def test_import_file_from_the_overflow_menu(page, tmp_path):
     wait_until(
         lambda: [i["instance_id"] for i in editor._tile_items] == [added], page, timeout=10000
     )
-    assert editor.dirty
+    # The import marks the editor dirty once loading, which places the tiles, has finished.
+    wait_until(lambda: editor.dirty, page, timeout=10000)
