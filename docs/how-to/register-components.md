@@ -31,7 +31,7 @@ def app(config):
 |-----------|------|---------|-------------|
 | `page` | `bool` | `True` | Register as a routable page. |
 | `component` | `bool` | `False` | Register as a dataflow component (tile). |
-| `sidebar` | `bool` | `False` | In dashboard mode, render this component's view in the Page sidebar instead of the tile grid. See [Layout & sizing](layout-and-sizing.md). |
+| `sidebar` | `bool` | `False` | Render this component's view in the controls bar above the tiles instead of in the tile grid. See [Layout & sizing](layout-and-sizing.md). |
 | `title` | `str` | Module name | Human-readable display title. |
 | `icon` | `str` | `None` | Icon identifier for the component palette. |
 | `description` | `str` | `None` | Short description shown in tooltips. |

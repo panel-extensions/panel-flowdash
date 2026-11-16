@@ -15,6 +15,13 @@ class DashboardSettings(param.Parameterized):
     serializable value, since the stores persist settings as JSON.
     """
 
+    description = param.String(
+        default="",
+        label="Description",
+        doc="""
+        A sentence or two on what the dashboard shows. Empty by default.""",
+    )
+
     refresh_period = param.Number(
         default=0.0,
         bounds=(0, 86400),

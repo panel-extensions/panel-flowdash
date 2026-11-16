@@ -1607,7 +1607,10 @@ class TestDisplayModes:
 
     async def test_dashboard_mode_shows_the_grid_under_the_bar(self, editor):
         editor.mode = "dashboard"
-        assert editor._workspace_area.objects[0] is editor._tile_grid
+        assert editor._workspace_area.objects[:2] == [
+            editor._view_controls._view,
+            editor._tile_grid,
+        ]
         assert editor._flow.top_panel == []
         assert not editor._side_panel.visible
 
@@ -3886,6 +3889,7 @@ class TestDashboardSettings:
     async def test_unknown_keys_survive_a_save(self, editor):
         editor.load_model(_dashboard({"refresh_period": 3, "retired": True}))
         assert editor.save().settings == {
+            "description": "",
             "refresh_period": 3,
             "retired": True,
             "viewers_can_inspect": False,
@@ -3919,6 +3923,7 @@ class TestDashboardSettings:
         editor.settings.param.update(refresh_period=45, accent="red")
         saved = editor.save()
         assert saved.settings == {
+            "description": "",
             "refresh_period": 45,
             "viewers_can_inspect": False,
             "accent": "red",
@@ -3946,7 +3951,11 @@ class TestDashboardSettings:
     async def test_export_and_import_carry_the_settings(self, editor):
         editor.load_model(_dashboard({"refresh_period": 15}))
         data = editor.export_dashboard()
-        assert data["settings"] == {"refresh_period": 15, "viewers_can_inspect": False}
+        assert data["settings"] == {
+            "description": "",
+            "refresh_period": 15,
+            "viewers_can_inspect": False,
+        }
         other = FlowDash(COMPONENTS, notifications=False)
         other.import_dashboard(data)
         assert other.settings.refresh_period == 15
@@ -3975,7 +3984,7 @@ class TestSettingsForm:
     async def test_form_is_generated_from_the_settings(self):
         editor = FlowDash(COMPONENTS, notifications=False, settings_class=BrandSettings)
         form = editor._settings_dialog.objects[0]
-        assert set(form._widgets) == {"refresh_period", "accent", "density"}
+        assert set(form._widgets) == {"description", "refresh_period", "accent", "density"}
 
     async def test_form_edits_the_settings_and_marks_dirty(self, editor):
         form = editor._settings_dialog.objects[0]
@@ -4105,7 +4114,7 @@ class TestRefreshButton:
     async def test_click_updates_the_indicator(self, editor):
         editor._refresh_label.object = ""
         editor._refresh_button.clicks += 1
-        assert re.fullmatch(r"Refreshed \d\d:\d\d:\d\d", editor._refresh_label.object)
+        assert re.fullmatch(r"Refreshed \d\d:\d\d", editor._refresh_label.object)
 
     async def test_loading_a_dashboard_stamps_the_indicator(self, editor):
         editor._refresh_label.object = ""
@@ -4117,7 +4126,10 @@ class TestRefreshButton:
         bar = editor._dashboard_bar
         assert editor._refresh_button in bar._actions.objects
         assert editor._refresh_label in bar._title_block[1].objects
-        assert editor._workspace_area.objects[0] is editor._tile_grid
+        assert editor._workspace_area.objects[:2] == [
+            editor._view_controls._view,
+            editor._tile_grid,
+        ]
 
     @pytest.mark.parametrize("mode", ["wiring", "dashboard"])
     async def test_edit_mode_has_no_refresh(self, editor, mode):
