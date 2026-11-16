@@ -2,7 +2,7 @@ name: CI
 on:
   pull_request:
     branches:
-      - "*"
+      - "**"
   push:
     branches:
       - main
@@ -39,8 +39,10 @@ jobs:
           filters: |
             code:
               - 'src/**'
+              - 'tests/ui/**'
               - 'pyproject.toml'
-              - '.github/workflows/ci.yaml'
+              - 'pixi.toml'
+              - '.github/workflows/ci.yml'
             img:
               - '**/*.png'
       - name: Set matrix option
@@ -113,7 +115,7 @@ jobs:
 
   pytest:
     timeout-minutes: 30
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     needs: [pre_commit, setup, pixi_lock]
     strategy:
       fail-fast: false
