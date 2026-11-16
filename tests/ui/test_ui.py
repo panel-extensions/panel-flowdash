@@ -484,9 +484,11 @@ class CustomMessageReport(CompanyReport):
     [(CompanyReport, "This tile needs Company"), (CustomMessageReport, "Pick a company to start")],
     ids=["default", "custom"],
 )
-@pytest.mark.parametrize("mode", ["dashboard", "wiring"])
-def test_component_waits_for_required_input(page, report, message, mode):
-    """A component shows its placeholder until the wired input holds a value, and again after a reset."""
+def test_component_waits_for_required_input(page, report, message):
+    """A tile shows its placeholder until the wired input holds a value, and again after a reset.
+
+    Components are only rendered in the tile grid; the canvas shows compact cards.
+    """
     editor = FlowDash(
         {"Test/picker": CompanyPicker, "Test/report": report},
         notifications=False,
@@ -495,7 +497,7 @@ def test_component_waits_for_required_input(page, report, message, mode):
     picker = editor.add_component("Test/picker", position=(0, 0))
     target = editor.add_component("Test/report", position=(600, 0))
     assert editor.connect(picker, "company", target, "company") is True
-    editor.mode = mode
+    editor.mode = "dashboard"
     serve_component(page, editor)
 
     waiting = page.get_by_text(message)

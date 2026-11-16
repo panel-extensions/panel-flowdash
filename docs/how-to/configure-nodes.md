@@ -10,8 +10,8 @@ Each node therefore has two pieces of state:
 
 - **Node state** - one param per input/output port, updated by the dataflow
   engine as edges propagate values.
-- **Config state** - one param per configuration field, edited through the node
-  editor and saved with the dashboard.
+- **Config state** - one param per configuration field, edited in the
+  inspector and saved with the dashboard.
 
 This guide covers how to declare configuration, how it appears in the editor,
 and how it reaches your component at instantiation time.
@@ -91,9 +91,9 @@ form.
 ### 3. Supply a custom editor with `config_editor`
 
 By default FlowDash renders an auto-generated form from the config fields. To
-take full control of the editing UI, pass a `config_editor` callable. It is
-handed to the node editor and invoked with the current config data, the schema,
-and callbacks:
+take full control of the editing UI, pass a `config_editor` callable. The
+inspector invokes it when the node is selected, with the current config data,
+the schema, and callbacks:
 
 ```python
 def editor(data, schema, *, id, type, on_patch):
@@ -112,8 +112,8 @@ class app(pn.viewable.Viewer):
 The way config is delivered depends on the component style.
 
 **Viewer components.** Config-state params are synced onto the Viewer instance
-when the node is created, and stay synced: editing a config field in the node
-editor updates the corresponding param on the live instance. You do not need to
+when the node is created, and stay synced: editing a config field in the
+inspector updates the corresponding param on the live instance. You do not need to
 accept any extra argument, just declare the params and use them in
 `__panel__`.
 
@@ -136,11 +136,9 @@ existing components keep working unchanged.
 
 ## In the editor and on disk
 
-Configuration fields declared via `config`/`config_schema` are attached to the
-node type, so the node in the flow canvas shows an editable form (or your custom
-`config_editor`) for them. Open it from the gear button on the node.
-
-![The auto-generated node config editor with Title and Color scheme fields](../assets/images/node-config.png)
+Configuration fields declared via `config`/`config_schema` are edited in the
+inspector beside the flow canvas: select a node and its *Settings* tab shows an
+editable form (or your custom `config_editor`) for them.
 
 Edits are applied to the node's config state immediately and marked as unsaved.
 
