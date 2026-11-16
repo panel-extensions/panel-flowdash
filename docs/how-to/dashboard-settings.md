@@ -10,11 +10,21 @@ shared `refresh` signal.
 ## Settings
 
 `FlowDash.settings` is a `param.Parameterized` instance filled from the loaded
-dashboard. It has three built-in parameters: `description`, a sentence or two on
+dashboard. Its built-in parameters include `description`, a sentence or two on
 what the dashboard shows (empty by default); `refresh_period`, the number of
 seconds between automatic refreshes (the default of 0 turns automatic refreshing
 off); and `viewers_can_inspect`, which opens output inspection to people who may
 only view the dashboard (see [Inspecting outputs](embed-the-editor.md#inspecting-outputs)).
+
+Two more control how tiles look in view mode. `tile_cards` (on by default) draws
+each tile as a framed card; turn it off to render tiles as the components' own
+views. `tile_titles` (off by default) adds a row with the tile's title and the
+component's description to each card. Without it a tile's actions take no space:
+Inspect, Expand and, when there is something to put in it, a More menu float
+over the tile's top-right corner on hover or keyboard focus. Set the defaults
+for dashboards that have not saved these settings with
+`FlowDash(tile_cards=..., tile_titles=...)`, or through `editor_options` in a
+`FlowDashApp`.
 
 ```python
 editor = FlowDash(components, store="dashboards.db")
@@ -26,10 +36,13 @@ editor.save()  # writes the current values with the dashboard
 
 ### The settings dialog
 
-In edit mode the toolbar has a **Settings** button that opens the **Dashboard
-settings** dialog. A list on the left switches between its sections:
+In edit mode the dashboard bar has a **Settings** button that opens the
+**Dashboard settings** dialog; in view mode it is in the bar's overflow menu, and
+in a `FlowDashApp` the **Share** button opens the same dialog on its Sharing
+section. A list on the left switches between its sections:
 
-- **General**: the dashboard's name, its description, any
+- **General**: the dashboard's name, its description, **Frame tiles** and **Show
+  tile titles** (`tile_cards` and `tile_titles`), any
   [settings of your own](#add-your-own-settings), and **Viewers can inspect
   outputs**, which is only offered when the editor has `inspect_outputs` on. Only
   people who may administer the dashboard can rename it; for everyone else, and
@@ -45,8 +58,8 @@ The dialog edits a copy of the settings. **Cancel** discards the changes and
 dashboard is unsaved, it also saves the dashboard right away, so a setting changed
 on its own does not wait for the toolbar's **Save**. When the canvas has unsaved
 changes, the settings join them and are saved with the next **Save**; the dialog
-says so in its footer. The button is not shown in view mode and is disabled when
-the dashboard cannot be saved.
+says so in its footer. Settings is not offered to people who may only view the
+dashboard.
 
 Loading a dashboard applies its stored values. A parameter the dashboard does not
 store takes its default, so one dashboard's settings never carry over into the

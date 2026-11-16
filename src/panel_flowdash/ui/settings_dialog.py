@@ -28,6 +28,9 @@ SECTION_ICONS = {"general": "info", "refresh": "autorenew", "sharing": "group"}
 # is rendered generically in the General section.
 DEDICATED_SETTINGS = ("description", "refresh_period", "viewers_can_inspect")
 
+# Shorter labels for the generic form, which shows them as switches.
+TILE_SETTINGS = {"tile_cards": "Frame tiles", "tile_titles": "Show tile titles"}
+
 REFRESH_PRESETS = {"Off": 0, "1 min": 60, "5 min": 300, "15 min": 900, "1 hour": 3600}
 
 CUSTOM = "Custom"
@@ -317,10 +320,16 @@ class SettingsDialog(param.Parameterized):
             margin=(0, 10, 4, 10),
         )
         extra = [name for name in self._draft.param if name not in ("name", *DEDICATED_SETTINGS)]
+        widgets = {
+            name: {"type": pmui.Switch, "name": label}
+            for name, label in TILE_SETTINGS.items()
+            if name in extra
+        }
         # `pn.Param` would pick a slider over the whole bounds for a bounded number.
         self._extra_form = pn.Param(
             self._draft,
             parameters=extra,
+            widgets=widgets,
             show_name=False,
             expand_button=False,
             sizing_mode="stretch_width",
@@ -356,6 +365,8 @@ class SettingsDialog(param.Parameterized):
             self._draft.param.refresh_period, visible=False, width=200
         )
         self._draft.param.watch(self._on_draft_period, "refresh_period")
+        if "tile_cards" in self._draft.param:
+            self._draft.param.watch(self._sync_tile_titles, "tile_cards")
         self._refresh_info = pmui.Typography(
             variant="caption", sx={"color": "text.secondary"}, margin=(4, 10)
         )
@@ -473,6 +484,7 @@ class SettingsDialog(param.Parameterized):
             self._custom_period,
         ):
             widget.disabled = not editable
+        self._sync_tile_titles()
         owner = self._access.owner if self._access else None
         if not self._target_title:
             subtitle = ""
@@ -552,6 +564,12 @@ class SettingsDialog(param.Parameterized):
 
     def _on_title_input(self, _event):
         self._title_input.param.update(error_state=False, helper_text="")
+
+    def _sync_tile_titles(self, *_events):
+        # Titles live in the card's bar, so they mean nothing without the frame.
+        titles = self._extra_form._widgets.get("tile_titles")
+        if titles is not None:
+            titles.disabled = not (self._settings_editable() and self._draft.tile_cards)
 
     # ------------------------------------------------------------------
     # Refresh

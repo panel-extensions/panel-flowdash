@@ -15,7 +15,7 @@ from panel_flowdash import register
     page=False,
     component=True,
     title="Stock Filter",
-    icon="chart-line",
+    icon="filter_alt",
     description="Filters stock data by ticker symbol.",
     tags=["finance", "filter"],
     provides=[{"key": "filtered", "type": "DataFrame"}],
@@ -33,12 +33,12 @@ def app(config):
 | `component` | `bool` | `False` | Register as a dataflow component (tile). |
 | `sidebar` | `bool` | `False` | In dashboard mode, render this component's view in the Page sidebar instead of the tile grid. See [Layout & sizing](layout-and-sizing.md). |
 | `title` | `str` | Module name | Human-readable display title. |
-| `icon` | `str` | `None` | Icon identifier for the component palette. |
-| `description` | `str` | `None` | Short description shown in tooltips. |
-| `tags` | `list[str]` | `[]` | Tags for filtering in the component palette. |
+| `icon` | `str` | `None` | [Material icon](https://fonts.google.com/icons?icon.set=Material+Icons) name shown in the component palette, e.g. `"filter_alt"`. |
+| `description` | `str` | `None` | Short description shown in tooltips and matched by the palette search. |
+| `tags` | `list[str]` | `[]` | Keywords matched by the palette search. A `source`, `transform`, `view` or `widget` tag also picks the palette group. See [The component palette](#the-component-palette). |
 | `provides` | `list` | `[]` | Output port declarations. See [Define ports](define-ports.md). |
 | `requires` | `list` | `[]` | Input port declarations. See [Define ports](define-ports.md). |
-| `placeholder` | `str` | `None` | Message a tile shows while a blocking input is unset, replacing "Waiting for ...". See [Define ports](define-ports.md#required-inputs). |
+| `placeholder` | `str` | `None` | Message a tile shows while a blocking input is unset, leading the "This tile needs ..." text. See [Define ports](define-ports.md#required-inputs). |
 | `default_size` | `dict` | `None` | Size of a new tile in pixels, e.g. `{"width": 600, "height": 400}`. See [Layout & sizing](layout-and-sizing.md#tile-sizing-hints). |
 | `min_size` | `dict` | `None` | Smallest size a tile can be resized to, in pixels. |
 | `max_size` | `dict` | `None` | Largest size a tile can be resized to, in pixels. |
@@ -48,6 +48,42 @@ def app(config):
 | `config_editor` | `callable` | `None` | Custom editor callable for the node's configuration form. See [Configure nodes](configure-nodes.md). |
 | `aliases` | `list[str]` | `[]` | Ids the component was registered under before. See [Renaming components and ports](#renaming-components-and-ports). |
 | `port_aliases` | `dict[str, str]` | `{}` | Former port or config names mapped to the current ones. See [Renaming components and ports](#renaming-components-and-ports). |
+
+---
+
+## The component palette
+
+The editor lists components in a palette next to the canvas, grouped by the
+role their ports suggest:
+
+| Group | Components |
+|-------|------------|
+| Data sources | Outputs but no inputs |
+| Transforms | Inputs and outputs |
+| Views | No outputs |
+| Widgets | The built-in Select, MultiChoice and Slider |
+
+A `source`, `transform`, `view` or `widget` tag overrides this, for example
+for a data source whose inputs only tune the query:
+
+```python
+@register(component=True, title="Wind Turbines Source", icon="storage", tags=["source"])
+class WindTurbines(pn.viewable.Viewer):
+    n_rows = param.Integer(default=1000)
+
+    @param.output(param.DataFrame)
+    def dataset(self):
+        ...
+```
+
+Each entry shows the icon, title and a summary of its ports, such as
+`in: dataset, state, out: filtered (DataFrame)`, and is marked *Placed* once it
+is on the canvas. The search field above the list (press `/` to focus it)
+matches the title, description, tags and port names and types.
+
+Project components are imported lazily. Until a module has been imported the
+palette uses the `provides` and `requires` declared on `@register`, and a
+Viewer without them is listed under *Components* until its ports are known.
 
 ---
 

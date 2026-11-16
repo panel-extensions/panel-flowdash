@@ -156,9 +156,9 @@ editor = FlowDash(
 
 ## Restricting dashboards
 
-To share a dashboard, open it in the editor and click **Share** in the toolbar,
-or open **Settings** and pick **Sharing**. Both open the same **Dashboard
-settings** dialog. The Sharing section is only offered to people allowed to
+To share a dashboard, click **Share** in the dashboard bar or in its card's menu
+on the launcher, or open **Settings** and pick **Sharing**. All of them open the
+same **Dashboard settings** dialog. The Sharing section is only offered to people allowed to
 administer that dashboard.
 
 The section has:

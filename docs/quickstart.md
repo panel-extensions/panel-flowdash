@@ -68,8 +68,8 @@ through `config.param.company` so the Markdown updates whenever a new value
 arrives. When the two are wired together, picking a company in the selector
 updates the chart.
 
-Until the chart's `company` input receives a value its tile shows a "Waiting
-for company" placeholder, because inputs are required by default. See
+Until the chart's `company` input receives a value its tile shows a "This tile
+needs company" placeholder, because inputs are required by default. See
 [Define Ports](how-to/define-ports.md) for optional inputs and fallbacks.
 
 ## Serve

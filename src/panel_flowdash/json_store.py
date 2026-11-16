@@ -12,6 +12,7 @@ import re
 import tempfile
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 try:
@@ -361,6 +362,7 @@ class JSONFolderDashboardStore(BaseDashboardStore):
             )
         if model.revision is None:
             model.revision = 0
+        model.updated_at = datetime.fromtimestamp(mtime / 1e9, timezone.utc)
         if model.dashboard_id != path.stem:
             self._warn_once(
                 path,

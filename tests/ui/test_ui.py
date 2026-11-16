@@ -2,6 +2,7 @@
 # import time
 
 import json
+import re
 
 import panel as pn
 import panel_material_ui as pmui
@@ -144,6 +145,12 @@ def test_editor_drag_validation_rejects_untyped_value_of_wrong_type(page):
     assert editor._flow.edges == []
 
 
+def _palette_item(page, title):
+    # Matched on the title alone: the "Data sources" header also contains "source".
+    primary = page.locator(".MuiListItemText-primary", has_text=re.compile(f"^{title}$"))
+    return page.locator(".MuiListItemButton-root", has=primary)
+
+
 def test_palette_click_places_component_inside_panned_viewport(page):
     editor = FlowDash(
         {"Test/source": source_component}, notifications=False, include_builtin_components=False
@@ -164,7 +171,7 @@ def test_palette_click_places_component_inside_panned_viewport(page):
     page.mouse.up()
     wait_until(lambda: editor._flow.viewport["x"] > initial_x + 500, timeout=8000)
 
-    page.locator(".MuiListItemButton-root").filter(has_text="Source").click()
+    _palette_item(page, "source").click()
     wait_until(lambda: len(editor._flow.nodes) == 2, timeout=8000)
 
     new_node = page.locator(".react-flow__node").nth(1)
@@ -178,14 +185,15 @@ def test_clear_requires_confirmation(page):
     editor.add_component("Test/source")
     serve_component(page, editor)
 
-    clear = page.get_by_role("button", name="Clear", exact=True)
-    clear.click()
+    page.get_by_role("button", name="More actions").click()
+    page.get_by_role("menuitem", name="Clear canvas").click()
     dialog = page.get_by_role("dialog")
     dialog.get_by_role("button", name="Cancel").click()
     wait_until(lambda: not editor._clear_dialog.open, timeout=8000)
     assert len(editor._tile_items) == 1
 
-    clear.click()
+    page.get_by_role("button", name="More actions").click()
+    page.get_by_role("menuitem", name="Clear canvas").click()
     page.get_by_role("dialog").get_by_role("button", name="Clear canvas").click()
     wait_until(lambda: editor._tile_items == [], timeout=8000)
 
@@ -211,12 +219,11 @@ def test_palette_drag_adds_and_wires_components(page):
     sink = editor.add_component("Test/sink", position=(300, 100))
     serve_component(page, editor)
 
-    palette = page.locator(".MuiListItemButton-root")
     pane = page.locator(".react-flow__pane")
     expect_count = page.locator(".react-flow__node")
     wait_until(lambda: expect_count.count() == 1, timeout=8000)
 
-    palette.filter(has_text="Source").drag_to(
+    _palette_item(page, "source").drag_to(
         page.locator(f".react-flow__node[data-id='{sink}'] .react-flow__handle-left")
     )
     wait_until(lambda: len(editor.graph.edges) == 1, timeout=8000)
@@ -224,7 +231,7 @@ def test_palette_drag_adds_and_wires_components(page):
     assert editor.graph.edges[0]["target"] == sink
     assert next(n for n in editor._flow.nodes if n["id"] == source)["position"]["x"] < 300
 
-    palette.filter(has_text="Sink").drag_to(pane, target_position={"x": 40, "y": 40})
+    _palette_item(page, "sink").drag_to(pane, target_position={"x": 40, "y": 40})
     wait_until(lambda: len(editor._tile_items) == 3, timeout=8000)
     assert len(editor.graph.edges) == 1
 
@@ -281,14 +288,16 @@ def test_downloaded_dashboard_recreated_by_dropping_it(page, tmp_path):
     serve_component(page, editor)
 
     with page.expect_download() as download:
-        page.get_by_role("button", name="Download").click()
+        page.get_by_role("button", name="More actions").click()
+        page.get_by_role("menuitem", name="Download").click()
     assert download.value.suggested_filename == "Wired_pair.json"
     path = tmp_path / "export.json"
     download.value.save_as(path)
     content = path.read_text()
     assert json.loads(content)["edges"][0]["source"] == src
 
-    page.get_by_role("button", name="Clear", exact=True).click()
+    page.get_by_role("button", name="More actions").click()
+    page.get_by_role("menuitem", name="Clear canvas").click()
     page.get_by_role("dialog").get_by_role("button", name="Clear canvas").click()
     wait_until(lambda: editor._tile_items == [], timeout=8000)
 
@@ -472,7 +481,7 @@ class CustomMessageReport(CompanyReport):
 @pytest.mark.filterwarnings("ignore:reference already known")
 @pytest.mark.parametrize(
     ("report", "message"),
-    [(CompanyReport, "Waiting for Company"), (CustomMessageReport, "Pick a company to start")],
+    [(CompanyReport, "This tile needs Company"), (CustomMessageReport, "Pick a company to start")],
     ids=["default", "custom"],
 )
 @pytest.mark.parametrize("mode", ["dashboard", "wiring"])
@@ -519,24 +528,25 @@ class Gauge(Viewer):
         return "gauge tile"
 
 
-def test_inspect_button_opens_dialog_with_current_value(page):
+@pytest.mark.filterwarnings("ignore:reference already known")
+def test_inspect_button_opens_sheet_with_current_value(page):
     editor = FlowDash({"Test/gauge": Gauge}, notifications=False, inspect_outputs=True)
     instance_id = editor.add_component("Test/gauge")
     editor.editable = False
     serve_component(page, editor)
 
-    page.get_by_role("button", name="Inspect outputs").click()
+    page.get_by_role("button", name="Inspect data for Gauge").click()
 
-    dialog = page.get_by_role("dialog")
-    dialog.get_by_text("Gauge", exact=True).wait_for()
-    dialog.get_by_text("doubled is reading * 2").wait_for()
-    assert dialog.get_by_text("14").is_visible()
+    sheet = page.locator(".MuiDrawer-paper")
+    sheet.get_by_text("Gauge", exact=True).wait_for()
+    sheet.get_by_text("doubled is reading * 2").wait_for()
+    assert sheet.get_by_text("14").is_visible()
 
     editor.graph.get_state(instance_id).reading = 8
-    page.keyboard.press("Escape")
-    page.get_by_role("dialog").wait_for(state="hidden")
-    page.get_by_role("button", name="Inspect outputs").click()
-    page.get_by_role("dialog").get_by_text("16").wait_for()
+    page.get_by_role("button", name="Close inspector").click()
+    sheet.wait_for(state="hidden")
+    page.get_by_role("button", name="Inspect data for Gauge").click()
+    sheet.get_by_text("16").wait_for()
 
 
 def test_inspect_button_is_absent_by_default(page):
@@ -546,7 +556,7 @@ def test_inspect_button_is_absent_by_default(page):
     serve_component(page, editor)
 
     page.get_by_text("gauge tile").wait_for()
-    assert page.get_by_role("button", name="Inspect outputs").count() == 0
+    assert not page.get_by_role("button", name="Inspect data for Gauge").is_visible()
 
 
 # The app re-renders the editor as it loads the dashboard, so the click reaches
@@ -575,9 +585,9 @@ def test_inspect_button_in_app_dashboard_page(page):
 
     serve_component(page, app)
 
-    page.get_by_role("button", name="Inspect outputs").click()
+    page.get_by_role("button", name="Inspect data for Gauge").click()
 
-    page.get_by_role("dialog").get_by_text("14").wait_for()
+    page.locator(".MuiDrawer-paper").get_by_text("14").wait_for()
 
 
 @register(page=False, component=True, title="Divider")

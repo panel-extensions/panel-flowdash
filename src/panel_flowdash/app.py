@@ -32,7 +32,16 @@ from panel_flowdash.editor import FlowDash
 from panel_flowdash.registry import RegistryEntry, build_registry
 from panel_flowdash.session_state import build_session_state_class, check_requirements
 from panel_flowdash.settings import DashboardSettings
+from panel_flowdash.ui.launcher import (
+    Launcher,
+    build_downloader,
+    copy_dashboard,
+    parse_dashboard_file,
+    send_download,
+    unique_title,
+)
 from panel_flowdash.ui.settings_dialog import SharingAccess, share_link
+from panel_flowdash.ui.shell import HEADER_SX, AppShell
 from panel_flowdash.util import notify, page_dialog, panel_call, panel_viewer
 
 logger = logging.getLogger("panel_flowdash")
@@ -47,60 +56,6 @@ if t.TYPE_CHECKING:
 COMPONENTS_ROUTE = "/components"
 DASH_ROUTE_PREFIX = "/dash/"
 
-_LAUNCHER_CARD_CSS = """
-:host {
-  cursor: pointer;
-  transition: box-shadow 0.2s;
-}
-:host(:hover) {
-  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-}
-:host .MuiCardContent-root {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 1;
-}
-"""
-
-_LAUNCHER_DASH_CARD_CSS = """
-:host {
-  cursor: pointer;
-  transition: box-shadow 0.2s;
-  overflow: visible;
-}
-:host(:hover) {
-  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-}
-:host .MuiCardContent-root {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 1;
-}
-"""
-
-_LAUNCHER_NEW_CARD_CSS = """
-:host {
-  cursor: pointer;
-  transition: box-shadow 0.2s, border-color 0.2s;
-}
-:host .MuiPaper-root {
-  border: 1px dashed var(--mui-palette-divider, rgba(0,0,0,0.23));
-  box-shadow: none;
-  background: transparent;
-}
-:host(:hover) .MuiPaper-root {
-  border-color: var(--mui-palette-primary-main, #0072b5);
-}
-:host .MuiCardContent-root {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 1;
-}
-"""
-
 _COMPONENT_PALETTE_CARD_CSS = """
 :host {
   cursor: pointer;
@@ -109,21 +64,6 @@ _COMPONENT_PALETTE_CARD_CSS = """
 }
 :host(:hover) {
   background-color: rgba(0, 114, 181, 0.08);
-}
-"""
-
-_LAUNCHER_SPEED_DIAL_CSS = """
-:host {
-  position: absolute;
-  top: 12px;
-  right: 0px;
-  z-index: 100;
-}
-:host .MuiSpeedDial-fab {
-  width: 28px;
-  height: 28px;
-  min-height: unset;
-  box-shadow: none;
 }
 """
 
@@ -189,12 +129,15 @@ class FlowDashApp(Viewer):
     )
 
     nav_variant = param.Selector(
-        default="right",
-        objects=["left", "right", "menubar"],
+        default="rail",
+        objects=["left", "menubar", "rail", "right"],
         doc="""
-        Where the navigation menu is rendered. 'left' and 'right' dock a
-        MenuList in a drawer on that side of the page; 'menubar' places a
-        MenuBar in the page header with quick-action icons alongside it.""",
+        How navigation is rendered. 'rail' shows a navigation rail on the left
+        (Home, Dashboards, Components, Pages, Help) and a breadcrumb with a
+        dashboard switcher in the top bar; on narrow screens the rail moves
+        behind a menu button. 'left' and 'right' dock a MenuList in a drawer
+        on that side of the page; 'menubar' places a MenuBar in the page
+        header with quick-action icons alongside it.""",
     )
 
     notifications = param.Boolean(
@@ -246,6 +189,8 @@ class FlowDashApp(Viewer):
 
     title = param.String(default="FlowDash", doc="Application title shown in the browser tab.")
 
+    _launcher: Launcher | None = None
+
     _main_task: asyncio.Task | None = None
 
     # Bumped by every navigation. A load that awaited something checks it before
@@ -296,6 +241,7 @@ class FlowDashApp(Viewer):
         # The editor owns the canvas, tile grid and persistence; this class adds
         # routing, navigation, pages and authorization on top of it.
         self._editor = self._build_editor()
+        self._editor._dashboard_bar.on_mode = self._on_dashboard_bar_mode
         self._menu_bar = None
         self._nav_menu = self._build_nav_menu()
         self._nav_drawer = pmui.Drawer(
@@ -315,6 +261,7 @@ class FlowDashApp(Viewer):
         if self.nav_variant == "menubar":
             self._build_nav_bar()
         self._menubar_mode = self.nav_variant == "menubar"
+        self._shell = AppShell(self) if self.nav_variant == "rail" else None
         self._build_dialog()
         self._build_unsaved_dialog()
         self._build_share_dialog()
@@ -322,8 +269,7 @@ class FlowDashApp(Viewer):
         # palette, which would turn the dialog into a header-coloured box.
         shared_dialog = page_dialog()
         self._page_dialogs = [] if shared_dialog is None else [shared_dialog]
-        # The share dialog is a portaled overlay; mount it once inside the
-        # always-present nav drawer rather than in each _page.main layout.
+        self._page_dialogs.append(self._build_downloader())
         page_kwargs = {
             "title": self.title,
             "theme_config": {"palette": {"primary": {"main": "#0072B5"}}},
@@ -341,8 +287,31 @@ class FlowDashApp(Viewer):
             page_kwargs["sx"] = {".main-content": {"overflow-x": "hidden"}}
         if self._menu_bar is not None:
             page_kwargs.setdefault("header", [self._menu_bar])
+        if self._shell is not None:
+            page_kwargs.setdefault("header", self._shell.header)
+            page_kwargs["sx"] = {**HEADER_SX, **page_kwargs["sx"]}
+        self._page_sx = page_kwargs["sx"]
+        page_kwargs["sx"] = self._page_sx_for_sidebar()
         self._page = pmui.Page(**page_kwargs)
+        self.param.watch(self._sync_sidebar_toggle, "sidebar")
+        self._sidebar_container.param.watch(self._sync_sidebar_toggle, "objects")
         pn.state.onload(self._load_page_layout)
+
+    def _page_sx_for_sidebar(self) -> dict:
+        """Return the page's ``sx``, hiding the sidebar's menu button while the sidebar is empty.
+
+        The sidebar keeps its (empty) container rather than dropping it: changing
+        the page's children re-renders it, which blanks views that move between
+        layouts in the same update.
+        """
+        if self.sidebar or self._sidebar_container.objects:
+            return self._page_sx
+        return {**self._page_sx, "& .header .MuiIconButton-edgeStart": {"display": "none"}}
+
+    def _sync_sidebar_toggle(self, *_events):
+        sx = self._page_sx_for_sidebar()
+        if sx != self._page.sx:
+            self._page.sx = sx
 
     def _begin_navigation(self) -> int:
         """Start a navigation, superseding the one in flight, and return its generation."""
@@ -402,12 +371,15 @@ class FlowDashApp(Viewer):
             task.cancel()
 
     def _nav_content(self, content):
-        """Wrap page content with the docked nav drawer, unless in menubar mode.
+        """Wrap page content with the navigation rail or docked nav drawer.
 
         In menubar mode navigation lives in the page header, so the content is
-        returned as-is; in the 'left'/'right' variants it is paired with the
-        docked drawer on that side.
+        returned as-is; in the 'rail' variant it follows the navigation rail
+        and in the 'left'/'right' variants it is paired with the docked drawer
+        on that side.
         """
+        if self._shell is not None:
+            return self._shell.wrap(content)
         if self._menubar_mode:
             return content
         if self.nav_variant == "left":
@@ -914,138 +886,23 @@ class FlowDashApp(Viewer):
         items[-1] = {**items[-1], "items": dash_items}
         self._menu_list.items = items
         self._refresh_menu_bar()
+        if self._shell is not None:
+            self._shell.refresh()
+        self._editor._dashboard_bar.sync()
+        location = pn.state.location
+        if self._launcher is not None and location is not None and location.pathname == "/":
+            self._launcher.refresh()
 
     def _build_launcher(self):
-        sections: dict[str, list[RegistryEntry]] = {}
-        for entry in self._accessible_page_entries().values():
-            sections.setdefault(entry.section, []).append(entry)
-
-        accordion_items = []
-        component_item = None
-
-        for section, entries in sorted(sections.items()):
-            cards = []
-            for entry in sorted(entries, key=lambda e: e.name):
-                icon_name = entry.metadata.icon or "article"
-                card = pmui.Card(
-                    pmui.ButtonIcon(
-                        icon=icon_name,
-                        icon_size="3em",
-                        disabled=True,
-                        stylesheets=[":host { pointer-events: none; opacity: 1; }"],
-                    ),
-                    title=entry.title,
-                    title_variant="h4",
-                    collapsible=False,
-                    stylesheets=[_LAUNCHER_CARD_CSS],
-                    width=200,
-                    height=140,
-                )
-                clickable = pmui.Clickable(object=card)
-                clickable.on_click(partial(self._launcher_navigate, entry.page_path))
-                cards.append(clickable)
-
-            section_label = section.replace("_", " ")
-            content = pn.FlexBox(*cards, gap="12px", margin=(0, 0, 12, 0))
-            if section_label.lower() == "components":
-                component_item = (section_label, content)
-            else:
-                accordion_items.append((section_label, content))
-
-        dashboards = self.store.list_accessible(
-            self._identity, default_allow=self._default_allow()
-        )
-        dash_cards = []
-        for d in dashboards:
-            speed_items = self._dashboard_speed_dial_items(*self._dashboard_rights(d))
-            speed_dial = None
-            if speed_items:
-                speed_dial = pmui.SpeedDial(
-                    items=speed_items,
-                    icon="more_vert",
-                    direction="down",
-                    color="default",
-                    size="small",
-                    persistent_tooltips=True,
-                    stylesheets=[_LAUNCHER_SPEED_DIAL_CSS],
-                )
-                speed_dial.param.watch(
-                    partial(self._on_launcher_dash_action, d.dashboard_id, d.title), "value"
-                )
-
-            card = pmui.Card(
-                pmui.ButtonIcon(
-                    icon="dashboard",
-                    icon_size="3em",
-                    disabled=True,
-                    stylesheets=[":host { pointer-events: none; opacity: 1; }"],
-                ),
-                title=d.title,
-                collapsible=False,
-                stylesheets=[_LAUNCHER_CARD_CSS],
-                title_variant="h4",
-                width=200,
-                height=140,
-            )
-            path = f"{DASH_ROUTE_PREFIX}{d.dashboard_id}"
-            clickable = pmui.Clickable(object=card)
-            clickable.on_click(partial(self._launcher_navigate, path))
-            wrapper_objects = [clickable]
-            if speed_dial is not None:
-                wrapper_objects.append(speed_dial)
-            wrapper = pn.Column(
-                *wrapper_objects,
-                styles={"position": "relative", "overflow": "visible"},
-                sizing_mode="fixed",
-                width=200,
-                height=140,
-            )
-            dash_cards.append(wrapper)
-
-        new_card = pmui.Card(
-            pmui.ButtonIcon(
-                icon="add",
-                icon_size="3em",
-                disabled=True,
-                stylesheets=[":host { pointer-events: none; opacity: 1; }"],
-            ),
-            title="New Dashboard",
-            collapsible=False,
-            stylesheets=[_LAUNCHER_NEW_CARD_CSS],
-            title_variant="h4",
-            width=200,
-            height=140,
-        )
-        new_clickable = pmui.Clickable(object=new_card)
-        new_clickable.on_click(lambda *_args: self._open_create_dialog())
-        dash_cards.append(new_clickable)
-
-        accordion_items.append(
-            ("Custom Apps", pn.FlexBox(*dash_cards, gap="12px", margin=(0, 0, 12, 0)))
-        )
-
-        if component_item:
-            accordion_items.append(component_item)
-
-        active = list(range(len(accordion_items)))
-        if component_item:
-            active.remove(len(accordion_items) - 1)
-
-        return pmui.Accordion(
-            *accordion_items,
-            active=active,
-            toggle=False,
-            sizing_mode="stretch_both",
-            margin=20,
-        )
+        """Return the launcher page, refreshed from the store; one instance per session."""
+        if self._launcher is None:
+            self._launcher = Launcher(app=self)
+        else:
+            self._launcher.refresh()
+        return self._launcher
 
     def _launcher_navigate(self, path, *_args):
         self._request_navigation(path)
-
-    def _on_launcher_dash_action(self, dashboard_id, title, event):
-        value = event.new if hasattr(event, "new") else event
-        action = self._action_key(value) if isinstance(value, dict) else value
-        self._on_dashboard_action(action, dashboard_id, title)
 
     def _apply_layout_config(self, content, route):
         """Run the ``configure_layout`` hook for the current navigation, if any."""
@@ -1102,17 +959,28 @@ class FlowDashApp(Viewer):
             self._page.sidebar_open = False
             launcher = self._build_launcher()
             self._apply_layout_config(launcher, pathname)
+            # The launcher's Share action opens the editor's settings dialog,
+            # which is otherwise only mounted with the editor.
             self._page.main = [
                 self._nav_content(launcher),
                 self._dialog,
                 self._unsaved_dialog,
                 *self._page_dialogs,
+                self._share_dialog,
             ]
             return
 
         if pathname == COMPONENTS_ROUTE:
+            # Navigating here in a session changes the pathname and then, through
+            # `_show_edit_mode`, the search. On Panel 1.10 the page update below
+            # never reaches the browser when it is made in the same tick as those
+            # URL changes, so let the pathname change go out first.
+            await asyncio.sleep(0)
+            if not self._is_current_navigation(generation):
+                return
             self._current_dashboard = None
-            self._sidebar_container.objects = []
+            # Arriving from a dashboard must not keep its components on the canvas.
+            self._reset_canvas()
             # No preload: the component picker is built from the scanned metadata
             # and `add_component` imports the one component being placed, so an
             # empty editor costs no imports.
@@ -1163,17 +1031,19 @@ class FlowDashApp(Viewer):
                 self._unsaved_dialog,
                 *self._page_dialogs,
             ]
-            if not self._menubar_mode:
+            if self._shell is not None:
+                main[0] = self._nav_content(main[0])
+            elif not self._menubar_mode:
                 main.append(self._nav_drawer)
             self._page.main = main
 
     @pn.io.hold()
     def _show_edit_mode(self):
         current = self._current_dashboard
-        can_admin, can_edit = (
+        _can_admin, can_edit = (
             self._dashboard_rights(current.dashboard_id) if current else (False, False)
         )
-        self._share_button.visible = can_admin
+        self._share_button.visible = False
         self._editor.param.update(editable=True, read_only=not can_edit)
         if pn.state.location is not None:
             pn.state.location.param.update(search="?edit=true")
@@ -1181,12 +1051,29 @@ class FlowDashApp(Viewer):
     @pn.io.hold()
     def _show_view_mode(self):
         current = self._current_dashboard
-        # The editor treats a read-only session as a viewer, e.g. for inspecting outputs.
-        can_edit = current is not None and self._can_edit_dashboard(current.dashboard_id)
-        self._share_button.visible = False
-        self._editor.param.update(editable=False, read_only=not can_edit)
+        can_admin, can_edit = (
+            self._dashboard_rights(current.dashboard_id) if current else (False, False)
+        )
+        self._share_button.visible = can_admin
+        # The editor treats a read-only session as a viewer, e.g. for inspecting
+        # outputs. Without a dashboard (the components route) there is nothing to refuse.
+        self._editor.param.update(editable=False, read_only=current is not None and not can_edit)
         if pn.state.location is not None:
             pn.state.location.param.update(search="")
+
+    def _on_dashboard_bar_mode(self, mode: str):
+        """Switch modes from the dashboard bar, keeping ``?edit=true`` in step.
+
+        Leaving edit mode with unsaved changes goes through the unsaved-changes
+        dialog, whose answers reload the dashboard in view mode.
+        """
+        location = pn.state.location
+        if mode == "edit":
+            self._show_edit_mode()
+        elif self._dirty and self._current_dashboard is not None and location is not None:
+            self._request_navigation(location.pathname)
+        else:
+            self._show_view_mode()
 
     def _dashboard_rights(self, dashboard: str | DashboardModel) -> tuple[bool, bool]:
         """Whether the current identity may administer and may edit a dashboard."""
@@ -1201,12 +1088,18 @@ class FlowDashApp(Viewer):
     _ADMIN_DASHBOARD_ACTIONS = (
         {"label": "Edit", "icon": "edit"},
         {"label": "Rename", "icon": "drive_file_rename_outline"},
-        {"label": "Delete", "icon": "delete"},
+        {"label": "Duplicate", "icon": "content_copy"},
+        {"label": "Share", "icon": "person_add"},
+        {"label": "Download as file", "icon": "download"},
+        {"label": "Delete", "icon": "delete", "color": "error"},
     )
 
     _EDITOR_DASHBOARD_ACTIONS = ({"label": "Edit", "icon": "edit"},)
 
-    _VIEWER_DASHBOARD_ACTIONS = ()
+    _VIEWER_DASHBOARD_ACTIONS = (
+        {"label": "Duplicate", "icon": "content_copy"},
+        {"label": "Download as file", "icon": "download"},
+    )
 
     def _dashboard_actions(self, can_admin: bool, can_edit: bool = False) -> tuple:
         """Menu actions for a dashboard, gated by administration and edit rights.
@@ -1228,10 +1121,6 @@ class FlowDashApp(Viewer):
     def _action_key(action: dict) -> str:
         """Return the key an action dispatches under, matching pmui's ``on_action`` lookup."""
         return action.get("action", action["label"])
-
-    def _dashboard_speed_dial_items(self, can_admin: bool, can_edit: bool = False) -> list[dict]:
-        """SpeedDial items for a launcher dashboard card, gated by admin and edit rights."""
-        return [dict(action) for action in self._dashboard_actions(can_admin, can_edit)]
 
     def _get_dashboard_menu_items(self) -> list[dict]:
         items = []
@@ -1279,12 +1168,75 @@ class FlowDashApp(Viewer):
         ``"action"`` entry if it has one, otherwise its ``"label"``. That is the
         same lookup pmui's ``MenuList.on_action`` uses.
         """
-        if action == "Edit":
+        if action == "Open":
+            self._request_navigation(f"{DASH_ROUTE_PREFIX}{dashboard_id}")
+        elif action == "Edit":
             self._edit_dashboard(dashboard_id)
         elif action == "Rename":
             self._open_rename_dialog(dashboard_id, title)
+        elif action == "Duplicate":
+            self._duplicate_dashboard(dashboard_id)
+        elif action == "Share":
+            self._open_share_dialog(dashboard_id, title)
+        elif action == "Download as file":
+            self._download_dashboard(dashboard_id)
         elif action == "Delete":
             self._open_delete_dialog(dashboard_id, title)
+
+    def _readable_dashboard(self, dashboard_id: str) -> DashboardModel | None:
+        """Load a dashboard the current identity may open, or notify that it is gone."""
+        model = self.store.load_for_access(
+            self._identity, dashboard_id, default_allow=self._default_allow()
+        )
+        if model is None:
+            self._notify("error", "The dashboard no longer exists or is not shared with you.")
+        return model
+
+    def _duplicate_dashboard(self, dashboard_id: str) -> DashboardModel | None:
+        """Copy a dashboard as "<title> copy", owned by the current user and not shared."""
+        source = self._readable_dashboard(dashboard_id)
+        if source is None:
+            return None
+        title = unique_title(self.store, self._user_id, f"{source.title} copy")
+        try:
+            model = copy_dashboard(self.store, source, self._user_id, title)
+        except Exception as exc:
+            self._notify_store_failure("duplicate", exc)
+            return None
+        self._refresh_sidebar_dashboards()
+        self._notify("success", f'Created "{model.title}".', duration=3000)
+        return model
+
+    def _download_dashboard(self, dashboard_id: str) -> bool:
+        """Download the saved dashboard as the file the editor's Download button writes."""
+        model = self._readable_dashboard(dashboard_id)
+        if model is None:
+            return False
+        send_download(self._downloader, model)
+        return True
+
+    def _import_dashboard_file(self, filename: str, content: str | bytes) -> DashboardModel | None:
+        """Save a downloaded dashboard file as a new dashboard of the user and open it."""
+        try:
+            parsed = parse_dashboard_file(content, self._user_id)
+        except ValueError as exc:
+            self._notify("error", f"Could not import {filename}: {exc}", duration=5000)
+            return None
+        title = unique_title(self.store, self._user_id, parsed.title)
+        try:
+            model = copy_dashboard(self.store, parsed, self._user_id, title)
+        except Exception as exc:
+            self._notify_store_failure("import", exc)
+            return None
+        self._refresh_sidebar_dashboards()
+        self._notify("success", f'Imported "{model.title}".', duration=3000)
+        self._request_navigation(f"{DASH_ROUTE_PREFIX}{model.dashboard_id}")
+        return model
+
+    def _build_downloader(self):
+        """Build the hidden download behind "Download as file", mounted on every page."""
+        self._downloader = build_downloader()
+        return self._downloader
 
     def _edit_dashboard(self, dashboard_id: str):
         self._nav_drawer.open = False
@@ -1615,9 +1567,19 @@ class FlowDashApp(Viewer):
             return
         pn.state.location.param.update(pathname=path, search=search)
         self._sync_menu_active(path)
-        pn.state.execute(self._load_page_layout)
+        doc = pn.state.curdoc
+        if doc is not None and doc.session_context is not None:
+            # Loading runs without the document lock, so started right away it
+            # can send the new page before the changes above (URL, breadcrumb)
+            # leave, and the browser rejects it: "reference ... isn't known".
+            # A locked next-tick callback runs once they went out.
+            doc.add_next_tick_callback(partial(pn.state.execute, self._load_page_layout))
+        else:
+            pn.state.execute(self._load_page_layout)
 
     def _sync_menu_active(self, path: str):
+        if self._shell is not None:
+            self._shell.sync(path)
         items = self._menu_list.items
         for si, section in enumerate(items):
             if section.get("path") == path:
