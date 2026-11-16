@@ -10,12 +10,14 @@ full multi-page application on top of it.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import inspect
 import io
 import json
 import logging
 import pathlib
 import re
+import time
 import typing as t
 import uuid
 import weakref
@@ -47,6 +49,7 @@ from panel_flowdash.dataflow_engine import (
 )
 from panel_flowdash.failure_overlay import with_failure_overlay
 from panel_flowdash.registry import RegistryEntry
+from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transform_editor import TransformEditor
 from panel_flowdash.transforms import parse_transform, summarize_transform
 from panel_flowdash.util import (
@@ -237,9 +240,35 @@ _FAILED_NODE_STYLE = {
 }
 
 
+# The editor whose component is being created, for `current_dashboard`.
+_INSTANTIATING: contextvars.ContextVar[FlowDash | None] = contextvars.ContextVar(
+    "panel_flowdash_instantiating", default=None
+)
+# The latest editor of each served session; weak on both sides so a session can end.
+_SESSION_EDITORS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def current_dashboard() -> FlowDash | None:
+    """Return the editor that is showing the component calling this.
+
+    Call it from a component's ``__init__`` or function body. It gives access
+    to the editor's ``settings`` and its ``refresh`` event without importing
+    anything from the application. Later, for example from a callback, it falls
+    back to the latest editor created in the current session. Outside a session
+    and outside component creation there is no editor, and it returns ``None``,
+    as it does for a component that is rendered on its own.
+    """
+    editor = _INSTANTIATING.get()
+    if editor is None and pn.state.curdoc is not None:
+        ref = _SESSION_EDITORS.get(pn.state.curdoc)
+        editor = ref() if ref is not None else None
+    return editor
+
+
 def _dispose_on_session_end(editor_ref: weakref.ref[FlowDash], session_context):
     editor = editor_ref()
     if editor is not None:
+        editor._stop_refresh_timer()
         editor._dispose_components()
 
 
@@ -269,6 +298,9 @@ class FlowDash(Viewer):
         subclass, a mapping of explicit component ids, a project directory to
         scan, or a list mixing any of those. See
         :func:`~panel_flowdash.component_library.normalize_components`.
+    settings_class
+        A subclass of :class:`~panel_flowdash.settings.DashboardSettings` adding
+        dashboard-wide parameters of your own, persisted with each dashboard.
 
     Examples
     --------
@@ -378,7 +410,32 @@ class FlowDash(Viewer):
         `save` refuses. Set this from your own authorization logic.""",
     )
 
+    refresh = param.Event(
+        doc="""
+        Triggered every ``settings.refresh_period`` seconds while a dashboard is
+        shown, and whenever the user clicks the refresh button. Components that
+        show live data subscribe to it, see `current_dashboard`.""",
+    )
+
     saved = param.Event(doc="Triggered after a dashboard is successfully saved.")
+
+    settings = param.ClassSelector(
+        class_=DashboardSettings,
+        constant=True,
+        doc="""
+        The dashboard-wide settings, an instance of `settings_class`. Filled
+        from the loaded dashboard and written back on save. Edited in edit mode
+        through the toolbar's settings form.""",
+    )
+
+    settings_class = param.ClassSelector(
+        class_=DashboardSettings,
+        default=DashboardSettings,
+        is_instance=False,
+        doc="""
+        The class of `settings`. Subclass `DashboardSettings` to add your own
+        dashboard-wide parameters. Read at construction time.""",
+    )
 
     sidebar = Children(
         default=[],
@@ -438,6 +495,7 @@ class FlowDash(Viewer):
             params["store"] = DashboardStore(params["store"])
         # Held back until the canvas exists, and resolved from an id if needed.
         dashboard = params.pop("dashboard", None)
+        params["settings"] = params.get("settings_class", type(self).settings_class)()
 
         super().__init__(**params)
 
@@ -469,6 +527,14 @@ class FlowDash(Viewer):
         # applied so a loaded dashboard doesn't inherit the previous one's overrides.
         self._pending_grid_config: dict | None = None
         self._inspection_key: tuple[str, str] | None = None
+
+        self._settings_names = [name for name in self.settings.param if name != "name"]
+        self._loading_settings = False
+        self._refresh_timer = None
+        self._refresh_ms = 0
+        self.settings.param.watch(self._on_setting_changed, self._settings_names)
+        if pn.state.curdoc is not None:
+            _SESSION_EDITORS[pn.state.curdoc] = weakref.ref(self)
 
         self._dataflow_graph = DataflowGraph(
             {}, on_error=self._on_wiring_error, propagate_failures=self.propagate_failures
@@ -516,6 +582,7 @@ class FlowDash(Viewer):
         automatically when that session ends. In a notebook, under pyodide or
         for an editor created outside a session, call this yourself.
         """
+        self._stop_refresh_timer()
         self._reset_canvas()
 
     def _dispose_components(self):
@@ -1505,6 +1572,29 @@ class FlowDash(Viewer):
             sx={"& .MuiDialog-paper": {"minWidth": "min(480px, 100%)"}},
         )
 
+        self._refresh_button = pmui.Button(
+            label="Refresh", icon="refresh", variant="text", size="small", margin=(5, 2)
+        )
+        self._refresh_label = pmui.Typography(
+            variant="caption", sx={"color": "text.secondary"}, margin=(0, 8, 0, 0), align="center"
+        )
+        self._refresh_bar = pn.Row(
+            self._refresh_label, self._refresh_button, align="end", margin=(4, 8, 0, 8)
+        )
+        self._refresh_button.on_click(lambda _event: self.param.trigger("refresh"))
+        self._settings_button = pmui.Button(
+            label="Settings",
+            icon="tune",
+            variant="text",
+            size="small",
+            margin=(5, 2),
+            align="center",
+        )
+        self._settings_dialog = self._build_settings_dialog()
+        self._settings_button.on_click(
+            lambda _event: self._settings_dialog.param.update(open=True)
+        )
+
         self._mode_toggle = pmui.RadioButtonGroup(
             options={
                 ":material/cable: Wiring": "wiring",
@@ -1533,6 +1623,7 @@ class FlowDash(Viewer):
             self._preview_switch,
             pmui.Divider(orientation="vertical", height=24, margin=(0, 6), align="center"),
             self._actions_row,
+            self._settings_button,
             align="center",
             direction="row",
             elevation=2,
@@ -1567,6 +1658,7 @@ class FlowDash(Viewer):
 
         self._sync_toolbar_extra()
         self._sync_toolbar_state()
+        self._stamp_refresh()
         return pn.Row(self._side_panel, self._workspace_area, sizing_mode="stretch_both")
 
     def _build_clear_dialog(self):
@@ -1618,12 +1710,32 @@ class FlowDash(Viewer):
             min_width=400,
         )
 
+    def _build_settings_dialog(self):
+        close = pmui.Button(label="Close", variant="text")
+        close.on_click(lambda _event: self._settings_dialog.param.update(open=False))
+        # `pn.Param` would pick a slider over the whole bounds, which for the period is a day.
+        form = pn.Param(
+            self.settings,
+            parameters=self._settings_names,
+            widgets={"refresh_period": pmui.NumberInput},
+            show_name=False,
+            expand_button=False,
+            sizing_mode="stretch_width",
+        )
+        return pmui.Dialog(
+            objects=[form, pn.Row(pn.layout.HSpacer(), close, sizing_mode="stretch_width")],
+            title="Dashboard settings",
+            open=False,
+            min_width=400,
+        )
+
     @param.depends("dirty", "read_only", watch=True)
     def _sync_toolbar_state(self):
         """Reflect canvas contents and save state in the toolbar and palette."""
         # Save is the only emphasized action, and only while there is something to save.
         variant = "contained" if self.dirty else "text"
         self._save_button.param.update(variant=variant, disabled=self.read_only)
+        self._settings_button.disabled = self.read_only
         self._clear_button.disabled = not self._tile_items
         hint = [] if self._tile_items else [self._empty_hint]
         if self._flow.bottom_panel != hint:
@@ -1708,7 +1820,7 @@ class FlowDash(Viewer):
         self._side_panel.visible = not showing_grid
         self._tile_grid.param.update(editable=interactive, card=interactive)
         # Column children rather than Row children, so the dialogs take no flex space.
-        dialogs = [self._clear_dialog, self._import_dialog]
+        dialogs = [self._clear_dialog, self._import_dialog, self._settings_dialog]
         if self.inspect_outputs:
             dialogs.insert(0, self._inspect_dialog)
         shared_dialog = page_dialog() if self.include_page_dialog else None
@@ -1716,7 +1828,9 @@ class FlowDash(Viewer):
             dialogs.append(shared_dialog)
         if showing_grid:
             self._flow.top_panel = []
-            self._workspace_area[:] = [*toolbar, self._tile_grid, *dialogs]
+            # Edit mode has its own toolbar; the bar is for what an end user sees.
+            bar = [] if interactive else [self._refresh_bar]
+            self._workspace_area[:] = [*toolbar, *bar, self._tile_grid, *dialogs]
             self._rebuild_tile_grid()
         else:
             self._stash_tile_layout()
@@ -1792,6 +1906,88 @@ class FlowDash(Viewer):
         return self._placed_layout(self._pending_tile_layout)
 
     # ------------------------------------------------------------------
+    # Settings and refresh
+    # ------------------------------------------------------------------
+
+    def _settings_values(self) -> dict[str, t.Any]:
+        return {name: getattr(self.settings, name) for name in self._settings_names}
+
+    def _apply_settings(self, stored: dict[str, t.Any]):
+        """Load a dashboard's stored settings, falling back to defaults for the rest."""
+        # A fresh instance doubles as the validator, so a bad stored value falls back
+        # to its default instead of keeping the previous dashboard's value.
+        fresh = self.settings_class()
+        for name, value in (stored or {}).items():
+            if name not in self._settings_names:
+                logger.debug("Ignoring unknown dashboard setting '%s'", name)
+                continue
+            try:
+                setattr(fresh, name, value)
+            except (TypeError, ValueError) as exc:
+                logger.warning("Saved setting '%s' rejected: %s", name, exc)
+        self._loading_settings = True
+        try:
+            self.settings.param.update(
+                **{name: getattr(fresh, name) for name in self._settings_names}
+            )
+        finally:
+            self._loading_settings = False
+
+    def _subscriptions(self) -> dict[int, tuple[param.Parameterized, param.parameterized.Watcher]]:
+        """Every watcher on the editor and its settings, which components subscribe to."""
+        return {
+            id(watcher): (owner, watcher)
+            for owner in (self, self.settings)
+            for by_mode in owner.param.watchers.values()
+            for watchers in by_mode.values()
+            for watcher in watchers
+        }
+
+    def _track_subscriptions(self, instance_id: str, before: dict):
+        """Release what a component subscribed to while it was created along with its wiring.
+
+        `_dispose_component` runs the releases however the component leaves the
+        editor, so a removed component stops reacting to `refresh` and can be freed.
+        """
+        wiring = self._component_wiring.setdefault(instance_id, [])
+        for key, (owner, watcher) in self._subscriptions().items():
+            if key not in before:
+                wiring.append(partial(owner.param.unwatch, watcher))
+
+    def _on_setting_changed(self, *_events):
+        if not self._loading_settings:
+            self.dirty = True
+
+    @param.depends("dashboard", "settings.refresh_period", watch=True)
+    def _schedule_refresh_timer(self, *_events):
+        # The period can change before the page has loaded, and a callback added
+        # then would start ahead of the session being ready.
+        pn.state.onload(self._sync_refresh_timer)
+
+    def _sync_refresh_timer(self):
+        """Run one periodic callback while a dashboard is shown and a period is set."""
+        period = self.settings.refresh_period if self.dashboard is not None else 0
+        period_ms = int(period * 1000)
+        if period_ms == self._refresh_ms:
+            return
+        self._stop_refresh_timer()
+        if period_ms:
+            self._refresh_timer = pn.state.add_periodic_callback(
+                partial(self.param.trigger, "refresh"), period=period_ms
+            )
+            self._refresh_ms = period_ms
+
+    def _stop_refresh_timer(self):
+        if self._refresh_timer is not None:
+            self._refresh_timer.stop()
+            self._refresh_timer = None
+        self._refresh_ms = 0
+
+    @param.depends("refresh", watch=True)
+    def _stamp_refresh(self):
+        self._refresh_label.object = time.strftime("Refreshed %H:%M:%S")
+
+    # ------------------------------------------------------------------
     # Public canvas API
     # ------------------------------------------------------------------
 
@@ -1852,12 +2048,18 @@ class FlowDash(Viewer):
         node_state = self._dataflow_graph.add_node(instance_id, component_id)
         config_state = self._dataflow_graph.get_config_state(instance_id)
         config_data = self._seed_config_state(instance_id, config)
+        before = self._subscriptions()
+        token = _INSTANTIATING.set(self)
         try:
             view = self._instantiate_for_node(entry, node_state, config_state)
         except Exception:
             self._dataflow_graph.remove_node(instance_id)
+            self._track_subscriptions(instance_id, before)
             self._dispose_component(instance_id)
             raise
+        finally:
+            _INSTANTIATING.reset(token)
+        self._track_subscriptions(instance_id, before)
         # The component is instantiated even while blocked, so it can subscribe
         # and publish outputs; only what the tile displays is gated.
         view, release = gate_view(view, node_state, spec.inputs, entry.metadata.placeholder)
@@ -2125,6 +2327,13 @@ class FlowDash(Viewer):
         if current is not None:
             model.version = current.version
             model.permission = current.permission
+        # Keys this editor has no parameter for stay, so saving does not erase
+        # settings an application with a richer `settings_class` stored.
+        stored = current.settings if current else {}
+        model.settings = {
+            **{k: v for k, v in stored.items() if k not in self._settings_names},
+            **self._settings_values(),
+        }
         model.items = [
             DashboardItem(
                 instance_id=item["instance_id"],
@@ -2182,9 +2391,12 @@ class FlowDash(Viewer):
     @pn.io.hold()
     def _hydrate_model(self, model: DashboardModel):
         """Populate the canvas from *model*, assuming its components are loaded."""
-        self.dashboard = model
         with self._muted_canvas():
             self._reset_canvas()
+        # After the previous components are disposed, so none of them reacts to the
+        # new values, and before these are placed, so they see this dashboard's.
+        self._apply_settings(model.settings)
+        self.dashboard = model
         # Unlike palette drops (see `_on_component_dropped`) this replaces every
         # node view at once, so no view already on the canvas can be blanked.
         with self._muted_canvas(), self._batched_canvas(), self._dataflow_graph.batch():
@@ -2235,6 +2447,7 @@ class FlowDash(Viewer):
             "reference_width": model.reference_width,
         }
         self.dirty = False
+        self._stamp_refresh()
         self._apply_mode_state()
 
     def _legacy_layout_ids(self, model: DashboardModel) -> list[str]:
@@ -2281,6 +2494,7 @@ class FlowDash(Viewer):
         self._reset_canvas()
         self._pending_tile_layout = []
         self._pending_grid_config = dict(_EMPTY_GRID_CONFIG)
+        self._apply_settings(model.settings)
         self.dashboard = model
         self.dirty = False
 

@@ -4,11 +4,13 @@ Every test here runs against every store backend, so the in-memory and JSON fold
 stores are held to exactly the same contract as the SQLite one.
 """
 
+import json
 import logging
 import os
 import sqlite3
 import threading
 import warnings
+from contextlib import closing
 
 import pytest
 
@@ -354,6 +356,128 @@ class TestPermissionPersistence:
         )
         loaded = store._load_any(dashboard.dashboard_id)
         assert loaded.permission.allow_users == frozenset({"bob"})
+
+
+class TestSettingsPersistence:
+    async def test_settings_round_trip(self, store, sample_dashboard):
+        sample_dashboard.settings = {
+            "refresh_period": 30,
+            "palette": ["a", "b"],
+            "nested": {"x": 1},
+        }
+        store.save_dashboard(sample_dashboard)
+        loaded = store.load_dashboard("user1", "d1")
+        assert loaded.settings == sample_dashboard.settings
+
+    async def test_new_dashboard_has_empty_settings(self, store):
+        dashboard = store.create_dashboard("user1", "Fresh")
+        assert dashboard.settings == {}
+        assert store.load_dashboard("user1", dashboard.dashboard_id).settings == {}
+
+    async def test_settings_update_and_clear(self, store, sample_dashboard):
+        sample_dashboard.settings = {"refresh_period": 30}
+        store.save_dashboard(sample_dashboard)
+        sample_dashboard.settings = {"refresh_period": 5}
+        store.save_dashboard(sample_dashboard)
+        assert store.load_dashboard("user1", "d1").settings == {"refresh_period": 5}
+        sample_dashboard.settings = {}
+        store.save_dashboard(sample_dashboard)
+        assert store.load_dashboard("user1", "d1").settings == {}
+
+    async def test_settings_survive_other_updates(self, store, sample_dashboard):
+        """Renaming or sharing rewrites the dashboard without dropping its settings."""
+        sample_dashboard.settings = {"refresh_period": 30}
+        store.save_dashboard(sample_dashboard)
+        store.rename_dashboard("user1", "d1", "Renamed")
+        store.set_permission("d1", Permission.from_spec(allow_users=["bob"]))
+        assert store.load_dashboard("user1", "d1").settings == {"refresh_period": 30}
+
+    async def test_loaded_settings_are_detached_from_the_store(self, store, sample_dashboard):
+        sample_dashboard.settings = {"tags": ["a"]}
+        store.save_dashboard(sample_dashboard)
+        store.load_dashboard("user1", "d1").settings["tags"].append("b")
+        assert store.load_dashboard("user1", "d1").settings == {"tags": ["a"]}
+
+    async def test_legacy_dict_without_settings_loads_empty(self, sample_dashboard):
+        legacy = sample_dashboard.to_dict()
+        del legacy["settings"]
+        assert DashboardModel.from_dict(legacy).settings == {}
+
+    @pytest.mark.parametrize("value", ["oops", [["a", 1]], {1: "x"}])
+    async def test_malformed_settings_in_a_dict_are_rejected(self, sample_dashboard, value):
+        """Like the other fields, so the stores can drop them and an import can refuse them."""
+        data = sample_dashboard.to_dict()
+        data["settings"] = value
+        with pytest.raises(TypeError, match="settings must be a mapping"):
+            DashboardModel.from_dict(data)
+
+
+_PRE_SETTINGS_SCHEMA = """
+    CREATE TABLE dashboards (
+        dashboard_id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1,
+        items_json TEXT NOT NULL DEFAULT '[]',
+        edges_json TEXT NOT NULL DEFAULT '[]',
+        tile_layout_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        breakpoints_json TEXT NOT NULL DEFAULT '[]',
+        responsive_layouts_json TEXT NOT NULL DEFAULT '{}',
+        permission_json TEXT NOT NULL DEFAULT '{}',
+        reference_width_json TEXT NOT NULL DEFAULT 'null'
+    )
+"""
+
+
+class TestSqliteSettingsMigration:
+    @pytest.fixture
+    def legacy_db(self, tmp_path):
+        path = tmp_path / "legacy.db"
+        items = [{"instance_id": "n1", "component_id": "Comp/a", "x": 1, "y": 2, "config": {}}]
+        with closing(sqlite3.connect(path)) as conn, conn:
+            conn.execute(_PRE_SETTINGS_SCHEMA)
+            conn.execute(
+                "INSERT INTO dashboards (dashboard_id, user_id, title, version, items_json) "
+                "VALUES ('old', 'user1', 'Old', 3, ?)",
+                (json.dumps(items),),
+            )
+        return path
+
+    async def test_existing_dashboard_loads_unchanged_with_empty_settings(self, legacy_db):
+        store = DashboardStore(legacy_db)
+        loaded = store.load_dashboard("user1", "old")
+        assert loaded.title == "Old"
+        assert [i.component_id for i in loaded.items] == ["Comp/a"]
+        assert loaded.settings == {}
+
+    async def test_migrated_database_saves_and_loads_settings(self, legacy_db):
+        store = DashboardStore(legacy_db)
+        loaded = store.load_dashboard("user1", "old")
+        loaded.settings = {"refresh_period": 12}
+        store.save_dashboard(loaded)
+        assert DashboardStore(legacy_db).load_dashboard("user1", "old").settings == {
+            "refresh_period": 12
+        }
+
+    async def test_reopening_a_migrated_database_is_harmless(self, legacy_db):
+        DashboardStore(legacy_db)
+        assert DashboardStore(legacy_db).load_dashboard("user1", "old") is not None
+
+    @pytest.mark.parametrize("raw", ["{broken", '"oops"', "[1, 2]", "null"])
+    async def test_malformed_settings_column_loads_without_settings(self, legacy_db, raw, caplog):
+        store = DashboardStore(legacy_db)
+        with closing(sqlite3.connect(legacy_db)) as conn, conn:
+            conn.execute("UPDATE dashboards SET settings_json = ?", (raw,))
+        with caplog.at_level(logging.WARNING):
+            loaded = store.load_dashboard("user1", "old")
+            listed = store.list_dashboards("user1")
+            store.list_dashboards("user1")
+        assert loaded.settings == {}
+        assert [(d.dashboard_id, d.settings) for d in listed] == [("old", {})]
+        warnings = [r for r in caplog.records if "malformed settings" in r.getMessage()]
+        assert len(warnings) == (raw != "null")
 
 
 class TestAccessControl:

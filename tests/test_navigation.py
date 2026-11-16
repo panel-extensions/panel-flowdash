@@ -226,9 +226,10 @@ class _GatedLoads:
         await self._original(component_ids)
 
 
-def _dashboard(app, title, component_id):
+def _dashboard(app, title, component_id, **settings):
     dash = app.store.create_dashboard(app._user_id, title)
     dash.items = [DashboardItem(instance_id=f"{title}-1", component_id=component_id)]
+    dash.settings = settings
     app.store.save_dashboard(dash)
     return dash
 
@@ -390,6 +391,66 @@ class TestStaleNavigation:
         await _goto(app, "/Analytics/page")
         await asyncio.wait_for(cancelled.wait(), 1)
         await asyncio.wait_for(first, 1)
+
+
+class _Timer:
+    def __init__(self, period):
+        self.period = period
+        self.stopped = False
+
+    def stop(self):
+        self.stopped = True
+
+
+class TestRefreshTimerNavigation:
+    """The refresh timer follows the dashboard that navigation ends on."""
+
+    @pytest.fixture
+    def timers(self, monkeypatch):
+        created = []
+
+        def add_periodic_callback(callback, period=500, **_):
+            created.append(_Timer(period))
+            return created[-1]
+
+        monkeypatch.setattr(pn.state, "add_periodic_callback", add_periodic_callback)
+        return created
+
+    @staticmethod
+    def _running(timers):
+        return [t.period for t in timers if not t.stopped]
+
+    async def test_slow_dashboard_does_not_apply_its_settings_over_newer_one(self, app, timers):
+        slow = _dashboard(app, "Slow", "Analytics/selector", refresh_period=5)
+        fast = _dashboard(app, "Fast", "Analytics/chart", refresh_period=7)
+        gate = _GatedLoads(app, "Analytics/selector")
+
+        first = _goto(app, f"{DASH_ROUTE_PREFIX}{slow.dashboard_id}")
+        await gate.started.wait()
+        await _goto(app, f"{DASH_ROUTE_PREFIX}{fast.dashboard_id}")
+        gate.release.set()
+        await asyncio.wait_for(first, 5)
+
+        assert app._editor.settings.refresh_period == 7
+        assert self._running(timers) == [7000]
+
+    async def test_leaving_for_a_page_stops_the_timer(self, app, timers):
+        dash = _dashboard(app, "Live", "Analytics/chart", refresh_period=5)
+        await _goto(app, f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}")
+        assert self._running(timers) == [5000]
+
+        await _goto(app, "/Analytics/page")
+        assert self._running(timers) == []
+
+        await _goto(app, f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}")
+        assert self._running(timers) == [5000]
+
+    async def test_deleting_the_shown_dashboard_stops_the_timer(self, app, timers):
+        dash = _dashboard(app, "Live", "Analytics/chart", refresh_period=5)
+        await _goto(app, f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}")
+
+        assert app._delete_dashboard(dash.dashboard_id)
+        assert self._running(timers) == []
 
 
 class TestNavigateTo:

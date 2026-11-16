@@ -92,6 +92,38 @@ class TestFiles:
         assert store.load_dashboard("u", "d1").title == "T"
 
 
+class TestSettings:
+    def test_file_without_the_key_loads_empty_settings(self, tmp_path):
+        """Files written before settings existed, or by hand, still load."""
+        data = DashboardModel(dashboard_id="old", user_id="u", title="Old").to_dict()
+        del data["settings"]
+        (tmp_path / "old.json").write_text(json.dumps(data))
+        assert JSONFolderDashboardStore(tmp_path).load_dashboard("u", "old").settings == {}
+
+    def test_settings_are_readable_in_the_file(self, tmp_path):
+        store = JSONFolderDashboardStore(tmp_path)
+        store.save_dashboard(
+            DashboardModel(
+                dashboard_id="d1", user_id="u", title="D", settings={"refresh_period": 30}
+            )
+        )
+        assert json.loads((tmp_path / "d1.json").read_text())["settings"] == {"refresh_period": 30}
+
+    def test_settings_that_are_not_a_mapping_are_dropped(self, tmp_path, caplog):
+        """Settings are optional, so bad ones do not make the dashboard unreadable."""
+        data = DashboardModel(dashboard_id="bad", user_id="u", title="Bad").to_dict()
+        data["settings"] = "oops"
+        (tmp_path / "bad.json").write_text(json.dumps(data))
+        store = JSONFolderDashboardStore(tmp_path)
+        with caplog.at_level(logging.WARNING):
+            listed = store.list_dashboards("u")
+            loaded = store.load_dashboard("u", "bad")
+        assert [(d.dashboard_id, d.settings) for d in listed] == [("bad", {})]
+        assert loaded.settings == {}
+        warnings = [r for r in caplog.records if "malformed settings" in r.getMessage()]
+        assert len(warnings) == 1
+
+
 class TestIds:
     def test_create_derives_the_id_from_the_title(self, tmp_path):
         store = JSONFolderDashboardStore(tmp_path)

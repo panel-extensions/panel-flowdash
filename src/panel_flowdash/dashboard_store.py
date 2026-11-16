@@ -28,6 +28,20 @@ _AMBIGUOUS_TITLES: set[str] = set()
 MALFORMED_ERRORS = (KeyError, TypeError, ValueError, AttributeError, RecursionError)
 
 
+def decode_settings(value: Any) -> dict[str, Any]:
+    """Return a private copy of stored dashboard settings, which may be missing (None).
+
+    Raises TypeError unless they are a mapping with string keys. Settings are
+    optional, so the stores catch this and drop just the settings, with a
+    warning, rather than skipping the whole dashboard.
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        raise TypeError(f"settings must be a mapping, not {type(value).__name__}")
+    return copy.deepcopy(value)
+
+
 class DashboardStoreError(Exception):
     """A store refused an operation for a reason the user should see.
 
@@ -122,6 +136,8 @@ class DashboardModel:
     # Container width the tile layout was authored at; narrower screens derive from it.
     reference_width: int | None = None
     permission: Permission = field(default_factory=Permission)
+    # Dashboard-wide values, keyed by the parameter names of the editor's settings object.
+    settings: dict[str, Any] = field(default_factory=dict)
 
     @property
     def owner(self) -> str:
@@ -141,6 +157,7 @@ class DashboardModel:
             "responsive_layouts": self.responsive_layouts,
             "reference_width": self.reference_width,
             "permission": self.permission.to_dict(),
+            "settings": copy.deepcopy(self.settings),
         }
 
     @classmethod
@@ -162,6 +179,7 @@ class DashboardModel:
             responsive_layouts=data.get("responsive_layouts", {}),
             reference_width=data.get("reference_width"),
             permission=Permission.from_dict(data.get("permission")),
+            settings=decode_settings(data.get("settings")),
         )
 
 
@@ -521,6 +539,7 @@ class DashboardStore(BaseDashboardStore):
                 ("responsive_layouts_json", "'{}'"),
                 ("permission_json", "'{}'"),
                 ("reference_width_json", "'null'"),
+                ("settings_json", "'{}'"),
             ]
             for col, default in migrations:
                 try:
@@ -607,11 +626,12 @@ class DashboardStore(BaseDashboardStore):
         responsive_layouts_json = json.dumps(dashboard.responsive_layouts)
         reference_width_json = json.dumps(dashboard.reference_width)
         permission_json = json.dumps(dashboard.permission.to_dict())
+        settings_json = json.dumps(dashboard.settings)
         with self._get_conn() as conn:
             conn.execute(
                 """
-                INSERT INTO dashboards (dashboard_id, user_id, title, version, items_json, edges_json, tile_layout_json, breakpoints_json, responsive_layouts_json, reference_width_json, permission_json, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                INSERT INTO dashboards (dashboard_id, user_id, title, version, items_json, edges_json, tile_layout_json, breakpoints_json, responsive_layouts_json, reference_width_json, permission_json, settings_json, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
                 ON CONFLICT(dashboard_id) DO UPDATE SET
                     title = excluded.title,
                     version = excluded.version,
@@ -622,6 +642,7 @@ class DashboardStore(BaseDashboardStore):
                     responsive_layouts_json = excluded.responsive_layouts_json,
                     reference_width_json = excluded.reference_width_json,
                     permission_json = excluded.permission_json,
+                    settings_json = excluded.settings_json,
                     updated_at = datetime('now')
                 """,
                 (
@@ -636,6 +657,7 @@ class DashboardStore(BaseDashboardStore):
                     responsive_layouts_json,
                     reference_width_json,
                     permission_json,
+                    settings_json,
                 ),
             )
 
@@ -702,4 +724,18 @@ class DashboardStore(BaseDashboardStore):
             responsive_layouts=responsive_layouts,
             reference_width=json.loads(reference_raw),
             permission=permission,
+            settings=self._row_settings(row) if "settings_json" in keys else {},
         )
+
+    def _row_settings(self, row: sqlite3.Row) -> dict[str, Any]:
+        """Decode a row's settings, or log (once per revision) and drop them if malformed."""
+        try:
+            return decode_settings(json.loads(row["settings_json"]))
+        except MALFORMED_ERRORS as exc:
+            key = (row["dashboard_id"], row["updated_at"], "settings")
+            if key not in self._warned:
+                self._warned.add(key)
+                logger.warning(
+                    "Ignoring malformed settings of dashboard %r (%r)", row["dashboard_id"], exc
+                )
+            return {}

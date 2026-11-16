@@ -286,7 +286,7 @@ class TestLayout:
     def test_editor_outside_a_session_has_no_page_dialog(self):
         editor = FlowDash({}, notifications=False)
         dialogs = [o for o in editor._workspace_area.objects if isinstance(o, pmui.Dialog)]
-        assert dialogs == [editor._clear_dialog, editor._import_dialog]
+        assert dialogs == [editor._clear_dialog, editor._import_dialog, editor._settings_dialog]
 
     @pytest.mark.parametrize("pathname", ["/", "/dash/{dashboard_id}", "/nowhere"])
     async def test_app_lays_out_the_dialog_once_on_every_route(self, doc, tmp_path, pathname):

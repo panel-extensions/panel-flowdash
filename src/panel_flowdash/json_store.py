@@ -19,6 +19,7 @@ from panel_flowdash.dashboard_store import (
     BaseDashboardStore,
     DashboardModel,
     DashboardStoreError,
+    decode_settings,
 )
 
 log = logging.getLogger(__name__)
@@ -260,10 +261,19 @@ class JSONFolderDashboardStore(BaseDashboardStore):
             return None
         data = path.read_bytes()
         try:
-            model = DashboardModel.from_dict(json.loads(data.decode("utf-8")))
+            fields = json.loads(data.decode("utf-8"))
+            # Settings are optional, so bad ones are dropped below instead of the file.
+            settings = fields.pop("settings", None) if isinstance(fields, dict) else None
+            model = DashboardModel.from_dict(fields)
         except MALFORMED_ERRORS as exc:
             self._warn_once(path, mtime, "Skipping dashboard file %s: malformed (%r)", exc)
             return None
+        try:
+            model.settings = decode_settings(settings)
+        except MALFORMED_ERRORS as exc:
+            self._warn_once(
+                path, mtime, "Ignoring malformed settings in dashboard file %s (%r)", exc
+            )
         if model.dashboard_id != path.stem:
             self._warn_once(
                 path,
