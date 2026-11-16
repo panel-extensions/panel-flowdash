@@ -174,7 +174,8 @@ re-runs `_fetch` because the event is bound to the widget.
 
 Whatever a component subscribes to on the editor or on `settings` while it is
 being created is released when its tile is removed, the canvas is cleared or
-another dashboard is loaded. A subscription added later, for example from a
+another dashboard is loaded. The body of an `async` function component counts as
+creation too, including the parts that run after an `await`. A subscription added later, for example from a
 button handler, is yours to remove with `dashboard.param.unwatch(...)`.
 
 Settings are applied before a dashboard's components are created, so a component

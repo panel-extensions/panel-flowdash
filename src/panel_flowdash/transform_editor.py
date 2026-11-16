@@ -325,7 +325,12 @@ def _caption(text: str, **kwargs) -> pmui.Typography:
 
 
 class TransformEditor(Viewer):
-    """Edit the transform steps of one edge, showing the shape of the value between steps."""
+    """Edit the transform steps of one edge, showing the shape of the value between steps.
+
+    Checking the steps runs the whole transform on the source value, so a change
+    of that value is only rendered while the editor is shown (see `show`).
+    Hidden, it keeps the issue from its last check and catches up when shown.
+    """
 
     issue = param.String(
         default=None,
@@ -349,6 +354,8 @@ class TransformEditor(Viewer):
         # told apart from an edit made here.
         self._base: list[dict[str, t.Any]] = []
         self._watched: tuple[param.Parameterized, t.Any] | None = None
+        self._shown = False
+        self._stale = False
         self._body = pn.Column(sizing_mode="stretch_width", margin=0)
 
     @property
@@ -390,6 +397,16 @@ class TransformEditor(Viewer):
         self._watch_source(self._key)
         self._render()
 
+    def show(self):
+        """Follow the source value, rendering a change missed while hidden."""
+        self._shown = True
+        if self._loaded and self._stale:
+            self._render()
+
+    def hide(self):
+        """Stop rendering source changes until shown again."""
+        self._shown = False
+
     def dispose(self):
         """Stop following the source port, once the edge is gone."""
         if self._watched is not None:
@@ -401,7 +418,13 @@ class TransformEditor(Viewer):
         self.dispose()
         state = self._owner.graph.get_state(key[0]) if key else None
         if state is not None:
-            self._watched = (state, state.param.watch(lambda _: self._render(), key[1]))
+            self._watched = (state, state.param.watch(self._on_source_changed, key[1]))
+
+    def _on_source_changed(self, _event):
+        if self._shown:
+            self._render()
+        else:
+            self._stale = True
 
     def _source_value(self):
         key = self._key
@@ -422,6 +445,7 @@ class TransformEditor(Viewer):
 
     @pn.io.hold()
     def _render(self):
+        self._stale = False
         if self._key is None:
             self._body[:] = []
             return

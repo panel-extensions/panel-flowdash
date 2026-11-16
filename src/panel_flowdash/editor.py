@@ -97,6 +97,7 @@ from panel_flowdash.util import (
     page_dialog,
     panel_call,
     panel_viewer,
+    stepped,
 )
 from panel_flowdash.widgets import BUILTIN_COMPONENTS
 
@@ -392,6 +393,26 @@ def current_dashboard() -> FlowDash | None:
         ref = _SESSION_EDITORS.get(pn.state.curdoc)
         editor = ref() if ref is not None else None
     return editor
+
+
+@contextmanager
+def _creating(editor_ref: weakref.ref[FlowDash], instance_id: str, wiring: list):
+    """Run one step of an async component body as part of creating *instance_id*.
+
+    Like synchronous creation, `current_dashboard` returns the editor and every
+    subscription the step makes is released with the component.
+    """
+    editor = editor_ref()
+    if editor is None:
+        yield
+        return
+    before = editor._subscriptions()
+    token = _INSTANTIATING.set(editor)
+    try:
+        yield
+    finally:
+        _INSTANTIATING.reset(token)
+        editor._track_subscriptions(instance_id, before, wiring)
 
 
 def _dispose_on_session_end(editor_ref: weakref.ref[FlowDash], session_context):
@@ -814,11 +835,14 @@ class FlowDash(Viewer):
             pn.state.execute(partial(self._await_dispose, instance_id, result), schedule=True)
 
     def _release_wiring(self, instance_id: str):
-        for release in self._component_wiring.pop(instance_id, ()):
+        releases = self._component_wiring.pop(instance_id, [])
+        for release in releases:
             try:
                 release()
             except Exception:
                 logger.exception("Releasing the wiring of component '%s' failed", instance_id)
+        # A pending async body still holds the list; emptied, it holds no watchers.
+        releases.clear()
 
     @staticmethod
     async def _await_dispose(instance_id: str, awaitable):
@@ -1832,6 +1856,11 @@ class FlowDash(Viewer):
         # is synchronous, the outputs they publish must exist before saved edges
         # are reconnected, and the dataflow graph is not thread-safe. Slow
         # components should be async (see docs/how-to/register-components.md).
+        if is_async(app_fn):
+            # The body runs at render time, after `_place` has finished tracking.
+            node_id = node_state.name
+            wiring = self._component_wiring.setdefault(node_id, [])
+            app_fn = stepped(app_fn, partial(_creating, weakref.ref(self), node_id, wiring))
         return panel_call(app_fn, **kwargs)
 
     def _instantiate_viewer_for_node(self, viewer_cls, entry, node_state, config_state=None):
@@ -2308,16 +2337,26 @@ class FlowDash(Viewer):
             for watcher in watchers
         }
 
-    def _track_subscriptions(self, instance_id: str, before: dict):
+    def _track_subscriptions(self, instance_id: str, before: dict, wiring: list | None = None):
         """Release what a component subscribed to while it was created along with its wiring.
 
         `_dispose_component` runs the releases however the component leaves the
         editor, so a removed component stops reacting to `refresh` and can be freed.
+        With *wiring*, the list the component was placed with, subscriptions made
+        after that placement was released (an async body finishing late) are
+        released right away instead of attaching to a later placement.
         """
-        wiring = self._component_wiring.setdefault(instance_id, [])
+        current = self._component_wiring.get(instance_id)
+        if wiring is None:
+            wiring = current = self._component_wiring.setdefault(instance_id, [])
         for key, (owner, watcher) in self._subscriptions().items():
-            if key not in before:
-                wiring.append(partial(owner.param.unwatch, watcher))
+            if key in before:
+                continue
+            release = partial(owner.param.unwatch, watcher)
+            if current is wiring:
+                wiring.append(release)
+            else:
+                release()
 
     def _on_setting_changed(self, *_events):
         if not self._loading_settings:

@@ -466,6 +466,7 @@ class TestTransformEditor:
     async def test_shapes_follow_the_source(self):
         editor, key, _, view = _editor_with_edge()
         view.__panel__()
+        view.show()
         editor.graph.get_state(key[0]).frame = PLANTS.head(1)
         assert "In: 1 row, 3 columns" in _texts(view)
 

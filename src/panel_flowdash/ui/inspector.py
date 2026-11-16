@@ -667,7 +667,10 @@ class Inspector(Viewer):
             margin=0,
             sizing_mode="stretch_width",
         )
-        return [header, steps, editor._transform_editor(edge_id)]
+        transform = editor._transform_editor(edge_id)
+        transform.show()
+        self._releases.append(transform.hide)
+        return [header, steps, transform]
 
     # ------------------------------------------------------------------
     # Collapsing
