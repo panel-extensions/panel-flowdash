@@ -8,7 +8,7 @@ import logging
 import pathlib
 import traceback
 import typing as t
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager
 from functools import cache, partial
 from html import escape
 
@@ -245,6 +245,8 @@ class FlowDashApp(Viewer):
         session_state_class = build_session_state_class(registry)
         self._registry = registry
         self._page_entries = page_entries
+        # Pages hidden from this session's menus until their rules are resolved.
+        self._pending_pages = [e for e in page_entries.values() if e.metadata.auth_pending]
         self._session_state_class = session_state_class
 
         self._session_state = self._session_state_class()
@@ -377,8 +379,51 @@ class FlowDashApp(Viewer):
         return self.auth_config.default_allow if self.auth_config else True
 
     def _can_access_entry(self, entry: RegistryEntry) -> bool:
-        """Whether the current identity may access a page/component entry."""
-        return entry_authorized(entry, self._identity, default_allow=self._default_allow())
+        """Whether the current identity may access a page/component entry.
+
+        Never imports: an entry whose rules are still pending is denied here
+        until :meth:`_resolve_pending_entries` or :meth:`_render_page` has
+        imported it off the event loop.
+        """
+        return entry_authorized(
+            entry, self._identity, default_allow=self._default_allow(), load=False
+        )
+
+    @staticmethod
+    def _unresolved(entry: RegistryEntry) -> bool:
+        return entry.metadata.auth_pending and entry.load_error is None
+
+    @staticmethod
+    async def _import_pending(entry: RegistryEntry):
+        """Import *entry* off the event loop so its decorator supplies the real rules."""
+        try:
+            await asyncio.to_thread(entry.load)
+        except Exception:
+            logger.exception(
+                "Could not import '%s' to resolve its permissions; denying access", entry.app_id
+            )
+
+    async def _resolve_pending_entries(self):
+        """Import pages whose rules are pending, off the event loop, then refresh the menus.
+
+        Registry entries are shared across sessions, so each module is imported
+        once per process; one whose import fails stays denied and is not retried.
+        """
+        if not self._pending_pages:
+            return
+        for entry in self._pending_pages:
+            if self._unresolved(entry):
+                await self._import_pending(entry)
+        if all(entry.metadata.auth_pending for entry in self._pending_pages):
+            return
+        self._pending_pages = [e for e in self._pending_pages if e.metadata.auth_pending]
+        menu_items = self._build_nav_menu_items()
+        self._menu_list.param.update(
+            items=menu_items,
+            expanded=list(range(len(menu_items))),
+            active=self._initial_menu_active(menu_items),
+        )
+        self._refresh_menu_bar()
 
     def _admin_groups(self) -> frozenset[str]:
         return self.auth_config.admin_groups if self.auth_config else frozenset()
@@ -444,11 +489,9 @@ class FlowDashApp(Viewer):
         if entry is None:
             return f"Unknown page: {'/'.join(key)}"
 
-        if entry.metadata.auth_pending:
-            # Import off the event loop so the decorator supplies the real rules;
-            # a failed import leaves them pending and access is refused below.
-            with suppress(Exception):
-                await asyncio.to_thread(entry.load)
+        if self._unresolved(entry):
+            # A failed import leaves the rules pending and access is refused below.
+            await self._import_pending(entry)
         if not self._can_access_entry(entry):
             return self._access_denied_view(entry.title)
 
@@ -917,6 +960,7 @@ class FlowDashApp(Viewer):
     async def _load_page_layout(self):
         if pn.state.location is None:
             return
+        await self._resolve_pending_entries()
         pathname = pn.state.location.pathname
 
         if pathname == "/":

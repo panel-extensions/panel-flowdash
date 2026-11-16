@@ -1789,7 +1789,10 @@ class FlowDash(Viewer):
         The owner, sharing rules and (unless *title* is given) title are taken
         from the stored dashboard rather than from the copy loaded into the
         editor, so saving never reverts a rename or sharing change made from
-        another session since the dashboard was opened.
+        another session since the dashboard was opened. If the dashboard is no
+        longer stored (deleted from another session, or loaded from elsewhere),
+        saving creates it with this editor's :attr:`user` as the owner, so it
+        is never recreated under the previous owner's name.
 
         Raises
         ------
@@ -1806,6 +1809,8 @@ class FlowDash(Viewer):
                 model.permission = stored.permission
                 if title is None:
                     model.title = stored.title
+            else:
+                model.user_id = self.user
             self.store.save_dashboard(model)
         self.dashboard = model
         self.dirty = False

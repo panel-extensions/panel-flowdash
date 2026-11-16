@@ -327,16 +327,25 @@ def can_administer(identity: Identity, owner: str, admin_groups: Iterable[str]) 
 
 
 def entry_authorized(
-    entry: RegistryEntry, identity: Identity, *, default_allow: bool = True
+    entry: RegistryEntry,
+    identity: Identity,
+    *,
+    default_allow: bool = True,
+    load: bool = True,
 ) -> bool:
     """Whether *identity* may access a code-authored page or component.
 
     A ``@register`` call whose rules could not be read from the source without
     importing it (``allow_groups=ADMINS``, ``authorize=...``) leaves the entry's
-    rules pending. Such an entry is imported here so its decorator supplies the
-    real rules, and access is refused if that fails.
+    rules pending. With *load* such an entry is imported here so its decorator
+    supplies the real rules; pass ``load=False`` on paths that must not import
+    synchronously (listings rendered on the event loop), which treats a
+    pending entry as denied until something else imports it. A pending entry
+    whose import already failed is denied without importing it again.
     """
     if entry.metadata.auth_pending:
+        if not load or entry.load_error is not None:
+            return False
         try:
             entry.load()
         except Exception:

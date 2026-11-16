@@ -67,7 +67,12 @@ even before its module is loaded. Rules given as expressions (a module-level
 constant such as `allow_groups=ADMINS`, or an `authorize` callable) cannot be
 read without importing the module, so such a page is denied until its module
 has been imported and the decorator supplies the real rules. `flowdash serve`
-imports these modules at startup; one that fails to import stays denied.
+imports these modules at startup, and the app imports any still pending in the
+background before showing the launcher and navigation, so listings never block
+on an import. A module that fails to import stays denied and is not imported
+again until the server restarts. A literal rule that is not a list of names,
+such as `allow_groups=5`, is logged as an error and the page is denied; the
+rest of the project still loads.
 
 ```python
 from panel_flowdash import register
@@ -182,10 +187,10 @@ def resolve_groups(identity):
 | `user_groups` | `dict[str, list[str]]` | `{}` | Static user-to-group mapping. |
 | `admin_groups` | `list[str]` | `[]` | Groups that may administer any dashboard. Empty means only owners administer their dashboards. |
 | `default_allow` | `bool` | `True` | Access policy for resources with no rules. Must be a bool (or the string `"true"`/`"false"`). |
+| `resolve_groups` | `callable` | `None` | Dynamic group resolution given the `Identity`. |
 
 A single string where a list is expected (`admin_groups = "admins"`) is read as
 one name.
-| `resolve_groups` | `callable` | `None` | Dynamic group resolution given the `Identity`. |
 
 ---
 

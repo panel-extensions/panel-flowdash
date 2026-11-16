@@ -1,5 +1,7 @@
 """Tests for the authorization model in panel_flowdash.auth."""
 
+import importlib
+import logging
 import uuid
 from contextlib import contextmanager
 from typing import ClassVar
@@ -387,6 +389,25 @@ class TestNonLiteralPagePermissions:
         assert entry_authorized(entry, make_identity("carol", groups=["admins"])) is False
         assert entry.metadata.auth_pending
 
+    def test_failed_import_is_not_retried(self, project):
+        entry = project["pages/broken"]
+        admin = make_identity("carol", groups=["admins"])
+        cb = make_authorize_callback(project, AuthConfig())
+        with patch("importlib.import_module", wraps=importlib.import_module) as spy:
+            assert entry_authorized(entry, admin) is False
+            assert entry_authorized(entry, admin) is False
+            with panel_session("carol", {"groups": ["admins"]}):
+                assert cb({}, "/pages/broken") is False
+        assert spy.call_count == 1
+        assert isinstance(entry.load_error, RuntimeError)
+
+    def test_no_import_mode_denies_pending_without_importing(self, project):
+        entry = project["pages/secret"]
+        admin = make_identity("carol", groups=["admins"])
+        assert entry_authorized(entry, admin, load=False) is False
+        assert entry.app is None
+        assert entry_authorized(project["pages/plain"], make_identity("bob"), load=False)
+
     def test_http_gate_fails_closed_and_reads_live_metadata(self, project):
         cb = make_authorize_callback(project, AuthConfig())
         with panel_session("bob", {}):
@@ -404,6 +425,27 @@ class TestNonLiteralPagePermissions:
         registry["Sec/open"].metadata = PanelAppMetadata(page=True, allow_groups=["finance"])
         with panel_session("alice", {}):
             assert cb({}, "/Sec/open") is False
+
+    @pytest.mark.parametrize("value", ["5", "{'admins': 1}", "[1]"])
+    def test_invalid_literal_rules_deny_the_page_without_aborting_the_scan(
+        self, tmp_path, caplog, value
+    ):
+        (tmp_path / "pages").mkdir()
+        (tmp_path / "pages" / "bad.py").write_text(
+            "from panel_flowdash import register\n"
+            f"@register(allow_groups={value})\n"
+            "def app():\n    return 'bad'\n"
+        )
+        (tmp_path / "pages" / "ok.py").write_text(
+            "from panel_flowdash import register\n@register()\ndef app():\n    return 'ok'\n"
+        )
+        with caplog.at_level(logging.ERROR, logger="panel_flowdash.registry"):
+            registry = build_registry(tmp_path)
+        assert "allow_groups must be a list of names" in caplog.text
+        bad = registry["pages/bad"]
+        assert bad.metadata.auth_pending
+        assert entry_authorized(bad, make_identity("carol"), load=False) is False
+        assert entry_authorized(registry["pages/ok"], make_identity("carol"), load=False)
 
     def test_string_literal_is_one_name(self, tmp_path):
         (tmp_path / "pages").mkdir()
@@ -437,3 +479,51 @@ class TestInAppPendingPermissions:
         assert "Access denied" in view.object
         assert entry.metadata.allow_groups == ["admins"]
         assert f"{section}/secret" not in app._accessible_page_entries()
+
+    @pytest.fixture
+    def gated_project(self, tmp_path, monkeypatch):
+        section = f"Gate{uuid.uuid4().hex[:8]}"
+        (tmp_path / section).mkdir()
+        (tmp_path / section / "__init__.py").write_text("")
+        (tmp_path / section / "secret.py").write_text(_SECRET)
+        (tmp_path / section / "broken.py").write_text(_BROKEN)
+        monkeypatch.syspath_prepend(str(tmp_path))
+        return tmp_path, section
+
+    async def test_listings_never_import_and_show_pages_once_resolved(self, gated_project):
+        from panel_flowdash.app import FlowDashApp
+        from panel_flowdash.dashboard_store import MemoryDashboardStore
+
+        tmp_path, section = gated_project
+        with (
+            panel_session("carol", {"groups": ["admins"]}),
+            patch("importlib.import_module", wraps=importlib.import_module) as spy,
+        ):
+            app = FlowDashApp(project_dir=tmp_path, store=MemoryDashboardStore())
+            assert app._accessible_page_entries() == {}
+            assert not any(call.args[0].startswith(section) for call in spy.call_args_list)
+
+            await app._resolve_pending_entries()
+            await app._resolve_pending_entries()
+
+        imports = [c.args[0] for c in spy.call_args_list if c.args[0].startswith(section)]
+        assert sorted(imports) == [f"{section}.broken", f"{section}.secret"]
+        assert list(app._accessible_page_entries()) == [f"{section}/secret"]
+        paths = [
+            item.get("path") for group in app._menu_list.items for item in group.get("items", [])
+        ]
+        assert f"/{section}/secret" in paths
+        assert f"/{section}/broken" not in paths
+
+    async def test_failed_page_import_is_not_retried_on_render(self, gated_project):
+        from panel_flowdash.app import FlowDashApp
+        from panel_flowdash.dashboard_store import MemoryDashboardStore
+
+        tmp_path, section = gated_project
+        with panel_session("carol", {"groups": ["admins"]}):
+            app = FlowDashApp(project_dir=tmp_path, store=MemoryDashboardStore())
+        with patch("importlib.import_module", wraps=importlib.import_module) as spy:
+            for _ in range(2):
+                view = await app._render_page((section, "broken"))
+                assert "Access denied" in view.object
+        assert [c.args[0] for c in spy.call_args_list] == [f"{section}.broken"]

@@ -264,11 +264,18 @@ class BaseDashboardStore(ABC):
         """Resolve a dashboard by its id first, then by title.
 
         Titles are only unique per user, so a title can match several
-        dashboards. Without *identity* the most recently updated match is
-        returned. With one, the identity's own dashboards are preferred, then
-        the most recent one it may open; dashboards it may not open are never
-        returned. Used to resolve the operator-configured home dashboard, which
-        may be given as either an id or a title.
+        dashboards. Without *identity* (trusted code, such as
+        :meth:`FlowDash.load`) the most recently updated match is returned.
+
+        With *identity*, as when resolving the operator-configured home
+        dashboard, a dashboard the identity may not open is never returned.
+        The identity's own dashboard with that title wins. Otherwise a title
+        owned by a single user resolves to that user's most recently updated
+        dashboard, while a title owned by several users is ambiguous and
+        resolves to ``None`` (the app then shows the launcher) with an error
+        logged asking for the dashboard id. Picking one of them instead would
+        let any user take over everyone's home page by creating a dashboard
+        with the same title.
         """
         model = self._load_any(ref)
         if model is not None:
@@ -281,27 +288,29 @@ class BaseDashboardStore(ABC):
     def _pick_titled(
         matches: list[DashboardModel], identity: Identity | None, default_allow: bool
     ) -> DashboardModel | None:
-        """Choose among same-titled dashboards, most recently updated first."""
+        """Choose among same-titled dashboards, ordered most recently updated first."""
         if identity is None:
             return matches[0] if matches else None
-        if len({m.owner for m in matches}) > 1 and matches[0].title not in _AMBIGUOUS_TITLES:
-            _AMBIGUOUS_TITLES.add(matches[0].title)
-            logger.warning(
-                "Several users own a dashboard titled %r; configure the home "
-                "dashboard by id to make it unambiguous.",
-                matches[0].title,
+
+        def allowed(model: DashboardModel) -> bool:
+            return is_authorized(
+                model.permission, identity, default_allow=default_allow, owner=model.owner
             )
-        for model in matches:
-            if model.owner in identity.user_names and is_authorized(
-                model.permission, identity, default_allow=default_allow, owner=model.owner
-            ):
-                return model
-        for model in matches:
-            if is_authorized(
-                model.permission, identity, default_allow=default_allow, owner=model.owner
-            ):
-                return model
-        return None
+
+        own = [m for m in matches if m.owner in identity.user_names]
+        if own:
+            return next((m for m in own if allowed(m)), None)
+        if len({m.owner for m in matches}) > 1:
+            title = matches[0].title
+            if title not in _AMBIGUOUS_TITLES:
+                _AMBIGUOUS_TITLES.add(title)
+                logger.error(
+                    "Several users own a dashboard titled %r, so it cannot be used as "
+                    "the home dashboard; configure it by id instead.",
+                    title,
+                )
+            return None
+        return next((m for m in matches if allowed(m)), None)
 
     def get_owner(self, dashboard_id: str) -> str | None:
         """Return the owner (user_id) of a dashboard, or ``None`` if missing."""

@@ -110,8 +110,11 @@ flowdash serve my_project/ --home-dashboard "Sales Overview"
 
 The dashboard is resolved by id first, then by title. Titles are only unique
 per user, so a title prefers the current user's own dashboard, then the most
-recently updated one they may open; prefer an id when several users may create
-a dashboard with the same title. If it cannot be found, or
+recently updated one they may open. Once dashboards with that title belong to
+more than one user, the title is ambiguous: other users get the launcher grid
+and an error is logged asking you to configure the dashboard by id, so that
+nobody can replace the homepage by creating a dashboard with the same title.
+Prefer an id whenever users can create dashboards. If it cannot be found, or
 the current user is not authorized to view it, the homepage falls back to the
 launcher grid. The grid remains reachable through the "Home" entry only when no
 home dashboard is configured, so use this for deployments centered on a single

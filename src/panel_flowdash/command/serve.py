@@ -180,14 +180,14 @@ class Serve(_PanelServe):
 
         # Pages whose permissions are not literals in the source are imported now
         # so their rules are known before the first request; one that fails to
-        # import stays denied.
+        # import stays denied and is not imported again until restart.
         for entry in registry.values():
             if entry.metadata.auth_pending:
                 try:
                     entry.load()
                 except Exception as exc:
                     log.warning(
-                        "Failed to import '%s'; access stays denied until it imports: %s",
+                        "Failed to import '%s'; access to it is denied: %s",
                         entry.app_id,
                         exc,
                     )

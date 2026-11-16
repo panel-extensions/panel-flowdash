@@ -2153,6 +2153,18 @@ class TestSaveKeepsStoredIdentity:
         assert saved.permission == stored.permission
         assert store_editor.dashboard.title == "Quarterly (confidential)"
 
+    async def test_save_after_delete_elsewhere_does_not_restore_previous_owner(self, store_editor):
+        store = store_editor.store
+        bobs = store.create_dashboard("bob", "Bob's board")
+        store.set_permission(bobs.dashboard_id, Permission.from_spec(allow_users=["alice"]))
+        store_editor.load_model(store._load_any(bobs.dashboard_id))
+
+        store.delete_dashboard("bob", bobs.dashboard_id)
+        store_editor.add_component(next(iter(store_editor.component_specs)))
+        store_editor.save()
+
+        assert store._load_any(bobs.dashboard_id).owner == "alice"
+
     async def test_explicit_title_still_renames(self, store_editor):
         model = store_editor.new_dashboard("Draft")
         store_editor.save(title="Final")
