@@ -173,7 +173,8 @@ app = FlowDashApp(project_dir="my_project", propagate_failures=True)
 ```
 
 `DataflowGraph(specs, propagate_failures=True)` does the same for the engine on
-its own. The setting is read when the editor or graph is constructed. The
+its own. A project served with `flowdash serve` sets `propagate_failures = True`
+in its `__init__.py`. The setting is read when the editor or graph is constructed. The
 failure is still logged once, where it happens, and the next successful value
 replaces it.
 

@@ -52,8 +52,16 @@ app = FlowDashApp(project_dir="my_project", settings_class=SalesSettings)
 
 The new parameters appear in the settings form and are stored with the dashboard.
 Values must be JSON serializable, since the stores write them as JSON. For
-`flowdash serve`, pass the class through `FlowDashApp.build_routes(...,
-settings_class=SalesSettings)` in your own launcher.
+`flowdash serve`, define the class in the project's `__init__.py` and assign it to
+`settings_class` there:
+
+```python
+# my_project/__init__.py
+settings_class = SalesSettings
+```
+
+See [Project configuration](serve-project.md#project-configuration) for the other
+options a served project can set this way.
 
 ---
 

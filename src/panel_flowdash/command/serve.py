@@ -26,6 +26,28 @@ log = logging.getLogger(__name__)
 
 _EXCLUDED_ARGS = ("files", "--args")
 
+# FlowDashApp parameters a project ``__init__.py`` may set by defining a module
+# attribute of the same name. Each value is validated against the parameter.
+# ``sidebar`` and ``contextbar`` are left out because module-level Panel objects
+# would be shared by every session; ``configure_layout`` sets them per session.
+PROJECT_OPTIONS = (
+    "breakpoints",
+    "configure_layout",
+    "editor_class",
+    "editor_options",
+    "home_dashboard",
+    "include_builtin_components",
+    "nav_variant",
+    "notifications",
+    "page_options",
+    "propagate_failures",
+    "settings_class",
+    "title",
+)
+
+# Options that also have a CLI flag; an explicit flag takes precedence.
+_CLI_OPTIONS = ("home_dashboard", "nav_variant", "title")
+
 
 def _resolve_store(
     init_mod, project_dir: Path, db_path: str | None
@@ -73,6 +95,29 @@ def _load_project_init(project_dir: Path, package: str | None):
     return mod
 
 
+def _project_options(init_mod, project_dir: Path) -> dict:
+    """Return the FlowDashApp options defined in the project's ``__init__.py``.
+
+    Names in ``PROJECT_OPTIONS`` that the module leaves undefined or sets to
+    ``None`` are omitted. A value the parameter rejects exits with an error.
+    """
+    options = {}
+    for name in PROJECT_OPTIONS:
+        value = getattr(init_mod, name, None)
+        if value is None:
+            continue
+        try:
+            FlowDashApp.param[name]._validate(value)
+        except (TypeError, ValueError) as exc:
+            print(  # noqa: T201
+                f"ERROR: invalid `{name}` in {project_dir / '__init__.py'}: {exc}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1) from None
+        options[name] = value
+    return options
+
+
 class Serve(_PanelServe):
     """Serve a flowdash dashboard application from a project directory."""
 
@@ -117,8 +162,11 @@ class Serve(_PanelServe):
             Argument(
                 action="store",
                 type=str,
-                default="FlowDash",
-                help="Application title shown in the browser tab.",
+                default=None,
+                help=(
+                    "Application title shown in the browser tab. Overrides `title` in "
+                    "__init__.py; defaults to 'FlowDash'."
+                ),
             ),
         ),
         (
@@ -128,8 +176,9 @@ class Serve(_PanelServe):
                 type=str,
                 default=None,
                 help=(
-                    "Dashboard (id or title) to show on the homepage. "
-                    "When unset, the homepage shows the dashboard grid."
+                    "Dashboard (id or title) to show on the homepage. Overrides "
+                    "`home_dashboard` in __init__.py. When unset, the homepage shows "
+                    "the dashboard grid."
                 ),
             ),
         ),
@@ -138,12 +187,13 @@ class Serve(_PanelServe):
             Argument(
                 action="store",
                 type=str,
-                default="right",
+                default=None,
                 choices=("left", "right", "menubar"),
                 help=(
                     "Where to render the navigation menu: 'left' or 'right' "
                     "(docked drawer on that side) or 'menubar' (in the page "
-                    "header)."
+                    "header). Overrides `nav_variant` in __init__.py; defaults "
+                    "to 'right'."
                 ),
             ),
         ),
@@ -168,7 +218,12 @@ class Serve(_PanelServe):
             raise SystemExit(1) from None
 
         init_mod = _load_project_init(project_dir, package)
-        configure_layout = getattr(init_mod, "configure_layout", None)
+        options = _project_options(init_mod, project_dir)
+        for name in _CLI_OPTIONS:
+            value = getattr(args, name)
+            if value is not None:
+                options[name] = value
+        title = options.get("title", FlowDashApp.param.title.default)
 
         auth_config = AuthConfig.from_module(init_mod)
 
@@ -203,18 +258,15 @@ class Serve(_PanelServe):
             project_dir=project_dir,
             package=package,
             store=store,
-            title=args.title,
-            home_dashboard=args.home_dashboard,
-            nav_variant=args.nav_variant,
             registry=registry,
-            configure_layout=configure_layout,
             auth_config=auth_config,
+            **options,
         )
 
         log.info(f"Serving FlowDash from '{project_dir}' on port {args.port}")
         log.info(f"Dashboard store: {store_description}")
 
-        self._apps = build_applications(routes, title=args.title, location=True)
+        self._apps = build_applications(routes, title=title, location=True)
 
         args.files = []
         args.args = None

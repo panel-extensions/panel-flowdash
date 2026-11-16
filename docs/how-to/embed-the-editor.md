@@ -346,3 +346,7 @@ class MyFlowDash(FlowDash):
 
 app = FlowDashApp(project_dir="my_project", editor_class=MyFlowDash)
 ```
+
+A project served with `flowdash serve` sets `editor_class` and `editor_options`
+as module attributes in its `__init__.py`, see
+[Project configuration](serve-project.md#project-configuration).
