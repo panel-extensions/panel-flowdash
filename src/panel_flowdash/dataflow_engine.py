@@ -31,6 +31,7 @@ from typing import Any
 import param
 
 from panel_flowdash.component_spec import ComponentSpec
+from panel_flowdash.port_types import port_types_compatible
 from panel_flowdash.transforms import Transform, apply_transform, parse_transform
 from panel_flowdash.util import ReactiveError, is_failure
 
@@ -768,10 +769,7 @@ class DataflowGraph:
                 target_type = port.type
                 break
 
-        if source_type is None or target_type is None:
-            return None
-
-        if source_type.lower() == target_type.lower():
+        if port_types_compatible(source_type, target_type):
             return None
 
         return (

@@ -90,8 +90,11 @@ Self-loops are rejected immediately.
 
 ### Type compatibility
 
-If both the source output and target input have declared types, they must
-match (case-insensitive). Untyped ports accept any connection.
+If both the source output and target input have declared types, the output's
+type must be the input's type, under any of its spellings (`String` and `str`
+are one type), or a subtype of it (`Integer` feeds `Number`). Untyped ports
+accept any connection. See
+[Type compatibility rules](define-ports.md#type-compatibility-rules).
 
 ---
 

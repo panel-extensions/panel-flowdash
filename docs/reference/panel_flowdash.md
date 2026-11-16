@@ -23,6 +23,13 @@
       show_root_heading: true
       members: true
 
+### Port Types
+
+::: panel_flowdash.port_types
+    options:
+      show_root_heading: true
+      members: true
+
 ### Dataflow Engine
 
 ::: panel_flowdash.dataflow_engine

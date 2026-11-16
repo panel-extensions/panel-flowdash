@@ -46,6 +46,8 @@ def app(config):
 | `config_schema` | `type \| dict` | `None` | Design-time configuration definition: a `param.Parameterized` subclass, a Pydantic model, or a JSON-Schema-like dict. See [Configure nodes](configure-nodes.md). |
 | `config` | `list[str]` | `[]` | For Viewer components, names the params that are design-time configuration rather than input ports. See [Configure nodes](configure-nodes.md). |
 | `config_editor` | `callable` | `None` | Custom editor callable for the node's configuration form. See [Configure nodes](configure-nodes.md). |
+| `aliases` | `list[str]` | `[]` | Ids the component was registered under before. See [Renaming components and ports](#renaming-components-and-ports). |
+| `port_aliases` | `dict[str, str]` | `{}` | Former port or config names mapped to the current ones. See [Renaming components and ports](#renaming-components-and-ports). |
 
 ---
 
@@ -244,6 +246,41 @@ Nothing is disposed automatically in a notebook, under pyodide, or for an editor
 built outside a server session. Call `FlowDash.dispose()` yourself there when
 the editor is no longer needed; it clears the canvas and disposes every placed
 component, and leaves an empty editor that can still be used.
+
+---
+
+## Renaming components and ports
+
+Saved dashboards refer to components by id (`<Section>/<name>`, derived from
+the module path) and to ports and config fields by name. Moving a module,
+renaming a component or renaming a port would leave old dashboards pointing
+at names that no longer exist. Declare the former names instead and old
+dashboards keep loading:
+
+```python
+@register(
+    component=True,
+    aliases=["Finance/stock_filter"],   # the id before the module moved
+    port_aliases={"ticker": "symbol"},  # the input used to be called "ticker"
+    requires=[{"key": "symbol", "type": "str"}],
+)
+def app(config):
+    ...
+```
+
+A Viewer can also declare a former name on the Parameter itself:
+
+```python
+class Report(pn.viewable.Viewer):
+    symbol = param.String(metadata={"flowdash": {"aliases": ["ticker"]}})
+```
+
+Former names are resolved when a dashboard is loaded or imported: component
+ids on its items, port names on its edges and keys of the item's config. The
+next save writes the current names. A registered id or a live port name always
+wins over an alias, so an alias can never redirect something that still
+exists. Keep `aliases` literal (a list of strings) so that a project directory
+scan can see it before the module is imported.
 
 ---
 

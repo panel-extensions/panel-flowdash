@@ -76,6 +76,19 @@ class ComponentSpec:
     config: list[ConfigField] = field(default_factory=list)
     config_state_class: type[param.Parameterized] | None = None
     config_editor: Callable | None = None
+    # Former port and config names mapped to current ones.
+    port_aliases: dict[str, str] = field(default_factory=dict)
+
+    def resolve_name(self, name: str) -> str:
+        """Return the current name of a port or config field that may have been renamed.
+
+        A name that is still a port or config field is never redirected, so an
+        alias cannot shadow a live name.
+        """
+        current = {item.name for item in (*self.outputs, *self.inputs, *self.config)}
+        if name in current:
+            return name
+        return self.port_aliases.get(name, name)
 
 
 _BASE_PARAMS: set[str] = set(param.Parameterized.param)
@@ -254,6 +267,18 @@ def _parameter_outputs(viewer_cls: type) -> list[OutputPort]:
     return outputs
 
 
+def _parameter_aliases(viewer_cls: type) -> dict[str, str]:
+    """Map the former names a viewer's Parameters declare in metadata to their current names."""
+    aliases = {}
+    for pname, p in viewer_cls.param.objects("existing").items():
+        former = _flowdash_metadata(p).get("aliases") or []
+        if isinstance(former, str):
+            former = [former]
+        for old in former:
+            aliases[old] = pname
+    return aliases
+
+
 def _ports_from_viewer_class(
     viewer_cls: type,
     exclude: set[str] | None = None,
@@ -373,6 +398,8 @@ def build_component_spec(entry: RegistryEntry) -> ComponentSpec:
     if metadata.handles_failures:
         inputs = _mark_failure_handlers(entry.app_id, inputs, metadata.handles_failures)
 
+    port_aliases = {**(_parameter_aliases(app) if is_viewer else {}), **metadata.port_aliases}
+
     spec = ComponentSpec(
         component_id=entry.app_id,
         title=entry.title,
@@ -385,6 +412,7 @@ def build_component_spec(entry: RegistryEntry) -> ComponentSpec:
         config=config,
         config_state_class=config_state_class,
         config_editor=metadata.config_editor,
+        port_aliases=port_aliases,
     )
     entry.spec = spec
     return spec

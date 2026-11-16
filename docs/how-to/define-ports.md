@@ -54,7 +54,7 @@ def app(config):
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `key` | `str` | | Port identifier (used in wiring). |
-| `type` | `str` | `None` | Expected type (case-insensitive match). |
+| `type` | `str` | `None` | Expected type. See [Type compatibility rules](#type-compatibility-rules). |
 | `label` | `str` | `None` | Display label. |
 | `required` | `bool` | `True` | Whether the port must hold a value. |
 | `blocking` | `bool` | `True` | Whether a missing value blocks the component. A port blocks when it is both `required` and `blocking`. |
@@ -214,26 +214,80 @@ view is built once rather than on every swap. An input that has a `default` or
 
 ## Type compatibility rules
 
-When connecting an output to an input, the dataflow engine checks type
-compatibility:
+When connecting an output to an input, the dataflow engine checks that the
+output's type can feed the input's type. Type names are normalized first, so
+the Python names used in `@register` and the Param class names that Viewer
+ports are introspected with interoperate:
 
-1. If either port is untyped (`type=None`), the connection is allowed.
-2. Types are compared case-insensitively: `"dataframe"` matches `"DataFrame"`.
-3. Mismatched types produce an error message explaining the incompatibility.
+| Canonical type | Also written as |
+|----------------|-----------------|
+| `str` | `String`, `Color`, `Path`, `Filename`, `Foldername`, `FileSelector` |
+| `int` | `Integer` |
+| `number` | `Number`, `float`, `Magnitude` |
+| `bool` | `Boolean`, `Event` |
+| `list` | `List`, `ListSelector`, `MultiFileSelector` |
+| `tuple` | `Tuple`, `NumericTuple`, `Range`, `XYCoordinates`, `DateRange` |
+| `dict` | `Dict` |
+| `date` | `Date`, `CalendarDate`, `datetime` |
+| `DataFrame` | `pd.DataFrame`, `pandas.DataFrame` |
+| `Series` | `pd.Series`, `pandas.Series` |
+| `Array` | `ndarray`, `np.ndarray`, `numpy.ndarray` |
+| `any` | `object`, `Any`, `Parameter`, `Selector`, `ObjectSelector`, `ClassSelector` |
+
+Names are matched case-insensitively, and a name not in the table matches
+itself. A connection is allowed when:
+
+1. Either port is untyped or typed `any`. A `Selector` or `ClassSelector`
+   does not say what type its value has, so it counts as `any`.
+2. Both normalize to the same type, e.g. a `param.String` output and a
+   `"str"` input.
+3. The output's type is a subtype of the input's. `int` is a subtype of
+   `number`, so an `Integer` output feeds a `Number` or `"float"` input but not
+   the other way round. `bool` is deliberately not a subtype of `int`, because
+   `param.Integer` and `param.Number` refuse booleans.
+
+Anything else is rejected with a "Type mismatch" message.
 
 ```python
-# This works: both typed as "str"
-provides=[{"key": "ticker", "type": "str"}]
+# Allowed: String and str are one type
+provides=[{"key": "ticker", "type": "String"}]
 requires=[{"key": "symbol", "type": "str"}]
 
-# This works: source is untyped
-provides=["value"]
-requires=[{"key": "input", "type": "str"}]
+# Allowed: an int output feeds a number input
+provides=[{"key": "count", "type": "int"}]
+requires=[{"key": "amount", "type": "Number"}]
 
-# This fails: "int" != "str"
+# Rejected: int is not a str
 provides=[{"key": "count", "type": "int"}]
 requires=[{"key": "name", "type": "str"}]
 ```
+
+The check only rules out connections that can never work. The input's
+Parameter still validates each value it receives, so a `Selector` output can
+connect to an `Integer` input but a value the `Integer` refuses is reported
+when it arrives, and connecting is refused if the output already holds one. An
+edge with a [transform](wire-dataflow.md) carries the transformed value rather
+than the output's type, so it skips the static check and relies on this
+runtime check alone.
+
+### Registering your own types
+
+Use `register_port_type` to add spellings and subtype rules for your own types,
+typically next to the components that use them:
+
+```python
+from panel_flowdash import register_port_type
+
+register_port_type("Person")
+register_port_type("Customer", aliases=["crm.Customer"], subtype_of=["Person"])
+register_port_type("Ticker", subtype_of=["str"])
+```
+
+A `Customer` output now feeds a `Person` input, and a `Ticker` output feeds any
+string input. Subtyping is transitive. Registering a name again adds to its
+aliases and supertypes, and an alias that already names a different type
+raises a `ValueError`. `normalize_port_type(name)` and
+`port_types_compatible(source, target)` expose the same rules, e.g. for tests.
 
 ---
 

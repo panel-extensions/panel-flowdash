@@ -29,6 +29,26 @@ def _name_list(value: Any) -> list[str]:
     return list(value)
 
 
+def _port_aliases(value: Any) -> dict[str, str]:
+    """Validate a mapping of former port names to current ones."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in value.items()
+    ):
+        raise TypeError(f"port_aliases must map old port names to new ones, got {value!r}.")
+    return dict(value)
+
+
+def _scanned(normalize: Callable[[Any], Any], value: Any, path: Path, name: str) -> Any:
+    """Normalize a scanned argument, ignoring a malformed one until the module is imported."""
+    try:
+        return normalize(value)
+    except TypeError as exc:
+        logger.warning("%s: ignoring %s: %s", path, name, exc)
+        return normalize(None)
+
+
 @dataclass(frozen=True)
 class PanelAppMetadata:
     """Metadata attached to a component or page by the @register decorator."""
@@ -52,6 +72,10 @@ class PanelAppMetadata:
     config: list[str] = field(default_factory=list)
     config_editor: Callable | None = None
     handles_failures: list[str] = field(default_factory=list)
+    # Former component ids and former port names, so dashboards saved before a
+    # rename still resolve.
+    aliases: list[str] = field(default_factory=list)
+    port_aliases: dict[str, str] = field(default_factory=dict)
     allow_users: list[str] = field(default_factory=list)
     allow_groups: list[str] = field(default_factory=list)
     deny_users: list[str] = field(default_factory=list)
@@ -115,6 +139,8 @@ def register(
     config: list[str] | None = None,
     config_editor: Callable | None = None,
     handles_failures: list[str] | None = None,
+    aliases: list[str] | None = None,
+    port_aliases: dict[str, str] | None = None,
     allow_users: list[str] | None = None,
     allow_groups: list[str] | None = None,
     deny_users: list[str] | None = None,
@@ -142,6 +168,11 @@ def register(
     reaches such an input as a ``param.ReactiveError`` instead of leaving the
     input on its last value; the parameter behind it must accept one, so use an
     untyped ``param.Parameter``.
+
+    The ``aliases`` argument lists ids the component was registered under
+    before (e.g. ``["Old/section_name"]``) and ``port_aliases`` maps former
+    port or config names to current ones (e.g. ``{"ticker": "symbol"}``), so a
+    saved dashboard that references the old names still loads after a rename.
 
     The ``extensions`` argument names the Panel extensions (e.g.
     ``["tabulator"]``) the app's output needs. Components are imported lazily,
@@ -176,6 +207,8 @@ def register(
         config=list(config or []),
         config_editor=config_editor,
         handles_failures=list(handles_failures or []),
+        aliases=_name_list(aliases),
+        port_aliases=_port_aliases(port_aliases),
         allow_users=_name_list(allow_users),
         allow_groups=_name_list(allow_groups),
         deny_users=_name_list(deny_users),
@@ -361,6 +394,8 @@ _LITERAL_KEYS = {
     "requires",
     "placeholder",
     "handles_failures",
+    "aliases",
+    "port_aliases",
     "config",
     "tags",
     "extensions",
@@ -556,6 +591,10 @@ def build_registry(project_dir: Path, *, package: str | None = None) -> dict[str
                 requires=list(kwargs.get("requires") or []),
                 placeholder=kwargs.get("placeholder"),
                 handles_failures=list(kwargs.get("handles_failures") or []),
+                aliases=_scanned(_name_list, kwargs.get("aliases"), module_path, "aliases"),
+                port_aliases=_scanned(
+                    _port_aliases, kwargs.get("port_aliases"), module_path, "port_aliases"
+                ),
                 config=list(kwargs.get("config") or []),
                 allow_users=_name_list(kwargs.get("allow_users")),
                 allow_groups=_name_list(kwargs.get("allow_groups")),
