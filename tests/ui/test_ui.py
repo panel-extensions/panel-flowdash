@@ -808,26 +808,32 @@ def _enter_period(field, text):
     field.press("Tab")
 
 
+def _open_refresh_settings(page):
+    page.get_by_role("button", name="Settings").click()
+    dialog = page.get_by_role("dialog")
+    dialog.get_by_text("Refresh", exact=True).first.click()
+    return dialog
+
+
 def test_refresh_period_set_in_the_settings_form_persists(page):
     store, editors = _serve_live_dashboard(page)
 
-    page.get_by_role("button", name="Settings").click()
-    period = page.get_by_role("dialog").get_by_label("Refresh period (s)")
-    _enter_period(period, "15")
-    wait_until(lambda: editors[-1].settings.refresh_period == 15, page)
-    assert editors[-1].dirty
-
-    page.get_by_role("button", name="Close").click()
-    page.get_by_role("button", name="Save", exact=True).click()
+    dialog = _open_refresh_settings(page)
+    dialog.get_by_role("button", name="Custom").click()
+    _enter_period(dialog.get_by_label("Refresh period (s)"), "15")
+    assert editors[-1].settings.refresh_period == 0
+    dialog.get_by_role("button", name="Save settings").click()
+    # Nothing else was unsaved, so saving the settings saves the dashboard.
     wait_until(
         lambda: store.load_dashboard("alice", "live").settings["refresh_period"] == 15, page
     )
+    assert not editors[-1].dirty
 
     page.reload()
     wait_until(lambda: len(editors) == 2, page)
     assert editors[-1].settings.refresh_period == 15
-    page.get_by_role("button", name="Settings").click()
-    expect(page.get_by_role("dialog").get_by_label("Refresh period (s)")).to_have_value("15.0")
+    dialog = _open_refresh_settings(page)
+    expect(dialog.get_by_label("Refresh period (s)")).to_have_value("15.0")
 
 
 def test_refresh_button_updates_listening_components_in_view_mode(page):
@@ -852,10 +858,13 @@ def test_period_change_applies_to_the_running_page(page):
     _store, editors = _serve_live_dashboard(page)
 
     page.get_by_text("fetches: 1").wait_for()
-    page.get_by_role("button", name="Settings").click()
-    period = page.get_by_role("dialog").get_by_label("Refresh period (s)")
-    _enter_period(period, "1")
+    dialog = _open_refresh_settings(page)
+    dialog.get_by_role("button", name="Custom").click()
+    _enter_period(dialog.get_by_label("Refresh period (s)"), "1")
+    dialog.get_by_role("button", name="Save settings").click()
     page.get_by_text("fetches: 3", exact=False).wait_for(timeout=10000)
 
-    _enter_period(period, "0")
+    dialog = _open_refresh_settings(page)
+    dialog.get_by_role("button", name="Off").click()
+    dialog.get_by_role("button", name="Save settings").click()
     wait_until(lambda: editors[-1]._refresh_timer is None, page)

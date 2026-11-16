@@ -492,7 +492,13 @@ class TestLauncher:
         model = _dashboard(app, "Mine")
         _click(app._build_launcher()._menus[model.dashboard_id], "Share")
         assert app._share_dialog.open is True
-        assert app._share_context == {"dashboard_id": model.dashboard_id}
+        assert app._editor._settings_view._target_id == model.dashboard_id
+        assert app._editor._settings_view.section == "sharing"
+
+    async def test_share_dialog_is_mounted_on_the_launcher(self, app, location):
+        location.pathname = "/"
+        await app._load_page_layout()
+        assert app._share_dialog in app._page.main
 
     async def test_menu_delete_opens_delete_dialog(self, app):
         model = _dashboard(app, "Mine")

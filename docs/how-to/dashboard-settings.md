@@ -10,12 +10,11 @@ shared `refresh` signal.
 ## Settings
 
 `FlowDash.settings` is a `param.Parameterized` instance filled from the loaded
-dashboard. Its built-in parameters include `refresh_period`, the number of seconds
-between automatic refreshes (the default of 0 turns automatic refreshing off), and
-`viewers_can_inspect`, which opens output inspection to people who may only view
-the dashboard (see [Inspecting outputs](embed-the-editor.md#inspecting-outputs)).
-The form only offers `viewers_can_inspect` when the editor has `inspect_outputs`
-on.
+dashboard. Its built-in parameters include `description`, a sentence or two on
+what the dashboard shows (empty by default); `refresh_period`, the number of
+seconds between automatic refreshes (the default of 0 turns automatic refreshing
+off); and `viewers_can_inspect`, which opens output inspection to people who may
+only view the dashboard (see [Inspecting outputs](embed-the-editor.md#inspecting-outputs)).
 
 Two more control how tiles look in view mode. `tile_cards` (on by default) draws
 each tile as a framed card; turn it off to render tiles as the components' own
@@ -35,10 +34,32 @@ editor.settings.refresh_period = 10  # marks the dashboard as having unsaved cha
 editor.save()  # writes the current values with the dashboard
 ```
 
-In edit mode the dashboard bar has a **Settings** button that opens a form generated from
-the settings object. Changes mark the dashboard dirty like any other edit. The
-button is not shown in view mode and is disabled when the dashboard cannot be
-saved.
+### The settings dialog
+
+In edit mode the dashboard bar has a **Settings** button that opens the
+**Dashboard settings** dialog; in view mode it is in the bar's overflow menu, and
+in a `FlowDashApp` the **Share** button opens the same dialog on its Sharing
+section. A list on the left switches between its sections:
+
+- **General**: the dashboard's name, its description, **Frame tiles** and **Show
+  tile titles** (`tile_cards` and `tile_titles`), any
+  [settings of your own](#add-your-own-settings), and **Viewers can inspect
+  outputs**, which is only offered when the editor has `inspect_outputs` on. Only
+  people who may administer the dashboard can rename it; for everyone else, and
+  for a standalone `FlowDash`, the name is read-only.
+- **Refresh**: presets for the refresh period (Off, 1 min, 5 min, 15 min, 1 hour)
+  and **Custom** for any number of seconds. Below them the dialog says when the
+  next automatic refresh runs and how long the last refresh took, once it knows.
+- **Sharing** and **Delete**, for people who may administer the dashboard in a
+  `FlowDashApp` (see [Manage Permissions](manage-permissions.md#restricting-dashboards)).
+
+The dialog edits a copy of the settings. **Cancel** discards the changes and
+**Save settings** applies them to `editor.settings`. When nothing else on the
+dashboard is unsaved, it also saves the dashboard right away, so a setting changed
+on its own does not wait for the toolbar's **Save**. When the canvas has unsaved
+changes, the settings join them and are saved with the next **Save**; the dialog
+says so in its footer. Settings is not offered to people who may only view the
+dashboard.
 
 Loading a dashboard applies its stored values. A parameter the dashboard does not
 store takes its default, so one dashboard's settings never carry over into the
@@ -69,7 +90,8 @@ app = FlowDashApp(
 )
 ```
 
-The new parameters appear in the settings form and are stored with the dashboard.
+The new parameters appear in the General section of the settings dialog and are
+stored with the dashboard.
 Values must be JSON serializable, since the stores write them as JSON. For
 `flowdash serve`, define the class in the project's `__init__.py` and assign it to
 `settings_class` there:

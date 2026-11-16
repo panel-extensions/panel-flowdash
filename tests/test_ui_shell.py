@@ -90,9 +90,16 @@ class TestOverflow:
 
     async def test_view_items(self, editor):
         editor.editable = False
-        assert _labels(editor) == ["Download"]
+        assert _labels(editor) == ["Download", "Settings"]
         editor.read_only = True
         assert _labels(editor) == []
+
+    async def test_view_settings_opens_the_general_section(self, editor):
+        editor.editable = False
+        editor._settings_view.section = "refresh"
+        editor._dashboard_bar._on_overflow({"action": "settings"})
+        assert editor._settings_dialog.open
+        assert editor._settings_view.section == "general"
 
     async def test_download_sends_the_file(self, editor):
         editor.new_dashboard("Wind farm")

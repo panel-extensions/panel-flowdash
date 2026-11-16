@@ -95,7 +95,7 @@ class DashboardBar(Viewer):
 
     In view mode it shows the dashboard title, a meta line (when it was last
     refreshed) and the view actions: Refresh, the editor's ``toolbar_extra``
-    items, the View/Edit control and an overflow menu. In edit mode it shows
+    items, the View/Edit control and an overflow menu (Download, Settings). In edit mode it shows
     the title with the save state, the Dataflow/Layout tabs and the edit
     actions: Settings, an overflow menu (Download, Import file, Clear canvas),
     Discard, Save and Done.
@@ -311,7 +311,7 @@ class DashboardBar(Viewer):
         """
         editor = self.editor
         if not editor.editable:
-            return [] if editor.read_only else [_DOWNLOAD]
+            return [] if editor.read_only else [_DOWNLOAD, _SETTINGS]
         items = [_DOWNLOAD, _IMPORT]
         if editor._tile_items:
             items += [None, _CLEAR]
@@ -325,6 +325,8 @@ class DashboardBar(Viewer):
             self.open_import()
         elif action == "clear":
             self.editor._clear_dialog.open = True
+        elif action == "settings":
+            self.editor._settings_view.show("general")
 
     # ------------------------------------------------------------------
     # State
@@ -559,6 +561,7 @@ class DashboardBar(Viewer):
 
 _DOWNLOAD = {"label": "Download", "icon": "download", "action": "download"}
 _IMPORT = {"label": "Import file", "icon": "upload_file", "action": "import"}
+_SETTINGS = {"label": "Settings", "icon": "tune", "action": "settings"}
 _CLEAR = {
     "label": "Clear canvas",
     "icon": "delete_sweep",

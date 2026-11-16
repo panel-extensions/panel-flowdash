@@ -4058,25 +4058,21 @@ class TestDashboardSettings:
 class TestSettingsForm:
     async def test_form_is_generated_from_the_settings(self):
         editor = FlowDash(COMPONENTS, notifications=False, settings_class=BrandSettings)
-        form = editor._settings_dialog.objects[0]
-        assert set(form._widgets) == {
-            "description",
-            "refresh_period",
-            "tile_cards",
-            "tile_titles",
-            "accent",
-            "density",
-        }
+        form = editor._settings_view._extra_form
+        assert set(form._widgets) == {"tile_cards", "tile_titles", "accent", "density"}
 
-    async def test_form_edits_the_settings_and_marks_dirty(self, editor):
-        form = editor._settings_dialog.objects[0]
-        form._widgets["refresh_period"].value = 12
+    async def test_form_edits_the_settings_on_save(self, editor):
+        editor._settings_dialog.open = True
+        editor._settings_view._custom_period.value = 12
+        assert editor.settings.refresh_period == 0
+        editor._settings_view._save_button.clicks += 1
         assert editor.settings.refresh_period == 12
         assert editor.dirty
 
     async def test_form_follows_a_loaded_dashboard(self, editor):
         editor.load_model(_dashboard({"refresh_period": 33}))
-        assert editor._settings_dialog.objects[0]._widgets["refresh_period"].value == 33
+        editor._settings_dialog.open = True
+        assert editor._settings_view._custom_period.value == 33
 
     async def test_button_opens_the_dialog(self, editor):
         assert not editor._settings_dialog.open
@@ -4091,9 +4087,38 @@ class TestSettingsForm:
         editor.read_only = True
         assert editor._settings_button.disabled
 
-    async def test_non_editable_view_has_no_settings_access(self, editor):
+    async def test_button_opens_the_general_section(self, editor):
+        editor._settings_view.section = "refresh"
+        editor._settings_button.clicks += 1
+        assert editor._settings_view.section == "general"
+
+    async def test_view_mode_offers_settings_in_the_overflow_menu(self, editor):
         editor.editable = False
         assert editor._settings_button not in editor._dashboard_bar._actions.objects
+        _click_overflow(editor, "Settings")
+        assert editor._settings_dialog.open
+
+    async def test_tile_settings_are_switches(self, editor):
+        widgets = editor._settings_view._extra_form._widgets
+        assert isinstance(widgets["tile_cards"], pmui.Switch)
+        assert isinstance(widgets["tile_titles"], pmui.Switch)
+        assert widgets["tile_cards"].label == "Frame tiles"
+        assert widgets["tile_titles"].label == "Show tile titles"
+
+    async def test_tile_titles_need_frames(self, editor):
+        editor.settings.tile_cards = False
+        editor._settings_dialog.open = True
+        widgets = editor._settings_view._extra_form._widgets
+        assert widgets["tile_titles"].disabled
+        widgets["tile_cards"].value = True
+        assert not widgets["tile_titles"].disabled
+
+    async def test_tile_settings_apply_on_save(self, editor):
+        editor._settings_dialog.open = True
+        editor._settings_view._extra_form._widgets["tile_cards"].value = False
+        assert editor.settings.tile_cards
+        editor._settings_view._save_button.clicks += 1
+        assert not editor.settings.tile_cards
 
 
 class TestRefreshTimer:

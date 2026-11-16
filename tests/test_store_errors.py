@@ -342,23 +342,23 @@ class TestShareRefused:
         store = RefusingStore()
         app, model = await _app_with_dashboard(make_app, store)
         app._open_share_dialog(model.dashboard_id, model.title)
-        app._share_allow_users.value = ["someone"]
+        app._editor._settings_view._add_input.value = "someone"
         store.refuse.add("share")
 
-        app._on_share_confirm(None)
+        app._editor._settings_view._save_button.clicks += 1
 
         assert app.notices == [("error", REFUSAL)]
         assert app._share_dialog.open
-        assert app._share_context == {"dashboard_id": model.dashboard_id}
+        assert app._editor._settings_view._target_id == model.dashboard_id
         assert app._current_dashboard.permission == Permission()
         assert store.load_dashboard(app._user_id, model.dashboard_id).permission == Permission()
 
     async def test_false_return_is_reported(self, make_app):
         app, model = await _app_with_dashboard(make_app, DecliningStore())
         app._open_share_dialog(model.dashboard_id, model.title)
-        app._share_allow_users.value = ["someone"]
+        app._editor._settings_view._add_input.value = "someone"
 
-        app._on_share_confirm(None)
+        app._editor._settings_view._save_button.clicks += 1
 
         assert app.notices == [("error", "Sharing could not be updated.")]
         assert app._share_dialog.open
