@@ -4212,6 +4212,17 @@ class Watcher(Viewer):
         return "watcher"
 
 
+class GatedWatcher(Watcher):
+    """A Watcher behind a required input, so its tile is gated by a placeholder."""
+
+    company = param.String(
+        default=None, allow_None=True, metadata={"flowdash": {"required": True}}
+    )
+
+    def __panel__(self):
+        return pn.pane.Markdown(pn.bind("watching {}".format, self.param.company))
+
+
 class TestSubscriptionLifetime:
     @pytest.fixture
     def editor(self):
@@ -4257,6 +4268,20 @@ class TestSubscriptionLifetime:
         editor.load_model(_dashboard({"refresh_period": 9}))
         assert Watcher.changes == []
         assert editor.settings.refresh_period == 9
+
+    async def test_gated_component_keeps_its_placeholder_and_subscriptions_until_removed(self):
+        Watcher.refreshes.clear()
+        editor = FlowDash({"Demo/gated": GatedWatcher}, notifications=False)
+        node = editor.add_component("Demo/gated")
+        assert current_dashboard() is None
+        assert len(editor._component_wiring[node]) >= 2
+        editor.param.trigger("refresh")
+        assert len(Watcher.refreshes) == 1
+
+        editor.remove_component(node)
+        editor.param.trigger("refresh")
+        assert len(Watcher.refreshes) == 1
+        assert node not in editor._component_wiring
 
     async def test_clearing_the_canvas_ends_subscriptions(self, editor):
         editor.add_component("Demo/watch")
