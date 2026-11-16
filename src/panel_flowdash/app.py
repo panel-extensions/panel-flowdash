@@ -241,6 +241,7 @@ class FlowDashApp(Viewer):
         # routing, navigation, pages and authorization on top of it.
         self._editor = self._build_editor()
         self._editor._dashboard_bar.on_mode = self._on_dashboard_bar_mode
+        self._editor.show_in_editor = self._show_in_editor
         self._menu_bar = None
         self._nav_menu = self._build_nav_menu()
         self._nav_drawer = pmui.Drawer(
@@ -1071,6 +1072,13 @@ class FlowDashApp(Viewer):
             self._request_navigation(location.pathname)
         else:
             self._show_view_mode()
+
+    def _show_in_editor(self, _instance_id: str):
+        """Open the current dashboard on its wiring canvas, from a tile's "Show in editor"."""
+        if self._current_dashboard is None:
+            return
+        self._editor.mode = "wiring"
+        self._show_edit_mode()
 
     def _dashboard_rights(self, dashboard: str | DashboardModel) -> tuple[bool, bool]:
         """Whether the current identity may administer and may edit a dashboard."""

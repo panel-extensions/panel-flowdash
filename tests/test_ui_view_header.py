@@ -482,3 +482,21 @@ class TestApp:
         app = await make_app()
         _open_with_picker(app)
         assert not [n for n in app.notices if n[1].startswith("Loaded dashboard")]
+
+    async def test_show_in_editor_opens_the_wiring_canvas(self, make_app):
+        app = await make_app()
+        editor = app._editor
+        editor.new_dashboard("Plant")
+        instance_id = editor.add_component("Plant/chart")
+        model = editor.save()
+        pn.state.location.pathname = f"{DASH_ROUTE_PREFIX}{model.dashboard_id}"
+        app._load_dashboard_sync(model.dashboard_id, edit=False)
+        editor.mode = "dashboard"
+        assert editor.show_in_editor == app._show_in_editor
+        assert editor._inspect_tiles[instance_id].more_menu.visible
+
+        editor._on_show_in_editor(instance_id)
+
+        assert editor.editable
+        assert editor.mode == "wiring"
+        assert pn.state.location.search == "?edit=true"
