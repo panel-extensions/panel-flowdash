@@ -31,7 +31,7 @@ from panel_flowdash.dashboard_store import (
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.registry import RegistryEntry, build_registry
 from panel_flowdash.session_state import build_session_state_class, check_requirements
-from panel_flowdash.util import notify, panel_call, panel_viewer
+from panel_flowdash.util import notify, page_dialog, panel_call, panel_viewer
 
 logger = logging.getLogger("panel_flowdash")
 
@@ -166,8 +166,9 @@ class FlowDashApp(Viewer):
         constructor, e.g. `value_repr` or `popup_trigger`. Entries override
         the defaults the app derives from its own parameters (such as
         `breakpoints` and `notifications`), and `toolbar_extra` items are
-        placed after the app's Share button. `components`, `store` and `user`
-        are supplied by the app and raise a ValueError if given here.
+        placed after the app's Share button. `components`, `store`, `user`
+        and `include_page_dialog` are supplied by the app and raise a
+        ValueError if given here.
         `dashboard`, `editable` and `read_only` are accepted but then managed
         by the app's routing and authorization. Read once at construction;
         the same editor is reused for every dashboard, so later changes have
@@ -239,7 +240,7 @@ class FlowDashApp(Viewer):
     # touching the page, so a slow load cannot overwrite a newer navigation.
     _nav_generation: int = 0
 
-    _RESERVED_EDITOR_OPTIONS = ("components", "store", "user")
+    _RESERVED_EDITOR_OPTIONS = ("components", "include_page_dialog", "store", "user")
 
     def __init__(self, registry: dict[str, RegistryEntry] | None = None, **params):
         super().__init__(**params)
@@ -299,6 +300,10 @@ class FlowDashApp(Viewer):
         self._build_dialog()
         self._build_unsaved_dialog()
         self._build_share_dialog()
+        # Not in the page header: Material UI gives header children an inverted
+        # palette, which would turn the dialog into a header-coloured box.
+        shared_dialog = page_dialog()
+        self._page_dialogs = [] if shared_dialog is None else [shared_dialog]
         # The share dialog is a portaled overlay; mount it once inside the
         # always-present nav drawer rather than in each _page.main layout.
         page_kwargs = {
@@ -327,6 +332,10 @@ class FlowDashApp(Viewer):
         if self._main_task is not None and not self._main_task.done():
             self._main_task.cancel()
         self._main_task = None
+        # A dialog opened by the previous page's components must not outlive it,
+        # nor an unanswered confirmation act on components that are being replaced.
+        for dialog in self._page_dialogs:
+            dialog.open = False
         return self._nav_generation
 
     def _is_current_navigation(self, generation: int) -> bool:
@@ -364,6 +373,7 @@ class FlowDashApp(Viewer):
                 pmui.LinearProgress(sizing_mode="stretch_width"),
                 self._dialog,
                 self._unsaved_dialog,
+                *self._page_dialogs,
                 self._share_dialog,
             ]
 
@@ -568,11 +578,13 @@ class FlowDashApp(Viewer):
             raise ValueError(
                 f"editor_options may not set {', '.join(map(repr, reserved))}; "
                 "the app supplies these to the editor. Configure the registry, "
-                "store and identity on FlowDashApp itself."
+                "store and identity on FlowDashApp itself; the app lays out the "
+                "page dialog."
             )
         toolbar_extra = [self._share_button, *(options.pop("toolbar_extra", None) or [])]
         editor = self.editor_class(
             components=self._registry,
+            include_page_dialog=False,
             store=self.store,
             user=self._user_id,
             **{
@@ -718,6 +730,7 @@ class FlowDashApp(Viewer):
                 ),
                 self._dialog,
                 self._unsaved_dialog,
+                *self._page_dialogs,
                 self._share_dialog,
             ]
             return
@@ -738,6 +751,7 @@ class FlowDashApp(Viewer):
             self._nav_content(self._component_view),
             self._dialog,
             self._unsaved_dialog,
+            *self._page_dialogs,
             self._share_dialog,
         ]
 
@@ -772,6 +786,7 @@ class FlowDashApp(Viewer):
             self._nav_content(self._component_view),
             self._dialog,
             self._unsaved_dialog,
+            *self._page_dialogs,
             self._share_dialog,
         ]
         return True
@@ -809,6 +824,7 @@ class FlowDashApp(Viewer):
                 self._nav_content(self._build_launcher()),
                 self._dialog,
                 self._unsaved_dialog,
+                *self._page_dialogs,
                 self._share_dialog,
             ]
         return True
@@ -1036,6 +1052,7 @@ class FlowDashApp(Viewer):
                 self._nav_content(launcher),
                 self._dialog,
                 self._unsaved_dialog,
+                *self._page_dialogs,
             ]
             return
 
@@ -1051,6 +1068,7 @@ class FlowDashApp(Viewer):
                 self._nav_content(self._component_view),
                 self._dialog,
                 self._unsaved_dialog,
+                *self._page_dialogs,
             ]
             return
 
@@ -1081,6 +1099,7 @@ class FlowDashApp(Viewer):
                 self._nav_content(wrapper),
                 self._dialog,
                 self._unsaved_dialog,
+                *self._page_dialogs,
             ]
         else:
             self._apply_layout_config(None, pathname)
@@ -1088,6 +1107,7 @@ class FlowDashApp(Viewer):
                 f"Invalid URL: {pathname}",
                 self._dialog,
                 self._unsaved_dialog,
+                *self._page_dialogs,
             ]
             if not self._menubar_mode:
                 main.append(self._nav_drawer)

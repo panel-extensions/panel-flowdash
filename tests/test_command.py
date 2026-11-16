@@ -319,7 +319,7 @@ class TestFlowDashApp:
         assert app._editor.breakpoints == [600]
         assert app._editor.toolbar_extra == [app._share_button, extra]
 
-    @pytest.mark.parametrize("key", ["components", "store", "user"])
+    @pytest.mark.parametrize("key", ["components", "include_page_dialog", "store", "user"])
     async def test_editor_options_reject_app_owned_keys(self, tmp_path, key):
         _create_project(tmp_path)
         with pytest.raises(ValueError, match=f"editor_options may not set '{key}'"):

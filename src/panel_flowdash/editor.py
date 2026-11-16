@@ -56,6 +56,7 @@ from panel_flowdash.util import (
     is_failure,
     missing_inputs,
     notify,
+    page_dialog,
     panel_call,
     panel_viewer,
 )
@@ -302,6 +303,16 @@ class FlowDash(Viewer):
         values, including outputs the tile itself does not display. A
         component can add its own explanation per output by defining
         ``__flowdash_inspect__(self, port)``.""",
+    )
+
+    include_page_dialog = param.Boolean(
+        default=True,
+        doc="""
+        Whether the editor lays out the session's page dialog, the one
+        `open_dialog` and `confirm` use. Set it to False when the surrounding
+        page already places `page_dialog()` itself, as `FlowDashApp` does; the
+        dialog must appear in only one layout. Read when the workspace is built,
+        so it needs a served session to take effect.""",
     )
 
     dashboard = param.ClassSelector(
@@ -1679,7 +1690,15 @@ class FlowDash(Viewer):
         ]
 
     @pn.io.hold()
-    @param.depends("editable", "inspect_outputs", "mode", "preview", "toolbar", watch=True)
+    @param.depends(
+        "editable",
+        "include_page_dialog",
+        "inspect_outputs",
+        "mode",
+        "preview",
+        "toolbar",
+        watch=True,
+    )
     def _apply_mode_state(self):
         """Reconcile the toolbar, side panel and workspace with the display params."""
         interactive = self.editable and not self.preview
@@ -1692,6 +1711,9 @@ class FlowDash(Viewer):
         dialogs = [self._clear_dialog, self._import_dialog]
         if self.inspect_outputs:
             dialogs.insert(0, self._inspect_dialog)
+        shared_dialog = page_dialog() if self.include_page_dialog else None
+        if shared_dialog is not None:
+            dialogs.append(shared_dialog)
         if showing_grid:
             self._flow.top_panel = []
             self._workspace_area[:] = [*toolbar, self._tile_grid, *dialogs]

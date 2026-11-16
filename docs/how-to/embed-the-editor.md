@@ -266,6 +266,23 @@ Set `notifications=False` to route the editor's user-facing messages to the
 logger instead of Panel notifications, which is what you want in a notebook or
 under test.
 
+### Where the page dialog goes
+
+Components open modals with `open_dialog` and `confirm` from `panel_flowdash.util` (see [Register Components](register-components.md#opening-a-dialog-from-a-component)). Both use one `Dialog` per session, which `FlowDash` lays out in its own workspace, so an embedded editor needs nothing more.
+
+If your page already shows the dialog, or you want it somewhere else, pass `include_page_dialog=False` to the editor and place `page_dialog()` yourself. A dialog can appear in only one layout, so do this for all but one editor on a page. Keep it out of a `Page` header, where Material UI recolors its children for the header:
+
+```python
+from panel_flowdash.util import page_dialog
+
+
+def app():
+    editor = FlowDash(components, include_page_dialog=False)
+    return pmui.Page(main=[editor, page_dialog()])
+```
+
+The dialog belongs to the session that is current when the editor is built, so construct `FlowDash` inside the function Panel calls per session, not at import time.
+
 ---
 
 ## Loading components off the event loop
@@ -299,8 +316,10 @@ app = FlowDashApp(
 
 Entries override the defaults the app derives from its own parameters, such as
 `breakpoints` and `notifications`. `toolbar_extra` items are placed after the
-app's *Share* button rather than replacing it. `components`, `store` and `user`
-are always supplied by the app and raise a `ValueError` if given here, while
+app's *Share* button rather than replacing it. `components`, `store`, `user`
+and `include_page_dialog` are always supplied by the app (which lays out the
+[page dialog](#where-the-page-dialog-goes) itself) and raise a `ValueError` if
+given here, while
 `dashboard`, `editable` and `read_only` are accepted but then driven by the
 app's routing and permissions. Both options are read once at construction, so
 changing them afterwards has no effect.
