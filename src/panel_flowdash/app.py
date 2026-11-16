@@ -32,6 +32,7 @@ from panel_flowdash.editor import FlowDash
 from panel_flowdash.registry import RegistryEntry, build_registry
 from panel_flowdash.session_state import build_session_state_class, check_requirements
 from panel_flowdash.settings import DashboardSettings
+from panel_flowdash.ui.command_palette import CommandPaletteController
 from panel_flowdash.ui.shell import HEADER_SX, AppShell
 from panel_flowdash.util import notify, page_dialog, panel_call, panel_viewer
 
@@ -320,6 +321,7 @@ class FlowDashApp(Viewer):
             self._build_nav_bar()
         self._menubar_mode = self.nav_variant == "menubar"
         self._shell = AppShell(self) if self.nav_variant == "rail" else None
+        self._command_palette = CommandPaletteController.install(self)
         self._build_dialog()
         self._build_unsaved_dialog()
         self._build_share_dialog()

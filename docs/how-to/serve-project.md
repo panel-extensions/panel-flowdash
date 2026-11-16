@@ -290,6 +290,23 @@ highlighted. The top bar shows where you are as a breadcrumb, for example
 dashboard the user can see, or *Home › Components* on other routes. On screens
 narrower than 600 px the rail moves behind a menu button in the top bar.
 
+The search field in the top bar, or <kbd>Ctrl</kbd>+<kbd>K</kbd>
+(<kbd>⌘</kbd>+<kbd>K</kbd> on macOS) anywhere in the app, opens a command
+palette. Typing filters dashboards the user can open, components (added to the
+dashboard in edit mode, otherwise opening the component library), Inspect and
+Expand for the current dashboard's tiles where the tiles offer them, and
+actions such as Refresh, Edit dashboard, Save, Dashboard settings and switching
+the theme. The arrow keys move through the results and <kbd>Enter</kbd> runs
+one. Outside text fields these shortcuts also work:
+
+| Key | Action |
+|---|---|
+| <kbd>R</kbd> | Refresh the dashboard |
+| <kbd>E</kbd> | Edit the dashboard, for users who may edit it |
+| <kbd>Esc</kbd> | Back to view mode while editing (asks first when there are unsaved changes) |
+| <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd> | Save, in edit mode |
+| <kbd>?</kbd> | List the keyboard shortcuts |
+
 The other variants keep the earlier navigation: `left` and `right` dock a
 navigation tree in a drawer on that side of the page, and `menubar` puts
 *Navigate* and *Dashboards* menus in the page header.
