@@ -67,21 +67,38 @@ def _is_list_port(port) -> bool:
     return port.type.lower() in ("list", "List")
 
 
+# holoviz/param#1232 makes param drop these watchers itself when a reference is
+# overwritten with a plain value.
+_PARAM_RELEASES_REF_WATCHERS = hasattr(param.parameterized.Parameters, "_remove_ref")
+
+
 def _prune_ref_watchers(state: param.Parameterized):
     """Remove the watchers a state keeps on the sources of references it no longer follows."""
     # Param releases without holoviz/param#1232 leave them in place when a
     # reference is overwritten with a plain value, so every source a state was
-    # once bound to keeps it alive and keeps calling into it. A no-op otherwise.
-    private = state._param__private
-    refs = private.refs
-    kept = []
-    for entry in private.ref_watchers:
-        names, watcher = entry
-        if any(name in refs for name in names):
-            kept.append(entry)
-            continue
-        owner = watcher.cls if watcher.inst is None else watcher.inst
-        owner.param.unwatch(watcher)
+    # once bound to keeps it alive and keeps calling into it. This reads param
+    # internals, so if their shape changes it gives up rather than break
+    # removing nodes and edges; the cost is the leak it was working around.
+    if _PARAM_RELEASES_REF_WATCHERS:
+        return
+    try:
+        private = state._param__private
+        refs = private.refs
+        kept, stale = [], []
+        for entry in private.ref_watchers:
+            names, watcher = entry
+            if any(name in refs for name in names):
+                kept.append(entry)
+            else:
+                owner = watcher.cls if watcher.inst is None else watcher.inst
+                stale.append((owner, watcher))
+    except (AttributeError, TypeError, ValueError):
+        return
+    for owner, watcher in stale:
+        try:
+            owner.param.unwatch(watcher)
+        except (AttributeError, TypeError, ValueError):
+            pass
     private.ref_watchers = kept
 
 

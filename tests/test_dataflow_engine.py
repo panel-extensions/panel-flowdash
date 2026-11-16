@@ -17,6 +17,7 @@ from panel_flowdash import (
     RegistryEntry,
     build_component_spec,
     build_node_state_class,
+    dataflow_engine,
     register,
 )
 
@@ -548,6 +549,30 @@ class TestEdgeDisposal:
 
         assert _watcher_count(self.source) == baseline
         assert target.val == [1, 2]
+
+    @pytest.mark.skipif(
+        dataflow_engine._PARAM_RELEASES_REF_WATCHERS,
+        reason="param releases ref watchers itself and reads the same structure",
+    )
+    @pytest.mark.parametrize(
+        "ref_watchers",
+        [[("val", "watcher", "extra")], [None], 5],
+        ids=["wider-entries", "non-tuple-entries", "not-iterable"],
+    )
+    async def test_removal_survives_unexpected_param_internals(self, monkeypatch, ref_watchers):
+        target = self.graph.add_node("t", "tgt")
+        other = self.graph.add_node("u", "tgt")
+        self.graph.add_edge("s", "val", "t", "val")
+        self.graph.add_edge("s", "val", "u", "val")
+        for state in (self.source, target, other):
+            monkeypatch.setattr(state._param__private, "ref_watchers", ref_watchers)
+
+        self.graph.remove_edge("s", "val", "t", "val")
+        self.graph.remove_node("u")
+
+        assert self.graph.edges == []
+        assert self.graph.get_state("u") is None
+        assert target.val is None
 
 
 class TestViewerComponents:
