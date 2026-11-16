@@ -386,7 +386,9 @@ class FlowDash(Viewer):
         doc="""
         Called with a component's `RegistryEntry` to decide whether this
         session may use it. Components it refuses are left out of the palette
-        and `add_component` raises `PermissionError` for them. `FlowDashApp`
+        and `add_component` raises `PermissionError` for them; a loaded
+        dashboard shows them as locked placeholders that are never created
+        and are saved back unchanged. `FlowDashApp`
         supplies one that evaluates each component's ``allow_*``/``deny_*``
         rules and ``authorize`` callback against the signed-in user. None
         allows every component.""",
@@ -2698,6 +2700,15 @@ class FlowDash(Viewer):
         component_id
             Its component id after resolving aliases.
         """
+        if component_id in self._component_entries and not self._component_authorized(
+            component_id
+        ):
+            return Placeholder(
+                "denied",
+                "Restricted component",
+                "You do not have access to this component.",
+                private=True,
+            )
         if component_id in self._component_specs:
             return None
         entry = self._component_entries.get(component_id)
