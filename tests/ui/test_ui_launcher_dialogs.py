@@ -43,7 +43,7 @@ def _serve_launcher(page):
 
 
 def _card_action(page, action):
-    page.locator(".MuiSpeedDial-fab").last.click()
+    page.locator(".flowdash-card-menu button").last.click()
     page.get_by_role("menuitem", name=action).last.click()
     dialog = page.get_by_role("dialog")
     expect(dialog).to_be_visible()

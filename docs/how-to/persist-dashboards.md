@@ -154,6 +154,13 @@ dictionary. An existing SQLite database gains the column the first time it is op
 Settings that are not a dictionary with string keys are dropped with a warning, so the
 dashboard itself still loads. See [Dashboard settings and refresh](dashboard-settings.md).
 
+`updated_at` is when the store last wrote the dashboard, as a timezone-aware UTC
+`datetime`. Stores fill it in when they load a dashboard (the SQLite store from its
+`updated_at` column, the JSON folder store from the file's modification time) and the
+launcher shows it as "Edited 12 minutes ago". It is not part of the dashboard's
+contents, so it is not saved, exported or compared. A custom store that leaves it
+`None` still works; its launcher cards then name only the owner.
+
 ---
 
 ## CRUD operations
@@ -327,6 +334,8 @@ former names, see
 In edit mode, **Download** in the side panel saves the canvas as a JSON file named after the dashboard. Dropping that file onto the wiring canvas recreates its components, connections and tile layout. If the canvas already has components, the editor asks before replacing them. Components the editor doesn't offer are kept as placeholders, see [Items that cannot be restored](#items-that-cannot-be-restored).
 
 The file holds the dashboard contents but not its `dashboard_id`, `user_id`, `permission` or `revision`. An imported file takes the identity of the dashboard currently loaded, so saving writes the imported contents to that dashboard and cannot overwrite another one or change who it is shared with. It also keeps the revision the dashboard was loaded at, so importing a file does not hide a save made by another session since then.
+
+The launcher offers the same file for any dashboard you can open: **Download as file** in the card's menu saves the stored dashboard without opening it, and **Import file** creates a new dashboard of yours from a downloaded file (titled after the file's dashboard, numbered if you already have one with that title) and opens it. **Duplicate** copies a dashboard the same way, titled "Sales copy" for a dashboard called "Sales", owned by you and not shared with anyone.
 
 The same round trip is available from Python:
 

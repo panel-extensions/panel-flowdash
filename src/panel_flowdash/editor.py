@@ -310,6 +310,20 @@ _FAILED_NODE_STYLE = {
 }
 
 
+def export_model(model: DashboardModel) -> dict:
+    """Serialize *model* as a dashboard file, without its identity fields."""
+    data = model.to_dict()
+    for key in _IDENTITY_FIELDS:
+        del data[key]
+    return data
+
+
+def export_filename(title: str) -> str:
+    """File name a downloaded dashboard titled *title* is saved under."""
+    stem = re.sub(r"[^\w-]+", "_", title).strip("_") or "dashboard"
+    return f"{stem}.json"
+
+
 # The editor whose component is being created, for `current_dashboard`.
 _INSTANTIATING: contextvars.ContextVar[FlowDash | None] = contextvars.ContextVar(
     "panel_flowdash_instantiating", default=None
@@ -2928,10 +2942,7 @@ class FlowDash(Viewer):
         The dashboard id, owner and sharing rules are omitted, so the file can
         be loaded into any dashboard with :meth:`import_dashboard`.
         """
-        data = self.to_model().to_dict()
-        for key in _IDENTITY_FIELDS:
-            del data[key]
-        return data
+        return export_model(self.to_model())
 
     def import_dashboard(self, data: dict | str | bytes) -> DashboardModel:
         """Replace the canvas with an exported dashboard, as dropping its file does.
@@ -3019,8 +3030,7 @@ class FlowDash(Viewer):
 
     def _download_callback(self):
         data = self.export_dashboard()
-        stem = re.sub(r"[^\w-]+", "_", data["title"]).strip("_") or "dashboard"
-        self._download_button.filename = f"{stem}.json"
+        self._download_button.filename = export_filename(data["title"])
         return io.StringIO(json.dumps(data, indent=2))
 
     def _on_files_dropped(self, files: list[dict]):
