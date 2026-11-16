@@ -1288,23 +1288,37 @@ class FlowDashApp(Viewer):
 
     @pn.io.hold()
     def _open_rename_dialog(self, dashboard_id: str, title: str):
-        self._dialog_name_input.param.update(
-            value=title, disabled=False, error_state=False, helper_text=""
-        )
-        self._dialog_context = {"action": "rename", "dashboard_id": dashboard_id}
-        self._dialog.title = "Rename Dashboard"
+        self._reset_dialog({"action": "rename", "dashboard_id": dashboard_id}, title)
+        self._dialog.title = "Rename dashboard"
         self._nav_drawer.open = False
         self._dialog.open = True
 
     @pn.io.hold()
     def _open_delete_dialog(self, dashboard_id: str, title: str):
-        self._dialog_name_input.param.update(
-            value=title, disabled=True, error_state=False, helper_text=""
-        )
-        self._dialog_context = {"action": "delete", "dashboard_id": dashboard_id}
-        self._dialog.title = "Delete Dashboard"
+        self._reset_dialog({"action": "delete", "dashboard_id": dashboard_id}, title)
+        self._dialog_message.object = self._delete_consequence(dashboard_id)
+        self._dialog.title = f"Delete {title}?"
         self._nav_drawer.open = False
         self._dialog.open = True
+
+    def _delete_consequence(self, dashboard_id: str) -> str:
+        """Describe what deleting the dashboard removes, with counts when it loads."""
+        try:
+            model = self.store.load_for_access(
+                self._identity, dashboard_id, default_allow=self._default_allow()
+            )
+        except Exception:
+            logger.exception("Failed to load dashboard %s for the delete dialog", dashboard_id)
+            model = None
+        if model is None or not (model.items or model.edges):
+            subject = "It is"
+        else:
+            n_items, n_edges = len(model.items), len(model.edges)
+            subject = (
+                f"Its {n_items} component{'s' * (n_items != 1)} and "
+                f"{n_edges} connection{'s' * (n_edges != 1)} are"
+            )
+        return f"{subject} removed for everyone it is shared with. This can't be undone."
 
     def _on_nav_menu_action(self, action: str, item: dict):
         """Decode a nav drawer action into a dashboard id and dispatch it."""
@@ -1319,13 +1333,31 @@ class FlowDashApp(Viewer):
 
     @pn.io.hold()
     def _open_create_dialog(self):
-        self._dialog_name_input.param.update(
-            value="", disabled=False, error_state=False, helper_text=""
-        )
-        self._dialog_context = {"action": "create"}
-        self._dialog.title = "Create Dashboard"
+        self._reset_dialog({"action": "create"}, "")
+        self._dialog.title = "Create dashboard"
         self._dialog.open = True
         self._nav_drawer.open = False
+
+    def _reset_dialog(self, context: dict, subject: str):
+        """Prepare the dashboard dialog for *context*, acting on the dashboard titled *subject*."""
+        action = context["action"]
+        deleting = action == "delete"
+        # The context must be in place before the input value changes, since
+        # the value watcher validates against it (rename excludes its own id).
+        self._dialog_context = context
+        self._dialog_subject = subject
+        self._dialog_name_input.param.update(value=subject, visible=not deleting)
+        self._dialog_delete_input.param.update(value="", placeholder=subject, visible=deleting)
+        self._dialog_name_input.param.update(error_state=False, helper_text="")
+        self._dialog_message.param.update(object="", visible=deleting)
+        label, color = {
+            "create": ("Create", "primary"),
+            "rename": ("Rename", "primary"),
+            "delete": ("Delete dashboard", "error"),
+        }[action]
+        self._dialog_confirm_button.param.update(
+            label=label, color=color, disabled=not self._dialog_valid()
+        )
 
     def _validate_dashboard_name(self, title: str) -> str | None:
         """Return an error message if the title is invalid, else None."""
@@ -1337,10 +1369,22 @@ class FlowDashApp(Viewer):
             return "A dashboard with this name already exists."
         return None
 
+    def _dialog_valid(self) -> bool:
+        """Whether the dialog's primary action may run with the current input."""
+        action = self._dialog_context.get("action")
+        if action == "delete":
+            return self._dialog_delete_input.value_input == self._dialog_subject
+        if action in ("create", "rename"):
+            return self._validate_dashboard_name(self._dialog_name_input.value_input or "") is None
+        return False
+
     def _on_dialog_name_changed(self, event):
-        error = self._validate_dashboard_name(event.new)
-        self._dialog_name_input.error_state = error is not None
-        self._dialog_name_input.helper_text = error or ""
+        if event.obj is self._dialog_name_input:
+            error = self._validate_dashboard_name(event.new or "")
+            self._dialog_name_input.param.update(
+                error_state=error is not None, helper_text=error or ""
+            )
+        self._dialog_confirm_button.disabled = not self._dialog_valid()
 
     @pn.io.hold()
     def _on_dialog_confirm(self, _event):
@@ -1348,51 +1392,65 @@ class FlowDashApp(Viewer):
         if not ctx:
             return
         action = ctx.get("action")
+        name = self._dialog_name_input.value_input or ""
         if action in ("create", "rename"):
-            error = self._validate_dashboard_name(self._dialog_name_input.value)
+            error = self._validate_dashboard_name(name)
             if error:
-                self._dialog_name_input.error_state = True
-                self._dialog_name_input.helper_text = error
+                self._show_dialog_name_error(error)
                 return
+        elif not self._dialog_valid():
+            return
         done = False
+        did = ctx.get("dashboard_id", "")
         if action == "create":
-            t = self._dialog_name_input.value
-            done = bool(t) and self._create_new_dashboard(t)
+            done = self._create_new_dashboard(name)
         elif action == "rename":
-            new_t = self._dialog_name_input.value
-            did = ctx.get("dashboard_id", "")
-            done = bool(new_t and did) and self._rename_dashboard(did, new_t)
+            done = name.strip() == self._dialog_subject or (
+                bool(did) and self._rename_dashboard(did, name)
+            )
         elif action == "delete":
-            did = ctx.get("dashboard_id", "")
             done = bool(did) and self._delete_dashboard(did)
         if not done:
             return
         self._dialog.open = False
-        self._dialog_name_input.param.update(disabled=False, error_state=False, helper_text="")
+        self._dialog_name_input.param.update(error_state=False, helper_text="")
         self._dialog_context = {}
 
     def _build_dialog(self):
-        self._dialog_name_input = pmui.TextInput(
-            label="Name",
-            sizing_mode="stretch_width",
-        )
-        self._dialog_name_input.param.watch(self._on_dialog_name_changed, "value_input")
-        confirm_btn = pmui.Button(label="Confirm", color="primary")
-        cancel_btn = pmui.Button(label="Cancel", color="light")
-        confirm_btn.on_click(self._on_dialog_confirm)
-        cancel_btn.on_click(lambda _: setattr(self._dialog, "open", False))
         self._dialog_context: dict = {}
+        self._dialog_subject = ""
+        self._dialog_name_input = pmui.TextInput(label="Name", sizing_mode="stretch_width")
+        self._dialog_message = pmui.Typography(
+            variant="body2", sx={"color": "text.secondary"}, visible=False
+        )
+        self._dialog_delete_input = pmui.TextInput(
+            label="Type the name to confirm", sizing_mode="stretch_width", visible=False
+        )
+        self._dialog_confirm_button = pmui.Button(label="Create", color="primary", disabled=True)
+        cancel_btn = pmui.Button(label="Cancel", variant="text")
+        for widget in (self._dialog_name_input, self._dialog_delete_input):
+            widget.param.watch(self._on_dialog_name_changed, "value_input")
+            widget.param.watch(self._on_dialog_confirm, "enter_pressed")
+        self._dialog_confirm_button.on_click(self._on_dialog_confirm)
+        cancel_btn.on_click(lambda _: setattr(self._dialog, "open", False))
         self._dialog = pmui.Dialog(
             objects=[
                 pn.Column(
+                    self._dialog_message,
                     self._dialog_name_input,
-                    pn.Row(confirm_btn, cancel_btn),
+                    self._dialog_delete_input,
+                    pn.Row(
+                        pn.layout.HSpacer(),
+                        cancel_btn,
+                        self._dialog_confirm_button,
+                        sizing_mode="stretch_width",
+                    ),
                     sizing_mode="stretch_width",
                 )
             ],
             title="Dashboard",
             open=False,
-            min_width=350,
+            min_width=400,
         )
 
     def _build_share_dialog(self):
