@@ -16,7 +16,7 @@ Initial release of panel-flowdash.
 - A store refuses a create, save, rename, delete or sharing change by raising `DashboardStoreError`; the app shows its message and leaves the dashboard as it was, and logs any other store failure with its traceback
 - `JSONFolderDashboardStore` claims a new dashboard's id exclusively, so concurrent creates with one title no longer overwrite each other, refuses to save over another user's file, and parses only the files that changed since the last listing
 - One malformed dashboard file or SQLite row, or a project module that is not UTF-8, is skipped with a warning instead of breaking the listing or `flowdash serve`
-- Dashboard listings check admin rights through the new `BaseDashboardStore.can_administer_model` instead of loading each dashboard again, and `DashboardStore` reuses one SQLite connection per thread (`DashboardStore.close()` releases them)
+- Dashboard listings check admin rights through the new `BaseDashboardStore.can_administer_model` instead of loading each dashboard again, and `DashboardStore` reuses one SQLite connection per thread (`DashboardStore.close()` releases them; safe across `--num-procs` forks)
 - Responsive tile grid that wraps the authored layout on narrower screens, with optional per-breakpoint custom layouts; `DashboardModel.reference_width` records the width the layout was authored at
 - Download a dashboard as JSON from the editor and drop the file onto the canvas to recreate it; `FlowDash.export_dashboard()` and `FlowDash.import_dashboard()` do the same from Python
 - `FlowDashApp.editor_options` passes keyword arguments through to the embedded `FlowDash` editor, and `FlowDashApp.editor_class` substitutes a `FlowDash` subclass

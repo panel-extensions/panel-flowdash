@@ -5,8 +5,10 @@ stores are held to exactly the same contract as the SQLite one.
 """
 
 import logging
+import os
 import sqlite3
 import threading
+import warnings
 
 import pytest
 
@@ -574,6 +576,76 @@ class TestSQLiteRobustness:
         thread.join()
         assert len(opened) == 2
         assert len(store.list_dashboards("u")) == 5
+
+    @staticmethod
+    def _is_open(conn):
+        try:
+            conn.total_changes  # noqa: B018
+        except sqlite3.ProgrammingError:
+            return False
+        return True
+
+    def test_closes_connections_of_exited_threads(self, store):
+        opened = []
+
+        def work():
+            store.list_dashboards("u")
+            opened.append(store._local.conn)
+
+        for _ in range(2):
+            thread = threading.Thread(target=work)
+            thread.start()
+            thread.join()
+        first, second = opened
+        assert not self._is_open(first)
+        assert self._is_open(second)
+        assert [e.conn for e in store._connections].count(first) == 0
+
+    def test_forked_child_neither_reuses_nor_closes_the_parents_connection(
+        self, store, monkeypatch
+    ):
+        store.create_dashboard("u", "D")
+        parent_conn = store._local.conn
+        real_pid = os.getpid()
+
+        monkeypatch.setattr(os, "getpid", lambda: real_pid + 1)
+        assert len(store.list_dashboards("u")) == 1
+        child_conn = store._local.conn
+        assert child_conn is not parent_conn
+        store.close()
+
+        assert not self._is_open(child_conn)
+        assert self._is_open(parent_conn)
+
+    @pytest.mark.skipif(not hasattr(os, "fork"), reason="needs os.fork")
+    def test_real_fork_leaves_the_parents_connection_alone(self, store):
+        store.create_dashboard("u", "D")
+        parent_conn = store._local.conn
+        read, write = os.pipe()
+        with warnings.catch_warnings():
+            # Python warns about forking a multi-threaded process.
+            warnings.simplefilter("ignore", DeprecationWarning)
+            pid = os.fork()
+        if pid == 0:
+            status = 1
+            try:
+                ok = len(store.list_dashboards("u")) == 1 and store._local.conn is not parent_conn
+                store.close()
+                ok = ok and self._is_open(parent_conn)
+                status = 0 if ok else 2
+            finally:
+                os.write(write, bytes([status]))
+                os._exit(0)
+        os.close(write)
+        try:
+            result = os.read(read, 1)
+        finally:
+            os.close(read)
+            os.waitpid(pid, 0)
+        assert result == bytes([0])
+        assert self._is_open(parent_conn)
+        assert len(store.list_dashboards("u")) == 1
+        assert store._local.conn is parent_conn
 
     def test_failed_write_rolls_back_on_the_shared_connection(self, store):
         store.save_dashboard(DashboardModel(dashboard_id="d1", user_id="u", title="T"))

@@ -174,6 +174,9 @@ class BaseDashboardStore(ABC):
 
     To refuse a create, save, rename, delete or permission change, raise
     :class:`DashboardStoreError` with a message for the user.
+
+    Models returned by listings may be shared with a backend cache, so callers
+    treat them as read-only; single-dashboard lookups return private copies.
     """
 
     @abstractmethod
@@ -407,43 +410,78 @@ class MemoryDashboardStore(BaseDashboardStore):
         return True
 
 
-def _close_all(connections: list[sqlite3.Connection], lock: threading.Lock) -> None:
+# Connections a forked child inherited from its parent. The child must not close
+# them (SQLite forbids touching a connection across fork(), and closing the last
+# one may checkpoint and delete the parent's WAL), and dropping the last reference
+# would close them, so they are kept alive here for the life of the process.
+_INHERITED: list[sqlite3.Connection] = []
+
+
+@dataclass(frozen=True)
+class _OpenConnection:
+    pid: int
+    thread: threading.Thread
+    conn: sqlite3.Connection
+
+
+def _close_all(connections: list[_OpenConnection], lock: threading.Lock) -> None:
+    pid = os.getpid()
     with lock:
-        for conn in connections:
-            conn.close()
+        for entry in connections:
+            if entry.pid == pid:
+                entry.conn.close()
+            else:
+                _INHERITED.append(entry.conn)
         connections.clear()
 
 
 class DashboardStore(BaseDashboardStore):
-    """SQLite-backed store for dashboard models."""
+    """SQLite-backed store for dashboard models.
+
+    Each thread reuses one connection, so a ``_get_conn()`` block nested in
+    another on the same thread (for example in a subclass) shares its
+    transaction: the inner block's commit or rollback ends the outer one too.
+    """
 
     def __init__(self, db_path: str | Path):
         self._db_path = str(db_path)
         # One connection per thread (and process, in case the server forks),
         # since opening one costs far more than the queries a listing runs.
         self._local = threading.local()
-        self._connections: list[sqlite3.Connection] = []
+        self._connections: list[_OpenConnection] = []
         self._lock = threading.Lock()
         self._warned: set[tuple[Any, Any]] = set()
         weakref.finalize(self, _close_all, self._connections, self._lock)
         self._init_db()
 
     def close(self) -> None:
-        """Close the store's database connections; later calls reopen them."""
+        """Close the connections this process opened; later calls reopen them."""
         _close_all(self._connections, self._lock)
         self._local = threading.local()
 
     def _connection(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
-        if conn is None or self._local.pid != os.getpid():
+        pid = os.getpid()
+        if conn is None or self._local.pid != pid:
             # Each connection is only used by the thread that opened it; the
-            # flag lets close() and the finalizer close it from another thread.
+            # flag lets close(), pruning and the finalizer close it elsewhere.
             conn = sqlite3.connect(self._db_path, check_same_thread=False)
             conn.row_factory = sqlite3.Row
             with self._lock:
-                self._connections.append(conn)
-            self._local.conn, self._local.pid = conn, os.getpid()
+                self._prune(pid)
+                self._connections.append(_OpenConnection(pid, threading.current_thread(), conn))
+            self._local.conn, self._local.pid = conn, pid
         return conn
+
+    def _prune(self, pid: int) -> None:
+        """Close connections of threads in this process that have exited."""
+        keep = []
+        for entry in self._connections:
+            if entry.pid == pid and not entry.thread.is_alive():
+                entry.conn.close()
+            else:
+                keep.append(entry)
+        self._connections[:] = keep
 
     @contextmanager
     def _get_conn(self):

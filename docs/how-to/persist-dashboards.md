@@ -19,7 +19,10 @@ store = DashboardStore("path/to/dashboards.db")
 
 The database file is created automatically with the required schema. WAL mode
 is enabled for concurrent read access. The store keeps one connection open per
-thread; call `store.close()` to release them. A row that cannot be decoded is
+thread and closes the connections of threads that have exited; call
+`store.close()` to release the rest. A server that forks worker processes after
+building the store (`flowdash serve --num-procs`) is safe: each process opens
+its own connections and never closes the ones it inherited. A row that cannot be decoded is
 skipped and logged once instead of breaking the listing.
 
 ---
