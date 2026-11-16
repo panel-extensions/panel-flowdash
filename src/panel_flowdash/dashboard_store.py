@@ -666,7 +666,9 @@ class DashboardStore(BaseDashboardStore):
             key = (row["dashboard_id"], row["updated_at"])
             if key not in self._warned:
                 self._warned.add(key)
-                logger.warning("Skipping malformed dashboard row %r (%r)", row["dashboard_id"], exc)
+                logger.warning(
+                    "Skipping malformed dashboard row %r (%r)", row["dashboard_id"], exc
+                )
             return None
 
     def _row_to_model(self, row: sqlite3.Row) -> DashboardModel:
