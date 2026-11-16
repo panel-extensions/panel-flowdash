@@ -6,11 +6,12 @@ The shared store contract is exercised for this backend in test_dashboard_store.
 import json
 import logging
 import os
+import threading
 
 import pytest
 
 from panel_flowdash.auth import Identity
-from panel_flowdash.dashboard_store import DashboardItem, DashboardModel
+from panel_flowdash.dashboard_store import DashboardItem, DashboardModel, DashboardStoreError
 from panel_flowdash.json_store import JSONFolderDashboardStore
 
 
@@ -120,6 +121,64 @@ class TestIds:
         assert store.find_by_id_or_title(bad) is None
         assert store.load_dashboard("u", bad) is None
 
+    def test_concurrent_creates_with_one_title_claim_distinct_ids(self, tmp_path):
+        store = JSONFolderDashboardStore(tmp_path)
+        users = [f"user{n}" for n in range(8)]
+        barrier = threading.Barrier(len(users))
+        created = {}
+
+        def create(user):
+            barrier.wait()
+            created[user] = store.create_dashboard(user, "Sales")
+
+        threads = [threading.Thread(target=create, args=(user,)) for user in users]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert len({model.dashboard_id for model in created.values()}) == len(users)
+        for user, model in created.items():
+            assert store.load_dashboard(user, model.dashboard_id) is not None
+        assert not list(tmp_path.glob(".*.tmp"))
+
+    def test_create_claims_ids_exclusively_without_hard_links(self, tmp_path, monkeypatch):
+        def no_links(src, dst):
+            raise PermissionError("hard links not supported")
+
+        monkeypatch.setattr(os, "link", no_links)
+        store = JSONFolderDashboardStore(tmp_path)
+        _write(tmp_path, DashboardModel(dashboard_id="sales", user_id="bob", title="Sales"))
+
+        assert store.create_dashboard("alice", "Sales").dashboard_id == "sales-2"
+        assert store.load_dashboard("bob", "sales").title == "Sales"
+        assert store.load_dashboard("alice", "sales-2") is not None
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["sales-2.json", "sales.json"]
+
+    def test_an_empty_file_being_claimed_is_skipped_silently(self, tmp_path, caplog):
+        (tmp_path / "claimed.json").touch()
+        store = JSONFolderDashboardStore(tmp_path)
+        with caplog.at_level(logging.WARNING, logger="panel_flowdash.json_store"):
+            assert store.list_dashboards("u") == []
+            assert store.load_dashboard("u", "claimed") is None
+        assert not caplog.records
+
+    def test_save_refuses_to_replace_another_users_dashboard(self, tmp_path):
+        store = JSONFolderDashboardStore(tmp_path)
+        store.save_dashboard(DashboardModel(dashboard_id="d1", user_id="alice", title="Mine"))
+        with pytest.raises(DashboardStoreError, match="another user"):
+            store.save_dashboard(DashboardModel(dashboard_id="d1", user_id="bob", title="Taken"))
+        assert store.load_dashboard("alice", "d1").title == "Mine"
+
+    def test_save_refuses_a_case_variant_of_another_users_id(self, tmp_path):
+        store = JSONFolderDashboardStore(tmp_path)
+        store.save_dashboard(DashboardModel(dashboard_id="foo", user_id="alice", title="Mine"))
+        if not (tmp_path / "FOO.json").exists():
+            pytest.skip("case-sensitive file system")
+        with pytest.raises(DashboardStoreError):
+            store.save_dashboard(DashboardModel(dashboard_id="FOO", user_id="bob", title="Taken"))
+        assert store.load_dashboard("alice", "foo").title == "Mine"
+
     def test_find_by_title_falls_back_when_the_title_is_not_a_valid_id(self, tmp_path):
         store = JSONFolderDashboardStore(tmp_path)
         store.create_dashboard("u", "Sales Overview")
@@ -159,6 +218,30 @@ class TestBadFiles:
             assert store.load_dashboard("u", "alias") is None
         assert "named for 'alias'" in caplog.records[0].getMessage()
 
+    @pytest.mark.parametrize(
+        "content",
+        [
+            b'{"dashboard_id": "bad", "user_id": "u", "title": "T", "items": '
+            + b"[" * 100_000
+            + b"]" * 100_000
+            + b"}",
+            json.dumps({"dashboard_id": "bad", "user_id": ["u"], "title": "T"}).encode(),
+            json.dumps({"dashboard_id": "bad", "user_id": "u", "title": None}).encode(),
+            b'{"dashboard_id": "bad", "user_id": "u", "title": "Na\xefve"}',
+        ],
+        ids=["deeply-nested", "list-user", "null-title", "not-utf8"],
+    )
+    def test_one_bad_file_does_not_break_listing(self, tmp_path, caplog, content):
+        store = JSONFolderDashboardStore(tmp_path)
+        store.save_dashboard(DashboardModel(dashboard_id="ok", user_id="u", title="OK"))
+        (tmp_path / "bad.json").write_bytes(content)
+
+        with caplog.at_level(logging.WARNING, logger="panel_flowdash.json_store"):
+            assert [m.dashboard_id for m in store.list_dashboards("u")] == ["ok"]
+            assert [m.dashboard_id for m in store.list_accessible(_identity("u"))] == ["ok"]
+            assert store.load_dashboard("u", "bad") is None
+        assert caplog.records
+
     def test_non_json_and_temp_files_are_ignored(self, tmp_path, caplog):
         store = JSONFolderDashboardStore(tmp_path)
         (tmp_path / "notes.txt").write_text("hello")
@@ -180,6 +263,53 @@ class TestBadFiles:
             (tmp_path / "gone").rename(folder)
             assert [m.dashboard_id for m in store.list_dashboards("u")] == ["d1"]
         assert [r.levelname for r in caplog.records] == ["ERROR", "INFO"]
+
+
+class TestParseCache:
+    @pytest.fixture
+    def parses(self, monkeypatch):
+        calls = []
+        original = DashboardModel.from_dict.__func__
+
+        def counting(cls, data):
+            calls.append(data["dashboard_id"])
+            return original(cls, data)
+
+        monkeypatch.setattr(DashboardModel, "from_dict", classmethod(counting))
+        return calls
+
+    def test_listing_parses_only_changed_files(self, tmp_path, parses):
+        store = JSONFolderDashboardStore(tmp_path)
+        for name in ("a", "b", "c"):
+            _write(tmp_path, DashboardModel(dashboard_id=name, user_id="u", title=name))
+        store.list_dashboards("u")
+        assert sorted(parses) == ["a", "b", "c"]
+
+        parses.clear()
+        store.list_dashboards("u")
+        store.title_exists("u", "a")
+        assert parses == []
+
+        _write(tmp_path, DashboardModel(dashboard_id="b", user_id="u", title="changed"))
+        assert "changed" in [m.title for m in store.list_dashboards("u")]
+        assert parses == ["b"]
+
+    def test_deleted_files_drop_out(self, tmp_path):
+        store = JSONFolderDashboardStore(tmp_path)
+        store.save_dashboard(DashboardModel(dashboard_id="a", user_id="u", title="A"))
+        assert len(store.list_dashboards("u")) == 1
+        (tmp_path / "a.json").unlink()
+        assert store.list_dashboards("u") == []
+        assert store._cache == {}
+
+    def test_single_lookups_return_private_copies(self, tmp_path):
+        store = JSONFolderDashboardStore(tmp_path)
+        store.save_dashboard(DashboardModel(dashboard_id="a", user_id="u", title="Sales"))
+        store.list_dashboards("u")
+
+        store.load_dashboard("u", "a").title = "mutated"
+        store.find_by_id_or_title("Sales").title = "mutated"
+        assert [m.title for m in store.list_dashboards("u")] == ["Sales"]
 
 
 class TestReadOnly:
@@ -212,6 +342,7 @@ class TestReadOnly:
 
     def test_nobody_administers_not_even_the_owner(self, store):
         assert not store.can_administer(_identity("u"), "d1")
+        assert not store.can_administer_model(_identity("u"), store.load_dashboard("u", "d1"))
 
 
 class TestAdministration:

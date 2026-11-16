@@ -5,6 +5,8 @@ stores are held to exactly the same contract as the SQLite one.
 """
 
 import logging
+import sqlite3
+import threading
 
 import pytest
 
@@ -421,6 +423,19 @@ class TestAccessControl:
         admin = _identity("carol", groups=["admins"])
         assert store.can_administer(admin, d.dashboard_id, frozenset({"admins"}))
 
+    async def test_can_administer_model_agrees_with_can_administer(self, store):
+        d = store.create_dashboard("alice", "Dash")
+        admins = frozenset({"admins"})
+        for identity in (
+            _identity("alice"),
+            _identity("bob"),
+            _identity("carol", groups=["admins"]),
+        ):
+            for groups in (frozenset(), admins):
+                assert store.can_administer_model(identity, d, groups) == store.can_administer(
+                    identity, d.dashboard_id, groups
+                )
+
 
 class TestItemPersistence:
     async def test_items_round_trip(self, store, sample_dashboard):
@@ -494,3 +509,77 @@ class TestFindByTitle:
         d = store.create_dashboard("admin", "Home")
         assert store.find_by_id_or_title("Home").dashboard_id == d.dashboard_id
         assert store.find_by_id_or_title(d.dashboard_id).dashboard_id == d.dashboard_id
+
+
+class TestModelValidation:
+    @pytest.mark.parametrize("key", ["dashboard_id", "user_id", "title"])
+    @pytest.mark.parametrize("value", [["u"], None, 3])
+    def test_from_dict_rejects_non_string_identity_fields(self, key, value):
+        data = {"dashboard_id": "d", "user_id": "u", "title": "T", key: value}
+        with pytest.raises(TypeError, match=key):
+            DashboardModel.from_dict(data)
+
+
+class TestSQLiteRobustness:
+    @pytest.fixture
+    def store(self, tmp_path):
+        store = DashboardStore(tmp_path / "test.db")
+        yield store
+        store.close()
+
+    def _insert_raw(self, store, **columns):
+        names = ", ".join(columns)
+        marks = ", ".join("?" * len(columns))
+        with store._get_conn() as conn:
+            conn.execute(
+                f"INSERT INTO dashboards ({names}) VALUES ({marks})", tuple(columns.values())
+            )
+
+    @pytest.mark.parametrize(
+        "columns",
+        [
+            {"items_json": "[" * 100_000 + "]" * 100_000},
+            {"items_json": "{not json"},
+            {"items_json": '[{"component_id": "A/b"}]'},
+            {"title": b"stored as a blob"},
+        ],
+        ids=["deeply-nested", "bad-json", "missing-key", "blob-title"],
+    )
+    def test_one_bad_row_is_skipped_with_one_warning(self, store, caplog, columns):
+        store.save_dashboard(DashboardModel(dashboard_id="ok", user_id="u", title="OK"))
+        self._insert_raw(store, **{"dashboard_id": "bad", "user_id": "u", "title": "T", **columns})
+
+        with caplog.at_level(logging.WARNING, logger="panel_flowdash.dashboard_store"):
+            for _ in range(2):
+                assert [m.dashboard_id for m in store.list_dashboards("u")] == ["ok"]
+                assert [m.dashboard_id for m in store.list_accessible(_identity("u"))] == ["ok"]
+                assert store.load_for_access(_identity("u"), "bad") is None
+        assert len(caplog.records) == 1
+
+    def test_reuses_one_connection_per_thread(self, store, monkeypatch):
+        opened = []
+        connect = sqlite3.connect
+        monkeypatch.setattr(
+            sqlite3, "connect", lambda *a, **k: opened.append(1) or connect(*a, **k)
+        )
+        store.close()
+
+        for n in range(5):
+            store.create_dashboard("u", f"D{n}")
+        store.list_dashboards("u")
+        assert len(opened) == 1
+
+        thread = threading.Thread(target=store.list_dashboards, args=("u",))
+        thread.start()
+        thread.join()
+        assert len(opened) == 2
+        assert len(store.list_dashboards("u")) == 5
+
+    def test_failed_write_rolls_back_on_the_shared_connection(self, store):
+        store.save_dashboard(DashboardModel(dashboard_id="d1", user_id="u", title="T"))
+        with pytest.raises(sqlite3.IntegrityError), store._get_conn() as conn:
+            conn.execute("UPDATE dashboards SET title = 'changed' WHERE dashboard_id = 'd1'")
+            conn.execute(
+                "INSERT INTO dashboards (dashboard_id, user_id, title) VALUES ('d1', 'u', 'T')"
+            )
+        assert store.load_dashboard("u", "d1").title == "T"

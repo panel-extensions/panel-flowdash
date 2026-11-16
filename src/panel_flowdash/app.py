@@ -473,9 +473,15 @@ class FlowDashApp(Viewer):
             if self._can_access_entry(entry)
         }
 
-    def _can_administer_dashboard(self, dashboard_id: str) -> bool:
-        """Whether the current identity may edit/delete/share a dashboard."""
-        return self.store.can_administer(self._identity, dashboard_id, self._admin_groups())
+    def _can_administer_dashboard(self, dashboard: str | DashboardModel) -> bool:
+        """Whether the current identity may edit/delete/share a dashboard.
+
+        Pass the model when it is already loaded, as listings do, to skip a
+        second store lookup per dashboard.
+        """
+        if isinstance(dashboard, DashboardModel):
+            return self.store.can_administer_model(self._identity, dashboard, self._admin_groups())
+        return self.store.can_administer(self._identity, dashboard, self._admin_groups())
 
     def _access_denied_view(self, title: str | None = None):
         """Generate the view shown when the user is not authorized for the target."""
@@ -872,9 +878,7 @@ class FlowDashApp(Viewer):
         )
         dash_cards = []
         for d in dashboards:
-            speed_items = self._dashboard_speed_dial_items(
-                self._can_administer_dashboard(d.dashboard_id)
-            )
+            speed_items = self._dashboard_speed_dial_items(self._can_administer_dashboard(d))
             speed_dial = None
             if speed_items:
                 speed_dial = pmui.SpeedDial(
@@ -1123,7 +1127,7 @@ class FlowDashApp(Viewer):
             self._identity, default_allow=self._default_allow()
         )
         for d in dashboards:
-            can_admin = self._can_administer_dashboard(d.dashboard_id)
+            can_admin = self._can_administer_dashboard(d)
             item = {
                 "icon": "dashboard",
                 "label": d.title,
@@ -1629,7 +1633,7 @@ class FlowDashApp(Viewer):
         for d in dashboards:
             path = f"{DASH_ROUTE_PREFIX}{d.dashboard_id}"
             entries = [{"label": "Open", "icon": "open_in_new", "path": path}]
-            for action in self._dashboard_actions(self._can_administer_dashboard(d.dashboard_id)):
+            for action in self._dashboard_actions(self._can_administer_dashboard(d)):
                 entries.append(
                     {
                         **{key: action[key] for key in ("label", "icon") if key in action},

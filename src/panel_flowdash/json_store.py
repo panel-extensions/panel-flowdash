@@ -15,6 +15,7 @@ from pathlib import Path
 
 from panel_flowdash.auth import Identity, Permission
 from panel_flowdash.dashboard_store import (
+    MALFORMED_ERRORS,
     BaseDashboardStore,
     DashboardModel,
     DashboardStoreError,
@@ -24,9 +25,6 @@ log = logging.getLogger(__name__)
 
 # The id becomes a file name, so it may not contain separators or lead with a dot.
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
-
-# What ``json.loads`` and ``DashboardModel.from_dict`` raise on a bad file.
-_MALFORMED = (KeyError, TypeError, ValueError, AttributeError)
 
 # A virus scanner or another reader can hold the target open for a few milliseconds
 # on Windows, which makes ``os.replace`` raise ``PermissionError``.
@@ -53,14 +51,38 @@ def _replace(tmp: str, target: Path) -> None:
             time.sleep(_REPLACE_PAUSE)
 
 
+def _claim(tmp: str, target: Path) -> None:
+    """Move *tmp* to *target*, raising FileExistsError instead of replacing it."""
+    try:
+        # A hard link fails if the target exists and publishes the complete file at once.
+        os.link(tmp, target)
+    except FileExistsError:
+        raise
+    except OSError:
+        # No hard links on this file system: reserve the name, then fill it in.
+        os.close(os.open(target, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+        try:
+            _replace(tmp, target)
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.unlink(target)
+            raise
+    else:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+
+
 class JSONFolderDashboardStore(BaseDashboardStore):
     """Stores each dashboard as ``<folder>/<dashboard_id>.json``.
 
     The files are plain, human-readable ``DashboardModel`` JSON, so a folder can
     be reviewed, diffed and versioned alongside the project that serves it, or
-    shipped read-only with a deployment. Nothing is cached: every listing reads
-    the folder, so files edited or added outside the application show up on the
-    next request.
+    shipped read-only with a deployment. Every listing scans the folder, so
+    files edited or added outside the application show up on the next request;
+    only files whose size, modification time or inode changed since the last
+    listing are parsed again. Models returned by listings are shared with that
+    cache and must not be mutated; ``load_dashboard`` and the other single
+    dashboard lookups return a private copy.
 
     New dashboards get an id derived from their title (``Sales Overview`` becomes
     ``sales-overview``, then ``sales-overview-2`` and so on), which keeps file
@@ -68,8 +90,10 @@ class JSONFolderDashboardStore(BaseDashboardStore):
     from its name, or that cannot be parsed, is skipped with one warning.
 
     Writes are atomic, so a reader never sees a half-written file. Several
-    server processes may share a folder, but two processes saving the same
-    dashboard at once resolve last-writer-wins.
+    server processes may share a folder: creating a dashboard claims its id
+    exclusively, and saving never replaces a file that belongs to another
+    user, but two processes saving the same dashboard at once resolve
+    last-writer-wins.
 
     Parameters
     ----------
@@ -87,6 +111,9 @@ class JSONFolderDashboardStore(BaseDashboardStore):
         self.path = Path(path)
         self.read_only = read_only
         self._warned: set[tuple[Path, int]] = set()
+        self._cache: dict[
+            Path, tuple[tuple[int, int, int], tuple[DashboardModel, int] | None]
+        ] = {}
         self._unreachable = False
         if not read_only:
             self.path.mkdir(parents=True, exist_ok=True)
@@ -98,12 +125,22 @@ class JSONFolderDashboardStore(BaseDashboardStore):
                 f"Dashboard id {dashboard.dashboard_id!r} cannot be used as a file name; "
                 "use letters, digits, '.', '_' and '-', starting with a letter or digit."
             )
+        owner = self._owner_on_disk(self.path / f"{dashboard.dashboard_id}.json")
+        if owner is not None and owner != dashboard.user_id:
+            raise DashboardStoreError(
+                f"The dashboard id {dashboard.dashboard_id!r} is already used by another user."
+            )
         self._write(dashboard)
 
     def _load_any(self, dashboard_id: str) -> DashboardModel | None:
         if not _SAFE_ID.match(dashboard_id):
             return None
-        found = self._read(self.path / f"{dashboard_id}.json")
+        path = self.path / f"{dashboard_id}.json"
+        try:
+            stat = path.stat()
+            found = self._parse(path, stat.st_mtime_ns, size=stat.st_size)
+        except OSError:
+            return None
         return found[0] if found else None
 
     def _all_dashboards(self) -> list[DashboardModel]:
@@ -118,7 +155,23 @@ class JSONFolderDashboardStore(BaseDashboardStore):
         if self._unreachable:
             self._unreachable = False
             log.info("Dashboard folder %s is reachable again", self.path)
-        found = [f for f in map(self._read, paths) if f is not None]
+        # Build a fresh cache so deleted files drop out; replacing the dict in one
+        # assignment keeps concurrent listings from tripping over each other.
+        previous, cache = self._cache, {}
+        for path in paths:
+            try:
+                stat = path.stat()
+                key = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+                hit = previous.get(path)
+                cache[path] = (
+                    hit
+                    if hit is not None and hit[0] == key
+                    else (key, self._parse(path, stat.st_mtime_ns, size=stat.st_size))
+                )
+            except OSError:
+                continue
+        self._cache = cache
+        found = [f for _, f in cache.values() if f is not None]
         found.sort(key=lambda f: (-f[1], f[0].dashboard_id))
         return [model for model, _ in found]
 
@@ -147,34 +200,47 @@ class JSONFolderDashboardStore(BaseDashboardStore):
         return True
 
     def create_dashboard(self, user_id: str, title: str) -> DashboardModel:
+        self._check_writable()
         slug = _slug(title) or "dashboard"
-        candidates = itertools.chain([slug], (f"{slug}-{n}" for n in itertools.count(2)))
-        dashboard_id = next(c for c in candidates if not (self.path / f"{c}.json").exists())
-        dashboard = DashboardModel(dashboard_id=dashboard_id, user_id=user_id, title=title)
-        self.save_dashboard(dashboard)
+        for n in itertools.count(1):
+            dashboard_id = slug if n == 1 else f"{slug}-{n}"
+            dashboard = DashboardModel(dashboard_id=dashboard_id, user_id=user_id, title=title)
+            try:
+                self._write(dashboard, exclusive=True)
+            except FileExistsError:
+                continue
+            break
         return dashboard
 
-    def can_administer(
-        self, identity: Identity, dashboard_id: str, admin_groups: frozenset[str] = frozenset()
+    def can_administer_model(
+        self,
+        identity: Identity,
+        dashboard: DashboardModel,
+        admin_groups: frozenset[str] = frozenset(),
     ) -> bool:
         if self.read_only:
             return False
-        return super().can_administer(identity, dashboard_id, admin_groups)
+        return super().can_administer_model(identity, dashboard, admin_groups)
 
     def _check_writable(self) -> None:
         if self.read_only:
             raise _ReadOnlyError("Dashboards are read-only on this server.")
 
-    def _read(self, path: Path) -> tuple[DashboardModel, int] | None:
-        """Parse one file, returning the model and its mtime, or None if unusable."""
-        try:
-            mtime = path.stat().st_mtime_ns
-            text = path.read_text(encoding="utf-8")
-        except OSError:
+    def _parse(
+        self, path: Path, mtime: int, size: int | None = None
+    ) -> tuple[DashboardModel, int] | None:
+        """Parse one file, returning the model and its mtime, or None if unusable.
+
+        Raises ``OSError`` if the file cannot be read, so callers do not cache
+        what may be a passing failure.
+        """
+        if size == 0:
+            # Only seen while another process claims an id without hard links.
             return None
+        data = path.read_bytes()
         try:
-            model = DashboardModel.from_dict(json.loads(text))
-        except _MALFORMED as exc:
+            model = DashboardModel.from_dict(json.loads(data.decode("utf-8")))
+        except MALFORMED_ERRORS as exc:
             self._warn_once(path, mtime, "Skipping dashboard file %s: malformed (%r)", exc)
             return None
         if model.dashboard_id != path.stem:
@@ -188,13 +254,29 @@ class JSONFolderDashboardStore(BaseDashboardStore):
             return None
         return model, mtime
 
+    @staticmethod
+    def _owner_on_disk(path: Path) -> str | None:
+        """Return the ``user_id`` stored in *path*, or None if it is missing or unreadable.
+
+        Deliberately lenient: on a case-insensitive file system ``Foo.json``
+        opens ``foo.json``, whose id does not match the name, and its owner
+        must still be found.
+        """
+        try:
+            data = json.loads(path.read_bytes().decode("utf-8"))
+        except (OSError, *MALFORMED_ERRORS):
+            return None
+        owner = data.get("user_id") if isinstance(data, dict) else None
+        return owner if isinstance(owner, str) else None
+
     def _warn_once(self, path: Path, mtime: int, message: str, *args: object) -> None:
         # Keyed on mtime so a file that is fixed and then broken again warns again.
         if (path, mtime) not in self._warned:
             self._warned.add((path, mtime))
             log.warning(message, path, *args)
 
-    def _write(self, model: DashboardModel) -> None:
+    def _write(self, model: DashboardModel, *, exclusive: bool = False) -> None:
+        """Atomically write *model*; with *exclusive*, raise FileExistsError if it exists."""
         target = self.path / f"{model.dashboard_id}.json"
         handle, tmp = tempfile.mkstemp(dir=self.path, prefix=f".{target.name}.", suffix=".tmp")
         with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as f:
@@ -203,7 +285,10 @@ class JSONFolderDashboardStore(BaseDashboardStore):
             f.flush()
             os.fsync(f.fileno())
         try:
-            _replace(tmp, target)
+            if exclusive:
+                _claim(tmp, target)
+            else:
+                _replace(tmp, target)
         except OSError:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)

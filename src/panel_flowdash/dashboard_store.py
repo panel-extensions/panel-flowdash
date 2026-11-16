@@ -5,8 +5,11 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 import sqlite3
+import threading
 import uuid
+import weakref
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -19,6 +22,10 @@ logger = logging.getLogger(__name__)
 
 # Titles already warned about as ambiguous, so a home page visit does not log each time.
 _AMBIGUOUS_TITLES: set[str] = set()
+
+# What decoding a stored dashboard raises when its data is malformed. Deeply
+# nested JSON overflows the decoder with a RecursionError.
+MALFORMED_ERRORS = (KeyError, TypeError, ValueError, AttributeError, RecursionError)
 
 
 class DashboardStoreError(Exception):
@@ -138,6 +145,11 @@ class DashboardModel:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DashboardModel:
+        # These are compared and hashed by every access check, so a wrong type
+        # must fail here rather than in the middle of a listing.
+        for key in ("dashboard_id", "user_id", "title"):
+            if not isinstance(data[key], str):
+                raise TypeError(f"{key} must be a string, not {type(data[key]).__name__}")
         return cls(
             dashboard_id=data["dashboard_id"],
             user_id=data["user_id"],
@@ -280,9 +292,11 @@ class BaseDashboardStore(ABC):
         model = self._load_any(ref)
         if model is not None:
             return model
-        return self._pick_titled(
+        match = self._pick_titled(
             [m for m in self._all_dashboards() if m.title == ref], identity, default_allow
         )
+        # Listings may hand out shared, cached models; return a private copy.
+        return None if match is None else self._load_any(match.dashboard_id)
 
     @staticmethod
     def _pick_titled(
@@ -324,7 +338,21 @@ class BaseDashboardStore(ABC):
         model = self._load_any(dashboard_id)
         if model is None:
             return False
-        return can_administer(identity, model.owner, admin_groups)
+        return self.can_administer_model(identity, model, admin_groups)
+
+    def can_administer_model(
+        self,
+        identity: Identity,
+        dashboard: DashboardModel,
+        admin_groups: frozenset[str] = frozenset(),
+    ) -> bool:
+        """Like :meth:`can_administer`, for a dashboard that is already loaded.
+
+        Listings use it to avoid loading every dashboard a second time.
+        Override this method, not :meth:`can_administer`, to change who may
+        administer a dashboard.
+        """
+        return can_administer(identity, dashboard.owner, admin_groups)
 
 
 class MemoryDashboardStore(BaseDashboardStore):
@@ -379,29 +407,58 @@ class MemoryDashboardStore(BaseDashboardStore):
         return True
 
 
+def _close_all(connections: list[sqlite3.Connection], lock: threading.Lock) -> None:
+    with lock:
+        for conn in connections:
+            conn.close()
+        connections.clear()
+
+
 class DashboardStore(BaseDashboardStore):
     """SQLite-backed store for dashboard models."""
 
     def __init__(self, db_path: str | Path):
         self._db_path = str(db_path)
+        # One connection per thread (and process, in case the server forks),
+        # since opening one costs far more than the queries a listing runs.
+        self._local = threading.local()
+        self._connections: list[sqlite3.Connection] = []
+        self._lock = threading.Lock()
+        self._warned: set[tuple[Any, Any]] = set()
+        weakref.finalize(self, _close_all, self._connections, self._lock)
         self._init_db()
+
+    def close(self) -> None:
+        """Close the store's database connections; later calls reopen them."""
+        _close_all(self._connections, self._lock)
+        self._local = threading.local()
+
+    def _connection(self) -> sqlite3.Connection:
+        conn = getattr(self._local, "conn", None)
+        if conn is None or self._local.pid != os.getpid():
+            # Each connection is only used by the thread that opened it; the
+            # flag lets close() and the finalizer close it from another thread.
+            conn = sqlite3.connect(self._db_path, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            with self._lock:
+                self._connections.append(conn)
+            self._local.conn, self._local.pid = conn, os.getpid()
+        return conn
 
     @contextmanager
     def _get_conn(self):
-        conn = sqlite3.connect(self._db_path)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.row_factory = sqlite3.Row
+        conn = self._connection()
         try:
             yield conn
             conn.commit()
         except Exception:
             conn.rollback()
             raise
-        finally:
-            conn.close()
 
     def _init_db(self):
         with self._get_conn() as conn:
+            # WAL mode is a property of the database file, so setting it once is enough.
+            conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS dashboards (
                     dashboard_id TEXT PRIMARY KEY,
@@ -441,7 +498,7 @@ class DashboardStore(BaseDashboardStore):
                 "SELECT * FROM dashboards WHERE user_id = ? ORDER BY updated_at DESC",
                 (user_id,),
             ).fetchall()
-        return [self._row_to_model(row) for row in rows]
+        return self._rows_to_models(rows)
 
     def title_exists(self, user_id: str, title: str, exclude_id: str | None = None) -> bool:
         """Check if a dashboard with the given title already exists for this user."""
@@ -464,9 +521,7 @@ class DashboardStore(BaseDashboardStore):
                 "SELECT * FROM dashboards WHERE dashboard_id = ? AND user_id = ?",
                 (dashboard_id, user_id),
             ).fetchone()
-        if row is None:
-            return None
-        return self._row_to_model(row)
+        return self._decode(row) if row is not None else None
 
     def _load_any(self, dashboard_id: str) -> DashboardModel | None:
         """Load a dashboard by id regardless of owner (for access checks)."""
@@ -475,16 +530,14 @@ class DashboardStore(BaseDashboardStore):
                 "SELECT * FROM dashboards WHERE dashboard_id = ?",
                 (dashboard_id,),
             ).fetchone()
-        if row is None:
-            return None
-        return self._row_to_model(row)
+        return self._decode(row) if row is not None else None
 
     def _all_dashboards(self) -> list[DashboardModel]:
         with self._get_conn() as conn:
             rows = conn.execute(
                 "SELECT * FROM dashboards ORDER BY updated_at DESC",
             ).fetchall()
-        return [self._row_to_model(row) for row in rows]
+        return self._rows_to_models(rows)
 
     def find_by_id_or_title(
         self, ref: str, identity: Identity | None = None, *, default_allow: bool = True
@@ -497,7 +550,7 @@ class DashboardStore(BaseDashboardStore):
                 "SELECT * FROM dashboards WHERE title = ? ORDER BY updated_at DESC",
                 (ref,),
             ).fetchall()
-        return self._pick_titled([self._row_to_model(r) for r in rows], identity, default_allow)
+        return self._pick_titled(self._rows_to_models(rows), identity, default_allow)
 
     def set_permission(self, dashboard_id: str, permission: Permission) -> bool:
         """Persist a new permission set on a dashboard. Returns success."""
@@ -564,6 +617,20 @@ class DashboardStore(BaseDashboardStore):
             )
         return cursor.rowcount > 0
 
+    def _rows_to_models(self, rows: list[sqlite3.Row]) -> list[DashboardModel]:
+        return [model for model in map(self._decode, rows) if model is not None]
+
+    def _decode(self, row: sqlite3.Row) -> DashboardModel | None:
+        """Decode one row, or log (once per revision) and return None if it is malformed."""
+        try:
+            return self._row_to_model(row)
+        except MALFORMED_ERRORS as exc:
+            key = (row["dashboard_id"], row["updated_at"])
+            if key not in self._warned:
+                self._warned.add(key)
+                logger.warning("Skipping malformed dashboard row %r (%r)", row["dashboard_id"], exc)
+            return None
+
     def _row_to_model(self, row: sqlite3.Row) -> DashboardModel:
         items = json.loads(row["items_json"])
         keys = row.keys()
@@ -580,6 +647,9 @@ class DashboardStore(BaseDashboardStore):
         breakpoints = json.loads(breakpoints_raw)
         responsive_layouts = json.loads(responsive_raw)
         permission = Permission.from_dict(json.loads(permission_raw))
+        for key in ("dashboard_id", "user_id", "title"):
+            if not isinstance(row[key], str):
+                raise TypeError(f"{key} must be a string, not {type(row[key]).__name__}")
         return DashboardModel(
             dashboard_id=row["dashboard_id"],
             user_id=row["user_id"],

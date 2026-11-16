@@ -495,8 +495,15 @@ def build_registry(project_dir: Path, *, package: str | None = None) -> dict[str
             if module_path.name.startswith("_"):
                 continue
 
-            source = module_path.read_text(encoding="utf-8")
-            kwargs = _extract_register_kwargs(source)
+            try:
+                source = module_path.read_text(encoding="utf-8")
+                kwargs = _extract_register_kwargs(source)
+            except (OSError, ValueError, RecursionError, MemoryError) as exc:
+                # One unreadable module must not keep the rest of the project from serving.
+                logger.warning(
+                    "Skipping %s: it could not be read or parsed (%s)", module_path, exc
+                )
+                continue
             if kwargs is None:
                 # No @register call found — skip silently (same as before).
                 continue
