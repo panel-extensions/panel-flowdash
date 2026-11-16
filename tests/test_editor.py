@@ -958,6 +958,34 @@ def _place_disposable(editor, component_id=DISPOSABLE):
     return instance_id, editor._component_instances[instance_id]
 
 
+class _Blob:
+    """A value param cannot compare, so re-setting it always notifies."""
+
+
+class _Emitter(Viewer):
+    blob = param.Parameter(default=_Blob())
+
+    @param.output(param.Parameter)
+    def out(self):
+        return self.blob
+
+    def __panel__(self):
+        return "emitter"
+
+
+class _Receiver(Viewer):
+    blob = param.Parameter(default=None)
+
+    received = param.Integer(default=0)
+
+    @param.depends("blob", watch=True)
+    def _count(self):
+        self.received += 1
+
+    def __panel__(self):
+        return "receiver"
+
+
 class TestComponentDisposal:
     async def test_remove_component_disposes_once(self, disposal_editor):
         instance_id, instance = _place_disposable(disposal_editor)
@@ -1160,6 +1188,26 @@ class TestComponentDisposal:
 
         assert instance.disposals == 1
         assert list(editor.graph.node_ids) == []
+
+    async def test_session_end_does_not_push_values_downstream(self, caplog):
+        doc, session_context = _session_doc()
+        with set_curdoc(doc):
+            editor = FlowDash(
+                {"Demo/emitter": _Emitter, "Demo/receiver": _Receiver}, notifications=False
+            )
+            src = editor.add_component("Demo/emitter")
+            dst = editor.add_component("Demo/receiver")
+            editor.connect(src, "out", dst, "blob")
+        receiver = editor._component_instances[dst]
+        received = receiver.received
+        assert isinstance(receiver.blob, _Blob)
+
+        # The Document is gone by then, so a component re-rendering would fail.
+        for callback in doc.session_destroyed_callbacks:
+            callback(session_context)
+
+        assert receiver.received == received
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
 
     async def test_session_callback_does_not_keep_the_editor_alive(self):
         doc, session_context = _session_doc()

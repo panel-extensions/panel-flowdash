@@ -731,6 +731,10 @@ class FlowDash(Viewer):
         Used once the session's Document is already destroyed, when pushing
         model updates would be pointless.
         """
+        # Unwired first: removing a node resets the inputs downstream of it,
+        # which would re-render components on the destroyed Document.
+        for instance_id in list(self._component_wiring):
+            self._release_wiring(instance_id)
         for node_id in list(self._dataflow_graph.node_ids):
             self._dataflow_graph.remove_node(node_id)
         self._inspect_tiles.clear()
@@ -745,11 +749,7 @@ class FlowDash(Viewer):
         Popping the instance first makes this a no-op on any later call, so a
         component is disposed at most once however it leaves the editor.
         """
-        for release in self._component_wiring.pop(instance_id, ()):
-            try:
-                release()
-            except Exception:
-                logger.exception("Releasing the wiring of component '%s' failed", instance_id)
+        self._release_wiring(instance_id)
         instance = self._component_instances.pop(instance_id, None)
         hook = getattr(instance, "dispose", None)
         if not callable(hook):
@@ -761,6 +761,13 @@ class FlowDash(Viewer):
             return
         if inspect.isawaitable(result):
             pn.state.execute(partial(self._await_dispose, instance_id, result), schedule=True)
+
+    def _release_wiring(self, instance_id: str):
+        for release in self._component_wiring.pop(instance_id, ()):
+            try:
+                release()
+            except Exception:
+                logger.exception("Releasing the wiring of component '%s' failed", instance_id)
 
     @staticmethod
     async def _await_dispose(instance_id: str, awaitable):
