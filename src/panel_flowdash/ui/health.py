@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import typing as t
+import weakref
 
 import param
 
@@ -86,7 +87,15 @@ class DashboardHealth(param.Parameterized):
         self.update()
 
     def _watch(self, owner: param.Parameterized, names: list[str]):
-        self._watchers.append((owner, owner.param.watch(self.update, names)))
+        # Graph nodes can outlive the editor (a session may keep a component), so
+        # they must not hold this object, and through it the editor, alive.
+        method = weakref.WeakMethod(self.update)
+
+        def update(*events):
+            if (bound := method()) is not None:
+                bound(*events)
+
+        self._watchers.append((owner, owner.param.watch(update, names)))
 
     def release(self):
         """Stop following the graph."""

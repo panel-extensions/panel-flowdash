@@ -1,11 +1,14 @@
 """Tests for the view-mode header: description, health, refresh period, controls bar, pipeline."""
 
+import gc
 import re
 import sys
+import weakref
 
 import panel as pn
 import param
 import pytest
+from panel.io.state import set_curdoc
 from panel.viewable import Viewer
 
 from panel_flowdash import register
@@ -16,7 +19,7 @@ from panel_flowdash.editor import FlowDash
 from panel_flowdash.ui.dashboard_bar import format_period
 from panel_flowdash.ui.issue_banner import ISSUE_CLASS
 from panel_flowdash.ui.pipeline import Stage, pipeline_stages
-from tests.test_editor import CHART, COMPONENTS, SELECTOR, SHOUTER, Shouter
+from tests.test_editor import CHART, COMPONENTS, SELECTOR, SHOUTER, Shouter, _session_doc
 from tests.test_navigation import FakeLocation
 
 
@@ -207,6 +210,20 @@ class TestHealth:
         editor.clear()
         assert bar.health.tiles == []
         assert bar.health.waiting == []
+
+    async def test_graph_nodes_do_not_keep_the_editor_alive(self):
+        doc, _ = _session_doc()
+        with set_curdoc(doc):
+            editor = FlowDash(COMPONENTS, notifications=False)
+            chart = editor.add_component(CHART)
+        # A session can hold a node's state or failures past the editor's lifetime.
+        graph = editor._dataflow_graph
+        held = (graph.get_state(chart), graph.get_failures(chart))
+        ref = weakref.ref(editor)
+        del editor, graph
+        gc.collect()
+        assert ref() is None
+        assert None not in held
 
 
 @pytest.mark.failures
