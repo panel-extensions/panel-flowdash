@@ -1617,7 +1617,15 @@ class FlowDashApp(Viewer):
             return
         pn.state.location.param.update(pathname=path, search=search)
         self._sync_menu_active(path)
-        pn.state.execute(self._load_page_layout)
+        doc = pn.state.curdoc
+        if doc is not None and doc.session_context is not None:
+            # Loading runs without the document lock, so started right away it
+            # can send the new page before the changes above (URL, breadcrumb)
+            # leave, and the browser rejects it: "reference ... isn't known".
+            # A locked next-tick callback runs once they went out.
+            doc.add_next_tick_callback(partial(pn.state.execute, self._load_page_layout))
+        else:
+            pn.state.execute(self._load_page_layout)
 
     def _sync_menu_active(self, path: str):
         if self._shell is not None:

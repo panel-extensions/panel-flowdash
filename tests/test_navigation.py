@@ -9,11 +9,14 @@ import asyncio
 import sys
 from contextlib import asynccontextmanager
 from functools import partial
+from types import SimpleNamespace
 
 import panel as pn
 import panel_material_ui as pmui
 import param
 import pytest
+from bokeh.document import Document
+from panel.io.state import set_curdoc
 
 from panel_flowdash.app import DASH_ROUTE_PREFIX, FlowDashApp
 from panel_flowdash.dashboard_store import DashboardItem, DashboardStore
@@ -462,6 +465,31 @@ class TestNavigateTo:
         assert pn.state.location.pathname == "/Analytics/page"
         assert pn.state.location.search == ""
         assert app._menu_list.active is not None
+
+    async def test_loads_the_page_after_the_navigation_changes_went_out(self, app):
+        loads = []
+
+        async def load():
+            loads.append(True)
+
+        app._load_page_layout = load
+        doc = Document()
+        doc._session_context = lambda: SimpleNamespace(
+            id="session", request=SimpleNamespace(arguments={})
+        )
+        with set_curdoc(doc):
+            app._navigate_to("/Analytics/page")
+        assert loads == []
+        # Scheduled as an unlocked callback the load could overtake the URL and
+        # breadcrumb changes; a locked one runs after they were sent.
+        (scheduled,) = doc.session_callbacks
+        assert not getattr(scheduled.callback, "nolock", False)
+        doc.remove_next_tick_callback(scheduled)
+        with set_curdoc(doc):
+            scheduled.callback()
+        (load_callback,) = doc.session_callbacks
+        await load_callback.callback()
+        assert loads == [True]
 
 
 def _menu_index_for_path(app, path):

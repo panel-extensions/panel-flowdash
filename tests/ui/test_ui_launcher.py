@@ -114,6 +114,8 @@ def test_rename_opens_rename_dialog(page, tmp_path):
 
 
 def test_card_opens_dashboard(page, tmp_path):
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
     store = _serve(page, tmp_path, [("Sales", None)])
     (model,) = store.list_dashboards(_user())
 
@@ -122,6 +124,9 @@ def test_card_opens_dashboard(page, tmp_path):
     wait_until(lambda: page.url.endswith(f"/dash/{model.dashboard_id}"), page)
     expect(_cards(page)).to_have_count(0)
     expect(page.get_by_text("gauge", exact=True)).to_be_visible()
+    # The breadcrumb switcher is created by the click and renamed by the load.
+    expect(page.locator(".header").get_by_role("button", name="Sales")).to_be_visible()
+    assert errors == []
 
 
 def test_filters_and_sort(page, tmp_path):
