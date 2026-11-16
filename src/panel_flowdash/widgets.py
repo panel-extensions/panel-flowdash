@@ -63,6 +63,7 @@ class _WidgetComponent(Viewer):
     page=False,
     component=True,
     title="Select",
+    icon="list",
     config=[*_COMMON_CONFIG, "default_options", "searchable", "variant", "size"],
     provides=[{"key": "selected"}],
     requires=[{"key": "options", "type": "List", "multiple": False, "required": False}],
@@ -106,6 +107,7 @@ class Select(_WidgetComponent):
     page=False,
     component=True,
     title="MultiChoice",
+    icon="checklist",
     config=[
         *_COMMON_CONFIG,
         "default_options",
@@ -165,6 +167,7 @@ class MultiChoice(_WidgetComponent):
     page=False,
     component=True,
     title="Slider",
+    icon="linear_scale",
     config=[
         *_COMMON_CONFIG,
         "number_type",

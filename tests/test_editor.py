@@ -3486,19 +3486,20 @@ def _drop(editor, component_id=None, *, path=None, position=(10, 20), target=Non
 
 
 class TestPalette:
-    async def test_palette_groups_components_by_section(self, editor):
-        sections = {s["label"]: s for s in editor._palette.items}
-        assert {"Demo", "Widgets"} <= set(sections)
-        demo = sections["Demo"]
-        assert demo["draggable"] is False
-        assert [i["component_id"] for i in demo["items"]] == [SELECTOR, CHART, SHOUTER]
-        assert all(i["draggable"] for i in demo["items"])
+    async def test_palette_groups_components_by_role(self, editor):
+        groups = {g["label"]: g for g in editor._palette.items}
+        assert list(groups) == ["Data sources", "Transforms", "Views", "Widgets"]
+        assert all(g["draggable"] is False for g in groups.values())
+        assert [i["component_id"] for i in groups["Data sources"]["items"]] == [SELECTOR]
+        assert [i["component_id"] for i in groups["Transforms"]["items"]] == [SHOUTER]
+        assert [i["component_id"] for i in groups["Views"]["items"]] == [CHART]
+        assert all(i["draggable"] for g in groups.values() for i in g["items"])
         assert editor._palette.drag_type in editor._flow.drop_types
 
     async def test_placed_singleton_is_not_draggable(self):
         editor = FlowDash({SINGLETON: page_header}, notifications=False)
         editor.add_component(SINGLETON)
-        (item,) = next(s for s in editor._palette.items if s["label"] == "Demo")["items"]
+        (item,) = next(s for s in editor._palette.items if s["label"] == "Views")["items"]
         assert item["draggable"] is False
 
     async def test_clicking_placed_singleton_does_not_add_it_again(self):
