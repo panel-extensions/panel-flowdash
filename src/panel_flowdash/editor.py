@@ -77,9 +77,12 @@ from panel_flowdash.ui.inspect_sheet import (
     sheet_header,
     value_status,
 )
+from panel_flowdash.ui.inspector import Inspector
+from panel_flowdash.ui.node_card import node_card, placeholder_card
 from panel_flowdash.ui.palette import ComponentPalette, palette_entry, palette_items
 from panel_flowdash.ui.settings_dialog import SettingsDialog
 from panel_flowdash.ui.states import StartCard
+from panel_flowdash.ui.status_bar import StatusBar
 from panel_flowdash.ui.tile import Tile
 from panel_flowdash.util import (
     close_dialog,
@@ -116,6 +119,10 @@ if t.TYPE_CHECKING:
     from panel_flowdash.component_spec import ComponentSpec, InputPort, OutputPort
 
 logger = logging.getLogger("panel_flowdash")
+
+
+def _no_node_editor(data, schema, *, id, type, on_patch):
+    return None
 
 
 def _add_all(add_many, add_one, items: list[dict]):
@@ -271,19 +278,46 @@ _SIDE_PANEL_WIDTH = 250
 _FLOW_STYLESHEET = """\
 .react-flow__node {
   padding: 0;
-  border-radius: 6px;
-  border: 1px solid var(--xy-node-border, var(--panel-border-color));
-  background-color: var(--xy-node-background-color, var(--panel-background-color));
+  border-radius: 10px;
+  border: 1px solid var(--mui-palette-divider, var(--panel-border-color));
+  background-color: var(--mui-palette-background-paper, var(--panel-background-color));
   box-shadow: 0 1px 2px var(--panel-shadow-color);
-  color: var(--xy-node-color, var(--panel-on-background-color));
+  color: var(--mui-palette-text-primary, var(--panel-on-background-color));
   font-size: 13px;
   min-width: 140px;
 }
+.react-flow__node.selected {
+  border-color: var(--mui-palette-primary-main, var(--panel-primary-color));
+  box-shadow: 0 0 0 2px var(--mui-palette-primary-main, var(--panel-primary-color));
+}
+/* Nodes show a compact card (see ui/node_card.py) that fills the node, so the
+   card's port labels line up with the handles ReactFlow spreads over its height. */
+.rf-node-content {
+  padding: 0;
+}
+.rf-node-label {
+  display: none;
+}
+/* The card has no controls, so pointer events reach the node to select and drag it. */
+.rf-node-view-wrapper,
+.rf-node-view-wrapper * {
+  pointer-events: none;
+}
 .react-flow__handle {
-  width: 14px;
-  height: 14px;
-  border: 1px solid black;
-  background: transparent;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--mui-palette-primary-main, var(--panel-primary-color));
+  background: var(--mui-palette-background-paper, var(--panel-background-color));
+}
+.react-flow__handle-right {
+  background: var(--mui-palette-primary-main, var(--panel-primary-color));
+}
+/* The popups stay on the canvas, never over the panels beside it. */
+:host {
+  overflow: hidden;
+}
+.rf-value-popup:has(.fd-popup-leftward) {
+  transform: translateX(-100%);
 }
 .react-flow__edge-textbg {
   fill: var(--panel-background-color, #fff);
@@ -599,9 +633,12 @@ class FlowDash(Viewer):
     )
 
     popup_trigger = param.ObjectSelector(
-        default="hover",
+        default="click",
         objects=["click", "hover", "none"],
-        doc="Whether live port values open on click, hover, or not automatically.",
+        doc="""
+        Whether live port values open on click, hover, or not automatically.
+        On hover the popups cover the nodes the pointer passes over, so they
+        open on click by default.""",
     )
 
     popup_hover_delay = param.Integer(
@@ -1038,8 +1075,6 @@ class FlowDash(Viewer):
                     for port in spec.outputs
                 ],
             )
-            if spec.config_editor is not None:
-                node_editors[type_key] = spec.config_editor
         node_types[PLACEHOLDER_NODE_TYPE] = pr.NodeType(
             type=PLACEHOLDER_NODE_TYPE, label="Unavailable component", inputs=[], outputs=[]
         )
@@ -1067,10 +1102,15 @@ class FlowDash(Viewer):
             edges=[],
             node_types=node_types,
             node_editors=node_editors,
+            # Config is edited in the inspector, so ReactFlow builds no node editors.
+            default_node_editor=_no_node_editor,
             default_edge_editor=self._make_edge_editor,
             editable=True,
+            editor_mode="side",
             enable_connect=True,
-            show_minimap=True,
+            # Fitting the view uses the whole pane, so a corner minimap would cover
+            # the nodes there; the status bar offers it for large graphs instead.
+            show_minimap=False,
             sizing_mode="stretch_both",
             min_height=600,
             stylesheets=[_FLOW_STYLESHEET],
@@ -1620,9 +1660,12 @@ class FlowDash(Viewer):
         if not self._can_inspect():
             self._close_inspection_dialog()
 
-    def _show_inspection(self, key, title, value, position, flow):
+    def _show_inspection(self, key, title, value, position, flow, leftward=False):
         self._inspection_key = key
-        flow.show_popup(self._build_value_popup(title, None, value), position)
+        popup = self._build_value_popup(title, None, value)
+        if leftward:
+            popup.css_classes = [*popup.css_classes, "fd-popup-leftward"]
+        flow.show_popup(popup, position)
 
     def _on_handle_clicked(self, payload, flow):
         node_id = payload.get("node_id", "") if isinstance(payload, dict) else ""
@@ -1645,9 +1688,18 @@ class FlowDash(Viewer):
             value,
             position,
             flow,
+            # An output's value opens over its own node, so a node at the right
+            # edge of the canvas does not push the popup over the inspector.
+            leftward=direction == "output",
         )
 
     def _on_edge_clicked(self, payload, flow):
+        # A click selects the edge, and the open inspector then describes it.
+        if self._inspector.visible and not self._inspector.collapsed:
+            return
+        self._show_edge_value(payload, flow)
+
+    def _show_edge_value(self, payload, flow):
         edge_id = payload.get("edge_id", "") if isinstance(payload, dict) else ""
         position = payload.get("position") if isinstance(payload, dict) else None
         mapping = self._edge_id_map.get(edge_id)
@@ -1668,7 +1720,7 @@ class FlowDash(Viewer):
         self._on_handle_clicked(payload, flow)
 
     def _on_edge_hovered(self, payload, flow):
-        self._on_edge_clicked(payload, flow)
+        self._show_edge_value(payload, flow)
 
     def _on_inspection_unhovered(self, payload, flow):
         if self.popup_trigger != "hover":
@@ -1932,13 +1984,18 @@ class FlowDash(Viewer):
         self._start_card = StartCard(editor=self)
         self._empty_hint = self._start_card.__panel__()
         self._workspace_area = pn.Column(sizing_mode="stretch_both", scroll="y-auto")
+        self._inspector = Inspector(editor=self)
+        self._status_bar = StatusBar(editor=self)
 
         self._sync_toolbar_extra()
         self._sync_toolbar_state()
         self._stamp_refresh()
         return pn.Column(
             bar,
-            pn.Row(self._side_panel, self._workspace_area, sizing_mode="stretch_both"),
+            pn.Row(
+                self._side_panel, self._workspace_area, self._inspector, sizing_mode="stretch_both"
+            ),
+            self._status_bar,
             sizing_mode="stretch_both",
         )
 
@@ -2104,6 +2161,7 @@ class FlowDash(Viewer):
         self._dashboard_bar.visible = self.toolbar
         self._dashboard_bar.sync()
         self._side_panel.visible = not showing_grid
+        self._inspector.visible = self._status_bar.visible = not showing_grid
         self._tile_grid.param.update(editable=interactive, card=interactive)
         # Column children rather than Row children, so the dialogs take no flex space.
         dialogs = [self._clear_dialog, self._import_dialog, self._settings_dialog]
@@ -2376,7 +2434,9 @@ class FlowDash(Viewer):
             data=config_data,
         )
         node_dict = node.to_dict()
-        node_dict["view"] = view
+        node_dict["view"] = node_card(
+            spec, node_state, failures, self._component_wiring.setdefault(instance_id, [])
+        )
         self._add_canvas_node(node_dict)
 
         self._tile_items.append(
@@ -2813,7 +2873,7 @@ class FlowDash(Viewer):
             label=placeholder.title,
             data={},
         ).to_dict()
-        node["view"] = view
+        node["view"] = placeholder_card(placeholder)
         self._add_canvas_node(node)
         self._tile_items.append(
             {

@@ -183,6 +183,18 @@ FlowDash(components, store="dashboards.db", dashboard="Sales Overview", editable
 Passing `dashboard=` at construction loads it immediately, either as a
 `DashboardModel` or, when a store is configured, as an id or title.
 
+On the wiring canvas each component is a compact card: its icon and title, a
+status dot, its ports labelled with their types (required inputs are marked
+with `*`) and a one-line summary of its current value, such as the rows and
+columns of a DataFrame or a widget's selection. The component itself is only
+rendered in the tile grid. Selecting a card opens it in the inspector on the
+right: its settings (the config form, or your `config_editor`), the data it
+currently outputs, how its tile is shown on the dashboard, the inputs wired to
+it, and *Remove from dashboard*. With nothing selected the inspector summarizes
+the dashboard and lists its issues. The status bar under the canvas counts the
+components, connections and issues; clicking the issue count selects the
+first component with one. The canvas follows the page's light or dark theme.
+
 Set `read_only=True` to refuse saves while still letting the user rearrange the
 canvas; `save` then raises `RuntimeError`. This is the seam for your own
 authorization logic, and it is exactly what `FlowDashApp` uses to enforce
@@ -192,7 +204,7 @@ per-dashboard permissions.
 
 ## Inspecting outputs
 
-On the wiring canvas, clicking or hovering a port opens a popup with the value it currently carries. A viewer of a dashboard has no canvas, which is when someone asks where a number comes from. Set `inspect_outputs=True` to give each tile in the dashboard grid an Inspect action next to its Expand action. Unless the dashboard shows [tile titles](dashboard-settings.md), the actions float over the tile's top-right corner on hover or keyboard focus and take no space:
+On the wiring canvas, clicking a port opens a popup with the value it currently carries (set `popup_trigger="hover"` to open it on hover instead). A viewer of a dashboard has no canvas, which is when someone asks where a number comes from. Set `inspect_outputs=True` to give each tile in the dashboard grid an Inspect action next to its Expand action. Unless the dashboard shows [tile titles](dashboard-settings.md), the actions float over the tile's top-right corner on hover or keyboard focus and take no space:
 
 ```python
 editor = FlowDash(
@@ -318,7 +330,7 @@ from panel_flowdash.app import FlowDashApp
 app = FlowDashApp(
     project_dir="my_project",
     store=DashboardStore("my_project/dashboards.db"),
-    editor_options={"value_repr": summarize, "popup_trigger": "click"},
+    editor_options={"value_repr": summarize, "popup_trigger": "hover"},
 )
 ```
 

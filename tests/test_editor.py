@@ -769,8 +769,8 @@ class TestConnect:
 class TestValuePopup:
     """Handle and edge previews look up live values."""
 
-    async def test_hover_is_default_and_popup_has_no_inner_paper(self, editor):
-        assert editor.popup_trigger == editor._flow.popup_trigger == "hover"
+    async def test_click_is_default_and_popup_has_no_inner_paper(self, editor):
+        assert editor.popup_trigger == editor._flow.popup_trigger == "click"
         popup = editor._build_value_popup("Value", None, "sample")
         assert isinstance(popup, pn.Column)
         assert popup[0].object == "**Value**"
@@ -847,6 +847,8 @@ class TestValuePopup:
         editor.connect(src, "ticker", dst, "ticker")
         editor.graph.get_state(src).ticker = "msft"
         edge_id = editor._flow.edges[0]["id"]
+        # With the inspector open, a click selects the edge for it instead.
+        editor._inspector.collapsed = True
 
         editor._on_edge_clicked({"edge_id": edge_id, "position": {"x": 3, "y": 4}}, editor._flow)
 

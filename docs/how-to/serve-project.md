@@ -224,7 +224,7 @@ class SalesSettings(DashboardSettings):
 store = JSONFolderDashboardStore("dashboards")
 settings_class = SalesSettings
 propagate_failures = True
-editor_options = {"popup_trigger": "click"}
+editor_options = {"popup_trigger": "hover"}
 title = "Sales"
 ```
 
