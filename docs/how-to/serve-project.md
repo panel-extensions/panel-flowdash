@@ -108,7 +108,10 @@ instead, pass `--home-dashboard` with either its id or its title:
 flowdash serve my_project/ --home-dashboard "Sales Overview"
 ```
 
-The dashboard is resolved by id first, then by title. If it cannot be found, or
+The dashboard is resolved by id first, then by title. Titles are only unique
+per user, so a title prefers the current user's own dashboard, then the most
+recently updated one they may open; prefer an id when several users may create
+a dashboard with the same title. If it cannot be found, or
 the current user is not authorized to view it, the homepage falls back to the
 launcher grid. The grid remains reachable through the "Home" entry only when no
 home dashboard is configured, so use this for deployments centered on a single

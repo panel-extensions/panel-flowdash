@@ -15,6 +15,15 @@ from typing import Any
 from panel_flowdash.auth import Permission
 
 
+def _name_list(value: Any) -> list[str]:
+    """Normalize a user/group argument, treating a lone string as one name."""
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [value]
+    return list(value)
+
+
 @dataclass(frozen=True)
 class PanelAppMetadata:
     """Metadata attached to a component or page by the @register decorator."""
@@ -41,6 +50,9 @@ class PanelAppMetadata:
     deny_users: list[str] = field(default_factory=list)
     deny_groups: list[str] = field(default_factory=list)
     authorize: Callable | None = None
+    # Set by the source scan when the permission arguments are expressions it
+    # cannot evaluate; access is refused until an import supplies the real rules.
+    auth_pending: bool = False
 
     @property
     def permission(self) -> Permission:
@@ -143,10 +155,10 @@ def register(
         config_schema=config_schema,
         config=list(config or []),
         config_editor=config_editor,
-        allow_users=list(allow_users or []),
-        allow_groups=list(allow_groups or []),
-        deny_users=list(deny_users or []),
-        deny_groups=list(deny_groups or []),
+        allow_users=_name_list(allow_users),
+        allow_groups=_name_list(allow_groups),
+        deny_users=_name_list(deny_users),
+        deny_groups=_name_list(deny_groups),
         authorize=authorize,
     )
 
@@ -329,6 +341,11 @@ _LITERAL_KEYS = {
     "deny_groups",
 }
 
+_AUTH_KEYS = {"allow_users", "allow_groups", "deny_users", "deny_groups", "authorize"}
+
+# Key under which _extract_register_kwargs flags rules it could not evaluate.
+_AUTH_PENDING = "auth_pending"
+
 
 def _eval_literal(node: ast.expr) -> Any:
     """Safely evaluate an AST literal node; return None on failure."""
@@ -342,8 +359,10 @@ def _extract_register_kwargs(source: str) -> dict[str, Any] | None:
     """Parse *source* and return the kwargs of the first @register/@panel_app call.
 
     Only literal-evaluable arguments are captured; runtime expressions (e.g.
-    ``config_schema=MyParamClass``) are silently skipped — they are picked up
-    later when the module is actually imported.
+    ``config_schema=MyParamClass``) are skipped and picked up later when the
+    module is actually imported. A permission argument that cannot be
+    evaluated, or any ``authorize`` callable, sets ``auth_pending`` instead, so
+    the page fails closed until it is imported rather than appearing open.
 
     Returns ``None`` if no @register call is found.
     """
@@ -371,10 +390,20 @@ def _extract_register_kwargs(source: str) -> dict[str, Any] | None:
                 continue
             kwargs: dict[str, Any] = {}
             for kw in call.keywords:
+                if kw.arg is None:
+                    # **kwargs may carry permission arguments the scan cannot see.
+                    kwargs[_AUTH_PENDING] = True
+                    continue
+                if kw.arg == "authorize":
+                    if not (isinstance(kw.value, ast.Constant) and kw.value.value is None):
+                        kwargs[_AUTH_PENDING] = True
+                    continue
                 if kw.arg in _LITERAL_KEYS:
                     val = _eval_literal(kw.value)
                     if val is not None or isinstance(kw.value, ast.Constant):
                         kwargs[kw.arg] = val
+                    elif kw.arg in _AUTH_KEYS:
+                        kwargs[_AUTH_PENDING] = True
             return kwargs
 
     return None
@@ -463,10 +492,11 @@ def build_registry(project_dir: Path, *, package: str | None = None) -> dict[str
                 provides=list(kwargs.get("provides") or []),
                 requires=list(kwargs.get("requires") or []),
                 config=list(kwargs.get("config") or []),
-                allow_users=list(kwargs.get("allow_users") or []),
-                allow_groups=list(kwargs.get("allow_groups") or []),
-                deny_users=list(kwargs.get("deny_users") or []),
-                deny_groups=list(kwargs.get("deny_groups") or []),
+                allow_users=_name_list(kwargs.get("allow_users")),
+                allow_groups=_name_list(kwargs.get("allow_groups")),
+                deny_users=_name_list(kwargs.get("deny_users")),
+                deny_groups=_name_list(kwargs.get("deny_groups")),
+                auth_pending=bool(kwargs.get(_AUTH_PENDING, False)),
             )
 
             parts = module_path.relative_to(project_dir).with_suffix("").parts

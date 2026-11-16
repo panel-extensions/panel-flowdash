@@ -1,10 +1,12 @@
 """Tests for the authorization model in panel_flowdash.auth."""
 
+import uuid
 from contextlib import contextmanager
 from typing import ClassVar
 from unittest.mock import PropertyMock, patch
 
 import panel as pn
+import pytest
 
 from panel_flowdash.auth import (
     ANONYMOUS_USER,
@@ -12,11 +14,12 @@ from panel_flowdash.auth import (
     Identity,
     Permission,
     can_administer,
+    entry_authorized,
     is_authorized,
     make_authorize_callback,
     resolve_identity,
 )
-from panel_flowdash.registry import PanelAppMetadata, RegistryEntry
+from panel_flowdash.registry import PanelAppMetadata, RegistryEntry, build_registry
 
 
 def _page_entry(app_id, *, allow_groups=(), deny_users=(), page=True):
@@ -71,6 +74,16 @@ class TestPermissionSerialization:
         restored = Permission.from_dict(perm.to_dict())
         assert restored == perm
         assert not restored.is_empty
+
+    def test_from_dict_treats_a_string_as_one_name(self):
+        perm = Permission.from_dict({"deny_users": "bob", "allow_groups": "finance"})
+        assert perm.deny_users == frozenset({"bob"})
+        assert perm.allow_groups == frozenset({"finance"})
+        assert not is_authorized(perm, make_identity("bob", oauth="bob"))
+
+    def test_from_dict_refuses_a_non_list(self):
+        with pytest.raises(TypeError):
+            Permission.from_dict({"deny_users": 5})
 
     def test_from_dict_partial(self):
         perm = Permission.from_dict({"allow_groups": ["finance"]})
@@ -131,10 +144,10 @@ class TestCanAdminister:
     def test_owner_can_administer(self):
         assert can_administer(make_identity("alice"), "alice", []) is True
 
-    def test_no_admin_groups_allows_anyone(self):
-        # Without configured admin groups administration is unrestricted.
+    def test_no_admin_groups_allows_only_the_owner(self):
         ident = make_identity("bob", groups=["eng"])
-        assert can_administer(ident, "alice", []) is True
+        assert can_administer(ident, "alice", []) is False
+        assert can_administer(make_identity("alice"), "alice", []) is True
 
     def test_admin_group_can_administer(self):
         ident = make_identity("bob", groups=["admins"])
@@ -167,6 +180,24 @@ class TestResolveIdentity:
                 ident = resolve_identity()
         assert ident.user == "alice"
         assert ident.oauth_user == "alice"
+
+    def test_oauth_user_does_not_carry_the_system_user(self):
+        cfg = AuthConfig(user_groups={"svc": frozenset({"admins"})})
+        with panel_session("mallory", {}):
+            with patch("panel_flowdash.auth._system_user", return_value="svc"):
+                ident = resolve_identity(cfg)
+        assert ident.system_user is None
+        assert ident.user_names == frozenset({"mallory"})
+        assert "admins" not in ident.groups
+        assert is_authorized(Permission.from_spec(deny_users=["svc"]), ident)
+        assert not can_administer(ident, "svc", frozenset({"admins"}))
+
+    def test_system_user_gets_its_mapped_groups(self):
+        cfg = AuthConfig(user_groups={"svc": frozenset({"admins"})})
+        with panel_session(None, None):
+            with patch("panel_flowdash.auth._system_user", return_value="svc"):
+                ident = resolve_identity(cfg)
+        assert ident.groups == frozenset({"admins"})
 
     def test_groups_from_claims_list(self):
         with panel_session("alice", {"groups": ["finance", "eng"]}):
@@ -255,3 +286,154 @@ class TestAuthConfigFromModule:
         assert cfg.user_groups == {"alice": frozenset({"execs"})}
         assert cfg.admin_groups == frozenset({"admins"})
         assert cfg.default_allow is False
+
+    def test_string_values_are_single_names(self):
+        class Mod:
+            group_claims = "cognito:groups"
+            user_groups: ClassVar = {"alice": "execs"}
+            admin_groups = "admins"
+            default_allow = "False"
+
+        cfg = AuthConfig.from_module(Mod)
+        assert cfg.group_claims == ("cognito:groups",)
+        assert cfg.user_groups == {"alice": frozenset({"execs"})}
+        assert cfg.admin_groups == frozenset({"admins"})
+        assert cfg.default_allow is False
+
+    @pytest.mark.parametrize("value", ["no", None, 2, []])
+    def test_ambiguous_default_allow_refused(self, value):
+        class Mod:
+            default_allow = value
+
+        with pytest.raises(TypeError, match="default_allow"):
+            AuthConfig.from_module(Mod)
+
+
+_SECRET = """
+from panel_flowdash import register
+ADMINS = ["admins"]
+@register(allow_groups=ADMINS)
+def app():
+    return "secret"
+"""
+
+_CUSTOM = """
+from panel_flowdash import register
+@register(authorize=lambda identity: "admins" in identity.groups)
+def app():
+    return "custom"
+"""
+
+_CONCAT = """
+from panel_flowdash import register
+@register(deny_users=["bob"] + [])
+def app():
+    return "concat"
+"""
+
+_BROKEN = """
+from panel_flowdash import register
+ADMINS = ["admins"]
+@register(allow_groups=ADMINS)
+def app():
+    return "broken"
+raise RuntimeError("import fails")
+"""
+
+
+class TestNonLiteralPagePermissions:
+    @pytest.fixture
+    def project(self, tmp_path, monkeypatch):
+        # A fresh package name per test, so modules imported by one test are not reused.
+        package_name = f"authproj_{uuid.uuid4().hex[:8]}"
+        package = tmp_path / package_name
+        (package / "pages").mkdir(parents=True)
+        (package / "__init__.py").write_text("")
+        (package / "pages" / "__init__.py").write_text("")
+        for module, source in [
+            ("secret", _SECRET),
+            ("custom", _CUSTOM),
+            ("concat", _CONCAT),
+            ("broken", _BROKEN),
+        ]:
+            (package / "pages" / f"{module}.py").write_text(source)
+        (package / "pages" / "plain.py").write_text(
+            "from panel_flowdash import register\n"
+            "@register(allow_users=['bob'])\n"
+            "def app():\n    return 'plain'\n"
+        )
+        monkeypatch.syspath_prepend(str(tmp_path))
+        return build_registry(package, package=package_name)
+
+    def test_unevaluable_rules_are_pending(self, project):
+        for name in ("secret", "custom", "concat", "broken"):
+            assert project[f"pages/{name}"].metadata.auth_pending, name
+        assert not project["pages/plain"].metadata.auth_pending
+        assert project["pages/plain"].metadata.allow_users == ["bob"]
+
+    def test_pending_entry_is_resolved_by_import(self, project):
+        bob = make_identity("bob", oauth="bob")
+        admin = make_identity("carol", oauth="carol", groups=["admins"])
+        for name in ("secret", "custom"):
+            entry = project[f"pages/{name}"]
+            assert entry_authorized(entry, bob) is False
+            assert entry.metadata.auth_pending is False
+            assert entry_authorized(entry, admin) is True
+        assert entry_authorized(project["pages/concat"], bob) is False
+        assert entry_authorized(project["pages/concat"], admin) is True
+
+    def test_failed_import_stays_denied(self, project):
+        entry = project["pages/broken"]
+        assert entry_authorized(entry, make_identity("carol", groups=["admins"])) is False
+        assert entry.metadata.auth_pending
+
+    def test_http_gate_fails_closed_and_reads_live_metadata(self, project):
+        cb = make_authorize_callback(project, AuthConfig())
+        with panel_session("bob", {}):
+            assert cb({}, "/pages/secret") is False
+            assert cb({}, "/pages/custom") is False
+            assert cb({}, "/pages/broken") is False
+        with panel_session("carol", {"groups": ["admins"]}):
+            assert cb({}, "/pages/secret") is True
+            assert cb({}, "/pages/custom") is True
+            assert cb({}, "/pages/broken") is False
+
+    def test_http_gate_sees_rules_changed_after_it_was_built(self):
+        registry = {"Sec/open": _page_entry("Sec/open")}
+        cb = make_authorize_callback(registry, AuthConfig())
+        registry["Sec/open"].metadata = PanelAppMetadata(page=True, allow_groups=["finance"])
+        with panel_session("alice", {}):
+            assert cb({}, "/Sec/open") is False
+
+    def test_string_literal_is_one_name(self, tmp_path):
+        (tmp_path / "pages").mkdir()
+        (tmp_path / "pages" / "p.py").write_text(
+            "from panel_flowdash import register\n"
+            "@register(deny_users='bob')\n"
+            "def app():\n    return 'p'\n"
+        )
+        entry = build_registry(tmp_path)["pages/p"]
+        assert entry.metadata.deny_users == ["bob"]
+
+
+class TestInAppPendingPermissions:
+    async def test_page_with_non_literal_rules_is_gated_on_first_render(
+        self, tmp_path, monkeypatch
+    ):
+        from panel_flowdash.app import FlowDashApp
+        from panel_flowdash.dashboard_store import MemoryDashboardStore
+
+        section = f"Gate{uuid.uuid4().hex[:8]}"
+        (tmp_path / section).mkdir()
+        (tmp_path / section / "__init__.py").write_text("")
+        (tmp_path / section / "secret.py").write_text(_SECRET)
+        monkeypatch.syspath_prepend(str(tmp_path))
+
+        with panel_session("bob", {}):
+            app = FlowDashApp(project_dir=tmp_path, store=MemoryDashboardStore())
+        entry = app._page_entries[f"{section}/secret"]
+
+        view = await app._render_page((section, "secret"))
+        assert "Access denied" in view.object
+        assert entry.metadata.allow_groups == ["admins"]
+        assert f"{section}/secret" not in app._accessible_page_entries()

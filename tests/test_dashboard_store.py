@@ -402,11 +402,10 @@ class TestAccessControl:
         d = store.create_dashboard("bob", "Open")
         assert store.load_for_access(_identity("alice"), d.dashboard_id, default_allow=True)
 
-    async def test_can_administer_unrestricted_without_admin_groups(self, store):
-        # With no admin groups configured administration is unrestricted.
+    async def test_can_administer_only_owner_without_admin_groups(self, store):
         d = store.create_dashboard("alice", "Dash")
         assert store.can_administer(_identity("alice"), d.dashboard_id)
-        assert store.can_administer(_identity("bob"), d.dashboard_id)
+        assert not store.can_administer(_identity("bob"), d.dashboard_id)
 
     async def test_can_administer_owner_with_admin_groups(self, store):
         d = store.create_dashboard("alice", "Dash")
@@ -454,3 +453,21 @@ class TestItemPersistence:
         store.save_dashboard(dashboard)
         loaded = store.load_dashboard("user1", "d4")
         assert loaded.items[0].config == {"color": "blue", "threshold": 42}
+
+
+class TestFindByTitle:
+    async def test_prefers_own_then_accessible_dashboard(self, store):
+        company = store.create_dashboard("admin", "Company Home")
+        store.set_permission(company.dashboard_id, Permission.from_spec(allow_users=["alice"]))
+        mallory = store.create_dashboard("mallory", "Company Home")
+        store.set_permission(mallory.dashboard_id, Permission.from_spec(allow_users=["mallory"]))
+
+        found = store.find_by_id_or_title("Company Home", _identity("alice"))
+        assert found.dashboard_id == company.dashboard_id
+        assert store.find_by_id_or_title("Company Home", _identity("mallory")).owner == "mallory"
+        assert store.find_by_id_or_title("Company Home", _identity("eve")) is None
+
+    async def test_without_identity_returns_a_match(self, store):
+        d = store.create_dashboard("admin", "Home")
+        assert store.find_by_id_or_title("Home").dashboard_id == d.dashboard_id
+        assert store.find_by_id_or_title(d.dashboard_id).dashboard_id == d.dashboard_id

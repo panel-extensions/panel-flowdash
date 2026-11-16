@@ -1786,6 +1786,11 @@ class FlowDash(Viewer):
         With no store configured the model is still built and returned, so the
         caller can persist it themselves.
 
+        The owner, sharing rules and (unless *title* is given) title are taken
+        from the stored dashboard rather than from the copy loaded into the
+        editor, so saving never reverts a rename or sharing change made from
+        another session since the dashboard was opened.
+
         Raises
         ------
         RuntimeError
@@ -1795,6 +1800,12 @@ class FlowDash(Viewer):
             raise _ReadOnlyEditorError("This dashboard is read-only.")
         model = self.to_model(title=title)
         if self.store is not None:
+            stored = self.store._load_any(model.dashboard_id)
+            if stored is not None:
+                model.user_id = stored.user_id
+                model.permission = stored.permission
+                if title is None:
+                    model.title = stored.title
             self.store.save_dashboard(model)
         self.dashboard = model
         self.dirty = False

@@ -178,6 +178,20 @@ class Serve(_PanelServe):
         # SPA and dashboard routes are gated in-app by FlowDashApp.
         pn.config.authorize_callback = make_authorize_callback(registry, auth_config)
 
+        # Pages whose permissions are not literals in the source are imported now
+        # so their rules are known before the first request; one that fails to
+        # import stays denied.
+        for entry in registry.values():
+            if entry.metadata.auth_pending:
+                try:
+                    entry.load()
+                except Exception as exc:
+                    log.warning(
+                        "Failed to import '%s'; access stays denied until it imports: %s",
+                        entry.app_id,
+                        exc,
+                    )
+
         if args.warm:
             for entry in registry.values():
                 try:

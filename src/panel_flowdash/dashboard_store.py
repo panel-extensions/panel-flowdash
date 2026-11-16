@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import sqlite3
 import uuid
 from abc import ABC, abstractmethod
@@ -13,6 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from panel_flowdash.auth import Identity, Permission, can_administer, is_authorized
+
+logger = logging.getLogger(__name__)
+
+# Titles already warned about as ambiguous, so a home page visit does not log each time.
+_AMBIGUOUS_TITLES: set[str] = set()
 
 
 class DashboardStoreError(Exception):
@@ -252,17 +258,50 @@ class BaseDashboardStore(ABC):
             return model
         return None
 
-    def find_by_id_or_title(self, ref: str) -> DashboardModel | None:
+    def find_by_id_or_title(
+        self, ref: str, identity: Identity | None = None, *, default_allow: bool = True
+    ) -> DashboardModel | None:
         """Resolve a dashboard by its id first, then by title.
 
-        Titles are only unique per user, so a title match returns the most
-        recently updated dashboard. Used to resolve the operator-configured
-        home dashboard, which may be given as either an id or a title.
+        Titles are only unique per user, so a title can match several
+        dashboards. Without *identity* the most recently updated match is
+        returned. With one, the identity's own dashboards are preferred, then
+        the most recent one it may open; dashboards it may not open are never
+        returned. Used to resolve the operator-configured home dashboard, which
+        may be given as either an id or a title.
         """
         model = self._load_any(ref)
         if model is not None:
             return model
-        return next((m for m in self._all_dashboards() if m.title == ref), None)
+        return self._pick_titled(
+            [m for m in self._all_dashboards() if m.title == ref], identity, default_allow
+        )
+
+    @staticmethod
+    def _pick_titled(
+        matches: list[DashboardModel], identity: Identity | None, default_allow: bool
+    ) -> DashboardModel | None:
+        """Choose among same-titled dashboards, most recently updated first."""
+        if identity is None:
+            return matches[0] if matches else None
+        if len({m.owner for m in matches}) > 1 and matches[0].title not in _AMBIGUOUS_TITLES:
+            _AMBIGUOUS_TITLES.add(matches[0].title)
+            logger.warning(
+                "Several users own a dashboard titled %r; configure the home "
+                "dashboard by id to make it unambiguous.",
+                matches[0].title,
+            )
+        for model in matches:
+            if model.owner in identity.user_names and is_authorized(
+                model.permission, identity, default_allow=default_allow, owner=model.owner
+            ):
+                return model
+        for model in matches:
+            if is_authorized(
+                model.permission, identity, default_allow=default_allow, owner=model.owner
+            ):
+                return model
+        return None
 
     def get_owner(self, dashboard_id: str) -> str | None:
         """Return the owner (user_id) of a dashboard, or ``None`` if missing."""
@@ -438,24 +477,18 @@ class DashboardStore(BaseDashboardStore):
             ).fetchall()
         return [self._row_to_model(row) for row in rows]
 
-    def find_by_id_or_title(self, ref: str) -> DashboardModel | None:
-        """Resolve a dashboard by its id first, then by title.
-
-        Titles are only unique per user, so a title match returns the most
-        recently updated dashboard. Used to resolve the operator-configured
-        home dashboard, which may be given as either an id or a title.
-        """
+    def find_by_id_or_title(
+        self, ref: str, identity: Identity | None = None, *, default_allow: bool = True
+    ) -> DashboardModel | None:
         model = self._load_any(ref)
         if model is not None:
             return model
         with self._get_conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM dashboards WHERE title = ? ORDER BY updated_at DESC LIMIT 1",
+            rows = conn.execute(
+                "SELECT * FROM dashboards WHERE title = ? ORDER BY updated_at DESC",
                 (ref,),
-            ).fetchone()
-        if row is None:
-            return None
-        return self._row_to_model(row)
+            ).fetchall()
+        return self._pick_titled([self._row_to_model(r) for r in rows], identity, default_allow)
 
     def set_permission(self, dashboard_id: str, permission: Permission) -> bool:
         """Persist a new permission set on a dashboard. Returns success."""

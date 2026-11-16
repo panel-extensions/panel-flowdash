@@ -40,6 +40,31 @@ ANONYMOUS_USER = "anonymous"
 DEFAULT_GROUP_CLAIMS: tuple[str, ...] = ("groups", "roles")
 
 
+def _names(value: Any, label: str) -> frozenset[str]:
+    """Normalize a configured name list, treating a lone string as one name.
+
+    Iterating a string would otherwise turn ``"bob"`` into ``{"b", "o"}``.
+    """
+    if value is None:
+        return frozenset()
+    if isinstance(value, str):
+        return frozenset({value}) if value else frozenset()
+    if not isinstance(value, Iterable) or isinstance(value, dict):
+        raise TypeError(f"{label} must be a list of names, got {type(value).__name__}.")
+    return frozenset(str(v) for v in value if v)
+
+
+def _flag(value: Any, label: str) -> bool:
+    """Read a configured boolean, refusing values whose truthiness is misleading."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str) and value.strip().lower() in ("true", "false"):
+        return value.strip().lower() == "true"
+    if isinstance(value, int) and value in (0, 1):
+        return bool(value)
+    raise TypeError(f"{label} must be True or False, got {value!r}.")
+
+
 @dataclass(frozen=True)
 class Permission:
     """An allow/deny rule set evaluated against an :class:`Identity`.
@@ -70,10 +95,10 @@ class Permission:
     ) -> Permission:
         """Build a :class:`Permission` from loosely-typed iterables."""
         return cls(
-            allow_users=frozenset(allow_users or ()),
-            allow_groups=frozenset(allow_groups or ()),
-            deny_users=frozenset(deny_users or ()),
-            deny_groups=frozenset(deny_groups or ()),
+            allow_users=_names(allow_users, "allow_users"),
+            allow_groups=_names(allow_groups, "allow_groups"),
+            deny_users=_names(deny_users, "deny_users"),
+            deny_groups=_names(deny_groups, "deny_groups"),
         )
 
     def to_dict(self) -> dict[str, list[str]]:
@@ -152,16 +177,22 @@ class AuthConfig:
         if module is None:
             return cls()
         group_claims = getattr(module, "group_claims", None)
+        if isinstance(group_claims, str):
+            group_claims = [group_claims]
+        _names(group_claims, "group_claims")
         raw_user_groups = getattr(module, "user_groups", None) or {}
-        user_groups = {user: frozenset(groups) for user, groups in raw_user_groups.items()}
-        admin_groups = getattr(module, "admin_groups", None) or ()
-        default_allow = getattr(module, "default_allow", True)
+        if not isinstance(raw_user_groups, dict):
+            raise TypeError("user_groups must map user names to lists of groups.")
+        user_groups = {
+            user: _names(groups, f"user_groups[{user!r}]")
+            for user, groups in raw_user_groups.items()
+        }
         return cls(
             group_claims=tuple(group_claims) if group_claims else DEFAULT_GROUP_CLAIMS,
             user_groups=user_groups,
             resolve_groups=getattr(module, "resolve_groups", None),
-            admin_groups=frozenset(admin_groups),
-            default_allow=bool(default_allow),
+            admin_groups=_names(getattr(module, "admin_groups", None), "admin_groups"),
+            default_allow=_flag(getattr(module, "default_allow", True), "default_allow"),
         )
 
 
@@ -195,9 +226,11 @@ def resolve_identity(auth_config: AuthConfig | None = None) -> Identity:
     """Resolve the current session's :class:`Identity`.
 
     Prefers the OAuth login (``pn.state.user``) when a real provider populated
-    it; otherwise falls back to the system user, then to ``"anonymous"``.
+    it; otherwise falls back to the system user, then to ``"anonymous"``. The
+    system user is only part of the identity when there is no OAuth login, so a
+    signed-in user never inherits the server account's dashboards or groups.
     Groups are the union of claim-derived groups, the static ``user_groups``
-    mapping and any dynamic ``resolve_groups`` callback.
+    entry for the resolved user and any dynamic ``resolve_groups`` callback.
     """
     auth_config = auth_config or AuthConfig()
 
@@ -207,15 +240,12 @@ def resolve_identity(auth_config: AuthConfig | None = None) -> Identity:
     if oauth_user in (ANONYMOUS_USER, "anonymous"):
         oauth_user = None
 
-    system_user = _system_user()
+    system_user = None if oauth_user else _system_user()
     user = oauth_user or system_user or ANONYMOUS_USER
 
     user_info = dict(pn.state.user_info or {})
     groups = _groups_from_claims(user_info, auth_config.group_claims)
-
-    for name in (user, oauth_user, system_user):
-        if name and name in auth_config.user_groups:
-            groups |= set(auth_config.user_groups[name])
+    groups |= set(auth_config.user_groups.get(user, ()))
 
     identity = Identity(
         user=user,
@@ -286,17 +316,46 @@ def is_authorized(
 def can_administer(identity: Identity, owner: str, admin_groups: Iterable[str]) -> bool:
     """Whether *identity* may administer a resource owned by *owner*.
 
-    When no *admin_groups* are configured administration is unrestricted: the
-    running user (however resolved) may administer any resource. This keeps the
-    default, auth-less deployment fully editable. Once *admin_groups* are set,
-    only the owner and members of those groups may administer a resource.
+    The owner and members of *admin_groups* may administer a resource; nobody
+    else may. In an auth-less deployment every session resolves to the same
+    system user, which owns every dashboard it creates, so such a deployment
+    stays fully editable without configuring admin groups.
     """
-    admin_groups = frozenset(admin_groups)
-    if not admin_groups:
-        return True
     if owner in identity.user_names:
         return True
     return identity.in_groups(admin_groups)
+
+
+def entry_authorized(
+    entry: RegistryEntry, identity: Identity, *, default_allow: bool = True
+) -> bool:
+    """Whether *identity* may access a code-authored page or component.
+
+    A ``@register`` call whose rules could not be read from the source without
+    importing it (``allow_groups=ADMINS``, ``authorize=...``) leaves the entry's
+    rules pending. Such an entry is imported here so its decorator supplies the
+    real rules, and access is refused if that fails.
+    """
+    if entry.metadata.auth_pending:
+        try:
+            entry.load()
+        except Exception:
+            logger.exception("Could not import '%s' to resolve its permissions", entry.app_id)
+            return False
+        if entry.metadata.auth_pending:
+            logger.error(
+                "'%s' declares permissions that could not be resolved; denying access",
+                entry.app_id,
+            )
+            return False
+    authorize = entry.metadata.authorize
+    if authorize is not None:
+        try:
+            return bool(authorize(identity))
+        except Exception:
+            logger.exception("authorize callback failed for '%s'", entry.app_id)
+            return False
+    return is_authorized(entry.metadata.permission, identity, default_allow=default_allow)
 
 
 def path_permission_lookup(
@@ -304,9 +363,8 @@ def path_permission_lookup(
 ) -> dict[str, Permission]:
     """Map each page's URL path to its declared :class:`Permission`.
 
-    Used by the HTTP-boundary authorize callback to gate direct URL access to
-    code-authored pages. Only page entries are included; component and
-    SPA-only routes are gated in-app.
+    A snapshot of the declared rule fields; use :func:`entry_authorized` to
+    evaluate an entry, which also honors ``authorize`` and pending rules.
     """
     lookup: dict[str, Permission] = {}
     for entry in registry.values():
@@ -329,21 +387,24 @@ def make_authorize_callback(
     ``/dash/...`` and unknown paths) always pass here and are gated in-app,
     where per-dashboard permissions and richer denied views live.
 
+    Rules are read from the registry entry on every request, so metadata
+    refreshed by importing a module takes effect immediately.
+
     ``url_prefix`` strips a server route prefix from the request path before
     matching against registry page paths.
     """
-    lookup = path_permission_lookup(registry)
+    pages = {entry.page_path: entry for entry in registry.values() if entry.metadata.page}
 
     def authorize(user_info: dict[str, Any] | None, path: str = "") -> bool:
         route = path or ""
         if url_prefix and route.startswith(url_prefix):
             route = route[len(url_prefix) :]
         route = "/" + route.strip("/") if route.strip("/") else "/"
-        permission = lookup.get(route)
-        if permission is None:
+        entry = pages.get(route)
+        if entry is None:
             # Not a code-authored page route; gated in-app if at all.
             return True
         identity = resolve_identity(auth_config)
-        return is_authorized(permission, identity, default_allow=auth_config.default_allow)
+        return entry_authorized(entry, identity, default_allow=auth_config.default_allow)
 
     return authorize

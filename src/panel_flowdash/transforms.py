@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import numbers
 import operator
+import re
 import typing as t
 
 import pandas as pd
@@ -247,6 +248,40 @@ class Round(Transform):
         return f"round {self.digits}"
 
 
+# Python's format spec mini-language; anything else (a strftime pattern for a
+# date) produces output no longer than the spec itself.
+_STANDARD_SPEC = re.compile(
+    r"(?:.?[<>=^])?[+\- ]?z?#?0?(?P<width>\d*)[,_]?(?:\.(?P<precision>\d*))?[,_]?[a-zA-Z%]?\Z",
+    re.DOTALL,
+)
+# A stored spec comes from a dashboard file anyone with edit access can write,
+# so cap the padding and digits it may ask for.
+MAX_FORMAT_WIDTH = 1000
+MAX_FORMAT_PRECISION = 100
+
+
+class FormatSpec(param.String):
+    """A format spec whose width and precision are bounded."""
+
+    def _validate_value(self, val, allow_None):
+        super()._validate_value(val, allow_None)
+        if val is None:
+            return
+        match = _STANDARD_SPEC.match(val)
+        if match is None:
+            return
+        width, precision = match["width"], match["precision"]
+        if width and int(width) > MAX_FORMAT_WIDTH:
+            raise ValueError(
+                f"Format spec width {int(width)} exceeds the maximum of {MAX_FORMAT_WIDTH}."
+            )
+        if precision and int(precision) > MAX_FORMAT_PRECISION:
+            raise ValueError(
+                f"Format spec precision {int(precision)} exceeds the maximum of "
+                f"{MAX_FORMAT_PRECISION}."
+            )
+
+
 class Format(Transform):
     """Format a value as a string with a format spec, prefix and suffix.
 
@@ -257,7 +292,7 @@ class Format(Transform):
     op = "format"
     label = "Format"
 
-    spec = param.String(default="", doc="Format spec, for example ',.2f' or '.0%'.")
+    spec = FormatSpec(default="", doc="Format spec, for example ',.2f' or '.0%'.")
     prefix = param.String(default="")
     suffix = param.String(default="")
 

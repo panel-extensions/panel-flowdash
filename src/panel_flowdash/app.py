@@ -8,7 +8,7 @@ import logging
 import pathlib
 import traceback
 import typing as t
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from functools import cache, partial
 from html import escape
 
@@ -20,7 +20,7 @@ from panel.viewable import Children, Viewer
 from panel_flowdash.auth import (
     AuthConfig,
     Permission,
-    is_authorized,
+    entry_authorized,
     resolve_identity,
 )
 from panel_flowdash.dashboard_store import (
@@ -378,18 +378,7 @@ class FlowDashApp(Viewer):
 
     def _can_access_entry(self, entry: RegistryEntry) -> bool:
         """Whether the current identity may access a page/component entry."""
-        authorize = entry.metadata.authorize
-        if authorize is not None:
-            try:
-                return bool(authorize(self._identity))
-            except Exception:
-                logger.exception("authorize callback failed for '%s'", entry.app_id)
-                return False
-        return is_authorized(
-            entry.metadata.permission,
-            self._identity,
-            default_allow=self._default_allow(),
-        )
+        return entry_authorized(entry, self._identity, default_allow=self._default_allow())
 
     def _admin_groups(self) -> frozenset[str]:
         return self.auth_config.admin_groups if self.auth_config else frozenset()
@@ -455,6 +444,11 @@ class FlowDashApp(Viewer):
         if entry is None:
             return f"Unknown page: {'/'.join(key)}"
 
+        if entry.metadata.auth_pending:
+            # Import off the event loop so the decorator supplies the real rules;
+            # a failed import leaves them pending and access is refused below.
+            with suppress(Exception):
+                await asyncio.to_thread(entry.load)
         if not self._can_access_entry(entry):
             return self._access_denied_view(entry.title)
 
@@ -903,7 +897,9 @@ class FlowDashApp(Viewer):
         configured dashboard cannot be resolved or the current identity is not
         authorized to view it.
         """
-        model = self.store.find_by_id_or_title(self.home_dashboard)
+        model = self.store.find_by_id_or_title(
+            self.home_dashboard, self._identity, default_allow=self._default_allow()
+        )
         if model is None:
             logger.warning("Configured home dashboard not found: '%s'", self.home_dashboard)
             return False
