@@ -945,7 +945,7 @@ class TestDashboardActionDispatch:
         (dial,) = _launcher_speed_dials(app)
         dial.value = {"label": "Rename"}
         assert app._dialog.open is True
-        assert app._dialog.title == "Rename Dashboard"
+        assert app._dialog.title == "Rename dashboard"
         assert app._dialog_name_input.value == "Dash A"
         assert app._dialog_context == {"action": "rename", "dashboard_id": dash.dashboard_id}
 
@@ -953,8 +953,8 @@ class TestDashboardActionDispatch:
         dash = app.store.create_dashboard(app._user_id, "Dash A")
         item = {"label": "Dash A", "path": f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}"}
         _fire_action(app, "Delete", item)
-        assert app._dialog.title == "Delete Dashboard"
-        assert app._dialog_name_input.disabled is True
+        assert app._dialog.title == "Delete Dash A?"
+        assert app._dialog_delete_input.visible is True
         assert app._dialog_context == {"action": "delete", "dashboard_id": dash.dashboard_id}
 
     async def test_card_edit_loads_dashboard_in_edit_mode(self, app):

@@ -237,6 +237,7 @@ class TestDashboardDialog:
         store = RefusingStore()
         app, model = await _app_with_dashboard(make_app, store)
         app._open_delete_dialog(model.dashboard_id, "Sales")
+        app._dialog_delete_input.value = "Sales"
         store.refuse.add("delete")
 
         app._on_dialog_confirm(None)
