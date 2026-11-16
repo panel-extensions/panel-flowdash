@@ -167,9 +167,9 @@ class FlowDashApp(Viewer):
         constructor, e.g. `value_repr` or `popup_trigger`. Entries override
         the defaults the app derives from its own parameters (such as
         `breakpoints` and `notifications`), and `toolbar_extra` items are
-        placed after the app's Share button. `components`, `store`, `user`
-        and `include_page_dialog` are supplied by the app and raise a
-        ValueError if given here.
+        placed after the app's Share button. `authorize_component`,
+        `components`, `store`, `user` and `include_page_dialog` are supplied
+        by the app and raise a ValueError if given here.
         `dashboard`, `editable` and `read_only` are accepted but then managed
         by the app's routing and authorization. Read once at construction;
         the same editor is reused for every dashboard, so later changes have
@@ -251,7 +251,13 @@ class FlowDashApp(Viewer):
     # touching the page, so a slow load cannot overwrite a newer navigation.
     _nav_generation: int = 0
 
-    _RESERVED_EDITOR_OPTIONS = ("components", "include_page_dialog", "store", "user")
+    _RESERVED_EDITOR_OPTIONS = (
+        "authorize_component",
+        "components",
+        "include_page_dialog",
+        "store",
+        "user",
+    )
 
     def __init__(self, registry: dict[str, RegistryEntry] | None = None, **params):
         super().__init__(**params)
@@ -455,6 +461,16 @@ class FlowDashApp(Viewer):
             entry, self._identity, default_allow=self._default_allow(), load=False
         )
 
+    def _can_use_component(self, entry: RegistryEntry) -> bool:
+        """Whether the current identity may place and see a component.
+
+        A component without rules is open to everyone who may edit a
+        dashboard, whatever ``default_allow`` says, so a private-by-default
+        project keeps its unrestricted building blocks (and the built-in
+        widgets) usable. Never imports, like :meth:`_can_access_entry`.
+        """
+        return entry_authorized(entry, self._identity, default_allow=True, load=False)
+
     @staticmethod
     def _unresolved(entry: RegistryEntry) -> bool:
         return entry.metadata.auth_pending and entry.load_error is None
@@ -600,6 +616,7 @@ class FlowDashApp(Viewer):
             )
         toolbar_extra = [self._share_button, *(options.pop("toolbar_extra", None) or [])]
         editor = self.editor_class(
+            authorize_component=self._can_use_component,
             components=self._registry,
             include_page_dialog=False,
             store=self.store,

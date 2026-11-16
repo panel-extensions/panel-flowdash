@@ -366,3 +366,22 @@ def test_palette_items_keeps_role_order():
         PaletteEntry(component_id="s", title="S", role="source"),
     ]
     assert [g["label"] for g in palette_items(entries)] == ["Data sources", "Views", "Widgets"]
+
+
+class TestAuthorization:
+    def test_restricted_component_stays_out_of_groups_and_search(self):
+        editor = FlowDash(
+            COMPONENTS,
+            notifications=False,
+            authorize_component=lambda entry: entry.app_id != "Demo/filter",
+        )
+        assert "Demo/filter" not in _groups(editor)["Transforms"]
+        editor._palette_panel.query = "ticker"
+        assert editor._palette.items == []
+        assert editor._palette_panel._empty.visible
+
+    def test_changing_the_rule_updates_the_filtered_palette(self, editor):
+        editor._palette_panel.query = "dataframe"
+        assert "Demo/filter" in _groups(editor)["Transforms"]
+        editor.authorize_component = lambda entry: entry.app_id != "Demo/filter"
+        assert "Transforms" not in _groups(editor)
