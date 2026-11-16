@@ -37,7 +37,8 @@ is one, otherwise the system user name. A rule that names a group matches any of
 
 ## Rules: allow and deny
 
-Both pages and dashboards share the same four rule fields:
+Both pages and dashboards share the same four rule fields (dashboards add two
+more for editors, see [Sharing edit rights](#sharing-edit-rights)):
 
 | Field | Matches |
 |-------|---------|
@@ -52,9 +53,11 @@ Evaluation order:
    rule, access is refused, even for the resource owner.
 2. **Owner is allowed.** For dashboards, the creating user always retains
    access (unless denied above).
-3. **Allow rules.** If any `allow_*` rule is present, the identity must match at
+3. **Editors are allowed.** For dashboards, anyone granted edit rights may also
+   view it.
+4. **Allow rules.** If any `allow_*` rule is present, the identity must match at
    least one of them.
-4. **Default policy.** With no allow or deny rules at all, the project's default
+5. **Default policy.** With no allow or deny rules at all, the project's default
    policy applies (allow by default).
 
 ---
@@ -130,21 +133,52 @@ Sharing changes the read model from "my dashboards" to "dashboards I own plus
 dashboards shared with me": the launcher and navigation menu list every
 dashboard the current identity is authorized to open.
 
+### Sharing edit rights
+
+The share dialog also has **Editor groups** and **Editor users**, stored as
+`allow_edit_groups` and `allow_edit_users` on the dashboard's `Permission`. An
+editor may:
+
+- view the dashboard, even when the view rules do not name them;
+- open it in edit mode (the **Edit** action, or an `?edit=true` link), change
+  tiles, wiring and the dashboard settings, and save.
+
+An editor may not rename, delete or re-share the dashboard; those stay with its
+administrators (below), so an editor cannot lock the owner out or hand the
+dashboard to someone else. Deny rules win over edit rights too. Edit rules only
+add editors, they do not restrict who else may view: a dashboard with editors
+and no view rules still follows the project default policy for everyone else.
+
+```python
+from panel_flowdash import Permission
+
+store.set_permission(
+    dashboard_id,
+    Permission.from_spec(allow_groups=["sales"], allow_edit_groups=["sales-leads"]),
+)
+```
+
+Editors can always [inspect tile outputs](embed-the-editor.md#inspecting-outputs)
+when the editor has `inspect_outputs` on; people who may only view need the
+dashboard's **Viewers can inspect outputs** setting.
+
 ---
 
 ## Who can administer a dashboard
 
-Editing, renaming, deleting and re-sharing a dashboard are *administration*
-actions, distinct from viewing it. Only the dashboard's owner and members of the
-configured **admin groups** (see below) may administer it. Without admin groups
+Renaming, deleting and re-sharing a dashboard are *administration* actions,
+distinct from viewing and editing it. Only the dashboard's owner and members of
+the configured **admin groups** (see below) may administer it, and they may
+always edit it too. Without admin groups
 only the owner can. In a local, auth-less deployment every session resolves to
 the same system user, who owns every dashboard it creates, so that deployment
 stays fully editable.
 
 Dashboards created before OAuth was enabled are owned by the system user; add
 an admin group to keep administering them once users sign in. A user with view-only access who
-follows an edit link is silently downgraded to view mode, and the share and
-edit-only controls are hidden.
+follows an edit link is silently downgraded to view mode, and the edit-only
+controls are hidden. Editors get edit mode but not the share button or the
+rename and delete actions.
 
 ---
 

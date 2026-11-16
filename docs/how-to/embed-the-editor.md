@@ -202,7 +202,7 @@ editor = FlowDash(
 
 In a `FlowDashApp`, pass it through `editor_options={"inspect_outputs": True}`. It is off by default, so existing dashboards look the same.
 
-Turning it on shows every output value to anyone who can view the dashboard, including values the tile itself does not display, such as the full DataFrame behind a chart. Leave it off for dashboards whose viewers should only see what the tiles render.
+The dialog shows values the tile itself may not display, such as the full DataFrame behind a chart, so by default only people who may edit the dashboard get the button. The editor treats a `read_only` session as a viewer and hides the button there; `FlowDashApp` sets `read_only` for everyone who is not the owner, an editor or an administrator of the dashboard (see [Manage Permissions](manage-permissions.md)). To open inspection to viewers of one dashboard, turn on its **Viewers can inspect outputs** setting, `settings.viewers_can_inspect`, which is saved with the dashboard like any other [setting](dashboard-settings.md). A standalone `FlowDash` that is not `read_only` shows the button to everyone who sees it.
 
 The button appears on tiles whose component has at least one output port, and opens one dialog per editor, titled with the component's title. The dialog lists every output with its label, type and current value. The values are read when the button is clicked, so the dialog is a snapshot; click again to refresh it. Values are rendered exactly as in the port popups: through `value_repr` when you set one, otherwise as a table preview for a DataFrame, as JSON for other values, and as a placeholder when nothing has been published yet.
 

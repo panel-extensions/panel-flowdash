@@ -3862,7 +3862,11 @@ class TestDashboardSettings:
 
     async def test_unknown_keys_survive_a_save(self, editor):
         editor.load_model(_dashboard({"refresh_period": 3, "retired": True}))
-        assert editor.save().settings == {"refresh_period": 3, "retired": True}
+        assert editor.save().settings == {
+            "refresh_period": 3,
+            "retired": True,
+            "viewers_can_inspect": False,
+        }
 
     async def test_rejected_value_falls_back_to_the_default(self, editor, caplog):
         editor.load_model(_dashboard({"refresh_period": 9}, "a"))
@@ -3891,7 +3895,12 @@ class TestDashboardSettings:
         model = editor.new_dashboard("Live")
         editor.settings.param.update(refresh_period=45, accent="red")
         saved = editor.save()
-        assert saved.settings == {"refresh_period": 45, "accent": "red", "density": 1}
+        assert saved.settings == {
+            "refresh_period": 45,
+            "viewers_can_inspect": False,
+            "accent": "red",
+            "density": 1,
+        }
         assert editor.store.load_dashboard("alice", model.dashboard_id).settings == saved.settings
         assert not editor.dirty
 
@@ -3914,7 +3923,7 @@ class TestDashboardSettings:
     async def test_export_and_import_carry_the_settings(self, editor):
         editor.load_model(_dashboard({"refresh_period": 15}))
         data = editor.export_dashboard()
-        assert data["settings"] == {"refresh_period": 15}
+        assert data["settings"] == {"refresh_period": 15, "viewers_can_inspect": False}
         other = FlowDash(COMPONENTS, notifications=False)
         other.import_dashboard(data)
         assert other.settings.refresh_period == 15

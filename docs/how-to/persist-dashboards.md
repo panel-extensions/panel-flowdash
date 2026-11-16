@@ -258,14 +258,18 @@ does the comparison and returns the next revision. A store that ignores
 
 ---
 
-## Decide who administers a dashboard
+## Decide who administers and edits a dashboard
 
 `store.can_administer(identity, dashboard_id, admin_groups)` decides whether a
-user may edit, rename, share or delete a dashboard. Listings already hold the
-models, so the app calls `store.can_administer_model(identity, model,
-admin_groups)` for them instead of loading every dashboard again, and
-`can_administer` delegates to it. To change the rule in a custom store, override
-`can_administer_model`.
+user may rename, share or delete a dashboard, and
+`store.can_edit(identity, dashboard_id, admin_groups)` whether they may edit and
+save its contents and settings. Listings already hold the models, so the app
+calls `store.can_administer_model(identity, model, admin_groups)` and
+`store.can_edit_model(...)` for them instead of loading every dashboard again,
+and the id-based methods delegate to these. To change a rule in a custom store,
+override the `_model` method. The default `can_edit_model` allows everyone
+`can_administer_model` allows, plus the editors named on the dashboard's
+permission.
 
 ---
 
