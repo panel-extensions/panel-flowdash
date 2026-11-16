@@ -13,10 +13,10 @@ from panel_flowdash.ui.palette import (
     EMPTY_MESSAGE,
     PaletteEntry,
     PalettePort,
-    component_role,
     palette_entry,
     palette_items,
 )
+from panel_flowdash.ui.roles import component_role
 
 
 @register(

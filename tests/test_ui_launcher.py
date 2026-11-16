@@ -8,6 +8,7 @@ import panel as pn
 import param
 import pytest
 
+from panel_flowdash import register
 from panel_flowdash.app import DASH_ROUTE_PREFIX, FlowDashApp
 from panel_flowdash.auth import AuthConfig, Permission
 from panel_flowdash.dashboard_store import (
@@ -20,9 +21,12 @@ from panel_flowdash.dashboard_store import (
 )
 from panel_flowdash.editor import export_model
 from panel_flowdash.json_store import JSONFolderDashboardStore
+from panel_flowdash.registry import RegistryEntry
 from panel_flowdash.ui.launcher import (
     Launcher,
     _tile_boxes,
+    component_icon,
+    component_role,
     copy_dashboard,
     parse_dashboard_file,
     relative_time,
@@ -299,6 +303,40 @@ class TestThumbnail:
         html = thumbnail_html(model, {"S/a": None, "S/b": None, "S/c": "map"})
         assert [icon in html for icon in ("storage", "filter_alt", "map")] == [True] * 3
         assert "help_outline" in thumbnail_html(model, {})
+
+
+def _entry(**metadata):
+    return RegistryEntry.from_app(
+        register(page=False, component=True, **metadata)(lambda config: None), app_id="Demo/x"
+    )
+
+
+class TestComponentRole:
+    """The launcher labels components by the rules the palette and gallery group them by."""
+
+    @pytest.mark.parametrize(
+        ("metadata", "role", "icon"),
+        [
+            ({"provides": ["rows"]}, "Data source", "storage"),
+            ({"provides": ["rows"], "requires": ["query"]}, "Transform", "filter_alt"),
+            ({"requires": ["rows"]}, "View", "insert_chart"),
+            (
+                {"requires": ["query"], "provides": ["rows"], "tags": ["source"]},
+                "Data source",
+                "storage",
+            ),
+        ],
+    )
+    def test_declared_ports_and_tags(self, metadata, role, icon):
+        entry = _entry(**metadata)
+        assert component_role(entry) == role
+        assert component_icon(entry) == icon
+
+    def test_unknown_ports_get_no_label(self):
+        entry = _entry()
+        assert component_role(entry) is None
+        assert component_icon(entry) is None
+        assert component_icon(_entry(icon="map")) == "map"
 
 
 class TestLauncher:

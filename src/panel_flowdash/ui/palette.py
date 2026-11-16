@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import typing as t
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 import panel as pn
@@ -14,9 +14,9 @@ from panel.viewable import Viewer
 
 from panel_flowdash.component_spec import ComponentSpec, _ports_from_metadata
 from panel_flowdash.registry import RegistryEntry
-from panel_flowdash.widgets import BUILTIN_COMPONENTS
+from panel_flowdash.ui.roles import ROLE_ICONS, component_role
 
-# "other" holds components whose ports are unknown until they are imported.
+# Palette group order; "other" holds components whose ports are unknown until imported.
 ROLES = ("source", "transform", "view", "other", "widget")
 
 ROLE_LABELS = {
@@ -25,23 +25,6 @@ ROLE_LABELS = {
     "view": "Views",
     "other": "Components",
     "widget": "Widgets",
-}
-
-ROLE_ICONS = {
-    "source": "storage",
-    "transform": "transform",
-    "view": "insert_chart",
-    "other": "widgets",
-    "widget": "tune",
-}
-
-# Tags that put a component in a palette group, whatever its ports say.
-ROLE_TAGS = {
-    "source": "source",
-    "data source": "source",
-    "transform": "transform",
-    "view": "view",
-    "widget": "widget",
 }
 
 HINT = (
@@ -182,35 +165,6 @@ class PaletteEntry:
             "component_id": self.component_id,
             "draggable": self.draggable,
         }
-
-
-def component_role(
-    entry: RegistryEntry,
-    inputs: Sequence[PalettePort],
-    outputs: Sequence[PalettePort],
-    *,
-    ports_known: bool = True,
-) -> str:
-    """Return the palette group of a component.
-
-    A ``source``, ``transform``, ``view`` or ``widget`` tag decides it.
-    Otherwise built-in widgets are widgets, a component without outputs is a
-    view, one with outputs but no inputs a data source, and the rest are
-    transforms. A component whose ports are not known yet is ``other``.
-    """
-    for tag in entry.metadata.tags:
-        role = ROLE_TAGS.get(str(tag).strip().lower())
-        if role is not None:
-            return role
-    if entry.app is not None and BUILTIN_COMPONENTS.get(entry.app_id) is entry.app:
-        return "widget"
-    if not ports_known:
-        return "other"
-    if not outputs:
-        return "view"
-    if not inputs:
-        return "source"
-    return "transform"
 
 
 def palette_entry(

@@ -17,8 +17,10 @@ import param
 from panel.viewable import Viewer
 
 from panel_flowdash.auth import Permission
+from panel_flowdash.component_spec import _ports_from_metadata
 from panel_flowdash.dashboard_store import BaseDashboardStore, DashboardModel
 from panel_flowdash.editor import export_filename, export_model
+from panel_flowdash.ui import roles
 
 if t.TYPE_CHECKING:
     from panel_flowdash.app import FlowDashApp
@@ -326,42 +328,50 @@ def send_download(downloader: pmui.FileDownload, model: DashboardModel):
     downloader.transfer(download=True)
 
 
-_ROLE_ICONS = {"Data source": "storage", "Transform": "filter_alt", "View": "bar_chart"}
+_ROLE_NAMES = {"source": "Data source", "transform": "Transform", "view": "View"}
 
 
 def component_role(entry: RegistryEntry) -> str | None:
-    """Return "Data source", "Transform" or "View", if the component's ports are known.
+    """Return "Data source", "Transform" or "View", by the rules the palette and gallery use.
 
-    Ports are only known once the component was imported; the launcher never
-    imports components just to label them.
+    Widgets and components whose ports are unknown get no label: ports are
+    only known once the component was imported or declared on ``@register``,
+    and the launcher never imports components just to label them.
     """
+    return _ROLE_NAMES.get(_role(entry))
+
+
+def _role(entry: RegistryEntry) -> str:
+    meta = entry.metadata
     spec = entry.spec
     if spec is None:
-        return None
-    if not spec.inputs:
-        return "Data source"
-    return "Transform" if spec.outputs else "View"
+        outputs, inputs = _ports_from_metadata(meta)
+    else:
+        outputs, inputs = spec.outputs, spec.inputs
+    ports_known = spec is not None or bool(meta.provides or meta.requires)
+    return roles.component_role(entry, inputs, outputs, ports_known=ports_known)
 
 
 def component_icon(entry: RegistryEntry) -> str | None:
     """Return a component's declared icon, else the icon of its role when that is known."""
     if entry.metadata.icon:
         return entry.metadata.icon
-    return _ROLE_ICONS.get(component_role(entry) or "")
+    role = _role(entry)
+    return None if role == "other" else roles.ROLE_ICONS[role]
 
 
 def _wiring_roles(model: DashboardModel) -> dict[str, str]:
     """Map each placed instance to the role it plays in the dashboard's saved wiring."""
     sources = {edge.source for edge in model.edges}
     targets = {edge.target for edge in model.edges}
-    roles = {}
+    wiring = {}
     for item in model.items:
         wired_in, wired_out = item.instance_id in targets, item.instance_id in sources
         if wired_in:
-            roles[item.instance_id] = "Transform" if wired_out else "View"
+            wiring[item.instance_id] = "transform" if wired_out else "view"
         elif wired_out:
-            roles[item.instance_id] = "Data source"
-    return roles
+            wiring[item.instance_id] = "source"
+    return wiring
 
 
 def _icon(name: str) -> str:
@@ -422,11 +432,11 @@ def thumbnail_html(model: DashboardModel, icons: dict[str, str | None]) -> str:
     # Short layouts keep their proportions; tall ones show their top part.
     span = min(max(bottom, reference * 0.45), reference * 0.9)
     components = {item.instance_id: item.component_id for item in model.items}
-    roles = _wiring_roles(model)
+    wiring = _wiring_roles(model)
     tiles = "".join(
         f'<div class="tile" style="left:{left:.2f}%;top:{top / span * 100:.2f}%;'
         f'width:{width:.2f}%;height:{height / span * 100:.2f}%">'
-        f"<div>{_icon(_tile_icon(icons, components[instance_id], roles.get(instance_id)))}"
+        f"<div>{_icon(_tile_icon(icons, components[instance_id], wiring.get(instance_id)))}"
         "</div></div>"
         for left, top, width, height, instance_id in boxes
     )
@@ -440,7 +450,7 @@ def _grid(cards: list) -> pn.Column:
 def _tile_icon(icons: dict[str, str | None], component_id: str, role: str | None) -> str:
     if component_id not in icons:
         return "help_outline"
-    return icons[component_id] or _ROLE_ICONS.get(role or "", "widgets")
+    return icons[component_id] or roles.ROLE_ICONS.get(role or "other")
 
 
 class Launcher(Viewer):
