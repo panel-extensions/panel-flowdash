@@ -262,6 +262,29 @@ class TestStaleNavigation:
         assert app._current_dashboard.dashboard_id == fast.dashboard_id
         assert [item["instance_id"] for item in app._editor._tile_items] == ["Fast-1"]
 
+    async def test_slow_pending_page_import_does_not_replace_newer_dashboard(self, app):
+        first_dash = _dashboard(app, "First", "Analytics/selector")
+        second_dash = _dashboard(app, "Second", "Analytics/chart")
+        started, release = asyncio.Event(), asyncio.Event()
+        calls = []
+
+        async def resolve_pending_entries():
+            calls.append(None)
+            if len(calls) == 1:
+                started.set()
+                await release.wait()
+
+        app._resolve_pending_entries = resolve_pending_entries
+
+        first = _goto(app, f"{DASH_ROUTE_PREFIX}{first_dash.dashboard_id}")
+        await started.wait()
+        await _goto(app, f"{DASH_ROUTE_PREFIX}{second_dash.dashboard_id}")
+        release.set()
+        await asyncio.wait_for(first, 5)
+
+        assert app._current_dashboard.dashboard_id == second_dash.dashboard_id
+        assert [item["instance_id"] for item in app._editor._tile_items] == ["Second-1"]
+
     async def test_slow_dashboard_progress_bar_does_not_replace_newer_page(self, app):
         app._loading_screen = partial(FlowDashApp._loading_screen, app, delay=0.05)
         slow = _dashboard(app, "Slow", "Analytics/selector")
