@@ -317,6 +317,12 @@ The other variants keep the earlier navigation: `left` and `right` dock a
 navigation tree in a drawer on that side of the page, and `menubar` puts
 *Navigate* and *Dashboards* menus in the page header.
 
+Whichever variant you use, anything that would throw away unsaved edits asks
+first, listing what changed: opening another page or dashboard, choosing the
+dashboard you are editing to return to view mode, or creating a new dashboard.
+Reloading or closing the browser tab with unsaved changes makes the browser
+ask before leaving.
+
 The sidebar's menu button only appears when the sidebar has content, such as
 items set through `configure_layout`. Components registered with `sidebar=True`
 are shown in the dashboard's controls bar above the tiles, or in the sidebar
