@@ -18,7 +18,12 @@ store = DashboardStore("path/to/dashboards.db")
 ```
 
 The database file is created automatically with the required schema. WAL mode
-is enabled for concurrent read access.
+is enabled for concurrent read access. The store keeps one connection open per
+thread and closes the connections of threads that have exited; call
+`store.close()` to release the rest. A server that forks worker processes after
+building the store (`flowdash serve --num-procs`) is safe: each process opens
+its own connections and never closes the ones it inherited. A row that cannot be decoded is
+skipped and logged once instead of breaking the listing.
 
 ---
 
@@ -33,16 +38,21 @@ store = JSONFolderDashboardStore("path/to/dashboards")
 Each dashboard is saved as `<dashboard_id>.json` in the folder. The files are
 indented, human-readable JSON, so you can review changes in a pull request, keep
 them in version control next to the project that serves them, or edit them by
-hand. The folder is read on every request, so files added or changed outside the
-application appear without a restart.
+hand. The folder is scanned on every request, so files added or changed outside
+the application appear without a restart. Only files whose size, modification
+time or inode changed since the last listing are parsed again, so the models a
+listing returns are shared with that cache and should be treated as read-only;
+`load_dashboard` and `load_for_access` return a private copy.
 
 Dashboards created through the store get an id derived from their title
 (`Sales Overview` becomes `sales-overview`, then `sales-overview-2`), which keeps
 file names and `/dash/<id>` URLs readable. Ids must be usable as file names:
 letters, digits, `.`, `_` and `-`, starting with a letter or digit.
 
-A file that cannot be parsed, or whose `dashboard_id` differs from its file name,
-is skipped and logged once, so one bad file does not take the others down.
+A file that cannot be parsed (invalid JSON or UTF-8, nesting too deep to decode,
+an id, owner or title that is not a string), or whose `dashboard_id` differs from
+its file name, is skipped and logged once, so one bad file does not take the
+others down.
 
 To ship a fixed set of dashboards, open the folder read-only:
 
@@ -54,8 +64,13 @@ Writes then raise `PermissionError` (also a `DashboardStoreError`, see below),
 and nobody can administer a dashboard, so the editor offers no way to modify,
 rename, share or delete one.
 
-Files are written atomically. Several server processes can share one folder, but
-two saving the same dashboard at the same moment resolve last-writer-wins.
+Files are written atomically. Several server processes can share one folder:
+creating a dashboard claims its id exclusively, so two users creating a
+dashboard with the same title at the same moment get `sales` and `sales-2`, and
+saving refuses (with a `DashboardStoreError`) to replace a file that belongs to
+another user, which also covers ids that differ only in case on a
+case-insensitive file system. Two saves of the same dashboard at the same moment
+still resolve last-writer-wins.
 
 ---
 
@@ -172,6 +187,17 @@ store.delete_dashboard("user1", "abc123")
 ```
 
 Returns `True` if a dashboard was deleted, `False` if not found.
+
+---
+
+## Decide who administers a dashboard
+
+`store.can_administer(identity, dashboard_id, admin_groups)` decides whether a
+user may edit, rename, share or delete a dashboard. Listings already hold the
+models, so the app calls `store.can_administer_model(identity, model,
+admin_groups)` for them instead of loading every dashboard again, and
+`can_administer` delegates to it. To change the rule in a custom store, override
+`can_administer_model`.
 
 ---
 

@@ -55,6 +55,19 @@ def _create_project(tmp_path: Path):
 
 
 class TestBuildRegistry:
+    def test_module_that_is_not_utf8_is_skipped_with_a_warning(self, tmp_path, caplog):
+        _create_project(tmp_path)
+        (tmp_path / "Analytics" / "broken.py").write_bytes(
+            b"# na\xefve\nfrom panel_flowdash import register\n"
+        )
+
+        with caplog.at_level("WARNING", logger="panel_flowdash.registry"):
+            registry = build_registry(tmp_path)
+
+        assert "Analytics/selector" in registry
+        assert "Analytics/broken" not in registry
+        assert "broken.py" in caplog.text
+
     async def test_scans_sections(self, tmp_path):
         _create_project(tmp_path)
         sys.path.insert(0, str(tmp_path))
@@ -465,3 +478,41 @@ class TestCLI:
             text=True,
         )
         assert result.returncode != 0
+
+
+class _CountingStore(MemoryDashboardStore):
+    def __init__(self):
+        super().__init__()
+        self.loads = 0
+
+    def _load_any(self, dashboard_id):
+        self.loads += 1
+        return super()._load_any(dashboard_id)
+
+
+class TestDashboardListings:
+    @pytest.fixture
+    async def app(self, tmp_path):
+        _create_project(tmp_path)
+        store = _CountingStore()
+        for n in range(5):
+            store.create_dashboard("someone", f"Dash {n}")
+        app = FlowDashApp(project_dir=tmp_path, store=store)
+        store.loads = 0
+        return app
+
+    async def test_menus_check_admin_rights_without_reloading_each_dashboard(self, app):
+        items = app._get_dashboard_menu_items()
+        app._build_menu_bar_items()
+        app._build_launcher()
+
+        assert len([item for item in items if item["label"].startswith("Dash")]) == 5
+        assert app.store.loads == 0
+
+    async def test_menus_follow_the_stores_admin_rule(self, app):
+        app.store.can_administer_model = lambda identity, dashboard, admin_groups: False
+        items = app._get_dashboard_menu_items()
+        viewer_actions = list(app._dashboard_actions(False))
+        for item in items:
+            if item["label"].startswith("Dash"):
+                assert item.get("actions", []) == viewer_actions
