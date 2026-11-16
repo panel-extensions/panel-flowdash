@@ -80,7 +80,7 @@ channels = [{ channel = "pyviz/label/dev", priority = -1 }]
 param = { version = ">=2.5.0b5", channel = "pyviz/label/dev" }
 
 [feature.param-dev.pypi-options]
-prerelease-mode = "allow"
+prerelease-mode = "if-necessary"
 
 [feature.test-ui]
 channels = ["microsoft"]
