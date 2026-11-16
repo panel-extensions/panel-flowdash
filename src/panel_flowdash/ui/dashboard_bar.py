@@ -514,7 +514,8 @@ class DashboardBar(Viewer):
         editor = self.editor
         model = editor.dashboard
         if editor.store is not None and model is not None:
-            model = editor.store._load_any(model.dashboard_id) or model
+            # Never shows a newer stored version to someone no longer allowed to view it.
+            model = editor._load_stored_dashboard() or model
         if model is None:
             editor.clear()
         else:

@@ -146,6 +146,10 @@ class JSONFolderDashboardStore(BaseDashboardStore):
         rename, share or delete one.
     """
 
+    # Ids are title slugs, so whether one exists must not be revealed to
+    # someone who may not open it.
+    random_ids = False
+
     def __init__(self, path: str | Path, *, read_only: bool = False):
         self.path = Path(path)
         self.read_only = read_only

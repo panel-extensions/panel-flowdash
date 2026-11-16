@@ -262,7 +262,17 @@ class BaseDashboardStore(ABC):
 
     Models returned by listings may be shared with a backend cache, so callers
     treat them as read-only; single-dashboard lookups return private copies.
+
+    Set :attr:`random_ids` to False in a store whose ids can be guessed.
     """
+
+    random_ids: bool = True
+    """Whether dashboard ids are random, so only someone given a link knows one.
+
+    The default :meth:`create_dashboard` makes random ids. A store whose ids
+    can be guessed (derived from titles, say) sets this to False, and the app
+    then answers a dashboard someone may not open exactly like a missing one,
+    rather than saying it exists and who owns it."""
 
     @abstractmethod
     def save_dashboard(self, dashboard: DashboardModel) -> None:

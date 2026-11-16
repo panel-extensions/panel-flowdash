@@ -21,6 +21,7 @@ from panel_flowdash.component_spec import _ports_from_metadata
 from panel_flowdash.dashboard_store import BaseDashboardStore, DashboardModel
 from panel_flowdash.editor import export_filename, export_model
 from panel_flowdash.ui import roles
+from panel_flowdash.ui.settings_dialog import entries_from_permission
 
 if t.TYPE_CHECKING:
     from panel_flowdash.app import FlowDashApp
@@ -892,12 +893,14 @@ class Launcher(Viewer):
         return f"Edited {when} by {owner}" if when else f"Owned by {owner}"
 
     def _sharing_chip(self, model: DashboardModel) -> str:
-        permission = model.permission
-        names = sorted(permission.allow_users | permission.allow_groups)
+        # Read the rules the way the settings dialog's Sharing section shows
+        # them, so the chip and the dialog always agree.
+        entries, everyone = entries_from_permission(model.permission, model.owner)
+        if everyone and self._app._default_allow():
+            return _chip("public", "Everyone", "Everyone in the project can view")
+        names = [entry.name for entry in entries if entry.role != "blocked"]
         if names:
             return _chip("group", f"Shared with {len(names)}", ", ".join(names))
-        if self._app._default_allow():
-            return _chip("public", "Everyone", "Everyone in the project can view")
         return _chip("lock", "Only you", "Only the owner and admins can open it")
 
     def _card_html(self, model: DashboardModel, icons: dict[str, str | None]) -> str:
@@ -921,7 +924,7 @@ class Launcher(Viewer):
         """Open, then the app's actions with a divider before destructive ones."""
         app = self._app
         items: list[dict | None] = [OPEN_ACTION]
-        for action in app._dashboard_actions(*app._dashboard_rights(model)):
+        for action in app._dashboard_menu_actions(model):
             if action.get("color") == "error" and items[-1] is not None:
                 items.append(None)
             items.append(dict(action))

@@ -474,6 +474,18 @@ class FlowDash(Viewer):
         allows every component.""",
     )
 
+    authorize_dashboard = param.Callable(
+        default=None,
+        doc="""
+        Called with the stored `DashboardModel` and the access it needs,
+        ``"view"`` or ``"edit"``, to decide whether this session may still
+        read or overwrite it. `save` asks for ``"edit"`` against the
+        dashboard's current sharing rules, so edit rights revoked from another
+        session take effect without reloading; reloading and discarding
+        changes ask for ``"view"``. `FlowDashApp` supplies one that checks the
+        signed-in user. None allows both.""",
+    )
+
     breakpoints = param.List(default=[768, 1200], doc="Responsive breakpoints for the tile grid.")
 
     components = param.Parameter(
@@ -3092,7 +3104,9 @@ class FlowDash(Viewer):
         Raises
         ------
         RuntimeError
-            If :attr:`read_only` is set.
+            If :attr:`read_only` is set, or :attr:`authorize_dashboard` no
+            longer grants edit access to the stored dashboard (which also sets
+            :attr:`read_only`).
         DashboardConflictError
             If the store holds a newer revision of the dashboard than the one
             loaded into the editor, because another session saved it since.
@@ -3103,6 +3117,11 @@ class FlowDash(Viewer):
         model = self.to_model(title=title)
         if self.store is not None:
             stored = self.store._load_any(model.dashboard_id)
+            if stored is not None and not self._dashboard_authorized(stored, "edit"):
+                self.read_only = True
+                raise _ReadOnlyEditorError(
+                    "You no longer have edit access to this dashboard, so it was not saved."
+                )
             if stored is not None:
                 model.user_id = stored.user_id
                 model.permission = stored.permission
@@ -3376,13 +3395,41 @@ class FlowDash(Viewer):
             ),
         )
 
-    def _reload_from_store(self):
+    def _dashboard_authorized(self, model: DashboardModel, access: str) -> bool:
+        if self.authorize_dashboard is None:
+            return True
+        try:
+            return bool(self.authorize_dashboard(model, access))
+        except Exception:
+            logger.exception(
+                "authorize_dashboard failed for '%s'; denying %s access",
+                model.dashboard_id,
+                access,
+            )
+            return False
+
+    def _load_stored_dashboard(self) -> DashboardModel | None:
+        """Return the stored version of the loaded dashboard if this session may still view it.
+
+        Notifies and returns None when it was deleted or is no longer shared
+        with this session.
+        """
         current = self.dashboard
         model = None
         if self.store is not None and current is not None:
             model = self.store._load_any(current.dashboard_id)
         if model is None:
             self._notify("error", "The dashboard no longer exists.", duration=5000)
+            return None
+        if not self._dashboard_authorized(model, "view"):
+            self._notify("error", "You no longer have access to this dashboard.", duration=5000)
+            return None
+        self.read_only = self.read_only or not self._dashboard_authorized(model, "edit")
+        return model
+
+    def _reload_from_store(self):
+        model = self._load_stored_dashboard()
+        if model is None:
             return
         self.load_model(model)
         self._notify("info", f'Reloaded the latest version of "{model.title}".', duration=3000)

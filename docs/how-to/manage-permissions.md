@@ -213,7 +213,12 @@ dashboard the current identity is authorized to open.
 Opening the link to a dashboard you may not see explains that it is not shared
 with you and names its owner (their login, so you know whom to ask), but never
 its title or contents. A link to a dashboard that does not exist says so instead
-and suggests accessible dashboards with a similar title or id.
+and suggests accessible dashboards with a similar title or id. With
+`JSONFolderDashboardStore`, whose ids are derived from titles and so can be
+guessed, a dashboard you may not see gets that same not-found page, so trying
+`/dash/<some-title>` does not reveal whether such a dashboard exists or who owns
+it. A custom store whose ids can be guessed opts into this by setting
+`random_ids = False`.
 
 ### Sharing edit rights
 
