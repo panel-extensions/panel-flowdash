@@ -1068,3 +1068,208 @@ class TestEdgeExpressions:
 
         source.val = "set"
         assert target.val == "set"
+
+
+def _chain_specs():
+    return {
+        "src": make_spec("src", outputs=[OutputPort(name="out")]),
+        "pass": make_spec(
+            "pass", inputs=[InputPort(name="inp")], outputs=[OutputPort(name="out")]
+        ),
+        "join": make_spec(
+            "join", inputs=[InputPort(name="items", type="list")], outputs=[OutputPort(name="out")]
+        ),
+    }
+
+
+def _add(graph, node_id, component_id):
+    state = graph.add_node(node_id, component_id)
+    if component_id == "pass":
+        state.out = param.bind(lambda inp: None if inp is None else inp + 1, state.param.inp)
+    elif component_id == "join":
+        state.out = param.bind(lambda items: sum(items), state.param.items)
+    return state
+
+
+def _chain(graph, length):
+    source = _add(graph, "s", "src")
+    source.out = 0
+    previous = "s"
+    for i in range(length):
+        _add(graph, f"n{i}", "pass")
+        assert graph.add_edge(previous, "out", f"n{i}", "inp") is True
+        previous = f"n{i}"
+    return source, graph.get_state(previous)
+
+
+class TestEdgeIndex:
+    async def test_index_tracks_edges(self):
+        graph = DataflowGraph(_chain_specs())
+        _add(graph, "a", "src")
+        _add(graph, "b", "src")
+        _add(graph, "j", "join")
+        _add(graph, "p", "pass")
+        graph.add_edge("a", "out", "j", "items")
+        graph.add_edge("b", "out", "j", "items")
+        graph.add_edge("a", "out", "p", "inp")
+        graph.set_edge_transform("a", "out", "p", "inp", [{"op": "round", "digits": 0}])
+        graph.remove_edge("b", "out", "j", "items")
+        graph.remove_node("p")
+
+        expected = {}
+        for key, edge in graph._edges.items():
+            expected.setdefault(key[2:], {})[key] = edge
+        assert graph._incoming_edges == expected
+        assert graph._successors == {"a": {"j": 1}}
+
+    async def test_cycle_detected_through_index(self):
+        graph = DataflowGraph(_chain_specs())
+        _chain(graph, 3)
+        assert graph._would_create_cycle("n2", "n0") is True
+        assert graph._would_create_cycle("s", "n2") is False
+        graph.remove_edge("n0", "out", "n1", "inp")
+        assert graph._would_create_cycle("n2", "n0") is False
+
+
+class TestBatch:
+    async def test_list_input_bound_once(self):
+        graph = DataflowGraph(_chain_specs())
+        source = _add(graph, "s", "src")
+        source.out = 1
+        join = _add(graph, "j", "join")
+        calls = []
+        join.param.watch(lambda e: calls.append(e.new), "items")
+        with graph.batch():
+            for i in range(20):
+                _add(graph, f"b{i}", "pass")
+                graph.add_edge("s", "out", f"b{i}", "inp")
+                graph.add_edge(f"b{i}", "out", "j", "items")
+            assert join.items == []
+        assert join.items == [2] * 20
+        assert len(calls) == 1
+        source.out = 2
+        assert join.out == 60
+
+    async def test_edge_from_downstream_of_pending_list_sees_its_value(self):
+        specs = _chain_specs()
+        specs["small"] = make_spec(
+            "small", inputs=[InputPort(name="inp", parameter=param.Integer(bounds=(0, 5)))]
+        )
+        graph = DataflowGraph(specs)
+        _add(graph, "a", "src").out = 3
+        _add(graph, "b", "src").out = 4
+        _add(graph, "j", "join")
+        graph.add_node("t", "small")
+        with graph.batch():
+            graph.add_edge("a", "out", "j", "items")
+            graph.add_edge("b", "out", "j", "items")
+            result = graph.add_edge("j", "out", "t", "inp")
+        assert isinstance(result, str) and "rejects" in result
+
+
+def test_deep_chain_without_event_loop_reports_instead_of_raising():
+    errors = []
+    graph = DataflowGraph(_chain_specs(), on_error=lambda *args: errors.append(args))
+    depth = sys.getrecursionlimit() // 5
+    source, last = _chain(graph, depth)
+    source.out = 1
+    assert last.out != depth + 1
+    assert len(errors) == 1
+    assert isinstance(errors[0][4], RecursionError)
+
+    source.out = 2
+    assert len(errors) == 2
+
+
+async def test_deep_chain_finishes_on_later_ticks():
+    import asyncio
+
+    errors = []
+    graph = DataflowGraph(_chain_specs(), on_error=lambda *args: errors.append(args))
+    depth = sys.getrecursionlimit() // 5
+    source, last = _chain(graph, depth)
+    source.out = 1
+    for _ in range(50):
+        if last.out == depth + 1:
+            break
+        await asyncio.sleep(0)
+    assert last.out == depth + 1
+    assert errors == []
+
+
+async def test_deferred_binding_error_is_reported(monkeypatch):
+    errors = []
+    graph = DataflowGraph(_chain_specs(), on_error=lambda *args: errors.append(args))
+    _chain(graph, 2)
+    graph._deferred = {("n0", "inp"): None, ("n1", "inp"): None}
+    bound = []
+
+    def _bind_input(target_id, target_port, skip_initial_none=False):
+        if target_id == "n0":
+            raise ValueError("boom")
+        bound.append(target_id)
+
+    monkeypatch.setattr(graph, "_bind_input", _bind_input)
+    await graph._drain_deferred()
+    assert [error[:4] for error in errors] == [("s", "out", "n0", "inp")]
+    assert isinstance(errors[0][4], ValueError)
+    assert bound == ["n1"]
+
+
+class TestEdgeDisposalOrder:
+    """Edges are released only after the input they fed was rebound or unbound."""
+
+    def _graph(self, monkeypatch):
+        graph = DataflowGraph(_chain_specs())
+        disposed = []
+
+        def _dispose_edges(edges):
+            # Record the list inputs still waiting to be rebound at disposal.
+            for edge in edges:
+                disposed.append((edge, list(graph._pending_lists)))
+
+        monkeypatch.setattr(graph, "_dispose_edges", _dispose_edges)
+        _add(graph, "a", "src").out = 1
+        _add(graph, "j", "join")
+        _add(graph, "p", "pass")
+        return graph, disposed
+
+    async def test_drop_edge_returns_edge(self, monkeypatch):
+        graph, _ = self._graph(monkeypatch)
+        graph.add_edge("a", "out", "p", "inp")
+        edge = graph._edges[("a", "out", "p", "inp")]
+        assert graph._drop_edge(("a", "out", "p", "inp")) is edge
+        assert graph._drop_edge(("a", "out", "p", "inp")) is None
+
+    async def test_remove_edge_disposes_after_unbinding(self, monkeypatch):
+        graph, disposed = self._graph(monkeypatch)
+        graph.add_edge("a", "out", "p", "inp")
+        edge = graph._edges[("a", "out", "p", "inp")]
+        graph.remove_edge("a", "out", "p", "inp")
+        assert disposed == [(edge, [])]
+
+    async def test_remove_node_disposes_its_edges(self, monkeypatch):
+        graph, disposed = self._graph(monkeypatch)
+        graph.add_edge("a", "out", "p", "inp")
+        graph.add_edge("a", "out", "j", "items")
+        edges = set(map(id, graph._edges.values()))
+        graph.remove_node("a")
+        assert {id(edge) for edge, _ in disposed} == edges
+
+    async def test_rewired_edge_disposed_after_rebind(self, monkeypatch):
+        graph, disposed = self._graph(monkeypatch)
+        graph.add_edge("a", "out", "p", "inp")
+        previous = graph._edges[("a", "out", "p", "inp")]
+        graph.set_edge_transform("a", "out", "p", "inp", [{"op": "round", "digits": 0}])
+        assert disposed == [(previous, [])]
+
+    async def test_rewired_list_edge_in_batch_disposed_after_flush(self, monkeypatch):
+        graph, disposed = self._graph(monkeypatch)
+        join = graph.get_state("j")
+        graph.add_edge("a", "out", "j", "items")
+        previous = graph._edges[("a", "out", "j", "items")]
+        with graph.batch():
+            graph.set_edge_transform("a", "out", "j", "items", [{"op": "round", "digits": 0}])
+            assert disposed == []
+        assert disposed == [(previous, [])]
+        assert join.items == [1]

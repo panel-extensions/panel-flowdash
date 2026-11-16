@@ -117,6 +117,44 @@ state_a = graph.get_state("a")
 state_a.output = "invalid_value"
 ```
 
+### Shared values
+
+An edge hands its target the very object the source produced, without copying
+it, and every other edge from that output receives the same object. Treat the
+values arriving on inputs as read-only: a component that edits a DataFrame in
+place, e.g. `df["a"] = 0`, changes it for the source and all of its siblings
+without any of them being notified. Copy the value first (`df = df.copy()`) if
+a component needs to modify it. Transform steps never return their input or a
+view of it, so the value of an edge with a transform is the target's own.
+
+### Long chains
+
+Values propagate synchronously, one nested call per node, so a long enough
+chain of nodes would exhaust Python's recursion limit. When an update reaches
+half of that limit and an event loop is running, as it is in a Panel server
+or a notebook, the rest of the chain updates from the next tick of the loop.
+Without an event loop the update instead stops shortly before the limit and
+`on_error` receives a `RecursionError` for the input it stopped at.
+
+### Fan-in and diamonds
+
+A node is updated once for every path a change reaches it through. When `a`
+feeds both `b` and `c`, which both feed `d`, a change to `a` updates `d` twice,
+first with the new value from `b` and the old one from `c`, then with both new
+values. Likewise a list input fed by N edges from one upstream node is
+recomputed N times. Components that are expensive to recompute or that reject
+mixed old and new inputs should be placed with this in mind.
+
+To wire many edges at once, e.g. when restoring a saved graph, wrap the calls in
+`graph.batch()`. List inputs are then bound once at the end of the block instead
+of once per edge:
+
+```python
+with graph.batch():
+    for source_id in sources:
+        graph.add_edge(source_id, "value", "summary", "items")
+```
+
 ---
 
 ## Remove edges and nodes

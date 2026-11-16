@@ -89,6 +89,24 @@ class TestOperations:
         assert run(TOTAL_MW, None) is None
 
 
+class TestDetachedResults:
+    @pytest.mark.parametrize(
+        "step",
+        [
+            {"op": "column", "column": "a"},
+            {"op": "filter", "column": "a", "comparison": "==", "value": None},
+            {"op": "head", "n": 2},
+        ],
+    )
+    async def test_editing_result_leaves_input_alone(self, step):
+        frame = pd.DataFrame({"a": [3, 1, 2]})
+        (parsed,) = parse_transform([step])
+        result = parsed(frame)
+        assert result is not frame
+        result.iloc[0] = 0
+        assert frame["a"].tolist() == [3, 1, 2]
+
+
 class TestParsing:
     async def test_steps_round_trip_through_to_dict(self):
         steps = parse_transform(TOTAL_MW)

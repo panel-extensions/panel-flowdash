@@ -41,6 +41,28 @@ def _scalar(value):
     return item() if callable(item) and getattr(value, "ndim", None) == 0 else value
 
 
+def _copy_on_write() -> bool:
+    # pandas 3 always copies on write and deprecates reading the option.
+    if int(pd.__version__.split(".", 1)[0]) >= 3:
+        return True
+    return pd.options.mode.copy_on_write is True
+
+
+def _detached(value):
+    """Return a pandas *value* that edits to the original cannot reach, and vice versa.
+
+    Selecting a column or the first rows hands out a view of the input, and a
+    filter without a value hands out the input itself, so a consumer editing
+    the result in place would silently change the source and every other
+    consumer of it. Under copy-on-write (always on in pandas 3) a shallow copy
+    is already isolated and costs nothing until written to. Without it, on
+    pandas < 3, this is a deep copy, so every hop through such a transform
+    costs time and memory proportional to the size of the data; enable
+    ``pd.options.mode.copy_on_write`` to avoid that.
+    """
+    return value.copy(deep=not _copy_on_write())
+
+
 class Transform(param.Parameterized):
     """One step of an edge transform.
 
@@ -101,7 +123,7 @@ class Column(Transform):
         return _is_frame(value)
 
     def apply(self, value):
-        return value[self.column]
+        return _detached(value[self.column])
 
     def summary(self) -> str:
         return self.column
@@ -138,7 +160,7 @@ class Filter(Transform):
 
     def apply(self, value):
         if self.value is None:
-            return value
+            return _detached(value)
         return value[_COMPARISONS[self.comparison](value[self.column], self.value)]
 
     def summary(self) -> str:
@@ -184,7 +206,7 @@ class Head(Transform):
 
     def apply(self, value):
         if isinstance(value, (pd.DataFrame, pd.Series)):
-            return value.head(self.n)
+            return _detached(value.head(self.n))
         return list(value[: self.n])
 
     def summary(self) -> str:

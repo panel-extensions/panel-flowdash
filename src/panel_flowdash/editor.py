@@ -20,7 +20,7 @@ import typing as t
 import uuid
 import weakref
 from contextlib import contextmanager
-from functools import partial
+from functools import cache, partial
 
 import panel as pn
 import panel_material_ui as pmui
@@ -46,12 +46,38 @@ from panel_flowdash.transforms import parse_transform, summarize_transform
 from panel_flowdash.util import is_async, is_async_gen, notify, panel_call, panel_viewer
 from panel_flowdash.widgets import BUILTIN_COMPONENTS
 
+try:
+    from panel_reactflow.base import _validate_data as _validate_node_data
+except ImportError:
+    _validate_node_data = None
+
+
+@cache
+def _warn_validation_unavailable():
+    logger.warning(
+        "panel_reactflow no longer provides _validate_data, so node data added "
+        "while loading a dashboard is not validated against its schema."
+    )
+
+
 if t.TYPE_CHECKING:
     from panel.viewable import Viewable
 
     from panel_flowdash.component_spec import ComponentSpec, InputPort, OutputPort
 
 logger = logging.getLogger("panel_flowdash")
+
+
+def _add_all(add_many, add_one, items: list[dict]):
+    """Add *items* in one call, or one by one, skipping the invalid ones, if that fails."""
+    try:
+        add_many(items)
+    except ValueError:
+        for item in items:
+            try:
+                add_one(item)
+            except ValueError:
+                logger.exception("Skipping invalid canvas item '%s'", item.get("id"))
 
 
 class _ReadOnlyEditorError(DashboardStoreError, RuntimeError):
@@ -125,6 +151,16 @@ _FILES_DROP_TYPE = "Files"
 # Left out of exports: they tie a dashboard to one store, owner and audience, and
 # importing a file must not let it claim another dashboard's id or sharing rules.
 _IDENTITY_FIELDS = ("dashboard_id", "user_id", "permission")
+# What `ReactFlow.add_node` fills in, applied when nodes are added in bulk instead.
+_NODE_DEFAULTS = {
+    "type": "panel",
+    "data": {},
+    "position": {"x": 0.0, "y": 0.0},
+    "selected": False,
+    "draggable": True,
+    "connectable": True,
+    "deletable": True,
+}
 _SIDE_PANEL_WIDTH = 250
 _PALETTE_SX = {
     "& .MuiListItemButton-root": {"py": 0.25, "minHeight": 0},
@@ -358,6 +394,7 @@ class FlowDash(Viewer):
         self._failed_components: set[str] = set()
 
         self._muted = False
+        self._canvas_batch: tuple[list[dict], list[dict]] | None = None
         self._grid_populated = False
         self._edge_count = 0
         self._edge_id_map: dict[str, tuple[str, str, str, str]] = {}
@@ -826,6 +863,54 @@ class FlowDash(Viewer):
             yield
         finally:
             self._muted = previous
+
+    def _add_canvas_node(self, node: dict):
+        if self._canvas_batch is None:
+            with self._muted_canvas():
+                self._flow.add_node(node)
+            return
+        for key, default in _NODE_DEFAULTS.items():
+            node.setdefault(key, dict(default) if isinstance(default, dict) else default)
+        if self._flow.validate_on_add:
+            if _validate_node_data is not None:
+                node_type = self._flow.node_types.get(node["type"]) or {}
+                _validate_node_data(node["data"], node_type.get("schema"))
+            else:
+                _warn_validation_unavailable()
+        self._canvas_batch[0].append(node)
+
+    def _add_canvas_edge(self, edge: dict):
+        if self._canvas_batch is None:
+            with self._muted_canvas():
+                self._flow.add_edge(edge)
+            return
+        edge.setdefault("data", {})
+        self._canvas_batch[1].append(edge)
+
+    @contextmanager
+    def _batched_canvas(self):
+        """Collect the nodes and edges added in the block and put them on the canvas at once.
+
+        ``ReactFlow.add_node`` and ``add_edge`` rebuild the whole node list and
+        its views on every call, which makes adding N items one by one O(N^2)
+        once the canvas is rendered (18 s for a 500 node dashboard).
+        """
+        nodes: list[dict] = []
+        edges: list[dict] = []
+        self._canvas_batch = (nodes, edges)
+        try:
+            yield
+        finally:
+            self._canvas_batch = None
+            flow = self._flow
+            with self._muted_canvas():
+                add_nodes = getattr(flow, "add_nodes", None)
+                add_edges = getattr(flow, "add_edges", None)
+                if add_nodes is not None and add_edges is not None:
+                    _add_all(add_nodes, flow.add_node, nodes)
+                    _add_all(add_edges, flow.add_edge, edges)
+                elif nodes or edges:
+                    flow.param.update(nodes=flow.nodes + nodes, edges=flow.edges + edges)
 
     def _forget_node(self, node_id: str):
         """Drop a node from the graph, the tile bookkeeping and the edge map."""
@@ -1564,8 +1649,7 @@ class FlowDash(Viewer):
         )
         node_dict = node.to_dict()
         node_dict["view"] = view
-        with self._muted_canvas():
-            self._flow.add_node(node_dict)
+        self._add_canvas_node(node_dict)
 
         self._tile_items.append(
             {
@@ -1643,18 +1727,17 @@ class FlowDash(Viewer):
         self._edge_count += 1
         edge_id = f"e{self._edge_count}"
         self._edge_id_map[edge_id] = (source_id, source_port, target_id, target_port)
-        with self._muted_canvas():
-            self._flow.add_edge(
-                {
-                    "id": edge_id,
-                    "source": source_id,
-                    "target": target_id,
-                    "sourceHandle": source_port,
-                    "targetHandle": target_port,
-                    "markerEnd": {"type": "arrowclosed"},
-                    **(self._edge_chip(self._edge_id_map[edge_id]) if transform else {}),
-                }
-            )
+        self._add_canvas_edge(
+            {
+                "id": edge_id,
+                "source": source_id,
+                "target": target_id,
+                "sourceHandle": source_port,
+                "targetHandle": target_port,
+                "markerEnd": {"type": "arrowclosed"},
+                **(self._edge_chip(self._edge_id_map[edge_id]) if transform else {}),
+            }
+        )
         self.dirty = True
         return True
 
@@ -1848,6 +1931,9 @@ class FlowDash(Viewer):
         self.dashboard = model
         with self._muted_canvas():
             self._reset_canvas()
+        # Unlike palette drops (see `_on_component_dropped`) this replaces every
+        # node view at once, so no view already on the canvas can be blanked.
+        with self._muted_canvas(), self._batched_canvas(), self._dataflow_graph.batch():
             for item in model.items:
                 if item.component_id not in self._component_specs:
                     logger.warning(

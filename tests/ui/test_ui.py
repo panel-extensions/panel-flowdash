@@ -3,6 +3,8 @@
 
 import json
 
+import panel as pn
+import panel_material_ui as pmui
 import param
 import pytest
 from panel.tests.util import serve_component, wait_until
@@ -215,6 +217,28 @@ def test_palette_drag_adds_and_wires_components(page):
     palette.filter(has_text="Sink").drag_to(pane, target_position={"x": 40, "y": 40})
     wait_until(lambda: len(editor._tile_items) == 3, timeout=8000)
     assert len(editor.graph.edges) == 1
+
+
+def test_loading_into_rendered_editor_shows_every_node_view(page):
+    components = {"Test/source": source_component, "Test/sink": sink_component}
+    editor = FlowDash(components, notifications=False, include_builtin_components=False)
+    editor.add_component("Test/source", position=(0, 0))
+    saved = FlowDash(components, notifications=False, include_builtin_components=False)
+    src = saved.add_component("Test/source", position=(0, 0))
+    dst = saved.add_component("Test/sink", position=(300, 0))
+    saved.connect(src, "value", dst, "value")
+    model = saved.to_model()
+    load = pmui.Button(label="Load saved")
+    load.on_click(lambda _: editor.load_model(model))
+    serve_component(page, pn.Column(load, editor))
+
+    nodes = page.locator(".react-flow__node")
+    wait_until(lambda: nodes.count() == 1, timeout=8000)
+    page.get_by_role("button", name="Load saved", exact=True).click()
+    wait_until(lambda: nodes.count() == 2, timeout=8000)
+    wait_until(lambda: page.locator(".react-flow__edge").count() == 1, timeout=8000)
+    wait_until(lambda: nodes.filter(has_text="sink").count() == 1, timeout=8000)
+    wait_until(lambda: nodes.filter(has_text="source").count() == 1, timeout=8000)
 
 
 def _drop_file(locator, name, content):
