@@ -51,7 +51,7 @@ from panel_flowdash.dataflow_engine import (
     _release_refs,
     failure_text,
 )
-from panel_flowdash.failure_overlay import with_failure_overlay
+from panel_flowdash.failure_overlay import FailureMessage, FailureOverlay, with_failure_overlay
 from panel_flowdash.placeholders import (
     PLACEHOLDER_NODE_TYPE,
     Placeholder,
@@ -65,7 +65,19 @@ from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transform_editor import TransformEditor
 from panel_flowdash.transforms import parse_transform, summarize_transform
 from panel_flowdash.ui.dashboard_bar import DashboardBar
+from panel_flowdash.ui.inspect_sheet import (
+    dataframe_preview,
+    describe_value,
+    heading,
+    is_dataframe,
+    make_inspect_sheet,
+    output_section,
+    reserve_space,
+    sheet_header,
+    value_status,
+)
 from panel_flowdash.ui.palette import ComponentPalette, palette_entry, palette_items
+from panel_flowdash.ui.tile import Tile
 from panel_flowdash.util import (
     close_dialog,
     gate_view,
@@ -253,8 +265,6 @@ _NODE_DEFAULTS = {
     "deletable": True,
 }
 _SIDE_PANEL_WIDTH = 250
-# Sits where the tile's close handle does in edit mode, which hides the button.
-_INSPECT_BUTTON_STYLES = {"position": "absolute", "top": "4px", "right": "4px", "z-index": "5"}
 _FLOW_STYLESHEET = """\
 .react-flow__node {
   padding: 0;
@@ -412,14 +422,14 @@ class FlowDash(Viewer):
     inspect_outputs = param.Boolean(
         default=False,
         doc="""
-        Whether each tile in the dashboard grid gets an info button that opens
-        a dialog with the current value of every output the component
-        publishes. The button is shown in the dashboard view and in preview,
-        not while arranging tiles. It reveals outputs the tile itself may not
-        display, so while the editor is ``read_only`` (in a ``FlowDashApp``,
-        for anyone who may not edit the dashboard) it is only shown if the
-        dashboard's ``viewers_can_inspect`` setting allows it. A component can
-        add its own explanation per output by defining
+        Whether each tile in the dashboard grid gets an Inspect action that
+        opens a side sheet with the current value of every output the
+        component publishes. The action is shown in the dashboard view and in
+        preview, not while arranging tiles. It reveals outputs the tile itself
+        may not display, so while the editor is ``read_only`` (in a
+        ``FlowDashApp``, for anyone who may not edit the dashboard) it is only
+        shown if the dashboard's ``viewers_can_inspect`` setting allows it. A
+        component can add its own explanation per output by defining
         ``__flowdash_inspect__(self, port)``.""",
     )
 
@@ -524,6 +534,17 @@ class FlowDash(Viewer):
         dashboard-wide parameters. Read at construction time.""",
     )
 
+    show_in_editor = param.Callable(
+        default=None,
+        allow_None=True,
+        doc="""
+        Called with a tile's instance id when someone viewing the dashboard
+        asks to see that component in the editor, from the tile's More menu or
+        its failure message. The action is offered in view mode while this is
+        set and `read_only` is False; the caller decides what showing a
+        component in the editor means, e.g. switching to edit mode.""",
+    )
+
     sidebar = Children(
         default=[],
         doc="""
@@ -539,6 +560,21 @@ class FlowDash(Viewer):
         Dashboard persistence backend. Accepts a store instance or a path to a
         SQLite file. When None the editor is ephemeral and `save` merely returns
         the model for the caller to persist.""",
+    )
+
+    tile_cards = param.Boolean(
+        default=True,
+        doc="""
+        Default of the ``tile_cards`` dashboard setting for dashboards that do
+        not store one: whether tiles are drawn as framed cards. Each dashboard
+        can change it in its settings.""",
+    )
+
+    tile_titles = param.Boolean(
+        default=False,
+        doc="""
+        Default of the ``tile_titles`` dashboard setting for dashboards that do
+        not store one: whether a tile's card shows its title.""",
     )
 
     toolbar = param.Boolean(
@@ -614,9 +650,9 @@ class FlowDash(Viewer):
         self._pending_tile_layout: list[dict] = []
         # Instance ids of the tiles currently in the grid, in grid order.
         self._grid_ids: list[str] = []
-        # Inspect-button wrappers of the tiles, by instance id, kept so a grid
-        # rebuild does not re-render the tiles.
-        self._inspect_tiles: dict[str, pn.Column] = {}
+        # The framed tiles of the grid, by instance id, kept so a grid rebuild
+        # does not re-render them.
+        self._inspect_tiles: dict[str, Tile] = {}
         self._inspected_id: str | None = None
         # Responsive grid settings waiting to be applied; empty values must also be
         # applied so a loaded dashboard doesn't inherit the previous one's overrides.
@@ -1200,10 +1236,15 @@ class FlowDash(Viewer):
     # Failures
     # ------------------------------------------------------------------
 
-    def _describe_failures(self, instance_id: str, failed: dict[str, InputFailure]) -> str:
-        """Phrase the failed inputs of a node in terms of the ports the user sees."""
-        lines = []
+    def _describe_failures(
+        self, instance_id: str, failed: dict[str, InputFailure]
+    ) -> FailureMessage:
+        """Name the components that stopped a node, and explain each failed input in its ports."""
+        lines, sources = [], []
         for port_name, failure in failed.items():
+            source_title = self._instance_title(failure.source_id)
+            if source_title not in sources:
+                sources.append(source_title)
             port = self._port_spec(instance_id, port_name, output=False)
             source = self._port_spec(failure.source_id, failure.source_port, output=True)
             source_id = self._component_id_for_instance(failure.source_id)
@@ -1214,7 +1255,7 @@ class FlowDash(Viewer):
                 f"'{source_spec.title if source_spec else failure.source_id}' "
                 f"failed ({failure.text})"
             )
-        return "\n".join(lines)
+        return FailureMessage(sources=sources, details="\n".join(lines))
 
     def _sync_failure_marks(self, instance_id: str, event):
         """Outline a node and its failed edges in red while its inputs hold a failure."""
@@ -1332,39 +1373,178 @@ class FlowDash(Viewer):
                 f"Could not describe this output: {exc}", severity="error", margin=(6, 0, 0, 0)
             )
 
-    def _inspection_sections(self, instance_id: str, spec: ComponentSpec) -> list[Viewable]:
-        """One section per output, reading each current value now rather than at build time."""
+    def _instance_title(self, instance_id: str) -> str:
+        """Return the title of a placed component: its configured title, else its component's."""
+        placeholder = self._placeholders().get(instance_id)
+        if placeholder is not None:
+            return placeholder.title
+        config = self._dataflow_graph.get_config_state(instance_id)
+        title = getattr(config, "title", None) if config is not None else None
+        if isinstance(title, str) and title:
+            return title
+        component_id = self._component_id_for_instance(instance_id)
+        spec = self._component_specs.get(component_id) if component_id else None
+        return spec.title if spec is not None else instance_id
+
+    def _output_lineage(self, instance_id: str, port_name: str) -> tuple[list[str], list[str]]:
+        """Return the components an output feeds, and where the node's inputs come from."""
+        feeds, comes_from = [], []
+        for mapping in self._edge_id_map.values():
+            source_id, source_port, target_id, _ = mapping
+            if source_id == instance_id and source_port == port_name:
+                feeds.append(self._instance_title(target_id))
+            if target_id == instance_id:
+                steps = parse_transform(self._dataflow_graph.get_edge_transform(*mapping))
+                summary = summarize_transform(steps)
+                source = self._instance_title(source_id)
+                comes_from.append(f"{source}, {summary}" if summary else source)
+        return list(dict.fromkeys(feeds)), list(dict.fromkeys(comes_from))
+
+    def _inspection_sections(
+        self, instance_id: str, spec: ComponentSpec
+    ) -> list[tuple[str, Viewable]]:
+        """One titled section per output, reading each current value now rather than at build time."""
         state = self._dataflow_graph.get_state(instance_id)
         sections = []
         for port in spec.outputs:
             value = getattr(state, port.name, None)
-            section = self._build_value_popup(port.label or port.name, port.type, value)
-            extra = self._inspect_hook_content(instance_id, port.name)
-            if extra is not None:
-                section.append(extra)
-            sections.append(section)
+            type_name, shape = describe_value(value)
+            feeds, comes_from = self._output_lineage(instance_id, port.name)
+            rows = [
+                ("Type", type_name or port.type),
+                ("Shape", shape),
+                ("Feeds", ", ".join(feeds)),
+                ("Comes from", ", ".join(comes_from)),
+            ]
+            if value is None:
+                preview = None
+            elif self.value_repr is None and is_dataframe(value):
+                preview = dataframe_preview(value, port.name)
+            else:
+                preview = pn.Column(
+                    heading("Value"),
+                    self._value_preview(value),
+                    margin=0,
+                    sizing_mode="stretch_width",
+                )
+            section = output_section(
+                status=value_status(value, is_failure(value)),
+                rows=rows,
+                preview=preview,
+                extra=self._inspect_hook_content(instance_id, port.name),
+            )
+            sections.append((port.label or port.name, section))
         return sections
 
-    def _on_inspect_clicked(self, instance_id: str, tile: pn.Column, _event):
+    def _on_inspect_clicked(self, instance_id: str, tile: Tile, _event=None):
         # A click can arrive after the tile left the grid, e.g. after navigating
         # to another dashboard that reuses the instance id; it belongs to no tile now.
         if self._inspect_tiles.get(instance_id) is not tile or not self._can_inspect():
             return
         spec = self._component_specs[self._component_id_for_instance(instance_id)]
-        objects = self._inspection_sections(instance_id, spec)
+        objects = [sheet_header(self._instance_title(instance_id), self._close_inspection_dialog)]
         # A gated tile shows its placeholder, so say why its outputs may be empty.
         missing = missing_inputs(self._dataflow_graph.get_state(instance_id), spec.inputs)
         if missing:
             notice = f"Waiting for {', '.join(missing)}; the outputs may not be computed yet."
-            objects.insert(0, pmui.Alert(notice, severity="info", margin=(0, 0, 6, 0)))
+            objects.append(pmui.Alert(notice, severity="info", margin=(0, 0, 6, 0)))
+        objects.append(
+            pmui.Tabs(
+                *self._inspection_sections(instance_id, spec),
+                margin=0,
+                sizing_mode="stretch_width",
+                sx={"& .MuiTab-root": {"textTransform": "none"}},
+            )
+        )
         self._inspected_id = instance_id
-        self._inspect_dialog.param.update(title=spec.title, objects=objects, open=True)
+        self._inspect_dialog.param.update(objects=objects, open=True)
+        reserve_space(self._workspace_area, True)
 
     def _close_inspection_dialog(self):
-        """Close the dialog and let go of the values it shows, whose tile is gone."""
+        """Close the sheet and let go of the values it shows, whose tile may be gone."""
         self._inspected_id = None
         if self._inspect_dialog.open or self._inspect_dialog.objects:
             self._inspect_dialog.param.update(open=False, objects=[])
+            reserve_space(self._workspace_area, False)
+
+    def _can_inspect_tile(self, spec: ComponentSpec | None) -> bool:
+        return bool(self._can_inspect() and spec and spec.outputs)
+
+    def _can_show_in_editor(self) -> bool:
+        return self.show_in_editor is not None and not self.read_only and not self.editable
+
+    def _on_show_in_editor(self, instance_id: str):
+        if self._can_show_in_editor():
+            self.show_in_editor(instance_id)
+
+    def _make_tile(self, item: dict, spec: ComponentSpec | None, view: Viewable, bounds: dict):
+        """Frame *view* with a title bar whose status follows the node's inputs."""
+        instance_id = item["instance_id"]
+        name = self._instance_title(instance_id)
+        config = self._dataflow_graph.get_config_state(instance_id)
+        title = name
+        if config is not None and "title" in config.param:
+            default = spec.title if spec is not None else name
+            title = config.param.title.rx.pipe(lambda value: value or default)
+        description = (spec.description or "").strip() if spec is not None else ""
+        tile = Tile(
+            view,
+            title=title,
+            label=name,
+            subtitle=" ".join(description.split("\n\n")[0].split()) or None,
+            on_show_in_editor=partial(self._on_show_in_editor, instance_id),
+            **bounds,
+        )
+        tile.on_inspect = partial(self._on_inspect_clicked, instance_id, tile)
+        if isinstance(view, FailureOverlay):
+            button = pmui.Button(
+                label="Show in editor",
+                icon="account_tree",
+                size="small",
+                variant="text",
+                margin=(0, 4),
+            )
+            button.on_click(lambda _event: self._on_show_in_editor(instance_id))
+            view.actions[:] = [button]
+
+        state = self._dataflow_graph.get_state(instance_id)
+        failures = (
+            self._dataflow_graph.get_failures(instance_id) if self.propagate_failures else None
+        )
+        inputs = [p.name for p in (spec.inputs if spec else []) if state and p.name in state.param]
+
+        def update_status(*_):
+            if failures is not None and failures.failed:
+                tile.set_status("failed")
+            elif spec is not None and state is not None and missing_inputs(state, spec.inputs):
+                tile.set_status("waiting")
+            else:
+                tile.set_status(None)
+
+        update_status()
+        wiring = self._component_wiring.setdefault(instance_id, [])
+        if inputs:
+            watcher = state.param.watch(update_status, inputs)
+            wiring.append(partial(state.param.unwatch, watcher))
+        if failures is not None:
+            watcher = failures.param.watch(update_status, "failed")
+            wiring.append(partial(failures.param.unwatch, watcher))
+        return tile
+
+    def _sync_tile(self, tile: Tile, spec: ComponentSpec | None):
+        """Offer a tile's actions to whoever is viewing it now."""
+        show_in_editor = self._can_show_in_editor()
+        tile.set_actions(inspect=self._can_inspect_tile(spec), show_in_editor=show_in_editor)
+        if isinstance(tile.view, FailureOverlay):
+            for button in tile.view.actions:
+                button.visible = show_in_editor
+
+    @param.depends("editable", "show_in_editor", watch=True)
+    def _sync_tile_actions(self):
+        for item in self._tile_items:
+            tile = self._inspect_tiles.get(item["instance_id"])
+            if tile is not None:
+                self._sync_tile(tile, self._tile_spec(item))
 
     def _tile_spec(self, item: dict) -> ComponentSpec | None:
         """Return the spec whose hints apply to a tile; a placeholder keeps its saved size."""
@@ -1373,42 +1553,43 @@ class FlowDash(Viewer):
         return self._component_specs.get(item["component_id"])
 
     def _grid_view(self, item: dict, view: Viewable) -> Viewable:
-        """Return the tile's view, with an inspect button over it when it has outputs to show.
+        """Return the tile's view in a frame with a title bar and its actions.
 
-        A tile with width bounds is wrapped too, since TileGrid reads a tile's
-        ``min_width`` and ``max_width`` to bound resizing and responsive widths.
-        A placeholder has neither, even if its component is offered.
+        A tile with width bounds carries them on the frame, since TileGrid reads
+        a tile's ``min_width`` and ``max_width`` to bound resizing and
+        responsive widths. A placeholder has neither, even if its component is
+        offered.
         """
         instance_id = item["instance_id"]
         spec = self._tile_spec(item)
-        inspect = bool(self.inspect_outputs and spec and spec.outputs)
         bounds = {
             f"{key}_width": size["width"]
             for key, size in (("min", spec and spec.min_size), ("max", spec and spec.max_size))
             if size and "width" in size
         }
-        if not inspect and not bounds:
-            return view
         tile = self._inspect_tiles.get(instance_id)
-        if tile is None or tile[0] is not view:
-            button = pmui.IconButton(
-                icon="info_outlined",
-                description="Inspect outputs",
-                size="small",
-                margin=0,
-                styles=_INSPECT_BUTTON_STYLES,
-            )
-            tile = self._inspect_tiles[instance_id] = pn.Column(
-                view,
-                button,
-                margin=0,
-                sizing_mode="stretch_both",
-                stylesheets=[":host { position: relative; }"],
-                **bounds,
-            )
-            button.on_click(partial(self._on_inspect_clicked, instance_id, tile))
-        tile[1].visible = inspect and not self._tile_grid.editable and self._can_inspect()
+        if tile is None or tile.view is not view:
+            tile = self._inspect_tiles[instance_id] = self._make_tile(item, spec, view, bounds)
+        tile.set_chrome(not self._tile_grid.editable)
+        tile.set_style(framed=self.settings.tile_cards, titled=self.settings.tile_titles)
+        self._sync_tile(tile, spec)
         return tile
+
+    @param.depends("tile_cards", "tile_titles", watch=True, on_init=True)
+    def _seed_tile_settings(self):
+        """Apply the editor's tile defaults to the dashboard settings shown now."""
+        loading = getattr(self, "_loading_settings", False)
+        self._loading_settings = True
+        try:
+            self.settings.param.update(tile_cards=self.tile_cards, tile_titles=self.tile_titles)
+        finally:
+            self._loading_settings = loading
+
+    @param.depends("settings.tile_cards", "settings.tile_titles", watch=True)
+    def _sync_tile_style(self):
+        # Also fires while the editor is being constructed, before there are tiles.
+        for tile in getattr(self, "_inspect_tiles", {}).values():
+            tile.set_style(framed=self.settings.tile_cards, titled=self.settings.tile_titles)
 
     def _can_inspect(self) -> bool:
         """Whether this session may inspect outputs: editors always, viewers if the dashboard allows."""
@@ -1416,11 +1597,7 @@ class FlowDash(Viewer):
 
     @param.depends("read_only", "settings.viewers_can_inspect", watch=True)
     def _sync_inspect_buttons(self):
-        visible = not self._tile_grid.editable and self._can_inspect()
-        for instance_id, (_view, button) in self._inspect_tiles.items():
-            # Tiles wrapped only for their size bounds have no outputs to inspect.
-            spec = self._component_specs.get(self._component_id_for_instance(instance_id))
-            button.visible = visible and bool(spec and spec.outputs)
+        self._sync_tile_actions()
         if not self._can_inspect():
             self._close_inspection_dialog()
 
@@ -1714,14 +1891,7 @@ class FlowDash(Viewer):
         self._pending_import: DashboardModel | None = None
         self._import_message = pn.pane.Markdown()
         self._import_dialog = self._build_import_dialog()
-        # `width_option` only caps the width; without a floor a short value yields a sliver.
-        self._inspect_dialog = pmui.Dialog(
-            open=False,
-            close_on_click=True,
-            show_close_button=True,
-            width_option="md",
-            sx={"& .MuiDialog-paper": {"minWidth": "min(480px, 100%)"}},
-        )
+        self._inspect_dialog = make_inspect_sheet()
         # Saving is only offered with unsaved changes, and rearranging is a change.
         self._flow.on("node_moved", lambda _payload: self._mark_rearranged())
         self._tile_grid.param.watch(self._on_tile_layout_edited, "layout")
@@ -2039,7 +2209,7 @@ class FlowDash(Viewer):
         """Load a dashboard's stored settings, falling back to defaults for the rest."""
         # A fresh instance doubles as the validator, so a bad stored value falls back
         # to its default instead of keeping the previous dashboard's value.
-        fresh = self.settings_class()
+        fresh = self.settings_class(tile_cards=self.tile_cards, tile_titles=self.tile_titles)
         for name, value in (stored or {}).items():
             if name not in self._settings_names:
                 logger.debug("Ignoring unknown dashboard setting '%s'", name)

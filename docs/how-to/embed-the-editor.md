@@ -192,7 +192,7 @@ per-dashboard permissions.
 
 ## Inspecting outputs
 
-On the wiring canvas, clicking or hovering a port opens a popup with the value it currently carries. A viewer of a dashboard has no canvas, which is when someone asks where a number comes from. Set `inspect_outputs=True` to give each tile in the dashboard grid a small info button in its top-right corner:
+On the wiring canvas, clicking or hovering a port opens a popup with the value it currently carries. A viewer of a dashboard has no canvas, which is when someone asks where a number comes from. Set `inspect_outputs=True` to give each tile in the dashboard grid an Inspect action next to its Expand action. Unless the dashboard shows [tile titles](dashboard-settings.md), the actions float over the tile's top-right corner on hover or keyboard focus and take no space:
 
 ```python
 editor = FlowDash(
@@ -204,7 +204,7 @@ In a `FlowDashApp`, pass it through `editor_options={"inspect_outputs": True}`. 
 
 The dialog shows values the tile itself may not display, such as the full DataFrame behind a chart, so by default only people who may edit the dashboard get the button. The editor treats a `read_only` session as a viewer and hides the button there; `FlowDashApp` sets `read_only` for everyone who is not the owner, an editor or an administrator of the dashboard (see [Manage Permissions](manage-permissions.md)). To open inspection to viewers of one dashboard, turn on its **Viewers can inspect outputs** setting, `settings.viewers_can_inspect`, which is saved with the dashboard like any other [setting](dashboard-settings.md). A standalone `FlowDash` that is not `read_only` shows the button to everyone who sees it.
 
-The button appears on tiles whose component has at least one output port, and opens one dialog per editor, titled with the component's title. The dialog lists every output with its label, type and current value. The values are read when the button is clicked, so the dialog is a snapshot; click again to refresh it. Values are rendered exactly as in the port popups: through `value_repr` when you set one, otherwise as a table preview for a DataFrame, as JSON for other values, and as a placeholder when nothing has been published yet.
+The action appears on tiles whose component has at least one output port, and opens a side sheet on the right, titled with the tile's title. On a wide screen the dashboard makes room for the sheet, so the tile being inspected stays in view; on a phone the sheet covers the screen. The sheet has one tab per output with its status (computed, failed or no value yet), type, shape, the tiles it feeds and where the component's inputs come from. A DataFrame shows its columns with their dtypes and its first 10 rows and 8 columns, never the whole frame, with Download CSV for the full frame and Copy as Python for the first rows. Other values are rendered as in the port popups, as JSON, and every value goes through `value_repr` instead when you set one. The values are read when the action is used, so the sheet is a snapshot; inspect again to refresh it.
 
 ```python
 editor = FlowDash(
@@ -214,7 +214,9 @@ editor = FlowDash(
 )
 ```
 
-The button is hidden while tiles are being arranged, because it would sit under the tile's close handle, and shown in view mode and in preview. Edit mode keeps its port popups. Components marked `sidebar=True` are not tiles and get no button. A tile still showing its placeholder because a required input is missing keeps its button, and the dialog then starts with a note naming the inputs it is waiting for.
+The actions are hidden while tiles are being arranged, where the grid draws its own handles, and shown in view mode and in preview. Edit mode keeps its port popups. Components marked `sidebar=True` are not tiles and get no action. A tile still showing its placeholder because a required input is missing keeps the action, and the sheet then starts with a note naming the inputs it is waiting for.
+
+A tile's More menu offers Show in editor, as does the message on a tile that could not update; the menu only appears when it has an entry. Set `show_in_editor` to a callable taking the tile's instance id, for example one that switches your page to edit mode. The action is offered in view mode while `show_in_editor` is set and `read_only` is False.
 
 ### Explaining an output
 
@@ -238,7 +240,7 @@ class Total(pn.viewable.Viewer):
         ...
 ```
 
-The hook is called once per output port while the dialog is built, on the live component instance. Return anything `pn.panel` accepts, or `None` for an output you have nothing to add to. The result is shown below the value, which always stays visible. If the hook raises, the error is logged and a short error line replaces the explanation for that output, without affecting the others. Function components have no instance and so no hook.
+The hook is called once per output port while the sheet is built, on the live component instance. Return anything `pn.panel` accepts, or `None` for an output you have nothing to add to. The result is shown below the value, which always stays visible. If the hook raises, the error is logged and a short error line replaces the explanation for that output, without affecting the others. Function components have no instance and so no hook.
 
 ---
 
