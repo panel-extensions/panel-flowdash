@@ -72,6 +72,16 @@ python = "3.13.*"
 [feature.py314.dependencies]
 python = "3.14.*"
 
+# Carrying failures along edges needs param >= 2.5, which is only on the dev label so far.
+[feature.param-dev]
+channels = [{ channel = "pyviz/label/dev", priority = -1 }]
+
+[feature.param-dev.dependencies]
+param = { version = ">=2.5.0b5", channel = "pyviz/label/dev" }
+
+[feature.param-dev.pypi-options]
+prerelease-mode = "allow"
+
 [feature.test-ui]
 channels = ["microsoft"]
 
@@ -106,6 +116,7 @@ test-311 = ["py311", "test"]
 test-312 = ["py312", "test"]
 test-313 = ["py313", "test"]
 test-314 = ["py314", "test"]
+test-param-dev = ["py314", "test", "param-dev"]
 test-ui = ["py312", "test", "test-ui"]
 docs = ["docs"]
 build = ["build"]

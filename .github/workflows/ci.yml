@@ -6,6 +6,24 @@ on:
   push:
     branches:
       - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Test matrix to run"
+        type: choice
+        options:
+          - default
+          - full
+          - downstream
+        default: full
+      cache:
+        description: "Use the pixi lock cache"
+        type: boolean
+        default: true
+  schedule:
+    - cron: "0 3 * * 1"
 
 permissions: {}
 
@@ -24,16 +42,18 @@ jobs:
     permissions:
       pull-requests: read
     outputs:
-      code_change: ${{ steps.filter.outputs.code }}
-      img_change: ${{ steps.filter.outputs.img }}
+      # Scheduled, manual and tag runs skip the filter and test everything.
+      code_change: ${{ steps.filter.outputs.code || 'true' }}
+      img_change: ${{ steps.filter.outputs.img || 'false' }}
       matrix: ${{ env.MATRIX }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        if: github.event_name != 'pull_request'
+        if: github.event_name == 'push' && github.ref_type == 'branch'
         with:
           persist-credentials: false
       - name: Check for code changes
         uses: dorny/paths-filter@fbd0ab8f3e69293af611ebaee6363fc25e6d187d # v4
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref_type == 'branch')
         id: filter
         with:
           filters: |
@@ -64,7 +84,8 @@ jobs:
         run: |
           MATRIX=$(jq -nsc '{
               "os": ["ubuntu-latest", "macos-latest", "windows-latest"],
-              "environment": ["test-311", "test-314"],
+              "environment": ["test-310", "test-314"],
+              "include": [{"os": "ubuntu-latest", "environment": "test-param-dev"}]
           }')
           echo "MATRIX=$MATRIX" >> $GITHUB_ENV
       - name: Set test matrix with 'full' option
@@ -72,7 +93,8 @@ jobs:
         run: |
           MATRIX=$(jq -nsc '{
               "os": ["ubuntu-latest", "macos-latest", "windows-latest"],
-              "environment": ["test-310", "test-311", "test-312", "test-313", "test-314"]
+              "environment": ["test-310", "test-311", "test-312", "test-313", "test-314"],
+              "include": [{"os": "ubuntu-latest", "environment": "test-param-dev"}]
           }')
           echo "MATRIX=$MATRIX" >> $GITHUB_ENV
       - name: Set test matrix with 'downstream' option
@@ -133,6 +155,7 @@ jobs:
       - name: Run pytest
         env:
           ENV: ${{ matrix.environment }}
+          FLOWDASH_REQUIRE_FAILURES: ${{ matrix.environment == 'test-param-dev' && '1' || '' }}
         run: pixi run -e "${ENV}" test-coverage --color=yes
 
   pytest_ui:

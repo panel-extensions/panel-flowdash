@@ -3210,7 +3210,9 @@ class TestFailurePropagation:
         src, dst = self._chain(editor)
         editor.graph.get_state(src).value = 0
         shown = []
-        editor._show_inspection = lambda key, title, value, position, flow: shown.append(value)
+        editor._show_inspection = lambda key, title, value, position, flow, **kw: shown.append(
+            value
+        )
 
         editor._on_handle_clicked(
             {
