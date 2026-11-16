@@ -34,6 +34,7 @@ from panel_flowdash.ui.status_bar import (
     connection_title,
     select_on_canvas,
 )
+from panel_flowdash.ui.tile_layout import tile_entry, update_tile
 
 if t.TYPE_CHECKING:
     from panel.viewable import Viewable
@@ -89,31 +90,6 @@ def _avatar(icon: str) -> pn.pane.HTML:
         margin=(2, 12, 0, 0),
         stylesheets=[_ICON_CSS],
     )
-
-
-def tile_entry(editor, instance_id: str) -> dict:
-    """Return the tile layout entry of a component, empty if it has none yet."""
-    layout = editor._pending_tile_layout or editor.layout
-    return next((dict(e) for e in layout if e.get("instance_id") == instance_id), {})
-
-
-def update_tile(editor, instance_id: str, **patch):
-    """Change how a component's tile is laid out, e.g. ``visible``, ``width`` or ``height``.
-
-    Works whether or not the tile grid is on screen: the grid is rebuilt from
-    the updated layout, which is what is saved.
-    """
-    layout = [dict(e) for e in (editor._pending_tile_layout or editor.layout)]
-    entry = next((e for e in layout if e.get("instance_id") == instance_id), None)
-    if entry is None:
-        entry = {"instance_id": instance_id}
-        layout.append(entry)
-    entry.update(patch)
-    for key in [k for k, v in patch.items() if v is None]:
-        del entry[key]
-    editor._pending_tile_layout = layout
-    editor._rebuild_tile_grid()
-    editor.dirty = True
 
 
 class Inspector(Viewer):

@@ -78,6 +78,7 @@ from panel_flowdash.ui.inspect_sheet import (
     value_status,
 )
 from panel_flowdash.ui.inspector import Inspector
+from panel_flowdash.ui.layout_panel import GRID_EDIT_CSS, LayoutPanel
 from panel_flowdash.ui.node_card import node_card, placeholder_card
 from panel_flowdash.ui.palette import ComponentPalette, palette_entry, palette_items
 from panel_flowdash.ui.settings_dialog import SettingsDialog
@@ -1996,6 +1997,7 @@ class FlowDash(Viewer):
         self._empty_hint = self._start_card.__panel__()
         self._workspace_area = pn.Column(sizing_mode="stretch_both", scroll="y-auto")
         self._inspector = Inspector(editor=self)
+        self._layout_panel = LayoutPanel(editor=self)
         self._status_bar = StatusBar(editor=self)
 
         self._sync_toolbar_extra()
@@ -2004,7 +2006,14 @@ class FlowDash(Viewer):
         return pn.Column(
             bar,
             pn.Row(
-                self._side_panel, self._workspace_area, self._inspector, sizing_mode="stretch_both"
+                self._side_panel,
+                self._workspace_area,
+                # One slot: a row counts the width of hidden children, and only
+                # one of the two panels is shown at a time.
+                pn.Column(
+                    self._inspector, self._layout_panel, margin=0, sizing_mode="stretch_height"
+                ),
+                sizing_mode="stretch_both",
             ),
             self._status_bar,
             sizing_mode="stretch_both",
@@ -2102,6 +2111,7 @@ class FlowDash(Viewer):
                 local_save=False,
                 min_height=320,
                 sizing_mode="stretch_both",
+                stylesheets=[GRID_EDIT_CSS],
             )
             self._tile__grid.param.watch(self._on_tile_layout, "layout")
         return self._tile__grid
@@ -2172,7 +2182,9 @@ class FlowDash(Viewer):
         self._dashboard_bar.visible = self.toolbar
         self._dashboard_bar.sync()
         self._side_panel.visible = not showing_grid
-        self._inspector.visible = self._status_bar.visible = not showing_grid
+        self._inspector.visible = not showing_grid
+        self._layout_panel.visible = interactive and showing_grid
+        self._status_bar.visible = self.editable
         self._tile_grid.param.update(editable=interactive, card=interactive)
         # Column children rather than Row children, so the dialogs take no flex space.
         dialogs = [self._clear_dialog, self._import_dialog, self._settings_dialog]

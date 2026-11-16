@@ -232,10 +232,11 @@ class TestInspector:
     async def test_shown_beside_the_canvas_only_while_editing_the_dataflow(self, editor):
         assert editor._inspector.visible and editor._status_bar.visible
         editor.mode = "dashboard"
-        assert not editor._inspector.visible and not editor._status_bar.visible
+        # The status bar stays and describes the tile grid in the Layout tab.
+        assert not editor._inspector.visible and editor._status_bar.visible
         editor.mode = "wiring"
         editor.editable = False
-        assert not editor._inspector.visible
+        assert not editor._inspector.visible and not editor._status_bar.visible
 
     async def test_summary_without_a_selection(self, editor):
         editor.add_component(TABLE)
