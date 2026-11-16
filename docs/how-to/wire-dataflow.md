@@ -169,10 +169,15 @@ say so. For dashboards where stale data is worse than no data, switch on failure
 propagation:
 
 ```python
-from panel_flowdash import FlowDash, FlowDashApp
+from panel_flowdash import DashboardStore, FlowDash
+from panel_flowdash.app import FlowDashApp
 
 editor = FlowDash(components, propagate_failures=True)
-app = FlowDashApp(project_dir="my_project", propagate_failures=True)
+app = FlowDashApp(
+    project_dir="my_project",
+    store=DashboardStore("my_project/dashboards.db"),
+    propagate_failures=True,
+)
 ```
 
 `DataflowGraph(specs, propagate_failures=True)` does the same for the engine on

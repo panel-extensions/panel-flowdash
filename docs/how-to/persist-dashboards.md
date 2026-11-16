@@ -112,6 +112,9 @@ edge = DashboardEdge(
 )
 ```
 
+An edge that reshapes its value also carries a `transform`, the list of steps it
+applies. See [Transform Edges](transform-edges.md#how-transforms-are-stored).
+
 ### DashboardModel
 
 The complete dashboard:

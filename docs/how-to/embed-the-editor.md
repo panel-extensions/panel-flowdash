@@ -195,7 +195,9 @@ per-dashboard permissions.
 On the wiring canvas, clicking or hovering a port opens a popup with the value it currently carries. A viewer of a dashboard has no canvas, which is when someone asks where a number comes from. Set `inspect_outputs=True` to give each tile in the dashboard grid a small info button in its top-right corner:
 
 ```python
-editor = FlowDash(components, dashboard="Sales Overview", editable=False, inspect_outputs=True)
+editor = FlowDash(
+    components, store="dashboards.db", dashboard="Sales Overview", editable=False, inspect_outputs=True
+)
 ```
 
 In a `FlowDashApp`, pass it through `editor_options={"inspect_outputs": True}`. It is off by default, so existing dashboards look the same.
@@ -306,10 +308,12 @@ dashboard. Pass any `FlowDash` parameter to it through `editor_options`, the
 editor counterpart of `page_options`:
 
 ```python
+from panel_flowdash import DashboardStore
 from panel_flowdash.app import FlowDashApp
 
 app = FlowDashApp(
     project_dir="my_project",
+    store=DashboardStore("my_project/dashboards.db"),
     editor_options={"value_repr": summarize, "popup_trigger": "click"},
 )
 ```
@@ -336,7 +340,7 @@ To substitute your own editor, subclass `FlowDash` and pass it as
 `editor_class`; `editor_options` is then passed to that class:
 
 ```python
-from panel_flowdash import FlowDash
+from panel_flowdash import DashboardStore, FlowDash
 from panel_flowdash.app import FlowDashApp
 
 
@@ -344,7 +348,11 @@ class MyFlowDash(FlowDash):
     ...
 
 
-app = FlowDashApp(project_dir="my_project", editor_class=MyFlowDash)
+app = FlowDashApp(
+    project_dir="my_project",
+    store=DashboardStore("my_project/dashboards.db"),
+    editor_class=MyFlowDash,
+)
 ```
 
 A project served with `flowdash serve` sets `editor_class` and `editor_options`

@@ -35,7 +35,10 @@ from panel_flowdash import register
 )
 def app(config):
     import panel_material_ui as pmui
-    return pmui.Select(name="Company", options=["ACME", "Globex", "Initech"])
+
+    select = pmui.Select(label="Company", options=["ACME", "Globex", "Initech"])
+    config.company = select.param.value
+    return select
 ```
 
 ```python title="Analytics/chart.py"
@@ -49,13 +52,25 @@ from panel_flowdash import register
 )
 def app(config):
     import panel as pn
-    company = config.get("company", "...")
-    return pn.pane.Markdown(f"## Revenue chart for {company}")
+
+    def title(company):
+        return f"## Revenue chart for {company}"
+
+    return pn.pane.Markdown(pn.bind(title, config.param.company))
 ```
 
 The `provides` list declares output ports and `requires` declares input ports.
-When wired together, changing the selector's output automatically updates the
-chart's input.
+Each placed component gets its own `config` object, a `param.Parameterized`
+with one parameter per port. A component publishes an output by assigning to
+it: assigning the widget's `value` parameter, rather than its current value,
+keeps the output following the selection. An input is read the same way, here
+through `config.param.company` so the Markdown updates whenever a new value
+arrives. When the two are wired together, picking a company in the selector
+updates the chart.
+
+Until the chart's `company` input receives a value its tile shows a "Waiting
+for company" placeholder, because inputs are required by default. See
+[Define Ports](how-to/define-ports.md) for optional inputs and fallbacks.
 
 ## Serve
 
@@ -64,7 +79,28 @@ flowdash serve my_project/
 ```
 
 This scans `my_project/`, discovers the two components, builds the application,
-and serves it on port 5006. Open `http://localhost:5006` in your browser.
+and serves it on port 5006. Open `http://localhost:5006` in your browser,
+create a dashboard, drop both components onto the wiring canvas and drag from
+the selector's `company` output to the chart's `company` input.
+
+## Wire it in Python
+
+The same dashboard can be built without the browser, which is also how you
+would test it. `FlowDash` scans the project the way `flowdash serve` does:
+
+```python
+from panel_flowdash import FlowDash, MemoryDashboardStore
+
+editor = FlowDash("my_project", store=MemoryDashboardStore())
+selector = editor.add_component("Analytics/selector")
+chart = editor.add_component("Analytics/chart")
+assert editor.connect(selector, "company", chart, "company") is True
+
+assert editor.graph.get_state(chart).company == "ACME"
+```
+
+See [Embed the Editor](how-to/embed-the-editor.md) for everything the editor
+can do from code.
 
 ## What happens under the hood
 
