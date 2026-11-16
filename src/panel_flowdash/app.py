@@ -278,7 +278,11 @@ class FlowDashApp(Viewer):
             "sidebar_open": False,
             "sidebar": self.param.sidebar.rx() + [self._sidebar_container],  # noqa: RUF005
             "contextbar": self.param.contextbar.rx(),
-            "contextbar_variant": "persistent",
+            # A persistent contextbar reserves its width even while empty, which
+            # pushes the main area past the viewport when the sidebar is open.
+            "contextbar_variant": param.bind(
+                lambda items: "persistent" if items else "temporary", self.param.contextbar
+            ),
             "contextbar_open": self.param.contextbar_open,
             **self.page_options,
         }

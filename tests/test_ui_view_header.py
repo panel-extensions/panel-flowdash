@@ -500,3 +500,13 @@ class TestApp:
         assert editor.editable
         assert editor.mode == "wiring"
         assert pn.state.location.search == "?edit=true"
+
+    async def test_contextbar_only_reserves_space_when_configured(self, make_app):
+        app = await make_app()
+        assert app._page.contextbar_variant == "temporary"
+        app.contextbar = [pn.pane.Markdown("Assistant")]
+        assert app._page.contextbar_variant == "persistent"
+        app.contextbar = []
+        assert app._page.contextbar_variant == "temporary"
+        configured = await make_app(page_options={"contextbar_variant": "persistent"})
+        assert configured._page.contextbar_variant == "persistent"
