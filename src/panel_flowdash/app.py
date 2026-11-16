@@ -23,6 +23,7 @@ from panel_flowdash.auth import (
     AuthConfig,
     Permission,
     entry_authorized,
+    is_authorized,
     resolve_identity,
 )
 from panel_flowdash.dashboard_store import (
@@ -123,7 +124,7 @@ class FlowDashApp(Viewer):
         the defaults the app derives from its own parameters (such as
         `breakpoints` and `notifications`), and `toolbar_extra` items are
         placed after the app's Share button. `authorize_component`,
-        `components`, `store`, `user` and `include_page_dialog` are supplied
+        `authorize_dashboard`, `components`, `store`, `user` and `include_page_dialog` are supplied
         by the app and raise a ValueError if given here.
         `dashboard`, `editable` and `read_only` are accepted but then managed
         by the app's routing and authorization. Read once at construction;
@@ -213,6 +214,7 @@ class FlowDashApp(Viewer):
 
     _RESERVED_EDITOR_OPTIONS = (
         "authorize_component",
+        "authorize_dashboard",
         "components",
         "include_page_dialog",
         "store",
@@ -527,6 +529,21 @@ class FlowDashApp(Viewer):
             return self.store.can_edit_model(self._identity, dashboard, self._admin_groups())
         return self.store.can_edit(self._identity, dashboard, self._admin_groups())
 
+    def _authorize_dashboard(self, dashboard: DashboardModel, access: str) -> bool:
+        """Whether the current identity may still view or edit the stored *dashboard*.
+
+        The editor asks before every save, reload and discard, so sharing
+        changes made from another session apply to an open dashboard.
+        """
+        if access == "edit":
+            return self._can_edit_dashboard(dashboard)
+        return is_authorized(
+            dashboard.permission,
+            self._identity,
+            default_allow=self._default_allow(),
+            owner=dashboard.owner,
+        )
+
     def _access_denied_view(self, title: str | None = None, owner: str | None = None):
         """Generate the view shown when the user is not authorized for the target.
 
@@ -543,11 +560,14 @@ class FlowDashApp(Viewer):
     def _missing_dashboard_view(self, dashboard_id: str):
         """Explain why *dashboard_id* cannot be shown: it does not exist, or it is not shared.
 
-        The id is random, so only someone given a link learns that a dashboard
-        exists. They are told who owns it, to ask for access, but not its title
-        or contents.
+        When the store's ids are random, only someone given a link learns that
+        a dashboard exists, so they are told who owns it, to ask for access,
+        but not its title or contents. When ids can be guessed (see
+        `BaseDashboardStore.random_ids`), a dashboard the user may not open
+        gets the same not-found page as a missing id, so guessing a title
+        reveals nothing.
         """
-        owner = self.store.get_owner(dashboard_id)
+        owner = self.store.get_owner(dashboard_id) if self.store.random_ids else None
         if owner is not None:
             return self._access_denied_view(owner=owner)
         accessible = self.store.list_accessible(
@@ -651,6 +671,7 @@ class FlowDashApp(Viewer):
         toolbar_extra = [self._share_button, *(options.pop("toolbar_extra", None) or [])]
         editor = self.editor_class(
             authorize_component=self._can_use_component,
+            authorize_dashboard=self._authorize_dashboard,
             components=self._registry,
             include_page_dialog=False,
             store=self.store,
@@ -753,21 +774,17 @@ class FlowDashApp(Viewer):
         await self._editor.ensure_components_loaded_async(component_ids)
 
     def _save_current_dashboard(self) -> bool:
-        """Save the loaded dashboard, refusing when the user only has read access.
+        """Save the loaded dashboard, returning whether it was saved.
 
-        Returns whether the dashboard was saved.
+        The editor checks edit access against the stored dashboard's current
+        sharing rules (see `_authorize_dashboard`), the same check as the
+        dashboard bar's Save and the settings dialog's auto-save.
         """
-        current = self._current_dashboard
-        if current is None:
+        if self._current_dashboard is None:
             self._notify(
                 "warning", "No dashboard loaded. Create one from the sidebar.", duration=4000
             )
             return False
-        if not self._can_edit_dashboard(current.dashboard_id):
-            self._editor.read_only = True
-            self._notify("error", "You have view-only access to this dashboard.", duration=4000)
-            return False
-        self._editor.read_only = False
         return self._editor._on_save_clicked()
 
     def _share_current_dashboard(self):
@@ -1164,20 +1181,44 @@ class FlowDashApp(Viewer):
         {"label": "Download as file", "icon": "download"},
     )
 
-    def _dashboard_actions(self, can_admin: bool, can_edit: bool = False) -> tuple:
+    def _dashboard_actions(
+        self, can_admin: bool, can_edit: bool = False, can_copy: bool = True
+    ) -> tuple:
         """Menu actions for a dashboard, gated by administration and edit rights.
 
         An editor gets ``_EDITOR_DASHBOARD_ACTIONS`` followed by the viewer
-        actions it does not already have.
+        actions it does not already have. A viewer gets no actions when
+        *can_copy* is false, see :meth:`_can_copy_dashboard`.
         """
         if can_admin:
             return self._ADMIN_DASHBOARD_ACTIONS
         if not can_edit:
-            return self._VIEWER_DASHBOARD_ACTIONS
+            return self._VIEWER_DASHBOARD_ACTIONS if can_copy else ()
         keys = {self._action_key(action) for action in self._EDITOR_DASHBOARD_ACTIONS}
         return (
             *self._EDITOR_DASHBOARD_ACTIONS,
             *(a for a in self._VIEWER_DASHBOARD_ACTIONS if self._action_key(a) not in keys),
+        )
+
+    def _dashboard_menu_actions(self, dashboard: DashboardModel) -> tuple:
+        """Return the :meth:`_dashboard_actions` the current identity gets for *dashboard*."""
+        return self._dashboard_actions(
+            *self._dashboard_rights(dashboard), can_copy=self._can_copy_dashboard(dashboard)
+        )
+
+    def _can_copy_dashboard(self, dashboard: DashboardModel) -> bool:
+        """Whether the current identity may duplicate or download *dashboard*.
+
+        A copy is the copier's own dashboard, with full edit and inspect
+        rights, so a viewer may only take one when the dashboard does not hide
+        its outputs from viewers: either output inspection is off in this app
+        or the dashboard's ``viewers_can_inspect`` setting allows it. Editors
+        and administrators may always copy.
+        """
+        if self._can_edit_dashboard(dashboard):
+            return True
+        return not self._editor.inspect_outputs or bool(
+            dashboard.settings.get("viewers_can_inspect", False)
         )
 
     @staticmethod
@@ -1197,7 +1238,7 @@ class FlowDashApp(Viewer):
                 "path": f"{DASH_ROUTE_PREFIX}{d.dashboard_id}",
                 "disable_link": True,
             }
-            actions = self._dashboard_actions(*self._dashboard_rights(d))
+            actions = self._dashboard_menu_actions(d)
             if actions:
                 item["actions"] = list(actions)
             items.append(item)
@@ -1255,9 +1296,21 @@ class FlowDashApp(Viewer):
             self._notify("error", "The dashboard no longer exists or is not shared with you.")
         return model
 
+    def _copyable_dashboard(self, dashboard_id: str) -> DashboardModel | None:
+        """Load a dashboard the current identity may copy, or notify why it may not."""
+        model = self._readable_dashboard(dashboard_id)
+        if model is not None and not self._can_copy_dashboard(model):
+            self._notify(
+                "error",
+                "Only people who can edit this dashboard may duplicate or download it.",
+                duration=4000,
+            )
+            return None
+        return model
+
     def _duplicate_dashboard(self, dashboard_id: str) -> DashboardModel | None:
         """Copy a dashboard as "<title> copy", owned by the current user and not shared."""
-        source = self._readable_dashboard(dashboard_id)
+        source = self._copyable_dashboard(dashboard_id)
         if source is None:
             return None
         title = unique_title(self.store, self._user_id, f"{source.title} copy")
@@ -1272,7 +1325,7 @@ class FlowDashApp(Viewer):
 
     def _download_dashboard(self, dashboard_id: str) -> bool:
         """Download the saved dashboard as the file the editor's Download button writes."""
-        model = self._readable_dashboard(dashboard_id)
+        model = self._copyable_dashboard(dashboard_id)
         if model is None:
             return False
         send_download(self._downloader, model)
@@ -1792,7 +1845,7 @@ class FlowDashApp(Viewer):
         for d in dashboards:
             path = f"{DASH_ROUTE_PREFIX}{d.dashboard_id}"
             entries = [{"label": "Open", "icon": "open_in_new", "path": path}]
-            for action in self._dashboard_actions(*self._dashboard_rights(d)):
+            for action in self._dashboard_menu_actions(d):
                 entries.append(
                     {
                         **{key: action[key] for key in ("label", "icon") if key in action},
