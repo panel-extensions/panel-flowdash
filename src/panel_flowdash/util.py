@@ -18,6 +18,7 @@ from panel_flowdash.ui.waiting import WaitingPlaceholder
 
 if t.TYPE_CHECKING:
     from collections.abc import Callable
+    from contextlib import AbstractContextManager
 
     from bokeh.document import Document
     from panel.viewable import Viewable
@@ -102,6 +103,70 @@ def panel_call(app: Callable, /, **kwargs) -> Viewable:
         # un-awaited, so hand it to Panel to resolve on the event loop.
         return pn.panel(_as_deferred(result))
     return pn.panel(result)
+
+
+class _Stepped:
+    """Await *awaitable*, running each of its synchronous steps inside ``step()``.
+
+    A coroutine only runs between two suspensions, so wrapping every
+    ``send``/``throw`` attributes exactly the code of this coroutine to the
+    context, never that of other tasks interleaved at its awaits.
+    """
+
+    def __init__(self, awaitable, step: Callable[[], AbstractContextManager]):
+        self._awaitable = awaitable
+        self._step = step
+
+    def __await__(self):
+        inner = self._awaitable.__await__()
+        value, error = None, None
+        while True:
+            with self._step():
+                try:
+                    yielded = inner.throw(error) if error is not None else inner.send(value)
+                except StopIteration as stop:
+                    return stop.value
+            value, error = None, None
+            try:
+                value = yield yielded
+            except GeneratorExit:
+                inner.close()
+                raise
+            except BaseException as exc:
+                error = exc
+
+
+def stepped(app: Callable, step: Callable[[], AbstractContextManager]) -> Callable:
+    """Wrap an async component callable so its body runs step by step inside ``step()``.
+
+    Both the coroutine and the async generator forms are supported and the
+    wrapper keeps the form, so ``panel_call`` still defers it to render time.
+    Any other callable is returned unchanged.
+    """
+    if is_async_gen(app):
+
+        async def gen_wrapper(**kwargs):
+            agen = app(**kwargs)
+            try:
+                while True:
+                    try:
+                        item = await _Stepped(agen.__anext__(), step)
+                    except StopAsyncIteration:
+                        return
+                    yield item
+            finally:
+                await _Stepped(agen.aclose(), step)
+
+        return gen_wrapper
+
+    if is_coroutine(app):
+
+        async def wrapper(**kwargs):
+            return await _Stepped(app(**kwargs), step)
+
+        return wrapper
+
+    return app
 
 
 def _as_deferred(awaitable) -> Callable:
