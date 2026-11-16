@@ -97,8 +97,11 @@ class TestItems:
 
     async def test_groups_come_in_order(self, app):
         _open(app, components=[SELECTOR])
+        editor = app._editor
+        instance_id = editor._tile_items[0]["instance_id"]
+        editor._inspect_tiles[instance_id] = SimpleNamespace(expand=lambda: None)
         groups = list(dict.fromkeys(i["group"] for i in app._command_palette.items()))
-        assert groups == ["Dashboards", "Components", "Actions"]
+        assert groups == ["Dashboards", "Components", "On this dashboard", "Actions"]
 
     async def test_view_mode(self, app):
         model = _open(app)
@@ -165,7 +168,8 @@ class TestItems:
         editor.inspect_outputs = True
         selector = next(i for i in editor._tile_items if i["component_id"] == SELECTOR)
         editor._grid_view(selector, editor._tile_objects[0])
-        items = [i for i in app._command_palette.items() if i["group"] == "On this dashboard"]
+        # Framed tiles also offer Expand; this test is about Inspect only.
+        items = [i for i in app._command_palette.items() if i["id"].startswith("inspect:")]
         assert [i["id"] for i in items] == [f"inspect:{selector['instance_id']}"]
         assert items[0]["title"] == "Inspect selector"
 
