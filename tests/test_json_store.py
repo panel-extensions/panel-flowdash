@@ -163,6 +163,21 @@ class TestIds:
             assert store.load_dashboard("u", "claimed") is None
         assert not caplog.records
 
+    def test_a_stale_empty_file_is_reported_once(self, tmp_path, caplog, monkeypatch):
+        import panel_flowdash.json_store as json_store
+
+        (tmp_path / "orphan.json").touch()
+        store = JSONFolderDashboardStore(tmp_path)
+        with caplog.at_level(logging.WARNING, logger="panel_flowdash.json_store"):
+            assert store.list_dashboards("u") == []
+            assert not caplog.records
+            now = json_store.time.time_ns()
+            monkeypatch.setattr(json_store.time, "time_ns", lambda: now + 10_000_000_000)
+            for _ in range(2):
+                assert store.list_dashboards("u") == []
+        assert len(caplog.records) == 1
+        assert "orphan" in caplog.text
+
     def test_save_refuses_to_replace_another_users_dashboard(self, tmp_path):
         store = JSONFolderDashboardStore(tmp_path)
         store.save_dashboard(DashboardModel(dashboard_id="d1", user_id="alice", title="Mine"))

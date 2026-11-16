@@ -31,6 +31,10 @@ _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\Z")
 _REPLACE_TRIES = 5
 _REPLACE_PAUSE = 0.02
 
+# An empty <id>.json older than this is a reservation whose writer crashed before
+# filling it in (see ``_claim``); it holds the id until someone removes it.
+_STALE_RESERVATION_NS = 5_000_000_000
+
 
 class _ReadOnlyError(DashboardStoreError, PermissionError):
     pass
@@ -119,6 +123,13 @@ class JSONFolderDashboardStore(BaseDashboardStore):
             self.path.mkdir(parents=True, exist_ok=True)
 
     def save_dashboard(self, dashboard: DashboardModel) -> None:
+        """Write *dashboard*, refusing to replace a file another user owns.
+
+        The owner check and the write are not one atomic step, so a concurrent
+        writer could slip in between. That is acceptable because ids are not
+        chosen by users on save: they come from ``create_dashboard``, which
+        claims them exclusively.
+        """
         self._check_writable()
         if not _SAFE_ID.match(dashboard.dashboard_id):
             raise ValueError(
@@ -165,7 +176,8 @@ class JSONFolderDashboardStore(BaseDashboardStore):
                 hit = previous.get(path)
                 cache[path] = (
                     hit
-                    if hit is not None and hit[0] == key
+                    # Empty files are re-checked so a stale reservation gets reported.
+                    if hit is not None and hit[0] == key and stat.st_size
                     else (key, self._parse(path, stat.st_mtime_ns, size=stat.st_size))
                 )
             except OSError:
@@ -235,7 +247,16 @@ class JSONFolderDashboardStore(BaseDashboardStore):
         what may be a passing failure.
         """
         if size == 0:
-            # Only seen while another process claims an id without hard links.
+            # Only seen while another process claims an id without hard links,
+            # unless that process died before filling the file in.
+            if time.time_ns() - mtime > _STALE_RESERVATION_NS:
+                self._warn_once(
+                    path,
+                    mtime,
+                    "Skipping dashboard file %s: it is empty, likely left by a writer that "
+                    "crashed while creating it; delete it to free the id %r",
+                    path.stem,
+                )
             return None
         data = path.read_bytes()
         try:
