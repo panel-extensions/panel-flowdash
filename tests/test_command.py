@@ -479,7 +479,7 @@ class _CountingStore(MemoryDashboardStore):
 
 class TestDashboardListings:
     @pytest.fixture
-    def app(self, tmp_path):
+    async def app(self, tmp_path):
         _create_project(tmp_path)
         store = _CountingStore()
         for n in range(5):
@@ -488,7 +488,7 @@ class TestDashboardListings:
         store.loads = 0
         return app
 
-    def test_menus_check_admin_rights_without_reloading_each_dashboard(self, app):
+    async def test_menus_check_admin_rights_without_reloading_each_dashboard(self, app):
         items = app._get_dashboard_menu_items()
         app._build_menu_bar_items()
         app._build_launcher()
@@ -496,7 +496,7 @@ class TestDashboardListings:
         assert len([item for item in items if item["label"].startswith("Dash")]) == 5
         assert app.store.loads == 0
 
-    def test_menus_follow_the_stores_admin_rule(self, app):
+    async def test_menus_follow_the_stores_admin_rule(self, app):
         app.store.can_administer_model = lambda identity, dashboard, admin_groups: False
         items = app._get_dashboard_menu_items()
         viewer_actions = list(app._dashboard_actions(False))
