@@ -8,7 +8,7 @@ import param
 from panel_flowdash import register
 
 
-@register(component=True, sidebar=True, title="Wind Turbines Source")
+@register(component=True, sidebar=True, title="Wind Turbines Source", tags=["data source"])
 class app(pn.viewable.Viewer):
     """Loads wind turbines data from the HoloViz datasets."""
 
