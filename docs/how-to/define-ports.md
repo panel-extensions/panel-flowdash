@@ -275,8 +275,11 @@ runtime check alone.
 
 ### Registering your own types
 
-Use `register_port_type` to add spellings and subtype rules for your own types,
-typically next to the components that use them:
+Use `register_port_type` to add spellings and subtype rules for your own types.
+Call it in the project's `__init__.py`, which `flowdash serve` runs before any
+component is loaded. A section package or component module is only imported
+once one of its components is placed, so a type registered there is unknown to
+connections made before that, and they are refused:
 
 ```python
 from panel_flowdash import register_port_type

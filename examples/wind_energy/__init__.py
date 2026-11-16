@@ -6,7 +6,13 @@ from pathlib import Path
 import panel as pn
 import param
 
-from panel_flowdash import DashboardModel, DashboardSettings, DashboardStore, resolve_identity
+from panel_flowdash import (
+    DashboardModel,
+    DashboardSettings,
+    DashboardStore,
+    register_port_type,
+    resolve_identity,
+)
 
 pn.extension("tabulator", "vega", "deckgl")
 
@@ -14,6 +20,13 @@ log = logging.getLogger(__name__)
 
 PROJECT_DIR = Path(__file__).parent
 SEED_DIR = PROJECT_DIR / "_dashboards"
+
+# A turbine table feeds any DataFrame input, but only a turbine table feeds an
+# input typed "Turbines", and the population table only feeds "StatePopulation".
+# Registered here, before any component is loaded: in a section package the types
+# would only exist once a component of that section was placed.
+register_port_type("Turbines", subtype_of=["DataFrame"])
+register_port_type("StatePopulation", subtype_of=["DataFrame"])
 
 
 class WindSettings(DashboardSettings):
