@@ -51,6 +51,7 @@ class PanelAppMetadata:
     config_schema: Any = None
     config: list[str] = field(default_factory=list)
     config_editor: Callable | None = None
+    handles_failures: list[str] = field(default_factory=list)
     allow_users: list[str] = field(default_factory=list)
     allow_groups: list[str] = field(default_factory=list)
     deny_users: list[str] = field(default_factory=list)
@@ -113,6 +114,7 @@ def register(
     config_schema: Any = None,
     config: list[str] | None = None,
     config_editor: Callable | None = None,
+    handles_failures: list[str] | None = None,
     allow_users: list[str] | None = None,
     allow_groups: list[str] | None = None,
     deny_users: list[str] | None = None,
@@ -134,6 +136,12 @@ def register(
     The ``placeholder`` argument sets the message a dashboard tile shows while a
     blocking input of the component is unset, in place of the default
     "Waiting for <inputs>" text.
+
+    The ``handles_failures`` argument names the inputs that can receive a
+    failure. With ``FlowDash(propagate_failures=True)`` an upstream failure
+    reaches such an input as a ``param.ReactiveError`` instead of leaving the
+    input on its last value; the parameter behind it must accept one, so use an
+    untyped ``param.Parameter``.
 
     The ``extensions`` argument names the Panel extensions (e.g.
     ``["tabulator"]``) the app's output needs. Components are imported lazily,
@@ -167,6 +175,7 @@ def register(
         config_schema=config_schema,
         config=list(config or []),
         config_editor=config_editor,
+        handles_failures=list(handles_failures or []),
         allow_users=_name_list(allow_users),
         allow_groups=_name_list(allow_groups),
         deny_users=_name_list(deny_users),
@@ -351,6 +360,7 @@ _LITERAL_KEYS = {
     "provides",
     "requires",
     "placeholder",
+    "handles_failures",
     "config",
     "tags",
     "extensions",
@@ -545,6 +555,7 @@ def build_registry(project_dir: Path, *, package: str | None = None) -> dict[str
                 provides=list(kwargs.get("provides") or []),
                 requires=list(kwargs.get("requires") or []),
                 placeholder=kwargs.get("placeholder"),
+                handles_failures=list(kwargs.get("handles_failures") or []),
                 config=list(kwargs.get("config") or []),
                 allow_users=_name_list(kwargs.get("allow_users")),
                 allow_groups=_name_list(kwargs.get("allow_groups")),

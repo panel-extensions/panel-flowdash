@@ -15,6 +15,7 @@ from panel_flowdash.dashboard_store import DashboardItem, DashboardModel
 from panel_flowdash.editor import FlowDash
 
 pytest.importorskip("playwright")
+expect = pytest.importorskip("playwright.sync_api").expect
 
 # from panel.pane import panel
 # from panel.tests.util import serve_component
@@ -564,3 +565,61 @@ def test_inspect_button_in_app_dashboard_page(page):
     page.get_by_role("button", name="Inspect outputs").click()
 
     page.get_by_role("dialog").get_by_text("14").wait_for()
+
+
+@register(page=False, component=True, title="Divider")
+class Divider(Viewer):
+    """A component whose output fails for a zero divisor."""
+
+    divisor = param.Number(default=1)
+
+    @param.output(param.Number)
+    @param.depends("divisor")
+    def ratio(self):
+        return 1 / self.divisor
+
+    @param.depends("divisor")
+    def __panel__(self):
+        return pn.pane.Markdown(f"divisor {self.divisor}", width=360, height=60)
+
+
+@pytest.mark.failures
+@pytest.mark.parametrize("editable", [True, False], ids=["edit", "view"])
+def test_tile_shows_failed_input_and_clears_on_recovery(page, editable):
+    editor = FlowDash(
+        {"Test/divider": Divider},
+        notifications=False,
+        include_builtin_components=False,
+        propagate_failures=True,
+    )
+    source = editor.add_component("Test/divider", position=(0, 0))
+    target = editor.add_component("Test/divider", position=(400, 0))
+    assert editor.connect(source, "ratio", target, "divisor") is True
+    editor.graph.get_state(source).divisor = 4
+    editor.mode = "dashboard"
+    editor.editable = editable
+    serve_component(page, editor)
+
+    overlays = page.locator(".flowdash-failure")
+    overlay = overlays.nth(1)
+    expect(page.get_by_text("divisor 0.25")).to_be_visible()
+    expect(overlays).to_have_count(2)
+    expect(overlay).to_be_hidden()
+
+    editor.graph.get_state(source).divisor = 0
+
+    expect(overlay).to_be_visible()
+    expect(overlay).to_contain_text("Input 'divisor' is stale")
+    expect(overlay).to_contain_text(
+        "'ratio' of 'Divider' failed (ZeroDivisionError: division by zero)"
+    )
+    expect(overlays.first).to_be_hidden()
+    box = overlay.bounding_box()
+    assert box["width"] > 100
+    assert box["height"] > 30
+    assert editor.graph.get_state(target).divisor == 0.25
+
+    editor.graph.get_state(source).divisor = 2
+
+    expect(overlay).to_be_hidden()
+    expect(page.get_by_text("divisor 0.5")).to_be_visible()

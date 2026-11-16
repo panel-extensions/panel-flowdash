@@ -6,6 +6,8 @@ from panel.io.reload import _local_modules, _modules, _watched_files
 from panel.io.state import state
 from panel.theme import Design
 
+from panel_flowdash.util import ReactiveError
+
 optional_markers = {
     "ui": {
         "help": "Runs UI related tests",
@@ -28,6 +30,19 @@ def pytest_configure(config):
         config.addinivalue_line("markers", "{}: {}".format(marker, info["marker-descr"]))
 
     config.addinivalue_line("markers", "internet: mark test as requiring an internet connection")
+    config.addinivalue_line(
+        "markers", "failures: needs param.ReactiveError to carry failures along edges"
+    )
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip tests of failure propagation on param releases that cannot carry failures."""
+    if ReactiveError is not None:
+        return
+    skip = pytest.mark.skip(reason="Carrying failures along edges needs param >= 2.5.")
+    for item in items:
+        if "failures" in item.keywords:
+            item.add_marker(skip)
 
 
 @pytest.fixture(autouse=True)
