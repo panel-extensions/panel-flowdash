@@ -58,18 +58,30 @@ Components can declare their preferred size on the grid through `@register`:
 ```python
 @register(
     component=True,
-    default_size={"w": 6, "h": 4},
-    min_size={"w": 3, "h": 2},
-    max_size={"w": 12, "h": 8},
+    default_size={"width": 600, "height": 400},
+    min_size={"width": 300, "height": 200},
+    max_size={"width": 1200, "height": 800},
 )
 class app(pn.viewable.Viewer):
     ...
 ```
 
-These are hints attached to the component spec. Widths are expressed in grid
-columns and heights in grid rows. They give a sensible starting footprint for a
-tile; the author can always resize tiles interactively in dashboard mode, and
-the arrangement they settle on is what gets persisted.
+Each hint is a dict with a `width`, a `height` or both, in pixels. Any other
+key is ignored with a warning.
+
+- `default_size` is the size a tile starts at when the dashboard has no layout
+  entry for it, e.g. when it was just added. The layout stores widths as a
+  percentage of the row, so the default width is converted at the grid's
+  reference width (see [Responsive layouts](#responsive-layouts)): a 600px tile
+  on a dashboard authored at 1200px takes half the row.
+- `min_size` and `max_size` bound the tile while you resize it in dashboard
+  mode, and apply to stored layouts when a dashboard is loaded, so a layout
+  saved before the hints existed is brought within them. On narrower screens
+  the minimum width still holds: a tile wraps onto a new line rather than
+  shrinking below it.
+
+Within these bounds the author can resize tiles freely, and the arrangement
+they settle on is what gets persisted.
 
 ---
 

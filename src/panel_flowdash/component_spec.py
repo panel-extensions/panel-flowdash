@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import logging
 import typing as t
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -13,6 +14,8 @@ from panel.viewable import Viewer
 
 from panel_flowdash.registry import PanelAppMetadata, RegistryEntry
 from panel_flowdash.util import ReactiveError, is_failure
+
+logger = logging.getLogger("panel_flowdash")
 
 
 @dataclass(frozen=True)
@@ -73,6 +76,8 @@ class ComponentSpec:
     outputs: list[OutputPort]
     inputs: list[InputPort]
     default_size: dict[str, Any] | None
+    max_size: dict[str, Any] | None = None
+    min_size: dict[str, Any] | None = None
     config: list[ConfigField] = field(default_factory=list)
     config_state_class: type[param.Parameterized] | None = None
     config_editor: Callable | None = None
@@ -336,6 +341,29 @@ def _mark_failure_handlers(
     return marked
 
 
+def _size_hint(component_id: str, name: str, hint: Any) -> dict[str, float] | None:
+    """Keep the positive ``width`` and ``height`` pixel values of a tile size hint."""
+    if hint is None:
+        return None
+    if not isinstance(hint, dict):
+        logger.warning("Ignoring %s of '%s': expected a dict, got %r.", name, component_id, hint)
+        return None
+    size = {}
+    for key, value in hint.items():
+        valid = isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+        if key in ("width", "height") and valid:
+            size[key] = value
+        else:
+            logger.warning(
+                "Ignoring %s[%r] of '%s': size hints take positive 'width' and "
+                "'height' values in pixels.",
+                name,
+                key,
+                component_id,
+            )
+    return size or None
+
+
 def build_component_spec(entry: RegistryEntry) -> ComponentSpec:
     """Build a ComponentSpec from a registry entry, caching it on the entry.
 
@@ -381,7 +409,9 @@ def build_component_spec(entry: RegistryEntry) -> ComponentSpec:
         tags=metadata.tags,
         outputs=outputs,
         inputs=inputs,
-        default_size=metadata.default_size,
+        default_size=_size_hint(entry.app_id, "default_size", metadata.default_size),
+        max_size=_size_hint(entry.app_id, "max_size", metadata.max_size),
+        min_size=_size_hint(entry.app_id, "min_size", metadata.min_size),
         config=config,
         config_state_class=config_state_class,
         config_editor=metadata.config_editor,
