@@ -55,7 +55,7 @@ Serving and API:
 - A Viewer declares a Parameter as an output port with `metadata={"flowdash": {"output": True, "label": ...}}`, so class factories need not repeat output names in `@register(provides=...)`; requires `param>=2.3`
 - Port types match across spellings (`str`/`String`, `int`/`Integer`, `DataFrame`/`pd.DataFrame`), an `Integer` output can feed a `Number` input, and untyped or generic ports connect to anything; `register_port_type(name, aliases=..., subtype_of=...)` adds project types
 - `@register(aliases=[...], port_aliases={...})` and a Parameter's `metadata={"flowdash": {"aliases": [...]}}` keep saved dashboards loading after a component or port is renamed; the next save writes the new names
-- A Viewer component can define `dispose()` to release its resources; FlowDash calls it once when the node is removed, the canvas is cleared or replaced, or the session ends. Removing a node or edge also releases its wiring and edge expressions
+- A Viewer component can define `dispose()` to release its resources; FlowDash calls it once when the node is removed, the canvas is cleared or replaced, or the session ends. Removing a node or edge, or loading another dashboard, also releases its wiring, its edge expressions and the subscriptions an async function component made
 - A tile shows a placeholder instead of its component while a blocking input is `None`: function components use the `required` and `blocking` fields of `requires`, Viewers declare `param.Parameter(metadata={"flowdash": {"required": True}})` (ignored on a metadata output), and `@register(placeholder=...)` replaces the default "Waiting for ..." text
 - The `default_size`, `min_size` and `max_size` hints of `@register` set a new tile's size and bound resizing and stored layouts
 - Mutable `requires` fallbacks and input defaults are copied per session and per node instead of shared
@@ -66,7 +66,7 @@ Serving and API:
 - Runtime validation via `param.watch` with error callbacks
 - `FlowDash(propagate_failures=True)`, also a `FlowDashApp` parameter, carries a failing output or edge transform downstream as a `param.ReactiveError` instead of leaving connected inputs on stale values. Inputs listed in `@register(handles_failures=[...])` receive the failure; any other input keeps its last value, its tile explains which upstream component failed, and the failed node and edge are outlined on the canvas. Needs Param 2.5 or later
 - Edge transforms are edited in the editor's inspector as numbered steps that show the value's shape between them; operations that cannot follow the current value are disabled, and a failing step shows the reason with a closest-column suggestion and is not applied until fixed. A new how-to covers the built-in steps and custom `Transform` subclasses
-- Dashboards load in one canvas update (a 500 node dashboard in about 1 s instead of 20 s), `DataflowGraph.batch()` binds list inputs once, and very deep chains finish on the next tick instead of raising `RecursionError`
+- Switching dashboards in an open editor places them in one canvas update (500 nodes in about 1 s instead of 20 s), `DataflowGraph.batch()` binds list inputs once, and very deep chains finish on the next tick instead of raising `RecursionError`
 - A component whose watcher raises no longer stops its siblings from receiving the value, and async outputs no longer run twice per input change
 
 ### Editor
@@ -75,7 +75,8 @@ Serving and API:
 - The wiring canvas shows compact node cards with a status dot, typed port labels and a value summary, a collapsible inspector for the selected component, edge or dashboard, and a status bar with issue, component and connection counts and the minimap toggle
 - The component palette is searchable (press `/`), groups components into data sources, transforms, views and widgets (a `source`, `transform`, `view` or `widget` tag overrides the role), shows each component's ports and marks placed ones
 - The Layout tab has a panel to size the selected tile in a 12-column grid within its size hints, hide it, and bring back components that are not on the dashboard, with always visible drag and resize handles
-- An empty canvas shows a start card, and the unsaved-changes dialog lists what changed
+- Every way of leaving a dashboard with unsaved changes asks first, including picking a dashboard in the switcher, creating a new one and reloading the tab, and the dialog lists what changed
+- An empty canvas shows a start card that adds a data source in one click
 - Download a dashboard as JSON from the editor and drop the file onto the canvas to recreate it; `FlowDash.export_dashboard()` and `FlowDash.import_dashboard()` do the same from Python
 - `open_dialog`, `close_dialog` and `confirm` in `panel_flowdash.util` show a modal from any component in one dialog per session, which `FlowDashApp` and `FlowDash` lay out for you; `confirm` closes the dialog before calling `on_confirm` or `on_cancel`, and either may be a coroutine function. `FlowDash(include_page_dialog=False)` leaves the placement of `page_dialog()` to the embedder
 
