@@ -86,25 +86,54 @@ param type class name (e.g. `"Number"`, `"DataFrame"`).
 ### Outputs from Parameters
 
 A Viewer that already holds the value on a Parameter does not need a method to
-publish it. Name the Parameter in `provides`:
+publish it. Declare the Parameter as an output in its `metadata`, under the
+`"flowdash"` key:
 
 ```python
-@register(component=True, provides=["selection"])
 class Picker(pn.viewable.Viewer):
-    selection = param.List(default=[])
+    company = param.String(default="ACME", metadata={"flowdash": {"output": True}})
+    region = param.Selector(
+        objects=["EU", "US"],
+        metadata={"flowdash": {"output": True, "label": "Region"}},
+    )
 
     def __panel__(self):
         return self._table
 ```
 
-Whatever the component assigns to `self.selection` flows to every connected
-input. The port is typed after the Parameter (`"List"` here) unless `provides`
-gives a `type`; a plain `param.Parameter` leaves the port untyped so it can
-connect to any input.
+Whatever the component assigns to `self.company` or `self.region`, in
+`__init__` or later, flows to every connected input. The port is typed after
+the Parameter (`"String"` and `"Selector"` here); a plain `param.Parameter`
+leaves the port untyped so it can connect to any input. `label` is optional.
+Other keys in the `"flowdash"` dict, and other metadata namespaces, are ignored.
+
+The declaration lives on the Parameter, so it is found on the class without
+instantiating it. Subclasses inherit it, and Parameters added to a class built
+with `type(...)` count too, which lets a class factory declare its outputs
+without repeating them in `@register`. A redeclared Parameter inherits the
+metadata of the one it overrides; set `{"flowdash": {"output": False}}` to turn
+an inherited output off.
 
 A Parameter published this way is an output only, so it is left out of the
-component's input ports. `provides` replaces the outputs introspected from
-`@param.output`, so list those methods in it too if the component has both.
+component's input ports. It must be a port-eligible name: a base Viewable
+Parameter such as `width`, or a name starting with an underscore, raises a
+`ValueError` when the component's spec is built.
+
+Metadata outputs combine with `@param.output` methods, which are listed first.
+To publish a Parameter without touching its definition, name it in `provides`
+instead:
+
+```python
+@register(component=True, provides=["selection"])
+class Picker(pn.viewable.Viewer):
+    selection = param.List(default=[])
+```
+
+The port is typed after the Parameter unless `provides` gives a `type`.
+`provides` replaces every introspected output, `@param.output` methods and
+metadata outputs alike, so list those in it too if the component has them. A
+Parameter declared as an output in metadata but missing from `provides` is not
+published and does not become an input either.
 
 ### Inputs from param declarations
 
