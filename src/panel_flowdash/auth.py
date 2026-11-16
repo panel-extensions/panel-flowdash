@@ -25,6 +25,7 @@ import logging
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlencode
 
 import panel as pn
 
@@ -440,8 +441,9 @@ def make_authorize_callback(
     registry: dict[str, RegistryEntry],
     auth_config: AuthConfig,
     *,
+    denied_route: str | None = None,
     url_prefix: str = "",
-) -> Callable[[dict[str, Any] | None, str], bool]:
+) -> Callable[[dict[str, Any] | None, str], bool | str]:
     """Build a Panel ``config.authorize_callback`` gating page routes.
 
     The returned callback authorizes direct HTTP access to code-authored page
@@ -454,10 +456,15 @@ def make_authorize_callback(
 
     ``url_prefix`` strips a server route prefix from the request path before
     matching against registry page paths.
+
+    With ``denied_route``, a refused request is redirected there (under
+    ``url_prefix``) with the page's path in the ``page`` query parameter, so
+    the app can explain the refusal in its own page rather than Panel's
+    generic authorization error.
     """
     pages = {entry.page_path: entry for entry in registry.values() if entry.metadata.page}
 
-    def authorize(user_info: dict[str, Any] | None, path: str = "") -> bool:
+    def authorize(user_info: dict[str, Any] | None, path: str = "") -> bool | str:
         route = path or ""
         if url_prefix and route.startswith(url_prefix):
             route = route[len(url_prefix) :]
@@ -467,6 +474,10 @@ def make_authorize_callback(
             # Not a code-authored page route; gated in-app if at all.
             return True
         identity = resolve_identity(auth_config)
-        return entry_authorized(entry, identity, default_allow=auth_config.default_allow)
+        if entry_authorized(entry, identity, default_allow=auth_config.default_allow):
+            return True
+        if denied_route is None:
+            return False
+        return f"{url_prefix}{denied_route}?{urlencode({'page': route})}"
 
     return authorize

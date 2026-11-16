@@ -388,7 +388,7 @@ class TestSaveRefused:
         assert app._unsaved_dialog.open
         store.refuse.add("save")
 
-        save_button = app._unsaved_dialog.objects[0].objects[1].objects[0]
+        save_button = app._unsaved_view.save_button
         save_button.clicks += 1
 
         assert navigated == []
@@ -405,7 +405,7 @@ class TestSaveRefused:
         app._navigate_to = lambda path, search="": navigated.append(path)
         app._request_navigation("/")
 
-        save_button = app._unsaved_dialog.objects[0].objects[1].objects[0]
+        save_button = app._unsaved_view.save_button
         save_button.clicks += 1
 
         assert navigated == ["/"]

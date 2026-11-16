@@ -243,7 +243,12 @@ def _goto(app, path):
 
 
 def _shows_progress(app):
-    return any(isinstance(obj, pmui.LinearProgress) for obj in app._page.main)
+    return any(
+        "flowdash-loading" in obj.css_classes
+        for main in app._page.main
+        if isinstance(main, pn.layout.Panel)
+        for obj in main.select(pn.Column)
+    )
 
 
 class TestStaleNavigation:
@@ -1042,7 +1047,7 @@ class TestDashboardActionDispatch:
         assert app._unsaved_dialog.open is True
         assert app._pending_navigation == (f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}", "?edit=true")
 
-    @pytest.mark.parametrize("button", ["Discard", "Save & Continue"])
+    @pytest.mark.parametrize("button", ["leave_button", "save_button"])
     async def test_edit_after_unsaved_prompt_opens_edit_mode(self, app, button):
         dash = app.store.create_dashboard(app._user_id, "Dash A")
         app._current_dashboard = app.store.create_dashboard(app._user_id, "Dirty")
@@ -1052,10 +1057,9 @@ class TestDashboardActionDispatch:
         app._load_page_layout = lambda: None
         _fire_action(app, "Edit", {"path": f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}"})
 
-        (row,) = (o for o in app._unsaved_dialog.objects[0] if isinstance(o, pn.Row))
-        next(b for b in row if b.label == button).clicks += 1
+        getattr(app._unsaved_view, button).clicks += 1
 
-        assert saved == ([True] if button == "Save & Continue" else [])
+        assert saved == ([True] if button == "save_button" else [])
         assert app._unsaved_dialog.open is False
         assert pn.state.location.pathname == f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}"
         assert pn.state.location.search == "?edit=true"

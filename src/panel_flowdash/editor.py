@@ -79,6 +79,7 @@ from panel_flowdash.ui.inspect_sheet import (
 )
 from panel_flowdash.ui.palette import ComponentPalette, palette_entry, palette_items
 from panel_flowdash.ui.settings_dialog import SettingsDialog
+from panel_flowdash.ui.states import StartCard
 from panel_flowdash.ui.tile import Tile
 from panel_flowdash.util import (
     close_dialog,
@@ -1928,12 +1929,8 @@ class FlowDash(Viewer):
             margin=0,
             sx={"borderRight": 1, "borderColor": "divider"},
         )
-        self._empty_hint = pmui.Typography(
-            "Drag components here from the palette, or drop a downloaded dashboard file.",
-            variant="body2",
-            sx={"color": "text.secondary"},
-            margin=(0, 0, 24, 0),
-        )
+        self._start_card = StartCard(editor=self)
+        self._empty_hint = self._start_card.__panel__()
         self._workspace_area = pn.Column(sizing_mode="stretch_both", scroll="y-auto")
 
         self._sync_toolbar_extra()
@@ -3194,7 +3191,9 @@ class FlowDash(Viewer):
                 "error", "Could not save the dashboard. The error has been logged.", duration=5000
             )
         else:
-            self._notify("success", f'Dashboard "{model.title}" saved.', duration=3000)
+            # The dashboard bar shows the save state; without it nothing else would.
+            if not self._dashboard_bar.visible:
+                self._notify("success", f'Dashboard "{model.title}" saved.', duration=3000)
             return True
         return False
 

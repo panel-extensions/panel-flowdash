@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 import logging
 import pathlib
@@ -11,6 +12,7 @@ import typing as t
 from contextlib import asynccontextmanager
 from functools import cache, partial
 from html import escape
+from urllib.parse import parse_qs
 
 import panel as pn
 import panel_material_ui as pmui
@@ -44,6 +46,15 @@ from panel_flowdash.ui.launcher import (
 )
 from panel_flowdash.ui.settings_dialog import SharingAccess, share_link
 from panel_flowdash.ui.shell import HEADER_SX, AppShell
+from panel_flowdash.ui.states import (
+    LoadingSkeleton,
+    UnsavedChangesDialog,
+    access_denied,
+    dashboard_not_found,
+    describe_changes,
+    page_not_found,
+    similar_dashboards,
+)
 from panel_flowdash.util import notify, page_dialog, panel_call, panel_viewer
 
 logger = logging.getLogger("panel_flowdash")
@@ -55,6 +66,7 @@ if t.TYPE_CHECKING:
         icon: str
 
 
+ACCESS_DENIED_ROUTE = "/access-denied"
 COMPONENTS_ROUTE = "/components"
 DASH_ROUTE_PREFIX = "/dash/"
 
@@ -365,7 +377,7 @@ class FlowDashApp(Viewer):
             if not self._is_current_navigation(generation):
                 return
             self._page.main = [
-                pmui.LinearProgress(sizing_mode="stretch_width"),
+                self._nav_content(LoadingSkeleton()),
                 self._dialog,
                 self._unsaved_dialog,
                 *self._page_dialogs,
@@ -515,18 +527,59 @@ class FlowDashApp(Viewer):
             return self.store.can_edit_model(self._identity, dashboard, self._admin_groups())
         return self.store.can_edit(self._identity, dashboard, self._admin_groups())
 
-    def _access_denied_view(self, title: str | None = None):
-        """Generate the view shown when the user is not authorized for the target."""
-        label = f" **{title}**" if title else ""
-        return pmui.Alert(
-            object=(
-                f"Access denied.{label} You are not authorized to view this "
-                f"(signed in as `{self._identity.user}`)."
-            ),
-            severity="error",
-            title="Access denied",
-            sizing_mode="stretch_width",
+    def _access_denied_view(self, title: str | None = None, owner: str | None = None):
+        """Generate the view shown when the user is not authorized for the target.
+
+        Pass *owner* to name who can grant access; dashboards pass no *title*,
+        so a dashboard's name is never shown to someone who may not open it.
+        """
+        return access_denied(
+            user=self._identity.user,
+            subject=title,
+            owner=owner,
+            on_home=partial(self._request_navigation, "/"),
         )
+
+    def _missing_dashboard_view(self, dashboard_id: str):
+        """Explain why *dashboard_id* cannot be shown: it does not exist, or it is not shared.
+
+        The id is random, so only someone given a link learns that a dashboard
+        exists. They are told who owns it, to ask for access, but not its title
+        or contents.
+        """
+        owner = self.store.get_owner(dashboard_id)
+        if owner is not None:
+            return self._access_denied_view(owner=owner)
+        accessible = self.store.list_accessible(
+            self._identity, default_allow=self._default_allow()
+        )
+        return dashboard_not_found(
+            dashboard_id,
+            similar_dashboards(dashboard_id, accessible),
+            on_open=lambda did: self._request_navigation(f"{DASH_ROUTE_PREFIX}{did}"),
+            on_all=partial(self._request_navigation, "/"),
+        )
+
+    def _route_state_view(self, pathname: str):
+        """Return the view for a route no dashboard or page handles: a refused page, or nothing.
+
+        Requests for a page the user may not open are redirected to
+        :data:`ACCESS_DENIED_ROUTE` by the serve command, with the page's path
+        in the ``page`` query parameter.
+        """
+        go_home = partial(self._request_navigation, "/")
+        if pathname.rstrip("/") == ACCESS_DENIED_ROUTE and pn.state.location is not None:
+            query = parse_qs((pn.state.location.search or "").lstrip("?"))
+            requested = "/" + (query.get("page") or [""])[0].strip("/")
+            entry = next(
+                (e for e in self._page_entries.values() if e.page_path == requested), None
+            )
+            if entry is not None:
+                if self._can_access_entry(entry):
+                    pn.state.execute(partial(self._navigate_to, requested), schedule=True)
+                    return LoadingSkeleton()
+                return self._access_denied_view(entry.title)
+        return page_not_found(pathname, on_home=go_home)
 
     async def _instantiate_entry(
         self,
@@ -760,9 +813,7 @@ class FlowDashApp(Viewer):
             edit = False
         if dashboard is None:
             self._page.main = [
-                self._nav_content(
-                    pn.pane.Alert(f"Dashboard not found: {dashboard_id}", alert_type="danger")
-                ),
+                self._nav_content(self._missing_dashboard_view(dashboard_id)),
                 self._dialog,
                 self._unsaved_dialog,
                 *self._page_dialogs,
@@ -1031,7 +1082,7 @@ class FlowDashApp(Viewer):
         else:
             self._apply_layout_config(None, pathname)
             main = [
-                f"Invalid URL: {pathname}",
+                self._route_state_view(pathname),
                 self._dialog,
                 self._unsaved_dialog,
                 *self._page_dialogs,
@@ -1530,20 +1581,14 @@ class FlowDashApp(Viewer):
     def _build_unsaved_dialog(self):
         self._pending_navigation: tuple[str, str] | None = None
 
-        discard_btn = pmui.Button(label="Discard", color="danger", variant="outlined")
-        save_btn = pmui.Button(label="Save & Continue", color="primary")
-        stay_btn = pmui.Button(label="Cancel", color="light")
-
-        def _on_discard(_event):
-            self._unsaved_dialog.open = False
+        def _on_leave():
             self._dirty = False
             pending = self._pending_navigation
             self._pending_navigation = None
             if pending:
                 self._navigate_to(*pending)
 
-        def _on_save(_event):
-            self._unsaved_dialog.open = False
+        def _on_save():
             if not self._save_current_dashboard():
                 self._pending_navigation = None
                 return
@@ -1552,27 +1597,26 @@ class FlowDashApp(Viewer):
             if pending:
                 self._navigate_to(*pending)
 
-        def _on_stay(_event):
-            self._unsaved_dialog.open = False
+        def _on_stay():
             self._pending_navigation = None
 
-        discard_btn.on_click(_on_discard)
-        save_btn.on_click(_on_save)
-        stay_btn.on_click(_on_stay)
-
-        self._unsaved_dialog = pmui.Dialog(
-            objects=[
-                pn.Column(
-                    pn.pane.Markdown("You have unsaved changes. What would you like to do?"),
-                    pn.Row(save_btn, discard_btn, stay_btn),
-                    sizing_mode="stretch_width",
-                )
-            ],
-            title="Unsaved Changes",
-            open=False,
-            min_width=400,
+        self._unsaved_view = UnsavedChangesDialog(
+            on_leave=_on_leave, on_save=_on_save, on_stay=_on_stay
         )
+        self._unsaved_dialog = self._unsaved_view.dialog
         return self._unsaved_dialog
+
+    def _unsaved_changes(self) -> list[tuple[str, str]]:
+        """List what the canvas changed since the dashboard was loaded or saved."""
+        editor = self._editor
+        saved = editor.dashboard
+        if saved is not None:
+            # Settings never stored are at their defaults, which `to_model` writes out.
+            defaults = editor.settings_class()
+            stored = {name: getattr(defaults, name) for name in editor._settings_names}
+            saved = dataclasses.replace(saved, settings={**stored, **saved.settings})
+        titles = {cid: entry.title for cid, entry in self._component_entries.items()}
+        return describe_changes(saved, editor.to_model(), titles)
 
     def _navigate_to(self, path: str, search: str = ""):
         if pn.state.location is None:
@@ -1606,7 +1650,7 @@ class FlowDashApp(Viewer):
     def _request_navigation(self, path: str, search: str = ""):
         if self._dirty and self._current_dashboard is not None:
             self._pending_navigation = (path, search)
-            self._unsaved_dialog.open = True
+            self._unsaved_view.show(self._unsaved_changes())
         else:
             self._navigate_to(path, search)
 
@@ -1811,6 +1855,7 @@ class FlowDashApp(Viewer):
 
         routes: dict[str, t.Any] = {
             "/": factory,
+            ACCESS_DENIED_ROUTE: factory,
             COMPONENTS_ROUTE: factory,
             f"{DASH_ROUTE_PREFIX}[^/]+": factory,
         }
