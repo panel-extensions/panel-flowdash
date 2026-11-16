@@ -121,7 +121,7 @@ class TestImport:
         assert _items(saved)[0] == ("r1", "T/restricted", SECRET)
         assert _edges(saved) == [("r1", "o1")]
 
-    def test_launcher_import_drops_restricted_items(self, monkeypatch):
+    async def test_launcher_import_drops_restricted_items(self, monkeypatch):
         store = MemoryDashboardStore()
         app = _app(store, monkeypatch)
         model = app._import_dashboard_file("evil.json", json.dumps(EVIL))
@@ -165,7 +165,7 @@ class TestExport:
         editor.import_dashboard(exported)
         assert _items(editor.to_model()) == [("o1", "T/open", {})]
 
-    def test_launcher_download_redacts_restricted_items(self, store, monkeypatch):
+    async def test_launcher_download_redacts_restricted_items(self, store, monkeypatch):
         app = _app(store, monkeypatch)
         (model,) = store._all_dashboards()
         assert app._download_dashboard(model.dashboard_id)

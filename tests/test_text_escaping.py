@@ -182,7 +182,7 @@ class TestStatesAndPlaceholders:
 
 
 class TestApp:
-    def test_share_entry_names_and_dialog_subtitle(self, monkeypatch):
+    async def test_share_entry_names_and_dialog_subtitle(self, monkeypatch):
         store = MemoryDashboardStore()
         dashboard = store.create_dashboard("alice", PAYLOAD)
         store.set_permission(dashboard.dashboard_id, Permission.from_spec(allow_users=[PAYLOAD]))
