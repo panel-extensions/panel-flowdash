@@ -150,6 +150,37 @@ def test_filters_and_sort(page, tmp_path):
     expect(page.get_by_text("Edited 1 minute ago by maya")).to_be_visible()
 
 
+def _chip_boxes(page):
+    chips = page.locator(".MuiChip-root")
+    expect(chips).to_have_count(3)
+    return [
+        (chip.bounding_box(), chip.locator(".MuiChip-label").bounding_box())
+        for chip in chips.all()
+    ]
+
+
+def test_filter_chips_line_up(page, tmp_path):
+    _serve(page, tmp_path, [("beta", None), ("Alpha", "maya"), ("gamma", None)])
+    selected = page.locator(".MuiChip-root").filter(has_text="All 3")
+    expect(selected.locator(".MuiChip-icon")).to_be_visible()
+
+    boxes = _chip_boxes(page)
+    chips, labels = zip(*boxes, strict=True)
+    assert {chip["height"] for chip in chips} == {chips[0]["height"]}
+    centres = [label["y"] + label["height"] / 2 for label in labels]
+    assert max(centres) - min(centres) <= 1
+    icon = selected.locator(".MuiChip-icon").bounding_box()
+    assert icon["height"] == 18
+    assert abs(icon["y"] + icon["height"] / 2 - centres[0]) <= 1
+
+    # Selecting another chip moves the check without shifting any chip.
+    page.locator(".MuiChip-root").filter(has_text="Owned by me").click()
+    expect(
+        page.locator(".MuiChip-root").filter(has_text="Owned by me").locator(".MuiChip-icon")
+    ).to_be_visible()
+    wait_until(lambda: [box for box, _ in _chip_boxes(page)] == list(chips), page)
+
+
 def test_list_view(page, tmp_path):
     _serve(page, tmp_path, [("Sales", None)])
 

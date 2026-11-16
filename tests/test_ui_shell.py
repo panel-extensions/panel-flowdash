@@ -48,9 +48,9 @@ class TestDashboardBarSections:
         editor.editable = False
         bar = editor._dashboard_bar
         assert bar._actions.objects == [
+            bar.mode_toggle,
             bar.refresh_button,
             bar.refresh_period,
-            bar.mode_toggle,
             bar.overflow,
         ]
         assert bar._title_block[1].objects == [bar.refresh_label]

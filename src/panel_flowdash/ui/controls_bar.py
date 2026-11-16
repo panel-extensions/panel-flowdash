@@ -13,6 +13,23 @@ from panel_flowdash.ui.pipeline import PipelineStrip, pipeline_stages
 # Sidebar components were laid out for a sidebar about this wide.
 _CONTROL_WIDTH = 320
 
+# Views are laid out for a tile, which most fill with stretch_both. Inside the
+# bar there is no height to fill, so the stretched view (and the wrapper, which
+# Panel makes stretch to match) would collapse to nothing and the content
+# would spill onto the tiles below. Sizing both to their content keeps the bar
+# as tall as its controls.
+_FIT_CONTENT = """
+:host {
+  height: auto;
+  max-height: none;
+}
+.bk-panel-models-layout-Column {
+  height: auto;
+  max-height: none;
+  flex: 0 0 auto;
+}
+"""
+
 
 class ControlsBar(Viewer):
     """Shown above the tile grid while the dashboard is viewed or laid out.
@@ -74,7 +91,11 @@ class ControlsBar(Viewer):
         wrapper = self._wrappers.get(id(view))
         if wrapper is None or wrapper[0] is not view:
             wrapper = self._wrappers[id(view)] = pn.Column(
-                view, margin=0, width=_CONTROL_WIDTH, styles={"max-width": "100%"}
+                view,
+                margin=0,
+                width=_CONTROL_WIDTH,
+                styles={"max-width": "100%"},
+                stylesheets=[] if getattr(view, "height", None) else [_FIT_CONTENT],
             )
         return wrapper
 

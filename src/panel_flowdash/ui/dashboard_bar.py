@@ -94,8 +94,8 @@ class DashboardBar(Viewer):
     """One bar above the editor's workspace, with a view and an edit section.
 
     In view mode it shows the dashboard title, a meta line (when it was last
-    refreshed) and the view actions: Refresh, the editor's ``toolbar_extra``
-    items, the View/Edit control and an overflow menu (Download, Settings). In edit mode it shows
+    refreshed) and the view actions: the View/Edit control, Refresh, the editor's
+    ``toolbar_extra`` items and an overflow menu (Download, Settings). In edit mode it shows
     the title with the save state, the Dataflow/Layout tabs and the edit
     actions: Settings, an overflow menu (Download, Import file, Clear canvas),
     Discard, Save and Done.
@@ -176,7 +176,7 @@ class DashboardBar(Viewer):
             options={":material/visibility: View": "view", ":material/edit: Edit": "edit"},
             value="view",
             size="small",
-            margin=(0, 4),
+            margin=(0, 16),
             sx=_TOGGLE_SX,
         )
         self.mode_toggle.param.watch(self._on_mode_toggled, "value")
@@ -277,11 +277,14 @@ class DashboardBar(Viewer):
         return [*items, self.refresh_label]
 
     def _view_actions(self) -> list:
-        """Actions on the right in view mode."""
+        """Actions on the right in view mode, the View/Edit control first.
+
+        The order mirrors edit mode, where the Dataflow/Layout tabs come first,
+        then the actions (``toolbar_extra`` such as Share) and the overflow menu.
+        """
         editor = self.editor
-        actions = [self.refresh_button, self.refresh_period, *editor.toolbar_extra]
-        if not editor.read_only:
-            actions.append(self.mode_toggle)
+        actions = [] if editor.read_only else [self.mode_toggle]
+        actions += [self.refresh_button, self.refresh_period, *editor.toolbar_extra]
         if self._overflow_items():
             actions.append(self.overflow)
         return actions
