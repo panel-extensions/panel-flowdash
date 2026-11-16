@@ -1242,7 +1242,7 @@ class TestModelRoundTrip:
             tile_layout=[{"i": "n1", "x": 2, "y": 0, "w": 4, "h": 3}],
         )
         editor.load_model(model)
-        assert editor.layout == [{"i": "n1", "x": 2, "y": 0, "w": 4, "h": 3}]
+        assert editor.layout == [{"i": "n1", "x": 2, "y": 0, "w": 4, "h": 3, "instance_id": "n1"}]
 
     async def test_saving_from_wiring_mode_keeps_unrendered_layout(self, editor):
         """A layout loaded but never rendered must survive a save from wiring mode."""
@@ -1257,7 +1257,7 @@ class TestModelRoundTrip:
             )
         )
         assert editor.mode == "wiring"
-        assert editor.to_model().tile_layout == layout
+        assert editor.to_model().tile_layout == [{**layout[0], "instance_id": "n1"}]
 
     async def test_reference_width_survives_wiring_and_dashboard_modes(self, editor):
         editor.load_model(
@@ -1320,6 +1320,109 @@ class TestModelRoundTrip:
         editor.mode = "dashboard"
         assert editor._tile_grid.responsive_layouts == {}
         assert editor._tile_grid.breakpoints == [768, 1200]
+
+
+def _spec(index, width, visible=True):
+    return {"index": index, "width": width, "height": 200, "visible": visible}
+
+
+def _layout_model(items, tile_layout, **kwargs):
+    return DashboardModel(
+        dashboard_id="d1",
+        user_id="alice",
+        title="Laid Out",
+        items=[DashboardItem(instance_id=i, component_id=c) for i, c in items],
+        tile_layout=tile_layout,
+        **kwargs,
+    )
+
+
+class TestTileLayoutKeys:
+    """The tile layout follows the tiles by instance id rather than by position."""
+
+    def _three_tiles(self, editor):
+        ids = [editor.add_component(SHOUTER) for _ in range(3)]
+        editor.mode = "dashboard"
+        editor._tile_grid.layout = [_spec(0, 100), _spec(1, 50), _spec(2, 50, visible=False)]
+        return ids
+
+    async def test_removing_a_tile_in_wiring_mode_keeps_the_others_layout(self, editor):
+        ids = self._three_tiles(editor)
+        editor.mode = "wiring"
+        editor.remove_component(ids[0])
+        editor.mode = "dashboard"
+
+        assert editor._tile_grid.layout == [_spec(0, 50), _spec(1, 50, visible=False)]
+
+    async def test_removing_a_tile_in_dashboard_mode_keeps_the_others_layout(self, editor):
+        ids = self._three_tiles(editor)
+        editor.remove_component(ids[0])
+        editor.mode = "wiring"
+        editor.mode = "dashboard"
+
+        assert editor._tile_grid.layout == [_spec(0, 50), _spec(1, 50, visible=False)]
+
+    async def test_saved_layout_is_keyed_and_drops_removed_tiles(self, editor):
+        ids = self._three_tiles(editor)
+        editor.mode = "wiring"
+        editor.remove_component(ids[1])
+
+        assert editor.to_model().tile_layout == [
+            {**_spec(0, 100), "instance_id": ids[0]},
+            {**_spec(2, 50, visible=False), "instance_id": ids[2]},
+        ]
+
+    async def test_keyed_layout_survives_a_component_that_no_longer_loads(self, editor):
+        model = _layout_model(
+            [("gone", "Gone/missing"), ("k1", SHOUTER), ("k2", SHOUTER)],
+            [
+                {**_spec(0, 100), "instance_id": "gone"},
+                {**_spec(1, 50), "instance_id": "k1"},
+                {**_spec(2, 30, visible=False), "instance_id": "k2"},
+            ],
+        )
+        editor.load_model(model)
+        editor.mode = "dashboard"
+
+        assert editor._tile_grid.layout == [_spec(0, 50), _spec(1, 30, visible=False)]
+
+    async def test_untagged_legacy_layout_maps_by_saved_position(self, editor):
+        """Layouts saved by older versions line up with the items as they were saved."""
+        model = _layout_model(
+            [("gone", "Gone/missing"), ("k1", SHOUTER), ("k2", SHOUTER)],
+            [_spec(0, 100), _spec(1, 50), _spec(2, 30, visible=False)],
+        )
+        editor.load_model(model)
+
+        assert editor.layout == [
+            {**_spec(1, 50), "instance_id": "k1"},
+            {**_spec(2, 30, visible=False), "instance_id": "k2"},
+        ]
+        editor.mode = "dashboard"
+        assert editor._tile_grid.layout == [_spec(0, 50), _spec(1, 30, visible=False)]
+
+    async def test_tiles_without_an_entry_get_an_empty_one(self, editor):
+        model = _layout_model(
+            [("k1", SHOUTER), ("k2", SHOUTER), ("k3", SHOUTER)],
+            [{**_spec(0, 40), "instance_id": "k1"}, {**_spec(1, 60), "instance_id": "k3"}],
+        )
+        editor.load_model(model)
+        editor.mode = "dashboard"
+
+        assert editor._tile_grid.layout == [_spec(0, 40), {}, _spec(1, 60)]
+
+    async def test_responsive_layouts_follow_the_tiles(self, editor):
+        ids = [editor.add_component(SHOUTER) for _ in range(2)]
+        editor.mode = "dashboard"
+        editor._tile_grid.responsive_layouts = {"xs": [_spec(0, 100), _spec(1, 80)]}
+        editor.mode = "wiring"
+        editor.remove_component(ids[0])
+        editor.mode = "dashboard"
+
+        assert editor._tile_grid.responsive_layouts == {"xs": [_spec(0, 80)]}
+        assert editor.to_model().responsive_layouts == {
+            "xs": [{**_spec(0, 80), "instance_id": ids[1]}]
+        }
 
 
 class TestPersistence:

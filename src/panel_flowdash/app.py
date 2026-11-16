@@ -227,6 +227,10 @@ class FlowDashApp(Viewer):
 
     _main_task: asyncio.Task | None = None
 
+    # Bumped by every navigation. A load that awaited something checks it before
+    # touching the page, so a slow load cannot overwrite a newer navigation.
+    _nav_generation: int = 0
+
     _RESERVED_EDITOR_OPTIONS = ("components", "store", "user")
 
     def __init__(self, registry: dict[str, RegistryEntry] | None = None, **params):
@@ -309,12 +313,45 @@ class FlowDashApp(Viewer):
         self._page = pmui.Page(**page_kwargs)
         pn.state.onload(self._load_page_layout)
 
+    def _begin_navigation(self) -> int:
+        """Start a navigation, superseding the one in flight, and return its generation."""
+        self._nav_generation += 1
+        if self._main_task is not None and not self._main_task.done():
+            self._main_task.cancel()
+        self._main_task = None
+        return self._nav_generation
+
+    def _is_current_navigation(self, generation: int) -> bool:
+        return generation == self._nav_generation
+
+    async def _run_navigation_task(self, coroutine):
+        """Await *coroutine* as a task that the next navigation cancels.
+
+        Returns ``None`` if it was cancelled by a newer navigation. If the task
+        awaiting it is cancelled itself, e.g. when the session is torn down,
+        the cancellation propagates (Python >= 3.11).
+        """
+        task = asyncio.create_task(coroutine)
+        self._main_task = task
+        try:
+            return await task
+        except asyncio.CancelledError:
+            # Task.cancelling() is new in Python 3.11; before it the two cases
+            # look the same from here, so the cancellation is always swallowed.
+            cancelling = getattr(asyncio.current_task(), "cancelling", None)
+            if cancelling is not None and cancelling():
+                raise
+            return None
+
     @asynccontextmanager
     async def _loading_screen(self, delay: float = 0.5):
         """Show a loading placeholder if the block takes longer than *delay* seconds."""
+        generation = self._nav_generation
 
         async def _show_after_delay():
             await asyncio.sleep(delay)
+            if not self._is_current_navigation(generation):
+                return
             self._page.main = [
                 pmui.LinearProgress(sizing_mode="stretch_width"),
                 self._dialog,
@@ -495,16 +532,11 @@ class FlowDashApp(Viewer):
         if not self._can_access_entry(entry):
             return self._access_denied_view(entry.title)
 
-        if self._main_task is not None and not self._main_task.done():
-            self._main_task.cancel()
-
         try:
             async with self._loading_screen():
-                coroutine = self._instantiate_entry(entry, context="page")
-                self._main_task = asyncio.create_task(coroutine)
-                return await self._main_task
-        except asyncio.CancelledError:
-            return None
+                return await self._run_navigation_task(
+                    self._instantiate_entry(entry, context="page")
+                )
         except Exception as e:
             logger.exception("Error rendering page '%s'", "/".join(key))
             err_name = type(e).__name__
@@ -631,7 +663,12 @@ class FlowDashApp(Viewer):
             self._current_dashboard.dashboard_id, self._current_dashboard.title
         )
 
-    async def _load_dashboard(self, dashboard_id: str, edit: bool = False):
+    async def _load_dashboard(
+        self, dashboard_id: str, edit: bool = False, generation: int | None = None
+    ):
+        """Load a dashboard into the page, unless navigation *generation* was superseded."""
+        if generation is None:
+            generation = self._nav_generation
         dashboard = self.store.load_for_access(
             self._identity, dashboard_id, default_allow=self._default_allow()
         )
@@ -641,6 +678,8 @@ class FlowDashApp(Viewer):
             # scanned metadata) and `add_component` imports on demand, so even
             # edit mode does not pay for the whole catalog.
             await self._ensure_components_loaded({item.component_id for item in dashboard.items})
+        if not self._is_current_navigation(generation):
+            return
         with pn.io.hold():
             self._load_dashboard_sync(dashboard_id, edit=edit, dashboard=dashboard)
 
@@ -698,6 +737,7 @@ class FlowDashApp(Viewer):
         except Exception as exc:
             self._show_dialog_name_error(self._notify_store_failure("create", exc))
             return False
+        self._begin_navigation()
         self._editor._start_dashboard(dashboard)
         self._sidebar_container.objects = []
 
@@ -933,7 +973,7 @@ class FlowDashApp(Viewer):
         except Exception:
             logger.exception("configure_layout hook failed for route '%s'", route)
 
-    async def _show_home_dashboard(self) -> bool:
+    async def _show_home_dashboard(self, generation: int) -> bool:
         """Render the configured home dashboard on '/'. Returns whether it was shown.
 
         Falls back to the launcher grid (by returning ``False``) if the
@@ -954,17 +994,25 @@ class FlowDashApp(Viewer):
         ):
             return False
         async with self._loading_screen():
-            await self._load_dashboard(model.dashboard_id, edit=False)
+            await self._run_navigation_task(
+                self._load_dashboard(model.dashboard_id, edit=False, generation=generation)
+            )
         return True
 
     async def _load_page_layout(self):
         if pn.state.location is None:
             return
-        await self._resolve_pending_entries()
+        generation = self._begin_navigation()
         pathname = pn.state.location.pathname
+        # Importing pending pages awaits, so a newer navigation may have started.
+        await self._resolve_pending_entries()
+        if not self._is_current_navigation(generation):
+            return
 
         if pathname == "/":
-            if self.home_dashboard and await self._show_home_dashboard():
+            if self.home_dashboard and await self._show_home_dashboard(generation):
+                return
+            if not self._is_current_navigation(generation):
                 return
             self._current_dashboard = None
             self._sidebar_container.objects = []
@@ -999,7 +1047,11 @@ class FlowDashApp(Viewer):
                 search = pn.state.location.search or ""
                 edit_requested = "edit=true" in search
                 async with self._loading_screen():
-                    await self._load_dashboard(dashboard_id, edit=edit_requested)
+                    await self._run_navigation_task(
+                        self._load_dashboard(
+                            dashboard_id, edit=edit_requested, generation=generation
+                        )
+                    )
                 return
 
         self._current_dashboard = None
@@ -1008,6 +1060,8 @@ class FlowDashApp(Viewer):
         key = tuple(pathname.strip("/").split("/"))
         if len(key) == 2 and self._entry_from_key(key):
             content = await self._render_page(key)
+            if not self._is_current_navigation(generation):
+                return
             self._apply_layout_config(content, pathname)
             wrapper = pmui.Column(content, sizing_mode="stretch_width")
             self._page.main = [
@@ -1128,7 +1182,10 @@ class FlowDashApp(Viewer):
         pn.state.execute(partial(self._load_dashboard_edit, dashboard_id))
 
     async def _load_dashboard_edit(self, dashboard_id: str):
-        await self._load_dashboard(dashboard_id, edit=True)
+        generation = self._begin_navigation()
+        await self._run_navigation_task(
+            self._load_dashboard(dashboard_id, edit=True, generation=generation)
+        )
 
     @pn.io.hold()
     def _open_rename_dialog(self, dashboard_id: str, title: str):

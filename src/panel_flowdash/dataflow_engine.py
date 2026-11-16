@@ -12,6 +12,7 @@ skipped, which leaves the target on its last good value.
 
 from __future__ import annotations
 
+import copy
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -135,8 +136,9 @@ def build_node_state_class(spec: ComponentSpec) -> type[param.Parameterized]:
                 allow_refs=True,
             )
         else:
+            # Copied per node, so a mutable fallback is not shared between nodes.
             params[port.name] = param.Parameter(
-                default=port.default, allow_None=True, allow_refs=True
+                default=port.default, allow_None=True, allow_refs=True, instantiate=True
             )
 
     for port in spec.outputs:
@@ -493,7 +495,7 @@ class DataflowGraph:
                 self._bind_input(target_id, target_port)
             else:
                 port = self._input_port(target_id, target_port)
-                _unbind(target_state, target_port, port.default if port else None)
+                _unbind(target_state, target_port, copy.deepcopy(port.default) if port else None)
         if edge is not None:
             edge.dispose()
 

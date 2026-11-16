@@ -60,6 +60,58 @@ class _ReadOnlyEditorError(DashboardStoreError, RuntimeError):
 
 _EMPTY_GRID_CONFIG = {"breakpoints": [], "responsive_layouts": {}, "reference_width": None}
 
+
+# TileGrid aligns its layout entries with its objects by position. The editor
+# stores and persists them keyed by the tile's instance id instead, so removing
+# a tile, or skipping one that no longer loads, cannot hand its slot to the next.
+
+
+def _key_layout(layout: list, instance_ids: list[str]) -> list[dict]:
+    """Tag the entries of a TileGrid layout with the instance id of their tile."""
+    return [
+        {**spec, "instance_id": instance_id}
+        for spec, instance_id in zip(layout, instance_ids, strict=False)
+        if isinstance(spec, dict)
+    ]
+
+
+def _key_saved_layout(layout: list | None, legacy_ids: list[str]) -> list[dict]:
+    """Key a persisted layout, mapping untagged entries saved by older versions by position."""
+    keyed = []
+    for i, spec in enumerate(layout or []):
+        if not isinstance(spec, dict):
+            continue
+        if "instance_id" in spec:
+            keyed.append(dict(spec))
+        elif i < len(legacy_ids):
+            keyed.append({**spec, "instance_id": legacy_ids[i]})
+    return keyed
+
+
+def _align_layout(keyed: list[dict], instance_ids: list[str]) -> list[dict]:
+    """Build the positional TileGrid layout for tiles *instance_ids* from keyed entries.
+
+    Tiles without an entry get an empty one, and the visual ``index`` values are
+    renumbered so that entries of removed tiles leave no gaps in the order.
+    """
+    by_id = {spec["instance_id"]: spec for spec in keyed}
+    specs = [by_id.get(instance_id) for instance_id in instance_ids]
+    ordered = sorted(
+        (i for i, spec in enumerate(specs) if spec is not None and spec.get("index") is not None),
+        key=lambda i: (specs[i]["index"], i),
+    )
+    rank = {i: r for r, i in enumerate(ordered)}
+    aligned = []
+    for i, spec in enumerate(specs):
+        entry = {k: v for k, v in (spec or {}).items() if k != "instance_id"}
+        if i in rank:
+            entry["index"] = rank[i]
+        aligned.append(entry)
+    while aligned and not aligned[-1]:
+        aligned.pop()
+    return aligned
+
+
 # Screen pixels between the visible canvas edge and an auto-placed node.
 _PLACEMENT_MARGIN = 40
 # Flow units each repeated auto-placement shifts, so nodes don't stack exactly.
@@ -311,7 +363,10 @@ class FlowDash(Viewer):
         self._edge_id_map: dict[str, tuple[str, str, str, str]] = {}
         self._tile_items: list[dict] = []
         self._tile_objects: list[Viewable] = []
+        # Layout entries keyed by instance id, waiting for the grid to be rendered.
         self._pending_tile_layout: list[dict] = []
+        # Instance ids of the tiles currently in the grid, in grid order.
+        self._grid_ids: list[str] = []
         # Responsive grid settings waiting to be applied; empty values must also be
         # applied so a loaded dashboard doesn't inherit the previous one's overrides.
         self._pending_grid_config: dict | None = None
@@ -499,7 +554,13 @@ class FlowDash(Viewer):
             self._components_loaded = True
 
     async def ensure_components_loaded_async(self, component_ids: t.Iterable[str] | None = None):
-        """Async :meth:`ensure_components_loaded`, importing off the event loop."""
+        """Async :meth:`ensure_components_loaded`, importing off the event loop.
+
+        If the awaiting task is cancelled (e.g. by a newer navigation) the
+        imports already running finish in their thread, but nothing is marked
+        loaded and their import errors are not reported; the next call
+        retries whatever is still unimported and reports its errors then.
+        """
         wanted = self._wanted_ids(component_ids)
         unimported = self._unimported_ids(wanted)
         errors = await asyncio.to_thread(self._load_entries, unimported) if unimported else []
@@ -992,6 +1053,10 @@ class FlowDash(Viewer):
         if "context" in sig.parameters:
             kwargs["context"] = "component"
 
+        # Unlike pages, sync components are not offloaded to a thread: placement
+        # is synchronous, the outputs they publish must exist before saved edges
+        # are reconnected, and the dataflow graph is not thread-safe. Slow
+        # components should be async (see docs/how-to/register-components.md).
         return panel_call(app_fn, **kwargs)
 
     def _instantiate_viewer_for_node(self, viewer_cls, entry, node_state, config_state=None):
@@ -1295,15 +1360,26 @@ class FlowDash(Viewer):
             grid = self._tile_grid
             return {
                 "breakpoints": list(grid.breakpoints),
-                "responsive_layouts": dict(grid.responsive_layouts),
+                "responsive_layouts": {
+                    band: self._placed_layout(_key_layout(layout, self._grid_ids))
+                    for band, layout in grid.responsive_layouts.items()
+                },
                 "reference_width": grid.reference_width,
             }
-        return dict(self._pending_grid_config or _EMPTY_GRID_CONFIG)
+        config = dict(self._pending_grid_config or _EMPTY_GRID_CONFIG)
+        config["responsive_layouts"] = {
+            band: self._placed_layout(layout)
+            for band, layout in config["responsive_layouts"].items()
+        }
+        return config
 
     def _apply_grid_config(self, config: dict):
         self._tile_grid.param.update(
             breakpoints=list(config["breakpoints"] or self.breakpoints),
-            responsive_layouts=dict(config["responsive_layouts"]),
+            responsive_layouts={
+                band: _align_layout(layout, self._grid_ids)
+                for band, layout in config["responsive_layouts"].items()
+            },
             reference_width=config["reference_width"],
         )
 
@@ -1343,7 +1419,7 @@ class FlowDash(Viewer):
         """Remember the grid's layout before the grid leaves the workspace."""
         if not self._grid_populated:
             return
-        self._pending_tile_layout = self._tile_grid.layout
+        self._pending_tile_layout = self.layout
         self._pending_grid_config = self._grid_config()
 
     def _rebuild_sidebar(self):
@@ -1365,7 +1441,13 @@ class FlowDash(Viewer):
 
     @pn.io.hold()
     def _rebuild_tile_grid(self):
-        grid_views = []
+        # Capture the layout keyed by instance id before the objects change, so it
+        # can be realigned with the tiles that remain.
+        layout = self._pending_tile_layout or self.layout
+        config = self._pending_grid_config
+        if config is None and self._grid_populated:
+            config = self._grid_config()
+        grid_views, grid_ids = [], []
         for i, item in enumerate(self._tile_items):
             entry = self._component_entries.get(item["component_id"])
             if entry is None or entry.metadata.sidebar:
@@ -1374,22 +1456,31 @@ class FlowDash(Viewer):
             if view is None:
                 view = pn.pane.Markdown(f"*{entry.title}*")
             grid_views.append(view)
+            grid_ids.append(item["instance_id"])
         self._tile_grid[:] = grid_views
+        self._grid_ids = grid_ids
         self._grid_populated = True
         self._rebuild_sidebar()
-        if self._pending_tile_layout:
-            self._tile_grid.layout = self._pending_tile_layout
-            self._pending_tile_layout = []
-        if self._pending_grid_config is not None:
-            self._apply_grid_config(self._pending_grid_config)
+        self._tile_grid.layout = _align_layout(layout, grid_ids)
+        self._pending_tile_layout = []
+        if config is not None:
+            self._apply_grid_config(config)
             self._pending_grid_config = None
+
+    def _placed_layout(self, keyed: list[dict]) -> list[dict]:
+        """Drop the layout entries of tiles that are no longer placed."""
+        placed = {item["instance_id"] for item in self._tile_items}
+        return [spec for spec in keyed if spec.get("instance_id") in placed]
 
     @property
     def layout(self) -> list[dict]:
-        """The current tile layout, whether or not the grid is on screen."""
+        """The current tile layout, whether or not the grid is on screen.
+
+        One entry per tile, keyed by the tile's ``instance_id``.
+        """
         if self._grid_populated:
-            return self._tile_grid.layout
-        return list(self._pending_tile_layout)
+            return self._placed_layout(_key_layout(self._tile_grid.layout, self._grid_ids))
+        return self._placed_layout(self._pending_tile_layout)
 
     # ------------------------------------------------------------------
     # Public canvas API
@@ -1666,6 +1757,7 @@ class FlowDash(Viewer):
             self._flow.param.update(nodes=[], edges=[])
         if self._grid_populated:
             self._tile_grid[:] = []
+        self._grid_ids = []
         self._sync_toolbar_state()
         for instance_id in list(self._component_instances):
             self._dispose_component(instance_id)
@@ -1791,15 +1883,38 @@ class FlowDash(Viewer):
                         result,
                     )
 
+        legacy_ids = self._legacy_layout_ids(model)
         self._grid_populated = False
-        self._pending_tile_layout = model.tile_layout or []
+        self._pending_tile_layout = _key_saved_layout(model.tile_layout, legacy_ids)
         self._pending_grid_config = {
             "breakpoints": list(model.breakpoints or []),
-            "responsive_layouts": dict(model.responsive_layouts or {}),
+            "responsive_layouts": {
+                band: _key_saved_layout(layout, legacy_ids)
+                for band, layout in (model.responsive_layouts or {}).items()
+            },
             "reference_width": model.reference_width,
         }
         self.dirty = False
         self._apply_mode_state()
+
+    def _legacy_layout_ids(self, model: DashboardModel) -> list[str]:
+        """Return the tiles an untagged layout saved with *model* lines up with, in grid order.
+
+        Older versions saved entries by grid position, over every item except
+        sidebar components. Items whose component is no longer offered still
+        held a slot when the layout was saved, so they keep theirs here.
+        """
+        ids = []
+        for item in model.items:
+            entry = self._component_entries.get(item.component_id)
+            # A sidebar component that is no longer in the registry cannot be
+            # recognised as one, so it is counted as a tile and shifts the
+            # legacy entries after it by one slot. Layouts saved since tiles
+            # were keyed by instance id are unaffected.
+            if entry is not None and entry.metadata.sidebar:
+                continue
+            ids.append(item.instance_id)
+        return ids
 
     def load(self, dashboard_id: str):
         """Load a dashboard from the configured store, by id or title."""

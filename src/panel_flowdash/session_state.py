@@ -36,8 +36,10 @@ def build_session_state_class(
                 if k and k not in state_keys:
                     state_keys[k] = req.get("fallback")
 
+    # The fallbacks come from module-level registry metadata shared by every
+    # session, so each instance needs its own copy of a mutable default.
     params = {
-        key: param.Parameter(default=default, allow_None=True)
+        key: param.Parameter(default=default, allow_None=True, instantiate=True)
         for key, default in state_keys.items()
     }
 
