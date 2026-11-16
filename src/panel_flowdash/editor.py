@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import copy
+import dataclasses
 import inspect
 import io
 import json
@@ -84,6 +85,7 @@ from panel_flowdash.ui.palette import ComponentPalette, palette_entry, palette_i
 from panel_flowdash.ui.settings_dialog import SettingsDialog
 from panel_flowdash.ui.states import StartCard
 from panel_flowdash.ui.status_bar import StatusBar
+from panel_flowdash.ui.text import code_block, escape_markdown, text_typography
 from panel_flowdash.ui.tile import Tile
 from panel_flowdash.util import (
     close_dialog,
@@ -355,11 +357,33 @@ _FAILED_NODE_STYLE = {
 }
 
 
-def export_model(model: DashboardModel) -> dict:
-    """Serialize *model* as a dashboard file, without its identity fields."""
+# Stands in for the component of an exported item the exporting user may not
+# use. Importing it back restores the stored item, or drops it.
+RESTRICTED_COMPONENT_ID = "flowdash:restricted"
+
+
+def export_model(model: DashboardModel, restricted: t.Collection[str] = ()) -> dict:
+    """Serialize *model* as a dashboard file, without its identity fields.
+
+    The items whose instance ids are in *restricted* keep only their id and
+    position, and the edges touching them are left out, so the file reveals
+    neither their component, config nor ports.
+    """
     data = model.to_dict()
     for key in _IDENTITY_FIELDS:
         del data[key]
+    if restricted:
+        data["items"] = [
+            {**item, "component_id": RESTRICTED_COMPONENT_ID, "config": {}}
+            if item["instance_id"] in restricted
+            else item
+            for item in data["items"]
+        ]
+        data["edges"] = [
+            edge
+            for edge in data["edges"]
+            if edge["source"] not in restricted and edge["target"] not in restricted
+        ]
     return data
 
 
@@ -1391,7 +1415,7 @@ class FlowDash(Viewer):
             return pn.pane.Markdown("*No value yet*", margin=0)
         if is_failure(value):
             return pmui.Alert(
-                pmui.Typography(failure_text(value), variant="body2", margin=0),
+                text_typography(failure_text(value), variant="body2", margin=0),
                 severity="error",
                 variant="outlined",
                 margin=0,
@@ -1418,12 +1442,12 @@ class FlowDash(Viewer):
             text = repr(value)
             if len(text) > 2000:
                 text = text[:2000] + "…"
-            return pn.pane.Markdown(f"```\n{text}\n```")
+            return pn.pane.Markdown(code_block(text))
 
     def _build_value_popup(self, title: str, subtitle: str | None, value: t.Any) -> Viewable:
-        header = f"**{title}**"
+        header = f"**{escape_markdown(title)}**"
         if subtitle:
-            header += f"  \n*{subtitle}*"
+            header += f"  \n*{escape_markdown(subtitle)}*"
         return pn.Column(
             pn.pane.Markdown(header, margin=(0, 0, 6, 0)),
             self._value_preview(value),
@@ -1441,7 +1465,9 @@ class FlowDash(Viewer):
         except Exception as exc:
             logger.exception("Inspecting output '%s' of %s failed", port_name, instance_id)
             return pmui.Alert(
-                f"Could not describe this output: {exc}", severity="error", margin=(6, 0, 0, 0)
+                escape_markdown(f"Could not describe this output: {exc}"),
+                severity="error",
+                margin=(6, 0, 0, 0),
             )
 
     def _instance_title(self, instance_id: str) -> str:
@@ -2221,7 +2247,7 @@ class FlowDash(Viewer):
                 continue
             view = self._tile_objects[i] if i < len(self._tile_objects) else None
             if view is None:
-                view = pn.pane.Markdown(f"*{entry.title}*")
+                view = pn.pane.Markdown(f"*{escape_markdown(entry.title)}*")
             sidebar_views.append(view)
         self.sidebar = sidebar_views
         self._view_controls.sync()
@@ -2241,7 +2267,7 @@ class FlowDash(Viewer):
                 continue
             view = self._tile_objects[i] if i < len(self._tile_objects) else None
             if view is None:
-                view = pn.pane.Markdown(f"*{entry.title}*")
+                view = pn.pane.Markdown(f"*{escape_markdown(entry.title)}*")
             grid_views.append(self._grid_view(item, view))
             grid_ids.append(item["instance_id"])
         self._tile_grid[:] = grid_views
@@ -3113,7 +3139,8 @@ class FlowDash(Viewer):
         The dashboard id, owner and sharing rules are omitted, so the file can
         be loaded into any dashboard with :meth:`import_dashboard`.
         """
-        return export_model(self.to_model())
+        private = {iid for iid, placeholder in self._placeholders().items() if placeholder.private}
+        return export_model(self.to_model(), restricted=private)
 
     def import_dashboard(self, data: dict | str | bytes) -> DashboardModel:
         """Replace the canvas with an exported dashboard, as dropping its file does.
@@ -3158,7 +3185,66 @@ class FlowDash(Viewer):
         if current is not None:
             model.permission = current.permission
             model.revision = current.revision
+        stored = self.store._load_any(current.dashboard_id) if current and self.store else None
+        self._guard_restricted(model, stored or current)
         return model
+
+    def _restricted_ids(self, model: DashboardModel) -> set[str]:
+        """Return the ids of the items of *model* whose component this session may not use."""
+        aliases = self._component_aliases()
+        restricted = set()
+        for item in model.items:
+            component_id = self._resolve_component_id(item.component_id, aliases)
+            if item.component_id == RESTRICTED_COMPONENT_ID or (
+                component_id in self._component_entries
+                and not self._component_authorized(component_id)
+            ):
+                restricted.add(item.instance_id)
+        return restricted
+
+    def _guard_restricted(self, model: DashboardModel, reference: DashboardModel | None):
+        """Keep an imported *model* from adding or changing items this session may not use.
+
+        Such an item is replaced by the item with its id in *reference*, the
+        dashboard as stored, when that one is restricted too or the file holds
+        only the stand-in :func:`export_model` writes for it, and dropped
+        otherwise. Imported edges touching these items are dropped and the
+        stored edges between the kept ones and the rest restored, so the file
+        decides neither their config nor their wiring.
+        """
+        restricted = self._restricted_ids(model)
+        if not restricted:
+            return
+        stored = {item.instance_id: item for item in reference.items} if reference else {}
+        stored_restricted = self._restricted_ids(reference) if reference else set()
+        items, kept = [], set()
+        for item in model.items:
+            iid = item.instance_id
+            original = stored.get(iid)
+            if iid not in restricted:
+                items.append(item)
+            elif original is not None and (
+                iid in stored_restricted or item.component_id == RESTRICTED_COMPONENT_ID
+            ):
+                items.append(dataclasses.replace(copy.deepcopy(original), x=item.x, y=item.y))
+                kept.add(iid)
+        present = {item.instance_id for item in items}
+        edges = [e for e in model.edges if not {e.source, e.target} & restricted]
+        if reference is not None:
+            edges += [
+                copy.deepcopy(edge)
+                for edge in reference.edges
+                if {edge.source, edge.target} & kept and {edge.source, edge.target} <= present
+            ]
+        model.items, model.edges = items, edges
+        dropped = len(restricted) - len(kept)
+        if dropped:
+            self._notify(
+                "warning",
+                f"Left out {dropped} component{'s' * (dropped != 1)} of the file that you "
+                "do not have access to.",
+                duration=5000,
+            )
 
     # ------------------------------------------------------------------
     # Toolbar handlers
@@ -3220,7 +3306,7 @@ class FlowDash(Viewer):
         self._pending_import = model
         self._import_message.object = (
             f"Replace the canvas with the {len(model.items)} components in "
-            f"**{file['name']}**? Unsaved work will be lost."
+            f"**{escape_markdown(file['name'])}**? Unsaved work will be lost."
         )
         self._import_dialog.open = True
 

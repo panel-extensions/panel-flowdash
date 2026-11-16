@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 import inspect
 import logging
 import threading
@@ -209,6 +210,10 @@ def notify(
     if notifications is None:
         logger.log(_LOG_LEVELS.get(severity, logging.INFO), message)
         return
+    # Panel's own notification area (notyf) renders messages as HTML, the
+    # Material one as text; messages carry dashboard titles and file names.
+    if not isinstance(notifications, pmui.NotificationArea):
+        message = html.escape(message)
     getattr(notifications, severity)(message, duration=duration)
 
 

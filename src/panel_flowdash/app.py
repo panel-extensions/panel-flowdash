@@ -55,6 +55,7 @@ from panel_flowdash.ui.states import (
     page_not_found,
     similar_dashboards,
 )
+from panel_flowdash.ui.text import escape_markdown
 from panel_flowdash.util import notify, page_dialog, panel_call, panel_viewer
 
 logger = logging.getLogger("panel_flowdash")
@@ -615,7 +616,7 @@ class FlowDashApp(Viewer):
     async def _render_page(self, key):
         entry = self._entry_from_key(key)
         if entry is None:
-            return f"Unknown page: {'/'.join(key)}"
+            return escape_markdown(f"Unknown page: {'/'.join(key)}")
 
         if self._unresolved(entry):
             # A failed import leaves the rules pending and access is refused below.
@@ -632,7 +633,7 @@ class FlowDashApp(Viewer):
             logger.exception("Error rendering page '%s'", "/".join(key))
             err_name = type(e).__name__
             return pn.pane.Alert(
-                f"**{err_name}**: {e}\n<hr>\n<pre> {escape(traceback.format_exc())}</pre>\n",
+                f"**{err_name}**: {escape_markdown(e)}\n<hr>\n<pre> {escape(traceback.format_exc())}</pre>\n",
                 alert_type="danger",
                 styles={"color": "black"},
             )
@@ -1275,7 +1276,7 @@ class FlowDashApp(Viewer):
         model = self._readable_dashboard(dashboard_id)
         if model is None:
             return False
-        send_download(self._downloader, model)
+        send_download(self._downloader, model, restricted=self._editor._restricted_ids(model))
         return True
 
     def _import_dashboard_file(self, filename: str, content: str | bytes) -> DashboardModel | None:
@@ -1285,6 +1286,7 @@ class FlowDashApp(Viewer):
         except ValueError as exc:
             self._notify("error", f"Could not import {filename}: {exc}", duration=5000)
             return None
+        self._editor._guard_restricted(parsed, None)
         title = unique_title(self.store, self._user_id, parsed.title)
         try:
             model = copy_dashboard(self.store, parsed, self._user_id, title)

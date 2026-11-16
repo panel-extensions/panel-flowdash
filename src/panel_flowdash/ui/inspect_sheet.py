@@ -10,6 +10,7 @@ import typing as t
 import panel as pn
 import panel_material_ui as pmui
 
+from panel_flowdash.ui.text import escape_markdown, text_typography
 from panel_flowdash.ui.tile import status_chip_sx
 
 if t.TYPE_CHECKING:
@@ -107,7 +108,7 @@ def sheet_header(title: str, on_close: Callable[[], None]) -> pn.Row:
             pmui.Typography(
                 "Inspect data", variant="caption", margin=0, sx={"color": "text.secondary"}
             ),
-            pmui.Typography(title, variant="h6", margin=0),
+            text_typography(title, variant="h6", margin=0),
             margin=0,
             sizing_mode="stretch_width",
         ),
@@ -178,7 +179,7 @@ def facts(rows: list[tuple[str, str | None]]) -> pn.Column:
                 pmui.Typography(
                     label, variant="body2", width=110, margin=0, sx={"color": "text.secondary"}
                 ),
-                pmui.Typography(text, variant="body2", margin=0, sizing_mode="stretch_width"),
+                text_typography(text, variant="body2", margin=0, sizing_mode="stretch_width"),
                 margin=(0, 0, 6, 0),
                 sizing_mode="stretch_width",
             )
@@ -265,7 +266,8 @@ def dataframe_preview(frame, filename: str) -> pn.Column:
     """Columns with their dtypes, the first rows and export actions; never the whole frame."""
     chips = [
         pmui.Typography(
-            f"{column} <span style='opacity: 0.7'>{short_dtype(frame[column])}</span>",
+            f"{escape_markdown(column)} <span style='opacity: 0.7'>"
+            f"{escape_markdown(short_dtype(frame[column]))}</span>",
             variant="caption",
             margin=(0, 6, 6, 0),
             sx=_CHIP_SX,

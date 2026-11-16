@@ -14,6 +14,7 @@ import panel_material_ui as pmui
 import param
 
 from panel_flowdash.auth import Permission
+from panel_flowdash.ui.text import escape_markdown, text_typography
 
 if t.TYPE_CHECKING:
     from panel_flowdash.editor import FlowDash
@@ -494,7 +495,7 @@ class SettingsDialog(param.Parameterized):
             subtitle = f"{self._target_title}, owned by you"
         else:
             subtitle = f"{self._target_title}, owned by {owner}"
-        self._subtitle.param.update(object=subtitle, visible=bool(subtitle))
+        self._subtitle.param.update(object=escape_markdown(subtitle), visible=bool(subtitle))
         self._sync_nav(section)
         self._sync_footer()
 
@@ -738,8 +739,8 @@ class SettingsDialog(param.Parameterized):
         return pn.Row(
             pn.Column(avatar, width=36, margin=(4, 12, 4, 10), align="center"),
             pn.Column(
-                pmui.Typography(title, variant="subtitle2", margin=0),
-                pmui.Typography(
+                text_typography(title, variant="subtitle2", margin=0),
+                text_typography(
                     caption, variant="caption", sx={"color": "text.secondary"}, margin=0
                 ),
                 sizing_mode="stretch_width",

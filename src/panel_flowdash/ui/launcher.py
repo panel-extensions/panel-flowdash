@@ -317,9 +317,14 @@ def build_downloader() -> pmui.FileDownload:
     )
 
 
-def send_download(downloader: pmui.FileDownload, model: DashboardModel):
-    """Make the browser save *model* as the same file the editor's Download writes."""
-    payload = json.dumps(export_model(model), indent=2)
+def send_download(
+    downloader: pmui.FileDownload, model: DashboardModel, restricted: t.Collection[str] = ()
+):
+    """Make the browser save *model* as the same file the editor's Download writes.
+
+    The items in *restricted* are written as :func:`export_model` describes.
+    """
+    payload = json.dumps(export_model(model, restricted), indent=2)
     # Clearing first makes downloading the same file twice a change the browser sees.
     downloader.data = None
     downloader.param.update(

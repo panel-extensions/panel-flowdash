@@ -6,6 +6,7 @@ import panel as pn
 import panel_material_ui as pmui
 
 from panel_flowdash.failure_overlay import icon_badge
+from panel_flowdash.ui.text import escape_markdown
 
 
 def join_labels(labels: list[str]) -> str:
@@ -49,13 +50,13 @@ class WaitingPlaceholder(pn.Column):
 
     def show(self, missing: list[str], message: str | None = None):
         """Say that the tile needs the *missing* inputs, led by a custom *message* if given."""
-        needs = f"This tile needs {join_labels(missing)}"
+        needs = escape_markdown(f"This tile needs {join_labels(missing)}")
         how = (
             "It appears once a connected component provides a value, "
             "or once one is connected in the editor."
         )
         if message:
-            self.headline.object = message
+            self.headline.object = escape_markdown(message)
             self.hint.object = f"{needs}. {how}"
         else:
             self.headline.object = needs
