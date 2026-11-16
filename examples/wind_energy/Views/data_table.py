@@ -5,7 +5,7 @@ import param
 
 from panel_flowdash import register
 
-from ._common import heading, message
+from ._common import has_rows, heading, is_empty, message
 
 LABELS = {
     "project": "Project",
@@ -44,29 +44,36 @@ class app(pn.viewable.Viewer):
 
     page_size = param.Integer(default=10, bounds=(5, 100), doc="Rows per page.")
 
-    @param.depends("table", "label", "columns", "page_size")
-    def _view(self):
+    @param.depends("table", "columns")
+    def _rows(self):
         df = self.table
         if df is not None and self.columns:
             df = df[[c for c in self.columns if c in df.columns]]
-        if df is None or df.empty:
-            return pn.Column(heading(self.label), message("No rows."))
-        return pn.Column(
-            heading(self.label, f"{len(df):,} rows"),
-            pn.widgets.Tabulator(
-                df.rename(columns=LABELS),
-                formatters={"Year": {"type": "plaintext"}},
-                disabled=True,
-                show_index=False,
-                pagination="local",
-                page_size=self.page_size,
-                layout="fit_columns",
-                theme="simple",
-                sizing_mode="stretch_both",
-                margin=(0, 10, 10, 10),
-            ),
-            sizing_mode="stretch_both",
-        )
+        if is_empty(df):
+            return None
+        return df.rename(columns=LABELS)
 
     def __panel__(self):
-        return pn.panel(self._view, sizing_mode="stretch_both")
+        table = pn.widgets.Tabulator(
+            self._rows,
+            formatters={"Year": {"type": "plaintext"}},
+            disabled=True,
+            show_index=False,
+            pagination="local",
+            page_size=self.param.page_size,
+            layout="fit_columns",
+            theme="simple",
+            sizing_mode="stretch_both",
+            margin=(0, 10, 10, 10),
+        )
+        rows = table.param.value
+        table.visible = pn.bind(has_rows, rows)
+        return pn.Column(
+            heading(
+                self.param.label,
+                pn.bind(lambda df: "" if df is None else f"{len(df):,} rows", rows),
+            ),
+            table,
+            message("No rows.", visible=pn.bind(is_empty, rows)),
+            sizing_mode="stretch_both",
+        )

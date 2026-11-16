@@ -1,4 +1,11 @@
-"""Helpers shared by the view components."""
+"""Helpers shared by the view components.
+
+The views build their panes once and bind what changes to them, so a new
+selection updates the text and data in place. Returning freshly built panes
+from a ``pn.bind`` or ``param.depends`` function would instead replace the
+whole view on every change: the tile empties for a frame and its charts and
+maps are drawn again from scratch.
+"""
 
 import panel as pn
 import panel_material_ui as pmui
@@ -38,7 +45,10 @@ def setting(name, default):
 
 
 def heading(text, caption=None):
-    """A compact heading drawn by the component itself, in place of a tile title."""
+    """A compact heading drawn by the component itself, in place of a tile title.
+
+    *text* and *caption* may be references, e.g. ``pn.bind(...)``, to update in place.
+    """
     parts = [pmui.Typography(text, variant="subtitle2", margin=(4, 10, 0, 10))]
     if caption is not None:
         parts.append(
@@ -49,9 +59,11 @@ def heading(text, caption=None):
     return pn.Column(*parts, margin=0, sizing_mode="stretch_width")
 
 
-def message(text):
+def message(text, **params):
     """A muted line shown when there is nothing to draw."""
-    return pmui.Typography(text, variant="body2", sx={"color": "text.secondary"}, margin=10)
+    return pmui.Typography(
+        text, variant="body2", sx={"color": "text.secondary"}, margin=10, **params
+    )
 
 
 def format_capacity(kw, unit="GW"):
@@ -61,9 +73,10 @@ def format_capacity(kw, unit="GW"):
     return f"{kw / 1e6:,.1f} GW"
 
 
-def vega(spec, **params):
-    """A Vega-Lite pane that fills its tile."""
-    spec = {
+def _full_spec(spec):
+    if spec is None:
+        return None
+    return {
         "$schema": "https://vega.github.io/schema/vega-lite/v5.json",
         "width": "container",
         "height": "container",
@@ -71,6 +84,25 @@ def vega(spec, **params):
         "config": VEGA_CONFIG,
         **spec,
     }
+
+
+def vega(spec, **params):
+    """A Vega-Lite pane that fills its tile.
+
+    *spec* may be a reference returning a spec, or None while there is nothing
+    to draw. When only the ``data`` values of the spec change, the pane passes
+    the new values to the chart it already draws instead of drawing it again.
+    """
+    spec = _full_spec(spec) if isinstance(spec, dict) else pn.bind(_full_spec, spec)
     return pn.pane.Vega(
         spec, sizing_mode="stretch_both", min_height=160, margin=(0, 10, 6, 10), **params
     )
+
+
+def is_empty(df):
+    """Whether *df* has no rows to show, including before it arrives."""
+    return df is None or df.empty
+
+
+def has_rows(df):
+    return not is_empty(df)

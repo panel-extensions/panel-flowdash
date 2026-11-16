@@ -26,33 +26,43 @@ ReactiveError = getattr(param, "ReactiveError", ())
 class app(pn.viewable.Viewer):
     checked = param.Parameter(default=None, doc="The gate's output, or the failure it raised.")
 
-    @param.depends("checked")
-    def _status(self):
+    # What the alert says; derived by a watcher, because a reference bound to
+    # `checked` would hand a failure on to the alert instead of explaining it.
+    _alert = param.Dict(default={"title": "", "object": "", "severity": "info"})
+
+    @param.depends("checked", watch=True, on_init=True)
+    def _explain(self):
         value = self.checked
         if isinstance(value, ReactiveError):
             reason = str(value.exception).removeprefix("Selection failed the quality gate: ")
-            return pn.Column(
-                heading("Gate status"),
-                pmui.Alert(
-                    title="Selection blocked",
-                    object=f"{reason}. Widen the selection to continue.",
-                    severity="error",
-                    margin=(4, 10),
-                    sizing_mode="stretch_width",
-                ),
-            )
-        if value is None:
-            return heading("Gate status", "Waiting for the gate")
-        return pn.Column(
-            heading("Gate status"),
-            pmui.Alert(
-                title="Selection passed",
-                object=f"{len(value):,} turbines passed every check.",
-                severity="success",
-                margin=(4, 10),
-                sizing_mode="stretch_width",
-            ),
-        )
+            self._alert = {
+                "title": "Selection blocked",
+                "object": f"{reason}. Widen the selection to continue.",
+                "severity": "error",
+            }
+        elif value is not None:
+            self._alert = {
+                "title": "Selection passed",
+                "object": f"{len(value):,} turbines passed every check.",
+                "severity": "success",
+            }
+        else:
+            self._alert = self.param._alert.default
 
     def __panel__(self):
-        return pn.panel(self._status, sizing_mode="stretch_width")
+        alert = self.param._alert
+        return pn.Column(
+            heading(
+                "Gate status",
+                pn.bind(lambda a: "" if a["title"] else "Waiting for the gate", alert),
+            ),
+            pmui.Alert(
+                title=pn.bind(lambda a: a["title"], alert),
+                object=pn.bind(lambda a: a["object"], alert),
+                severity=pn.bind(lambda a: a["severity"], alert),
+                margin=(4, 10),
+                sizing_mode="stretch_width",
+                visible=pn.bind(lambda a: bool(a["title"]), alert),
+            ),
+            sizing_mode="stretch_width",
+        )

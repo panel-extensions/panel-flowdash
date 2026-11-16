@@ -150,6 +150,39 @@ A Parameter can also be an output. Mark it with
 instead of listed as an input. See
 [Outputs from Parameters](define-ports.md#outputs-from-parameters).
 
+### Updating a view in place
+
+When a control changes, FlowDash sends the updates of every tile downstream to
+the browser together, so they all change in the same frame. Each tile then
+changes as much as its component's view does. A view that builds new panes on
+every update, by returning them from a `pn.bind` or `param.depends` function,
+is replaced as a whole: the tile empties for a moment and its charts, maps and
+tables are drawn again from scratch. Build the panes once and bind what changes
+to their parameters instead:
+
+```python
+class Summary(pn.viewable.Viewer):
+    turbines = param.DataFrame(default=None, allow_None=True)
+
+    def _count(self, df):
+        return "Waiting for data" if df is None else f"{len(df):,} turbines"
+
+    def _spec(self, df):
+        return None if df is None else {"data": {"values": df}, "mark": "bar"}
+
+    def __panel__(self):
+        return pn.Column(
+            pn.pane.Markdown(pn.bind(self._count, self.param.turbines)),
+            pn.pane.Vega(pn.bind(self._spec, self.param.turbines)),
+        )
+```
+
+A Vega pane given a spec in which only the data values changed passes the new
+values to the chart it already draws, and a Tabulator or deck.gl pane updates
+its data the same way. Toggle `visible` to swap in a message while there is
+nothing to show. The views of the
+[wind energy example](../examples/wind-energy.md) follow this pattern.
+
 ---
 
 ## Decorator overrides on Viewer classes

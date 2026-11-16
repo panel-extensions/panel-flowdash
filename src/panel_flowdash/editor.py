@@ -1886,7 +1886,11 @@ class FlowDash(Viewer):
                 # A component rejecting a value, or a watcher of its own raising,
                 # must not abort the dispatch to the node's other consumers.
                 try:
-                    setattr(instance, _name, event.new)
+                    # Everything downstream updates within this call, so holding
+                    # the document sends the whole cascade as one message and
+                    # every tile changes in the same frame, not one after another.
+                    with pn.io.hold():
+                        setattr(instance, _name, event.new)
                 except Exception as exc:
                     if (owner := editor()) is not None:
                         owner._report_input_error(node_id, _name, exc)
