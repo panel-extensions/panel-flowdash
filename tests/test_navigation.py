@@ -5,8 +5,10 @@ without a live Bokeh server, by injecting a ``Location`` onto ``pn.state``
 and driving the registered callbacks the way the frontend would.
 """
 
+import asyncio
 import sys
 from contextlib import asynccontextmanager
+from functools import partial
 
 import panel as pn
 import panel_material_ui as pmui
@@ -205,6 +207,140 @@ class TestRequestNavigation:
         app._request_navigation("/Analytics/page")
 
         assert calls == ["/Analytics/page"]
+
+
+class _GatedLoads:
+    """Hold back the component imports of chosen dashboards until released."""
+
+    def __init__(self, app, gated_component):
+        self.gated_component = gated_component
+        self.release = asyncio.Event()
+        self.started = asyncio.Event()
+        self._original = app._ensure_components_loaded
+        app._ensure_components_loaded = self
+
+    async def __call__(self, component_ids=None):
+        if component_ids and self.gated_component in component_ids:
+            self.started.set()
+            await self.release.wait()
+        await self._original(component_ids)
+
+
+def _dashboard(app, title, component_id):
+    dash = app.store.create_dashboard(app._user_id, title)
+    dash.items = [DashboardItem(instance_id=f"{title}-1", component_id=component_id)]
+    app.store.save_dashboard(dash)
+    return dash
+
+
+def _goto(app, path):
+    pn.state.location.param.update(pathname=path, search="")
+    return asyncio.create_task(app._load_page_layout())
+
+
+def _shows_progress(app):
+    return any(isinstance(obj, pmui.LinearProgress) for obj in app._page.main)
+
+
+class TestStaleNavigation:
+    """A slow load must not overwrite a navigation that started after it."""
+
+    async def test_slow_dashboard_does_not_replace_newer_dashboard(self, app):
+        slow = _dashboard(app, "Slow", "Analytics/selector")
+        fast = _dashboard(app, "Fast", "Analytics/chart")
+        gate = _GatedLoads(app, "Analytics/selector")
+
+        first = _goto(app, f"{DASH_ROUTE_PREFIX}{slow.dashboard_id}")
+        await gate.started.wait()
+        await _goto(app, f"{DASH_ROUTE_PREFIX}{fast.dashboard_id}")
+        assert app._current_dashboard.dashboard_id == fast.dashboard_id
+
+        gate.release.set()
+        await asyncio.wait_for(first, 5)
+
+        assert first.done() and first.exception() is None
+        assert app._current_dashboard.dashboard_id == fast.dashboard_id
+        assert [item["instance_id"] for item in app._editor._tile_items] == ["Fast-1"]
+
+    async def test_slow_dashboard_progress_bar_does_not_replace_newer_page(self, app):
+        app._loading_screen = partial(FlowDashApp._loading_screen, app, delay=0.05)
+        slow = _dashboard(app, "Slow", "Analytics/selector")
+        fast = _dashboard(app, "Fast", "Analytics/chart")
+        gate = _GatedLoads(app, "Analytics/selector")
+
+        first = _goto(app, f"{DASH_ROUTE_PREFIX}{slow.dashboard_id}")
+        await gate.started.wait()
+        await _goto(app, f"{DASH_ROUTE_PREFIX}{fast.dashboard_id}")
+        await asyncio.sleep(0.1)
+
+        assert not _shows_progress(app)
+        gate.release.set()
+        await asyncio.wait_for(first, 5)
+
+    async def test_slow_dashboard_does_not_replace_launcher(self, app):
+        slow = _dashboard(app, "Slow", "Analytics/selector")
+        gate = _GatedLoads(app, "Analytics/selector")
+
+        first = _goto(app, f"{DASH_ROUTE_PREFIX}{slow.dashboard_id}")
+        await gate.started.wait()
+        await _goto(app, "/")
+        gate.release.set()
+        await asyncio.wait_for(first, 5)
+
+        assert app._current_dashboard is None
+        assert app._editor._tile_items == []
+
+    async def test_slow_edit_load_does_not_replace_newer_dashboard(self, app):
+        slow = _dashboard(app, "Slow", "Analytics/selector")
+        fast = _dashboard(app, "Fast", "Analytics/chart")
+        gate = _GatedLoads(app, "Analytics/selector")
+
+        first = asyncio.create_task(app._load_dashboard_edit(slow.dashboard_id))
+        await gate.started.wait()
+        await _goto(app, f"{DASH_ROUTE_PREFIX}{fast.dashboard_id}")
+        gate.release.set()
+        await asyncio.wait_for(first, 5)
+
+        assert app._current_dashboard.dashboard_id == fast.dashboard_id
+
+    async def test_navigation_cancels_in_flight_page(self, app):
+        started, cancelled = asyncio.Event(), asyncio.Event()
+
+        async def slow_instantiate(entry, **kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        app._instantiate_entry = slow_instantiate
+        first = _goto(app, "/Analytics/page")
+        await started.wait()
+        await _goto(app, "/")
+        await asyncio.wait_for(cancelled.wait(), 1)
+        await asyncio.wait_for(first, 1)
+
+        assert not any(isinstance(obj, pmui.Column) for obj in app._page.main)
+
+    async def test_access_denied_page_still_cancels_in_flight_page(self, app):
+        started, cancelled = asyncio.Event(), asyncio.Event()
+
+        async def slow_instantiate(entry, **kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+        app._instantiate_entry = slow_instantiate
+        first = _goto(app, "/Analytics/page")
+        await started.wait()
+        app._can_access_entry = lambda entry: False
+        await _goto(app, "/Analytics/page")
+        await asyncio.wait_for(cancelled.wait(), 1)
+        await asyncio.wait_for(first, 1)
 
 
 class TestNavigateTo:
