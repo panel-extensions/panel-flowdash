@@ -2488,8 +2488,25 @@ class BrokenExplanation(Explained):
         raise RuntimeError("no explanation today")
 
 
+class GatedTotals(Viewer):
+    """A Viewer whose tile waits for a company and that publishes its length."""
+
+    company = param.String(
+        default=None, allow_None=True, metadata={"flowdash": {"required": True}}
+    )
+
+    @param.output(param.Integer)
+    @param.depends("company")
+    def length(self):
+        return None if self.company is None else len(self.company)
+
+    def __panel__(self):
+        return pn.pane.Markdown(pn.bind("report for {}".format, self.param.company))
+
+
 EXPLAINED = "Demo/explained"
 BROKEN = "Demo/broken"
+GATED = "Demo/gated"
 
 
 def _texts(dialog):
@@ -2511,6 +2528,7 @@ class TestInspectOutputs:
                 **COMPONENTS,
                 EXPLAINED: Explained,
                 BROKEN: BrokenExplanation,
+                GATED: GatedTotals,
             },
             notifications=False,
             inspect_outputs=True,
@@ -2760,6 +2778,30 @@ class TestInspectOutputs:
 
         editor.remove_component(inspected)
         assert not editor._inspect_dialog.open
+
+    async def test_gated_tile_keeps_its_button_and_says_what_it_waits_for(self, editor):
+        instance_id = editor.add_component(GATED)
+        tile = _tile(editor)
+        gated = editor._tile_objects[0]
+        assert tile[0] is gated
+        placeholder, body = gated
+        assert placeholder.visible and not body.visible
+        assert tile[1].visible
+
+        self._click(editor, instance_id)
+
+        dialog = editor._inspect_dialog
+        notice = dialog.objects[0]
+        assert isinstance(notice, pmui.Alert)
+        assert notice.severity == "info"
+        assert "Waiting for Company" in notice.objects[0].object
+        assert "*No value yet*" in _texts(dialog)
+
+        editor.graph.get_state(instance_id).company = "ACME"
+        self._click(editor, instance_id)
+
+        assert not dialog.select(pmui.Alert)
+        assert 4 in [pane.object for pane in dialog.select(pn.pane.JSON)]
 
     async def test_app_passes_the_switch_to_its_editor(self):
         from panel_flowdash.app import FlowDashApp

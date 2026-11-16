@@ -47,6 +47,7 @@ from panel_flowdash.util import (
     gate_view,
     is_async,
     is_async_gen,
+    missing_inputs,
     notify,
     panel_call,
     panel_viewer,
@@ -1059,12 +1060,14 @@ class FlowDash(Viewer):
         if self._inspect_tiles.get(instance_id) is not tile:
             return
         spec = self._component_specs[self._component_id_for_instance(instance_id)]
+        objects = self._inspection_sections(instance_id, spec)
+        # A gated tile shows its placeholder, so say why its outputs may be empty.
+        missing = missing_inputs(self._dataflow_graph.get_state(instance_id), spec.inputs)
+        if missing:
+            notice = f"Waiting for {', '.join(missing)}; the outputs may not be computed yet."
+            objects.insert(0, pmui.Alert(notice, severity="info", margin=(0, 0, 6, 0)))
         self._inspected_id = instance_id
-        self._inspect_dialog.param.update(
-            title=spec.title,
-            objects=self._inspection_sections(instance_id, spec),
-            open=True,
-        )
+        self._inspect_dialog.param.update(title=spec.title, objects=objects, open=True)
 
     def _close_inspection_dialog(self):
         """Close the dialog and let go of the values it shows, whose tile is gone."""

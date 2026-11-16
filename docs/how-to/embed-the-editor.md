@@ -212,7 +212,7 @@ editor = FlowDash(
 )
 ```
 
-The button is hidden while tiles are being arranged, because it would sit under the tile's close handle, and shown in view mode and in preview. Edit mode keeps its port popups. Components marked `sidebar=True` are not tiles and get no button.
+The button is hidden while tiles are being arranged, because it would sit under the tile's close handle, and shown in view mode and in preview. Edit mode keeps its port popups. Components marked `sidebar=True` are not tiles and get no button. A tile still showing its placeholder because a required input is missing keeps its button, and the dialog then starts with a note naming the inputs it is waiting for.
 
 ### Explaining an output
 
