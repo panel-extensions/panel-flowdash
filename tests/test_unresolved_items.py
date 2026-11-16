@@ -175,16 +175,20 @@ class TestPlaceholders:
         model.tile_layout.append({"instance_id": "b1", "x": 4, "y": 0, "w": 2, "h": 6})
         editor.load_model(model)
         editor.mode = "dashboard"
-        assert "b1" not in editor._inspect_tiles
-        assert editor._tile_grid[editor._grid_ids.index("b1")] is editor._tile_objects[2]
+        tile = editor._tile_grid[editor._grid_ids.index("b1")]
+        assert tile.view is editor._tile_objects[2]
+        assert not tile.inspect_button.visible
+        assert (tile.min_width, tile.max_width) == (None, None)
         assert editor.to_model().tile_layout == editor.layout
         (entry,) = [e for e in editor.layout if e["instance_id"] == "b1"]
         assert entry["h"] == 6
 
         editor.read_only = True
         editor.settings.viewers_can_inspect = True
-        assert "b1" not in editor._inspect_tiles
-        assert editor._tile_grid[editor._grid_ids.index("b1")] is editor._tile_objects[2]
+        tile = editor._tile_grid[editor._grid_ids.index("b1")]
+        assert tile.view is editor._tile_objects[2]
+        assert not tile.inspect_button.visible
+        assert (tile.min_width, tile.max_width) == (None, None)
 
     async def test_removing_a_placeholder_drops_it_and_its_edges(self):
         editor = _editor(notifications=False)

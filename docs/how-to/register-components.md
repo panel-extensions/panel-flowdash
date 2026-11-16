@@ -38,7 +38,7 @@ def app(config):
 | `tags` | `list[str]` | `[]` | Keywords matched by the palette search. A `source`, `transform`, `view` or `widget` tag also picks the palette group. See [The component palette](#the-component-palette). |
 | `provides` | `list` | `[]` | Output port declarations. See [Define ports](define-ports.md). |
 | `requires` | `list` | `[]` | Input port declarations. See [Define ports](define-ports.md). |
-| `placeholder` | `str` | `None` | Message a tile shows while a blocking input is unset, replacing "Waiting for ...". See [Define ports](define-ports.md#required-inputs). |
+| `placeholder` | `str` | `None` | Message a tile shows while a blocking input is unset, leading the "This tile needs ..." text. See [Define ports](define-ports.md#required-inputs). |
 | `default_size` | `dict` | `None` | Size of a new tile in pixels, e.g. `{"width": 600, "height": 400}`. See [Layout & sizing](layout-and-sizing.md#tile-sizing-hints). |
 | `min_size` | `dict` | `None` | Smallest size a tile can be resized to, in pixels. |
 | `max_size` | `dict` | `None` | Largest size a tile can be resized to, in pixels. |

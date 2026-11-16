@@ -202,8 +202,11 @@ replace the introspected inputs as usual. A Parameter declared as an output
 with `{"output": True}` is not an input, so `required` and `blocking` on it are
 ignored.
 
-The placeholder reads "Waiting for Company", naming the labels of the inputs that
-are still missing. Pass `placeholder` to `@register` to replace the text.
+The placeholder reads "This tile needs Company", naming the labels of the inputs
+that are still missing, and explains that the tile appears once a connected
+component provides a value. Pass `placeholder` to `@register` to lead with your
+own message; the inputs it needs are still named below it. The tile's title bar
+shows a Waiting chip meanwhile.
 
 The component is still created while it waits, so it can subscribe to
 parameters and publish outputs; only what the tile displays changes, and its

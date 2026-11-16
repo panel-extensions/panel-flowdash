@@ -203,13 +203,16 @@ recorded on the node, see `graph.get_failures(node_id).failed`, which maps the
 input name to an `InputFailure` with the upstream `source_id`, `source_port`
 and the `error`.
 
-In the dashboard, in view and in edit mode, the component's tile is covered by a
-message naming the upstream port and the exception, for example:
+In the dashboard, in view and in edit mode, the component's stale content is
+faded behind a message saying that the tile could not update and which upstream
+component stopped it, and the tile's title bar shows a Failed chip. A Details
+disclosure holds the technical explanation naming the input, the upstream port
+and the exception, for example:
 
 > Input 'ticker' is stale: 'inverse' of 'Inverse' failed (ZeroDivisionError: division by zero)
 
 The message disappears when a valid value arrives. If the input is a required one
-that has not received a value yet, the message covers the "Waiting for ..."
+that has not received a value yet, the message covers the "This tile needs ..."
 placeholder, since the failure is why the input is still unset. On the wiring
 canvas the node and the failed edge are outlined in red, and the value popup of
 the input shows the failure instead of the stale value.
