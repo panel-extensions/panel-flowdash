@@ -1708,7 +1708,10 @@ class TestDisplayModes:
         assert actions.index(editor._settings_button) < actions.index(button)
         editor.editable = False
         actions = editor._dashboard_bar._actions.objects
-        assert actions.index(button) < actions.index(editor._dashboard_bar.mode_toggle)
+        bar = editor._dashboard_bar
+        assert actions.index(bar.mode_toggle) < actions.index(bar.refresh_button)
+        assert actions.index(bar.refresh_period) < actions.index(button)
+        assert actions.index(button) < actions.index(bar.overflow)
 
     async def test_toolbar_extra_updates_reactively(self, editor):
         button = pmui.Button(label="Later")

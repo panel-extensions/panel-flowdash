@@ -1989,7 +1989,6 @@ class FlowDash(Viewer):
             self._palette_section,
             width=_SIDE_PANEL_WIDTH,
             sizing_mode="stretch_height",
-            scroll="y-auto",
             margin=0,
             sx={"borderRight": 1, "borderColor": "divider"},
         )

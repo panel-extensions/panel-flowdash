@@ -44,6 +44,22 @@ _DEFAULT_REFERENCE_WIDTH = 1200
 # Thumbnail tiles are drawn at least this tall (in grid pixels) so their icon fits.
 _MIN_TILE_HEIGHT = 120.0
 
+# Filter chips: every chip has the check, as a chip keeps an icon once it had
+# one, and only the selected chip shows it. It is drawn at the 18px of a Material
+# filter chip, centred like the label (Panel's chip icon is a 2em font glyph,
+# set inline, hence !important). Every chip reserves the check's room as label
+# padding, so selecting one changes no chip's width and the row never shifts:
+# 6px + 18px - 4px of icon plus 12px of padding on each side is 44px in all,
+# which an outlined chip, inside its 1px border, splits as 21px either side.
+_CHIP_ICON_SX = {
+    "fontSize": "18px !important",
+    "lineHeight": 1,
+    "ml": "6px",
+    "mr": "-4px",
+}
+_SELECTED_CHIP_SX = {"& .MuiChip-icon": _CHIP_ICON_SX, "& .MuiChip-label": {"px": "12px"}}
+_CHIP_SX = {"& .MuiChip-icon": {"display": "none"}, "& .MuiChip-label": {"px": "21px"}}
+
 _ICON_CSS = """
 .mi {
   font-family: 'Material Icons';
@@ -486,7 +502,7 @@ class Launcher(Viewer):
         self._dashboards: list[DashboardModel] = []
         self._menus: dict[str, pmui.MenuButton] = {}
         self._chips = {
-            key: pmui.Chip(label=label, size="medium", margin=0)
+            key: pmui.Chip(label=label, icon="check", size="medium", margin=0)
             for key, label in self._FILTER_LABELS.items()
         }
         for key, chip in self._chips.items():
@@ -842,9 +858,9 @@ class Launcher(Viewer):
                 label = f"{label} {len(self._dashboards)}"
             chip.param.update(
                 label=label,
-                icon="check" if selected else None,
                 color="primary" if selected else "default",
                 variant="filled" if selected else "outlined",
+                sx=_SELECTED_CHIP_SX if selected else _CHIP_SX,
             )
         self._sort_menu.label = self._SORT_LABELS[self.sort]
         icons = self._component_icons()

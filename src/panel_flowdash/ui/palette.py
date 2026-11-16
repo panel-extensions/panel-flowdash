@@ -336,6 +336,9 @@ class ComponentPalette(Viewer):
             level_indent=0,
             sizing_mode="stretch_width",
             margin=0,
+            # Panel caps a child at its parent's height, which would let the
+            # entries overflow the list instead of extending its scroll area.
+            styles={"max-height": "none"},
             sx=_PALETTE_SX,
         )
         self.menu.on_click(on_click)
@@ -383,12 +386,20 @@ class ComponentPalette(Viewer):
             margin=(12, 12),
             sx={"p": 1, "borderRadius": 2, "bgcolor": "background.default"},
         )
-        self._layout = pn.Column(
-            self._shortcut,
+        # The list scrolls in its own region between the search field and the
+        # hint, so neither scrolls away and the hint never covers an entry.
+        self._list = pn.Column(
             self._empty,
             self.menu,
+            sizing_mode="stretch_both",
+            scroll="y-auto",
+            margin=0,
+        )
+        self._layout = pn.Column(
+            self._shortcut,
+            self._list,
             self._hint,
-            sizing_mode="stretch_width",
+            sizing_mode="stretch_both",
             margin=0,
         )
 
