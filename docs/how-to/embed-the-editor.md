@@ -258,7 +258,7 @@ The hook is called once per output port while the sheet is built, on the live co
 
 ## Fitting it into your own layout
 
-The dashboard bar runs across the top of the editor. In view mode (`editable=False`) it shows the dashboard title, when it was last refreshed, a *Refresh* button, a full screen button, a *View*/*Edit* control (unless the editor is `read_only`) and a menu with *Download*. In edit mode it shows the title with the save state (*Unsaved changes*, *Saved 16:24* or *Read-only*), the *Dataflow*/*Layout* tabs that switch `mode`, *Settings*, a menu with *Download*, *Import file* and *Clear canvas*, and *Discard* (reloads the saved dashboard after asking), *Save* (enabled while there are unsaved changes) and *Done*, which returns to view mode and asks first when there are unsaved changes. Hide the bar with `toolbar=False`, leaving only the component palette, or extend it with your own controls through `toolbar_extra`, which places them in the bar's actions in both modes. Small text buttons match the built-in actions:
+The dashboard bar runs across the top of the editor. In view mode (`editable=False`) it shows the dashboard title, when it was last refreshed, a *Refresh* button, a full screen button, a *View*/*Edit* control (unless the editor is `read_only`) and a menu with *Download*. In edit mode it shows the title with the save state (*Unsaved changes*, *Saved 16:24* or *Read-only*), the *Dataflow*/*Layout*/*Split* tabs that switch `mode`, *Settings*, a menu with *Download*, *Import file* and *Clear canvas*, and *Discard* (reloads the saved dashboard after asking), *Save* (enabled while there are unsaved changes) and *Done*, which returns to view mode and asks first when there are unsaved changes. Hide the bar with `toolbar=False`, leaving only the component palette, or extend it with your own controls through `toolbar_extra`, which places them in the bar's actions in both modes. Small text buttons match the built-in actions:
 
 ```python
 import panel_material_ui as pmui
@@ -266,6 +266,8 @@ import panel_material_ui as pmui
 share = pmui.Button(label="Share", icon="share", variant="text", size="small")
 editor = FlowDash(components, toolbar_extra=[share])
 ```
+
+The *Split* tab (`mode="split"`) shows the canvas and the tile grid side by side with a draggable divider. Selecting a component on either side selects it on the other and in the inspector (clicking a tile whose node is out of view pans the canvas to it), and components added or removed on the canvas appear on the grid straight away. The grid there previews the dashboard at the width of its pane; tiles are arranged in the *Layout* tab, or sized from the inspector's *Tile* tab. Collapsing a side with the divider's arrows switches to the tab of the side that is left. The browser remembers the pane sizes and whether the Split tab was last used, and in windows narrower than 1600 px the inspector stays folded until something is selected.
 
 Components registered with `sidebar=True` are kept out of the tile grid and
 shown in the editor's controls bar above the tiles. Their views are also

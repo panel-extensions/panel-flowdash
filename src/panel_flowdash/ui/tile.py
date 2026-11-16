@@ -43,6 +43,11 @@ _TILE_CSS = """
   width: auto !important;
   z-index: 20;
 }
+:host(.flowdash-tile-selected) {
+  border-radius: 12px;
+  outline: 2px solid var(--mui-palette-primary-main, #0072b5);
+  outline-offset: -2px;
+}
 :host(.flowdash-tile-floating:hover) .flowdash-tile-header,
 :host(.flowdash-tile-floating:focus-within) .flowdash-tile-header {
   opacity: 1;
@@ -268,6 +273,14 @@ class Tile(pn.Column):
         if shown and not titled:
             classes.append("flowdash-tile-floating")
         self.css_classes = classes
+
+    def set_selected(self, selected: bool):
+        """Outline the tile as the selection, e.g. of the canvas beside the grid."""
+        classes = [c for c in self.css_classes if c != "flowdash-tile-selected"]
+        if selected:
+            classes.append("flowdash-tile-selected")
+        if classes != self.css_classes:
+            self.css_classes = classes
 
     def set_actions(self, *, inspect: bool, show_in_editor: bool):
         """Offer Inspect and Show in editor only where they apply to the current viewer."""

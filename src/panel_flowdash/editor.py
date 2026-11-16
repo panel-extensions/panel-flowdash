@@ -15,6 +15,7 @@ import copy
 import dataclasses
 import inspect
 import io
+import itertools
 import json
 import logging
 import pathlib
@@ -86,11 +87,12 @@ from panel_flowdash.ui.inspect_sheet import (
 )
 from panel_flowdash.ui.inspector import Inspector
 from panel_flowdash.ui.layout_panel import GRID_EDIT_CSS, LayoutPanel
-from panel_flowdash.ui.node_card import node_card, placeholder_card
+from panel_flowdash.ui.node_card import CARD_WIDTH, card_height, node_card, placeholder_card
 from panel_flowdash.ui.palette import ComponentPalette, palette_entry, palette_items
 from panel_flowdash.ui.settings_dialog import SettingsDialog
+from panel_flowdash.ui.split_view import TILE_KEY_PREFIX, SplitView
 from panel_flowdash.ui.states import StartCard
-from panel_flowdash.ui.status_bar import StatusBar
+from panel_flowdash.ui.status_bar import StatusBar, select_on_canvas
 from panel_flowdash.ui.text import code_block, escape_markdown, text_typography
 from panel_flowdash.ui.tile import Tile
 from panel_flowdash.util import (
@@ -285,6 +287,10 @@ _NODE_DEFAULTS = {
     "deletable": True,
 }
 _SIDE_PANEL_WIDTH = 250
+
+# Narrower windows show the Split tab with the inspector folded until something is selected.
+_SPLIT_FOLD_WIDTH = 1600
+
 _FLOW_STYLESHEET = """\
 .react-flow__node {
   padding: 0;
@@ -601,10 +607,11 @@ class FlowDash(Viewer):
 
     mode = param.Selector(
         default="wiring",
-        objects=["wiring", "dashboard"],
+        objects=["wiring", "dashboard", "split"],
         doc="""
         Which workspace is shown: 'wiring' for the ReactFlow canvas, 'dashboard'
-        for the tile grid.""",
+        for the tile grid and 'split' for both side by side, with the canvas
+        on the left. Only meaningful while `editable`.""",
     )
 
     notifications = param.Boolean(
@@ -789,6 +796,15 @@ class FlowDash(Viewer):
         # The framed tiles of the grid, by instance id, kept so a grid rebuild
         # does not re-render them.
         self._inspect_tiles: dict[str, Tile] = {}
+        # Tiles carry a key the page reports when one is clicked in the Split tab.
+        self._tile_keys = itertools.count()
+        # The tab Split returns to when it is toggled off.
+        self._mode_before_split = "wiring"
+        self._split_shown = False
+        # Whether the inspector was folded to make room for the split, rather than by the user.
+        self._inspector_folded = False
+        self._folding = False
+        self._pending_reveal: str | None = None
         self._inspected_id: str | None = None
         # Responsive grid settings waiting to be applied; empty values must also be
         # applied so a loaded dashboard doesn't inherit the previous one's overrides.
@@ -1281,7 +1297,7 @@ class FlowDash(Viewer):
                 self._forget_node(node_id)
                 self._dispose_component(node_id)
                 self.dirty = True
-                self._rebuild_sidebar()
+                self._sync_placed()
 
         flow.param.watch(self._on_selection_changed, "selection")
         flow.on("edge_added", _on_edge_added)
@@ -1644,6 +1660,7 @@ class FlowDash(Viewer):
             label=name,
             subtitle=" ".join(description.split("\n\n")[0].split()) or None,
             on_show_in_editor=partial(self._on_show_in_editor, instance_id),
+            css_classes=["flowdash-tile", f"{TILE_KEY_PREFIX}{next(self._tile_keys)}"],
             **bounds,
         )
         tile.on_inspect = partial(self._on_inspect_clicked, instance_id, tile)
@@ -2092,6 +2109,15 @@ class FlowDash(Viewer):
         )
         self._fullscreen_controller.param.watch(self._on_fullscreen_changed, "active")
         self._fullscreen_overlay = PresentationOverlay(bar.title, bar.health_chip)
+        self._split_view = SplitView(
+            on_collapse=self._on_split_collapsed,
+            on_load=self._on_split_preferences_loaded,
+            on_tile=self._on_tile_clicked,
+            on_resize=self._fit_canvas,
+        )
+        self._flow.param.watch(self._sync_tile_selection, "selection")
+        self._inspector.param.watch(self._on_inspector_toggled, "collapsed")
+        self._split_view.events.param.watch(self._on_pane_resized, "pane_size")
 
         self._sync_toolbar_extra()
         self._sync_toolbar_state()
@@ -2111,6 +2137,7 @@ class FlowDash(Viewer):
             self._status_bar,
             self._fullscreen_overlay,
             self._fullscreen_controller,
+            self._split_view.storage,
             sizing_mode="stretch_both",
             stylesheets=[PRESENTATION_CSS],
         )
@@ -2292,14 +2319,24 @@ class FlowDash(Viewer):
     def _apply_mode_state(self):
         """Reconcile the dashboard bar, side panel and workspace with the display params."""
         interactive = self.editable and not self.preview
-        showing_grid = self.mode == "dashboard" or not self.editable
+        split = self.editable and self.mode == "split"
+        showing_grid = split or self.mode == "dashboard" or not self.editable
+        showing_canvas = split or not showing_grid
         self._dashboard_bar.visible = self.toolbar and not self.fullscreen
         self._dashboard_bar.sync()
-        self._side_panel.visible = not showing_grid
-        self._inspector.visible = not showing_grid
-        self._layout_panel.visible = interactive and showing_grid
+        self._side_panel.visible = showing_canvas
+        self._inspector.visible = showing_canvas
+        self._layout_panel.visible = interactive and showing_grid and not split
         self._status_bar.visible = self.editable
-        self._tile_grid.param.update(editable=interactive, card=interactive)
+        self._split_view.events.active = split
+        if split != self._split_shown:
+            self._split_shown = split
+            self._fold_inspector(split)
+        # Beside the canvas the grid is narrower than the layout is authored at,
+        # so arranging it there would edit a narrow breakpoint's layout instead;
+        # it previews the dashboard, and tiles are arranged in the Layout tab.
+        arranging = interactive and not split
+        self._tile_grid.param.update(editable=arranging, card=arranging)
         # Column children rather than Row children, so the dialogs take no flex space.
         dialogs = [self._clear_dialog, self._import_dialog, self._settings_dialog]
         if self.inspect_outputs:
@@ -2307,12 +2344,141 @@ class FlowDash(Viewer):
         shared_dialog = page_dialog() if self.include_page_dialog else None
         if shared_dialog is not None:
             dialogs.append(shared_dialog)
-        if showing_grid:
+        if split:
+            self._split_view.show([self._flow], [self._view_controls, self._tile_grid])
+            self._workspace_area[:] = [self._split_view, *dialogs]
+            self._rebuild_tile_grid()
+        elif showing_grid:
             self._workspace_area[:] = [self._view_controls, self._tile_grid, *dialogs]
             self._rebuild_tile_grid()
         else:
             self._stash_tile_layout()
             self._workspace_area[:] = [self._flow, *dialogs]
+            self._rebuild_sidebar()
+        self._sync_tile_selection()
+
+    @param.depends("mode", watch=True)
+    def _remember_mode(self):
+        if self.mode != "split":
+            self._mode_before_split = self.mode
+        self._split_view.preferences.split = self.mode == "split"
+
+    def toggle_split(self):
+        """Show the canvas and the tile grid side by side, or return to the previous tab."""
+        self.mode = self._mode_before_split if self.mode == "split" else "split"
+
+    @property
+    def _grid_on_screen(self) -> bool:
+        return self.mode in ("dashboard", "split") or not self.editable
+
+    def _on_split_collapsed(self, pane: int):
+        """Fall back to the tab of the pane left over, keeping the split's sizes for next time."""
+        if self.mode == "split":
+            self.mode = "dashboard" if pane == 0 else "wiring"
+        self._split_view.restore()
+
+    def _on_split_preferences_loaded(self):
+        if self._split_view.preferences.split and self.mode != "split":
+            self.mode = "split"
+
+    def _fit_canvas(self):
+        self._flow.fit_view()
+
+    def _reveal_node(self, instance_id: str):
+        """Pan the canvas, at its current zoom, so the node of *instance_id* is in view.
+
+        The server knows the viewport and the node positions but not the
+        rendered node sizes, so the node's center is estimated from its card.
+        """
+        pane = self._split_view.events.pane_size
+        node = next((n for n in self._flow.nodes if n["id"] == instance_id), None)
+        if node is None or not pane:
+            return
+        viewport = self._flow.viewport or {}
+        zoom = viewport.get("zoom") or 1
+        item = next((i for i in self._tile_items if i["instance_id"] == instance_id), None)
+        spec = self._tile_spec(item) if item is not None else None
+        height = card_height(len(spec.inputs), len(spec.outputs)) if spec else card_height(0, 0)
+        x = (node["position"]["x"] + CARD_WIDTH / 2) * zoom + viewport.get("x", 0)
+        y = (node["position"]["y"] + height / 2) * zoom + viewport.get("y", 0)
+        if 0 <= x <= pane[0] and 0 <= y <= pane[1]:
+            return
+        self._flow.fit_view(instance_id, min_zoom=zoom, max_zoom=zoom, duration=300)
+
+    def _fold_inspector(self, split: bool):
+        """Fold the inspector while the split is shown in a narrow window, until it is needed.
+
+        Beside the palette and the open inspector, the canvas and the grid would
+        get about 300 px each at 1280 px. The inspector opens again with the
+        first selection, or when the split is left.
+        """
+        width = self._split_view.storage.window_width
+        selection = self._flow.selection or {}
+        if split:
+            fold = (
+                width is not None
+                and width < _SPLIT_FOLD_WIDTH
+                and not self._inspector.collapsed
+                and not (selection.get("nodes") or selection.get("edges"))
+            )
+        else:
+            fold = False
+        if fold or self._inspector_folded:
+            self._folding = True
+            try:
+                self._inspector.collapsed = fold
+            finally:
+                self._folding = False
+            self._inspector_folded = fold
+
+    def _on_inspector_toggled(self, _event):
+        if not self._folding:
+            self._inspector_folded = False
+
+    def _sync_tile_selection(self, *_events):
+        """Outline the tiles of the components selected on the canvas, in the Split tab."""
+        selected: set[str] = set()
+        if self.editable and self.mode == "split":
+            selection = self._flow.selection or {}
+            selected = set(selection.get("nodes") or [])
+            if self._inspector_folded and (selected or selection.get("edges")):
+                self._fold_inspector(False)
+        for instance_id, tile in self._inspect_tiles.items():
+            tile.set_selected(instance_id in selected)
+
+    def _on_tile_clicked(self, key: str):
+        """Select the component of a tile clicked in the Split tab on the canvas."""
+        if not (self.editable and self.mode == "split"):
+            return
+        css_class = f"{TILE_KEY_PREFIX}{key}"
+        instance_id = next(
+            (iid for iid, tile in self._inspect_tiles.items() if css_class in tile.css_classes),
+            None,
+        )
+        selection = self._flow.selection or {}
+        if instance_id is None or (
+            selection.get("nodes") == [instance_id] and not selection.get("edges")
+        ):
+            return
+        if self._inspector_folded:
+            # The inspector opens for the selection and narrows the pane, so the
+            # node is revealed once the pane reports its new size.
+            self._pending_reveal = instance_id
+            self._fold_inspector(False)
+        else:
+            self._reveal_node(instance_id)
+        select_on_canvas(self._flow, node_id=instance_id)
+
+    def _on_pane_resized(self, _event):
+        instance_id, self._pending_reveal = self._pending_reveal, None
+        if instance_id is not None and self.mode == "split":
+            self._reveal_node(instance_id)
+
+    def _sync_placed(self):
+        """Show a component added or removed on whichever of the canvas and grid is on screen."""
+        if self._grid_on_screen:
+            self._rebuild_tile_grid()
+        else:
             self._rebuild_sidebar()
 
     def _stash_tile_layout(self):
@@ -2533,7 +2699,7 @@ class FlowDash(Viewer):
             position,
         )
         self.dirty = True
-        self._rebuild_sidebar()
+        self._sync_placed()
         return instance_id
 
     def _place(self, component_id, instance_id, config, position=None) -> str:
@@ -2647,7 +2813,7 @@ class FlowDash(Viewer):
         """Remove a placed component along with its edges and its tile."""
         self._unplace(instance_id)
         self.dirty = True
-        self._rebuild_sidebar()
+        self._sync_placed()
 
     def _unplace(self, instance_id: str):
         """Take a component off the graph, canvas and tile list, and dispose it."""

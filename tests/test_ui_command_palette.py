@@ -124,6 +124,7 @@ class TestItems:
         assert _ids(controller, "Actions") == [
             "action:refresh",
             "action:save",
+            "action:split",
             "action:view",
             "action:settings",
             "action:theme",

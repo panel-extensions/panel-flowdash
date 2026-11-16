@@ -490,6 +490,8 @@ export function render({model, el: root}) {
       model.send_msg({type: "shortcut", name: "edit"})
     } else if (key === "f" && !editing()) {
       document.dispatchEvent(new CustomEvent("flowdash:fullscreen", {cancelable: true}))
+    } else if (key === "s" && editing()) {
+      model.send_msg({type: "shortcut", name: "split"})
     } else if (event.key === "Escape" && editing()) {
       model.send_msg({type: "shortcut", name: "view"})
     }
