@@ -54,6 +54,44 @@ class DashboardStoreError(Exception):
     """
 
 
+class DashboardConflictError(DashboardStoreError):
+    """A save was refused because the dashboard changed since it was loaded.
+
+    Raised by :meth:`BaseDashboardStore.save_dashboard` when the stored
+    revision differs from the revision the saved model was loaded at, that is
+    when another session saved the dashboard in the meantime.
+
+    Attributes
+    ----------
+    dashboard_id
+        The dashboard that was being saved.
+    expected
+        The revision the rejected model was based on.
+    current
+        The revision now stored.
+    """
+
+    def __init__(self, dashboard_id: str, expected: int | None, current: int | None):
+        self.dashboard_id = dashboard_id
+        self.expected = expected
+        self.current = current
+        super().__init__("This dashboard was changed in another session since you opened it.")
+
+
+def check_revision(dashboard: DashboardModel, stored: int | None) -> int:
+    """Return the revision to store *dashboard* at, given the *stored* one.
+
+    Raises :class:`DashboardConflictError` if *dashboard* was loaded at a
+    revision other than the stored one. A model with no revision
+    (``None``) is saved unconditionally, and *stored* is ``None`` when the
+    dashboard is not stored (new, or deleted since it was loaded).
+    """
+    expected = dashboard.revision
+    if expected is not None and stored is not None and stored != expected:
+        raise DashboardConflictError(dashboard.dashboard_id, expected, stored)
+    return max(stored or 0, expected or 0) + 1
+
+
 @dataclass
 class DashboardItem:
     """A component instance on the dashboard.
@@ -138,6 +176,8 @@ class DashboardModel:
     permission: Permission = field(default_factory=Permission)
     # Dashboard-wide values, keyed by the parameter names of the editor's settings object.
     settings: dict[str, Any] = field(default_factory=dict)
+    # Bumped by the store on every save; None saves without a conflict check.
+    revision: int | None = None
 
     @property
     def owner(self) -> str:
@@ -158,6 +198,7 @@ class DashboardModel:
             "reference_width": self.reference_width,
             "permission": self.permission.to_dict(),
             "settings": copy.deepcopy(self.settings),
+            "revision": self.revision,
         }
 
     @classmethod
@@ -180,7 +221,15 @@ class DashboardModel:
             reference_width=data.get("reference_width"),
             permission=Permission.from_dict(data.get("permission")),
             settings=decode_settings(data.get("settings")),
+            revision=_decode_revision(data.get("revision")),
         )
+
+
+def _decode_revision(value: Any) -> int | None:
+    """Return a stored revision, or None (no conflict check) if it is not an integer."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
 
 
 class BaseDashboardStore(ABC):
@@ -193,13 +242,26 @@ class BaseDashboardStore(ABC):
     To refuse a create, save, rename, delete or permission change, raise
     :class:`DashboardStoreError` with a message for the user.
 
+    Stores that detect concurrent edits keep a revision per dashboard: every
+    save stores ``dashboard.revision + 1`` (see :func:`check_revision`), and a
+    save based on an older revision than the stored one raises
+    :class:`DashboardConflictError`. A store that does not support revisions
+    simply ignores the field and saves last-writer-wins.
+
     Models returned by listings may be shared with a backend cache, so callers
     treat them as read-only; single-dashboard lookups return private copies.
     """
 
     @abstractmethod
     def save_dashboard(self, dashboard: DashboardModel) -> None:
-        """Insert or update a dashboard."""
+        """Insert or update a dashboard.
+
+        Stores that support revisions refuse a *dashboard* whose ``revision``
+        is not the stored one with :class:`DashboardConflictError`, as one
+        atomic check and write, and on success set ``dashboard.revision`` to
+        the stored revision. Renaming a dashboard or changing its permission
+        does not change its revision.
+        """
 
     @abstractmethod
     def _load_any(self, dashboard_id: str) -> DashboardModel | None:
@@ -388,15 +450,21 @@ class MemoryDashboardStore(BaseDashboardStore):
     def __init__(self, dashboards: dict[str, DashboardModel] | None = None):
         self._dashboards: dict[str, DashboardModel] = {}
         self._order: list[str] = []
+        self._lock = threading.Lock()
         for dashboard in (dashboards or {}).values():
-            self.save_dashboard(dashboard)
+            self.save_dashboard(copy.deepcopy(dashboard))
 
     def save_dashboard(self, dashboard: DashboardModel) -> None:
-        self._dashboards[dashboard.dashboard_id] = copy.deepcopy(dashboard)
-        # Re-inserting moves the dashboard to the front of the recency order.
-        if dashboard.dashboard_id in self._order:
-            self._order.remove(dashboard.dashboard_id)
-        self._order.insert(0, dashboard.dashboard_id)
+        with self._lock:
+            stored = self._dashboards.get(dashboard.dashboard_id)
+            revision = check_revision(dashboard, None if stored is None else stored.revision)
+            self._dashboards[dashboard.dashboard_id] = copy.deepcopy(dashboard)
+            self._dashboards[dashboard.dashboard_id].revision = revision
+            # Re-inserting moves the dashboard to the front of the recency order.
+            if dashboard.dashboard_id in self._order:
+                self._order.remove(dashboard.dashboard_id)
+            self._order.insert(0, dashboard.dashboard_id)
+        dashboard.revision = revision
 
     def _load_any(self, dashboard_id: str) -> DashboardModel | None:
         model = self._dashboards.get(dashboard_id)
@@ -406,11 +474,12 @@ class MemoryDashboardStore(BaseDashboardStore):
         return [copy.deepcopy(self._dashboards[did]) for did in self._order]
 
     def delete_dashboard(self, user_id: str, dashboard_id: str) -> bool:
-        model = self._dashboards.get(dashboard_id)
-        if model is None or model.user_id != user_id:
-            return False
-        del self._dashboards[dashboard_id]
-        self._order.remove(dashboard_id)
+        with self._lock:
+            model = self._dashboards.get(dashboard_id)
+            if model is None or model.user_id != user_id:
+                return False
+            del self._dashboards[dashboard_id]
+            self._order.remove(dashboard_id)
         return True
 
     def rename_dashboard(self, user_id: str, dashboard_id: str, new_title: str) -> bool:
@@ -548,6 +617,12 @@ class DashboardStore(BaseDashboardStore):
                     )
                 except sqlite3.OperationalError:
                     pass
+            try:
+                conn.execute(
+                    "ALTER TABLE dashboards ADD COLUMN revision INTEGER NOT NULL DEFAULT 0"
+                )
+            except sqlite3.OperationalError:
+                pass
 
     def list_dashboards(self, user_id: str) -> list[DashboardModel]:
         with self._get_conn() as conn:
@@ -619,47 +694,45 @@ class DashboardStore(BaseDashboardStore):
         return cursor.rowcount > 0
 
     def save_dashboard(self, dashboard: DashboardModel) -> None:
-        items_json = json.dumps([item.to_dict() for item in dashboard.items])
-        edges_json = json.dumps([edge.to_dict() for edge in dashboard.edges])
-        tile_layout_json = json.dumps(dashboard.tile_layout)
-        breakpoints_json = json.dumps(dashboard.breakpoints)
-        responsive_layouts_json = json.dumps(dashboard.responsive_layouts)
-        reference_width_json = json.dumps(dashboard.reference_width)
-        permission_json = json.dumps(dashboard.permission.to_dict())
-        settings_json = json.dumps(dashboard.settings)
+        columns = {
+            "title": dashboard.title,
+            "version": dashboard.version,
+            "items_json": json.dumps([item.to_dict() for item in dashboard.items]),
+            "edges_json": json.dumps([edge.to_dict() for edge in dashboard.edges]),
+            "tile_layout_json": json.dumps(dashboard.tile_layout),
+            "breakpoints_json": json.dumps(dashboard.breakpoints),
+            "responsive_layouts_json": json.dumps(dashboard.responsive_layouts),
+            "reference_width_json": json.dumps(dashboard.reference_width),
+            "permission_json": json.dumps(dashboard.permission.to_dict()),
+            "settings_json": json.dumps(dashboard.settings),
+        }
         with self._get_conn() as conn:
+            # Writing first takes the database's write lock, so the revision
+            # read below cannot change before this transaction commits.
             conn.execute(
-                """
-                INSERT INTO dashboards (dashboard_id, user_id, title, version, items_json, edges_json, tile_layout_json, breakpoints_json, responsive_layouts_json, reference_width_json, permission_json, settings_json, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-                ON CONFLICT(dashboard_id) DO UPDATE SET
-                    title = excluded.title,
-                    version = excluded.version,
-                    items_json = excluded.items_json,
-                    edges_json = excluded.edges_json,
-                    tile_layout_json = excluded.tile_layout_json,
-                    breakpoints_json = excluded.breakpoints_json,
-                    responsive_layouts_json = excluded.responsive_layouts_json,
-                    reference_width_json = excluded.reference_width_json,
-                    permission_json = excluded.permission_json,
-                    settings_json = excluded.settings_json,
-                    updated_at = datetime('now')
-                """,
-                (
-                    dashboard.dashboard_id,
-                    dashboard.user_id,
-                    dashboard.title,
-                    dashboard.version,
-                    items_json,
-                    edges_json,
-                    tile_layout_json,
-                    breakpoints_json,
-                    responsive_layouts_json,
-                    reference_width_json,
-                    permission_json,
-                    settings_json,
-                ),
+                "UPDATE dashboards SET revision = revision WHERE dashboard_id = ?",
+                (dashboard.dashboard_id,),
             )
+            row = conn.execute(
+                "SELECT revision FROM dashboards WHERE dashboard_id = ?",
+                (dashboard.dashboard_id,),
+            ).fetchone()
+            revision = check_revision(dashboard, None if row is None else row["revision"])
+            if row is None:
+                names = ["dashboard_id", "user_id", *columns, "revision"]
+                conn.execute(
+                    f"INSERT INTO dashboards ({', '.join(names)}) "
+                    f"VALUES ({', '.join('?' * len(names))})",
+                    (dashboard.dashboard_id, dashboard.user_id, *columns.values(), revision),
+                )
+            else:
+                assignments = ", ".join(f"{name} = ?" for name in columns)
+                conn.execute(
+                    f"UPDATE dashboards SET {assignments}, revision = ?, "
+                    "updated_at = datetime('now') WHERE dashboard_id = ?",
+                    (*columns.values(), revision, dashboard.dashboard_id),
+                )
+        dashboard.revision = revision
 
     def delete_dashboard(self, user_id: str, dashboard_id: str) -> bool:
         with self._get_conn() as conn:
@@ -725,6 +798,7 @@ class DashboardStore(BaseDashboardStore):
             reference_width=json.loads(reference_raw),
             permission=permission,
             settings=self._row_settings(row) if "settings_json" in keys else {},
+            revision=row["revision"] if "revision" in keys else 0,
         )
 
     def _row_settings(self, row: sqlite3.Row) -> dict[str, Any]:

@@ -609,12 +609,29 @@ class FlowDashApp(Viewer):
             },
         )
         editor.param.watch(self._on_editor_sidebar, "sidebar")
+        editor.param.watch(self._on_editor_saved, "saved")
         return editor
 
     def _on_editor_sidebar(self, event):
         """Mirror the editor's sidebar views into the page sidebar."""
         self._sidebar_container.objects = list(event.new)
         self._page.sidebar_open = bool(event.new)
+
+    def _on_editor_saved(self, _event):
+        """Follow the editor to a dashboard it saved under a new id ("Save as copy")."""
+        current = self._current_dashboard
+        location = pn.state.location
+        if current is None or location is None:
+            return
+        if not location.pathname.startswith(DASH_ROUTE_PREFIX):
+            return
+        path = f"{DASH_ROUTE_PREFIX}{current.dashboard_id}"
+        if location.pathname.rstrip("/") == path:
+            return
+        self._refresh_sidebar_dashboards()
+        location.param.update(pathname=path, search="?edit=true")
+        self._sync_menu_active(path)
+        self._apply_layout_config(self._component_view, path)
 
     def _notify(self, severity: str, message: str, duration: int = 3000):
         """Surface a message to the user, or log it when notifications are unavailable."""

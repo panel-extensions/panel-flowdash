@@ -17,6 +17,7 @@ import json
 import logging
 import pathlib
 import re
+import threading
 import time
 import typing as t
 import uuid
@@ -31,10 +32,12 @@ import param
 from panel.viewable import Children, Viewer
 from panel_tiles import TileGrid
 
+from panel_flowdash.auth import Permission
 from panel_flowdash.component_library import normalize_components
 from panel_flowdash.component_spec import build_component_specs
 from panel_flowdash.dashboard_store import (
     BaseDashboardStore,
+    DashboardConflictError,
     DashboardEdge,
     DashboardItem,
     DashboardModel,
@@ -53,12 +56,14 @@ from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transform_editor import TransformEditor
 from panel_flowdash.transforms import parse_transform, summarize_transform
 from panel_flowdash.util import (
+    close_dialog,
     gate_view,
     is_async,
     is_async_gen,
     is_failure,
     missing_inputs,
     notify,
+    open_dialog,
     page_dialog,
     panel_call,
     panel_viewer,
@@ -223,8 +228,9 @@ _PALETTE_DRAG_TYPE = "application/x-flowdash-component"
 # The DataTransfer type of files dragged in from the OS.
 _FILES_DROP_TYPE = "Files"
 # Left out of exports: they tie a dashboard to one store, owner and audience, and
-# importing a file must not let it claim another dashboard's id or sharing rules.
-_IDENTITY_FIELDS = ("dashboard_id", "user_id", "permission")
+# importing a file must not let it claim another dashboard's id, sharing rules or
+# the revision a save is checked against.
+_IDENTITY_FIELDS = ("dashboard_id", "user_id", "permission", "revision")
 # What `ReactFlow.add_node` fills in, applied when nodes are added in bulk instead.
 _NODE_DEFAULTS = {
     "type": "panel",
@@ -2443,6 +2449,7 @@ class FlowDash(Viewer):
         if current is not None:
             model.version = current.version
             model.permission = current.permission
+            model.revision = current.revision
         # Keys this editor has no parameter for stay, so saving does not erase
         # settings an application with a richer `settings_class` stored.
         stored = current.settings if current else {}
@@ -2647,6 +2654,10 @@ class FlowDash(Viewer):
         ------
         RuntimeError
             If :attr:`read_only` is set.
+        DashboardConflictError
+            If the store holds a newer revision of the dashboard than the one
+            loaded into the editor, because another session saved it since.
+            Nothing is written; reload the dashboard or use :meth:`save_as`.
         """
         if self.read_only:
             raise _ReadOnlyEditorError("This dashboard is read-only.")
@@ -2661,6 +2672,35 @@ class FlowDash(Viewer):
             else:
                 model.user_id = self.user
             self.store.save_dashboard(model)
+        self.dashboard = model
+        self.dirty = False
+        self.param.trigger("saved")
+        return model
+
+    def save_as(self, title: str) -> DashboardModel:
+        """Persist the current canvas as a new dashboard titled *title* and switch to it.
+
+        The new dashboard is owned by this editor's :attr:`user` and not
+        shared with anyone. With no store configured the model is still built
+        and returned.
+
+        Raises
+        ------
+        RuntimeError
+            If :attr:`read_only` is set.
+        """
+        if self.read_only:
+            raise _ReadOnlyEditorError("This dashboard is read-only.")
+        model = self.to_model(title=title)
+        model.permission = Permission()
+        if self.store is not None:
+            created = self.store.create_dashboard(self.user, title)
+            model.dashboard_id, model.user_id = created.dashboard_id, created.user_id
+            model.title, model.revision = created.title, created.revision
+            self.store.save_dashboard(model)
+        else:
+            model.dashboard_id, model.user_id = uuid.uuid4().hex[:12], self.user
+            model.revision = None
         self.dashboard = model
         self.dirty = False
         self.param.trigger("saved")
@@ -2719,6 +2759,7 @@ class FlowDash(Viewer):
             raise ValueError(f"Malformed dashboard export: {exc!r}") from exc
         if current is not None:
             model.permission = current.permission
+            model.revision = current.revision
         return model
 
     # ------------------------------------------------------------------
@@ -2858,6 +2899,10 @@ class FlowDash(Viewer):
     def _on_save_clicked(self) -> bool:
         try:
             model = self.save()
+        except DashboardConflictError as exc:
+            logger.info("Store refused to save dashboard: %s", exc)
+            self._notify("error", str(exc), duration=5000)
+            self._show_save_conflict()
         except DashboardStoreError as exc:
             logger.info("Store refused to save dashboard: %s", exc)
             self._notify("error", str(exc), duration=5000)
@@ -2870,6 +2915,72 @@ class FlowDash(Viewer):
             self._notify("success", f'Dashboard "{model.title}" saved.', duration=3000)
             return True
         return False
+
+    def _show_save_conflict(self):
+        """Offer to reload the stored dashboard or save the canvas as a copy."""
+        keep = pmui.Button(label="Keep editing", variant="text")
+        reload = pmui.Button(label="Reload", color="danger", variant="outlined")
+        copy = pmui.Button(label="Save as copy", color="primary")
+        # Under threaded Panel two clicks can be dispatched concurrently, and a
+        # second "Save as copy" must not create a second copy.
+        answered = threading.Lock()
+
+        def answer_with(handler):
+            def answer(_event):
+                if answered.acquire(blocking=False):
+                    close_dialog()
+                    handler()
+
+            return answer
+
+        keep.on_click(answer_with(lambda: None))
+        reload.on_click(answer_with(self._reload_from_store))
+        copy.on_click(answer_with(self._save_copy_from_ui))
+        open_dialog(
+            "Dashboard changed since you opened it",
+            pn.Column(
+                pn.pane.Markdown(
+                    "Someone else saved this dashboard after you opened it, so saving "
+                    "would overwrite their changes. **Reload** discards your changes "
+                    "and shows the latest version. **Save as copy** keeps your "
+                    "changes in a new dashboard."
+                ),
+                pn.Row(pn.layout.HSpacer(), keep, reload, copy, sizing_mode="stretch_width"),
+                sizing_mode="stretch_width",
+            ),
+        )
+
+    def _reload_from_store(self):
+        current = self.dashboard
+        model = None
+        if self.store is not None and current is not None:
+            model = self.store._load_any(current.dashboard_id)
+        if model is None:
+            self._notify("error", "The dashboard no longer exists.", duration=5000)
+            return
+        self.load_model(model)
+        self._notify("info", f'Reloaded the latest version of "{model.title}".', duration=3000)
+
+    def _copy_title(self) -> str:
+        base = f"{self.dashboard.title if self.dashboard else 'Untitled'} (copy"
+        title, n = f"{base})", 2
+        while self.store is not None and self.store.title_exists(self.user, title):
+            title, n = f"{base} {n})", n + 1
+        return title
+
+    def _save_copy_from_ui(self):
+        try:
+            model = self.save_as(self._copy_title())
+        except DashboardStoreError as exc:
+            logger.info("Store refused to save a copy of the dashboard: %s", exc)
+            self._notify("error", str(exc), duration=5000)
+        except Exception:
+            logger.exception("Failed to save a copy of the dashboard")
+            self._notify(
+                "error", "Could not save a copy. The error has been logged.", duration=5000
+            )
+        else:
+            self._notify("success", f'Saved your changes as "{model.title}".', duration=3000)
 
     def __panel__(self):
         """Render the editor."""
