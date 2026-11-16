@@ -554,7 +554,13 @@ class FlowDash(Viewer):
             self._components_loaded = True
 
     async def ensure_components_loaded_async(self, component_ids: t.Iterable[str] | None = None):
-        """Async :meth:`ensure_components_loaded`, importing off the event loop."""
+        """Async :meth:`ensure_components_loaded`, importing off the event loop.
+
+        If the awaiting task is cancelled (e.g. by a newer navigation) the
+        imports already running finish in their thread, but nothing is marked
+        loaded and their import errors are not reported; the next call
+        retries whatever is still unimported and reports its errors then.
+        """
         wanted = self._wanted_ids(component_ids)
         unimported = self._unimported_ids(wanted)
         errors = await asyncio.to_thread(self._load_entries, unimported) if unimported else []
@@ -1901,6 +1907,10 @@ class FlowDash(Viewer):
         ids = []
         for item in model.items:
             entry = self._component_entries.get(item.component_id)
+            # A sidebar component that is no longer in the registry cannot be
+            # recognised as one, so it is counted as a tile and shifts the
+            # legacy entries after it by one slot. Layouts saved since tiles
+            # were keyed by instance id are unaffected.
             if entry is not None and entry.metadata.sidebar:
                 continue
             ids.append(item.instance_id)

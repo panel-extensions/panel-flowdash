@@ -323,6 +323,32 @@ class TestStaleNavigation:
 
         assert not any(isinstance(obj, pmui.Column) for obj in app._page.main)
 
+    @pytest.mark.skipif(sys.version_info < (3, 11), reason="needs Task.cancelling()")
+    async def test_cancelling_navigation_itself_propagates(self, app):
+        started = asyncio.Event()
+
+        async def hang():
+            started.set()
+            await asyncio.Event().wait()
+
+        outer = asyncio.create_task(app._run_navigation_task(hang()))
+        await started.wait()
+        outer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(outer, 1)
+
+    async def test_superseded_navigation_task_returns_none(self, app):
+        started = asyncio.Event()
+
+        async def hang():
+            started.set()
+            await asyncio.Event().wait()
+
+        outer = asyncio.create_task(app._run_navigation_task(hang()))
+        await started.wait()
+        app._main_task.cancel()
+        assert await asyncio.wait_for(outer, 1) is None
+
     async def test_access_denied_page_still_cancels_in_flight_page(self, app):
         started, cancelled = asyncio.Event(), asyncio.Event()
 

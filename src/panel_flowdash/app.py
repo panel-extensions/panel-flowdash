@@ -327,13 +327,20 @@ class FlowDashApp(Viewer):
     async def _run_navigation_task(self, coroutine):
         """Await *coroutine* as a task that the next navigation cancels.
 
-        Returns ``None`` if it was cancelled.
+        Returns ``None`` if it was cancelled by a newer navigation. If the task
+        awaiting it is cancelled itself, e.g. when the session is torn down,
+        the cancellation propagates (Python >= 3.11).
         """
         task = asyncio.create_task(coroutine)
         self._main_task = task
         try:
             return await task
         except asyncio.CancelledError:
+            # Task.cancelling() is new in Python 3.11; before it the two cases
+            # look the same from here, so the cancellation is always swallowed.
+            cancelling = getattr(asyncio.current_task(), "cancelling", None)
+            if cancelling is not None and cancelling():
+                raise
             return None
 
     @asynccontextmanager
