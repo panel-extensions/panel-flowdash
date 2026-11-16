@@ -268,6 +268,7 @@ def current_dashboard() -> FlowDash | None:
 def _dispose_on_session_end(editor_ref: weakref.ref[FlowDash], session_context):
     editor = editor_ref()
     if editor is not None:
+        editor._stop_refresh_timer()
         editor._dispose_components()
 
 
@@ -529,15 +530,11 @@ class FlowDash(Viewer):
 
         self._settings_names = [name for name in self.settings.param if name != "name"]
         self._loading_settings = False
-        self._node_subscriptions: dict[str, list] = {}
         self._refresh_timer = None
         self._refresh_ms = 0
         self.settings.param.watch(self._on_setting_changed, self._settings_names)
-        self.settings.param.watch(self._schedule_refresh_timer, "refresh_period")
-        doc = pn.state.curdoc
-        if doc is not None:
-            _SESSION_EDITORS[doc] = weakref.ref(self)
-            pn.state.on_session_destroyed(self._on_session_destroyed)
+        if pn.state.curdoc is not None:
+            _SESSION_EDITORS[pn.state.curdoc] = weakref.ref(self)
 
         self._dataflow_graph = DataflowGraph(
             {}, on_error=self._on_wiring_error, propagate_failures=self.propagate_failures
@@ -585,6 +582,7 @@ class FlowDash(Viewer):
         automatically when that session ends. In a notebook, under pyodide or
         for an editor created outside a session, call this yourself.
         """
+        self._stop_refresh_timer()
         self._reset_canvas()
 
     def _dispose_components(self):
@@ -1051,7 +1049,6 @@ class FlowDash(Viewer):
     def _forget_node(self, node_id: str):
         """Drop a node from the graph, the tile bookkeeping and the edge map."""
         self._dataflow_graph.remove_node(node_id)
-        self._release_subscriptions(node_id)
         self._inspect_tiles.pop(node_id, None)
         if self._inspected_id == node_id:
             self._close_inspection_dialog()
@@ -1920,7 +1917,7 @@ class FlowDash(Viewer):
         # A fresh instance doubles as the validator, so a bad stored value falls back
         # to its default instead of keeping the previous dashboard's value.
         fresh = self.settings_class()
-        for name, value in stored.items():
+        for name, value in (stored or {}).items():
             if name not in self._settings_names:
                 logger.debug("Ignoring unknown dashboard setting '%s'", name)
                 continue
@@ -1946,13 +1943,16 @@ class FlowDash(Viewer):
             for watcher in watchers
         }
 
-    def _new_subscriptions(self, before: dict) -> list:
-        return [sub for key, sub in self._subscriptions().items() if key not in before]
+    def _track_subscriptions(self, instance_id: str, before: dict):
+        """Release what a component subscribed to while it was created along with its wiring.
 
-    def _release_subscriptions(self, node_id: str):
-        """Drop what a removed component subscribed to, so it stops reacting and can be freed."""
-        for owner, watcher in self._node_subscriptions.pop(node_id, ()):
-            owner.param.unwatch(watcher)
+        `_dispose_component` runs the releases however the component leaves the
+        editor, so a removed component stops reacting to `refresh` and can be freed.
+        """
+        wiring = self._component_wiring.setdefault(instance_id, [])
+        for key, (owner, watcher) in self._subscriptions().items():
+            if key not in before:
+                wiring.append(partial(owner.param.unwatch, watcher))
 
     def _on_setting_changed(self, *_events):
         if not self._loading_settings:
@@ -1982,9 +1982,6 @@ class FlowDash(Viewer):
             self._refresh_timer.stop()
             self._refresh_timer = None
         self._refresh_ms = 0
-
-    def _on_session_destroyed(self, _session_context):
-        self._stop_refresh_timer()
 
     @param.depends("refresh", watch=True)
     def _stamp_refresh(self):
@@ -2057,13 +2054,12 @@ class FlowDash(Viewer):
             view = self._instantiate_for_node(entry, node_state, config_state)
         except Exception:
             self._dataflow_graph.remove_node(instance_id)
+            self._track_subscriptions(instance_id, before)
             self._dispose_component(instance_id)
-            self._node_subscriptions[instance_id] = self._new_subscriptions(before)
-            self._release_subscriptions(instance_id)
             raise
         finally:
             _INSTANTIATING.reset(token)
-        self._node_subscriptions[instance_id] = self._new_subscriptions(before)
+        self._track_subscriptions(instance_id, before)
         # The component is instantiated even while blocked, so it can subscribe
         # and publish outputs; only what the tile displays is gated.
         view, release = gate_view(view, node_state, spec.inputs, entry.metadata.placeholder)
@@ -2287,7 +2283,6 @@ class FlowDash(Viewer):
         """Tear down all node/edge state, clear the ReactFlow canvas and dispose the components."""
         for node_id in list(self._dataflow_graph.node_ids):
             self._dataflow_graph.remove_node(node_id)
-            self._release_subscriptions(node_id)
         self._tile_items = []
         self._tile_objects = []
         self._inspect_tiles.clear()
@@ -2396,11 +2391,12 @@ class FlowDash(Viewer):
     @pn.io.hold()
     def _hydrate_model(self, model: DashboardModel):
         """Populate the canvas from *model*, assuming its components are loaded."""
-        # Before components are placed, so they see this dashboard's settings.
-        self._apply_settings(model.settings)
-        self.dashboard = model
         with self._muted_canvas():
             self._reset_canvas()
+        # After the previous components are disposed, so none of them reacts to the
+        # new values, and before these are placed, so they see this dashboard's.
+        self._apply_settings(model.settings)
+        self.dashboard = model
         # Unlike palette drops (see `_on_component_dropped`) this replaces every
         # node view at once, so no view already on the canvas can be blanked.
         with self._muted_canvas(), self._batched_canvas(), self._dataflow_graph.batch():

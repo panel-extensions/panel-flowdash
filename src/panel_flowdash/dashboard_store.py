@@ -28,6 +28,20 @@ _AMBIGUOUS_TITLES: set[str] = set()
 MALFORMED_ERRORS = (KeyError, TypeError, ValueError, AttributeError, RecursionError)
 
 
+def _decode_settings(value: Any, dashboard_id: Any) -> dict[str, Any]:
+    """Return a private copy of stored settings, or no settings if they are malformed.
+
+    Settings are optional, so a bad value costs the dashboard its settings
+    rather than making it unreadable.
+    """
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
+        logger.warning("Ignoring malformed settings of dashboard %r", dashboard_id)
+        return {}
+    return copy.deepcopy(value)
+
+
 class DashboardStoreError(Exception):
     """A store refused an operation for a reason the user should see.
 
@@ -165,7 +179,7 @@ class DashboardModel:
             responsive_layouts=data.get("responsive_layouts", {}),
             reference_width=data.get("reference_width"),
             permission=Permission.from_dict(data.get("permission")),
-            settings=copy.deepcopy(dict(data.get("settings") or {})),
+            settings=_decode_settings(data.get("settings"), data.get("dashboard_id")),
         )
 
 
@@ -690,7 +704,12 @@ class DashboardStore(BaseDashboardStore):
         )
         permission_raw = row["permission_json"] if "permission_json" in keys else "{}"
         reference_raw = row["reference_width_json"] if "reference_width_json" in keys else "null"
-        settings_raw = row["settings_json"] if "settings_json" in keys else "{}"
+        settings: Any = None
+        if "settings_json" in keys:
+            try:
+                settings = json.loads(row["settings_json"])
+            except (TypeError, ValueError, RecursionError):
+                settings = row["settings_json"]
         edges = json.loads(edges_raw)
         tile_layout = json.loads(tile_layout_raw)
         breakpoints = json.loads(breakpoints_raw)
@@ -711,5 +730,5 @@ class DashboardStore(BaseDashboardStore):
             responsive_layouts=responsive_layouts,
             reference_width=json.loads(reference_raw),
             permission=permission,
-            settings=json.loads(settings_raw),
+            settings=_decode_settings(settings, row["dashboard_id"]),
         )

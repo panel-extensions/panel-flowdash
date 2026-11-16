@@ -403,6 +403,12 @@ class TestSettingsPersistence:
         del legacy["settings"]
         assert DashboardModel.from_dict(legacy).settings == {}
 
+    @pytest.mark.parametrize("value", ["oops", [["a", 1]], {1: "x"}])
+    async def test_malformed_settings_in_a_dict_are_dropped(self, sample_dashboard, value):
+        data = sample_dashboard.to_dict()
+        data["settings"] = value
+        assert DashboardModel.from_dict(data).settings == {}
+
 
 _PRE_SETTINGS_SCHEMA = """
     CREATE TABLE dashboards (
@@ -456,6 +462,18 @@ class TestSqliteSettingsMigration:
     async def test_reopening_a_migrated_database_is_harmless(self, legacy_db):
         DashboardStore(legacy_db)
         assert DashboardStore(legacy_db).load_dashboard("user1", "old") is not None
+
+    @pytest.mark.parametrize("raw", ["{broken", '"oops"', "[1, 2]", "null"])
+    async def test_malformed_settings_column_loads_without_settings(self, legacy_db, raw, caplog):
+        store = DashboardStore(legacy_db)
+        with closing(sqlite3.connect(legacy_db)) as conn, conn:
+            conn.execute("UPDATE dashboards SET settings_json = ?", (raw,))
+        with caplog.at_level(logging.WARNING):
+            loaded = store.load_dashboard("user1", "old")
+            listed = store.list_dashboards("user1")
+        assert loaded.settings == {}
+        assert [d.dashboard_id for d in listed] == ["old"]
+        assert ("malformed settings" in caplog.text) == (raw != "null")
 
 
 class TestAccessControl:

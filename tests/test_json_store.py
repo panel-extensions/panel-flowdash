@@ -109,13 +109,15 @@ class TestSettings:
         )
         assert json.loads((tmp_path / "d1.json").read_text())["settings"] == {"refresh_period": 30}
 
-    def test_settings_that_are_not_a_mapping_skip_the_file(self, tmp_path, caplog):
+    def test_settings_that_are_not_a_mapping_are_dropped(self, tmp_path, caplog):
+        """Settings are optional, so bad ones do not make the dashboard unreadable."""
         data = DashboardModel(dashboard_id="bad", user_id="u", title="Bad").to_dict()
         data["settings"] = "oops"
         (tmp_path / "bad.json").write_text(json.dumps(data))
         with caplog.at_level(logging.WARNING):
-            assert JSONFolderDashboardStore(tmp_path).list_dashboards("u") == []
-        assert "malformed" in caplog.text
+            listed = JSONFolderDashboardStore(tmp_path).list_dashboards("u")
+        assert [(d.dashboard_id, d.settings) for d in listed] == [("bad", {})]
+        assert "malformed settings" in caplog.text
 
 
 class TestIds:

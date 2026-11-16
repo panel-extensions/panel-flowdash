@@ -784,10 +784,13 @@ def _serve_live_dashboard(page, *, refresh_period=0, view=False):
 
 
 def _enter_period(field, text):
-    """Type into the number input and blur it; `fill` garbles values it already holds."""
-    field.click()
-    field.press("ControlOrMeta+a")
-    field.press_sequentially(text)
+    """Replace the number input's value and blur it to commit.
+
+    Filling over a value appends to it and typed keys get reformatted mid-entry,
+    so the field is emptied first and the new value filled in one go.
+    """
+    field.fill("")
+    field.fill(text)
     field.press("Tab")
 
 

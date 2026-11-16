@@ -67,7 +67,9 @@ settings_class=SalesSettings)` in your own launcher.
 
 The timer is a single periodic callback per editor. It starts once the page has
 loaded, restarts when the period changes, stops at 0, and stops when the dashboard
-is unloaded or the session ends.
+is unloaded, the editor is disposed or the session ends. In a `FlowDashApp`,
+navigating to a page or the launcher unloads the dashboard, and a dashboard whose
+load is overtaken by a newer navigation never applies its settings.
 
 In view mode, and in the edit-mode dashboard preview, a **Refresh** button and a
 "Refreshed HH:MM:SS" indicator sit above the grid. The button is shown whether or

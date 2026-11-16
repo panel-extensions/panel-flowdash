@@ -4034,19 +4034,23 @@ class TestRefreshTimer:
         assert timers[0].stopped
 
     async def test_ending_the_session_stops_it(self, timers):
-        doc = Document()
-        pn.state.curdoc = doc
-        try:
+        doc, session_context = _session_doc()
+        with set_curdoc(doc):
             editor = FlowDash(COMPONENTS, notifications=False)
             editor.dashboard = _dashboard()
             editor.settings.refresh_period = 5
             editor._sync_refresh_timer()
-            assert len(timers) == 1
-            for callback in doc.session_destroyed_callbacks:
-                callback(None)
-        finally:
-            pn.state.curdoc = None
+        assert len(timers) == 1
+        for callback in doc.session_destroyed_callbacks:
+            callback(session_context)
         assert timers[0].stopped
+
+    async def test_dispose_stops_it(self, editor, timers):
+        editor.load_model(_dashboard({"refresh_period": 5}))
+        editor.dispose()
+        assert timers[0].stopped
+        editor.settings.refresh_period = 6
+        assert [t.period for t in timers] == [5000, 6000]
 
     async def test_waits_for_the_page_to_load(self, editor, timers, monkeypatch):
         deferred = []
@@ -4245,6 +4249,14 @@ class TestSubscriptionLifetime:
         editor.load_model(_dashboard())
         editor.param.trigger("refresh")
         assert Watcher.refreshes == []
+
+    async def test_loading_a_dashboard_does_not_hand_its_settings_to_the_previous_one(
+        self, editor
+    ):
+        editor.add_component("Demo/watch")
+        editor.load_model(_dashboard({"refresh_period": 9}))
+        assert Watcher.changes == []
+        assert editor.settings.refresh_period == 9
 
     async def test_clearing_the_canvas_ends_subscriptions(self, editor):
         editor.add_component("Demo/watch")
