@@ -20,6 +20,8 @@ from panel_flowdash.ui.gallery import (
     ports_html,
     usage_index,
 )
+from panel_flowdash.ui.launcher import component_role as launcher_role
+from panel_flowdash.ui.palette import palette_entry
 from panel_flowdash.ui.roles import component_role
 from tests.test_navigation import FakeLocation
 
@@ -145,6 +147,13 @@ class TestRoles:
 
         entry = normalize_components({"T/tagged": tagged})["T/tagged"]
         assert component_role(entry, ["a"], ["b"]) == role
+
+    def test_palette_and_launcher_agree(self):
+        names = {"source": "Data source", "transform": "Transform", "view": "View"}
+        for entry in REGISTRY.values():
+            role = gallery_entry(entry).role
+            assert palette_entry(entry).role == role, entry.app_id
+            assert launcher_role(entry) == names.get(role), entry.app_id
 
     async def test_builtin_widgets_are_widgets(self, app):
         gallery = _gallery(app)
