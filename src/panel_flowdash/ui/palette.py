@@ -285,7 +285,11 @@ export function render({model, el}) {
     const target = event.composedPath()[0]
     const input = findInput(child.shadowRoot || child)
     if (event.key === "Escape" && input && target === input) {
-      model.send_msg("clear")
+      // Cleared like typing would, so the empty value follows the keystrokes
+      // still on their way to the server instead of racing them.
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set
+      setValue.call(input, "")
+      input.dispatchEvent(new Event("input", {bubbles: true}))
       input.blur()
       return
     }
@@ -303,10 +307,6 @@ export function render({model, el}) {
   model.on("remove", () => document.removeEventListener("keydown", onKey))
 }
 """
-
-    def _handle_msg(self, msg):
-        if msg == "clear" and self.search is not None:
-            self.search.param.update(value="", value_input="")
 
 
 class ComponentPalette(Viewer):

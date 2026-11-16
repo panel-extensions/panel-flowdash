@@ -270,12 +270,6 @@ class TestSearch:
         editor._palette_panel.search.value_input = "slider"
         assert _groups(editor) == {"Widgets": ["Widgets/Slider"]}
 
-    def test_escape_clears_the_field(self, editor):
-        editor._palette_panel.search.value_input = "slider"
-        editor._palette_panel._shortcut._handle_msg("clear")
-        assert editor._palette_panel.query == ""
-        assert editor._palette_panel.search.value_input == ""
-
     def test_placing_keeps_the_filter(self, editor):
         editor._palette_panel.query = "chart"
         editor.add_component("Demo/chart")
