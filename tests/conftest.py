@@ -1,5 +1,8 @@
 """Holds fixtures and configuration for the test suite."""
 
+import os
+
+import param
 import pytest
 from panel.config import panel_extension
 from panel.io.reload import _local_modules, _modules, _watched_files
@@ -39,6 +42,11 @@ def pytest_collection_modifyitems(config, items):
     """Skip tests of failure propagation on param releases that cannot carry failures."""
     if ReactiveError is not None:
         return
+    if os.environ.get("FLOWDASH_REQUIRE_FAILURES"):
+        raise pytest.UsageError(
+            "FLOWDASH_REQUIRE_FAILURES is set but param "
+            f"{param.__version__} cannot carry failures along edges (needs >= 2.5)."
+        )
     skip = pytest.mark.skip(reason="Carrying failures along edges needs param >= 2.5.")
     for item in items:
         if "failures" in item.keywords:

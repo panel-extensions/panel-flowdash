@@ -188,7 +188,9 @@ replaces it.
 
 Failure propagation needs Param 2.5 or later. With an older Param,
 `propagate_failures=True` raises a `RuntimeError` when the editor or graph is
-constructed; the default behaviour is unaffected.
+constructed; the default behaviour is unaffected. Until Param 2.5 is released,
+install the pre-release with `pip install --pre "param>=2.5.0b5"` or from the
+`pyviz/label/dev` conda channel.
 
 A failure travels as a [`param.ReactiveError`](https://param.holoviz.org/user_guide/Reactive_Expressions.html)
 value, Param's own channel for this, carrying the original exception. What an
