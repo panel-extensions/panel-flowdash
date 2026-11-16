@@ -116,6 +116,44 @@ identity may not see from the launcher and navigation menu.
 
 ---
 
+## Restricting components
+
+The same rules on a component restrict who may use it in a dashboard:
+
+```python
+@register(component=True, title="Payroll", allow_groups=["finance"])
+def payroll(config):
+    ...
+```
+
+In a `FlowDashApp`, a component the signed-in user may not use is left out of
+the editor's palette, and placing it through `FlowDash.add_component` raises a
+`PermissionError`. On a dashboard that already contains it, such as one shared
+by a colleague in `finance`, it is shown as a locked placeholder instead: the
+component is never imported or created for that user, its outputs are not
+computed and cannot be inspected, and its edges stay in place. If an editor
+without access saves the dashboard, the placeholder is written back unchanged,
+so the restricted tile and its wiring survive.
+
+A component without rules may be used by everyone who can edit a dashboard,
+even under `default_allow = False`: the default policy governs pages and
+dashboards, while unrestricted components (including the built-in widgets) stay
+usable building blocks. A standalone `FlowDash` applies whatever check you pass
+as `authorize_component`, a callable that takes the component's
+`RegistryEntry` and returns whether it may be used:
+
+```python
+from panel_flowdash.auth import entry_authorized, resolve_identity
+
+identity = resolve_identity()
+editor = FlowDash(
+    components,
+    authorize_component=lambda entry: entry_authorized(entry, identity),
+)
+```
+
+---
+
 ## Restricting dashboards
 
 Saved dashboards start out accessible only to their owner (the user who created
