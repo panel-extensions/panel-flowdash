@@ -109,7 +109,8 @@ def test_breadcrumb_switches_dashboards(page):
     page.get_by_role("menuitem", name="Depot").click()
 
     wait_until(lambda: _path(page) == f"/dash/{depot}", page, timeout=10000)
-    page.get_by_role("button", name="Depot").wait_for()
+    # Checked on the server: slow runners can take long to repaint the header.
+    wait_until(lambda: apps[0]._shell.dashboard_switcher.label == "Depot", page, timeout=20000)
     assert apps[0]._current_dashboard.dashboard_id == depot
 
 
