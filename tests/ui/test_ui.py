@@ -418,7 +418,7 @@ def test_reopened_dashboard_keeps_layout_after_tile_removed(page):
     wait_until(lambda: _tile_widths(page) == [[40, True], [60, False]], page=page, timeout=8000)
 
 
-def test_legacy_layout_skips_slot_of_component_that_no_longer_loads(page):
+def test_legacy_layout_keeps_slot_of_component_that_no_longer_loads(page):
     components = {"Test/tile": tile_component}
     editor = FlowDash(components, notifications=False, include_builtin_components=False)
     model = DashboardModel(
@@ -436,7 +436,11 @@ def test_legacy_layout_skips_slot_of_component_that_no_longer_loads(page):
     editor.mode = "dashboard"
     serve_component(page, editor)
 
-    wait_until(lambda: _tile_widths(page) == [[40, True], [60, False]], page=page, timeout=8000)
+    wait_until(
+        lambda: _tile_widths(page) == [[100, True], [40, True], [60, False]],
+        page=page,
+        timeout=8000,
+    )
 
 
 @register(page=False, component=True, provides=["company"])

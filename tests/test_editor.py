@@ -1451,7 +1451,12 @@ class TestTileLayoutKeys:
         editor.load_model(model)
         editor.mode = "dashboard"
 
-        assert editor._tile_grid.layout == [_spec(0, 50), _spec(1, 30, visible=False)]
+        # The missing component keeps its slot as a placeholder tile.
+        assert editor._tile_grid.layout == [
+            _spec(0, 100),
+            _spec(1, 50),
+            _spec(2, 30, visible=False),
+        ]
 
     async def test_untagged_legacy_layout_maps_by_saved_position(self, editor):
         """Layouts saved by older versions line up with the items as they were saved."""
@@ -1462,11 +1467,16 @@ class TestTileLayoutKeys:
         editor.load_model(model)
 
         assert editor.layout == [
+            {**_spec(0, 100), "instance_id": "gone"},
             {**_spec(1, 50), "instance_id": "k1"},
             {**_spec(2, 30, visible=False), "instance_id": "k2"},
         ]
         editor.mode = "dashboard"
-        assert editor._tile_grid.layout == [_spec(0, 50), _spec(1, 30, visible=False)]
+        assert editor._tile_grid.layout == [
+            _spec(0, 100),
+            _spec(1, 50),
+            _spec(2, 30, visible=False),
+        ]
 
     async def test_tiles_without_an_entry_get_an_empty_one(self, editor):
         model = _layout_model(
@@ -3768,13 +3778,15 @@ class TestFileDrop:
         assert not editor._import_dialog.open
         assert [i["instance_id"] for i in editor._tile_items] == [existing]
 
-    async def test_drop_skips_components_the_editor_lacks(self):
-        data, src, _dst = _wired_export()
+    async def test_drop_keeps_components_the_editor_lacks(self):
+        data, src, dst = _wired_export()
         editor = FlowDash({SELECTOR: ticker_select}, notifications=False)
         _file_drop(editor, ("dash.json", json.dumps(data)))
-        await async_wait_until(lambda: len(editor._tile_items) == 1)
+        await async_wait_until(lambda: len(editor._tile_items) == 2)
         assert editor._tile_items[0]["instance_id"] == src
+        assert "placeholder" in editor._tile_items[1]
         assert editor.graph.edges == []
+        assert [(e.source, e.target) for e in editor.to_model().edges] == [(src, dst)]
 
 
 class BrandSettings(DashboardSettings):
