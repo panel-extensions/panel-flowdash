@@ -4,13 +4,15 @@ import typing as t
 
 import param
 import pytest
-from panel.tests.util import serve_component, wait_until
+from panel.tests.util import wait_until
 from panel.viewable import Viewer
 
 from panel_flowdash import DashboardItem, MemoryDashboardStore, Permission, register
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.auth import AuthConfig, resolve_identity
 from panel_flowdash.component_library import normalize_components
+
+from .util import serve_component
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect

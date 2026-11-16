@@ -5,11 +5,12 @@ import sys
 from pathlib import Path
 
 import pytest
-from panel.tests.util import serve_component
 
 from panel_flowdash import MemoryDashboardStore
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.registry import build_registry
+
+from .util import serve_component
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect

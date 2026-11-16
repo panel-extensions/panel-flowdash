@@ -2,10 +2,12 @@
 
 import panel as pn
 import pytest
-from panel.tests.util import serve_component, wait_until
+from panel.tests.util import wait_until
 
 from panel_flowdash import register
 from panel_flowdash.editor import FlowDash
+
+from .util import center, serve_component, stable_box
 
 pytest.importorskip("playwright")
 
@@ -46,8 +48,7 @@ def test_new_tile_starts_at_default_size_and_resizing_stays_in_bounds(page):
     wait_until(lambda: _tile_sizes(page) == [[50, "300px", "240"]], page=page, timeout=8000)
 
     handle = page.locator(".muuri-grid-item .muuri-handle.resize")
-    box = handle.bounding_box()
-    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    x, y = center(stable_box(handle, page))
     page.mouse.move(x, y)
     page.mouse.down()
     for step in range(1, 11):

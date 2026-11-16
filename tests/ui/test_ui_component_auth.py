@@ -1,11 +1,12 @@
 """UI tests for component-level authorization."""
 
 import pytest
-from panel.tests.util import serve_component
 
 from panel_flowdash import DashboardItem, MemoryDashboardStore, register
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.component_library import normalize_components
+
+from .util import serve_component
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect

@@ -1,10 +1,11 @@
 """UI tests for saved items and edges that cannot be restored."""
 
 import pytest
-from panel.tests.util import serve_component
 
 from panel_flowdash import DashboardEdge, DashboardItem, DashboardModel, register
 from panel_flowdash.editor import FlowDash
+
+from .util import serve_component
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect

@@ -4,11 +4,13 @@ import pandas as pd
 import panel as pn
 import param
 import pytest
-from panel.tests.util import serve_component, wait_until
+from panel.tests.util import wait_until
 from panel.viewable import Viewer
 
 from panel_flowdash import register
 from panel_flowdash.editor import FlowDash
+
+from .util import serve_component
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect
