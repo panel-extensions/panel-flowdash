@@ -26,6 +26,25 @@ class DashboardSettings(param.Parameterized):
         refreshing off.""",
     )
 
+    tile_cards = param.Boolean(
+        default=True,
+        label="Show tiles as cards",
+        doc="""
+        Whether each tile is drawn as a framed card with a bar for its status
+        and actions. Without the card the tile renders as the component's own
+        view, and its actions appear over its top-right corner on hover or
+        keyboard focus.""",
+    )
+
+    tile_titles = param.Boolean(
+        default=False,
+        label="Show tile titles",
+        doc="""
+        Whether a card's bar also shows the tile's title and the component's
+        description. Off by default, since most components show their own
+        heading. Only applies while ``tile_cards`` is on.""",
+    )
+
     viewers_can_inspect = param.Boolean(
         default=False,
         label="Viewers can inspect outputs",
