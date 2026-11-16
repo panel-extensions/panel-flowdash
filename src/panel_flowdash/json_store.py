@@ -10,8 +10,15 @@ import logging
 import os
 import re
 import tempfile
+import threading
 import time
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
+    import msvcrt
 
 from panel_flowdash.auth import Identity, Permission
 from panel_flowdash.dashboard_store import (
@@ -19,6 +26,8 @@ from panel_flowdash.dashboard_store import (
     BaseDashboardStore,
     DashboardModel,
     DashboardStoreError,
+    _decode_revision,
+    check_revision,
     decode_settings,
 )
 
@@ -35,6 +44,9 @@ _REPLACE_PAUSE = 0.02
 # An empty <id>.json older than this is a reservation whose writer crashed before
 # filling it in (see ``_claim``); it holds the id until someone removes it.
 _STALE_RESERVATION_NS = 5_000_000_000
+
+# Windows cannot lock a directory, so writers there lock this file in the folder.
+_LOCK_FILE = ".flowdash.lock"
 
 
 class _ReadOnlyError(DashboardStoreError, PermissionError):
@@ -54,6 +66,22 @@ def _replace(tmp: str, target: Path) -> None:
             if attempt == _REPLACE_TRIES:
                 raise
             time.sleep(_REPLACE_PAUSE)
+
+
+def _lock_file(fd: int) -> None:
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    else:
+        # Retries for about ten seconds, then raises OSError.
+        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+
+
+def _unlock_file(fd: int) -> None:
+    if fcntl is not None:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    else:
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
 
 
 def _claim(tmp: str, target: Path) -> None:
@@ -96,9 +124,14 @@ class JSONFolderDashboardStore(BaseDashboardStore):
 
     Writes are atomic, so a reader never sees a half-written file. Several
     server processes may share a folder: creating a dashboard claims its id
-    exclusively, and saving never replaces a file that belongs to another
-    user, but two processes saving the same dashboard at once resolve
-    last-writer-wins.
+    exclusively, and the other writes hold an advisory lock on the folder
+    (on Windows on a ``.flowdash.lock`` file in it) while they check the file
+    they replace. Saving
+    never replaces a file that belongs to another user, and each file stores
+    a ``revision`` that saving checks and increments, so a save based on an
+    outdated copy raises :class:`DashboardConflictError`. Edit the files by
+    hand only while no server writes to the folder; a hand edit that keeps
+    the ``revision`` is not detected as a conflict.
 
     Parameters
     ----------
@@ -120,16 +153,16 @@ class JSONFolderDashboardStore(BaseDashboardStore):
             Path, tuple[tuple[int, int, int], tuple[DashboardModel, int] | None]
         ] = {}
         self._unreachable = False
+        self._thread_lock = threading.Lock()
+        self._lock_warned = False
         if not read_only:
             self.path.mkdir(parents=True, exist_ok=True)
 
     def save_dashboard(self, dashboard: DashboardModel) -> None:
         """Write *dashboard*, refusing to replace a file another user owns.
 
-        The owner check and the write are not one atomic step, so a concurrent
-        writer could slip in between. That is acceptable because ids are not
-        chosen by users on save: they come from ``create_dashboard``, which
-        claims them exclusively.
+        Raises :class:`DashboardConflictError` if the file holds a different
+        revision than *dashboard* was loaded at.
         """
         self._check_writable()
         if not _SAFE_ID.match(dashboard.dashboard_id):
@@ -137,12 +170,19 @@ class JSONFolderDashboardStore(BaseDashboardStore):
                 f"Dashboard id {dashboard.dashboard_id!r} cannot be used as a file name; "
                 "use letters, digits, '.', '_' and '-', starting with a letter or digit."
             )
-        owner = self._owner_on_disk(self.path / f"{dashboard.dashboard_id}.json")
-        if owner is not None and owner != dashboard.user_id:
-            raise DashboardStoreError(
-                f"The dashboard id {dashboard.dashboard_id!r} is already used by another user."
-            )
-        self._write(dashboard)
+        with self._locked():
+            stored = self._fields_on_disk(self.path / f"{dashboard.dashboard_id}.json")
+            owner = stored.get("user_id")
+            if isinstance(owner, str) and owner != dashboard.user_id:
+                raise DashboardStoreError(
+                    f"The dashboard id {dashboard.dashboard_id!r} is already used by another user."
+                )
+            revision = _decode_revision(stored.get("revision"))
+            if stored and revision is None:
+                revision = 0
+            revision = check_revision(dashboard, revision)
+            self._write(dataclasses.replace(dashboard, revision=revision))
+        dashboard.revision = revision
 
     def _load_any(self, dashboard_id: str) -> DashboardModel | None:
         if not _SAFE_ID.match(dashboard_id):
@@ -190,26 +230,29 @@ class JSONFolderDashboardStore(BaseDashboardStore):
 
     def delete_dashboard(self, user_id: str, dashboard_id: str) -> bool:
         self._check_writable()
-        model = self._load_any(dashboard_id)
-        if model is None or model.user_id != user_id:
-            return False
-        (self.path / f"{dashboard_id}.json").unlink(missing_ok=True)
+        with self._locked():
+            model = self._load_any(dashboard_id)
+            if model is None or model.user_id != user_id:
+                return False
+            (self.path / f"{dashboard_id}.json").unlink(missing_ok=True)
         return True
 
     def rename_dashboard(self, user_id: str, dashboard_id: str, new_title: str) -> bool:
         self._check_writable()
-        model = self._load_any(dashboard_id)
-        if model is None or model.user_id != user_id:
-            return False
-        self._write(dataclasses.replace(model, title=new_title))
+        with self._locked():
+            model = self._load_any(dashboard_id)
+            if model is None or model.user_id != user_id:
+                return False
+            self._write(dataclasses.replace(model, title=new_title))
         return True
 
     def set_permission(self, dashboard_id: str, permission: Permission) -> bool:
         self._check_writable()
-        model = self._load_any(dashboard_id)
-        if model is None:
-            return False
-        self._write(dataclasses.replace(model, permission=permission))
+        with self._locked():
+            model = self._load_any(dashboard_id)
+            if model is None:
+                return False
+            self._write(dataclasses.replace(model, permission=permission))
         return True
 
     def create_dashboard(self, user_id: str, title: str) -> DashboardModel:
@@ -217,7 +260,9 @@ class JSONFolderDashboardStore(BaseDashboardStore):
         slug = _slug(title) or "dashboard"
         for n in itertools.count(1):
             dashboard_id = slug if n == 1 else f"{slug}-{n}"
-            dashboard = DashboardModel(dashboard_id=dashboard_id, user_id=user_id, title=title)
+            dashboard = DashboardModel(
+                dashboard_id=dashboard_id, user_id=user_id, title=title, revision=1
+            )
             try:
                 self._write(dashboard, exclusive=True)
             except FileExistsError:
@@ -234,6 +279,36 @@ class JSONFolderDashboardStore(BaseDashboardStore):
         if self.read_only:
             return False
         return super().can_administer_model(identity, dashboard, admin_groups)
+
+    @contextlib.contextmanager
+    def _locked(self):
+        """Hold the folder's write lock, shared with other processes using the folder."""
+        with self._thread_lock:
+            if fcntl is not None:
+                fd = os.open(self.path, os.O_RDONLY)
+            else:
+                fd = os.open(self.path / _LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o644)
+            try:
+                locked = self._lock_fd(fd)
+                try:
+                    yield
+                finally:
+                    if locked:
+                        _unlock_file(fd)
+            finally:
+                os.close(fd)
+
+    def _lock_fd(self, fd: int) -> bool:
+        try:
+            _lock_file(fd)
+        except OSError as exc:
+            # Some network file systems do not support locks; this process's
+            # writers are still serialized by the thread lock.
+            if not self._lock_warned:
+                self._lock_warned = True
+                log.warning("Cannot lock the dashboard folder %s (%s)", self.path, exc)
+            return False
+        return True
 
     def _check_writable(self) -> None:
         if self.read_only:
@@ -274,6 +349,8 @@ class JSONFolderDashboardStore(BaseDashboardStore):
             self._warn_once(
                 path, mtime, "Ignoring malformed settings in dashboard file %s (%r)", exc
             )
+        if model.revision is None:
+            model.revision = 0
         if model.dashboard_id != path.stem:
             self._warn_once(
                 path,
@@ -286,8 +363,8 @@ class JSONFolderDashboardStore(BaseDashboardStore):
         return model, mtime
 
     @staticmethod
-    def _owner_on_disk(path: Path) -> str | None:
-        """Return the ``user_id`` stored in *path*, or None if it is missing or unreadable.
+    def _fields_on_disk(path: Path) -> dict:
+        """Return the JSON object stored in *path*, or {} if it is missing or unreadable.
 
         Deliberately lenient: on a case-insensitive file system ``Foo.json``
         opens ``foo.json``, whose id does not match the name, and its owner
@@ -296,9 +373,8 @@ class JSONFolderDashboardStore(BaseDashboardStore):
         try:
             data = json.loads(path.read_bytes().decode("utf-8"))
         except (OSError, *MALFORMED_ERRORS):
-            return None
-        owner = data.get("user_id") if isinstance(data, dict) else None
-        return owner if isinstance(owner, str) else None
+            return {}
+        return data if isinstance(data, dict) else {}
 
     def _warn_once(self, path: Path, mtime: int, message: str, *args: object) -> None:
         # Keyed on mtime so a file that is fixed and then broken again warns again.

@@ -69,8 +69,17 @@ creating a dashboard claims its id exclusively, so two users creating a
 dashboard with the same title at the same moment get `sales` and `sales-2`, and
 saving refuses (with a `DashboardStoreError`) to replace a file that belongs to
 another user, which also covers ids that differ only in case on a
-case-insensitive file system. Two saves of the same dashboard at the same moment
-still resolve last-writer-wins.
+case-insensitive file system. Saves, renames and permission changes hold an
+advisory lock on the folder (on Windows, on a `.flowdash.lock` file inside it)
+while they check the file they replace, so two saves of the same dashboard
+cannot both succeed; see [Concurrent edits](#concurrent-edits). The lock needs
+a file system that supports it; where it does not, as on some network shares,
+a warning is logged and only the writers within one process are serialized.
+
+Each file stores the dashboard's `revision`. If you edit a file by hand while
+the server runs, increment its `revision` too, or a session that opened the old
+contents can still save over your edit. A file without a `revision` is treated
+as revision 0.
 
 ---
 
@@ -178,7 +187,9 @@ dashboard.edges.append(new_edge)
 store.save_dashboard(dashboard)
 ```
 
-Inserts the dashboard or replaces the stored one with the same id.
+Inserts the dashboard or replaces the stored one with the same id. If the
+dashboard was changed since it was loaded, the save raises
+`DashboardConflictError` instead; see [Concurrent edits](#concurrent-edits).
 
 ### Rename
 
@@ -193,6 +204,54 @@ store.delete_dashboard("user1", "abc123")
 ```
 
 Returns `True` if a dashboard was deleted, `False` if not found.
+
+---
+
+## Concurrent edits
+
+Every stored dashboard has a `revision`, a number the store increments on each
+save. A model loaded from a store carries the revision it was loaded at, and
+`save_dashboard` only writes it if that is still the stored revision. Otherwise
+another session saved the dashboard in the meantime, and the store raises
+`DashboardConflictError` (a `DashboardStoreError`) without writing anything.
+The check and the write are one atomic step in every built-in store, also when
+several server processes share a SQLite database or a JSON folder. On success
+the store sets `dashboard.revision` to the new revision, so the same model can
+be saved again.
+
+```python
+from panel_flowdash import DashboardConflictError
+
+first = store.load_dashboard("user1", "abc123")
+second = store.load_dashboard("user1", "abc123")
+store.save_dashboard(first)
+try:
+    store.save_dashboard(second)
+except DashboardConflictError as exc:
+    print(exc.expected, exc.current)  # 1 2
+```
+
+A model whose `revision` is `None`, such as one you build yourself, is saved
+unconditionally. Renaming a dashboard or changing who it is shared with does
+not change its revision, because a save keeps the stored title and sharing
+rules anyway. An existing SQLite database gains the `revision` column the first
+time it is opened, with every dashboard at revision 0.
+
+In the editor, a rejected save leaves the canvas as it was and opens a dialog
+explaining that someone else saved the dashboard. **Reload** discards the local
+changes and loads the latest version. **Save as copy** saves the canvas as a new
+dashboard owned by the current user, titled after the original with `(copy)`
+appended, and switches to it; in a `FlowDashApp` the URL and dashboard menu
+follow. **Keep editing** closes the dialog. The same applies to saving dashboard
+settings, which are part of the saved dashboard. From Python, `FlowDash.save()`
+raises `DashboardConflictError` and `FlowDash.save_as(title)` saves a copy.
+
+A store of your own can support this too: compare `dashboard.revision` with the
+stored revision under the same lock or transaction as the write, raise
+`DashboardConflictError` on a mismatch, and set `dashboard.revision` to the
+stored value afterwards. The helper `panel_flowdash.dashboard_store.check_revision`
+does the comparison and returns the next revision. A store that ignores
+`revision` keeps working, with saves resolving last-writer-wins.
 
 ---
 
@@ -240,7 +299,7 @@ has been logged.", never the exception text.
 
 In edit mode, **Download** in the side panel saves the canvas as a JSON file named after the dashboard. Dropping that file onto the wiring canvas recreates its components, connections and tile layout. If the canvas already has components, the editor asks before replacing them. Components the editor doesn't offer are skipped with a warning.
 
-The file holds the dashboard contents but not its `dashboard_id`, `user_id` or `permission`. An imported file takes the identity of the dashboard currently loaded, so saving writes the imported contents to that dashboard and cannot overwrite another one or change who it is shared with.
+The file holds the dashboard contents but not its `dashboard_id`, `user_id`, `permission` or `revision`. An imported file takes the identity of the dashboard currently loaded, so saving writes the imported contents to that dashboard and cannot overwrite another one or change who it is shared with. It also keeps the revision the dashboard was loaded at, so importing a file does not hide a save made by another session since then.
 
 The same round trip is available from Python:
 

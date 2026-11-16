@@ -22,6 +22,7 @@ from panel_flowdash.component_spec import (
 )
 from panel_flowdash.dashboard_store import (
     BaseDashboardStore,
+    DashboardConflictError,
     DashboardEdge,
     DashboardItem,
     DashboardModel,
@@ -48,6 +49,7 @@ __all__: list[str] = [
     "BaseDashboardStore",
     "ComponentSpec",
     "ConfigField",
+    "DashboardConflictError",
     "DashboardEdge",
     "DashboardItem",
     "DashboardModel",
