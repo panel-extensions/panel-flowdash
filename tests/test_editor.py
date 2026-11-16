@@ -478,23 +478,33 @@ class TestAddRemove:
         assert list(editor.graph.node_ids) == []
 
 
+def _overflow_labels(editor):
+    return [item["label"] for item in editor._dashboard_bar.overflow.items if item]
+
+
+def _click_overflow(editor, label):
+    items = editor._dashboard_bar.overflow.items
+    index = next(i for i, item in enumerate(items) if item and item["label"] == label)
+    editor._dashboard_bar.overflow._handle_msg({"type": "click", "item": index})
+
+
 class TestToolbar:
-    async def test_clear_disabled_on_empty_canvas(self, editor):
-        assert editor._clear_button.disabled
+    async def test_clear_offered_only_with_components(self, editor):
+        assert "Clear canvas" not in _overflow_labels(editor)
         instance_id = editor.add_component(SELECTOR)
-        assert not editor._clear_button.disabled
+        assert _overflow_labels(editor)[-1] == "Clear canvas"
         editor.remove_component(instance_id)
-        assert editor._clear_button.disabled
+        assert "Clear canvas" not in _overflow_labels(editor)
 
     async def test_clear_button_asks_for_confirmation(self, editor):
         editor.add_component(SELECTOR)
-        editor._clear_button.clicks += 1
+        _click_overflow(editor, "Clear canvas")
         assert editor._clear_dialog.open
         assert len(editor._tile_items) == 1
 
     async def test_clear_confirmation_clears_canvas(self, editor):
         editor.add_component(SELECTOR)
-        editor._clear_button.clicks += 1
+        _click_overflow(editor, "Clear canvas")
         confirm = editor._clear_dialog.objects[1][-1]
         confirm.clicks += 1
         assert not editor._clear_dialog.open
@@ -502,18 +512,19 @@ class TestToolbar:
 
     async def test_clear_cancel_keeps_canvas(self, editor):
         editor.add_component(SELECTOR)
-        editor._clear_button.clicks += 1
+        _click_overflow(editor, "Clear canvas")
         cancel = editor._clear_dialog.objects[1][-2]
         cancel.clicks += 1
         assert not editor._clear_dialog.open
         assert len(editor._tile_items) == 1
 
-    async def test_save_button_highlights_unsaved_changes(self, store_editor):
-        assert store_editor._save_button.variant == "text"
-        store_editor.add_component(SELECTOR)
+    async def test_save_button_enabled_only_with_unsaved_changes(self, store_editor):
         assert store_editor._save_button.variant == "contained"
+        assert store_editor._save_button.disabled
+        store_editor.add_component(SELECTOR)
+        assert not store_editor._save_button.disabled
         store_editor.save(title="Demo")
-        assert store_editor._save_button.variant == "text"
+        assert store_editor._save_button.disabled
 
     async def test_save_button_disabled_when_read_only(self, editor):
         editor.read_only = True
@@ -1587,23 +1598,24 @@ class TestPersistence:
 
 
 class TestDisplayModes:
-    async def test_wiring_mode_floats_the_toolbar_over_the_canvas(self, editor):
+    async def test_wiring_mode_shows_the_canvas_under_the_bar(self, editor):
         assert editor.mode == "wiring"
+        assert editor._view.objects[0] is editor._dashboard_bar.__panel__()
         assert editor._workspace_area.objects[0] is editor._flow
-        assert editor._flow.top_panel == [editor._controls]
+        assert editor._flow.top_panel == []
         assert editor._side_panel.visible
 
-    async def test_dashboard_mode_puts_the_toolbar_above_the_grid(self, editor):
+    async def test_dashboard_mode_shows_the_grid_under_the_bar(self, editor):
         editor.mode = "dashboard"
-        assert editor._workspace_area.objects[:2] == [editor._controls, editor._tile_grid]
+        assert editor._workspace_area.objects[0] is editor._tile_grid
         assert editor._flow.top_panel == []
         assert not editor._side_panel.visible
 
-    async def test_toolbar_returns_to_the_canvas(self, editor):
+    async def test_canvas_returns_after_the_grid(self, editor):
         editor.mode = "dashboard"
         editor.mode = "wiring"
-        assert editor._controls not in editor._workspace_area.objects
-        assert editor._flow.top_panel == [editor._controls]
+        assert editor._workspace_area.objects[0] is editor._flow
+        assert editor._tile_grid not in editor._workspace_area.objects
 
     async def test_dialogs_stay_mounted_in_both_modes(self, editor):
         dialogs = [editor._clear_dialog, editor._import_dialog, editor._settings_dialog]
@@ -1614,15 +1626,15 @@ class TestDisplayModes:
     async def test_non_editable_always_shows_the_grid(self, editor):
         editor.editable = False
         assert editor._tile_grid in editor._workspace_area.objects
-        assert editor._controls not in editor._workspace_area.objects
+        assert editor._dashboard_bar.mode_tabs not in editor._dashboard_bar._actions.objects
         assert not editor._side_panel.visible
 
     async def test_toolbar_can_be_hidden(self):
         editor = FlowDash(COMPONENTS, notifications=False, toolbar=False)
-        assert editor._flow.top_panel == []
+        assert not editor._dashboard_bar.visible
         assert editor._side_panel.visible
-        editor.mode = "dashboard"
-        assert editor._controls not in editor._workspace_area.objects
+        editor.editable = False
+        assert not editor._dashboard_bar.visible
 
     async def test_empty_canvas_shows_drop_hint(self, editor):
         assert editor._flow.bottom_panel == [editor._empty_hint]
@@ -1636,20 +1648,19 @@ class TestDisplayModes:
         assert not editor._tile_grid.editable
         assert not editor._tile_grid.card
 
-    async def test_toolbar_extra_is_seated_between_download_and_clear(self):
+    async def test_toolbar_extra_is_seated_in_the_bar_actions(self):
         button = pmui.Button(label="Share")
         editor = FlowDash(COMPONENTS, notifications=False, toolbar_extra=[button])
-        assert editor._actions_row.objects == [
-            editor._save_button,
-            editor._download_button,
-            button,
-            editor._clear_button,
-        ]
+        actions = editor._dashboard_bar._actions.objects
+        assert actions.index(editor._settings_button) < actions.index(button)
+        editor.editable = False
+        actions = editor._dashboard_bar._actions.objects
+        assert actions.index(button) < actions.index(editor._dashboard_bar.mode_toggle)
 
     async def test_toolbar_extra_updates_reactively(self, editor):
         button = pmui.Button(label="Later")
         editor.toolbar_extra = [button]
-        assert button in editor._actions_row.objects
+        assert button in editor._dashboard_bar._actions.objects
 
     async def test_switching_out_of_dashboard_mode_stashes_layout(self, editor):
         editor.add_component(SELECTOR)
@@ -3486,19 +3497,20 @@ def _drop(editor, component_id=None, *, path=None, position=(10, 20), target=Non
 
 
 class TestPalette:
-    async def test_palette_groups_components_by_section(self, editor):
-        sections = {s["label"]: s for s in editor._palette.items}
-        assert {"Demo", "Widgets"} <= set(sections)
-        demo = sections["Demo"]
-        assert demo["draggable"] is False
-        assert [i["component_id"] for i in demo["items"]] == [SELECTOR, CHART, SHOUTER]
-        assert all(i["draggable"] for i in demo["items"])
+    async def test_palette_groups_components_by_role(self, editor):
+        groups = {g["label"]: g for g in editor._palette.items}
+        assert list(groups) == ["Data sources", "Transforms", "Views", "Widgets"]
+        assert all(g["draggable"] is False for g in groups.values())
+        assert [i["component_id"] for i in groups["Data sources"]["items"]] == [SELECTOR]
+        assert [i["component_id"] for i in groups["Transforms"]["items"]] == [SHOUTER]
+        assert [i["component_id"] for i in groups["Views"]["items"]] == [CHART]
+        assert all(i["draggable"] for g in groups.values() for i in g["items"])
         assert editor._palette.drag_type in editor._flow.drop_types
 
     async def test_placed_singleton_is_not_draggable(self):
         editor = FlowDash({SINGLETON: page_header}, notifications=False)
         editor.add_component(SINGLETON)
-        (item,) = next(s for s in editor._palette.items if s["label"] == "Demo")["items"]
+        (item,) = next(s for s in editor._palette.items if s["label"] == "Views")["items"]
         assert item["draggable"] is False
 
     async def test_clicking_placed_singleton_does_not_add_it_again(self):
@@ -3982,7 +3994,7 @@ class TestSettingsForm:
         assert editor._settings_dialog.open
 
     async def test_button_is_in_the_toolbar(self, editor):
-        assert editor._settings_button in editor._controls.objects
+        assert editor._settings_button in editor._dashboard_bar._actions.objects
 
     async def test_button_is_disabled_when_the_dashboard_cannot_be_saved(self, editor):
         assert not editor._settings_button.disabled
@@ -3991,7 +4003,7 @@ class TestSettingsForm:
 
     async def test_non_editable_view_has_no_settings_access(self, editor):
         editor.editable = False
-        assert editor._controls not in editor._workspace_area.objects
+        assert editor._settings_button not in editor._dashboard_bar._actions.objects
 
 
 class TestRefreshTimer:
@@ -4101,24 +4113,23 @@ class TestRefreshButton:
         editor.load_model(_dashboard())
         assert editor._refresh_label.object.startswith("Refreshed ")
 
-    async def test_view_mode_shows_the_bar_above_the_grid(self, editor):
+    async def test_view_mode_shows_refresh_in_the_bar(self, editor):
         editor.editable = False
-        assert editor._workspace_area.objects[:2] == [editor._refresh_bar, editor._tile_grid]
-
-    async def test_preview_shows_the_bar(self, editor):
-        editor.param.update(mode="dashboard", preview=True)
-        assert editor._refresh_bar in editor._workspace_area.objects
+        bar = editor._dashboard_bar
+        assert editor._refresh_button in bar._actions.objects
+        assert editor._refresh_label in bar._title_block[1].objects
+        assert editor._workspace_area.objects[0] is editor._tile_grid
 
     @pytest.mark.parametrize("mode", ["wiring", "dashboard"])
-    async def test_edit_mode_has_no_bar(self, editor, mode):
+    async def test_edit_mode_has_no_refresh(self, editor, mode):
         editor.mode = mode
-        assert editor._refresh_bar not in editor._workspace_area.objects
+        assert editor._refresh_button not in editor._dashboard_bar._actions.objects
 
-    async def test_bar_returns_to_view_mode_after_editing(self, editor):
+    async def test_refresh_returns_to_view_mode_after_editing(self, editor):
         editor.editable = False
         editor.editable = True
         editor.editable = False
-        assert editor._workspace_area.objects.count(editor._refresh_bar) == 1
+        assert editor._dashboard_bar._actions.objects.count(editor._refresh_button) == 1
 
 
 class Subscriber(Viewer):

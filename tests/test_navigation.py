@@ -560,18 +560,18 @@ class TestMenuBarVariant:
         assert menubar_app._menu_bar is not None
         assert menubar_app._menu_bar in menubar_app._page.header
 
-    async def test_drawer_default_keeps_header_empty(self, app):
-        assert app._menu_bar is None
-        assert app._page.header == []
+    async def test_drawer_variant_keeps_header_empty(self, right_nav_app):
+        assert right_nav_app._menu_bar is None
+        assert right_nav_app._page.header == []
 
     async def test_nav_content_omits_drawer_in_menubar(self, menubar_app):
         content = pn.pane.Markdown("x")
         assert menubar_app._nav_content(content) is content
 
-    async def test_nav_content_wraps_drawer_in_drawer_mode(self, app):
+    async def test_nav_content_wraps_drawer_in_drawer_mode(self, right_nav_app):
         content = pn.pane.Markdown("x")
-        wrapped = app._nav_content(content)
-        assert app._nav_drawer in wrapped
+        wrapped = right_nav_app._nav_content(content)
+        assert right_nav_app._nav_drawer in wrapped
 
     async def test_menubar_click_navigates(self, menubar_app):
         calls = []
@@ -619,16 +619,14 @@ class TestMenuBarVariant:
         }
 
 
-@pytest.fixture
-async def left_nav_app(tmp_path):
-    """A FlowDashApp with the navigation drawer docked on the left."""
+async def _nav_variant_app(tmp_path, nav_variant):
     _create_project(tmp_path)
     sys.path.insert(0, str(tmp_path))
     previous = pn.state._location
     pn.state._location = FakeLocation()
     try:
         store = DashboardStore(tmp_path / "test.db")
-        instance = FlowDashApp(project_dir=tmp_path, store=store, nav_variant="left")
+        instance = FlowDashApp(project_dir=tmp_path, store=store, nav_variant=nav_variant)
         await instance._ensure_components_loaded()
         yield instance
     finally:
@@ -636,14 +634,34 @@ async def left_nav_app(tmp_path):
         sys.path.remove(str(tmp_path))
 
 
-class TestNavSide:
-    async def test_default_anchors_drawer_right(self, app):
-        assert app._nav_drawer.anchor == "right"
+@pytest.fixture
+async def left_nav_app(tmp_path):
+    """A FlowDashApp with the navigation drawer docked on the left."""
+    async for instance in _nav_variant_app(tmp_path, "left"):
+        yield instance
 
-    async def test_default_places_drawer_after_content(self, app):
+
+@pytest.fixture
+async def right_nav_app(tmp_path):
+    """A FlowDashApp with the navigation drawer docked on the right."""
+    async for instance in _nav_variant_app(tmp_path, "right"):
+        yield instance
+
+
+class TestNavSide:
+    async def test_right_anchors_drawer_right(self, right_nav_app):
+        assert right_nav_app._nav_drawer.anchor == "right"
+
+    async def test_right_places_drawer_after_content(self, right_nav_app):
+        content = pn.pane.Markdown("x")
+        wrapped = right_nav_app._nav_content(content)
+        assert list(wrapped) == [content, right_nav_app._nav_drawer]
+
+    async def test_default_places_rail_before_content(self, app):
+        assert app.nav_variant == "rail"
         content = pn.pane.Markdown("x")
         wrapped = app._nav_content(content)
-        assert list(wrapped) == [content, app._nav_drawer]
+        assert list(wrapped) == [app._shell.rail, content]
 
     async def test_left_anchors_drawer_left(self, left_nav_app):
         assert left_nav_app._nav_drawer.anchor == "left"

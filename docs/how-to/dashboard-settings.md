@@ -25,7 +25,7 @@ editor.settings.refresh_period = 10  # marks the dashboard as having unsaved cha
 editor.save()  # writes the current values with the dashboard
 ```
 
-In edit mode the toolbar has a **Settings** button that opens a form generated from
+In edit mode the dashboard bar has a **Settings** button that opens a form generated from
 the settings object. Changes mark the dashboard dirty like any other edit. The
 button is not shown in view mode and is disabled when the dashboard cannot be
 saved.
