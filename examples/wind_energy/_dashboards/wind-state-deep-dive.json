@@ -1,0 +1,317 @@
+{
+  "version": 3,
+  "title": "State Deep Dive",
+  "items": [
+    {
+      "instance_id": "turbines",
+      "component_id": "Sources/turbines",
+      "x": 0,
+      "y": 280,
+      "config": {}
+    },
+    {
+      "instance_id": "population",
+      "component_id": "Sources/population",
+      "x": 0,
+      "y": 1100,
+      "config": {}
+    },
+    {
+      "instance_id": "state",
+      "component_id": "Controls/state_picker",
+      "x": 0,
+      "y": 0,
+      "config": {
+        "initial_state": "TX"
+      }
+    },
+    {
+      "instance_id": "filter",
+      "component_id": "Transforms/filter_turbines",
+      "x": 520,
+      "y": 120,
+      "config": {}
+    },
+    {
+      "instance_id": "projects",
+      "component_id": "Transforms/project_summary",
+      "x": 520,
+      "y": 480,
+      "config": {}
+    },
+    {
+      "instance_id": "join",
+      "component_id": "Transforms/state_join",
+      "x": 520,
+      "y": 1100,
+      "config": {}
+    },
+    {
+      "instance_id": "project",
+      "component_id": "Controls/project_picker",
+      "x": 1040,
+      "y": 480,
+      "config": {}
+    },
+    {
+      "instance_id": "kpi_capacity",
+      "component_id": "Views/kpi",
+      "x": 1560,
+      "y": 0,
+      "config": {
+        "metric": "capacity"
+      }
+    },
+    {
+      "instance_id": "kpi_size",
+      "component_id": "Views/kpi",
+      "x": 1560,
+      "y": 220,
+      "config": {
+        "metric": "median_size"
+      }
+    },
+    {
+      "instance_id": "kpi_modern",
+      "component_id": "Views/kpi",
+      "x": 1040,
+      "y": 0,
+      "config": {
+        "metric": "turbines",
+        "label": "Turbines of 3 MW and up"
+      }
+    },
+    {
+      "instance_id": "map",
+      "component_id": "Views/turbine_map",
+      "x": 2080,
+      "y": 0,
+      "config": {
+        "color_by": "capacity"
+      }
+    },
+    {
+      "instance_id": "detail",
+      "component_id": "Views/project_detail",
+      "x": 1560,
+      "y": 480,
+      "config": {}
+    },
+    {
+      "instance_id": "models",
+      "component_id": "Views/models",
+      "x": 2080,
+      "y": 560,
+      "config": {
+        "top_n": 12
+      }
+    },
+    {
+      "instance_id": "ranking",
+      "component_id": "Views/state_ranking",
+      "x": 1040,
+      "y": 1100,
+      "config": {
+        "metric": "watts_per_person",
+        "top_n": 15
+      }
+    }
+  ],
+  "edges": [
+    {
+      "source": "turbines",
+      "source_port": "turbines",
+      "target": "filter",
+      "target_port": "turbines"
+    },
+    {
+      "source": "turbines",
+      "source_port": "turbines",
+      "target": "state",
+      "target_port": "turbines"
+    },
+    {
+      "source": "state",
+      "source_port": "state",
+      "target": "filter",
+      "target_port": "state"
+    },
+    {
+      "source": "filter",
+      "source_port": "filtered",
+      "target": "projects",
+      "target_port": "turbines"
+    },
+    {
+      "source": "projects",
+      "source_port": "projects",
+      "target": "project",
+      "target_port": "projects"
+    },
+    {
+      "source": "project",
+      "source_port": "project",
+      "target": "detail",
+      "target_port": "project"
+    },
+    {
+      "source": "filter",
+      "source_port": "filtered",
+      "target": "detail",
+      "target_port": "turbines"
+    },
+    {
+      "source": "filter",
+      "source_port": "filtered",
+      "target": "kpi_capacity",
+      "target_port": "turbines"
+    },
+    {
+      "source": "filter",
+      "source_port": "filtered",
+      "target": "kpi_size",
+      "target_port": "turbines"
+    },
+    {
+      "source": "filter",
+      "source_port": "filtered",
+      "target": "kpi_modern",
+      "target_port": "turbines",
+      "transform": [
+        {
+          "op": "filter",
+          "column": "t_cap",
+          "comparison": ">=",
+          "value": 3000
+        }
+      ]
+    },
+    {
+      "source": "filter",
+      "source_port": "filtered",
+      "target": "map",
+      "target_port": "turbines"
+    },
+    {
+      "source": "filter",
+      "source_port": "filtered",
+      "target": "models",
+      "target_port": "turbines"
+    },
+    {
+      "source": "turbines",
+      "source_port": "turbines",
+      "target": "join",
+      "target_port": "turbines"
+    },
+    {
+      "source": "population",
+      "source_port": "population",
+      "target": "join",
+      "target_port": "population"
+    },
+    {
+      "source": "join",
+      "source_port": "by_state",
+      "target": "ranking",
+      "target_port": "by_state"
+    }
+  ],
+  "tile_layout": [
+    {
+      "instance_id": "kpi_capacity",
+      "index": 0,
+      "width": 33.33,
+      "height": 130,
+      "visible": true
+    },
+    {
+      "instance_id": "kpi_size",
+      "index": 1,
+      "width": 33.33,
+      "height": 130,
+      "visible": true
+    },
+    {
+      "instance_id": "kpi_modern",
+      "index": 2,
+      "width": 33.34,
+      "height": 130,
+      "visible": true
+    },
+    {
+      "instance_id": "map",
+      "index": 3,
+      "width": 55,
+      "height": 440,
+      "visible": true
+    },
+    {
+      "instance_id": "detail",
+      "index": 4,
+      "width": 45,
+      "height": 440,
+      "visible": true
+    },
+    {
+      "instance_id": "models",
+      "index": 5,
+      "width": 55,
+      "height": 400,
+      "visible": true
+    },
+    {
+      "instance_id": "ranking",
+      "index": 6,
+      "width": 45,
+      "height": 400,
+      "visible": true
+    },
+    {
+      "instance_id": "turbines",
+      "index": 7,
+      "width": 33.33,
+      "height": 150,
+      "visible": false
+    },
+    {
+      "instance_id": "population",
+      "index": 8,
+      "width": 33.33,
+      "height": 150,
+      "visible": false
+    },
+    {
+      "instance_id": "filter",
+      "index": 9,
+      "width": 33.33,
+      "height": 150,
+      "visible": false
+    },
+    {
+      "instance_id": "projects",
+      "index": 10,
+      "width": 33.33,
+      "height": 150,
+      "visible": false
+    },
+    {
+      "instance_id": "join",
+      "index": 11,
+      "width": 33.33,
+      "height": 150,
+      "visible": false
+    }
+  ],
+  "breakpoints": [
+    768,
+    1200
+  ],
+  "responsive_layouts": {},
+  "reference_width": 1200,
+  "settings": {
+    "refresh_period": 0,
+    "capacity_unit": "MW",
+    "color_scheme": "blues"
+  }
+}
