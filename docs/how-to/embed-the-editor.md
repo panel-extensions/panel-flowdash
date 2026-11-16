@@ -270,7 +270,8 @@ editor = FlowDash(components, toolbar_extra=[share])
 The *Split* tab (`mode="split"`) shows the canvas and the tile grid side by side with a draggable divider. Selecting a component on either side selects it on the other and in the inspector (clicking a tile whose node is out of view pans the canvas to it), and components added or removed on the canvas appear on the grid straight away. The grid there previews the dashboard at the width of its pane; tiles are arranged in the *Layout* tab, or sized from the inspector's *Tile* tab. Collapsing a side with the divider's arrows switches to the tab of the side that is left. The browser remembers the pane sizes and whether the Split tab was last used, and in windows narrower than 1600 px the inspector stays folded until something is selected.
 
 Components registered with `sidebar=True` are kept out of the tile grid and
-shown in the editor's controls bar above the tiles. Their views are also
+shown as controls above the tiles, or in a panel to their left with
+`controls_position="left"`. Their views are also
 published on the `sidebar` param. To render them wherever your layout wants them
 instead, turn the controls bar off:
 

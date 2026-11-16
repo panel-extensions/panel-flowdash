@@ -1,17 +1,17 @@
-"""The bar above the tiles: the dashboard's controls, the pipeline strip and the issue banner."""
+"""The dashboard's controls: a slim row above the tiles, or a collapsible panel beside them."""
 
 from __future__ import annotations
 
 import panel as pn
+import panel_material_ui as pmui
 import param
 from panel.viewable import Viewer
+from panel_material_ui.widgets.base import MaterialWidget
 
-from panel_flowdash.ui.health import DashboardHealth
-from panel_flowdash.ui.issue_banner import IssueBanner, mark_issue_targets
-from panel_flowdash.ui.pipeline import PipelineStrip, pipeline_stages
-
-# Sidebar components were laid out for a sidebar about this wide.
-_CONTROL_WIDTH = 320
+# Controls in the row are about this wide. The panel leaves its controls the
+# width of the sidebar they were laid out for before there was a controls row.
+_CONTROL_WIDTH = 240
+_PANEL_WIDTH = 320
 
 # Views are laid out for a tile, which most fill with stretch_both. Inside the
 # bar there is no height to fill, so the stretched view (and the wrapper, which
@@ -30,115 +30,170 @@ _FIT_CONTENT = """
 }
 """
 
+POSITIONS = ("top", "left")
+
+
+def compact_inputs(view):
+    """Switch the Material UI widgets in *view* to their small size, where they have one."""
+    if not hasattr(view, "select"):
+        return
+    for widget in view.select(MaterialWidget):
+        # Selects keep the number of visible rows in `size` and the MUI size in `visual_size`.
+        for name in ("visual_size", "size"):
+            size = widget.param[name] if name in widget.param else None
+            if isinstance(size, param.Selector) and "small" in size.objects:
+                if getattr(widget, name) != "small":
+                    setattr(widget, name, "small")
+                break
+
 
 class ControlsBar(Viewer):
-    """Shown above the tile grid while the dashboard is viewed or laid out.
+    """The views of the components registered with ``sidebar=True``, beside the tiles.
 
-    It holds the views of the components registered with ``sidebar=True``
-    (when the editor's ``controls_bar`` is on) in a row that wraps on narrow
-    screens and, in view mode, the pipeline strip and the issue banner. The
-    bar hides itself while it has nothing to show. :meth:`sync` re-reads the
-    editor; the editor calls it whenever its components change.
+    With ``position="top"`` they sit in one slim row above the tile grid that
+    wraps on narrow screens; with ``position="left"`` they are stacked in a
+    panel left of the grid that collapses to a narrow strip. Either way the
+    inputs use Material UI's small size and the controls take no room while
+    the dashboard has none (or the editor's ``controls_bar`` is off).
+    :meth:`sync` re-reads the editor, which calls it whenever its components
+    change, and :meth:`layout` places the controls around the tile grid.
     """
 
     editor = param.Parameter(doc="The FlowDash editor whose controls are shown.")
 
-    health = param.ClassSelector(class_=DashboardHealth, doc="The tiles' health.")
+    position = param.Selector(
+        default="top", objects=list(POSITIONS), doc="Where the controls sit around the tiles."
+    )
+
+    collapsed = param.Boolean(default=False, doc="Whether the left panel is collapsed.")
 
     def __init__(self, **params):
         super().__init__(**params)
-        self.pipeline = PipelineStrip()
-        self.banner = IssueBanner(health=self.health, on_show=self._mark_issues)
         self._wrappers: dict[int, pn.Column] = {}
         self._controls = pn.FlexBox(
             align_items="flex-start",
             flex_wrap="wrap",
             margin=0,
-            sizing_mode=None,
-            gap="4px 16px",
-            styles={"flex": "1 1 auto", "min-width": "0"},
-            visible=False,
+            sizing_mode="stretch_width",
+            gap="8px 16px",
         )
-        self._bar = pn.FlexBox(
+        self._row = pn.Column(
             self._controls,
-            self.pipeline,
-            align_items="center",
-            flex_wrap="wrap",
-            margin=(12, 16, 0, 16),
+            margin=(4, 16, 0, 16),
             sizing_mode="stretch_width",
             visible=False,
             css_classes=["fd-controls-bar"],
-            gap="8px 16px",
-            styles={
-                "padding": "8px 16px",
-                "border": "1px solid var(--mui-palette-divider)",
-                "border-radius": "12px",
-                "background": "var(--mui-palette-background-paper)",
-            },
         )
-        # Each part carries its own margin, so the column takes no room while both are hidden.
-        self._view = pn.Column(self._bar, self.banner, margin=0, sizing_mode="stretch_width")
-        self.health.param.watch(self._sync_pipeline, ["failed", "waiting", "origins"])
+        self._hide = pmui.IconButton(
+            icon="chevron_left", description="Hide controls", size="small", margin=0
+        )
+        self._hide.on_click(lambda _event: setattr(self, "collapsed", True))
+        self._show = pmui.IconButton(
+            icon="tune", description="Show controls", size="small", margin=0
+        )
+        self._show.on_click(lambda _event: setattr(self, "collapsed", False))
+        self._heading = pmui.Typography(
+            "Controls",
+            variant="overline",
+            margin=0,
+            sx={"color": "text.secondary", "letterSpacing": "0.08em", "lineHeight": 2},
+        )
+        panel_sx = {
+            "borderRadius": 0,
+            "borderRight": 1,
+            "borderColor": "divider",
+            "bgcolor": "background.paper",
+            "px": 1,
+            "py": 1,
+            "gap": 1.5,
+            "overflowY": "auto",
+            "flexShrink": 0,
+        }
+        self._panel = pmui.Paper(
+            pn.Row(self._heading, pn.HSpacer(), self._hide, margin=0, align="center"),
+            margin=0,
+            elevation=0,
+            width=_PANEL_WIDTH,
+            sizing_mode="stretch_height",
+            visible=False,
+            css_classes=["fd-controls-panel"],
+            sx=panel_sx,
+        )
+        # Collapsed, the panel gives way to a strip holding the button that reopens it.
+        self._strip = pmui.Paper(
+            self._show,
+            margin=0,
+            elevation=0,
+            width=48,
+            sizing_mode="stretch_height",
+            visible=False,
+            css_classes=["fd-controls-strip"],
+            sx={**panel_sx, "alignItems": "center"},
+        )
         self.editor.param.watch(lambda _event: self.sync(), ["controls_bar"])
 
     @property
     def controls(self) -> list:
         """The component views currently shown as controls."""
-        return [wrapper[0] for wrapper in self._controls]
+        return [wrapper[0] for wrapper in self._wrappers.values()]
+
+    @property
+    def visible(self) -> bool:
+        """Whether there are controls to show."""
+        return bool(self._wrappers)
 
     def _wrap(self, view) -> pn.Column:
         # Reusing the wrapper keeps a control from re-rendering when the bar is rebuilt.
         wrapper = self._wrappers.get(id(view))
         if wrapper is None or wrapper[0] is not view:
-            wrapper = self._wrappers[id(view)] = pn.Column(
+            compact_inputs(view)
+            wrapper = pn.Column(
                 view,
                 margin=0,
-                width=_CONTROL_WIDTH,
                 styles={"max-width": "100%"},
                 stylesheets=[] if getattr(view, "height", None) else [_FIT_CONTENT],
             )
         return wrapper
 
     @pn.io.hold()
+    @param.depends("position", "collapsed", watch=True)
     def sync(self):
-        """Re-read the editor's controls, graph and mode."""
+        """Re-read the editor's controls and lay them out for the position."""
         editor = self.editor
         views = list(editor.sidebar) if editor.controls_bar else []
         wrappers = [self._wrap(view) for view in views]
         self._wrappers = {id(w[0]): w for w in wrappers}
-        if list(self._controls) != wrappers:
-            self._controls[:] = wrappers
-        self._controls.visible = bool(wrappers)
-        self.health.track()
-        self.banner.visible = not editor.editable
-        self._sync_pipeline()
+        left = self.position == "left"
+        for wrapper in wrappers:
+            # In the panel a control takes its full width; in the row about a select's.
+            wrapper.param.update(
+                width=None if left else _CONTROL_WIDTH,
+                sizing_mode="stretch_width" if left else "fixed",
+            )
+        top = [] if left else wrappers
+        if list(self._controls) != top:
+            self._controls[:] = top
+        self._row.visible = bool(top)
+        body = wrappers if left and not self.collapsed else []
+        if list(self._panel)[1:] != body:
+            self._panel[1:] = body
+        self._panel.visible = bool(body)
+        self._strip.visible = left and bool(wrappers) and self.collapsed
 
-    def _sync_pipeline(self, *_events):
-        editor = self.editor
-        stages = (
-            []
-            if editor.editable
-            else pipeline_stages(editor._dataflow_graph.edges, self._titles(), self.health.status)
-        )
-        with pn.io.hold():
-            self.pipeline.update(stages)
-            self._bar.visible = bool(self._controls.visible or self.pipeline.visible)
-
-    def _titles(self) -> dict[str, str]:
-        editor = self.editor
-        titles = {}
-        for item in editor._tile_items:
-            entry = editor._component_entries.get(item["component_id"])
-            title = (item.get("config") or {}).get("title")
-            titles[item["instance_id"]] = title or (entry.title if entry else item["component_id"])
-        return titles
-
-    def _mark_issues(self, affected: list[str]):
-        grid = self.editor._tile_grid
-        views = list(grid.objects)
-        ids = list(self.editor._grid_ids)
-        mark_issue_targets(views, [views[ids.index(i)] for i in affected if i in ids])
+    def layout(self, grid) -> list:
+        """Return the workspace items placing the controls around *grid*."""
+        if self.position == "left":
+            return [
+                pn.Row(
+                    self._panel,
+                    self._strip,
+                    pn.Column(grid, margin=0, sizing_mode="stretch_both"),
+                    margin=0,
+                    sizing_mode="stretch_both",
+                )
+            ]
+        return [self._row, grid]
 
     def __panel__(self):
-        """Render the bar and the banner."""
-        return self._view
+        """Render the row of controls (the panel is placed by :meth:`layout`)."""
+        return self._row

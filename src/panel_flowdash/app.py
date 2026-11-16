@@ -46,7 +46,7 @@ from panel_flowdash.ui.launcher import (
     unique_title,
 )
 from panel_flowdash.ui.settings_dialog import SharingAccess, share_link
-from panel_flowdash.ui.shell import HEADER_SX, AppShell
+from panel_flowdash.ui.shell import DASHBOARD_HEADER_SX, HEADER_SX, AppShell
 from panel_flowdash.ui.states import (
     LeavePageGuard,
     LoadingSkeleton,
@@ -110,6 +110,16 @@ class FlowDashApp(Viewer):
     contextbar = Children(default=[], doc="Items prepended to the contextbar.")
 
     contextbar_open = param.Boolean(default=False, doc="Whether the contextbar is open.")
+
+    controls_position = param.Selector(
+        default="top",
+        objects=["top", "left"],
+        doc="""
+        Where a dashboard's controls (components registered with
+        ``sidebar=True``) go unless the dashboard's settings say otherwise:
+        "top" in a slim row above the tiles, "left" in a collapsible panel
+        beside them. Passed to the editor, see `FlowDash.controls_position`.""",
+    )
 
     editor_class = param.ClassSelector(
         class_=FlowDash,
@@ -283,6 +293,10 @@ class FlowDashApp(Viewer):
         if self.nav_variant == "menubar":
             self._build_nav_bar()
         self._menubar_mode = self.nav_variant == "menubar"
+        self._dashboard_header = False
+        if self.nav_variant == "rail":
+            # The top bar shows the dashboard's title (the breadcrumb) and actions.
+            self._editor._dashboard_bar.placement = "header"
         self._shell = AppShell(self) if self.nav_variant == "rail" else None
         self._command_palette = CommandPaletteController.install(self)
         self._build_dialog()
@@ -334,9 +348,16 @@ class FlowDashApp(Viewer):
         the page's children re-renders it, which blanks views that move between
         layouts in the same update.
         """
+        sx = {**self._page_sx, **DASHBOARD_HEADER_SX} if self._dashboard_header else self._page_sx
         if self.sidebar or self._sidebar_container.objects:
-            return self._page_sx
-        return {**self._page_sx, "& .header .MuiIconButton-edgeStart": {"display": "none"}}
+            return sx
+        return {**sx, "& .header .MuiIconButton-edgeStart": {"display": "none"}}
+
+    def _set_dashboard_header(self, showing: bool):
+        """Make room in the top bar for the dashboard's actions while one is shown."""
+        self._dashboard_header = showing
+        if getattr(self, "_page", None) is not None:
+            self._sync_sidebar_toggle()
 
     def _sync_sidebar_toggle(self, *_events):
         sx = self._page_sx_for_sidebar()
@@ -690,6 +711,7 @@ class FlowDashApp(Viewer):
                 "include_builtin_components": self.include_builtin_components,
                 "breakpoints": self.breakpoints,
                 "notifications": self.notifications,
+                "controls_position": self.controls_position,
                 "propagate_failures": self.propagate_failures,
                 "settings_class": self.settings_class,
                 **options,

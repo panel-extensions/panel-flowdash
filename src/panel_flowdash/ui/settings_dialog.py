@@ -326,6 +326,12 @@ class SettingsDialog(param.Parameterized):
             for name, label in TILE_SETTINGS.items()
             if name in extra
         }
+        if "controls_position" in extra:
+            widgets["controls_position"] = {
+                "type": pmui.RadioButtonGroup,
+                "name": "Controls",
+                "options": {"Above the tiles": "top", "Left of the tiles": "left"},
+            }
         # `pn.Param` would pick a slider over the whole bounds for a bounded number.
         self._extra_form = pn.Param(
             self._draft,

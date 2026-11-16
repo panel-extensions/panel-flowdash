@@ -33,6 +33,7 @@ def configure_layout(app, content, route):
 
 
 breakpoints = [500, 900]
+controls_position = "left"
 editor_class = ProjectFlowDash
 editor_options = {"popup_trigger": "click"}
 home_dashboard = "sales"
@@ -104,6 +105,7 @@ def test_project_options_reach_build_routes(project, monkeypatch):
 
     kwargs = calls["routes"]
     assert kwargs["breakpoints"] == [500, 900]
+    assert kwargs["controls_position"] == "left"
     assert kwargs["editor_class"].__name__ == "ProjectFlowDash"
     assert kwargs["editor_options"] == {"popup_trigger": "click"}
     assert kwargs["home_dashboard"] == "sales"
@@ -128,6 +130,7 @@ async def test_project_options_reach_the_app_and_editor(project, monkeypatch):
     assert type(editor).__name__ == "ProjectFlowDash"
     assert editor.popup_trigger == "click"
     assert editor.breakpoints == [500, 900]
+    assert editor.controls_position == "left"
     assert editor.include_builtin_components is False
     assert editor.notifications is False
     assert editor.settings_class.__name__ == "ProjectSettings"

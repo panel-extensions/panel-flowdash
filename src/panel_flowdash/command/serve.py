@@ -34,6 +34,7 @@ _EXCLUDED_ARGS = ("files", "--args")
 PROJECT_OPTIONS = (
     "breakpoints",
     "configure_layout",
+    "controls_position",
     "editor_class",
     "editor_options",
     "home_dashboard",

@@ -33,6 +33,17 @@ class DashboardSettings(param.Parameterized):
         refreshing off.""",
     )
 
+    controls_position = param.Selector(
+        default="top",
+        objects=["top", "left"],
+        label="Controls position",
+        doc="""
+        Where the dashboard's controls (components registered with
+        ``sidebar=True``) go: "top" in a slim row above the tiles, "left" in
+        a collapsible panel beside them. Defaults to the editor's
+        ``controls_position``.""",
+    )
+
     tile_cards = param.Boolean(
         default=True,
         label="Show tiles as cards",

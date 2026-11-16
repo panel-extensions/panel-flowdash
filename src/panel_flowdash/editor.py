@@ -536,9 +536,20 @@ class FlowDash(Viewer):
         default=True,
         doc="""
         Whether to show the views of components registered with
-        ``sidebar=True`` in a controls bar above the tiles, while the
-        dashboard is viewed or laid out. Turn it off to render the `sidebar`
-        views in a layout of your own instead.""",
+        ``sidebar=True`` beside the tiles (see `controls_position`), while
+        the dashboard is viewed or laid out. Turn it off to render the
+        `sidebar` views in a layout of your own instead.""",
+    )
+
+    controls_position = param.Selector(
+        default="top",
+        objects=["top", "left"],
+        doc="""
+        Default of the ``controls_position`` dashboard setting for dashboards
+        that do not store one: where the views of components registered with
+        ``sidebar=True`` go. "top" puts them in one slim row above the tiles,
+        which suits the few filters most dashboards have; "left" stacks them
+        in a collapsible panel left of the tiles, which suits many controls.""",
     )
 
     include_builtin_components = param.Boolean(
@@ -1743,15 +1754,31 @@ class FlowDash(Viewer):
         self._sync_tile(tile, spec)
         return tile
 
-    @param.depends("tile_cards", "tile_titles", watch=True, on_init=True)
+    @param.depends("controls_position", "tile_cards", "tile_titles", watch=True, on_init=True)
     def _seed_tile_settings(self):
-        """Apply the editor's tile defaults to the dashboard settings shown now."""
+        """Apply the editor's layout defaults to the dashboard settings shown now."""
         loading = getattr(self, "_loading_settings", False)
         self._loading_settings = True
         try:
-            self.settings.param.update(tile_cards=self.tile_cards, tile_titles=self.tile_titles)
+            self.settings.param.update(**self._layout_defaults())
         finally:
             self._loading_settings = loading
+
+    def _layout_defaults(self) -> dict[str, t.Any]:
+        return {
+            "controls_position": self.controls_position,
+            "tile_cards": self.tile_cards,
+            "tile_titles": self.tile_titles,
+        }
+
+    @param.depends("settings.controls_position", watch=True)
+    def _sync_controls_position(self):
+        controls = getattr(self, "_view_controls", None)
+        if controls is None or controls.position == self.settings.controls_position:
+            return
+        controls.position = self.settings.controls_position
+        if self.mode == "dashboard" or not self.editable:
+            self._apply_mode_state()
 
     @param.depends("settings.tile_cards", "settings.tile_titles", watch=True)
     def _sync_tile_style(self):
@@ -2070,11 +2097,10 @@ class FlowDash(Viewer):
 
     def _build_component_view(self):
         self._dashboard_bar = bar = DashboardBar(editor=self)
-        self._view_controls = ControlsBar(editor=self, health=bar.health)
+        self._view_controls = ControlsBar(editor=self, position=self.settings.controls_position)
         self._save_button = bar.save_button
         self._download_button = bar.download_button
         self._refresh_button = bar.refresh_button
-        self._refresh_label = bar.refresh_label
         self._settings_button = bar.settings_button
         self._save_button.on_click(lambda _event: self._on_save_clicked())
         self._clear_dialog = self._build_clear_dialog()
@@ -2345,11 +2371,11 @@ class FlowDash(Viewer):
         if shared_dialog is not None:
             dialogs.append(shared_dialog)
         if split:
-            self._split_view.show([self._flow], [self._view_controls, self._tile_grid])
+            self._split_view.show([self._flow], self._view_controls.layout(self._tile_grid))
             self._workspace_area[:] = [self._split_view, *dialogs]
             self._rebuild_tile_grid()
         elif showing_grid:
-            self._workspace_area[:] = [self._view_controls, self._tile_grid, *dialogs]
+            self._workspace_area[:] = [*self._view_controls.layout(self._tile_grid), *dialogs]
             self._rebuild_tile_grid()
         else:
             self._stash_tile_layout()
@@ -2505,6 +2531,9 @@ class FlowDash(Viewer):
             sidebar_views.append(view)
         self.sidebar = sidebar_views
         self._view_controls.sync()
+        bar = self._dashboard_bar
+        bar.health.track()
+        bar.health_popover.sync()
 
     @pn.io.hold()
     def _rebuild_tile_grid(self):
@@ -2561,7 +2590,7 @@ class FlowDash(Viewer):
         """Load a dashboard's stored settings, falling back to defaults for the rest."""
         # A fresh instance doubles as the validator, so a bad stored value falls back
         # to its default instead of keeping the previous dashboard's value.
-        fresh = self.settings_class(tile_cards=self.tile_cards, tile_titles=self.tile_titles)
+        fresh = self.settings_class(**self._layout_defaults())
         for name, value in (stored or {}).items():
             if name not in self._settings_names:
                 logger.debug("Ignoring unknown dashboard setting '%s'", name)

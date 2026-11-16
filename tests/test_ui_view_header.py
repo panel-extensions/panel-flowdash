@@ -6,6 +6,7 @@ import sys
 import weakref
 
 import panel as pn
+import panel_material_ui as pmui
 import param
 import pytest
 from panel.io.state import set_curdoc
@@ -16,6 +17,7 @@ from panel_flowdash.app import DASH_ROUTE_PREFIX, FlowDashApp
 from panel_flowdash.dashboard_store import DashboardStore
 from panel_flowdash.dataflow_engine import InputFailure
 from panel_flowdash.editor import FlowDash
+from panel_flowdash.ui.controls_bar import compact_inputs
 from panel_flowdash.ui.dashboard_bar import format_period
 from panel_flowdash.ui.issue_banner import ISSUE_CLASS
 from panel_flowdash.ui.pipeline import Stage, pipeline_stages
@@ -70,19 +72,19 @@ def _fail(editor, instance_id, source_id, port="ticker"):
 
 
 class TestDescription:
-    async def test_shown_under_the_title_in_view_mode(self, editor):
+    async def test_behind_an_info_button_next_to_the_title(self, editor):
         editor.settings.description = "What the plant produced today."
         bar = _view(editor)
-        assert bar.description.object == "What the plant produced today."
-        assert bar._title_block[1].objects[0] is bar.description
+        assert bar.info_button.description == "What the plant produced today."
+        assert bar.lead.objects[:2] == [bar.title, bar.info_button]
 
     async def test_left_out_when_empty(self, editor):
         bar = _view(editor)
-        assert bar.description not in bar._title_block[1].objects
+        assert bar.info_button not in bar.lead.objects
 
     async def test_not_shown_in_edit_mode(self, editor):
         editor.settings.description = "Shown only when viewing."
-        assert editor._dashboard_bar.description not in editor._dashboard_bar._title_block[1]
+        assert editor._dashboard_bar.info_button not in editor._dashboard_bar.lead
 
     async def test_is_a_saved_setting(self, editor):
         editor.new_dashboard("Plant")
@@ -109,14 +111,13 @@ class TestRefreshMeta:
         editor.settings.refresh_period = 900
         bar = _view(editor)
         bar.stamp_refresh()
-        assert re.fullmatch(
-            r"Refreshed \d\d:\d\d, auto-refresh every 15 min", bar.refresh_label.object
-        )
+        assert re.fullmatch(r"Refreshed \d\d:\d\d, auto-refresh every 15 min", bar.refresh_text)
+        assert bar.refresh_button.description == f"Refresh now. {bar.refresh_text}."
 
     async def test_label_without_a_period(self, editor):
         bar = _view(editor)
         bar.stamp_refresh()
-        assert re.fullmatch(r"Refreshed \d\d:\d\d", bar.refresh_label.object)
+        assert re.fullmatch(r"Refreshed \d\d:\d\d", bar.refresh_text)
 
     async def test_period_menu_follows_the_setting(self, editor):
         bar = _view(editor)
@@ -134,7 +135,7 @@ class TestRefreshMeta:
         bar._on_period_chosen(item)
         assert editor.settings.refresh_period == 3600
         assert not editor.dirty
-        assert bar.refresh_label.object.endswith("auto-refresh every 1 hour")
+        assert bar.refresh_text.endswith("auto-refresh every 1 hour")
 
     async def test_split_button_sits_next_to_refresh(self, editor):
         bar = _view(editor)
@@ -147,23 +148,23 @@ class TestHealth:
         editor.add_component(SELECTOR)
         editor.add_component(SELECTOR)
         bar = _view(editor)
-        assert bar.health_chip.object == "All 2 tiles up to date"
-        assert bar.health_chip in bar._title_block[1].objects
+        assert bar.health_chip.label == "2/2 up to date"
+        assert bar.health_popover.__panel__() in bar.lead.objects
 
     async def test_one_tile(self, editor):
         editor.add_component(SELECTOR)
-        assert _view(editor).health_chip.object == "1 tile up to date"
+        assert _view(editor).health_chip.label == "1/1 up to date"
 
     async def test_no_chip_without_tiles(self, editor):
         bar = _view(editor)
-        assert bar.health_chip not in bar._title_block[1].objects
+        assert bar.health_popover.__panel__() not in bar.lead.objects
 
     async def test_unconnected_required_input_waits(self, editor):
         editor.add_component(SELECTOR)
         chart = editor.add_component(CHART)
         bar = _view(editor)
         assert bar.health.waiting == [chart]
-        assert bar.health_chip.object == "1 waiting"
+        assert bar.health_chip.label == "1 waiting"
 
     async def test_a_value_arriving_clears_the_wait(self, editor):
         editor.add_component(SELECTOR)
@@ -171,7 +172,7 @@ class TestHealth:
         bar = _view(editor)
         _supply(editor, chart)
         assert bar.health.waiting == []
-        assert bar.health_chip.object == "All 2 tiles up to date"
+        assert bar.health_chip.label == "2/2 up to date"
 
     async def test_failures_are_counted(self, editor):
         source = editor.add_component(SELECTOR)
@@ -180,7 +181,7 @@ class TestHealth:
         _fail(editor, chart, source)
         assert bar.health.failed == [chart]
         assert bar.health.origins == [source]
-        assert bar.health_chip.object == "1 failed"
+        assert bar.health_chip.label == "1 failed"
         assert bar.health.status(source) == "failed"
 
     async def test_failed_and_waiting(self, editor):
@@ -189,7 +190,7 @@ class TestHealth:
         editor.add_component(CHART)
         bar = _view(editor)
         _fail(editor, failed, source)
-        assert bar.health_chip.object == "1 failed, 1 waiting"
+        assert bar.health_chip.label == "1 failed \u00b7 1 waiting"
 
     async def test_sidebar_components_are_not_tiles(self, editor):
         editor.add_component(SIDE)
@@ -202,7 +203,7 @@ class TestHealth:
         bar = _view(editor)
         editor.remove_component(chart)
         assert bar.health.waiting == []
-        assert bar.health_chip.object == "1 tile up to date"
+        assert bar.health_chip.label == "1/1 up to date"
 
     async def test_clearing_forgets_everything(self, editor):
         editor.add_component(CHART)
@@ -239,15 +240,15 @@ class TestPropagatedFailures:
         editor._dataflow_graph.get_state(raiser).ticker = "bad"
         assert bar.health.failed == [shouter]
         assert bar.health.origins == [raiser]
-        assert bar.health_chip.object == "1 failed"
-        stages = editor._view_controls.pipeline.stages
+        assert bar.health_chip.label == "1 failed"
+        stages = editor._dashboard_bar.health_popover.pipeline.stages
         assert [(s.label, s.status) for s in stages] == [
             ("raiser", "failed"),
             ("shouter", "failed"),
         ]
         editor._dataflow_graph.get_state(raiser).ticker = "fine"
         assert bar.health.failed == []
-        assert bar.health_chip.object == "All 2 tiles up to date"
+        assert bar.health_chip.label == "2/2 up to date"
 
 
 class TestIssueBanner:
@@ -273,11 +274,10 @@ class TestIssueBanner:
         health.param.update(tiles=ids, failed=ids[:failed], waiting=ids[failed : failed + waiting])
         assert health.sentence() == (lead, rest)
 
-    async def test_shown_only_with_issues_in_view_mode(self, editor):
+    async def test_shown_only_with_issues(self, editor):
         editor.add_component(SELECTOR)
         chart = editor.add_component(CHART)
-        banner = editor._view_controls.banner
-        assert not banner._banner.visible
+        banner = editor._dashboard_bar.health_popover.banner
         editor.editable = False
         assert banner._banner.visible
         assert banner._lead.object == "1 tile is waiting for input."
@@ -291,7 +291,7 @@ class TestIssueBanner:
         editor.editable = False
         _fail(editor, failed, source)
         messages = []
-        banner = editor._view_controls.banner
+        banner = editor._dashboard_bar.health_popover.banner
         banner._focus._send_msg = messages.append
         assert banner.show_issues() == [failed, waiting]
         grid = editor._tile_grid
@@ -307,7 +307,7 @@ class TestIssueBanner:
         source = editor.add_component(SELECTOR)
         chart = editor.add_component(CHART)
         editor.editable = False
-        banner = editor._view_controls.banner
+        banner = editor._dashboard_bar.health_popover.banner
         banner._focus._send_msg = lambda msg: None
         banner.show_issues()
         _supply(editor, chart)
@@ -365,21 +365,18 @@ class TestControlsBar:
         editor.editable = False
         controls = editor._view_controls
         assert controls.controls == editor.sidebar
-        assert controls._bar.visible
-        assert editor._workspace_area.objects[0] is controls._view
+        assert controls._row.visible
+        assert editor._workspace_area.objects[0] is controls._row
 
     async def test_hidden_when_empty(self, editor):
         editor.add_component(SELECTOR)
         editor.editable = False
-        assert not editor._view_controls._bar.visible
+        assert not editor._view_controls._row.visible
 
     async def test_shown_while_laying_out(self, editor):
         editor.add_component(SIDE)
         editor.mode = "dashboard"
-        controls = editor._view_controls
-        assert controls._bar.visible
-        assert not controls.pipeline.visible
-        assert not controls.banner.visible
+        assert editor._view_controls._row.visible
 
     async def test_switched_off(self, editor):
         editor.add_component(SIDE)
@@ -393,9 +390,8 @@ class TestControlsBar:
         chart = editor.add_component(CHART)
         editor.connect(side, "ticker", chart, "ticker")
         editor.editable = False
-        stages = editor._view_controls.pipeline.stages
+        stages = editor._dashboard_bar.health_popover.pipeline.stages
         assert [s.label for s in stages] == ["Filter", "Chart"]
-        assert editor._view_controls._bar.visible
 
     async def test_pipeline_follows_failures(self, editor):
         side = editor.add_component(SIDE)
@@ -403,7 +399,8 @@ class TestControlsBar:
         editor.connect(side, "ticker", chart, "ticker")
         editor.editable = False
         _fail(editor, chart, side)
-        assert [s.status for s in editor._view_controls.pipeline.stages] == ["failed", "failed"]
+        stages = editor._dashboard_bar.health_popover.pipeline.stages
+        assert [s.status for s in stages] == ["failed", "failed"]
 
     async def test_controls_are_not_rewrapped(self, editor):
         editor.add_component(SIDE)
@@ -411,6 +408,63 @@ class TestControlsBar:
         wrapper = editor._view_controls._controls[0]
         editor.add_component(SELECTOR)
         assert editor._view_controls._controls[0] is wrapper
+
+    async def test_inputs_use_the_small_size(self):
+        text, select = pmui.TextInput(label="Find"), pmui.Select(options=["a", "b"])
+        compact_inputs(pn.Column(text, select))
+        assert text.size == "small"
+        assert select.visual_size == "small"
+        assert select.size == 1
+
+
+class TestControlsPosition:
+    async def test_defaults_to_the_top_row(self, editor):
+        assert editor.controls_position == "top"
+        assert editor.settings.controls_position == "top"
+        assert editor._view_controls.position == "top"
+
+    async def test_left_panel_beside_the_tiles(self):
+        editor = FlowDash(
+            {**COMPONENTS, SIDE: side_filter}, notifications=False, controls_position="left"
+        )
+        editor.add_component(SIDE)
+        editor.editable = False
+        controls = editor._view_controls
+        assert not controls._row.visible
+        assert controls._panel.visible
+        assert controls._panel.objects[1:] == list(controls._wrappers.values())
+        row = editor._workspace_area.objects[0]
+        assert row.objects[:2] == [controls._panel, controls._strip]
+        assert editor._tile_grid in row.objects[2]
+
+    async def test_left_panel_collapses_to_a_strip(self):
+        editor = FlowDash(
+            {**COMPONENTS, SIDE: side_filter}, notifications=False, controls_position="left"
+        )
+        editor.add_component(SIDE)
+        editor.editable = False
+        controls = editor._view_controls
+        controls._hide.clicks += 1
+        assert controls.collapsed
+        assert not controls._panel.visible
+        assert controls._strip.visible
+        controls._show.clicks += 1
+        assert controls._panel.visible
+
+    async def test_a_dashboard_setting_overrides_the_default(self, editor):
+        editor.add_component(SIDE)
+        editor.editable = False
+        editor.settings.controls_position = "left"
+        assert editor._view_controls.position == "left"
+        assert editor._view_controls._panel.visible
+        assert not editor._view_controls._row.visible
+        editor.settings.controls_position = "top"
+        assert editor._workspace_area.objects[0] is editor._view_controls._row
+
+    async def test_saved_with_the_dashboard(self, editor):
+        editor.new_dashboard("Plant")
+        editor.settings.controls_position = "left"
+        assert editor.save().settings["controls_position"] == "left"
 
 
 def _create_project(tmp_path):

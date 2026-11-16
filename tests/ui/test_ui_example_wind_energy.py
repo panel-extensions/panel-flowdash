@@ -110,10 +110,13 @@ def test_controls_bar_holds_the_state_select_above_the_tiles(page, serve_example
     select = stable_box(page.locator(".MuiFormControl-root").filter(has_text="State").first, page)
     tile = stable_box(gate, page)
 
-    assert select["height"] > 40
+    assert select["height"] >= 36
     assert bar["y"] <= select["y"]
     assert select["y"] + select["height"] <= bar["y"] + bar["height"]
     assert bar["y"] + bar["height"] <= tile["y"]
+    # The top bar and one row of small inputs leave the tiles close to the top.
+    tiles = page.locator(".flowdash-tile").filter(visible=True)
+    assert min(tiles.nth(i).bounding_box()["y"] for i in range(tiles.count())) <= 130
 
 
 def _bar_button(page, label):
