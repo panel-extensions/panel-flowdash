@@ -241,6 +241,7 @@ class FlowDashApp(Viewer):
         # routing, navigation, pages and authorization on top of it.
         self._editor = self._build_editor()
         self._editor._dashboard_bar.on_mode = self._on_dashboard_bar_mode
+        self._editor.show_in_editor = self._show_in_editor
         self._menu_bar = None
         self._nav_menu = self._build_nav_menu()
         self._nav_drawer = pmui.Drawer(
@@ -277,7 +278,11 @@ class FlowDashApp(Viewer):
             "sidebar_open": False,
             "sidebar": self.param.sidebar.rx() + [self._sidebar_container],  # noqa: RUF005
             "contextbar": self.param.contextbar.rx(),
-            "contextbar_variant": "persistent",
+            # A persistent contextbar reserves its width even while empty, which
+            # pushes the main area past the viewport when the sidebar is open.
+            "contextbar_variant": param.bind(
+                lambda items: "persistent" if items else "temporary", self.param.contextbar
+            ),
             "contextbar_open": self.param.contextbar_open,
             **self.page_options,
         }
@@ -605,14 +610,16 @@ class FlowDashApp(Viewer):
                 "toolbar_extra": toolbar_extra,
             },
         )
-        editor.param.watch(self._on_editor_sidebar, "sidebar")
+        editor.param.watch(self._on_editor_sidebar, ["controls_bar", "sidebar"])
         editor.param.watch(self._on_editor_saved, "saved")
         return editor
 
-    def _on_editor_sidebar(self, event):
-        """Mirror the editor's sidebar views into the page sidebar."""
-        self._sidebar_container.objects = list(event.new)
-        self._page.sidebar_open = bool(event.new)
+    def _on_editor_sidebar(self, _event):
+        """Mirror the editor's sidebar views into the page sidebar, unless its controls bar shows them."""
+        editor = self._editor
+        views = [] if editor.controls_bar else list(editor.sidebar)
+        self._sidebar_container.objects = views
+        self._page.sidebar_open = bool(views)
 
     def _on_editor_saved(self, _event):
         """Follow the editor to a dashboard it saved under a new id ("Save as copy")."""
@@ -765,11 +772,6 @@ class FlowDashApp(Viewer):
         # could not restore.
         self._editor.read_only = not self._can_edit_dashboard(dashboard_id)
         self._editor.load_model(dashboard)
-        self._notify(
-            "info",
-            f'Loaded dashboard "{dashboard.title}" with {len(dashboard.items)} tiles.',
-            duration=3000,
-        )
         if edit:
             self._show_edit_mode()
         else:
@@ -1074,6 +1076,13 @@ class FlowDashApp(Viewer):
             self._request_navigation(location.pathname)
         else:
             self._show_view_mode()
+
+    def _show_in_editor(self, _instance_id: str):
+        """Open the current dashboard on its wiring canvas, from a tile's "Show in editor"."""
+        if self._current_dashboard is None:
+            return
+        self._editor.mode = "wiring"
+        self._show_edit_mode()
 
     def _dashboard_rights(self, dashboard: str | DashboardModel) -> tuple[bool, bool]:
         """Whether the current identity may administer and may edit a dashboard."""

@@ -301,8 +301,9 @@ navigation tree in a drawer on that side of the page, and `menubar` puts
 *Navigate* and *Dashboards* menus in the page header.
 
 The sidebar's menu button only appears when the sidebar has content, such as
-components registered with `sidebar=True` or items set through
-`configure_layout`.
+items set through `configure_layout`. Components registered with `sidebar=True`
+are shown in the dashboard's controls bar above the tiles, or in the sidebar
+when `editor_options={"controls_bar": False}`.
 
 ---
 

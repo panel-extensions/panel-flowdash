@@ -256,10 +256,12 @@ editor = FlowDash(components, toolbar_extra=[share])
 ```
 
 Components registered with `sidebar=True` are kept out of the tile grid and
-published on the `sidebar` param instead, for you to render wherever your layout
-wants them:
+shown in the editor's controls bar above the tiles. Their views are also
+published on the `sidebar` param. To render them wherever your layout wants them
+instead, turn the controls bar off:
 
 ```python
+editor = FlowDash(components, controls_bar=False)
 sidebar = pn.Column()
 editor.param.watch(lambda e: sidebar.param.update(objects=list(e.new)), "sidebar")
 

@@ -19,7 +19,6 @@ import logging
 import pathlib
 import re
 import threading
-import time
 import typing as t
 import uuid
 import weakref
@@ -64,6 +63,7 @@ from panel_flowdash.registry import RegistryEntry
 from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transform_editor import TransformEditor
 from panel_flowdash.transforms import parse_transform, summarize_transform
+from panel_flowdash.ui.controls_bar import ControlsBar
 from panel_flowdash.ui.dashboard_bar import DashboardBar
 from panel_flowdash.ui.inspect_sheet import (
     dataframe_preview,
@@ -415,6 +415,15 @@ class FlowDash(Viewer):
         list mixing any of those. Read at construction time.""",
     )
 
+    controls_bar = param.Boolean(
+        default=True,
+        doc="""
+        Whether to show the views of components registered with
+        ``sidebar=True`` in a controls bar above the tiles, while the
+        dashboard is viewed or laid out. Turn it off to render the `sidebar`
+        views in a layout of your own instead.""",
+    )
+
     include_builtin_components = param.Boolean(
         default=True, doc="Include Select, MultiChoice and Slider in the component palette."
     )
@@ -722,6 +731,10 @@ class FlowDash(Viewer):
         Used once the session's Document is already destroyed, when pushing
         model updates would be pointless.
         """
+        # Unwired first: removing a node resets the inputs downstream of it,
+        # which would re-render components on the destroyed Document.
+        for instance_id in list(self._component_wiring):
+            self._release_wiring(instance_id)
         for node_id in list(self._dataflow_graph.node_ids):
             self._dataflow_graph.remove_node(node_id)
         self._inspect_tiles.clear()
@@ -736,11 +749,7 @@ class FlowDash(Viewer):
         Popping the instance first makes this a no-op on any later call, so a
         component is disposed at most once however it leaves the editor.
         """
-        for release in self._component_wiring.pop(instance_id, ()):
-            try:
-                release()
-            except Exception:
-                logger.exception("Releasing the wiring of component '%s' failed", instance_id)
+        self._release_wiring(instance_id)
         instance = self._component_instances.pop(instance_id, None)
         hook = getattr(instance, "dispose", None)
         if not callable(hook):
@@ -752,6 +761,13 @@ class FlowDash(Viewer):
             return
         if inspect.isawaitable(result):
             pn.state.execute(partial(self._await_dispose, instance_id, result), schedule=True)
+
+    def _release_wiring(self, instance_id: str):
+        for release in self._component_wiring.pop(instance_id, ()):
+            try:
+                release()
+            except Exception:
+                logger.exception("Releasing the wiring of component '%s' failed", instance_id)
 
     @staticmethod
     async def _await_dispose(instance_id: str, awaitable):
@@ -1881,6 +1897,7 @@ class FlowDash(Viewer):
 
     def _build_component_view(self):
         self._dashboard_bar = bar = DashboardBar(editor=self)
+        self._view_controls = ControlsBar(editor=self, health=bar.health)
         self._save_button = bar.save_button
         self._download_button = bar.download_button
         self._refresh_button = bar.refresh_button
@@ -2123,7 +2140,7 @@ class FlowDash(Viewer):
         if shared_dialog is not None:
             dialogs.append(shared_dialog)
         if showing_grid:
-            self._workspace_area[:] = [self._tile_grid, *dialogs]
+            self._workspace_area[:] = [self._view_controls, self._tile_grid, *dialogs]
             self._rebuild_tile_grid()
         else:
             self._stash_tile_layout()
@@ -2153,6 +2170,7 @@ class FlowDash(Viewer):
                 view = pn.pane.Markdown(f"*{entry.title}*")
             sidebar_views.append(view)
         self.sidebar = sidebar_views
+        self._view_controls.sync()
 
     @pn.io.hold()
     def _rebuild_tile_grid(self):
@@ -2278,7 +2296,7 @@ class FlowDash(Viewer):
 
     @param.depends("refresh", watch=True)
     def _stamp_refresh(self):
-        self._refresh_label.object = time.strftime("Refreshed %H:%M:%S")
+        self._dashboard_bar.stamp_refresh()
 
     # ------------------------------------------------------------------
     # Public canvas API
@@ -2593,7 +2611,7 @@ class FlowDash(Viewer):
         self._edge_count = 0
         self._unresolved_edges = []
         self._unresolved_notice = None
-        self.sidebar = []
+        self._rebuild_sidebar()
         with self._muted_canvas():
             self._flow.param.update(nodes=[], edges=[])
         if self._grid_populated:

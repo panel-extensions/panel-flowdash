@@ -98,10 +98,19 @@ is unloaded, the editor is disposed or the session ends. In a `FlowDashApp`,
 navigating to a page or the launcher unloads the dashboard, and a dashboard whose
 load is overtaken by a newer navigation never applies its settings.
 
-In view mode, and in the edit-mode dashboard preview, a **Refresh** button and a
-"Refreshed HH:MM:SS" indicator sit above the grid. The button is shown whether or
+In view mode the dashboard bar shows a **Refresh** split button and, under the
+title, "Refreshed HH:MM, auto-refresh every 15 min". The button is shown whether or
 not a period is set, because a dashboard that does not poll can still be refreshed
-by hand.
+by hand. Its menu picks the period (Off, every minute, 5 min, 15 min or hour) for
+the current session: it restarts the timer without marking the dashboard as
+changed, and is only saved if someone saves the dashboard afterwards.
+
+The same line carries the dashboard's `description` setting, when set, and a
+health chip: "All 5 tiles up to date", or a count such as "1 failed, 1 waiting".
+A tile has failed while one of its inputs holds a failure carried from upstream
+(see `propagate_failures`), and waits while a required input is unset. With any
+such tile a banner above the tiles says how many are affected, and its **Show
+issues** button scrolls to them and outlines them briefly.
 
 ---
 
