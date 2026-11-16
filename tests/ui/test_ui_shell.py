@@ -5,13 +5,15 @@ import re
 from urllib.parse import urlparse
 
 import pytest
-from panel.tests.util import serve_component, wait_until
+from panel.tests.util import wait_until
 
 from panel_flowdash import DashboardItem, MemoryDashboardStore, register
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.auth import resolve_identity
 from panel_flowdash.component_library import normalize_components
 from panel_flowdash.editor import FlowDash
+
+from .util import serve_component, stable_box
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect
@@ -170,8 +172,7 @@ def test_save_follows_unsaved_changes(page):
 
     save = page.get_by_role("button", name="Save", exact=True)
     expect(save).to_be_disabled()
-    node = page.locator(".react-flow__node").first
-    box = node.bounding_box()
+    box = stable_box(page.locator(".react-flow__node").first, page)
     page.mouse.move(box["x"] + 20, box["y"] + 8)
     page.mouse.down()
     page.mouse.move(box["x"] + 120, box["y"] + 80, steps=8)

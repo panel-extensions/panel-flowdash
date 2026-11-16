@@ -4,7 +4,7 @@ import json
 import re
 
 import pytest
-from panel.tests.util import serve_component, wait_until
+from panel.tests.util import wait_until
 
 from panel_flowdash import DashboardItem, DashboardModel, register
 from panel_flowdash.app import FlowDashApp
@@ -12,6 +12,8 @@ from panel_flowdash.auth import AuthConfig, resolve_identity
 from panel_flowdash.component_library import normalize_components
 from panel_flowdash.dashboard_store import DashboardStore
 from panel_flowdash.editor import export_model
+
+from .util import serve_component
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect

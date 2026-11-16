@@ -1,9 +1,11 @@
 """UI tests for the launcher's create, rename and delete dashboard dialogs."""
 
 import pytest
-from panel.tests.util import serve_component, wait_until
+from panel.tests.util import wait_until
 
 from panel_flowdash import DashboardEdge, DashboardItem, MemoryDashboardStore, register
+
+from .util import serve_component
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect

@@ -8,7 +8,7 @@ import panel as pn
 import panel_material_ui as pmui
 import param
 import pytest
-from panel.tests.util import serve_component, wait_until
+from panel.tests.util import wait_until
 from panel.viewable import Viewer
 
 from panel_flowdash import (
@@ -23,6 +23,8 @@ from panel_flowdash.auth import AuthConfig, resolve_identity
 from panel_flowdash.dashboard_store import DashboardStore
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.util import confirm
+
+from .util import center, serve_component, stable_box
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect
@@ -79,18 +81,15 @@ def test_editor_drag_validation_rejects_occupied_input(page):
         .filter(has_text="sink")
         .locator(".react-flow__handle-left")
     )
-    origin = output.bounding_box()
-    page.mouse.move(origin["x"] + origin["width"] / 2, origin["y"] + origin["height"] / 2)
+    x, y = center(stable_box(output, page))
+    page.mouse.move(x, y)
     page.mouse.down()
-    page.mouse.move(origin["x"] + origin["width"] / 2 + 25, origin["y"] + origin["height"] / 2)
+    page.mouse.move(x + 25, y)
     wait_until(
         lambda: "rf-handle-invalid" in (input_handle.get_attribute("class") or ""), timeout=8000
     )
     assert "already has a connection" in input_handle.get_attribute("data-tooltip")
-    destination = input_handle.bounding_box()
-    page.mouse.move(
-        destination["x"] + destination["width"] / 2, destination["y"] + destination["height"] / 2
-    )
+    page.mouse.move(*center(input_handle.bounding_box()))
     page.mouse.up()
 
     assert len(editor.graph.edges) == 1
@@ -126,18 +125,15 @@ def test_editor_drag_validation_rejects_untyped_value_of_wrong_type(page):
 
     output = page.locator(".react-flow__handle-right[data-handleid='picked']")
     input_handle = page.locator(".react-flow__handle-left[data-handleid='start_year']")
-    origin = output.bounding_box()
-    page.mouse.move(origin["x"] + origin["width"] / 2, origin["y"] + origin["height"] / 2)
+    x, y = center(stable_box(output, page))
+    page.mouse.move(x, y)
     page.mouse.down()
-    page.mouse.move(origin["x"] + origin["width"] / 2 + 25, origin["y"] + origin["height"] / 2)
+    page.mouse.move(x + 25, y)
     wait_until(
         lambda: "rf-handle-invalid" in (input_handle.get_attribute("class") or ""), timeout=8000
     )
     assert "must be an integer" in input_handle.get_attribute("data-tooltip")
-    destination = input_handle.bounding_box()
-    page.mouse.move(
-        destination["x"] + destination["width"] / 2, destination["y"] + destination["height"] / 2
-    )
+    page.mouse.move(*center(input_handle.bounding_box()))
     page.mouse.up()
     page.wait_for_timeout(500)
 
@@ -159,7 +155,7 @@ def test_palette_click_places_component_inside_panned_viewport(page):
     serve_component(page, editor)
 
     pane = page.locator(".react-flow__pane")
-    box = pane.bounding_box()
+    box = stable_box(pane, page)
     wait_until(lambda: editor._flow.viewport is not None, timeout=8000)
     initial_x = editor._flow.viewport["x"]
     # Grab empty canvas clear of the fitted node, and pan far enough that the

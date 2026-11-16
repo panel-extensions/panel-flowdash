@@ -1,10 +1,12 @@
 """UI tests for saving a dashboard that another session saved in the meantime."""
 
 import pytest
-from panel.tests.util import serve_component, wait_until
+from panel.tests.util import wait_until
 
 from panel_flowdash import DashboardItem, DashboardModel, MemoryDashboardStore, register
 from panel_flowdash.editor import FlowDash
+
+from .util import serve_component
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect
