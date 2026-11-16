@@ -120,7 +120,7 @@ class CommandPaletteController:
 
     def _editing(self) -> bool:
         editor = self._editor
-        return editor.editable and not editor.read_only
+        return self._dashboard() is not None and editor.editable and not editor.read_only
 
     def _can_edit(self) -> bool:
         dashboard = self._dashboard()

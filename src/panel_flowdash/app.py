@@ -47,6 +47,7 @@ from panel_flowdash.ui.launcher import (
 from panel_flowdash.ui.settings_dialog import SharingAccess, share_link
 from panel_flowdash.ui.shell import HEADER_SX, AppShell
 from panel_flowdash.ui.states import (
+    LeavePageGuard,
     LoadingSkeleton,
     UnsavedChangesDialog,
     access_denied,
@@ -286,6 +287,9 @@ class FlowDashApp(Viewer):
         shared_dialog = page_dialog()
         self._page_dialogs = [] if shared_dialog is None else [shared_dialog]
         self._page_dialogs.append(self._build_downloader())
+        self._leave_page_guard = LeavePageGuard()
+        self._editor.param.watch(self._sync_leave_page_guard, ["dashboard", "dirty"])
+        self._page_dialogs.append(self._leave_page_guard)
         page_kwargs = {
             "title": self.title,
             "theme_config": {"palette": {"primary": {"main": "#0072B5"}}},
@@ -739,6 +743,19 @@ class FlowDashApp(Viewer):
     def _dirty(self, value):
         self._editor.dirty = value
 
+    def _has_unsaved_changes(self) -> bool:
+        return self._dirty and self._current_dashboard is not None
+
+    def _sync_leave_page_guard(self, *_events):
+        self._leave_page_guard.active = self._has_unsaved_changes()
+
+    def _leave_dashboard(self):
+        """Forget the current dashboard, leaving edit mode, for a route that shows none."""
+        self._current_dashboard = None
+        # Editor actions such as the command palette's "Add to this dashboard"
+        # would otherwise act on the hidden canvas.
+        self._editor.param.update(editable=False, read_only=False)
+
     def _reset_canvas(self):
         """Clear the editor canvas and the mirrored page sidebar."""
         self._editor._reset_canvas()
@@ -812,6 +829,7 @@ class FlowDashApp(Viewer):
             # A viewer with read access followed an edit link; downgrade to view.
             edit = False
         if dashboard is None:
+            self._leave_dashboard()
             self._page.main = [
                 self._nav_content(self._missing_dashboard_view(dashboard_id)),
                 self._dialog,
@@ -871,6 +889,17 @@ class FlowDashApp(Viewer):
             self._unsaved_dialog,
             *self._page_dialogs,
         ]
+        return True
+
+    def _request_new_dashboard(self, title_str: str) -> bool:
+        """Create a dashboard, first asking about unsaved changes on the current one.
+
+        Returns False only if creating failed right away, so the create dialog
+        stays open with the error.
+        """
+        if not self._has_unsaved_changes():
+            return self._create_new_dashboard(title_str)
+        self._confirm_unsaved(partial(self._create_new_dashboard, title_str))
         return True
 
     def _delete_dashboard(self, dashboard_id: str) -> bool:
@@ -1010,7 +1039,7 @@ class FlowDashApp(Viewer):
                 return
             if not self._is_current_navigation(generation):
                 return
-            self._current_dashboard = None
+            self._leave_dashboard()
             self._sidebar_container.objects = []
             self._page.sidebar_open = False
             launcher = self._build_launcher()
@@ -1033,7 +1062,7 @@ class FlowDashApp(Viewer):
             await asyncio.sleep(0)
             if not self._is_current_navigation(generation):
                 return
-            self._current_dashboard = None
+            self._leave_dashboard()
             # Arriving from a dashboard must not keep its components running.
             self._reset_canvas()
             gallery = ComponentGallery(self)
@@ -1063,8 +1092,7 @@ class FlowDashApp(Viewer):
                     )
                 return
 
-        self._current_dashboard = None
-
+        self._leave_dashboard()
         self._sidebar_container.objects = []
         key = tuple(pathname.strip("/").split("/"))
         if len(key) == 2 and self._entry_from_key(key):
@@ -1126,7 +1154,7 @@ class FlowDashApp(Viewer):
         location = pn.state.location
         if mode == "edit":
             self._show_edit_mode()
-        elif self._dirty and self._current_dashboard is not None and location is not None:
+        elif self._has_unsaved_changes() and location is not None:
             self._request_navigation(location.pathname)
         else:
             self._show_view_mode()
@@ -1304,7 +1332,10 @@ class FlowDashApp(Viewer):
     def _edit_dashboard(self, dashboard_id: str):
         self._nav_drawer.open = False
         target_path = f"{DASH_ROUTE_PREFIX}{dashboard_id}"
-        if self._dirty and self._current_dashboard is not None:
+        current = self._current_dashboard
+        if current is not None and current.dashboard_id == dashboard_id and self._editor.editable:
+            return
+        if self._has_unsaved_changes():
             self._request_navigation(target_path, search="?edit=true")
             return
         if pn.state.location:
@@ -1434,7 +1465,7 @@ class FlowDashApp(Viewer):
         done = False
         did = ctx.get("dashboard_id", "")
         if action == "create":
-            done = self._create_new_dashboard(name)
+            done = self._request_new_dashboard(name)
         elif action == "rename":
             done = name.strip() == self._dialog_subject or (
                 bool(did) and self._rename_dashboard(did, name)
@@ -1579,26 +1610,32 @@ class FlowDashApp(Viewer):
         return True
 
     def _build_unsaved_dialog(self):
+        # The (path, search) the pending action navigates to, if it navigates.
         self._pending_navigation: tuple[str, str] | None = None
+        self._pending_action: t.Callable[[], object] | None = None
+
+        def _take_pending():
+            pending = self._pending_action
+            self._pending_action = None
+            self._pending_navigation = None
+            return pending
 
         def _on_leave():
             self._dirty = False
-            pending = self._pending_navigation
-            self._pending_navigation = None
+            pending = _take_pending()
             if pending:
-                self._navigate_to(*pending)
+                pending()
 
         def _on_save():
             if not self._save_current_dashboard():
-                self._pending_navigation = None
+                _take_pending()
                 return
-            pending = self._pending_navigation
-            self._pending_navigation = None
+            pending = _take_pending()
             if pending:
-                self._navigate_to(*pending)
+                pending()
 
         def _on_stay():
-            self._pending_navigation = None
+            _take_pending()
 
         self._unsaved_view = UnsavedChangesDialog(
             on_leave=_on_leave, on_save=_on_save, on_stay=_on_stay
@@ -1647,12 +1684,25 @@ class FlowDashApp(Viewer):
                     return
         self._menu_list.active = None
 
+    def _confirm_unsaved(
+        self, action: t.Callable[[], object], navigation: tuple[str, str] | None = None
+    ):
+        """Run *action*, after the unsaved-changes dialog if the dashboard has unsaved changes.
+
+        Every navigation or mode change that would discard edits goes through
+        here. "Leave without saving" and "Save and leave" run *action*;
+        "Keep editing" drops it. *navigation* is the ``(path, search)`` that
+        *action* navigates to, if it navigates.
+        """
+        if not self._has_unsaved_changes():
+            action()
+            return
+        self._pending_action = action
+        self._pending_navigation = navigation
+        self._unsaved_view.show(self._unsaved_changes())
+
     def _request_navigation(self, path: str, search: str = ""):
-        if self._dirty and self._current_dashboard is not None:
-            self._pending_navigation = (path, search)
-            self._unsaved_view.show(self._unsaved_changes())
-        else:
-            self._navigate_to(path, search)
+        self._confirm_unsaved(partial(self._navigate_to, path, search), (path, search))
 
     _SECTION_ICONS: t.ClassVar[dict[str, str]] = {
         "components": "widgets",
@@ -1727,6 +1777,10 @@ class FlowDashApp(Viewer):
             return
         if path == pn.state.location.pathname:
             if "edit=true" in (pn.state.location.search or ""):
+                # Back to view mode, asking about unsaved changes first like Done.
+                if self._has_unsaved_changes():
+                    self._request_navigation(path)
+                    return
                 pn.state.location.param.update(search="")
                 self._show_view_mode()
             return

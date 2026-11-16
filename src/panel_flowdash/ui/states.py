@@ -10,6 +10,7 @@ import typing as t
 import panel as pn
 import panel_material_ui as pmui
 import param
+from panel.custom import JSComponent
 from panel.viewable import Viewer
 
 from panel_flowdash.auth import ANONYMOUS_USER
@@ -583,6 +584,35 @@ class UnsavedChangesDialog(Viewer):
     def __panel__(self):
         """Render the dialog."""
         return self.dialog
+
+
+class LeavePageGuard(JSComponent):
+    """Has the browser ask before the page is reloaded, closed or left while `active`.
+
+    Navigation inside the app goes through :class:`UnsavedChangesDialog`; this
+    covers leaving the page itself, where the browser shows its own prompt.
+    """
+
+    active = param.Boolean(default=False, doc="Whether leaving the page asks first.")
+
+    _esm = """
+    export function render({model}) {
+      const onBeforeUnload = (event) => {
+        if (model.active) {
+          event.preventDefault()
+          event.returnValue = ""
+        }
+      }
+      window.addEventListener("beforeunload", onBeforeUnload)
+      model.on("remove", () => window.removeEventListener("beforeunload", onBeforeUnload))
+    }
+    """
+
+    def __init__(self, **params):
+        params.setdefault("height", 0)
+        params.setdefault("width", 0)
+        params.setdefault("margin", 0)
+        super().__init__(**params)
 
 
 _CHANGES_CSS = """
