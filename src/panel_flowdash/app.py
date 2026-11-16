@@ -32,6 +32,7 @@ from panel_flowdash.editor import FlowDash
 from panel_flowdash.registry import RegistryEntry, build_registry
 from panel_flowdash.session_state import build_session_state_class, check_requirements
 from panel_flowdash.settings import DashboardSettings
+from panel_flowdash.ui.settings_dialog import SharingAccess, share_link
 from panel_flowdash.util import notify, page_dialog, panel_call, panel_viewer
 
 logger = logging.getLogger("panel_flowdash")
@@ -807,7 +808,6 @@ class FlowDashApp(Viewer):
             self._dialog,
             self._unsaved_dialog,
             *self._page_dialogs,
-            self._share_dialog,
         ]
 
     def _create_new_dashboard(self, title_str: str) -> bool:
@@ -842,7 +842,6 @@ class FlowDashApp(Viewer):
             self._dialog,
             self._unsaved_dialog,
             *self._page_dialogs,
-            self._share_dialog,
         ]
         return True
 
@@ -1471,66 +1470,18 @@ class FlowDashApp(Viewer):
         )
 
     def _build_share_dialog(self):
-        """Build the (owner/admin-only) dashboard sharing dialog."""
-        self._share_context: dict = {}
-        common = dict(sizing_mode="stretch_width", solid=True, delete_button=True)
-        self._share_allow_groups = pmui.MultiChoice(
-            label="Allow groups", helper_text="Members of any listed group.", **common
+        """Give the editor's settings dialog the sharing, rename and delete actions.
+
+        Share and Settings open the same dialog, so ``_share_dialog`` is the
+        editor's ``_settings_dialog``.
+        """
+        self._editor._settings_view.param.update(
+            delete=self._open_delete_dialog,
+            rename=self._rename_from_settings,
+            save_sharing=self._save_sharing,
+            sharing=self._sharing_access,
         )
-        self._share_allow_users = pmui.MultiChoice(
-            label="Allow users", helper_text="OAuth logins or system users.", **common
-        )
-        self._share_deny_groups = pmui.MultiChoice(
-            label="Deny groups", helper_text="Deny always wins.", **common
-        )
-        self._share_deny_users = pmui.MultiChoice(
-            label="Deny users", helper_text="Deny always wins.", **common
-        )
-        self._share_edit_groups = pmui.MultiChoice(
-            label="Editor groups",
-            helper_text="May also edit and save, but not rename, delete or share.",
-            **common,
-        )
-        self._share_edit_users = pmui.MultiChoice(
-            label="Editor users",
-            helper_text="May also edit and save, but not rename, delete or share.",
-            **common,
-        )
-        self._share_widgets = (
-            self._share_allow_groups,
-            self._share_allow_users,
-            self._share_deny_groups,
-            self._share_deny_users,
-            self._share_edit_groups,
-            self._share_edit_users,
-        )
-        confirm_btn = pmui.Button(label="Save sharing", color="primary")
-        cancel_btn = pmui.Button(label="Cancel", color="light")
-        confirm_btn.on_click(self._on_share_confirm)
-        cancel_btn.on_click(lambda _: setattr(self._share_dialog, "open", False))
-        self._share_dialog = pmui.Dialog(
-            objects=[
-                pn.Column(
-                    pmui.Typography(
-                        "Grant access by group or user. With no view rules the "
-                        "project default applies. Editors can always view.",
-                        variant="body2",
-                        styles={"opacity": "0.7"},
-                    ),
-                    self._share_allow_groups,
-                    self._share_allow_users,
-                    self._share_edit_groups,
-                    self._share_edit_users,
-                    self._share_deny_groups,
-                    self._share_deny_users,
-                    pn.Row(confirm_btn, cancel_btn),
-                    sizing_mode="stretch_width",
-                )
-            ],
-            title="Share Dashboard",
-            open=False,
-            min_width=420,
-        )
+        self._share_dialog = self._editor._settings_dialog
         return self._share_dialog
 
     def _known_groups(self) -> list[str]:
@@ -1549,70 +1500,68 @@ class FlowDashApp(Viewer):
             users |= set(self.auth_config.user_groups)
         return sorted(users)
 
-    @pn.io.hold()
+    def _group_sizes(self) -> dict[str, int]:
+        """Members per group, as far as the static ``user_groups`` mapping knows them."""
+        sizes: dict[str, int] = {}
+        if self.auth_config is not None:
+            for member_groups in self.auth_config.user_groups.values():
+                for group in member_groups:
+                    sizes[group] = sizes.get(group, 0) + 1
+        return sizes
+
+    def _sharing_access(self, dashboard_id: str) -> SharingAccess | None:
+        """Return what the settings dialog's sharing section shows, for administrators only."""
+        if not self._can_administer_dashboard(dashboard_id):
+            return None
+        model = self.store._load_any(dashboard_id)
+        if model is None:
+            return None
+        return SharingAccess(
+            owner=model.owner,
+            permission=model.permission,
+            default_allow=self._default_allow(),
+            group_sizes=self._group_sizes(),
+            groups=self._known_groups(),
+            link=share_link(f"{DASH_ROUTE_PREFIX}{dashboard_id}"),
+            users=self._known_users(),
+            you=self._identity.user_names,
+        )
+
     def _open_share_dialog(self, dashboard_id: str, title: str):
         if not self._can_administer_dashboard(dashboard_id):
             self._notify("error", "You are not allowed to share this dashboard.")
             return
-        model = self.store.load_for_access(
-            self._identity, dashboard_id, default_allow=self._default_allow()
-        )
-        perm = model.permission if model else Permission()
-        self._share_context = {"dashboard_id": dashboard_id}
+        self._editor._settings_view.show("sharing", dashboard_id=dashboard_id, title=title)
 
-        # Seed options from discoverable names, extended with any values already
-        # stored on the permission so custom entries render (MultiChoice shows
-        # out-of-option values as removable chips).
-        known_groups = self._known_groups()
-        known_users = self._known_users()
-        for widget, options, selected in (
-            (self._share_allow_groups, known_groups, perm.allow_groups),
-            (self._share_allow_users, known_users, perm.allow_users),
-            (self._share_deny_groups, known_groups, perm.deny_groups),
-            (self._share_deny_users, known_users, perm.deny_users),
-            (self._share_edit_groups, known_groups, perm.allow_edit_groups),
-            (self._share_edit_users, known_users, perm.allow_edit_users),
-        ):
-            widget.param.update(
-                options=sorted(set(options) | set(selected)),
-                value=sorted(selected),
-            )
+    def _rename_from_settings(self, dashboard_id: str, title: str) -> str | None:
+        """Rename from the settings dialog, returning why the name was refused, if it was."""
+        title = title.strip()
+        if not title:
+            return "Name cannot be empty."
+        if self.store.title_exists(self._user_id, title, exclude_id=dashboard_id):
+            return "A dashboard with this name already exists."
+        if not self._rename_dashboard(dashboard_id, title):
+            return "The dashboard could not be renamed."
+        return None
 
-        self._share_dialog.title = f"Share “{title}”" if title else "Share Dashboard"
-        self._share_dialog.open = True
-
-    @pn.io.hold()
-    def _on_share_confirm(self, _event):
-        ctx = self._share_context
-        dashboard_id = ctx.get("dashboard_id", "")
-        if not dashboard_id:
-            return
+    def _save_sharing(self, dashboard_id: str, permission: Permission) -> bool:
+        """Store a dashboard's sharing rules, returning whether they were stored."""
         if not self._can_administer_dashboard(dashboard_id):
             self._notify("error", "You are not allowed to share this dashboard.")
-            self._share_dialog.open = False
-            return
-        permission = Permission.from_spec(
-            allow_groups=self._share_allow_groups.value,
-            allow_users=self._share_allow_users.value,
-            deny_groups=self._share_deny_groups.value,
-            deny_users=self._share_deny_users.value,
-            allow_edit_groups=self._share_edit_groups.value,
-            allow_edit_users=self._share_edit_users.value,
-        )
+            return False
         try:
             updated = self.store.set_permission(dashboard_id, permission)
         except Exception as exc:
             self._notify_store_failure("share", exc)
-            return
+            return False
         if not updated:
             self._notify("error", "Sharing could not be updated.", duration=5000)
-            return
+            return False
         if self._current_dashboard and self._current_dashboard.dashboard_id == dashboard_id:
             self._current_dashboard.permission = permission
-        self._share_dialog.open = False
-        self._share_context = {}
         self._refresh_sidebar_dashboards()
         self._notify("success", "Sharing updated.", duration=3000)
+        return True
 
     def _build_unsaved_dialog(self):
         self._pending_navigation: tuple[str, str] | None = None

@@ -64,6 +64,7 @@ from panel_flowdash.registry import RegistryEntry
 from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transform_editor import TransformEditor
 from panel_flowdash.transforms import parse_transform, summarize_transform
+from panel_flowdash.ui.settings_dialog import SettingsDialog
 from panel_flowdash.util import (
     close_dialog,
     gate_view,
@@ -1890,32 +1891,8 @@ class FlowDash(Viewer):
         )
 
     def _build_settings_dialog(self):
-        close = pmui.Button(label="Close", variant="text")
-        close.on_click(lambda _event: self._settings_dialog.param.update(open=False))
-        # `pn.Param` would pick a slider over the whole bounds, which for the period is a day.
-        self._settings_form = form = pn.Param(
-            self.settings,
-            parameters=self._settings_form_names(),
-            widgets={"refresh_period": pmui.NumberInput},
-            show_name=False,
-            expand_button=False,
-            sizing_mode="stretch_width",
-        )
-        return pmui.Dialog(
-            objects=[form, pn.Row(pn.layout.HSpacer(), close, sizing_mode="stretch_width")],
-            title="Dashboard settings",
-            open=False,
-            min_width=400,
-        )
-
-    def _settings_form_names(self) -> list[str]:
-        # Inspection settings mean nothing while the editor offers no inspection.
-        hidden = () if self.inspect_outputs else ("viewers_can_inspect",)
-        return [name for name in self._settings_names if name not in hidden]
-
-    @param.depends("inspect_outputs", watch=True)
-    def _sync_settings_form(self):
-        self._settings_form.parameters = self._settings_form_names()
+        self._settings_view = SettingsDialog(self)
+        return self._settings_view.dialog
 
     @param.depends("dirty", "read_only", watch=True)
     def _sync_toolbar_state(self):
@@ -2183,6 +2160,7 @@ class FlowDash(Viewer):
                 partial(self.param.trigger, "refresh"), period=period_ms
             )
             self._refresh_ms = period_ms
+            self._refresh_started = time.time()
 
     def _stop_refresh_timer(self):
         if self._refresh_timer is not None:

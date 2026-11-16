@@ -53,10 +53,12 @@ def test_share_dialog_sets_editors(page):
 
     dialog = page.get_by_role("dialog")
     expect(dialog.get_by_text("bob", exact=True)).to_be_visible()
-    dialog.get_by_role("combobox", name="Editor users").click()
-    page.get_by_role("menuitem", name="erin").click()
-    page.locator(".MuiMenu-root .MuiBackdrop-root").click()
-    dialog.get_by_role("button", name="Save sharing").click()
+    add = dialog.get_by_role("combobox", name="Add people or groups")
+    add.fill("erin")
+    add.press("Enter")
+    dialog.locator(".share-entry").filter(has_text="erin").get_by_role("combobox").click()
+    page.get_by_role("menuitem", name="Can edit").click()
+    dialog.get_by_role("button", name="Save settings").click()
 
     (dashboard,) = store._all_dashboards()
     wait_until(

@@ -3875,6 +3875,7 @@ class TestDashboardSettings:
     async def test_unknown_keys_survive_a_save(self, editor):
         editor.load_model(_dashboard({"refresh_period": 3, "retired": True}))
         assert editor.save().settings == {
+            "description": "",
             "refresh_period": 3,
             "retired": True,
             "viewers_can_inspect": False,
@@ -3908,6 +3909,7 @@ class TestDashboardSettings:
         editor.settings.param.update(refresh_period=45, accent="red")
         saved = editor.save()
         assert saved.settings == {
+            "description": "",
             "refresh_period": 45,
             "viewers_can_inspect": False,
             "accent": "red",
@@ -3935,7 +3937,11 @@ class TestDashboardSettings:
     async def test_export_and_import_carry_the_settings(self, editor):
         editor.load_model(_dashboard({"refresh_period": 15}))
         data = editor.export_dashboard()
-        assert data["settings"] == {"refresh_period": 15, "viewers_can_inspect": False}
+        assert data["settings"] == {
+            "description": "",
+            "refresh_period": 15,
+            "viewers_can_inspect": False,
+        }
         other = FlowDash(COMPONENTS, notifications=False)
         other.import_dashboard(data)
         assert other.settings.refresh_period == 15
@@ -3963,18 +3969,21 @@ class TestDashboardSettings:
 class TestSettingsForm:
     async def test_form_is_generated_from_the_settings(self):
         editor = FlowDash(COMPONENTS, notifications=False, settings_class=BrandSettings)
-        form = editor._settings_dialog.objects[0]
-        assert set(form._widgets) == {"refresh_period", "accent", "density"}
+        form = editor._settings_view._extra_form
+        assert set(form._widgets) == {"accent", "density"}
 
-    async def test_form_edits_the_settings_and_marks_dirty(self, editor):
-        form = editor._settings_dialog.objects[0]
-        form._widgets["refresh_period"].value = 12
+    async def test_form_edits_the_settings_on_save(self, editor):
+        editor._settings_dialog.open = True
+        editor._settings_view._custom_period.value = 12
+        assert editor.settings.refresh_period == 0
+        editor._settings_view._save_button.clicks += 1
         assert editor.settings.refresh_period == 12
         assert editor.dirty
 
     async def test_form_follows_a_loaded_dashboard(self, editor):
         editor.load_model(_dashboard({"refresh_period": 33}))
-        assert editor._settings_dialog.objects[0]._widgets["refresh_period"].value == 33
+        editor._settings_dialog.open = True
+        assert editor._settings_view._custom_period.value == 33
 
     async def test_button_opens_the_dialog(self, editor):
         assert not editor._settings_dialog.open

@@ -156,16 +156,48 @@ editor = FlowDash(
 
 ## Restricting dashboards
 
-Saved dashboards start out accessible only to their owner (the user who created
-them). To share one, open it in the editor and click **Share** in the
-editor's side panel next to *Save*. The button is only shown when you are allowed to
+To share a dashboard, open it in the editor and click **Share** in the toolbar,
+or open **Settings** and pick **Sharing**. Both open the same **Dashboard
+settings** dialog. The Sharing section is only offered to people allowed to
 administer that dashboard.
 
-The share dialog exposes the same four rule fields as allow/deny lists of groups
-and users. Add entries by group or by user; deny always wins. With no rules the
-project default applies, so a dashboard shared with no rules under the default
-allow policy is visible to everyone, while under a default-deny policy it stays
-private to its owner.
+The section has:
+
+- a **Link** to the dashboard with a **Copy link** button;
+- **Add people or groups**, which suggests the users and groups the project knows
+  about (the current identity's names and groups, `user_groups` and
+  `admin_groups`). Press Enter to add any other name. A name the project knows
+  only as a group is added as a group; prefix an unknown group with `group:`;
+- one row per person or group with a role: **Can view**, **Can edit** or
+  **Blocked**, or **Remove**. The owner has a fixed **Owner** row;
+- **Everyone in the project can view**, shown when the project's default policy
+  allows access.
+
+The roles map onto the dashboard's `Permission`:
+
+| Role | Stored in |
+|------|-----------|
+| Can view | `allow_users` / `allow_groups` |
+| Can edit | `allow_edit_users` / `allow_edit_groups` |
+| Blocked | `deny_users` / `deny_groups` |
+
+A blocked person or group is always blocked, even if they are listed above with
+another role or belong to a group that is: deny always wins. A name that the
+stored rules list under several roles is shown with the strongest one (Blocked,
+then Can edit, then Can view) and saved with only that one.
+
+**Everyone in the project can view** is on when the dashboard has no view rules,
+so the project default lets everyone view. Turning it off limits viewing to the
+people and groups with **Can view**, plus editors and the owner. When nobody has
+**Can view**, the dialog stores the owner as the only view rule, so the dashboard
+stays private to its owner and editors. With the switch on, **Can view** entries
+add nothing and are dropped when you save. Under a default-deny policy there is
+nothing per dashboard that opens it to everyone, so the switch is not shown and
+only the people listed can view.
+
+Changes to sharing apply when you click **Save settings**, and only if the rules
+changed. **Delete**, below the sections, asks you to type the dashboard's name
+before deleting it.
 
 Sharing changes the read model from "my dashboards" to "dashboards I own plus
 dashboards shared with me": the launcher and navigation menu list every
@@ -173,9 +205,8 @@ dashboard the current identity is authorized to open.
 
 ### Sharing edit rights
 
-The share dialog also has **Editor groups** and **Editor users**, stored as
-`allow_edit_groups` and `allow_edit_users` on the dashboard's `Permission`. An
-editor may:
+The **Can edit** role is stored as `allow_edit_groups` and `allow_edit_users` on
+the dashboard's `Permission`. An editor may:
 
 - view the dashboard, even when the view rules do not name them;
 - open it in edit mode (the **Edit** action, or an `?edit=true` link), change
@@ -215,8 +246,8 @@ stays fully editable.
 Dashboards created before OAuth was enabled are owned by the system user; add
 an admin group to keep administering them once users sign in. A user with view-only access who
 follows an edit link is silently downgraded to view mode, and the edit-only
-controls are hidden. Editors get edit mode but not the share button or the
-rename and delete actions.
+controls are hidden. Editors get edit mode and the settings dialog, but not the
+share button, the Sharing section, renaming or the Delete action.
 
 ---
 

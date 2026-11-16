@@ -14,6 +14,7 @@ from panel_flowdash.component_library import normalize_components
 from panel_flowdash.dashboard_store import DashboardItem, DashboardStore, MemoryDashboardStore
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.json_store import JSONFolderDashboardStore
+from panel_flowdash.ui.settings_dialog import ShareEntry
 
 
 @register(page=False, component=True, title="Source", provides=[{"key": "value", "type": "int"}])
@@ -214,8 +215,9 @@ class TestApp:
         assert not app._delete_dashboard(did)
         app._open_share_dialog(did, "Shared")
         assert not app._share_dialog.open
-        app._share_context = {"dashboard_id": did}
-        app._on_share_confirm(None)
+        assert app._sharing_access(did) is None
+        assert not app._save_sharing(did, Permission())
+        assert app._rename_from_settings(did, "Mine now")
         assert store._load_any(did).title == "Shared"
         assert store._load_any(did).permission == EDITORS
 
@@ -244,13 +246,18 @@ class TestApp:
         store, did = shared
         app = _app(store, ALICE)
         app._open_share_dialog(did, "Shared")
+        view = app._editor._settings_view
         assert app._share_dialog.open
-        assert app._share_edit_users.value == ["bob"]
-        assert app._share_edit_groups.value == ["analysts"]
+        assert view.section == "sharing"
+        assert view._entries == [
+            ShareEntry("analysts", "group", "edit"),
+            ShareEntry("bob", "user", "edit"),
+        ]
 
-        app._share_edit_users.value = ["bob", "erin"]
-        app._share_edit_groups.value = []
-        app._on_share_confirm(None)
+        view._add_input.value = "erin"
+        view.set_role("erin", "user", "edit")
+        view.set_role("analysts", "group", "remove")
+        view._save_button.clicks += 1
         assert store._load_any(did).permission == Permission.from_spec(
             allow_edit_users=["bob", "erin"]
         )
@@ -304,9 +311,9 @@ class TestInspectPermission:
 
     async def test_setting_is_only_offered_with_inspection_on(self):
         editor = FlowDash(COMPONENTS, notifications=False)
-        assert "viewers_can_inspect" not in editor._settings_form.parameters
+        assert not editor._settings_view._inspect_switch.visible
         editor.inspect_outputs = True
-        assert "viewers_can_inspect" in editor._settings_form.parameters
+        assert editor._settings_view._inspect_switch.visible
 
     async def test_setting_round_trips(self):
         editor = self._editor()
