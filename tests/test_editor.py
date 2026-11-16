@@ -958,6 +958,34 @@ def _place_disposable(editor, component_id=DISPOSABLE):
     return instance_id, editor._component_instances[instance_id]
 
 
+class _Blob:
+    """A value param cannot compare, so re-setting it always notifies."""
+
+
+class _Emitter(Viewer):
+    blob = param.Parameter(default=_Blob())
+
+    @param.output(param.Parameter)
+    def out(self):
+        return self.blob
+
+    def __panel__(self):
+        return "emitter"
+
+
+class _Receiver(Viewer):
+    blob = param.Parameter(default=None)
+
+    received = param.Integer(default=0)
+
+    @param.depends("blob", watch=True)
+    def _count(self):
+        self.received += 1
+
+    def __panel__(self):
+        return "receiver"
+
+
 class TestComponentDisposal:
     async def test_remove_component_disposes_once(self, disposal_editor):
         instance_id, instance = _place_disposable(disposal_editor)
@@ -1160,6 +1188,26 @@ class TestComponentDisposal:
 
         assert instance.disposals == 1
         assert list(editor.graph.node_ids) == []
+
+    async def test_session_end_does_not_push_values_downstream(self, caplog):
+        doc, session_context = _session_doc()
+        with set_curdoc(doc):
+            editor = FlowDash(
+                {"Demo/emitter": _Emitter, "Demo/receiver": _Receiver}, notifications=False
+            )
+            src = editor.add_component("Demo/emitter")
+            dst = editor.add_component("Demo/receiver")
+            editor.connect(src, "out", dst, "blob")
+        receiver = editor._component_instances[dst]
+        received = receiver.received
+        assert isinstance(receiver.blob, _Blob)
+
+        # The Document is gone by then, so a component re-rendering would fail.
+        for callback in doc.session_destroyed_callbacks:
+            callback(session_context)
+
+        assert receiver.received == received
+        assert not [r for r in caplog.records if r.levelname == "ERROR"]
 
     async def test_session_callback_does_not_keep_the_editor_alive(self):
         doc, session_context = _session_doc()
@@ -1607,7 +1655,10 @@ class TestDisplayModes:
 
     async def test_dashboard_mode_shows_the_grid_under_the_bar(self, editor):
         editor.mode = "dashboard"
-        assert editor._workspace_area.objects[0] is editor._tile_grid
+        assert editor._workspace_area.objects[:2] == [
+            editor._view_controls._view,
+            editor._tile_grid,
+        ]
         assert editor._flow.top_panel == []
         assert not editor._side_panel.visible
 
@@ -3907,6 +3958,7 @@ class TestDashboardSettings:
     async def test_unknown_keys_survive_a_save(self, editor):
         editor.load_model(_dashboard({"refresh_period": 3, "retired": True}))
         assert editor.save().settings == {
+            "description": "",
             "refresh_period": 3,
             "retired": True,
             "tile_cards": True,
@@ -3942,6 +3994,7 @@ class TestDashboardSettings:
         editor.settings.param.update(refresh_period=45, accent="red")
         saved = editor.save()
         assert saved.settings == {
+            "description": "",
             "refresh_period": 45,
             "tile_cards": True,
             "tile_titles": False,
@@ -3972,6 +4025,7 @@ class TestDashboardSettings:
         editor.load_model(_dashboard({"refresh_period": 15}))
         data = editor.export_dashboard()
         assert data["settings"] == {
+            "description": "",
             "refresh_period": 15,
             "tile_cards": True,
             "tile_titles": False,
@@ -4006,6 +4060,7 @@ class TestSettingsForm:
         editor = FlowDash(COMPONENTS, notifications=False, settings_class=BrandSettings)
         form = editor._settings_dialog.objects[0]
         assert set(form._widgets) == {
+            "description",
             "refresh_period",
             "tile_cards",
             "tile_titles",
@@ -4141,7 +4196,7 @@ class TestRefreshButton:
     async def test_click_updates_the_indicator(self, editor):
         editor._refresh_label.object = ""
         editor._refresh_button.clicks += 1
-        assert re.fullmatch(r"Refreshed \d\d:\d\d:\d\d", editor._refresh_label.object)
+        assert re.fullmatch(r"Refreshed \d\d:\d\d", editor._refresh_label.object)
 
     async def test_loading_a_dashboard_stamps_the_indicator(self, editor):
         editor._refresh_label.object = ""
@@ -4153,7 +4208,10 @@ class TestRefreshButton:
         bar = editor._dashboard_bar
         assert editor._refresh_button in bar._actions.objects
         assert editor._refresh_label in bar._title_block[1].objects
-        assert editor._workspace_area.objects[0] is editor._tile_grid
+        assert editor._workspace_area.objects[:2] == [
+            editor._view_controls._view,
+            editor._tile_grid,
+        ]
 
     @pytest.mark.parametrize("mode", ["wiring", "dashboard"])
     async def test_edit_mode_has_no_refresh(self, editor, mode):
