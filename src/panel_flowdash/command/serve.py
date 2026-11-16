@@ -16,8 +16,9 @@ from bokeh.embed.bundle import extension_dirs
 from bokeh.server.views.multi_root_static_handler import MultiRootStaticHandler
 from panel.command.serve import Serve as _PanelServe
 from panel.io.application import build_applications
+from panel.io.server import DocHandler, WSHandler
 
-from panel_flowdash.app import FlowDashApp
+from panel_flowdash.app import ACCESS_DENIED_ROUTE, FlowDashApp
 from panel_flowdash.auth import AuthConfig, make_authorize_callback
 from panel_flowdash.dashboard_store import BaseDashboardStore, DashboardStore
 from panel_flowdash.registry import PackageResolutionError, build_registry
@@ -47,6 +48,45 @@ PROJECT_OPTIONS = (
 
 # Options that also have a CLI flag; an explicit flag takes precedence.
 _CLI_OPTIONS = ("home_dashboard", "nav_variant", "title")
+
+
+def _root_route_kwargs(tornado_app, kwargs: dict) -> dict:
+    """Bind a handler to the app served at ``/``, as Bokeh binds its own route handlers."""
+    prefix = tornado_app.prefix
+    return {
+        **kwargs,
+        "application_context": tornado_app._applications["/"],
+        "bokeh_websocket_path": f"{prefix}/ws",
+    }
+
+
+class _NotFoundWSHandler(WSHandler):
+    """The websocket of a page served by :class:`_NotFoundHandler`, at ``<url>/ws``."""
+
+    def __init__(self, tornado_app, *args, **kwargs):
+        super().__init__(tornado_app, *args, **_root_route_kwargs(tornado_app, kwargs))
+
+
+class _NotFoundHandler(DocHandler):
+    """Tornado's ``default_handler_class``: the app at ``/`` with a 404 status.
+
+    The app reads the browser's location, so for a URL no route matches it
+    renders its own "page does not exist" view instead of Tornado's bare 404.
+    Tornado uses one class for every unmatched request, so the page's
+    websocket, at ``<url>/ws``, is handed to :class:`_NotFoundWSHandler`.
+    """
+
+    def __new__(cls, tornado_app, request, **kwargs):
+        if request.path.endswith("/ws"):
+            return _NotFoundWSHandler(tornado_app, request, **kwargs)
+        return super().__new__(cls)
+
+    def __init__(self, tornado_app, *args, **kwargs):
+        super().__init__(tornado_app, *args, **_root_route_kwargs(tornado_app, kwargs))
+
+    async def get(self, *args, **kwargs):
+        self.set_status(404)
+        await super().get(*args, **kwargs)
 
 
 def _resolve_store(
@@ -231,7 +271,11 @@ class Serve(_PanelServe):
 
         # Install the HTTP-boundary authorization callback for page routes.
         # SPA and dashboard routes are gated in-app by FlowDashApp.
-        pn.config.authorize_callback = make_authorize_callback(registry, auth_config)
+        # Refused pages redirect to the app's own access-denied view.
+        url_prefix = "/" + args.prefix.strip("/") if getattr(args, "prefix", None) else ""
+        pn.config.authorize_callback = make_authorize_callback(
+            registry, auth_config, denied_route=ACCESS_DENIED_ROUTE, url_prefix=url_prefix
+        )
 
         # Pages whose permissions are not literals in the source are imported now
         # so their rules are known before the first request; one that fails to
@@ -280,4 +324,7 @@ class Serve(_PanelServe):
         kwargs["extra_patterns"].append(
             (r"/.+/static/extensions/(.*)", MultiRootStaticHandler, dict(root=extension_dirs))
         )
+        # Only requests no route matches reach the default handler, so unlike a
+        # catch-all route it cannot shadow static files or login endpoints.
+        kwargs.setdefault("default_handler_class", _NotFoundHandler)
         return kwargs

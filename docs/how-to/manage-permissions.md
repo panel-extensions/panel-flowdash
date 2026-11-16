@@ -114,6 +114,13 @@ is checked at the HTTP boundary, so an unauthorized user cannot reach it even by
 typing the address. In-app navigation applies the same check and hides pages the
 identity may not see from the launcher and navigation menu.
 
+Under `flowdash serve`, a refused request is redirected to `/access-denied`,
+which names the page, says who the user is signed in as and asks them to
+contact an administrator. Pass `denied_route` to
+`panel_flowdash.auth.make_authorize_callback` to get the same redirect when
+serving the routes yourself; without it Panel's generic authorization error is
+shown.
+
 ---
 
 ## Restricting components
@@ -202,6 +209,11 @@ before deleting it.
 Sharing changes the read model from "my dashboards" to "dashboards I own plus
 dashboards shared with me": the launcher and navigation menu list every
 dashboard the current identity is authorized to open.
+
+Opening the link to a dashboard you may not see explains that it is not shared
+with you and names its owner (their login, so you know whom to ask), but never
+its title or contents. A link to a dashboard that does not exist says so instead
+and suggests accessible dashboards with a similar title or id.
 
 ### Sharing edit rights
 

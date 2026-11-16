@@ -91,7 +91,7 @@ def test_done_with_unsaved_changes_asks_and_discards(page):
 
     page.get_by_role("button", name="Done").click()
     dialog = page.get_by_role("dialog")
-    dialog.get_by_role("button", name="Discard").click()
+    dialog.get_by_role("button", name="Leave without saving").click()
 
     page.get_by_role("button", name="Refresh").wait_for()
     wait_until(lambda: len(apps[0]._editor._tile_items) == 1, page, timeout=10000)

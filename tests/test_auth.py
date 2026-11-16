@@ -476,7 +476,7 @@ class TestInAppPendingPermissions:
         entry = app._page_entries[f"{section}/secret"]
 
         view = await app._render_page((section, "secret"))
-        assert "Access denied" in view.object
+        assert view.title.startswith("You don't have access")
         assert entry.metadata.allow_groups == ["admins"]
         assert f"{section}/secret" not in app._accessible_page_entries()
 
@@ -525,5 +525,5 @@ class TestInAppPendingPermissions:
         with patch("importlib.import_module", wraps=importlib.import_module) as spy:
             for _ in range(2):
                 view = await app._render_page((section, "broken"))
-                assert "Access denied" in view.object
+                assert view.title.startswith("You don't have access")
         assert [c.args[0] for c in spy.call_args_list] == [f"{section}.broken"]
