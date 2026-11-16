@@ -5,14 +5,28 @@ from __future__ import annotations
 import ast
 import importlib
 import importlib.util
+import logging
 import pathlib
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from panel_flowdash.auth import Permission
+
+logger = logging.getLogger(__name__)
+
+
+def _name_list(value: Any) -> list[str]:
+    """Normalize a user/group argument, treating a lone string as one name."""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    if not isinstance(value, Iterable) or isinstance(value, dict):
+        raise TypeError(f"Expected a list of user or group names, got {value!r}.")
+    return list(value)
 
 
 @dataclass(frozen=True)
@@ -41,6 +55,9 @@ class PanelAppMetadata:
     deny_users: list[str] = field(default_factory=list)
     deny_groups: list[str] = field(default_factory=list)
     authorize: Callable | None = None
+    # Set by the source scan when the permission arguments are expressions it
+    # cannot evaluate; access is refused until an import supplies the real rules.
+    auth_pending: bool = False
 
     @property
     def permission(self) -> Permission:
@@ -143,10 +160,10 @@ def register(
         config_schema=config_schema,
         config=list(config or []),
         config_editor=config_editor,
-        allow_users=list(allow_users or []),
-        allow_groups=list(allow_groups or []),
-        deny_users=list(deny_users or []),
-        deny_groups=list(deny_groups or []),
+        allow_users=_name_list(allow_users),
+        allow_groups=_name_list(allow_groups),
+        deny_users=_name_list(deny_users),
+        deny_groups=_name_list(deny_groups),
         authorize=authorize,
     )
 
@@ -230,6 +247,10 @@ class RegistryEntry:
     # once per process rather than once per session. Untyped to avoid a circular
     # import with component_spec.
     spec: Any = field(default=None, repr=False, compare=False)
+    # The exception from the last failed ``load()``. Authorization checks deny
+    # an entry whose rules are still pending once this is set, rather than
+    # re-running a failing import on every listing or request.
+    load_error: BaseException | None = field(default=None, repr=False, compare=False)
 
     @property
     def title(self) -> str:
@@ -286,10 +307,15 @@ class RegistryEntry:
         """
         if self.app is not None:
             return self.app
-        module = importlib.import_module(self.module_name)
-        app = getattr(module, "app", None)
-        if app is None:
-            raise ImportError(f"Module '{self.module_name}' has no 'app' export.")
+        try:
+            module = importlib.import_module(self.module_name)
+            app = getattr(module, "app", None)
+            if app is None:
+                raise ImportError(f"Module '{self.module_name}' has no 'app' export.")
+        except Exception as exc:
+            object.__setattr__(self, "load_error", exc)
+            raise
+        object.__setattr__(self, "load_error", None)
         # Refresh metadata from the live object (decorators may carry richer info
         # e.g. config_schema / config_editor that AST cannot capture).
         object.__setattr__(self, "app", app)
@@ -329,6 +355,22 @@ _LITERAL_KEYS = {
     "deny_groups",
 }
 
+_AUTH_KEYS = {"allow_users", "allow_groups", "deny_users", "deny_groups", "authorize"}
+
+# Key under which _extract_register_kwargs flags rules it could not evaluate.
+_AUTH_PENDING = "auth_pending"
+# Key listing permission arguments whose literal value is not a list of names.
+_AUTH_INVALID = "auth_invalid"
+
+
+def _is_name_list(value: Any) -> bool:
+    """Whether a literal permission value is a name or a collection of names."""
+    if isinstance(value, str):
+        return True
+    return isinstance(value, (list, tuple, set, frozenset)) and all(
+        isinstance(v, str) for v in value
+    )
+
 
 def _eval_literal(node: ast.expr) -> Any:
     """Safely evaluate an AST literal node; return None on failure."""
@@ -342,8 +384,10 @@ def _extract_register_kwargs(source: str) -> dict[str, Any] | None:
     """Parse *source* and return the kwargs of the first @register/@panel_app call.
 
     Only literal-evaluable arguments are captured; runtime expressions (e.g.
-    ``config_schema=MyParamClass``) are silently skipped — they are picked up
-    later when the module is actually imported.
+    ``config_schema=MyParamClass``) are skipped and picked up later when the
+    module is actually imported. A permission argument that cannot be
+    evaluated, or any ``authorize`` callable, sets ``auth_pending`` instead, so
+    the page fails closed until it is imported rather than appearing open.
 
     Returns ``None`` if no @register call is found.
     """
@@ -371,10 +415,26 @@ def _extract_register_kwargs(source: str) -> dict[str, Any] | None:
                 continue
             kwargs: dict[str, Any] = {}
             for kw in call.keywords:
+                if kw.arg is None:
+                    # **kwargs may carry permission arguments the scan cannot see.
+                    kwargs[_AUTH_PENDING] = True
+                    continue
+                if kw.arg == "authorize":
+                    if not (isinstance(kw.value, ast.Constant) and kw.value.value is None):
+                        kwargs[_AUTH_PENDING] = True
+                    continue
                 if kw.arg in _LITERAL_KEYS:
                     val = _eval_literal(kw.value)
+                    if kw.arg in _AUTH_KEYS and val is not None and not _is_name_list(val):
+                        # The decorator refuses this value at import, so the page
+                        # stays pending and is denied rather than aborting the scan.
+                        kwargs.setdefault(_AUTH_INVALID, []).append(kw.arg)
+                        kwargs[_AUTH_PENDING] = True
+                        continue
                     if val is not None or isinstance(kw.value, ast.Constant):
                         kwargs[kw.arg] = val
+                    elif kw.arg in _AUTH_KEYS:
+                        kwargs[_AUTH_PENDING] = True
             return kwargs
 
     return None
@@ -441,6 +501,13 @@ def build_registry(project_dir: Path, *, package: str | None = None) -> dict[str
                 # No @register call found — skip silently (same as before).
                 continue
 
+            if kwargs.get(_AUTH_INVALID):
+                logger.error(
+                    "%s: %s must be a list of names; access to this module is denied.",
+                    module_path,
+                    ", ".join(kwargs[_AUTH_INVALID]),
+                )
+
             # Defaults that match PanelAppMetadata
             page = kwargs.get("page", True)
             component = kwargs.get("component", False)
@@ -463,10 +530,11 @@ def build_registry(project_dir: Path, *, package: str | None = None) -> dict[str
                 provides=list(kwargs.get("provides") or []),
                 requires=list(kwargs.get("requires") or []),
                 config=list(kwargs.get("config") or []),
-                allow_users=list(kwargs.get("allow_users") or []),
-                allow_groups=list(kwargs.get("allow_groups") or []),
-                deny_users=list(kwargs.get("deny_users") or []),
-                deny_groups=list(kwargs.get("deny_groups") or []),
+                allow_users=_name_list(kwargs.get("allow_users")),
+                allow_groups=_name_list(kwargs.get("allow_groups")),
+                deny_users=_name_list(kwargs.get("deny_users")),
+                deny_groups=_name_list(kwargs.get("deny_groups")),
+                auth_pending=bool(kwargs.get(_AUTH_PENDING, False)),
             )
 
             parts = module_path.relative_to(project_dir).with_suffix("").parts

@@ -277,11 +277,14 @@ def test_dropping_file_on_populated_canvas_asks_first(page):
     dialog = page.get_by_role("dialog")
     dialog.get_by_role("button", name="Cancel").click()
     wait_until(lambda: not editor._import_dialog.open, timeout=8000)
-    assert editor._tile_items[0]["instance_id"] == existing
+    assert [i["instance_id"] for i in editor._tile_items] == [existing]
 
     assert _drop_file(pane, "other.json", json.dumps(export.export_dashboard()))
     page.get_by_role("dialog").get_by_role("button", name="Replace canvas").click()
-    wait_until(lambda: editor._tile_items[0]["instance_id"] == replacement, timeout=8000)
+    # Loading clears the canvas before re-adding tiles, so the list is briefly empty.
+    wait_until(
+        lambda: [i["instance_id"] for i in editor._tile_items] == [replacement], timeout=8000
+    )
 
 
 class FrameSource(Viewer):

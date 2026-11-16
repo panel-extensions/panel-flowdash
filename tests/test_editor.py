@@ -2132,6 +2132,45 @@ def _wired_export():
     return data, src, dst
 
 
+class TestSaveKeepsStoredIdentity:
+    async def test_save_does_not_revert_sharing_or_rename_made_elsewhere(self, store_editor):
+        store = store_editor.store
+        model = store_editor.new_dashboard("Quarterly")
+        store.set_permission(
+            model.dashboard_id, Permission.from_spec(allow_users=["alice", "bob"])
+        )
+        store_editor.load_model(store._load_any(model.dashboard_id))
+
+        store.set_permission(model.dashboard_id, Permission.from_spec(allow_users=["alice"]))
+        store.rename_dashboard("alice", model.dashboard_id, "Quarterly (confidential)")
+        store_editor.add_component(next(iter(store_editor.component_specs)))
+        saved = store_editor.save()
+
+        stored = store._load_any(model.dashboard_id)
+        assert stored.permission.allow_users == frozenset({"alice"})
+        assert stored.title == "Quarterly (confidential)"
+        assert len(stored.items) == 1
+        assert saved.permission == stored.permission
+        assert store_editor.dashboard.title == "Quarterly (confidential)"
+
+    async def test_save_after_delete_elsewhere_does_not_restore_previous_owner(self, store_editor):
+        store = store_editor.store
+        bobs = store.create_dashboard("bob", "Bob's board")
+        store.set_permission(bobs.dashboard_id, Permission.from_spec(allow_users=["alice"]))
+        store_editor.load_model(store._load_any(bobs.dashboard_id))
+
+        store.delete_dashboard("bob", bobs.dashboard_id)
+        store_editor.add_component(next(iter(store_editor.component_specs)))
+        store_editor.save()
+
+        assert store._load_any(bobs.dashboard_id).owner == "alice"
+
+    async def test_explicit_title_still_renames(self, store_editor):
+        model = store_editor.new_dashboard("Draft")
+        store_editor.save(title="Final")
+        assert store_editor.store._load_any(model.dashboard_id).title == "Final"
+
+
 class TestExportImport:
     async def test_export_omits_identity_and_keeps_contents(self, store_editor):
         store_editor.new_dashboard("Mine")
@@ -2163,7 +2202,9 @@ class TestExportImport:
 
     async def test_import_keeps_loaded_dashboard_identity(self, store_editor):
         target = store_editor.new_dashboard("Target")
-        store_editor.dashboard.permission = Permission.from_spec(allow_users=["bob"])
+        store_editor.store.set_permission(
+            target.dashboard_id, Permission.from_spec(allow_users=["bob"])
+        )
         data, src, _dst = _wired_export()
         data.update(dashboard_id="other", user_id="mallory", permission={"allow_users": ["x"]})
 

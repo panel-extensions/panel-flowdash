@@ -4,8 +4,11 @@ Every test here runs against every store backend, so the in-memory and JSON fold
 stores are held to exactly the same contract as the SQLite one.
 """
 
+import logging
+
 import pytest
 
+from panel_flowdash import dashboard_store
 from panel_flowdash.auth import Identity, Permission
 from panel_flowdash.dashboard_store import (
     DashboardEdge,
@@ -402,11 +405,10 @@ class TestAccessControl:
         d = store.create_dashboard("bob", "Open")
         assert store.load_for_access(_identity("alice"), d.dashboard_id, default_allow=True)
 
-    async def test_can_administer_unrestricted_without_admin_groups(self, store):
-        # With no admin groups configured administration is unrestricted.
+    async def test_can_administer_only_owner_without_admin_groups(self, store):
         d = store.create_dashboard("alice", "Dash")
         assert store.can_administer(_identity("alice"), d.dashboard_id)
-        assert store.can_administer(_identity("bob"), d.dashboard_id)
+        assert not store.can_administer(_identity("bob"), d.dashboard_id)
 
     async def test_can_administer_owner_with_admin_groups(self, store):
         d = store.create_dashboard("alice", "Dash")
@@ -454,3 +456,41 @@ class TestItemPersistence:
         store.save_dashboard(dashboard)
         loaded = store.load_dashboard("user1", "d4")
         assert loaded.items[0].config == {"color": "blue", "threshold": 42}
+
+
+class TestFindByTitle:
+    async def test_prefers_own_dashboard(self, store):
+        company = store.create_dashboard("admin", "Company Home")
+        store.set_permission(company.dashboard_id, Permission.from_spec(allow_users=["alice"]))
+        mallory = store.create_dashboard("mallory", "Company Home")
+        store.set_permission(mallory.dashboard_id, Permission.from_spec(allow_users=["mallory"]))
+
+        assert store.find_by_id_or_title("Company Home", _identity("admin")).owner == "admin"
+        assert store.find_by_id_or_title("Company Home", _identity("mallory")).owner == "mallory"
+
+    async def test_title_shared_by_several_owners_is_ambiguous(self, store, caplog, monkeypatch):
+        monkeypatch.setattr(dashboard_store, "_AMBIGUOUS_TITLES", set())
+        company = store.create_dashboard("admin", "Company Home")
+        store.set_permission(company.dashboard_id, Permission.from_spec(allow_users=["alice"]))
+        # A newer same-titled dashboard with default (open) sharing must not
+        # become everyone else's home page.
+        store.create_dashboard("mallory", "Company Home")
+
+        with caplog.at_level(logging.ERROR, logger="panel_flowdash.dashboard_store"):
+            assert store.find_by_id_or_title("Company Home", _identity("alice")) is None
+        assert store.find_by_id_or_title("Company Home", _identity("eve")) is None
+        assert "configure it by id" in caplog.text
+        assert store.find_by_id_or_title(company.dashboard_id).owner == "admin"
+
+    async def test_single_owner_title_resolves_to_an_accessible_dashboard(self, store):
+        older = store.create_dashboard("admin", "Home")
+        newer = store.create_dashboard("admin", "Home")
+        store.set_permission(newer.dashboard_id, Permission.from_spec(allow_users=["admin"]))
+
+        found = store.find_by_id_or_title("Home", _identity("alice"))
+        assert found.dashboard_id == older.dashboard_id
+
+    async def test_without_identity_returns_a_match(self, store):
+        d = store.create_dashboard("admin", "Home")
+        assert store.find_by_id_or_title("Home").dashboard_id == d.dashboard_id
+        assert store.find_by_id_or_title(d.dashboard_id).dashboard_id == d.dashboard_id

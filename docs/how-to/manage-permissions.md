@@ -18,17 +18,20 @@ Every session resolves to a single `Identity` made up of:
 - **OAuth user** — `pn.state.user`, populated when an OAuth provider is
   configured. This is preferred when present.
 - **System user** — the OS account running the server (`getpass.getuser()`),
-  used as a fallback when there is no OAuth login. This is what lets a local,
-  auth-less deployment still key rules to a real user.
+  used only when there is no OAuth login. This is what lets a local,
+  auth-less deployment still key rules to a real user. A signed-in OAuth user
+  never also carries the server account's name, so they do not inherit its
+  dashboards or `user_groups` entry.
 - **Groups** — the union of three sources: group claims read from
-  `pn.state.user_info` (by default the `groups` and `roles` claims), a static
-  `user_groups` mapping, and an optional dynamic `resolve_groups` callback.
+  `pn.state.user_info` (by default the `groups` and `roles` claims), the static
+  `user_groups` entry for the resolved user, and an optional dynamic
+  `resolve_groups` callback.
 
 When no OAuth login and no system user can be determined, the identity falls
 back to the `anonymous` user with no groups.
 
-A rule that names a user matches either the OAuth login *or* the system user
-name. A rule that names a group matches any of the identity's resolved groups.
+A rule that names a user matches the resolved user: the OAuth login when there
+is one, otherwise the system user name. A rule that names a group matches any of the identity's resolved groups.
 
 ---
 
@@ -58,9 +61,18 @@ Evaluation order:
 
 ## Restricting pages
 
-Declare rules directly on the `@register` decorator. They are picked up
+Declare rules directly on the `@register` decorator. Literal rules are picked up
 statically from the source (no import needed), so a restricted page is gated
-even before its module is loaded.
+even before its module is loaded. Rules given as expressions (a module-level
+constant such as `allow_groups=ADMINS`, or an `authorize` callable) cannot be
+read without importing the module, so such a page is denied until its module
+has been imported and the decorator supplies the real rules. `flowdash serve`
+imports these modules at startup, and the app imports any still pending in the
+background before showing the launcher and navigation, so listings never block
+on an import. A module that fails to import stays denied and is not imported
+again until the server restarts. A literal rule that is not a list of names,
+such as `allow_groups=5`, is logged as an error and the page is denied; the
+rest of the project still loads.
 
 ```python
 from panel_flowdash import register
@@ -123,12 +135,14 @@ dashboard the current identity is authorized to open.
 ## Who can administer a dashboard
 
 Editing, renaming, deleting and re-sharing a dashboard are *administration*
-actions, distinct from viewing it. By default, administration is unrestricted:
-whoever is running the app can administer any dashboard, which keeps a local,
-auth-less deployment fully editable.
+actions, distinct from viewing it. Only the dashboard's owner and members of the
+configured **admin groups** (see below) may administer it. Without admin groups
+only the owner can. In a local, auth-less deployment every session resolves to
+the same system user, who owns every dashboard it creates, so that deployment
+stays fully editable.
 
-Once you configure **admin groups** (see below), administration narrows to the
-dashboard's owner plus members of those groups. A user with view-only access who
+Dashboards created before OAuth was enabled are owned by the system user; add
+an admin group to keep administering them once users sign in. A user with view-only access who
 follows an edit link is silently downgraded to view mode, and the share and
 edit-only controls are hidden.
 
@@ -171,9 +185,12 @@ def resolve_groups(identity):
 |------|------|---------|-------------|
 | `group_claims` | `list[str]` | `["groups", "roles"]` | `user_info` claim keys to read groups from. Values may be lists or comma/space-separated strings. |
 | `user_groups` | `dict[str, list[str]]` | `{}` | Static user-to-group mapping. |
-| `admin_groups` | `list[str]` | `[]` | Groups that may administer any dashboard. Empty means unrestricted administration. |
-| `default_allow` | `bool` | `True` | Access policy for resources with no rules. |
+| `admin_groups` | `list[str]` | `[]` | Groups that may administer any dashboard. Empty means only owners administer their dashboards. |
+| `default_allow` | `bool` | `True` | Access policy for resources with no rules. Must be a bool (or the string `"true"`/`"false"`). |
 | `resolve_groups` | `callable` | `None` | Dynamic group resolution given the `Identity`. |
+
+A single string where a list is expected (`admin_groups = "admins"`) is read as
+one name.
 
 ---
 

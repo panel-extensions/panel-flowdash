@@ -76,6 +76,15 @@ class TestOperations:
         with pytest.raises(ValueError):
             run([{"op": "format", "spec": "{value.__class__}"}], 1)
 
+    @pytest.mark.parametrize("spec", ["2000000000", "0>5000", "x^1001", ".2000000000f", ",.101f"])
+    async def test_format_refuses_oversized_width_or_precision(self, spec):
+        with pytest.raises(ValueError, match="exceeds the maximum"):
+            parse_transform([{"op": "format", "spec": spec}])
+
+    @pytest.mark.parametrize("spec", [">1000", "_^+#01000,.100f", "%Y-%m-%d 2000000000"])
+    async def test_format_accepts_specs_within_bounds(self, spec):
+        parse_transform([{"op": "format", "spec": spec}])
+
     async def test_unset_value_passes_through(self):
         assert run(TOTAL_MW, None) is None
 

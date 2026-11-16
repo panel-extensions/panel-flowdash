@@ -221,7 +221,7 @@ class TestAdministration:
         admins = frozenset({"admins"})
         boss = Identity(user="boss", oauth_user="boss", groups=admins)
 
-        assert store.can_administer(_identity("other"), "d1")
+        assert not store.can_administer(_identity("other"), "d1")
         assert store.can_administer(_identity("owner"), "d1", admins)
         assert store.can_administer(boss, "d1", admins)
         assert not store.can_administer(_identity("other"), "d1", admins)
