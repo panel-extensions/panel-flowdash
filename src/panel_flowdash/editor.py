@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import copy
 import inspect
 import io
 import json
@@ -51,6 +52,14 @@ from panel_flowdash.dataflow_engine import (
     failure_text,
 )
 from panel_flowdash.failure_overlay import with_failure_overlay
+from panel_flowdash.placeholders import (
+    PLACEHOLDER_NODE_TYPE,
+    Placeholder,
+    UnresolvedEdge,
+    broken_edges_panel,
+    placeholder_view,
+    unresolved_summary,
+)
 from panel_flowdash.registry import RegistryEntry
 from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transform_editor import TransformEditor
@@ -578,6 +587,10 @@ class FlowDash(Viewer):
         self._edge_id_map: dict[str, tuple[str, str, str, str]] = {}
         self._tile_items: list[dict] = []
         self._tile_objects: list[Viewable] = []
+        # Saved edges that could not be wired, kept to be saved unchanged, and the
+        # notice about them waiting for an editor to see it.
+        self._unresolved_edges: list[UnresolvedEdge] = []
+        self._unresolved_notice: str | None = None
         # Layout entries keyed by instance id, waiting for the grid to be rendered.
         self._pending_tile_layout: list[dict] = []
         # Instance ids of the tiles currently in the grid, in grid order.
@@ -956,6 +969,9 @@ class FlowDash(Viewer):
             )
             if spec.config_editor is not None:
                 node_editors[type_key] = spec.config_editor
+        node_types[PLACEHOLDER_NODE_TYPE] = pr.NodeType(
+            type=PLACEHOLDER_NODE_TYPE, label="Unavailable component", inputs=[], outputs=[]
+        )
         return node_types, node_editors
 
     def _rebuild_flow_canvas(self):
@@ -1159,6 +1175,9 @@ class FlowDash(Viewer):
             if node_id in (mapping[0], mapping[2]):
                 del self._edge_id_map[edge_id]
                 self._drop_edge_editor(edge_id)
+        self._unresolved_edges = [
+            u for u in self._unresolved_edges if node_id not in (u.edge.source, u.edge.target)
+        ]
         self._sync_toolbar_state()
 
     # ------------------------------------------------------------------
@@ -1331,14 +1350,21 @@ class FlowDash(Viewer):
         if self._inspect_dialog.open or self._inspect_dialog.objects:
             self._inspect_dialog.param.update(open=False, objects=[])
 
+    def _tile_spec(self, item: dict) -> ComponentSpec | None:
+        """Return the spec whose hints apply to a tile; a placeholder keeps its saved size."""
+        if "placeholder" in item:
+            return None
+        return self._component_specs.get(item["component_id"])
+
     def _grid_view(self, item: dict, view: Viewable) -> Viewable:
         """Return the tile's view, with an inspect button over it when it has outputs to show.
 
         A tile with width bounds is wrapped too, since TileGrid reads a tile's
         ``min_width`` and ``max_width`` to bound resizing and responsive widths.
+        A placeholder has neither, even if its component is offered.
         """
         instance_id = item["instance_id"]
-        spec = self._component_specs.get(item["component_id"])
+        spec = self._tile_spec(item)
         inspect = bool(self.inspect_outputs and spec and spec.outputs)
         bounds = {
             f"{key}_width": size["width"]
@@ -1868,6 +1894,8 @@ class FlowDash(Viewer):
         self._settings_button.disabled = self.read_only
         self._clear_button.disabled = not self._tile_items
         hint = [] if self._tile_items else [self._empty_hint]
+        if self._unresolved_edges:
+            hint.append(self._broken_edges_listing())
         if self._flow.bottom_panel != hint:
             self._flow.bottom_panel = hint
 
@@ -1895,8 +1923,8 @@ class FlowDash(Viewer):
 
     def _sized_layout(self, layout: list[dict]) -> list[dict]:
         """Apply the size hints of the tiles on the grid to its positional *layout*."""
-        components = {item["instance_id"]: item["component_id"] for item in self._tile_items}
-        specs = [self._component_specs.get(components.get(i)) for i in self._grid_ids]
+        items = {item["instance_id"]: item for item in self._tile_items}
+        specs = [self._tile_spec(items[i]) if i in items else None for i in self._grid_ids]
         grid = self._tile_grid
         return _size_layout(
             layout, specs, _reference_width(grid.reference_width, grid.breakpoints)
@@ -2019,7 +2047,7 @@ class FlowDash(Viewer):
         grid_views, grid_ids = [], []
         for i, item in enumerate(self._tile_items):
             entry = self._component_entries.get(item["component_id"])
-            if entry is None or entry.metadata.sidebar:
+            if "placeholder" not in item and (entry is None or entry.metadata.sidebar):
                 continue
             view = self._tile_objects[i] if i < len(self._tile_objects) else None
             if view is None:
@@ -2275,7 +2303,8 @@ class FlowDash(Viewer):
         return {
             item["component_id"]
             for item in self._tile_items
-            if self._component_entries[item["component_id"]].metadata.singleton
+            if "placeholder" not in item
+            and self._component_entries[item["component_id"]].metadata.singleton
         }
 
     def remove_component(self, instance_id: str):
@@ -2438,6 +2467,8 @@ class FlowDash(Viewer):
         for edge_id in list(self._transform_editors):
             self._drop_edge_editor(edge_id)
         self._edge_count = 0
+        self._unresolved_edges = []
+        self._unresolved_notice = None
         self.sidebar = []
         with self._muted_canvas():
             self._flow.param.update(nodes=[], edges=[])
@@ -2501,7 +2532,7 @@ class FlowDash(Viewer):
                 transform=edge["transform"],
             )
             for edge in self._dataflow_graph.edges
-        ]
+        ] + [copy.deepcopy(unresolved.edge) for unresolved in self._unresolved_edges]
         # Read the layout through `layout` and the pending-config fields so that
         # saving from wiring mode, where the grid is off screen, cannot clobber a
         # layout that was loaded from storage but never rendered.
@@ -2515,8 +2546,9 @@ class FlowDash(Viewer):
     def load_model(self, model: DashboardModel):
         """Hydrate the canvas from a :class:`DashboardModel`.
 
-        Components the model references but this editor does not offer are
-        skipped with a warning rather than aborting the load.
+        Items and edges that cannot be restored, such as a component this editor
+        does not offer or an edge whose port no longer exists, do not abort the
+        load. They are shown as placeholders and saved back unchanged.
 
         Only the components the model places are imported, so a component that
         does work at import time cannot slow down dashboards that do not use it.
@@ -2551,44 +2583,52 @@ class FlowDash(Viewer):
         with self._muted_canvas(), self._batched_canvas(), self._dataflow_graph.batch():
             for item in model.items:
                 component_id = self._resolve_component_id(item.component_id, aliases)
-                spec = self._component_specs.get(component_id)
-                if spec is None:
-                    logger.warning(
-                        "Skipping unknown component '%s' (%s)",
-                        item.component_id,
-                        item.instance_id,
-                    )
-                    continue
-                try:
-                    self._place(
-                        component_id,
-                        item.instance_id,
-                        {spec.resolve_name(key): value for key, value in item.config.items()},
-                        {"x": item.x, "y": item.y},
-                    )
-                except Exception:
-                    logger.exception(
-                        "Error loading component '%s' (%s)",
-                        item.component_id,
-                        item.instance_id,
-                    )
+                placeholder = self._item_placeholder(item, component_id)
+                if placeholder is None:
+                    spec = self._component_specs[component_id]
+                    try:
+                        self._place(
+                            component_id,
+                            item.instance_id,
+                            {spec.resolve_name(key): value for key, value in item.config.items()},
+                            {"x": item.x, "y": item.y},
+                        )
+                        continue
+                    except Exception:
+                        logger.exception(
+                            "Error loading component '%s' (%s)",
+                            item.component_id,
+                            item.instance_id,
+                        )
+                        placeholder = Placeholder(
+                            "failed", spec.title, f"'{spec.title}' failed to load."
+                        )
+                self._place_placeholder(item, placeholder)
+            placeholders = self._placeholders()
             for edge in model.edges:
-                result = self.connect(
-                    edge.source,
-                    self._resolve_port_name(edge.source, edge.source_port),
-                    edge.target,
-                    self._resolve_port_name(edge.target, edge.target_port),
-                    edge.transform,
-                )
+                if edge.source in placeholders or edge.target in placeholders:
+                    result = "One of its components could not be restored."
+                else:
+                    result = self.connect(
+                        edge.source,
+                        self._resolve_port_name(edge.source, edge.source_port),
+                        edge.target,
+                        self._resolve_port_name(edge.target, edge.target_port),
+                        edge.transform,
+                    )
                 if result is not True:
                     logger.warning(
-                        "Skipping saved edge %s.%s -> %s.%s: %s",
+                        "Keeping unresolved saved edge %s.%s -> %s.%s: %s",
                         edge.source,
                         edge.source_port,
                         edge.target,
                         edge.target_port,
                         result,
                     )
+                    self._unresolved_edges.append(UnresolvedEdge(edge, result))
+        self._unresolved_notice = unresolved_summary(
+            len(placeholders), len(self._unresolved_edges)
+        )
 
         legacy_ids = self._legacy_layout_ids(model)
         self._grid_populated = False
@@ -2604,11 +2644,115 @@ class FlowDash(Viewer):
         self.dirty = False
         self._stamp_refresh()
         self._apply_mode_state()
+        self._sync_toolbar_state()
+        self._notify_unresolved()
 
     def _resolve_port_name(self, instance_id: str, port: str) -> str:
         """Return the current name of a port a saved edge may name by a former name."""
         spec = self._component_specs.get(self._component_id_for_instance(instance_id) or "")
         return spec.resolve_name(port) if spec is not None else port
+
+    def _item_placeholder(self, item: DashboardItem, component_id: str) -> Placeholder | None:
+        """Return the placeholder to show instead of placing a saved item, or None to place it.
+
+        Parameters
+        ----------
+        item
+            The saved item, untouched.
+        component_id
+            Its component id after resolving aliases.
+        """
+        if component_id in self._component_specs:
+            return None
+        entry = self._component_entries.get(component_id)
+        if entry is not None:
+            return Placeholder("failed", entry.title, f"'{entry.title}' could not be imported.")
+        return Placeholder(
+            "missing",
+            item.component_id,
+            f"Component '{item.component_id}' is not available. It is kept on the "
+            "dashboard and comes back once the component is offered again.",
+        )
+
+    def _place_placeholder(self, item: DashboardItem, placeholder: Placeholder) -> str:
+        """Show a saved item that cannot be placed as a placeholder node and tile.
+
+        The item's component id and config are kept as saved, so the next save
+        writes it back unchanged; none of it is sent to the page.
+        """
+        view = placeholder_view(placeholder)
+        node = pr.NodeSpec(
+            id=item.instance_id,
+            type=PLACEHOLDER_NODE_TYPE,
+            position={"x": item.x, "y": item.y},
+            label=placeholder.title,
+            data={},
+        ).to_dict()
+        node["view"] = view
+        self._add_canvas_node(node)
+        self._tile_items.append(
+            {
+                "instance_id": item.instance_id,
+                "component_id": item.component_id,
+                "config": copy.deepcopy(item.config),
+                "placeholder": placeholder,
+            }
+        )
+        self._tile_objects.append(view)
+        self._sync_toolbar_state()
+        return item.instance_id
+
+    def _placeholders(self) -> dict[str, Placeholder]:
+        """Return the placeholders on the canvas, by instance id."""
+        return {
+            item["instance_id"]: item["placeholder"]
+            for item in self._tile_items
+            if "placeholder" in item
+        }
+
+    def _broken_edges_listing(self) -> Viewable:
+        """List the saved edges that could not be wired, leaving out private endpoints."""
+        placeholders = self._placeholders()
+        lines, hidden = [], 0
+        for unresolved in self._unresolved_edges:
+            edge = unresolved.edge
+            ends = []
+            for instance_id, port in (
+                (edge.source, edge.source_port),
+                (edge.target, edge.target_port),
+            ):
+                placeholder = placeholders.get(instance_id)
+                if placeholder is not None and placeholder.private:
+                    break
+                if placeholder is not None:
+                    title = placeholder.title
+                else:
+                    spec = self._component_specs.get(
+                        self._component_id_for_instance(instance_id) or ""
+                    )
+                    title = spec.title if spec else instance_id
+                ends.append(f"{title}.{port}")
+            else:
+                lines.append(f"{ends[0]} → {ends[1]}: {unresolved.reason}")
+                continue
+            hidden += 1
+        return broken_edges_panel(lines, hidden, self._discard_unresolved_edges)
+
+    def _discard_unresolved_edges(self):
+        """Drop the saved edges that could not be wired, so the next save leaves them out."""
+        if not self._unresolved_edges:
+            return
+        self._unresolved_edges = []
+        self.dirty = True
+        self._sync_toolbar_state()
+
+    @param.depends("editable", "read_only", watch=True)
+    def _notify_unresolved(self):
+        """Tell an editor once that a loaded dashboard holds items that could not be restored."""
+        if self._unresolved_notice is None or not self.editable or self.read_only:
+            return
+        message, self._unresolved_notice = self._unresolved_notice, None
+        self._notify("warning", message, duration=8000)
 
     def _legacy_layout_ids(self, model: DashboardModel) -> list[str]:
         """Return the tiles an untagged layout saved with *model* lines up with, in grid order.
@@ -2862,20 +3006,7 @@ class FlowDash(Viewer):
             self._notify("error", f"Could not load the dashboard: {exc}", duration=5000)
             return
         self.dirty = True
-        aliases = self._component_aliases()
-        missing = sorted(
-            {
-                item.component_id
-                for item in model.items
-                if self._resolve_component_id(item.component_id, aliases)
-                not in self._component_specs
-            }
-        )
-        if missing:
-            self._notify(
-                "warning", f"Skipped unavailable components: {', '.join(missing)}", duration=6000
-            )
-        else:
+        if not self._placeholders() and not self._unresolved_edges:
             self._notify("success", f"Loaded {len(model.items)} components.", duration=3000)
 
     def _add_dropped(self, payload):

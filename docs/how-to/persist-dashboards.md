@@ -302,9 +302,29 @@ has been logged.", never the exception text.
 
 ---
 
+## Items that cannot be restored
+
+A saved dashboard can outlive the code it was built with. When a dashboard is
+loaded or imported, an item whose component is no longer offered, or whose
+component raises while it is built, is shown as a placeholder node on the
+wiring canvas and a placeholder tile on the dashboard, in the slot it had. An
+edge whose port no longer exists, whose types no longer fit, or which touches
+a placeholder is listed under the wiring canvas instead of being drawn.
+
+Nothing is dropped: placeholders and broken edges are saved back exactly as
+they were stored, so the dashboard is whole again as soon as the component
+returns. Remove a placeholder node to drop the item and its edges, or click
+**Discard** under the listing to drop the broken edges. Someone who can save
+the dashboard is told once, when it is opened for editing, how many items and
+connections could not be restored.
+
+To keep dashboards loading after you rename a component or a port, declare the
+former names, see
+[Renaming components and ports](register-components.md#renaming-components-and-ports).
+
 ## Export and import dashboard files
 
-In edit mode, **Download** in the side panel saves the canvas as a JSON file named after the dashboard. Dropping that file onto the wiring canvas recreates its components, connections and tile layout. If the canvas already has components, the editor asks before replacing them. Components the editor doesn't offer are skipped with a warning.
+In edit mode, **Download** in the side panel saves the canvas as a JSON file named after the dashboard. Dropping that file onto the wiring canvas recreates its components, connections and tile layout. If the canvas already has components, the editor asks before replacing them. Components the editor doesn't offer are kept as placeholders, see [Items that cannot be restored](#items-that-cannot-be-restored).
 
 The file holds the dashboard contents but not its `dashboard_id`, `user_id`, `permission` or `revision`. An imported file takes the identity of the dashboard currently loaded, so saving writes the imported contents to that dashboard and cannot overwrite another one or change who it is shared with. It also keeps the revision the dashboard was loaded at, so importing a file does not hide a save made by another session since then.
 

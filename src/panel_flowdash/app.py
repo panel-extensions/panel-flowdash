@@ -770,6 +770,9 @@ class FlowDashApp(Viewer):
             ]
             return
 
+        # Before loading, so only someone who may save it is told about items it
+        # could not restore.
+        self._editor.read_only = not self._can_edit_dashboard(dashboard_id)
         self._editor.load_model(dashboard)
         self._notify(
             "info",
