@@ -48,6 +48,29 @@ def app(config):
 
 ---
 
+## Slow components and the event loop
+
+A page's `app` function is called in a worker thread, but a component's is not.
+FlowDash calls a sync component function on the server's event loop when the
+node is placed, so the outputs it publishes and the watchers it sets up on
+`config` exist before saved edges are reconnected, and the dataflow graph, which
+is not thread-safe, is only ever touched from one thread. While the function
+runs, every session served by the process waits.
+
+Keep sync component functions quick and move slow work (queries, file reads,
+model loading) out of them:
+
+- make the function `async def` and `await` the slow call, for example with
+  `await asyncio.to_thread(load_data, ticker)`; FlowDash awaits it on the event
+  loop when the tile renders,
+- or bind the slow part to the inputs with `pn.bind` and let it run per update
+  from an async function or generator.
+
+Publish outputs (assign to `config`) from the event loop, not from a thread you
+start yourself.
+
+---
+
 ## Using Viewer subclasses
 
 Panel `Viewer` subclasses work as components without needing explicit port

@@ -366,6 +366,14 @@ class TestNodeStateCreation:
         instance = cls()
         assert instance.param.x.allow_refs is True
 
+    async def test_mutable_default_is_copied_per_node(self):
+        spec = make_spec("test", inputs=[InputPort(name="x", default={"a": 1})])
+        cls = build_node_state_class(spec)
+        first, second = cls(), cls()
+        first.x["a"] = 2
+        assert second.x == {"a": 1}
+        assert spec.inputs[0].default == {"a": 1}
+
 
 class TestEdgeRemoval:
     async def test_remove_resets_to_default(self):
@@ -383,6 +391,21 @@ class TestEdgeRemoval:
 
         graph.remove_edge("s", "val", "t", "val")
         assert graph.get_state("t").val == "fallback"
+
+    async def test_remove_resets_to_a_copy_of_the_default(self):
+        default = ["AAPL"]
+        specs = {
+            "src": make_spec("src", outputs=[OutputPort(name="val")]),
+            "tgt": make_spec("tgt", inputs=[InputPort(name="val", default=default)]),
+        }
+        graph = DataflowGraph(specs)
+        graph.add_node("s", "src")
+        graph.add_node("t", "tgt")
+        graph.add_edge("s", "val", "t", "val")
+        graph.remove_edge("s", "val", "t", "val")
+
+        graph.get_state("t").val.append("MSFT")
+        assert default == ["AAPL"]
 
     async def test_remove_node_clears_edges(self):
         specs = {
