@@ -358,16 +358,12 @@ def _editor_with_edge(transform=TOTAL_MW, target=("Demo/kpi", "total")):
     dst = editor.add_component(target[0])
     assert editor.connect(src, "plants", dst, target[1], transform) is True
     (edge_id,) = editor._edge_id_map
-    view = editor._make_edge_editor({}, None, id=edge_id, type=None, on_patch=None)
+    view = editor._transform_editor(edge_id)
     return editor, (src, "plants", dst, target[1]), edge_id, view
 
 
 def _texts(view):
     return [t.object for t in view._body.select(pmui.Typography)]
-
-
-def _alerts(view):
-    return [a.object for a in view._body.select(pmui.Alert)]
 
 
 class TestTransformEditor:
@@ -386,25 +382,25 @@ class TestTransformEditor:
         assert _filter_value("N, S", "in", PLANTS["region"]) == ["N", "S"]
         assert _filter_value(" ", "==", PLANTS["site"]) is None
 
-    async def test_previews_show_the_value_after_each_step(self):
+    async def test_shapes_show_the_value_after_each_step(self):
         _, _, _, view = _editor_with_edge()
         view.__panel__()
         texts = _texts(view)
-        assert "DataFrame · 4 rows × 3 cols" in texts  # noqa: RUF001
-        assert "Series · 4 values" in texts
-        assert "int · 100" in texts
-        assert "✓ Applied to total" in texts
+        assert "In: 4 rows, 3 columns" in texts
+        assert "Out: Series of 4 values" in texts
+        assert "Out: number 100" in texts
 
     async def test_editing_an_argument_applies_it_and_updates_the_chip(self):
         editor, key, edge_id, view = _editor_with_edge()
         view.__panel__()
+        view._toggle(1)
         how = next(w for w in view._body.select(pmui.Select) if w.label == "How")
         how.value = "max"
 
         assert editor.graph.get_state(key[2]).total == 40
         assert editor.graph.get_edge_transform(*key)[-1] == {"op": "aggregate", "how": "max"}
         edge = next(e for e in editor._flow.edges if e["id"] == edge_id)
-        assert edge["label"] == "mw › max"  # noqa: RUF001
+        assert edge["label"] == "fx 2 steps"
         assert editor.dirty
 
     async def test_rejected_draft_keeps_the_applied_transform(self):
@@ -418,21 +414,22 @@ class TestTransformEditor:
         view._remove(2)
 
         assert editor.graph.get_edge_transform(*key) == transform
-        assert _alerts(view) == [
-            "Not applied: total does not accept list · 3 items. "
-            "The edge keeps its previous transform."
-        ]
+        assert "Total does not accept a list." in _texts(view)
+        assert view.issue == "Transform"
 
+        # The draft stays flagged until it is fixed or reverted.
         editor._flow.selection = {"nodes": [], "edges": [edge_id]}
-        assert _alerts(view) == []
+        assert len(view._steps) == 2
+        view.reset()
         assert len(view._steps) == 3
+        assert view.issue is None
 
     async def test_repeated_panel_calls_keep_the_same_widgets(self):
         _, _, _, view = _editor_with_edge()
         view.__panel__()
         widgets = view._body.objects
         view.__panel__()
-        view.reset()
+        view.sync()
         assert view._body.objects is widgets
 
     async def test_step_that_does_not_fit_is_marked_and_blocks_adding(self):
@@ -440,23 +437,20 @@ class TestTransformEditor:
         view.__panel__()
         view._remove(0)
 
-        assert "Aggregate cannot be applied to a DataFrame." in _texts(view)
-        assert not view._body.select(pmui.MenuButton)
-        assert _alerts(view) == [
-            "Not applied: the step marked in red fails. The edge keeps its previous transform."
-        ]
+        assert "Aggregate needs a Series or list, not a table." in _texts(view)
+        (add,) = (b for b in view._body.select(pmui.Button) if b.label == "Add step")
+        assert add.disabled
+        assert view.issue == "Aggregate step"
 
-    async def test_add_step_defaults_to_the_first_column(self):
+    async def test_new_steps_leave_the_column_unchosen(self):
         editor, key, _, view = _editor_with_edge(transform=[], target=("Demo/table", "data"))
         view.__panel__()
-        (menu,) = view._body.select(pmui.MenuButton)
-        assert [item["op"] for item in menu.items][:4] == ["column", "filter", "sort", "head"]
-
-        view._add("head", PLANTS)
+        view._add("head")
         assert editor.graph.get_edge_transform(*key) == [{"op": "head", "n": 5}]
-        view._add("filter", PLANTS)
-        assert view._steps[1].column == "site"
-        assert _alerts(view) == []
+        view._add("filter")
+        assert view._steps[1].column == ""
+        assert editor.graph.get_edge_transform(*key) == [{"op": "head", "n": 5}]
+        assert view.issue is None
 
     async def test_filter_widget_coerces_numbers(self):
         editor, key, _, view = _editor_with_edge(
@@ -469,11 +463,11 @@ class TestTransformEditor:
         assert editor.graph.get_edge_transform(*key)[0]["value"] == 15
         assert editor.graph.get_state(key[2]).total == 90
 
-    async def test_previews_follow_the_source(self):
+    async def test_shapes_follow_the_source(self):
         editor, key, _, view = _editor_with_edge()
         view.__panel__()
         editor.graph.get_state(key[0]).frame = PLANTS.head(1)
-        assert "DataFrame · 1 rows × 3 cols" in _texts(view)  # noqa: RUF001
+        assert "In: 1 row, 3 columns" in _texts(view)
 
     async def test_editor_is_disposed_with_its_edge(self):
         editor, key, edge_id, view = _editor_with_edge()
@@ -491,7 +485,7 @@ class TestTransformEditor:
         assert editor.connect(src, "plants", dst, "data") is True
         plain = next(e for e in editor._flow.edges if e["id"] != edge_id)
         transformed = next(e for e in editor._flow.edges if e["id"] == edge_id)
-        assert transformed["label"] == "mw › sum"  # noqa: RUF001
+        assert transformed["label"] == "fx 2 steps"
         assert transformed["style"]["strokeDasharray"]
         assert not plain.get("label")
 

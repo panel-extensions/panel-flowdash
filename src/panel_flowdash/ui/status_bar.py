@@ -33,14 +33,41 @@ class Issue:
     title: str
     status: str
     detail: str
+    edge_id: str | None = None
+
+
+def component_title(editor, instance_id: str) -> str:
+    """Return the title of a placed component, or its id if its spec is unknown."""
+    spec = editor._component_specs.get(editor._component_id_for_instance(instance_id) or "")
+    return spec.title if spec else instance_id
+
+
+def connection_title(editor, mapping) -> str:
+    """Name a connection by its ends, e.g. 'State Filter to Capacity by Year'."""
+    return f"{component_title(editor, mapping[0])} to {component_title(editor, mapping[2])}"
 
 
 def canvas_issues(editor) -> list[Issue]:
-    """List the components that failed, wait for input or are unavailable, then broken edges."""
+    """List the components that failed, wait for input or are unavailable, then broken edges.
+
+    An edge is broken when the transform being edited on it has a failing step
+    or is refused by its target, or when it could not be restored.
+    """
     issues = [
         Issue(node["id"], card.title, card.status, card.status_detail)
         for node in editor._flow.nodes
         if isinstance(card := node.get("view"), NodeCard) and card.status != "ok"
+    ]
+    issues += [
+        Issue(
+            None,
+            f"{transform.issue} on {connection_title(editor, mapping)}",
+            "failed",
+            transform.message or "",
+            edge_id=edge_id,
+        )
+        for edge_id, transform in editor._transform_editors.items()
+        if transform.issue and (mapping := editor._edge_id_map.get(edge_id))
     ]
     issues += [
         Issue(None, "Connection", "unavailable", unresolved.reason)
@@ -125,8 +152,9 @@ class StatusBar(Viewer):
     """A one-line bar under the canvas summarizing the dashboard's state.
 
     It says whether every output is up to date or how many issues there are
-    (clicking the count selects the first component with an issue), counts
-    the components and connections, lists key hints and shows the zoom.
+    (clicking the count selects the first component or connection with an
+    issue), counts the components and connections, lists key hints and shows
+    the zoom.
     The canvas follows the page's light or dark theme through it, since it is
     a Material component shown alongside the canvas in every edit session.
     """
@@ -214,9 +242,9 @@ class StatusBar(Viewer):
         editor = self.editor
         issues = canvas_issues(editor)
         if issues:
-            noun = "issue" if len(issues) == 1 else "issues"
+            label = f"1 issue: {issues[0].title}" if len(issues) == 1 else f"{len(issues)} issues"
             self.issues_button.param.update(
-                label=f"{len(issues)} {noun}",
+                label=label,
                 icon="error_outline",
                 color="error" if any(i.status == "failed" for i in issues) else "warning",
             )
@@ -233,9 +261,9 @@ class StatusBar(Viewer):
         )
 
     def _on_issues_clicked(self, _event):
-        first = next((i for i in canvas_issues(self.editor) if i.instance_id), None)
+        first = next((i for i in canvas_issues(self.editor) if i.instance_id or i.edge_id), None)
         if first is not None:
-            select_on_canvas(self.editor._flow, node_id=first.instance_id)
+            select_on_canvas(self.editor._flow, node_id=first.instance_id, edge_id=first.edge_id)
 
     def __panel__(self):
         """Render the bar."""

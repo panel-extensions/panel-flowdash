@@ -328,8 +328,8 @@ class TestInspector:
         edge_id = editor._flow.edges[0]["id"]
         select_on_canvas(editor._flow, edge_id=edge_id)
         texts = _texts(editor._inspector._body)
-        assert "Connection: Rows to Table" in texts
-        assert "3 rows, 2 columns" in texts
+        assert "Rows to Table" in texts
+        assert "In: 3 rows, 2 columns" in texts
 
     async def test_edge_view_can_be_replaced(self, editor):
         src, table = editor.add_component(ROWS), editor.add_component(TABLE)
@@ -390,7 +390,7 @@ class TestStatusBar:
         assert bar.issues_button.label == "All outputs up to date"
         src, table = editor.add_component(ROWS), editor.add_component(TABLE)
         assert bar.counts.object == "2 components, 0 connections"
-        assert bar.issues_button.label == "1 issue"
+        assert bar.issues_button.label == "1 issue: Table"
         assert bar.issues_button.color == "warning"
         editor.connect(src, "rows", table, "rows")
         assert bar.counts.object == "2 components, 1 connection"
