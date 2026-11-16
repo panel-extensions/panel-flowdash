@@ -225,12 +225,19 @@ class TestApp:
         def actions(identity):
             app = _app(store, identity)
             item = next(i for i in app._get_dashboard_menu_items() if i["label"] == "Shared")
-            return [a["label"] for a in item.get("actions", [])]
+            return ["---" if a is None else a["label"] for a in item.get("actions", [])]
 
-        assert actions(ALICE) == ["Edit", "Rename", "Delete"]
-        assert actions(BOB) == ["Edit"]
+        assert actions(ALICE) == [
+            "Edit",
+            "Rename",
+            "Duplicate",
+            "Share",
+            "Download as file",
+            "Delete",
+        ]
+        assert actions(BOB) == ["Edit", "Duplicate", "Download as file"]
         store.set_permission(did, Permission())
-        assert actions(DAVE) == []
+        assert actions(DAVE) == ["Duplicate", "Download as file"]
 
     async def test_editor_actions_include_viewer_actions(self, shared, location):
         class CopyApp(FlowDashApp):

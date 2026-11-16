@@ -9,11 +9,14 @@ import asyncio
 import sys
 from contextlib import asynccontextmanager
 from functools import partial
+from types import SimpleNamespace
 
 import panel as pn
 import panel_material_ui as pmui
 import param
 import pytest
+from bokeh.document import Document
+from panel.io.state import set_curdoc
 
 from panel_flowdash.app import DASH_ROUTE_PREFIX, FlowDashApp
 from panel_flowdash.dashboard_store import DashboardItem, DashboardStore
@@ -463,6 +466,31 @@ class TestNavigateTo:
         assert pn.state.location.search == ""
         assert app._menu_list.active is not None
 
+    async def test_loads_the_page_after_the_navigation_changes_went_out(self, app):
+        loads = []
+
+        async def load():
+            loads.append(True)
+
+        app._load_page_layout = load
+        doc = Document()
+        doc._session_context = lambda: SimpleNamespace(
+            id="session", request=SimpleNamespace(arguments={})
+        )
+        with set_curdoc(doc):
+            app._navigate_to("/Analytics/page")
+        assert loads == []
+        # Scheduled as an unlocked callback the load could overtake the URL and
+        # breadcrumb changes; a locked one runs after they were sent.
+        (scheduled,) = doc.session_callbacks
+        assert not getattr(scheduled.callback, "nolock", False)
+        doc.remove_next_tick_callback(scheduled)
+        with set_curdoc(doc):
+            scheduled.callback()
+        (load_callback,) = doc.session_callbacks
+        await load_callback.callback()
+        assert loads == [True]
+
 
 def _menu_index_for_path(app, path):
     """Return the (section, item) index of the menu entry with *path*."""
@@ -537,6 +565,11 @@ async def menubar_app(tmp_path):
         sys.path.remove(str(tmp_path))
 
 
+def _labels(items):
+    """Labels of menu *items*, with dividers as ``"---"``."""
+    return ["---" if item is None else item["label"] for item in items]
+
+
 def _find_menu_bar_item(items, label):
     """Depth-first search for a MenuBar item dict with the given label."""
     for item in items:
@@ -587,8 +620,15 @@ class TestMenuBarVariant:
         menubar_app._refresh_sidebar_dashboards()
         submenu = _find_menu_bar_item(menubar_app._menu_bar.items, "Dash A")
         assert submenu is not None
-        labels = [i["label"] for i in submenu["items"]]
-        assert labels == ["Open", "Edit", "Rename", "Delete"]
+        assert _labels(submenu["items"]) == [
+            "Open",
+            "Edit",
+            "Rename",
+            "Duplicate",
+            "Share",
+            "Download as file",
+            "Delete",
+        ]
         assert (
             _find_menu_bar_item(menubar_app._menu_bar.items, "Dash A")["items"][0]["path"]
             == f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}"
@@ -598,7 +638,7 @@ class TestMenuBarVariant:
         dash = menubar_app.store.create_dashboard(menubar_app._user_id, "Dash A")
         menubar_app._refresh_sidebar_dashboards()
         submenu = _find_menu_bar_item(menubar_app._menu_bar.items, "Dash A")
-        delete_item = next(i for i in submenu["items"] if i["label"] == "Delete")
+        delete_item = next(i for i in submenu["items"] if i and i["label"] == "Delete")
         menubar_app._on_menu_bar_click(delete_item)
         assert menubar_app._dialog.open is True
         assert menubar_app._dialog_context == {
@@ -797,14 +837,14 @@ class CopyFlowDashApp(FlowDashApp):
             super()._on_dashboard_action(action, dashboard_id, title)
 
 
-_DUPLICATE_ACTION = {"action": "copy", "label": "Duplicate", "icon": "content_copy"}
+_CLONE_ACTION = {"action": "copy", "label": "Clone", "icon": "content_copy"}
 
 
 class KeyedActionFlowDashApp(FlowDashApp):
     """A subclass whose action key differs from its display label."""
 
-    _ADMIN_DASHBOARD_ACTIONS = (*FlowDashApp._ADMIN_DASHBOARD_ACTIONS, _DUPLICATE_ACTION)
-    _VIEWER_DASHBOARD_ACTIONS = (_DUPLICATE_ACTION,)
+    _ADMIN_DASHBOARD_ACTIONS = (*FlowDashApp._ADMIN_DASHBOARD_ACTIONS, _CLONE_ACTION)
+    _VIEWER_DASHBOARD_ACTIONS = (_CLONE_ACTION,)
 
     def __init__(self, **params):
         super().__init__(**params)
@@ -857,18 +897,15 @@ async def keyed_menubar_app(tmp_path):
         yield instance
 
 
-def _launcher_speed_dials(app):
-    """The SpeedDial of each dashboard card in the launcher, ``None`` where absent."""
-    launcher = app._build_launcher()
-    dash_box = next(
-        obj for title, obj in zip(launcher._names, launcher, strict=True) if title == "Custom Apps"
-    )
-    dials = []
-    for wrapper in dash_box:
-        if not isinstance(wrapper, pn.Column):
-            continue
-        dials.append(next((o for o in wrapper if isinstance(o, pmui.SpeedDial)), None))
-    return dials
+def _launcher_menus(app):
+    """The actions MenuButton of each dashboard card in the launcher."""
+    return list(app._build_launcher()._menus.values())
+
+
+def _click_menu(menu, label):
+    """Click the item with *label* through pmui's message handler, as the frontend does."""
+    index = next(i for i, item in enumerate(menu.items) if item and item["label"] == label)
+    menu._handle_msg({"type": "click", "item": index})
 
 
 def _menu_bar_path(items, label, path=()):
@@ -902,33 +939,42 @@ def _record_dispatch(app):
     return calls
 
 
-class TestLauncherSpeedDial:
+class TestLauncherCardMenu:
     async def test_admin_card_has_admin_actions(self, app):
         app.store.create_dashboard(app._user_id, "Dash A")
-        (dial,) = _launcher_speed_dials(app)
-        assert [i["label"] for i in dial.items] == ["Edit", "Rename", "Delete"]
+        (menu,) = _launcher_menus(app)
+        assert _labels(menu.items) == [
+            "Open",
+            "Edit",
+            "Rename",
+            "Duplicate",
+            "Share",
+            "Download as file",
+            "---",
+            "Delete",
+        ]
 
-    async def test_viewer_without_actions_has_no_speed_dial(self, app):
+    async def test_viewer_card_has_read_actions(self, app):
         app.store.create_dashboard(app._user_id, "Dash A")
         app._can_administer_dashboard = lambda dashboard_id: False
         app._can_edit_dashboard = lambda dashboard: False
-        assert _launcher_speed_dials(app) == [None]
+        (menu,) = _launcher_menus(app)
+        assert _labels(menu.items) == ["Open", "Duplicate", "Download as file"]
 
-    async def test_viewer_with_viewer_action_gets_speed_dial(self, copy_app):
+    async def test_viewer_card_lists_subclass_viewer_action(self, copy_app):
         copy_app.store.create_dashboard(copy_app._user_id, "Dash A")
         copy_app._can_administer_dashboard = lambda dashboard_id: False
         copy_app._can_edit_dashboard = lambda dashboard: False
-        (dial,) = _launcher_speed_dials(copy_app)
-        assert dial is not None
-        assert [i["label"] for i in dial.items] == ["Copy"]
+        (menu,) = _launcher_menus(copy_app)
+        assert _labels(menu.items) == ["Open", "Copy"]
 
 
 class TestDashboardActionDispatch:
     async def test_card_routes_through_dispatch(self, app):
         dash = app.store.create_dashboard(app._user_id, "Dash A")
-        (dial,) = _launcher_speed_dials(app)
+        (menu,) = _launcher_menus(app)
         calls = _record_dispatch(app)
-        dial.value = {"label": "Rename", "icon": "drive_file_rename_outline"}
+        _click_menu(menu, "Rename")
         assert calls == [("Rename", dash.dashboard_id, "Dash A")]
 
     async def test_nav_menu_routes_through_dispatch(self, app):
@@ -960,8 +1006,8 @@ class TestDashboardActionDispatch:
 
     async def test_card_rename_opens_dialog(self, app):
         dash = app.store.create_dashboard(app._user_id, "Dash A")
-        (dial,) = _launcher_speed_dials(app)
-        dial.value = {"label": "Rename"}
+        (menu,) = _launcher_menus(app)
+        _click_menu(menu, "Rename")
         assert app._dialog.open is True
         assert app._dialog.title == "Rename dashboard"
         assert app._dialog_name_input.value == "Dash A"
@@ -979,8 +1025,8 @@ class TestDashboardActionDispatch:
         dash = app.store.create_dashboard(app._user_id, "Dash A")
         loaded = []
         app._load_dashboard_edit = lambda did: loaded.append(did)
-        (dial,) = _launcher_speed_dials(app)
-        dial.value = {"label": "Edit"}
+        (menu,) = _launcher_menus(app)
+        _click_menu(menu, "Edit")
         assert loaded == [dash.dashboard_id]
         assert pn.state.location.pathname == f"{DASH_ROUTE_PREFIX}{dash.dashboard_id}"
         assert pn.state.location.search == "?edit=true"
@@ -1022,12 +1068,20 @@ class TestSubclassAction:
     async def test_action_in_nav_menu_items(self, copy_app):
         copy_app.store.create_dashboard(copy_app._user_id, "Dash A")
         (item,) = [i for i in copy_app._get_dashboard_menu_items() if i["label"] == "Dash A"]
-        assert [a["label"] for a in item["actions"]] == ["Edit", "Rename", "Delete", "Copy"]
+        assert _labels(item["actions"]) == [
+            "Edit",
+            "Rename",
+            "Duplicate",
+            "Share",
+            "Download as file",
+            "Delete",
+            "Copy",
+        ]
 
     async def test_action_from_card(self, copy_app):
         dash = copy_app.store.create_dashboard(copy_app._user_id, "Dash A")
-        (dial,) = _launcher_speed_dials(copy_app)
-        dial.value = {"label": "Copy"}
+        (menu,) = _launcher_menus(copy_app)
+        _click_menu(menu, "Copy")
         assert copy_app.copied == [(dash.dashboard_id, "Dash A")]
 
     async def test_action_from_nav_menu(self, copy_app):
@@ -1040,8 +1094,8 @@ class TestSubclassAction:
         dash = copy_app.store.create_dashboard(copy_app._user_id, "Dash A")
         copy_app._can_administer_dashboard = lambda dashboard_id: False
         copy_app._can_edit_dashboard = lambda dashboard: False
-        (dial,) = _launcher_speed_dials(copy_app)
-        dial.value = {"label": "Copy"}
+        (menu,) = _launcher_menus(copy_app)
+        _click_menu(menu, "Copy")
         assert copy_app.copied == [(dash.dashboard_id, "Dash A")]
 
     async def test_builtin_actions_still_reach_super(self, copy_app):
@@ -1059,10 +1113,13 @@ class TestSubclassAction:
         dash = app.store.create_dashboard(app._user_id, "Dash A")
         app._refresh_sidebar_dashboards()
         submenu = _find_menu_bar_item(app._menu_bar.items, "Dash A")
-        assert [i["label"] for i in submenu["items"]] == [
+        assert _labels(submenu["items"]) == [
             "Open",
             "Edit",
             "Rename",
+            "Duplicate",
+            "Share",
+            "Download as file",
             "Delete",
             "Copy",
         ]
@@ -1076,7 +1133,7 @@ class TestSubclassAction:
         app._can_edit_dashboard = lambda dashboard: False
         app._refresh_sidebar_dashboards()
         submenu = _find_menu_bar_item(app._menu_bar.items, "Dash A")
-        assert [i["label"] for i in submenu["items"]] == ["Open", "Copy"]
+        assert _labels(submenu["items"]) == ["Open", "Copy"]
         _click_menu_bar(app, "Dash A", "Copy")
         assert app.copied == [(dash.dashboard_id, "Dash A")]
 
@@ -1097,8 +1154,8 @@ class TestActionKey:
 
     async def test_card_dispatches_action_key(self, keyed_app):
         dash = keyed_app.store.create_dashboard(keyed_app._user_id, "Dash A")
-        (dial,) = _launcher_speed_dials(keyed_app)
-        dial.value = next(i for i in dial.items if i["label"] == "Duplicate")
+        (menu,) = _launcher_menus(keyed_app)
+        _click_menu(menu, "Clone")
         assert keyed_app.duplicated == [(dash.dashboard_id, "Dash A")]
 
     async def test_drawer_dispatches_action_key(self, keyed_app):
@@ -1112,5 +1169,5 @@ class TestActionKey:
         app = keyed_menubar_app
         dash = app.store.create_dashboard(app._user_id, "Dash A")
         app._refresh_sidebar_dashboards()
-        _click_menu_bar(app, "Dash A", "Duplicate")
+        _click_menu_bar(app, "Dash A", "Clone")
         assert app.duplicated == [(dash.dashboard_id, "Dash A")]

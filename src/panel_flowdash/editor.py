@@ -65,6 +65,7 @@ from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transform_editor import TransformEditor
 from panel_flowdash.transforms import parse_transform, summarize_transform
 from panel_flowdash.ui.dashboard_bar import DashboardBar
+from panel_flowdash.ui.palette import ComponentPalette, palette_entry, palette_items
 from panel_flowdash.util import (
     close_dialog,
     gate_view,
@@ -254,21 +255,6 @@ _NODE_DEFAULTS = {
 _SIDE_PANEL_WIDTH = 250
 # Sits where the tile's close handle does in edit mode, which hides the button.
 _INSPECT_BUTTON_STYLES = {"position": "absolute", "top": "4px", "right": "4px", "z-index": "5"}
-_PALETTE_SX = {
-    "& .MuiListItemButton-root": {"py": 0.25, "minHeight": 0},
-    "& .MuiListItemText-root": {"my": 0},
-    "& .MuiListItemText-primary": {"fontSize": "0.85rem"},
-    "& .MuiListItemIcon-root .MuiIcon-root": {"fontSize": "1.1rem"},
-    # Section headers are the list's direct children; components sit in their collapses.
-    "& > .MuiListItemButton-root .MuiListItemText-primary": {
-        "fontSize": "0.72rem",
-        "fontWeight": 600,
-        "letterSpacing": "0.06em",
-        "textTransform": "uppercase",
-        "color": "text.secondary",
-    },
-}
-
 _FLOW_STYLESHEET = """\
 .react-flow__node {
   padding: 0;
@@ -309,6 +295,20 @@ _FAILED_NODE_STYLE = {
     "borderColor": "var(--panel-danger-color, #d32f2f)",
     "boxShadow": "0 0 0 1px var(--panel-danger-color, #d32f2f)",
 }
+
+
+def export_model(model: DashboardModel) -> dict:
+    """Serialize *model* as a dashboard file, without its identity fields."""
+    data = model.to_dict()
+    for key in _IDENTITY_FIELDS:
+        del data[key]
+    return data
+
+
+def export_filename(title: str) -> str:
+    """File name a downloaded dashboard titled *title* is saved under."""
+    stem = re.sub(r"[^\w-]+", "_", title).strip("_") or "dashboard"
+    return f"{stem}.json"
 
 
 # The editor whose component is being created, for `current_dashboard`.
@@ -921,44 +921,22 @@ class FlowDash(Viewer):
             pn.extension(*extensions)
 
     def _make_palette(self):
-        palette = pmui.MenuList(
-            draggable=True,
+        self._palette_panel = ComponentPalette(
             drag_type=_PALETTE_DRAG_TYPE,
-            highlight=False,
-            level_indent=8,
-            sizing_mode="stretch_width",
-            margin=0,
-            sx=_PALETTE_SX,
+            items=self._palette_items,
+            on_click=self._on_palette_clicked,
         )
-        palette.on_click(self._on_palette_clicked)
-        return palette
+        return self._palette_panel.menu
 
     def _palette_items(self) -> list[dict]:
-        placed = self._placed_singletons()
-        sections: dict[str, list[dict]] = {}
+        placed = {item["component_id"] for item in self._tile_items}
+        entries = []
         for app_id, entry in self._component_entries.items():
             if not self._component_authorized(app_id):
                 continue
-            meta = entry.metadata
-            sections.setdefault(entry.section.replace("_", " "), []).append(
-                {
-                    "label": entry.title,
-                    "icon": meta.icon,
-                    "tooltip": meta.description,
-                    "component_id": app_id,
-                    "draggable": app_id not in placed,
-                }
-            )
-        return [
-            {
-                "label": section,
-                "icon": None,
-                "draggable": False,
-                "selectable": False,
-                "items": items,
-            }
-            for section, items in sections.items()
-        ]
+            spec = self._component_specs.get(app_id)
+            entries.append(palette_entry(entry, spec, placed=app_id in placed))
+        return palette_items(entries, self._palette_panel.query)
 
     def _component_authorized(self, component_id: str) -> bool:
         """Whether `authorize_component` lets this session use *component_id*."""
@@ -1751,16 +1729,10 @@ class FlowDash(Viewer):
         self._settings_button.on_click(
             lambda _event: self._settings_dialog.param.update(open=True)
         )
-        self._palette_section = pn.Column(
-            pmui.Typography(
-                "Drag a component onto the canvas, or onto a port to connect it.",
-                variant="caption",
-                sx={"color": "text.secondary"},
-                margin=(10, 10, 0, 10),
-            ),
-            self._palette,
-            sizing_mode="stretch_width",
-        )
+        self._palette_section = self._palette_panel
+        # Specs registered after a lazy import replace the node types, and give
+        # the palette real ports in place of the ones declared on `@register`.
+        self._flow.param.watch(lambda _event: self._palette_panel.refresh(), "node_types")
         self._side_panel = pmui.Column(
             self._palette_section,
             width=_SIDE_PANEL_WIDTH,
@@ -2872,10 +2844,7 @@ class FlowDash(Viewer):
         The dashboard id, owner and sharing rules are omitted, so the file can
         be loaded into any dashboard with :meth:`import_dashboard`.
         """
-        data = self.to_model().to_dict()
-        for key in _IDENTITY_FIELDS:
-            del data[key]
-        return data
+        return export_model(self.to_model())
 
     def import_dashboard(self, data: dict | str | bytes) -> DashboardModel:
         """Replace the canvas with an exported dashboard, as dropping its file does.
@@ -2963,8 +2932,7 @@ class FlowDash(Viewer):
 
     def _download_callback(self):
         data = self.export_dashboard()
-        stem = re.sub(r"[^\w-]+", "_", data["title"]).strip("_") or "dashboard"
-        self._download_button.filename = f"{stem}.json"
+        self._download_button.filename = export_filename(data["title"])
         return io.StringIO(json.dumps(data, indent=2))
 
     def _on_files_dropped(self, files: list[dict]):
