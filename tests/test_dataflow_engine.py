@@ -1,6 +1,8 @@
 """Tests for DataflowGraph validation: type checking, cycle detection, single-source."""
 
+import gc
 import sys
+import weakref
 
 import param
 import pytest
@@ -458,6 +460,94 @@ class TestEdgeRemoval:
         driver.value = "b"
 
         assert state.val == "a"
+
+
+def _watcher_count(obj):
+    return sum(
+        len(watchers) for by_type in obj.param.watchers.values() for watchers in by_type.values()
+    )
+
+
+class TestEdgeDisposal:
+    """Removing nodes and edges must leave nothing behind on the sources."""
+
+    def setup_method(self):
+        specs = {
+            "src": make_spec("src", outputs=[OutputPort(name="val")]),
+            "tgt": make_spec("tgt", inputs=[InputPort(name="val")]),
+            "many": make_spec("many", inputs=[InputPort(name="items", type="list")]),
+        }
+        self.errors = []
+        self.graph = DataflowGraph(specs, on_error=lambda *args: self.errors.append(args))
+        self.source = self.graph.add_node("s", "src")
+        self.source.val = [0]
+
+    async def test_removed_target_nodes_are_released(self):
+        baseline = _watcher_count(self.source)
+        removed = []
+        for i in range(20):
+            target = self.graph.add_node(f"t{i}", "tgt")
+            self.graph.add_edge("s", "val", f"t{i}", "val")
+            removed.append(weakref.ref(target))
+            self.graph.remove_node(f"t{i}")
+        del target
+        gc.collect()
+
+        self.source.val = [1]
+
+        assert [ref for ref in removed if ref() is not None] == []
+        assert _watcher_count(self.source) == baseline
+        assert self.errors == []
+
+    async def test_removed_source_node_is_released(self):
+        target = self.graph.add_node("t", "tgt")
+        self.graph.add_edge("s", "val", "t", "val")
+        source = weakref.ref(self.source)
+        del self.source
+
+        self.graph.remove_node("s")
+        gc.collect()
+
+        assert source() is None
+        assert target.val == [0]
+
+    async def test_reconnecting_does_not_accumulate_watchers(self):
+        self.graph.add_node("t", "tgt")
+        baseline = _watcher_count(self.source)
+        for _ in range(20):
+            self.graph.add_edge("s", "val", "t", "val")
+            self.graph.remove_edge("s", "val", "t", "val")
+        gc.collect()
+
+        assert _watcher_count(self.source) == baseline
+
+    async def test_list_input_reconnecting_does_not_accumulate_watchers(self):
+        self.graph.add_node("m", "many")
+        baseline = _watcher_count(self.source)
+        for _ in range(20):
+            self.graph.add_edge("s", "val", "m", "items")
+            self.graph.remove_edge("s", "val", "m", "items")
+        gc.collect()
+
+        assert _watcher_count(self.source) == baseline
+        assert self.graph.get_state("m").items == []
+
+    async def test_changing_a_transform_does_not_accumulate_watchers(self):
+        target = self.graph.add_node("t", "tgt")
+        self.graph.add_edge("s", "val", "t", "val", [{"op": "head", "n": 1}])
+        gc.collect()
+        baseline = _watcher_count(self.source)
+        for i in range(20):
+            self.graph.set_edge_transform("s", "val", "t", "val", [{"op": "head", "n": i % 3 + 1}])
+        # Where param can dispose an expression, a replaced edge is detached
+        # right away rather than whenever the cyclic collector runs.
+        if not hasattr(param.rx(0).rx, "dispose"):
+            gc.collect()
+
+        self.source.val = [1, 2, 3]
+
+        assert _watcher_count(self.source) == baseline
+        assert target.val == [1, 2]
 
 
 class TestViewerComponents:
