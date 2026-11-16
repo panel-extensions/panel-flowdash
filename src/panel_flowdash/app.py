@@ -972,10 +972,9 @@ class FlowDashApp(Viewer):
             return
 
         if pathname == COMPONENTS_ROUTE:
-            # Navigating here in a session changes the pathname and then, through
-            # `_show_edit_mode`, the search. On Panel 1.10 the page update below
-            # never reaches the browser when it is made in the same tick as those
-            # URL changes, so let the pathname change go out first.
+            # On Panel 1.10 the page update below never reaches the browser when
+            # it is made in the same tick as the pathname change, so let that go
+            # out first.
             await asyncio.sleep(0)
             if not self._is_current_navigation(generation):
                 return
