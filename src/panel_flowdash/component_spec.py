@@ -289,8 +289,7 @@ def _ports_from_viewer_class(
         ):
             continue
         type_str = type(p).__name__ if p else None
-        # Param leaves `metadata` as None unless one was passed.
-        flowdash = (p.metadata or {}).get("flowdash", {})
+        flowdash = _flowdash_metadata(p)
         required = bool(flowdash.get("required", False))
         inputs.append(
             InputPort(

@@ -183,8 +183,10 @@ class Report(pn.viewable.Viewer):
 ```
 
 `blocking` defaults to the value of `required`, so `{"required": True}` is
-enough. Viewer params without `metadata["flowdash"]` stay optional, and
-`requires` entries on `@register` replace the introspected inputs as usual.
+enough. Viewer params without `metadata["flowdash"]` stay optional, other keys
+in the `"flowdash"` dict are ignored here, and `requires` entries on `@register`
+replace the introspected inputs as usual. Parameter `metadata` needs param 2.3
+or later.
 
 The placeholder reads "Waiting for Company", naming the labels of the inputs that
 are still missing. Pass `placeholder` to `@register` to replace the text.

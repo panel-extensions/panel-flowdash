@@ -470,7 +470,7 @@ class FlowDash(Viewer):
         """
         for node_id in list(self._dataflow_graph.node_ids):
             self._dataflow_graph.remove_node(node_id)
-        for instance_id in list(self._component_instances):
+        for instance_id in [*self._component_instances, *self._component_wiring]:
             self._dispose_component(instance_id)
 
     def _dispose_component(self, instance_id: str):
@@ -1643,7 +1643,9 @@ class FlowDash(Viewer):
             raise
         # The component is instantiated even while blocked, so it can subscribe
         # and publish outputs; only what the tile displays is gated.
-        view = gate_view(view, node_state, spec.inputs, entry.metadata.placeholder)
+        view, release = gate_view(view, node_state, spec.inputs, entry.metadata.placeholder)
+        if release is not None:
+            self._component_wiring.setdefault(instance_id, []).append(release)
 
         if position is None:
             position = self._default_position()
@@ -1852,7 +1854,7 @@ class FlowDash(Viewer):
             self._tile_grid[:] = []
         self._grid_ids = []
         self._sync_toolbar_state()
-        for instance_id in list(self._component_instances):
+        for instance_id in [*self._component_instances, *self._component_wiring]:
             self._dispose_component(instance_id)
 
     # ------------------------------------------------------------------

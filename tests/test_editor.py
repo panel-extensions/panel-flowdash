@@ -2263,6 +2263,7 @@ class TestRequiredInputPlaceholder:
                 "Demo/function": report_function,
                 "Demo/fallback": report_with_fallback,
                 "Demo/receiver": Receiver,
+                "Demo/picker": Picker,
             },
             notifications=False,
             include_builtin_components=False,
@@ -2403,6 +2404,43 @@ class TestRequiredInputPlaceholder:
         assert self._shown(view) == (True, False)
         editor.graph.get_state(source).company = "ACME"
         assert self._shown(view) == (False, True)
+
+    async def test_batched_load_delivers_upstream_values_to_the_gate(self, editor):
+        editor.add_component("Demo/picker")
+        editor.add_component("Demo/viewer")
+        picker, target = (item["instance_id"] for item in editor._tile_items)
+        editor.connect(picker, "picked", target, "company")
+        model = editor.to_model("Gated")
+
+        editor.load_model(model)
+
+        assert editor.graph.get_state(target).company == "A"
+        assert self._shown(editor._tile_objects[1]) == (False, True)
+
+    @pytest.mark.parametrize("component", ["Demo/viewer", "Demo/function"])
+    async def test_removing_a_component_releases_its_placeholder(self, editor, component):
+        target = editor.add_component(component)
+        view = editor._tile_objects[0]
+        state = editor.graph.get_state(target)
+
+        editor.remove_component(target)
+        state.company = "ACME"
+        state.region = "EU" if component == "Demo/function" else None
+
+        assert self._shown(view) == (True, False)
+        assert target not in editor._component_wiring
+
+    @pytest.mark.parametrize("teardown", ["clear", "dispose"])
+    async def test_teardown_releases_function_component_placeholders(self, editor, teardown):
+        target = editor.add_component("Demo/function")
+        view = editor._tile_objects[0]
+        state = editor.graph.get_state(target)
+
+        getattr(editor, teardown)()
+        state.param.update(company="ACME", region="EU")
+
+        assert self._shown(view) == (True, False)
+        assert editor._component_wiring == {}
 
 
 class TestOutputFailures:

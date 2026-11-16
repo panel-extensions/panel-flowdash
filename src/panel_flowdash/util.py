@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import logging
 import typing as t
+from functools import partial
 
 import panel as pn
 import panel_material_ui as pmui
@@ -121,30 +122,23 @@ def gate_view(
     state: param.Parameterized,
     inputs: t.Iterable[InputPort],
     message: str | None = None,
-) -> Viewable:
+) -> tuple[Viewable, Callable[[], None] | None]:
     """Show a placeholder instead of *view* while a blocking input of *state* is None.
 
     Blocking follows :func:`~panel_flowdash.session_state.check_requirements`.
-    Returns *view* itself when no input can block. Otherwise *view* is built once
-    and only its container is hidden, so toggling neither re-renders the view nor
-    recreates its models.
+    Returns the view to display and a callable that stops it following
+    *state*, or *view* itself and ``None`` when no input can block. Otherwise
+    *view* is built once and only its container is hidden, so toggling neither
+    re-renders the view nor recreates its models.
     """
     ports = [p for p in inputs if p.required and p.blocking and p.name in state.param]
     if not ports:
-        return view
+        return view, None
 
     requires = [{"key": p.name, "required": True, "blocking": True} for p in ports]
     labels = {p.name: _input_label(p) for p in ports}
-
-    def missing(*_):
-        return [labels[u["key"]] for u in check_requirements(state, requires)]
-
-    missing_ref = param.bind(missing, *(state.param[p.name] for p in ports))
-    text = message or param.bind(lambda names: f"Waiting for {', '.join(names)}", missing_ref)
     placeholder = pmui.Typography(
-        text,
         variant="body2",
-        visible=param.bind(bool, missing_ref),
         sizing_mode="stretch_both",
         # Canvas nodes shrink to their content, so a stretching placeholder
         # needs its own minimum size to leave the node any room.
@@ -161,13 +155,23 @@ def gate_view(
     )
     # The view is wrapped rather than toggled itself, since a component may
     # manage the `visible` of the objects it returns.
-    body = pn.Column(
-        view,
-        visible=param.bind(lambda names: not names, missing_ref),
-        margin=0,
-        sizing_mode="stretch_both",
-    )
-    return pn.Column(placeholder, body, margin=0, sizing_mode="stretch_both")
+    body = pn.Column(view, margin=0, sizing_mode="stretch_both")
+
+    def update(*_):
+        missing = [labels[u["key"]] for u in check_requirements(state, requires)]
+        with pn.io.hold():
+            placeholder.param.update(
+                object=message or f"Waiting for {', '.join(missing)}",
+                visible=bool(missing),
+            )
+            body.visible = not missing
+
+    update()
+    # One plain watcher rather than bound refs, so the editor can release it
+    # with the rest of the node's wiring when the node is removed.
+    watcher = state.param.watch(update, [p.name for p in ports])
+    gated = pn.Column(placeholder, body, margin=0, sizing_mode="stretch_both")
+    return gated, partial(state.param.unwatch, watcher)
 
 
 def notify(
