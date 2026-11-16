@@ -3703,6 +3703,7 @@ class TestExportImport:
             ('["items"]', "Not a FlowDash dashboard"),
             ({"title": "No items"}, "Not a FlowDash dashboard"),
             ({"items": [{"component_id": SELECTOR}]}, "Malformed"),
+            ({"items": [], "settings": "oops"}, "Malformed"),
         ],
     )
     async def test_import_rejects_invalid_data(self, editor, data, match):

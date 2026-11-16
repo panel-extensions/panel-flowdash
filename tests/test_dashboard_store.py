@@ -404,10 +404,12 @@ class TestSettingsPersistence:
         assert DashboardModel.from_dict(legacy).settings == {}
 
     @pytest.mark.parametrize("value", ["oops", [["a", 1]], {1: "x"}])
-    async def test_malformed_settings_in_a_dict_are_dropped(self, sample_dashboard, value):
+    async def test_malformed_settings_in_a_dict_are_rejected(self, sample_dashboard, value):
+        """Like the other fields, so the stores can drop them and an import can refuse them."""
         data = sample_dashboard.to_dict()
         data["settings"] = value
-        assert DashboardModel.from_dict(data).settings == {}
+        with pytest.raises(TypeError, match="settings must be a mapping"):
+            DashboardModel.from_dict(data)
 
 
 _PRE_SETTINGS_SCHEMA = """
@@ -471,9 +473,11 @@ class TestSqliteSettingsMigration:
         with caplog.at_level(logging.WARNING):
             loaded = store.load_dashboard("user1", "old")
             listed = store.list_dashboards("user1")
+            store.list_dashboards("user1")
         assert loaded.settings == {}
-        assert [d.dashboard_id for d in listed] == ["old"]
-        assert ("malformed settings" in caplog.text) == (raw != "null")
+        assert [(d.dashboard_id, d.settings) for d in listed] == [("old", {})]
+        warnings = [r for r in caplog.records if "malformed settings" in r.getMessage()]
+        assert len(warnings) == (raw != "null")
 
 
 class TestAccessControl:

@@ -28,17 +28,17 @@ _AMBIGUOUS_TITLES: set[str] = set()
 MALFORMED_ERRORS = (KeyError, TypeError, ValueError, AttributeError, RecursionError)
 
 
-def _decode_settings(value: Any, dashboard_id: Any) -> dict[str, Any]:
-    """Return a private copy of stored settings, or no settings if they are malformed.
+def decode_settings(value: Any) -> dict[str, Any]:
+    """Return a private copy of stored dashboard settings, which may be missing (None).
 
-    Settings are optional, so a bad value costs the dashboard its settings
-    rather than making it unreadable.
+    Raises TypeError unless they are a mapping with string keys. Settings are
+    optional, so the stores catch this and drop just the settings, with a
+    warning, rather than skipping the whole dashboard.
     """
     if value is None:
         return {}
     if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
-        logger.warning("Ignoring malformed settings of dashboard %r", dashboard_id)
-        return {}
+        raise TypeError(f"settings must be a mapping, not {type(value).__name__}")
     return copy.deepcopy(value)
 
 
@@ -179,7 +179,7 @@ class DashboardModel:
             responsive_layouts=data.get("responsive_layouts", {}),
             reference_width=data.get("reference_width"),
             permission=Permission.from_dict(data.get("permission")),
-            settings=_decode_settings(data.get("settings"), data.get("dashboard_id")),
+            settings=decode_settings(data.get("settings")),
         )
 
 
@@ -704,12 +704,6 @@ class DashboardStore(BaseDashboardStore):
         )
         permission_raw = row["permission_json"] if "permission_json" in keys else "{}"
         reference_raw = row["reference_width_json"] if "reference_width_json" in keys else "null"
-        settings: Any = None
-        if "settings_json" in keys:
-            try:
-                settings = json.loads(row["settings_json"])
-            except (TypeError, ValueError, RecursionError):
-                settings = row["settings_json"]
         edges = json.loads(edges_raw)
         tile_layout = json.loads(tile_layout_raw)
         breakpoints = json.loads(breakpoints_raw)
@@ -730,5 +724,18 @@ class DashboardStore(BaseDashboardStore):
             responsive_layouts=responsive_layouts,
             reference_width=json.loads(reference_raw),
             permission=permission,
-            settings=_decode_settings(settings, row["dashboard_id"]),
+            settings=self._row_settings(row) if "settings_json" in keys else {},
         )
+
+    def _row_settings(self, row: sqlite3.Row) -> dict[str, Any]:
+        """Decode a row's settings, or log (once per revision) and drop them if malformed."""
+        try:
+            return decode_settings(json.loads(row["settings_json"]))
+        except MALFORMED_ERRORS as exc:
+            key = (row["dashboard_id"], row["updated_at"], "settings")
+            if key not in self._warned:
+                self._warned.add(key)
+                logger.warning(
+                    "Ignoring malformed settings of dashboard %r (%r)", row["dashboard_id"], exc
+                )
+            return {}

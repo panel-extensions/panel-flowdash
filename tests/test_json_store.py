@@ -114,10 +114,14 @@ class TestSettings:
         data = DashboardModel(dashboard_id="bad", user_id="u", title="Bad").to_dict()
         data["settings"] = "oops"
         (tmp_path / "bad.json").write_text(json.dumps(data))
+        store = JSONFolderDashboardStore(tmp_path)
         with caplog.at_level(logging.WARNING):
-            listed = JSONFolderDashboardStore(tmp_path).list_dashboards("u")
+            listed = store.list_dashboards("u")
+            loaded = store.load_dashboard("u", "bad")
         assert [(d.dashboard_id, d.settings) for d in listed] == [("bad", {})]
-        assert "malformed settings" in caplog.text
+        assert loaded.settings == {}
+        warnings = [r for r in caplog.records if "malformed settings" in r.getMessage()]
+        assert len(warnings) == 1
 
 
 class TestIds:
