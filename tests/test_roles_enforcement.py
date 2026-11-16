@@ -24,16 +24,20 @@ def _capture(app):
     return app.notices
 
 
-@pytest.fixture
-def editing(location):  # noqa: F811
-    """Bob editing alice's dashboard, with his edit rights then revoked from another session."""
+async def _editing():
+    """Bob editing alice's dashboard; the tests then revoke his rights from another session.
+
+    Loaded in the test itself rather than a fixture, so the app's startup
+    navigation cannot run in between and replace the dashboard.
+    """
     store = MemoryDashboardStore()
     model = store.create_dashboard("alice", "Plant")
     model.items = [DashboardItem(instance_id="s1", component_id=SOURCE)]
     store.save_dashboard(model)
     store.set_permission(model.dashboard_id, Permission.from_spec(allow_edit_users=["bob"]))
     app = _app(store, BOB)
-    app._load_dashboard_sync(model.dashboard_id, edit=True)
+    await app._load_dashboard(model.dashboard_id, edit=True)
+    assert app._editor.dashboard.dashboard_id == model.dashboard_id
     assert not app._editor.read_only
     notices = _capture(app)
     return app, store, model.dashboard_id, notices
@@ -52,8 +56,8 @@ def _assert_refused(app, store, did, notices, revision):
 
 class TestRevokedEditRights:
     @pytest.mark.parametrize("spec", [{"deny_users": ["bob"]}, {"allow_users": ["bob"]}])
-    def test_save_button(self, editing, spec):
-        app, store, did, notices = editing
+    async def test_save_button(self, location, spec):  # noqa: F811
+        app, store, did, notices = await _editing()
         revision = store._load_any(did).revision
         _revoke(store, did, **spec)
         app._editor.settings.description = "written by bob"
@@ -64,8 +68,8 @@ class TestRevokedEditRights:
         _assert_refused(app, store, did, notices, revision)
         assert app._editor.dirty
 
-    def test_save_and_view(self, editing):
-        app, store, did, notices = editing
+    async def test_save_and_view(self, location):  # noqa: F811
+        app, store, did, notices = await _editing()
         revision = store._load_any(did).revision
         _revoke(store, did, deny_users=["bob"])
         app._editor.settings.description = "written by bob"
@@ -79,8 +83,8 @@ class TestRevokedEditRights:
         _assert_refused(app, store, did, notices, revision)
         assert app._editor.editable
 
-    def test_settings_auto_save(self, editing):
-        app, store, did, notices = editing
+    async def test_settings_auto_save(self, location):  # noqa: F811
+        app, store, did, notices = await _editing()
         revision = store._load_any(did).revision
         _revoke(store, did, allow_users=["bob"])
         dialog = app._editor._settings_view
@@ -90,8 +94,8 @@ class TestRevokedEditRights:
 
         _assert_refused(app, store, did, notices, revision)
 
-    def test_app_save(self, editing):
-        app, store, did, notices = editing
+    async def test_app_save(self, location):  # noqa: F811
+        app, store, did, notices = await _editing()
         revision = store._load_any(did).revision
         _revoke(store, did, deny_users=["bob"])
         app._editor.settings.description = "written by bob"
@@ -101,8 +105,8 @@ class TestRevokedEditRights:
 
         _assert_refused(app, store, did, notices, revision)
 
-    def test_save_still_works_while_allowed(self, editing):
-        app, store, did, notices = editing
+    async def test_save_still_works_while_allowed(self, location):  # noqa: F811
+        app, store, did, notices = await _editing()
         app._editor.settings.description = "written by bob"
         app._editor.dirty = True
 
@@ -111,8 +115,8 @@ class TestRevokedEditRights:
         assert store._load_any(did).settings["description"] == "written by bob"
         assert notices == []
 
-    def test_discard_does_not_show_newer_content_after_access_is_revoked(self, editing):
-        app, store, did, notices = editing
+    async def test_discard_does_not_show_newer_content_after_access_is_revoked(self, location):  # noqa: F811
+        app, store, did, notices = await _editing()
         newer = store._load_any(did)
         newer.settings = {"description": "alice's secret plan"}
         store.save_dashboard(newer)
@@ -124,8 +128,8 @@ class TestRevokedEditRights:
         assert app._editor.settings.description != "alice's secret plan"
         assert ("error", "You no longer have access to this dashboard.") in notices
 
-    def test_reload_does_not_show_newer_content_after_access_is_revoked(self, editing):
-        app, store, did, notices = editing
+    async def test_reload_does_not_show_newer_content_after_access_is_revoked(self, location):  # noqa: F811
+        app, store, did, notices = await _editing()
         newer = store._load_any(did)
         newer.settings = {"description": "alice's secret plan"}
         store.save_dashboard(newer)
@@ -136,8 +140,8 @@ class TestRevokedEditRights:
         assert app._editor.settings.description != "alice's secret plan"
         assert ("error", "You no longer have access to this dashboard.") in notices
 
-    def test_discard_after_edit_rights_are_revoked_loads_read_only(self, editing):
-        app, store, did, _notices = editing
+    async def test_discard_after_edit_rights_are_revoked_loads_read_only(self, location):  # noqa: F811
+        app, store, did, _notices = await _editing()
         newer = store._load_any(did)
         newer.settings = {"description": "newer"}
         store.save_dashboard(newer)
@@ -162,7 +166,7 @@ def _labels(actions):
 
 
 class TestCopyingRespectsInspection:
-    def test_viewer_may_not_copy_a_dashboard_that_hides_outputs(self, location):  # noqa: F811
+    async def test_viewer_may_not_copy_a_dashboard_that_hides_outputs(self, location):  # noqa: F811
         store = MemoryDashboardStore()
         model = _restricted(store)
         app = _app(store, BOB, editor_options={"inspect_outputs": True})
@@ -180,7 +184,7 @@ class TestCopyingRespectsInspection:
         [(True, True, BOB), (False, False, BOB), (True, False, Identity(user="carl"))],
         ids=["viewers-can-inspect", "inspection-off", "editor"],
     )
-    def test_copy_is_offered_when_it_reveals_nothing_new(
+    async def test_copy_is_offered_when_it_reveals_nothing_new(
         self,
         location,  # noqa: F811
         inspect_outputs,
@@ -213,7 +217,7 @@ class TestDeniedDashboardDisclosure:
         missing = app._missing_dashboard_view("no-such-dashboard")
         return denied, missing
 
-    def test_guessable_ids_answer_like_a_missing_dashboard(self, tmp_path, location):  # noqa: F811
+    async def test_guessable_ids_answer_like_a_missing_dashboard(self, tmp_path, location):  # noqa: F811
         denied, missing = self._views(JSONFolderDashboardStore(tmp_path / "dashboards"))
         assert (denied.icon, denied.title, denied.tone) == (
             missing.icon,
@@ -223,7 +227,7 @@ class TestDeniedDashboardDisclosure:
         assert "alice" not in denied.text
         assert "access" not in denied.title.lower()
 
-    def test_random_ids_name_the_owner(self, location):  # noqa: F811
+    async def test_random_ids_name_the_owner(self, location):  # noqa: F811
         denied, missing = self._views(MemoryDashboardStore())
         assert denied.icon == "lock"
         assert "alice" in denied.text
@@ -248,7 +252,7 @@ def _expected_chip(permission, default_allow):
     return f"Shared with {shared}" if shared else "Only you"
 
 
-def test_sharing_chip_matches_access_for_every_dialog_combination(location):  # noqa: F811
+async def test_sharing_chip_matches_access_for_every_dialog_combination(location):  # noqa: F811
     store = MemoryDashboardStore()
     app = _app(store, ALICE)
     launcher = app._build_launcher()
