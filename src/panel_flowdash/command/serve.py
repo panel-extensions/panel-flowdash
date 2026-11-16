@@ -188,12 +188,12 @@ class Serve(_PanelServe):
                 action="store",
                 type=str,
                 default=None,
-                choices=("left", "right", "menubar"),
+                choices=("rail", "left", "right", "menubar"),
                 help=(
-                    "Where to render the navigation menu: 'left' or 'right' "
-                    "(docked drawer on that side) or 'menubar' (in the page "
-                    "header). Overrides `nav_variant` in __init__.py; defaults "
-                    "to 'right'."
+                    "How to render navigation: 'rail' (navigation rail and "
+                    "breadcrumb), 'left' or 'right' (docked drawer on that side) "
+                    "or 'menubar' (in the page header). Overrides `nav_variant` "
+                    "in __init__.py; defaults to 'rail'."
                 ),
             ),
         ),

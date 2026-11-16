@@ -34,6 +34,5 @@ _assistant_panel = pn.Column(
 
 
 def configure_layout(app, content, route):
-    """Show a chat assistant in the contextbar on every page except the launcher."""
+    """Offer a chat assistant in the contextbar, opened from the top bar when wanted."""
     app.contextbar = [_assistant_panel]
-    app.contextbar_open = route != "/"

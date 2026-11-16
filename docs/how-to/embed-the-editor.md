@@ -244,7 +244,7 @@ The hook is called once per output port while the dialog is built, on the live c
 
 ## Fitting it into your own layout
 
-The toolbar holds the mode toggle and the *Save*, *Download* and *Clear* actions. It floats at the top of the wiring canvas and sits above the tile grid in dashboard mode. Hide it with `toolbar=False`, leaving only the component palette, or extend it with your own controls through `toolbar_extra`, which places them between *Download* and *Clear*. Small text buttons match the built-in actions:
+The dashboard bar runs across the top of the editor. In view mode (`editable=False`) it shows the dashboard title, when it was last refreshed, a *Refresh* button, a *View*/*Edit* control (unless the editor is `read_only`) and a menu with *Download*. In edit mode it shows the title with the save state (*Unsaved changes*, *Saved 16:24* or *Read-only*), the *Dataflow*/*Layout* tabs that switch `mode`, *Settings*, a menu with *Download*, *Import file* and *Clear canvas*, and *Discard* (reloads the saved dashboard after asking), *Save* (enabled while there are unsaved changes) and *Done*, which returns to view mode and asks first when there are unsaved changes. Hide the bar with `toolbar=False`, leaving only the component palette, or extend it with your own controls through `toolbar_extra`, which places them in the bar's actions in both modes. Small text buttons match the built-in actions:
 
 ```python
 import panel_material_ui as pmui
