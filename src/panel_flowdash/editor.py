@@ -428,6 +428,7 @@ class FlowDash(Viewer):
         # Inspect-button wrappers of the tiles, by instance id, kept so a grid
         # rebuild does not re-render the tiles.
         self._inspect_tiles: dict[str, pn.Column] = {}
+        self._inspected_id: str | None = None
         # Responsive grid settings waiting to be applied; empty values must also be
         # applied so a loaded dashboard doesn't inherit the previous one's overrides.
         self._pending_grid_config: dict | None = None
@@ -941,6 +942,8 @@ class FlowDash(Viewer):
         """Drop a node from the graph, the tile bookkeeping and the edge map."""
         self._dataflow_graph.remove_node(node_id)
         self._inspect_tiles.pop(node_id, None)
+        if self._inspected_id == node_id:
+            self._close_inspection_dialog()
         idx = next(
             (i for i, item in enumerate(self._tile_items) if item["instance_id"] == node_id),
             None,
@@ -1056,11 +1059,18 @@ class FlowDash(Viewer):
         if self._inspect_tiles.get(instance_id) is not tile:
             return
         spec = self._component_specs[self._component_id_for_instance(instance_id)]
+        self._inspected_id = instance_id
         self._inspect_dialog.param.update(
             title=spec.title,
             objects=self._inspection_sections(instance_id, spec),
             open=True,
         )
+
+    def _close_inspection_dialog(self):
+        """Close the dialog and let go of the values it shows, whose tile is gone."""
+        self._inspected_id = None
+        if self._inspect_dialog.open or self._inspect_dialog.objects:
+            self._inspect_dialog.param.update(open=False, objects=[])
 
     def _grid_view(self, item: dict, view: Viewable) -> Viewable:
         """Return the tile's view, with an inspect button over it when it has outputs to show."""
@@ -1938,6 +1948,7 @@ class FlowDash(Viewer):
         self._tile_items = []
         self._tile_objects = []
         self._inspect_tiles.clear()
+        self._close_inspection_dialog()
         self._edge_id_map.clear()
         for edge_id in list(self._transform_editors):
             self._drop_edge_editor(edge_id)

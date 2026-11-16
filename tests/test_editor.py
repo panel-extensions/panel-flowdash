@@ -2737,6 +2737,30 @@ class TestInspectOutputs:
         editor._inspect_tiles["g1"][1].clicks += 1
         assert editor._inspect_dialog.open
 
+    async def test_loading_another_dashboard_closes_the_dialog(self, editor):
+        instance_id = editor.add_component(EXPLAINED)
+        _tile(editor)
+        self._click(editor, instance_id)
+
+        editor.load_model(
+            DashboardModel(dashboard_id="other", user_id="u", title="Other", items=[])
+        )
+
+        assert not editor._inspect_dialog.open
+        assert editor._inspect_dialog.objects == []
+
+    async def test_removing_the_inspected_component_closes_the_dialog(self, editor):
+        inspected = editor.add_component(EXPLAINED)
+        other = editor.add_component(SELECTOR)
+        _tile(editor)
+        self._click(editor, inspected)
+
+        editor.remove_component(other)
+        assert editor._inspect_dialog.open
+
+        editor.remove_component(inspected)
+        assert not editor._inspect_dialog.open
+
     async def test_app_passes_the_switch_to_its_editor(self):
         from panel_flowdash.app import FlowDashApp
         from panel_flowdash.dashboard_store import MemoryDashboardStore
