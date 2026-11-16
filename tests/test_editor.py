@@ -7,6 +7,7 @@ objects, wiring them, and round-tripping through a store, all without a server.
 
 import asyncio
 import gc
+import itertools
 import json
 import weakref
 from types import SimpleNamespace
@@ -1219,6 +1220,70 @@ class TestModelRoundTrip:
         assert sorted(fresh.graph.node_ids) == sorted([src, dst])
         assert len(fresh._flow.edges) == 1
         assert not fresh.dirty
+
+    async def test_load_model_assigns_canvas_once(self, editor):
+        ids = [editor.add_component(SHOUTER, position=(i * 10, 0)) for i in range(5)]
+        for src, dst in itertools.pairwise(ids):
+            editor.connect(src, "shouted", dst, "ticker")
+        model = editor.to_model()
+
+        fresh = FlowDash(COMPONENTS, notifications=False)
+        assignments = []
+        fresh._flow.param.watch(
+            lambda *events: assignments.extend(e.name for e in events), ["nodes", "edges"]
+        )
+        fresh.load_model(model)
+
+        # One reset and one fill per list, instead of one assignment per item.
+        assert assignments.count("nodes") <= 2
+        assert assignments.count("edges") <= 2
+        assert [n["id"] for n in fresh._flow.nodes] == ids
+        assert all(n["view"] is not None and n["deletable"] for n in fresh._flow.nodes)
+        assert len(fresh._flow.edges) == 4
+
+        state = fresh.graph.get_state(ids[0])
+        state.ticker = "abc"
+        assert fresh.graph.get_state(ids[-1]).ticker == "ABC"
+
+    async def test_load_model_skips_node_with_invalid_data(self, editor, caplog):
+        # panel-reactflow only validates node data when jsonschema is installed.
+        pytest.importorskip("jsonschema")
+        model = DashboardModel(
+            dashboard_id="d1",
+            user_id="alice",
+            title="Bad data",
+            items=[DashboardItem(instance_id="n1", component_id=SELECTOR)],
+        )
+        editor._flow.node_types = {
+            "Demo__selector": {
+                "type": "Demo__selector",
+                "schema": {"type": "object", "required": ["x"]},
+            }
+        }
+        editor.load_model(model)
+        assert editor._flow.nodes == []
+
+    async def test_load_model_warns_once_without_node_validator(self, editor, monkeypatch, caplog):
+        import panel_flowdash.editor as editor_module
+
+        monkeypatch.setattr(editor_module, "_validate_node_data", None)
+        editor_module._warn_validation_unavailable.cache_clear()
+        model = DashboardModel(
+            dashboard_id="d1",
+            user_id="alice",
+            title="Unvalidated",
+            items=[
+                DashboardItem(instance_id="n1", component_id=SELECTOR),
+                DashboardItem(instance_id="n2", component_id=SELECTOR),
+            ],
+        )
+        with caplog.at_level("WARNING", logger="panel_flowdash"):
+            editor.load_model(model)
+            editor.load_model(model)
+        editor_module._warn_validation_unavailable.cache_clear()
+        warnings = [r for r in caplog.records if "_validate_data" in r.getMessage()]
+        assert len(warnings) == 1
+        assert [n["id"] for n in editor._flow.nodes] == ["n1", "n2"]
 
     async def test_load_model_skips_unknown_components(self, editor):
         model = DashboardModel(

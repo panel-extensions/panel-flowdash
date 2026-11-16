@@ -12,9 +12,13 @@ skipped, which leaves the target on its last good value.
 
 from __future__ import annotations
 
+import asyncio
 import copy
+import logging
+import sys
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,9 +27,15 @@ import param
 from panel_flowdash.component_spec import ComponentSpec
 from panel_flowdash.transforms import Transform, apply_transform, parse_transform
 
+logger = logging.getLogger("panel_flowdash")
+
 _RESERVED_PARAMS = set(param.Parameterized.param)
 
 EdgeKey = tuple[str, str, str, str]
+
+# Frames left free below the recursion limit when an update has to stop, for
+# the hop already in progress to finish.
+_STACK_MARGIN = 100
 
 
 @dataclass
@@ -66,6 +76,17 @@ def _is_list_port(port) -> bool:
     if port.type is None:
         return False
     return port.type.lower() in ("list", "List")
+
+
+def _stack_deeper_than(depth: int) -> bool:
+    try:
+        sys._getframe(depth)
+    except ValueError:
+        return False
+    return True
+
+
+_iterative_updates = getattr(param, "batch", nullcontext)
 
 
 # holoviz/param#1232 makes param drop these watchers itself when a reference is
@@ -179,7 +200,17 @@ class DataflowGraph:
         self._config_states: dict[str, param.Parameterized] = {}
         self._node_specs: dict[str, ComponentSpec] = {}
         self._edges: dict[EdgeKey, Edge] = {}
+        # Indexes over `_edges`, kept in step by `_store_edge` and `_drop_edge`.
+        self._incoming_edges: dict[tuple[str, str], dict[EdgeKey, Edge]] = {}
+        self._successors: dict[str, dict[str, int]] = {}
         self._on_error = on_error
+        self._batch_depth = 0
+        self._pending_lists: dict[tuple[str, str], None] = {}
+        # Edges replaced inside batch() whose target is rebound only when the
+        # pending list inputs are flushed, so they are released after that.
+        self._pending_disposals: list[Edge] = []
+        self._deferred: dict[tuple[str, str], None] = {}
+        self._drain_scheduled = False
 
         for comp_id, spec in specs.items():
             self._state_classes[comp_id] = build_node_state_class(spec)
@@ -218,7 +249,7 @@ class DataflowGraph:
         stops receiving values but keeps the ones it last held.
         """
         removed = [key for key in self._edges if instance_id in (key[0], key[2])]
-        edges = [self._edges.pop(key) for key in removed]
+        edges = [edge for edge in map(self._drop_edge, removed) if edge is not None]
         for target_id, target_port in {key[2:] for key in removed}:
             if target_id == instance_id:
                 continue
@@ -234,8 +265,7 @@ class DataflowGraph:
         self._node_specs.pop(instance_id, None)
         if state is not None:
             _release_refs(state)
-        for edge in edges:
-            edge.dispose()
+        self._dispose_edges(edges)
 
     def _input_port(self, target_id: str, target_port: str):
         spec = self._node_specs.get(target_id)
@@ -258,9 +288,143 @@ class DataflowGraph:
             port.parameter._validate(value)
 
     def _incoming(self, target_id: str, target_port: str) -> dict[EdgeKey, Edge]:
-        return {
-            key: edge for key, edge in self._edges.items() if key[2:] == (target_id, target_port)
-        }
+        return self._incoming_edges.get((target_id, target_port)) or {}
+
+    def _store_edge(self, key: EdgeKey, edge: Edge):
+        if key not in self._edges:
+            targets = self._successors.setdefault(key[0], {})
+            targets[key[2]] = targets.get(key[2], 0) + 1
+        self._edges[key] = edge
+        self._incoming_edges.setdefault(key[2:], {})[key] = edge
+
+    def _drop_edge(self, key: EdgeKey) -> Edge | None:
+        """Remove *key* from the indexes and return its edge, or None if it was not wired.
+
+        The edge is returned rather than released here: its target may still
+        be bound to it, so callers release it once the target is rebound or
+        unbound.
+        """
+        edge = self._edges.pop(key, None)
+        if edge is None:
+            return None
+        incoming = self._incoming_edges[key[2:]]
+        del incoming[key]
+        if not incoming:
+            del self._incoming_edges[key[2:]]
+        targets = self._successors[key[0]]
+        targets[key[2]] -= 1
+        if not targets[key[2]]:
+            del targets[key[2]]
+            if not targets:
+                del self._successors[key[0]]
+        return edge
+
+    def _dispose_edges(self, edges: list[Edge]):
+        """Release edges that no input is bound to any more.
+
+        Called only after the target input was rebound or unbound, since
+        disposing an expression an input still follows would cut it off.
+        """
+        for edge in edges:
+            edge.dispose()
+
+    @contextmanager
+    def batch(self) -> Iterator[None]:
+        """Defer binding list inputs until the block exits.
+
+        Every edge into a list input rebinds it to all of its edges, so wiring
+        N edges into one list input one by one costs O(N^2). Inside this block
+        each list input is bound once, when the block exits, with all of its
+        edges. Wiring an edge into any other input from a node downstream of a
+        pending list input binds the pending inputs first, since validating
+        the edge reads the value that node produces.
+        """
+        self._batch_depth += 1
+        try:
+            yield
+        finally:
+            self._batch_depth -= 1
+            if not self._batch_depth:
+                self._flush_pending_lists()
+
+    def _flush_pending_lists(self, before: str | None = None):
+        """Bind the pending list inputs, or only if node *before* is downstream of one."""
+        if not self._pending_lists:
+            return
+        if before is not None:
+            seen = set()
+            queue = deque(target_id for target_id, _ in self._pending_lists)
+            while queue:
+                node = queue.popleft()
+                if node not in seen:
+                    seen.add(node)
+                    queue.extend(self._successors.get(node, ()))
+            if before not in seen:
+                return
+        while self._pending_lists:
+            target_id, target_port = next(iter(self._pending_lists))
+            del self._pending_lists[(target_id, target_port)]
+            if target_id in self._nodes:
+                self._bind_input(target_id, target_port)
+        disposals, self._pending_disposals = self._pending_disposals, []
+        self._dispose_edges(disposals)
+
+    def _defer_binding(
+        self, target_id: str, target_port: str, error_source: tuple[str, str]
+    ) -> bool:
+        """Return True if an input deep down the stack should not be updated right now.
+
+        Each hop of a chain of nodes adds a dozen or more frames to the stack of
+        the update that started it, so a long enough chain would raise a
+        RecursionError out of whatever set the first value and leave the rest
+        of the chain stale. With an event loop running, the update continues
+        from a shallow stack on the next tick instead, by re-binding the input.
+        Without one it runs as deep as it safely can, then stops and is reported.
+        """
+        limit = sys.getrecursionlimit()
+        if not _stack_deeper_than(limit // 2):
+            return False
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            if not _stack_deeper_than(limit - _STACK_MARGIN):
+                return False
+            if self._on_error:
+                exc = RecursionError(
+                    "The chain of connected nodes is too deep to update synchronously."
+                )
+                self._on_error(*error_source, target_id, target_port, exc)
+            return True
+        self._deferred[(target_id, target_port)] = None
+        if not self._drain_scheduled:
+            self._drain_scheduled = True
+            param.parameterized.async_executor(self._drain_deferred)
+        return True
+
+    async def _drain_deferred(self):
+        self._drain_scheduled = False
+        deferred, self._deferred = list(self._deferred), {}
+        # param.batch (param >= 2.5) runs the watchers a cascade triggers one
+        # after another instead of nested, so the rest of the chain cannot
+        # run out of stack again.
+        with _iterative_updates():
+            for target_id, target_port in deferred:
+                if target_id not in self._nodes:
+                    continue
+                incoming = self._incoming(target_id, target_port)
+                is_list = self._is_list_input(target_id, target_port)
+                if not (incoming or is_list):
+                    continue
+                # Nothing awaits this task, so an error raised here would only
+                # surface as an unretrieved task exception.
+                try:
+                    self._bind_input(target_id, target_port)
+                except Exception as exc:
+                    if self._on_error:
+                        source = ("", "") if is_list or not incoming else next(iter(incoming))[:2]
+                        self._on_error(*source, target_id, target_port, exc)
+                    else:
+                        logger.exception("Failed to update input %s.%s", target_id, target_port)
 
     def _build_edge(self, key: EdgeKey, steps: list[Transform]) -> Edge:
         stage = self._nodes[key[0]].param[key[1]].rx()
@@ -309,6 +473,8 @@ class DataflowGraph:
         def _guard(*values):
             value = [v for v in values if v is not None] if is_list else values[0]
             if first_call and first_call.pop() and value is None:
+                raise param.Skip
+            if self._defer_binding(target_id, target_port, error_source):
                 raise param.Skip
             try:
                 self._check_target_value(target_id, target_port, value)
@@ -391,6 +557,8 @@ class DataflowGraph:
             naming an ``op`` from :data:`panel_flowdash.transforms.TRANSFORMS`
             plus its arguments.
         """
+        if not self._is_list_input(target_id, target_port):
+            self._flush_pending_lists(source_id)
         error = self.validate_connection(source_id, source_port, target_id, target_port, transform)
         if error is not None:
             return error
@@ -421,6 +589,7 @@ class DataflowGraph:
         _, _, target_id, target_port = key
         is_list = self._is_list_input(target_id, target_port)
         if not is_list:
+            self._flush_pending_lists(key[0])
             # A connection whose first value is rejected would sit wired but
             # broken, so refuse it instead.
             try:
@@ -429,20 +598,23 @@ class DataflowGraph:
                 return f"Connection rejected: {exc}"
 
         previous = self._edges.get(key)
-        self._edges[key] = self._build_edge(key, steps)
+        self._store_edge(key, self._build_edge(key, steps))
+        if is_list and self._batch_depth:
+            self._pending_lists[(target_id, target_port)] = None
+            if previous is not None:
+                self._pending_disposals.append(previous)
+            return True
         # An output nothing has set yet should not wipe the input's default.
         self._bind_input(target_id, target_port, skip_initial_none=not is_list)
         if previous is not None:
-            previous.dispose()
+            self._dispose_edges([previous])
         return True
 
     def _would_create_cycle(self, source_id: str, target_id: str) -> bool:
         """Return True if adding an edge from source to target would create a cycle."""
         if source_id == target_id:
             return True
-        successors = {}
-        for src, _, tgt, _ in self._edges:
-            successors.setdefault(src, []).append(tgt)
+        successors = self._successors
         visited = set()
         queue = deque([target_id])
         while queue:
@@ -488,7 +660,7 @@ class DataflowGraph:
 
     def remove_edge(self, source_id: str, source_port: str, target_id: str, target_port: str):
         """Remove an edge and reset the target input to its default."""
-        edge = self._edges.pop((source_id, source_port, target_id, target_port), None)
+        edge = self._drop_edge((source_id, source_port, target_id, target_port))
         target_state = self._nodes.get(target_id)
         if target_state is not None and hasattr(target_state, target_port):
             if self._is_list_input(target_id, target_port):
@@ -497,7 +669,7 @@ class DataflowGraph:
                 port = self._input_port(target_id, target_port)
                 _unbind(target_state, target_port, copy.deepcopy(port.default) if port else None)
         if edge is not None:
-            edge.dispose()
+            self._dispose_edges([edge])
 
     def get_state(self, instance_id: str) -> param.Parameterized | None:
         """Get the state instance for a node."""
