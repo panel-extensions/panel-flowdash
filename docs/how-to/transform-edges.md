@@ -11,31 +11,46 @@ the total of one column, without writing a component for the glue in between.
 
 ## Add a transform in the editor
 
-On the wiring canvas, click an edge to select it. A **Transform** panel opens
-for that edge, headed with the ports it connects (`data → total`) and a preview
-of the value the source currently carries, such as
-`DataFrame · 1,000 rows × 5 cols`.
+On the wiring canvas, click an edge to select it. The inspector beside the
+canvas shows the **Connection**: the components it joins (`Plants to Kpi`),
+the ports and their types (`data (DataFrame) into Value`), a button to
+remove the connection and the edge's **Transform steps**.
 
-- **Add step** lists the steps that accept the value at that point, so after a
-  *Column* step on a DataFrame it offers the steps that work on a Series. It is
-  disabled while the source has not published a value yet.
-- Each step is a card with its arguments. A `column` argument is a dropdown of
-  the DataFrame's columns, and a new step that takes a column starts on the
-  first one.
-- Below every step a preview line shows the value it produces, so you can see a
-  filter emptying a table or an aggregate turning a Series into a number before
-  the result reaches the target.
-- The **×** on a card removes that step.
+- The steps are numbered and applied in order. Each step is a card that
+  collapses to a summary line, such as `Filter rows state == CA` or
+  `First rows 500`; expand it to edit its arguments. The arrows on a card move
+  it up or down and the **×** removes it.
+- Between the steps the shape of the value is shown: `In: 1,000 rows, 5
+  columns` before the first, then what each step produces, such as
+  `Out: 412 rows` or `Out: number 162.75`, so you can see a filter emptying a
+  table or an aggregate turning a Series into a number before the result
+  reaches the target.
+- **Add step** lists every step. Steps that cannot follow the value at the
+  end are disabled with the reason, for example *Aggregate* on a DataFrame says
+  "Needs a Series or list; add Column first". A `column` argument is a dropdown
+  of the DataFrame's columns.
 
-Every change is applied to the edge straight away, and the panel confirms it
-with "✓ Applied to total". If the target input rejects the result, for example
-because a step fails on the current value or the input is typed and the result
-does not match, the panel shows why under "Not applied" and the edge keeps its
-previous transform. Selecting the edge again discards the rejected draft.
+Every complete change is applied to the edge straight away. A step that still
+needs an argument, such as a new *Filter rows* without a column and a value or
+a *Sort* of a DataFrame without a column, says what it needs and is left out of
+the transform until it is complete, so adding a step never changes the target
+before you have chosen anything.
 
-A transformed edge is drawn dashed in the accent color, with a label
-summarizing its steps, for example `capacity › sum`. Remove every step to turn
-the edge back into a plain connection.
+A step that fails on the current value is flagged on its card with the reason,
+for example "No column named capacity_mw. Did you mean t_cap?", with a button
+that uses the suggested column. When every step works but the target input
+refuses the result, the editor says what it received. In both cases the edits
+are not applied: the target keeps its last value until they are fixed, or until
+**Revert to the applied steps** goes back to the transform the edge still
+carries. Until then the edge is drawn in the error colour and the status bar
+under the canvas counts it as an issue, such as
+"1 issue: Sort step on Plants to Kpi"; clicking it selects the edge. The
+edits are kept while you select other things, so you can look at the source
+and come back.
+
+A transformed edge is drawn dashed in the accent color, with a chip that names
+a single step, for example `fx first 500`, or counts several, `fx 3 steps`.
+Remove every step to turn the edge back into a plain connection.
 
 ---
 
@@ -52,8 +67,9 @@ the edge back into a plain connection.
 | Round | `round` | a number or a Series | `digits` (default 0) | the rounded value; an `int` for a number rounded to 0 digits |
 | Format | `format` | anything | `spec`, a [format spec](https://docs.python.org/3/library/string.html#formatspec) such as `,.2f` or `.0%`, and `prefix` and `suffix` strings | a string |
 
-A filter without a `value` keeps every row, so a freshly added filter does not
-empty the edge before you have typed anything. For `in`, the value is a list,
+A filter without a `value` keeps every row, so a stored filter that has no
+value yet does not empty the edge; the editor leaves such a filter out until
+you have chosen a column and typed a value. For `in`, the value is a list,
 which the editor reads from comma-separated text. When the filtered column is
 numeric, the editor turns what you type into a number.
 
@@ -208,8 +224,9 @@ assert step.to_dict() == {"op": "pick", "key": "total"}
 - `apply(value)` returns the new value. Return a new object rather than the
   input, a view of it or a mutable part of it, for the reason given in
   [Shared values](wire-dataflow.md#shared-values).
-- `summary()` is the text the step contributes to the edge label. It defaults
-  to the label.
+- `summary()` describes the step's arguments in a few words. It labels an edge
+  whose transform is that single step and the step's card when it is
+  collapsed, and defaults to the label.
 - Every parameter except `name` is stored, so its values must be JSON
   serializable. In the editor a `param.Selector` becomes a dropdown, a
   `param.Boolean` a switch, a `param.Integer` a number field and a parameter

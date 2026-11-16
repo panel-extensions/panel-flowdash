@@ -121,7 +121,7 @@ if t.TYPE_CHECKING:
 logger = logging.getLogger("panel_flowdash")
 
 
-def _no_node_editor(data, schema, *, id, type, on_patch):
+def _no_editor(data, schema, *, id, type, on_patch):
     return None
 
 
@@ -320,14 +320,24 @@ _FLOW_STYLESHEET = """\
   transform: translateX(-100%);
 }
 .react-flow__edge-textbg {
-  fill: var(--panel-background-color, #fff);
-  stroke: var(--panel-primary-color, #0072b5);
+  fill: var(--mui-palette-background-paper, var(--panel-background-color, #fff));
+  stroke: var(--mui-palette-primary-main, var(--panel-primary-color, #0072b5));
   stroke-width: 1px;
+  rx: 9px;
+  ry: 9px;
 }
 .react-flow__edge-text {
-  fill: var(--panel-on-background-color, #222);
-  font-size: 11px;
-  font-family: monospace;
+  fill: var(--mui-palette-text-primary, var(--panel-on-background-color, #222));
+  font-size: 12px;
+  font-weight: 500;
+}
+/* A failed edge's transform chip is filled in the error colour, so it reads as an issue. */
+.react-flow__edge:has(.react-flow__edge-path[style*="danger"]) .react-flow__edge-textbg {
+  fill: var(--mui-palette-error-main, #d32f2f);
+  stroke: none;
+}
+.react-flow__edge:has(.react-flow__edge-path[style*="danger"]) .react-flow__edge-text {
+  fill: var(--mui-palette-error-contrastText, #fff);
 }"""
 
 # A transformed edge is dashed in the accent color, so it reads as derived at a glance.
@@ -1102,9 +1112,10 @@ class FlowDash(Viewer):
             edges=[],
             node_types=node_types,
             node_editors=node_editors,
-            # Config is edited in the inspector, so ReactFlow builds no node editors.
-            default_node_editor=_no_node_editor,
-            default_edge_editor=self._make_edge_editor,
+            # Config and transforms are edited in the inspector, so ReactFlow
+            # builds no node or edge editors.
+            default_node_editor=_no_editor,
+            default_edge_editor=_no_editor,
             editable=True,
             editor_mode="side",
             enable_connect=True,
@@ -2571,11 +2582,26 @@ class FlowDash(Viewer):
         return True
 
     def _edge_chip(self, mapping) -> dict[str, t.Any]:
-        """Edge props summarizing an edge's transform and failure, clearing them when it has none."""
+        """Edge props summarizing an edge's transform and failure, clearing them when it has none.
+
+        The label names a single step, e.g. "fx first 500", or counts them,
+        e.g. "fx 3 steps". An edge whose transform failed, or whose edited
+        transform cannot be applied, is drawn in the error colour.
+        """
         steps = parse_transform(self._dataflow_graph.get_edge_transform(*mapping))
-        label = summarize_transform(steps)
+        invalid = any(
+            editor.issue
+            for edge_id, editor in self._transform_editors.items()
+            if self._edge_id_map.get(edge_id) == mapping
+        )
+        if len(steps) == 1:
+            label = f"fx {summarize_transform(steps, max_length=24) or steps[0].op}"
+        elif steps:
+            label = f"fx {len(steps)} steps"
+        else:
+            label = "fx not applied" if invalid else None
         style = _TRANSFORMED_EDGE_STYLE if label else None
-        if self._edge_failed(mapping):
+        if invalid or self._edge_failed(mapping):
             style = {**(style or {}), **_FAILED_EDGE_STYLE}
         return {"label": label, "style": style}
 
@@ -2585,25 +2611,34 @@ class FlowDash(Viewer):
         failure = failures.failed.get(mapping[3]) if failures is not None else None
         return failure is not None and (failure.source_id, failure.source_port) == mapping[:2]
 
-    def _make_edge_editor(self, data, schema, *, id, type, on_patch):
-        """Create the transform editor ReactFlow shows when an edge is selected.
+    def _transform_editor(self, edge_id: str) -> TransformEditor:
+        """Return the transform editor of an edge, which the inspector shows while it is selected.
 
-        The edge may not be in the edge map yet, since the canvas can report a
-        drawn edge before the graph has wired it, so the editor looks it up
-        whenever it is opened.
+        It is kept until the edge is removed, so a draft that cannot be applied
+        yet stays flagged on the canvas and in the status bar after the edge is
+        deselected.
         """
-        editor = self._transform_editors.get(id)
+        editor = self._transform_editors.get(edge_id)
         if editor is None:
-            editor = self._transform_editors[id] = TransformEditor(self, id)
+            editor = self._transform_editors[edge_id] = TransformEditor(self, edge_id)
+            editor.param.watch(lambda _event: self._on_transform_issue(edge_id), "issue")
         return editor
 
+    def _on_transform_issue(self, edge_id: str):
+        mapping = self._edge_id_map.get(edge_id)
+        if mapping is None:
+            return
+        self._patch_canvas_props("edge", edge_id, self._edge_chip(mapping))
+        self._status_bar.sync()
+        self._inspector.refresh_summary()
+
     def _on_selection_changed(self, event):
-        """Reload an edge's transform editor when the edge is newly selected."""
+        """Reload an edge's transform editor when the edge is newly selected, keeping drafts."""
         previous = set((event.old or {}).get("edges", []))
         for edge_id in (event.new or {}).get("edges", []):
             editor = self._transform_editors.get(edge_id)
             if edge_id not in previous and editor is not None:
-                editor.reset()
+                editor.sync()
 
     def _drop_edge_editor(self, edge_id: str):
         editor = self._transform_editors.pop(edge_id, None)

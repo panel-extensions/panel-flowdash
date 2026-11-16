@@ -4,8 +4,8 @@ With a component selected it shows the component's header and status, its
 settings (the config form that used to open in a popup above the node), its
 current outputs and how it appears on the dashboard, with the inputs wired to
 it and a way to remove it. With a connection selected it describes the
-connection; :meth:`Inspector._edge_view` is the place to grow that into an
-editor. With nothing selected it summarizes the dashboard and lists its issues.
+connection and edits its transform steps (see :meth:`Inspector._edge_view`).
+With nothing selected it summarizes the dashboard and lists its issues.
 """
 
 from __future__ import annotations
@@ -28,7 +28,12 @@ from panel_flowdash.ui.node_card import (
     port_label,
     summarize_value,
 )
-from panel_flowdash.ui.status_bar import CanvasWatcher, canvas_issues, select_on_canvas
+from panel_flowdash.ui.status_bar import (
+    CanvasWatcher,
+    canvas_issues,
+    connection_title,
+    select_on_canvas,
+)
 
 if t.TYPE_CHECKING:
     from panel.viewable import Viewable
@@ -224,6 +229,11 @@ class Inspector(Viewer):
             objects = self._edge_view(self._shown[1])
         self._body[:] = objects
 
+    def refresh_summary(self):
+        """Rebuild the dashboard summary if it is shown, e.g. after the issues changed."""
+        if self.visible and self._shown is None:
+            self.refresh(force=True)
+
     def _release(self):
         for release in self._releases:
             release()
@@ -270,7 +280,7 @@ class Inspector(Viewer):
         objects.append(
             _caption(
                 "Select a component to see its settings, its data and how it appears "
-                "on the dashboard. Select a connection to see what it carries.",
+                "on the dashboard. Select a connection to edit its transform.",
                 margin=(16, 0, 0, 0),
             )
         )
@@ -281,7 +291,7 @@ class Inspector(Viewer):
         if issue.status == "unavailable":
             severity = "info"
         label = f"{issue.title}: {issue.detail}"
-        if issue.instance_id is None:
+        if issue.instance_id is None and issue.edge_id is None:
             return pmui.Alert(label, severity=severity, margin=(0, 0, 6, 0))
         button = pmui.Button(
             label=label,
@@ -293,7 +303,11 @@ class Inspector(Viewer):
             margin=(0, 0, 6, 0),
             sx={"justifyContent": "flex-start", "textAlign": "left", "textTransform": "none"},
         )
-        button.on_click(lambda _event: select_on_canvas(self._flow, node_id=issue.instance_id))
+        button.on_click(
+            lambda _event: select_on_canvas(
+                self._flow, node_id=issue.instance_id, edge_id=issue.edge_id
+            )
+        )
         return button
 
     # ------------------------------------------------------------------
@@ -624,67 +638,60 @@ class Inspector(Viewer):
     # ------------------------------------------------------------------
 
     def _edge_view(self, edge_id: str) -> list[Viewable]:
-        """Describe a selected connection.
+        """Show a selected connection: its ends and the editor of its transform steps.
 
-        Override or extend this to edit the connection here; the editing
-        follow-up replaces the transform popover on the canvas with an editor
-        built from this method. It receives the canvas edge id; the wired
-        ports are ``editor._edge_id_map[edge_id]``.
+        It receives the canvas edge id; the wired ports are
+        ``editor._edge_id_map[edge_id]``. The transform editor is the edge's
+        own, kept by the editor, so a draft survives the edge being deselected.
         """
         editor = self.editor
         mapping = editor._edge_id_map[edge_id]
         source_id, source_port, target_id, target_port = mapping
 
         def end(instance_id, port, output):
-            component = editor._component_id_for_instance(instance_id)
-            spec = editor._component_specs.get(component or "")
             port_spec = editor._port_spec(instance_id, port, output=output)
-            return (spec.title if spec else instance_id), (
-                port_label(port_spec) if port_spec else port
-            )
+            label = port_label(port_spec) if port_spec else port
+            port_type = port_spec.type if port_spec else None
+            return f"{label} ({port_type})" if port_type else label
 
-        source_title, source_label = end(source_id, source_port, True)
-        target_title, target_label = end(target_id, target_port, False)
-        steps = parse_transform(editor._dataflow_graph.get_edge_transform(*mapping))
-        transform = summarize_transform(steps)
-        expr = editor._dataflow_graph.get_edge_expression(*mapping)
-        value = expr.rx.value if expr is not None else None
-        remove = pmui.Button(
-            label="Remove connection",
+        disconnect = pmui.IconButton(
             icon="link_off",
+            description="Remove connection",
+            size="small",
             color="error",
-            variant="text",
-            margin=(16, 0, 0, 0),
-            sx={"textTransform": "none"},
+            margin=(4, 0, 0, 0),
         )
-        remove.on_click(lambda _event: editor.disconnect(*mapping))
-        return [
-            pn.Row(
-                _avatar("timeline"),
-                pn.Column(
-                    pmui.Typography(
-                        f"Connection: {source_title} to {target_title}",
-                        variant="subtitle1",
-                        margin=0,
-                        sx={"fontWeight": 500},
-                    ),
-                    _caption(f"{source_label} to {target_label}"),
-                    margin=0,
-                    sizing_mode="stretch_width",
+        disconnect.on_click(lambda _event: editor.disconnect(*mapping))
+        header = pn.Row(
+            _avatar("functions"),
+            pn.Column(
+                _caption("Connection", margin=0),
+                pmui.Typography(
+                    connection_title(editor, mapping),
+                    variant="subtitle1",
+                    margin=(2, 0, 0, 0),
+                    sx={"fontWeight": 500, "lineHeight": 1.3},
                 ),
-                margin=(0, 0, 8, 0),
+                _caption(
+                    f"{end(source_id, source_port, True)} into "
+                    f"{end(target_id, target_port, False)}",
+                    margin=(2, 0, 0, 0),
+                ),
+                margin=0,
                 sizing_mode="stretch_width",
             ),
-            _heading("Transform"),
-            _caption(
-                f"{transform}. Edit the steps in the panel on the canvas."
-                if transform
-                else "None. Add steps in the panel on the canvas."
-            ),
-            _heading("Carries"),
-            _caption(summarize_value(value)),
-            remove,
-        ]
+            disconnect,
+            margin=(0, 0, 8, 0),
+            sizing_mode="stretch_width",
+        )
+        steps = pn.Row(
+            _heading("Transform steps"),
+            pn.layout.HSpacer(),
+            _caption("Applied in order", margin=(18, 0, 0, 0)),
+            margin=0,
+            sizing_mode="stretch_width",
+        )
+        return [header, steps, editor._transform_editor(edge_id)]
 
     # ------------------------------------------------------------------
     # Collapsing

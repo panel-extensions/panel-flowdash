@@ -362,24 +362,25 @@ def test_edge_transform_editor_applies_changes(page):
     assert editor.connect(src, "rows", dst, "total", transform) is True
     serve_component(page, editor)
 
-    page.locator(".react-flow__edge-text").filter(has_text="sum").wait_for()
-    page.locator(".react-flow__edge").first.click(force=True)
-    page.get_by_text("int · 40").wait_for()
+    page.locator(".react-flow__edge-text").filter(has_text="fx 2 steps").wait_for()
+    page.locator(".react-flow__edge-text").first.click(force=True)
+    page.get_by_text("Out: number 40").wait_for()
 
     page.get_by_role("button", name="Add step").click()
-    page.get_by_role("menuitem", name="Format").click()
+    page.get_by_role("button", name="Format").click()
 
-    wait_until(lambda: editor.graph.get_state(dst).total == 40, page)
-    page.get_by_text("Not applied: total does not accept", exact=False).wait_for()
+    page.get_by_text("Total does not accept text.").wait_for()
+    assert editor.graph.get_state(dst).total == 40
     assert editor.graph.get_edge_transform(src, "rows", dst, "total") == transform
 
     page.get_by_role("button", name="Remove step").nth(2).click()
-    page.get_by_text("✓ Applied to total").wait_for()
+    page.get_by_text("Total does not accept text.").wait_for(state="detached")
 
+    page.get_by_role("button", name="Expand step").nth(1).click()
     page.get_by_role("combobox", name="How").click()
     page.get_by_text("max", exact=True).click()
     wait_until(lambda: editor.graph.get_state(dst).total == 30, page)
-    page.locator(".react-flow__edge-text").filter(has_text="max").wait_for()
+    assert editor.graph.get_edge_transform(src, "rows", dst, "total")[-1]["how"] == "max"
 
 
 @register(page=False, component=True, title="Tile")
