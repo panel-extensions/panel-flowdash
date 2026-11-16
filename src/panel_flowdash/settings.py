@@ -25,3 +25,13 @@ class DashboardSettings(param.Parameterized):
         announces by triggering its ``refresh`` event. 0 turns automatic
         refreshing off.""",
     )
+
+    viewers_can_inspect = param.Boolean(
+        default=False,
+        label="Viewers can inspect outputs",
+        doc="""
+        Whether people who may only view the dashboard get the inspect button
+        on its tiles, when the editor has ``inspect_outputs`` on. Editors and
+        administrators always get it. Leave it off when an output carries
+        data a tile deliberately hides.""",
+    )

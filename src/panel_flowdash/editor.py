@@ -391,10 +391,12 @@ class FlowDash(Viewer):
         doc="""
         Whether each tile in the dashboard grid gets an info button that opens
         a dialog with the current value of every output the component
-        publishes. The button is shown to viewers and in preview, not while
-        arranging tiles. Anyone who can view the dashboard can read these
-        values, including outputs the tile itself does not display. A
-        component can add its own explanation per output by defining
+        publishes. The button is shown in the dashboard view and in preview,
+        not while arranging tiles. It reveals outputs the tile itself may not
+        display, so while the editor is ``read_only`` (in a ``FlowDashApp``,
+        for anyone who may not edit the dashboard) it is only shown if the
+        dashboard's ``viewers_can_inspect`` setting allows it. A component can
+        add its own explanation per output by defining
         ``__flowdash_inspect__(self, port)``.""",
     )
 
@@ -1311,7 +1313,7 @@ class FlowDash(Viewer):
     def _on_inspect_clicked(self, instance_id: str, tile: pn.Column, _event):
         # A click can arrive after the tile left the grid, e.g. after navigating
         # to another dashboard that reuses the instance id; it belongs to no tile now.
-        if self._inspect_tiles.get(instance_id) is not tile:
+        if self._inspect_tiles.get(instance_id) is not tile or not self._can_inspect():
             return
         spec = self._component_specs[self._component_id_for_instance(instance_id)]
         objects = self._inspection_sections(instance_id, spec)
@@ -1363,8 +1365,22 @@ class FlowDash(Viewer):
                 **bounds,
             )
             button.on_click(partial(self._on_inspect_clicked, instance_id, tile))
-        tile[1].visible = inspect and not self._tile_grid.editable
+        tile[1].visible = inspect and not self._tile_grid.editable and self._can_inspect()
         return tile
+
+    def _can_inspect(self) -> bool:
+        """Whether this session may inspect outputs: editors always, viewers if the dashboard allows."""
+        return self.inspect_outputs and (not self.read_only or self.settings.viewers_can_inspect)
+
+    @param.depends("read_only", "settings.viewers_can_inspect", watch=True)
+    def _sync_inspect_buttons(self):
+        visible = not self._tile_grid.editable and self._can_inspect()
+        for instance_id, (_view, button) in self._inspect_tiles.items():
+            # Tiles wrapped only for their size bounds have no outputs to inspect.
+            spec = self._component_specs.get(self._component_id_for_instance(instance_id))
+            button.visible = visible and bool(spec and spec.outputs)
+        if not self._can_inspect():
+            self._close_inspection_dialog()
 
     def _show_inspection(self, key, title, value, position, flow):
         self._inspection_key = key
@@ -1819,9 +1835,9 @@ class FlowDash(Viewer):
         close = pmui.Button(label="Close", variant="text")
         close.on_click(lambda _event: self._settings_dialog.param.update(open=False))
         # `pn.Param` would pick a slider over the whole bounds, which for the period is a day.
-        form = pn.Param(
+        self._settings_form = form = pn.Param(
             self.settings,
-            parameters=self._settings_names,
+            parameters=self._settings_form_names(),
             widgets={"refresh_period": pmui.NumberInput},
             show_name=False,
             expand_button=False,
@@ -1833,6 +1849,15 @@ class FlowDash(Viewer):
             open=False,
             min_width=400,
         )
+
+    def _settings_form_names(self) -> list[str]:
+        # Inspection settings mean nothing while the editor offers no inspection.
+        hidden = () if self.inspect_outputs else ("viewers_can_inspect",)
+        return [name for name in self._settings_names if name not in hidden]
+
+    @param.depends("inspect_outputs", watch=True)
+    def _sync_settings_form(self):
+        self._settings_form.parameters = self._settings_form_names()
 
     @param.depends("dirty", "read_only", watch=True)
     def _sync_toolbar_state(self):

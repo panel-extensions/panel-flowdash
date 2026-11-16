@@ -503,7 +503,7 @@ class FlowDashApp(Viewer):
         }
 
     def _can_administer_dashboard(self, dashboard: str | DashboardModel) -> bool:
-        """Whether the current identity may edit/delete/share a dashboard.
+        """Whether the current identity may rename/delete/share a dashboard.
 
         Pass the model when it is already loaded, as listings do, to skip a
         second store lookup per dashboard.
@@ -511,6 +511,12 @@ class FlowDashApp(Viewer):
         if isinstance(dashboard, DashboardModel):
             return self.store.can_administer_model(self._identity, dashboard, self._admin_groups())
         return self.store.can_administer(self._identity, dashboard, self._admin_groups())
+
+    def _can_edit_dashboard(self, dashboard: str | DashboardModel) -> bool:
+        """Whether the current identity may edit and save a dashboard's contents."""
+        if isinstance(dashboard, DashboardModel):
+            return self.store.can_edit_model(self._identity, dashboard, self._admin_groups())
+        return self.store.can_edit(self._identity, dashboard, self._admin_groups())
 
     def _access_denied_view(self, title: str | None = None):
         """Generate the view shown when the user is not authorized for the target."""
@@ -704,7 +710,7 @@ class FlowDashApp(Viewer):
                 "warning", "No dashboard loaded. Create one from the sidebar.", duration=4000
             )
             return False
-        if not self._can_administer_dashboard(current.dashboard_id):
+        if not self._can_edit_dashboard(current.dashboard_id):
             self._editor.read_only = True
             self._notify("error", "You have view-only access to this dashboard.", duration=4000)
             return False
@@ -749,7 +755,7 @@ class FlowDashApp(Viewer):
             dashboard = self.store.load_for_access(
                 self._identity, dashboard_id, default_allow=self._default_allow()
             )
-        if edit and dashboard is not None and not self._can_administer_dashboard(dashboard_id):
+        if edit and dashboard is not None and not self._can_edit_dashboard(dashboard_id):
             # A viewer with read access followed an edit link; downgrade to view.
             edit = False
         if dashboard is None:
@@ -932,7 +938,7 @@ class FlowDashApp(Viewer):
         )
         dash_cards = []
         for d in dashboards:
-            speed_items = self._dashboard_speed_dial_items(self._can_administer_dashboard(d))
+            speed_items = self._dashboard_speed_dial_items(*self._dashboard_rights(d))
             speed_dial = None
             if speed_items:
                 speed_dial = pmui.SpeedDial(
@@ -1145,18 +1151,33 @@ class FlowDashApp(Viewer):
     @pn.io.hold()
     def _show_edit_mode(self):
         current = self._current_dashboard
-        can_admin = current is not None and self._can_administer_dashboard(current.dashboard_id)
+        can_admin, can_edit = (
+            self._dashboard_rights(current.dashboard_id) if current else (False, False)
+        )
         self._share_button.visible = can_admin
-        self._editor.param.update(editable=True, read_only=not can_admin)
+        self._editor.param.update(editable=True, read_only=not can_edit)
         if pn.state.location is not None:
             pn.state.location.param.update(search="?edit=true")
 
     @pn.io.hold()
     def _show_view_mode(self):
+        current = self._current_dashboard
+        # The editor treats a read-only session as a viewer, e.g. for inspecting outputs.
+        can_edit = current is not None and self._can_edit_dashboard(current.dashboard_id)
         self._share_button.visible = False
-        self._editor.editable = False
+        self._editor.param.update(editable=False, read_only=not can_edit)
         if pn.state.location is not None:
             pn.state.location.param.update(search="")
+
+    def _dashboard_rights(self, dashboard: str | DashboardModel) -> tuple[bool, bool]:
+        """Whether the current identity may administer and may edit a dashboard."""
+        if isinstance(dashboard, str):
+            dashboard = self.store._load_any(dashboard)
+            if dashboard is None:
+                return False, False
+        if self._can_administer_dashboard(dashboard):
+            return True, True
+        return False, self._can_edit_dashboard(dashboard)
 
     _ADMIN_DASHBOARD_ACTIONS = (
         {"label": "Edit", "icon": "edit"},
@@ -1164,20 +1185,34 @@ class FlowDashApp(Viewer):
         {"label": "Delete", "icon": "delete"},
     )
 
+    _EDITOR_DASHBOARD_ACTIONS = ({"label": "Edit", "icon": "edit"},)
+
     _VIEWER_DASHBOARD_ACTIONS = ()
 
-    def _dashboard_actions(self, can_admin: bool) -> tuple:
-        """Menu actions for a dashboard, gated by administration rights."""
-        return self._ADMIN_DASHBOARD_ACTIONS if can_admin else self._VIEWER_DASHBOARD_ACTIONS
+    def _dashboard_actions(self, can_admin: bool, can_edit: bool = False) -> tuple:
+        """Menu actions for a dashboard, gated by administration and edit rights.
+
+        An editor gets ``_EDITOR_DASHBOARD_ACTIONS`` followed by the viewer
+        actions it does not already have.
+        """
+        if can_admin:
+            return self._ADMIN_DASHBOARD_ACTIONS
+        if not can_edit:
+            return self._VIEWER_DASHBOARD_ACTIONS
+        keys = {self._action_key(action) for action in self._EDITOR_DASHBOARD_ACTIONS}
+        return (
+            *self._EDITOR_DASHBOARD_ACTIONS,
+            *(a for a in self._VIEWER_DASHBOARD_ACTIONS if self._action_key(a) not in keys),
+        )
 
     @staticmethod
     def _action_key(action: dict) -> str:
         """Return the key an action dispatches under, matching pmui's ``on_action`` lookup."""
         return action.get("action", action["label"])
 
-    def _dashboard_speed_dial_items(self, can_admin: bool) -> list[dict]:
-        """SpeedDial items for a launcher dashboard card, gated by admin rights."""
-        return [dict(action) for action in self._dashboard_actions(can_admin)]
+    def _dashboard_speed_dial_items(self, can_admin: bool, can_edit: bool = False) -> list[dict]:
+        """SpeedDial items for a launcher dashboard card, gated by admin and edit rights."""
+        return [dict(action) for action in self._dashboard_actions(can_admin, can_edit)]
 
     def _get_dashboard_menu_items(self) -> list[dict]:
         items = []
@@ -1185,14 +1220,13 @@ class FlowDashApp(Viewer):
             self._identity, default_allow=self._default_allow()
         )
         for d in dashboards:
-            can_admin = self._can_administer_dashboard(d)
             item = {
                 "icon": "dashboard",
                 "label": d.title,
                 "path": f"{DASH_ROUTE_PREFIX}{d.dashboard_id}",
                 "disable_link": True,
             }
-            actions = self._dashboard_actions(can_admin)
+            actions = self._dashboard_actions(*self._dashboard_rights(d))
             if actions:
                 item["actions"] = list(actions)
             items.append(item)
@@ -1217,10 +1251,10 @@ class FlowDashApp(Viewer):
 
         Every entry point (launcher card, nav drawer, header MenuBar) decodes its
         event and calls this. A subclass adds an action by extending
-        ``_ADMIN_DASHBOARD_ACTIONS`` or ``_VIEWER_DASHBOARD_ACTIONS``, then
-        overrides this method to handle it and calls ``super()`` for the rest.
-        The nav drawer registers a handler for every action in
-        ``_dashboard_actions(True)`` and ``_dashboard_actions(False)``.
+        ``_ADMIN_DASHBOARD_ACTIONS``, ``_EDITOR_DASHBOARD_ACTIONS`` or
+        ``_VIEWER_DASHBOARD_ACTIONS``, then overrides this method to handle it
+        and calls ``super()`` for the rest. The nav drawer registers a handler
+        for every action of the three roles.
 
         *action* is the key from :meth:`_action_key`: the action dict's
         ``"action"`` entry if it has one, otherwise its ``"label"``. That is the
@@ -1374,11 +1408,23 @@ class FlowDashApp(Viewer):
         self._share_deny_users = pmui.MultiChoice(
             label="Deny users", helper_text="Deny always wins.", **common
         )
+        self._share_edit_groups = pmui.MultiChoice(
+            label="Editor groups",
+            helper_text="May also edit and save, but not rename, delete or share.",
+            **common,
+        )
+        self._share_edit_users = pmui.MultiChoice(
+            label="Editor users",
+            helper_text="May also edit and save, but not rename, delete or share.",
+            **common,
+        )
         self._share_widgets = (
             self._share_allow_groups,
             self._share_allow_users,
             self._share_deny_groups,
             self._share_deny_users,
+            self._share_edit_groups,
+            self._share_edit_users,
         )
         confirm_btn = pmui.Button(label="Save sharing", color="primary")
         cancel_btn = pmui.Button(label="Cancel", color="light")
@@ -1388,13 +1434,15 @@ class FlowDashApp(Viewer):
             objects=[
                 pn.Column(
                     pmui.Typography(
-                        "Grant access by group or user. With no rules the project "
-                        "default applies.",
+                        "Grant access by group or user. With no view rules the "
+                        "project default applies. Editors can always view.",
                         variant="body2",
                         styles={"opacity": "0.7"},
                     ),
                     self._share_allow_groups,
                     self._share_allow_users,
+                    self._share_edit_groups,
+                    self._share_edit_users,
                     self._share_deny_groups,
                     self._share_deny_users,
                     pn.Row(confirm_btn, cancel_btn),
@@ -1444,6 +1492,8 @@ class FlowDashApp(Viewer):
             (self._share_allow_users, known_users, perm.allow_users),
             (self._share_deny_groups, known_groups, perm.deny_groups),
             (self._share_deny_users, known_users, perm.deny_users),
+            (self._share_edit_groups, known_groups, perm.allow_edit_groups),
+            (self._share_edit_users, known_users, perm.allow_edit_users),
         ):
             widget.param.update(
                 options=sorted(set(options) | set(selected)),
@@ -1468,6 +1518,8 @@ class FlowDashApp(Viewer):
             allow_users=self._share_allow_users.value,
             deny_groups=self._share_deny_groups.value,
             deny_users=self._share_deny_users.value,
+            allow_edit_groups=self._share_edit_groups.value,
+            allow_edit_users=self._share_edit_users.value,
         )
         try:
             updated = self.store.set_permission(dashboard_id, permission)
@@ -1647,7 +1699,11 @@ class FlowDashApp(Viewer):
             width_policy="max",
         )
 
-        actions = (*self._dashboard_actions(True), *self._dashboard_actions(False))
+        actions = (
+            *self._dashboard_actions(True),
+            *self._dashboard_actions(False, True),
+            *self._dashboard_actions(False),
+        )
         # "Create" lives on the fixed "New Dashboard" row, not in the action tuples.
         keys = dict.fromkeys([*(self._action_key(action) for action in actions), "Create"])
         for key in keys:
@@ -1691,7 +1747,7 @@ class FlowDashApp(Viewer):
         for d in dashboards:
             path = f"{DASH_ROUTE_PREFIX}{d.dashboard_id}"
             entries = [{"label": "Open", "icon": "open_in_new", "path": path}]
-            for action in self._dashboard_actions(self._can_administer_dashboard(d)):
+            for action in self._dashboard_actions(*self._dashboard_rights(d)):
                 entries.append(
                     {
                         **{key: action[key] for key in ("label", "icon") if key in action},

@@ -141,8 +141,8 @@ class JSONFolderDashboardStore(BaseDashboardStore):
     read_only
         Serve the dashboards without allowing changes. Writes raise
         ``PermissionError`` (also a ``DashboardStoreError``) and nobody may
-        administer a dashboard, so the editor offers no way to modify, rename,
-        share or delete one.
+        edit or administer a dashboard, so the editor offers no way to modify,
+        rename, share or delete one.
     """
 
     def __init__(self, path: str | Path, *, read_only: bool = False):
@@ -309,6 +309,16 @@ class JSONFolderDashboardStore(BaseDashboardStore):
                 log.warning("Cannot lock the dashboard folder %s (%s)", self.path, exc)
             return False
         return True
+
+    def can_edit_model(
+        self,
+        identity: Identity,
+        dashboard: DashboardModel,
+        admin_groups: frozenset[str] = frozenset(),
+    ) -> bool:
+        if self.read_only:
+            return False
+        return super().can_edit_model(identity, dashboard, admin_groups)
 
     def _check_writable(self) -> None:
         if self.read_only:

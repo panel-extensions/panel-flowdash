@@ -69,20 +69,33 @@ def _flag(value: Any, label: str) -> bool:
 class Permission:
     """An allow/deny rule set evaluated against an :class:`Identity`.
 
-    All four fields match either the resolved ``user`` (OAuth login *or* system
+    The rule fields match either the resolved ``user`` (OAuth login *or* system
     user) or one of the identity's ``groups``. An empty ``Permission`` declares
     no constraints and defers entirely to the caller's default policy.
+
+    ``allow_edit_users`` and ``allow_edit_groups`` only apply to dashboards:
+    they grant editing (which includes viewing) on top of the view rules,
+    without restricting who else may view.
     """
 
     allow_users: frozenset[str] = field(default_factory=frozenset)
     allow_groups: frozenset[str] = field(default_factory=frozenset)
     deny_users: frozenset[str] = field(default_factory=frozenset)
     deny_groups: frozenset[str] = field(default_factory=frozenset)
+    allow_edit_users: frozenset[str] = field(default_factory=frozenset)
+    allow_edit_groups: frozenset[str] = field(default_factory=frozenset)
 
     @property
     def is_empty(self) -> bool:
-        """Whether the permission declares no allow or deny rules."""
-        return not (self.allow_users or self.allow_groups or self.deny_users or self.deny_groups)
+        """Whether the permission declares no allow, deny or edit rules."""
+        return not (
+            self.allow_users
+            or self.allow_groups
+            or self.deny_users
+            or self.deny_groups
+            or self.allow_edit_users
+            or self.allow_edit_groups
+        )
 
     @classmethod
     def from_spec(
@@ -92,6 +105,8 @@ class Permission:
         allow_groups: Iterable[str] | None = None,
         deny_users: Iterable[str] | None = None,
         deny_groups: Iterable[str] | None = None,
+        allow_edit_users: Iterable[str] | None = None,
+        allow_edit_groups: Iterable[str] | None = None,
     ) -> Permission:
         """Build a :class:`Permission` from loosely-typed iterables."""
         return cls(
@@ -99,6 +114,8 @@ class Permission:
             allow_groups=_names(allow_groups, "allow_groups"),
             deny_users=_names(deny_users, "deny_users"),
             deny_groups=_names(deny_groups, "deny_groups"),
+            allow_edit_users=_names(allow_edit_users, "allow_edit_users"),
+            allow_edit_groups=_names(allow_edit_groups, "allow_edit_groups"),
         )
 
     def to_dict(self) -> dict[str, list[str]]:
@@ -108,6 +125,8 @@ class Permission:
             "allow_groups": sorted(self.allow_groups),
             "deny_users": sorted(self.deny_users),
             "deny_groups": sorted(self.deny_groups),
+            "allow_edit_users": sorted(self.allow_edit_users),
+            "allow_edit_groups": sorted(self.allow_edit_groups),
         }
 
     @classmethod
@@ -119,6 +138,14 @@ class Permission:
             allow_groups=data.get("allow_groups"),
             deny_users=data.get("deny_users"),
             deny_groups=data.get("deny_groups"),
+            allow_edit_users=data.get("allow_edit_users"),
+            allow_edit_groups=data.get("allow_edit_groups"),
+        )
+
+    def grants_edit(self, identity: Identity) -> bool:
+        """Whether an edit rule names *identity*; deny rules are not consulted."""
+        return identity.is_user(self.allow_edit_users) or identity.in_groups(
+            self.allow_edit_groups
         )
 
 
@@ -288,9 +315,11 @@ def is_authorized(
     1. A matching ``deny_users``/``deny_groups`` rule denies access (deny always
        wins, even for the owner).
     2. The *owner*, if given and matching, is allowed.
-    3. Any ``allow_*`` rule present: allowed iff the identity matches at least
-       one of them.
-    4. No allow/deny rules at all: fall back to *default_allow*.
+    3. An identity granted editing (``allow_edit_users``/``allow_edit_groups``)
+       is allowed, since editing includes viewing.
+    4. Any ``allow_users``/``allow_groups`` rule present: allowed iff the
+       identity matches at least one of them.
+    5. No allow/deny rules at all: fall back to *default_allow*.
     """
     if permission is None:
         permission = Permission()
@@ -301,6 +330,9 @@ def is_authorized(
         return False
 
     if owner is not None and owner in identity.user_names:
+        return True
+
+    if permission.grants_edit(identity):
         return True
 
     if permission.allow_users or permission.allow_groups:
@@ -324,6 +356,27 @@ def can_administer(identity: Identity, owner: str, admin_groups: Iterable[str]) 
     if owner in identity.user_names:
         return True
     return identity.in_groups(admin_groups)
+
+
+def can_edit(
+    permission: Permission | None,
+    identity: Identity,
+    owner: str,
+    admin_groups: Iterable[str],
+) -> bool:
+    """Whether *identity* may edit the contents of a dashboard owned by *owner*.
+
+    Everyone who may administer it may edit it. Otherwise the identity must
+    match an ``allow_edit_users``/``allow_edit_groups`` rule and no deny rule.
+    Editing covers changing and saving the canvas and the dashboard settings,
+    not renaming, deleting or sharing it, which stay administration.
+    """
+    if can_administer(identity, owner, admin_groups):
+        return True
+    permission = permission or Permission()
+    if identity.is_user(permission.deny_users) or identity.in_groups(permission.deny_groups):
+        return False
+    return permission.grants_edit(identity)
 
 
 def entry_authorized(

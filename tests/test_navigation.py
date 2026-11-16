@@ -893,11 +893,13 @@ class TestLauncherSpeedDial:
     async def test_viewer_without_actions_has_no_speed_dial(self, app):
         app.store.create_dashboard(app._user_id, "Dash A")
         app._can_administer_dashboard = lambda dashboard_id: False
+        app._can_edit_dashboard = lambda dashboard: False
         assert _launcher_speed_dials(app) == [None]
 
     async def test_viewer_with_viewer_action_gets_speed_dial(self, copy_app):
         copy_app.store.create_dashboard(copy_app._user_id, "Dash A")
         copy_app._can_administer_dashboard = lambda dashboard_id: False
+        copy_app._can_edit_dashboard = lambda dashboard: False
         (dial,) = _launcher_speed_dials(copy_app)
         assert dial is not None
         assert [i["label"] for i in dial.items] == ["Copy"]
@@ -1019,6 +1021,7 @@ class TestSubclassAction:
     async def test_viewer_action_from_card(self, copy_app):
         dash = copy_app.store.create_dashboard(copy_app._user_id, "Dash A")
         copy_app._can_administer_dashboard = lambda dashboard_id: False
+        copy_app._can_edit_dashboard = lambda dashboard: False
         (dial,) = _launcher_speed_dials(copy_app)
         dial.value = {"label": "Copy"}
         assert copy_app.copied == [(dash.dashboard_id, "Dash A")]
@@ -1052,6 +1055,7 @@ class TestSubclassAction:
         app = copy_menubar_app
         dash = app.store.create_dashboard(app._user_id, "Dash A")
         app._can_administer_dashboard = lambda dashboard_id: False
+        app._can_edit_dashboard = lambda dashboard: False
         app._refresh_sidebar_dashboards()
         submenu = _find_menu_bar_item(app._menu_bar.items, "Dash A")
         assert [i["label"] for i in submenu["items"]] == ["Open", "Copy"]

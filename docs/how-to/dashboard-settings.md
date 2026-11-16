@@ -10,8 +10,12 @@ shared `refresh` signal.
 ## Settings
 
 `FlowDash.settings` is a `param.Parameterized` instance filled from the loaded
-dashboard. It has one built-in parameter, `refresh_period`, the number of seconds
-between automatic refreshes. The default of 0 turns automatic refreshing off.
+dashboard. It has two built-in parameters: `refresh_period`, the number of seconds
+between automatic refreshes (the default of 0 turns automatic refreshing off), and
+`viewers_can_inspect`, which opens output inspection to people who may only view
+the dashboard (see [Inspecting outputs](embed-the-editor.md#inspecting-outputs)).
+The form only offers `viewers_can_inspect` when the editor has `inspect_outputs`
+on.
 
 ```python
 editor = FlowDash(components, store="dashboards.db")

@@ -8,6 +8,7 @@ from panel_flowdash.auth import (
     Identity,
     Permission,
     can_administer,
+    can_edit,
     is_authorized,
     resolve_identity,
 )
@@ -78,6 +79,7 @@ __all__: list[str] = [
     "build_node_state_class",
     "build_session_state_class",
     "can_administer",
+    "can_edit",
     "check_requirements",
     "current_dashboard",
     "is_authorized",

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from panel_flowdash.auth import Identity, Permission, can_administer, is_authorized
+from panel_flowdash.auth import Identity, Permission, can_administer, can_edit, is_authorized
 
 logger = logging.getLogger(__name__)
 
@@ -417,7 +417,10 @@ class BaseDashboardStore(ABC):
     def can_administer(
         self, identity: Identity, dashboard_id: str, admin_groups: frozenset[str] = frozenset()
     ) -> bool:
-        """Whether *identity* may administer (edit/delete/share) the dashboard."""
+        """Whether *identity* may administer (rename/delete/share) the dashboard.
+
+        Administering includes editing, see :meth:`can_edit`.
+        """
         model = self._load_any(dashboard_id)
         if model is None:
             return False
@@ -436,6 +439,32 @@ class BaseDashboardStore(ABC):
         administer a dashboard.
         """
         return can_administer(identity, dashboard.owner, admin_groups)
+
+    def can_edit(
+        self, identity: Identity, dashboard_id: str, admin_groups: frozenset[str] = frozenset()
+    ) -> bool:
+        """Whether *identity* may edit and save the dashboard's contents and settings."""
+        model = self._load_any(dashboard_id)
+        if model is None:
+            return False
+        return self.can_edit_model(identity, model, admin_groups)
+
+    def can_edit_model(
+        self,
+        identity: Identity,
+        dashboard: DashboardModel,
+        admin_groups: frozenset[str] = frozenset(),
+    ) -> bool:
+        """Like :meth:`can_edit`, for a dashboard that is already loaded.
+
+        Administrators (see :meth:`can_administer_model`) may always edit;
+        anyone else needs an ``allow_edit_users``/``allow_edit_groups`` grant
+        on the dashboard's permission. Override this method, not
+        :meth:`can_edit`, to change who may edit a dashboard.
+        """
+        if self.can_administer_model(identity, dashboard, admin_groups):
+            return True
+        return can_edit(dashboard.permission, identity, dashboard.owner, frozenset())
 
 
 class MemoryDashboardStore(BaseDashboardStore):
