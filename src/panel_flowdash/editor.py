@@ -709,8 +709,41 @@ class FlowDash(Viewer):
         """
         if component_ids is None:
             return list(self._component_entries)
-        wanted = set(component_ids)
+        aliases = self._component_aliases()
+        wanted = {self._resolve_component_id(cid, aliases) for cid in component_ids}
         return [cid for cid in self._component_entries if cid in wanted]
+
+    def _component_aliases(self) -> dict[str, str]:
+        """Map the former ids components declare with ``aliases`` to their current ids.
+
+        A registered id always wins over an alias, and of two components
+        claiming one alias the first in registry order wins.
+        """
+        aliases: dict[str, str] = {}
+        for app_id, entry in self._component_entries.items():
+            for alias in entry.metadata.aliases:
+                if alias in self._component_entries:
+                    continue
+                owner = aliases.setdefault(alias, app_id)
+                if owner != app_id:
+                    logger.warning(
+                        "Component alias '%s' is claimed by both '%s' and '%s'; using '%s'.",
+                        alias,
+                        owner,
+                        app_id,
+                        owner,
+                    )
+        return aliases
+
+    def _resolve_component_id(
+        self, component_id: str, aliases: dict[str, str] | None = None
+    ) -> str:
+        """Return the current id of a component a saved dashboard may name by a former id."""
+        if component_id in self._component_entries:
+            return component_id
+        if aliases is None:
+            aliases = self._component_aliases()
+        return aliases.get(component_id, component_id)
 
     def _unimported_ids(self, wanted: list[str]) -> list[str]:
         """Of *wanted*, the ids whose module has not been imported yet.
@@ -2482,9 +2515,12 @@ class FlowDash(Viewer):
         self.dashboard = model
         # Unlike palette drops (see `_on_component_dropped`) this replaces every
         # node view at once, so no view already on the canvas can be blanked.
+        aliases = self._component_aliases()
         with self._muted_canvas(), self._batched_canvas(), self._dataflow_graph.batch():
             for item in model.items:
-                if item.component_id not in self._component_specs:
+                component_id = self._resolve_component_id(item.component_id, aliases)
+                spec = self._component_specs.get(component_id)
+                if spec is None:
                     logger.warning(
                         "Skipping unknown component '%s' (%s)",
                         item.component_id,
@@ -2493,9 +2529,9 @@ class FlowDash(Viewer):
                     continue
                 try:
                     self._place(
-                        item.component_id,
+                        component_id,
                         item.instance_id,
-                        item.config,
+                        {spec.resolve_name(key): value for key, value in item.config.items()},
                         {"x": item.x, "y": item.y},
                     )
                 except Exception:
@@ -2506,7 +2542,11 @@ class FlowDash(Viewer):
                     )
             for edge in model.edges:
                 result = self.connect(
-                    edge.source, edge.source_port, edge.target, edge.target_port, edge.transform
+                    edge.source,
+                    self._resolve_port_name(edge.source, edge.source_port),
+                    edge.target,
+                    self._resolve_port_name(edge.target, edge.target_port),
+                    edge.transform,
                 )
                 if result is not True:
                     logger.warning(
@@ -2533,6 +2573,11 @@ class FlowDash(Viewer):
         self._stamp_refresh()
         self._apply_mode_state()
 
+    def _resolve_port_name(self, instance_id: str, port: str) -> str:
+        """Return the current name of a port a saved edge may name by a former name."""
+        spec = self._component_specs.get(self._component_id_for_instance(instance_id) or "")
+        return spec.resolve_name(port) if spec is not None else port
+
     def _legacy_layout_ids(self, model: DashboardModel) -> list[str]:
         """Return the tiles an untagged layout saved with *model* lines up with, in grid order.
 
@@ -2541,8 +2586,11 @@ class FlowDash(Viewer):
         held a slot when the layout was saved, so they keep theirs here.
         """
         ids = []
+        aliases = self._component_aliases()
         for item in model.items:
-            entry = self._component_entries.get(item.component_id)
+            entry = self._component_entries.get(
+                self._resolve_component_id(item.component_id, aliases)
+            )
             # A sidebar component that is no longer in the registry cannot be
             # recognised as one, so it is counted as a tile and shifts the
             # legacy entries after it by one slot. Layouts saved since tiles
@@ -2748,8 +2796,14 @@ class FlowDash(Viewer):
             self._notify("error", f"Could not load the dashboard: {exc}", duration=5000)
             return
         self.dirty = True
+        aliases = self._component_aliases()
         missing = sorted(
-            {item.component_id for item in model.items} - self._component_specs.keys()
+            {
+                item.component_id
+                for item in model.items
+                if self._resolve_component_id(item.component_id, aliases)
+                not in self._component_specs
+            }
         )
         if missing:
             self._notify(
