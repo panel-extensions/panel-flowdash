@@ -2380,6 +2380,22 @@ class TestRequiredInputPlaceholder:
         assert editor.graph.get_state(target).company == "ACME"
         assert self._shown(view) == (False, True)
 
+    async def test_metadata_output_marked_required_is_not_gated(self):
+        class Source(Viewer):
+            company = param.String(
+                default=None,
+                allow_None=True,
+                metadata={"flowdash": {"output": True, "required": True}},
+            )
+
+            def __panel__(self):
+                return "source"
+
+        editor = FlowDash({"Demo/source": Source}, notifications=False)
+        editor.add_component("Demo/source")
+
+        assert not isinstance(editor._tile_objects[0], pn.Column)
+
     async def test_builtin_widgets_are_not_gated(self):
         editor = FlowDash({}, notifications=False)
         for component_id in BUILTIN_COMPONENTS:

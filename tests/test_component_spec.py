@@ -553,6 +553,21 @@ class TestRequiredInputMetadata:
         port = self._port(Needy, "company")
         assert (port.required, port.blocking) == (required, blocking)
 
+    async def test_required_on_a_metadata_output_is_ignored(self):
+        class Source(Viewer):
+            company = param.String(
+                default=None,
+                allow_None=True,
+                metadata={"flowdash": {"output": True, "required": True, "blocking": True}},
+            )
+
+            def __panel__(self):
+                return "test"
+
+        spec = build_component_spec(make_entry(Source))
+        assert [p.name for p in spec.outputs] == ["company"]
+        assert spec.inputs == []
+
     async def test_register_requires_override_introspection(self):
         @register(component=True, requires=[{"key": "company", "required": False}])
         class Needy(Viewer):

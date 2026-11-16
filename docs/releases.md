@@ -10,7 +10,7 @@ Initial release of panel-flowdash.
 - A Viewer can publish a Parameter as an output by naming it in `provides`, without wrapping it in a `@param.output` method
 - A Viewer declares a Parameter as an output port with `metadata={"flowdash": {"output": True, "label": ...}}`, so class factories need not repeat output names in `@register(provides=...)`; requires `param>=2.3`
 - A Viewer component can define `dispose()` to release its resources; FlowDash calls it once when the node is removed, the canvas is cleared or replaced, or the session ends
-- A tile shows a placeholder instead of its component while a blocking input is `None`: function components use the `required` and `blocking` fields of `requires`, Viewers declare `param.Parameter(metadata={"flowdash": {"required": True}})`, and `@register(placeholder=...)` replaces the default "Waiting for ..." text
+- A tile shows a placeholder instead of its component while a blocking input is `None`: function components use the `required` and `blocking` fields of `requires`, Viewers declare `param.Parameter(metadata={"flowdash": {"required": True}})` (ignored on a metadata output), and `@register(placeholder=...)` replaces the default "Waiting for ..." text
 - `DataflowGraph` engine with cycle detection, type checking, single-source validation
 - Runtime validation via `param.watch` with error callbacks
 - SQLite persistence (`DashboardStore`, `DashboardModel`)
