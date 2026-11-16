@@ -38,6 +38,7 @@ flowdash serve <directory> [options]
 | `--address` | `0.0.0.0` | Address to bind to. |
 | `--title` | `FlowDash` | Application title in the browser tab. |
 | `--home-dashboard` | none | Dashboard (id or title) to show on the homepage instead of the grid. |
+| `--nav-variant` | `right` | Where the navigation menu goes: `left`, `right` or `menubar`. |
 | `--package` | none | Serve the project as this importable package, naming modules `<package>.<Section>.<name>` instead of adding the directory to `sys.path`. See [Serving a package](#serving-a-package). |
 | `--db-path` | `<dir>/dashboards.db` | Path to the SQLite database. Conflicts with a `store` defined in the project. |
 | `--warm` | off | Import all modules at startup instead of lazily on first visit. |
@@ -49,6 +50,10 @@ flowdash serve <directory> [options]
 | `--no-notifications` | off | Disable Panel notifications. |
 | `--static-dirs` | none | Serve extra static file directories, e.g. `--static-dirs assets=/path/to/assets`. Paths are resolved relative to the project directory. |
 | `--plugins` | none | Register extra Tornado routes from an importable module exposing a `ROUTES` list, e.g. `--plugins my_plugin` for `<project>/my_plugin.py`. With `--package`, pass the dotted name, e.g. `--plugins catalogue.my_plugin`. Repeatable. |
+
+`--title`, `--home-dashboard` and `--nav-variant` can also be set in the
+project's `__init__.py` (see [Project configuration](#project-configuration)).
+A flag given on the command line takes precedence over the module attribute.
 
 `flowdash serve` is built on Panel's `serve` command and inherits its full
 set of CLI options (OAuth, REST providers, session options, and more).
@@ -173,6 +178,59 @@ directory, so local relative imports work normally. A project served with
 
 ---
 
+## Project configuration
+
+After executing `__init__.py`, `flowdash serve` reads the following module
+attributes and passes them to `FlowDashApp`. All are optional, and a name that is
+missing or set to `None` keeps its default.
+
+| Name | Type | Description |
+|------|------|-------------|
+| `store` | `BaseDashboardStore` | Where dashboards are kept, see [Custom dashboard store](#custom-dashboard-store). Conflicts with `--db-path`. |
+| `breakpoints` | `list` | Responsive breakpoints of the tile grid. Default `[768, 1200]`. |
+| `configure_layout` | callable | Per-page sidebar and contextbar hook, see [Page-aware sidebar and contextbar](#page-aware-sidebar-and-contextbar). |
+| `editor_class` | `FlowDash` subclass | The editor class the app instantiates. |
+| `editor_options` | `dict` | Extra keyword arguments for the editor, see [Embed the Editor](embed-the-editor.md#configuring-the-editor-inside-flowdashapp). |
+| `home_dashboard` | `str` | Dashboard id or title shown on the homepage. Overridden by `--home-dashboard`. |
+| `include_builtin_components` | `bool` | Offer the built-in widget components in the editor. Default `True`. |
+| `nav_variant` | `str` | `"left"`, `"right"` or `"menubar"`. Overridden by `--nav-variant`. |
+| `notifications` | `bool` | Show user-facing messages as Panel notifications. Default `True`. |
+| `page_options` | `dict` | Extra keyword arguments for the underlying `panel_material_ui.Page`. |
+| `propagate_failures` | `bool` | Carry failures downstream, see [Wire Dataflow](wire-dataflow.md#carry-failures-downstream). |
+| `settings_class` | `DashboardSettings` subclass | Dashboard-wide settings, see [Dashboard Settings](dashboard-settings.md#add-your-own-settings). |
+| `title` | `str` | Application title in the browser tab. Overridden by `--title`. |
+
+The authorization names `group_claims`, `user_groups`, `resolve_groups`,
+`admin_groups` and `default_allow` are read too, see
+[Manage Permissions](manage-permissions.md#project-level-configuration).
+
+```python
+# my_project/__init__.py
+import param
+
+from panel_flowdash import DashboardSettings, JSONFolderDashboardStore
+
+
+class SalesSettings(DashboardSettings):
+    currency = param.Selector(default="EUR", objects=["EUR", "USD", "GBP"])
+
+
+store = JSONFolderDashboardStore("dashboards")
+settings_class = SalesSettings
+propagate_failures = True
+editor_options = {"popup_trigger": "click"}
+title = "Sales"
+```
+
+Each value is checked against the matching `FlowDashApp` parameter at startup,
+and a value of the wrong type stops the server with an error naming the
+attribute. `editor_options` and `page_options` are shared by every session, so
+create any Panel objects they would hold in an `editor_class` subclass or in
+`configure_layout` instead. `sidebar` and `contextbar` are not read for the same
+reason; set them from `configure_layout`.
+
+---
+
 ## Serving a package
 
 By default FlowDash imports `my_project/Analytics/chart.py` as the module
@@ -195,8 +253,9 @@ FlowDash then:
   and on the served component's `__module__`
 - does not add `path/to/catalogue/` to `sys.path`
 - imports the project's `__init__.py` as `catalogue` itself, so `store`,
-  `configure_layout` and the auth settings come from the same module the rest of
-  your code imports
+  `settings_class`, `editor_class` and the rest of the
+  [project configuration](#project-configuration) come from the same module the
+  rest of your code imports
 
 The package must resolve to the directory being served. If `catalogue` is not
 importable, or imports from somewhere else (a stale install, say), `flowdash
@@ -267,7 +326,7 @@ the rendered view itself.
 
 ```
 my_project/
-    __init__.py             # optional startup hook (runs before server launch)
+    __init__.py             # optional startup hook and project configuration
     SectionA/
         __init__.py         # optional
         component1.py       # must export `app`
