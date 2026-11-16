@@ -12,7 +12,12 @@ import pytest
 
 from panel_flowdash.auth import Identity
 from panel_flowdash.dashboard_store import DashboardItem, DashboardModel, DashboardStoreError
-from panel_flowdash.json_store import JSONFolderDashboardStore
+from panel_flowdash.json_store import _LOCK_FILE, JSONFolderDashboardStore
+
+
+def _dashboard_files(folder):
+    # On Windows the store locks a .flowdash.lock file in the folder.
+    return [p.name for p in folder.iterdir() if p.name != _LOCK_FILE]
 
 
 def _identity(user):
@@ -43,7 +48,7 @@ class TestFiles:
         assert text.endswith("}\n")
         assert "Café" in text
         assert DashboardModel.from_dict(json.loads(text)) == model
-        assert [p.name for p in tmp_path.iterdir()] == ["d1.json"]
+        assert _dashboard_files(tmp_path) == ["d1.json"]
 
     def test_picks_up_files_added_outside_the_store(self, tmp_path):
         store = JSONFolderDashboardStore(tmp_path)
@@ -72,7 +77,7 @@ class TestFiles:
             store.rename_dashboard("u", "d1", "After")
 
         assert store.load_dashboard("u", "d1").title == "Before"
-        assert [p.name for p in tmp_path.iterdir()] == ["d1.json"]
+        assert _dashboard_files(tmp_path) == ["d1.json"]
 
     def test_retries_a_transient_replace_refusal(self, tmp_path, monkeypatch):
         store = JSONFolderDashboardStore(tmp_path)

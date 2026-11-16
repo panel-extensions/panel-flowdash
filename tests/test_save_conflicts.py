@@ -27,11 +27,17 @@ from panel_flowdash import (
 )
 from panel_flowdash.app import DASH_ROUTE_PREFIX
 from panel_flowdash.editor import FlowDash
+from panel_flowdash.json_store import _LOCK_FILE
 from panel_flowdash.util import page_dialog
 from panel_flowdash.widgets import BUILTIN_COMPONENTS
 from tests.test_store_errors import location, make_app  # noqa: F401
 
 WIDGET = next(iter(BUILTIN_COMPONENTS))
+
+
+def _dashboard_files(folder):
+    # On Windows the store locks a .flowdash.lock file in the folder.
+    return [p.name for p in folder.iterdir() if p.name != _LOCK_FILE]
 
 
 @pytest.fixture(params=["memory", "sqlite", "json"])
@@ -206,7 +212,7 @@ class TestJSONFolderRevisions:
         store.save_dashboard(model)
 
         assert json.loads((tmp_path / "sales.json").read_text())["revision"] == 2
-        assert [p.name for p in tmp_path.iterdir()] == ["sales.json"]
+        assert _dashboard_files(tmp_path) == ["sales.json"]
 
     def test_file_without_revision_is_checked_as_revision_zero(self, tmp_path):
         data = {"dashboard_id": "d", "user_id": "u", "title": "T", "items": []}
