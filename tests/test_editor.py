@@ -3909,6 +3909,8 @@ class TestDashboardSettings:
         assert editor.save().settings == {
             "refresh_period": 3,
             "retired": True,
+            "tile_cards": True,
+            "tile_titles": False,
             "viewers_can_inspect": False,
         }
 
@@ -3941,6 +3943,8 @@ class TestDashboardSettings:
         saved = editor.save()
         assert saved.settings == {
             "refresh_period": 45,
+            "tile_cards": True,
+            "tile_titles": False,
             "viewers_can_inspect": False,
             "accent": "red",
             "density": 1,
@@ -3967,7 +3971,12 @@ class TestDashboardSettings:
     async def test_export_and_import_carry_the_settings(self, editor):
         editor.load_model(_dashboard({"refresh_period": 15}))
         data = editor.export_dashboard()
-        assert data["settings"] == {"refresh_period": 15, "viewers_can_inspect": False}
+        assert data["settings"] == {
+            "refresh_period": 15,
+            "tile_cards": True,
+            "tile_titles": False,
+            "viewers_can_inspect": False,
+        }
         other = FlowDash(COMPONENTS, notifications=False)
         other.import_dashboard(data)
         assert other.settings.refresh_period == 15
@@ -3996,7 +4005,13 @@ class TestSettingsForm:
     async def test_form_is_generated_from_the_settings(self):
         editor = FlowDash(COMPONENTS, notifications=False, settings_class=BrandSettings)
         form = editor._settings_dialog.objects[0]
-        assert set(form._widgets) == {"refresh_period", "accent", "density"}
+        assert set(form._widgets) == {
+            "refresh_period",
+            "tile_cards",
+            "tile_titles",
+            "accent",
+            "density",
+        }
 
     async def test_form_edits_the_settings_and_marks_dirty(self, editor):
         form = editor._settings_dialog.objects[0]

@@ -192,7 +192,7 @@ per-dashboard permissions.
 
 ## Inspecting outputs
 
-On the wiring canvas, clicking or hovering a port opens a popup with the value it currently carries. A viewer of a dashboard has no canvas, which is when someone asks where a number comes from. Set `inspect_outputs=True` to give each tile in the dashboard grid an Inspect action in its title bar, next to Expand and the More menu:
+On the wiring canvas, clicking or hovering a port opens a popup with the value it currently carries. A viewer of a dashboard has no canvas, which is when someone asks where a number comes from. Set `inspect_outputs=True` to give each tile in the dashboard grid an Inspect action next to its Expand action. Unless the dashboard shows [tile titles](dashboard-settings.md), the actions float over the tile's top-right corner on hover or keyboard focus and take no space:
 
 ```python
 editor = FlowDash(
@@ -214,9 +214,9 @@ editor = FlowDash(
 )
 ```
 
-The title bar, and with it the action, is hidden while tiles are being arranged, where the grid draws its own handles, and shown in view mode and in preview. Edit mode keeps its port popups. Components marked `sidebar=True` are not tiles and get no action. A tile still showing its placeholder because a required input is missing keeps the action, and the sheet then starts with a note naming the inputs it is waiting for.
+The actions are hidden while tiles are being arranged, where the grid draws its own handles, and shown in view mode and in preview. Edit mode keeps its port popups. Components marked `sidebar=True` are not tiles and get no action. A tile still showing its placeholder because a required input is missing keeps the action, and the sheet then starts with a note naming the inputs it is waiting for.
 
-The More menu can also offer Show in editor, as can the message on a tile that could not update. Set `show_in_editor` to a callable taking the tile's instance id, for example one that switches your page to edit mode. The action is offered in view mode while `show_in_editor` is set and `read_only` is False.
+A tile's More menu offers Show in editor, as does the message on a tile that could not update; the menu only appears when it has an entry. Set `show_in_editor` to a callable taking the tile's instance id, for example one that switches your page to edit mode. The action is offered in view mode while `show_in_editor` is set and `read_only` is False.
 
 ### Explaining an output
 

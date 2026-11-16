@@ -205,7 +205,7 @@ and the `error`.
 
 In the dashboard, in view and in edit mode, the component's stale content is
 faded behind a message saying that the tile could not update and which upstream
-component stopped it, and the tile's title bar shows a Failed chip. A Details
+component stopped it, and the tile's actions show a Failed chip. A Details
 disclosure holds the technical explanation naming the input, the upstream port
 and the exception, for example:
 

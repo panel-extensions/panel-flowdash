@@ -1,4 +1,4 @@
-"""The frame and title bar of a dashboard tile in view mode."""
+"""The optional frame, title and actions of a dashboard tile in view mode."""
 
 from __future__ import annotations
 
@@ -13,13 +13,38 @@ if t.TYPE_CHECKING:
     from panel.viewable import Viewable
 
 # The frame is drawn only in view mode; while arranging, TileGrid draws its own
-# card around the tile, so the tile must not add a second border.
-_FRAME_CSS = """
+# card around the tile, so the tile must not add a second border. Unless titles
+# are shown, the actions take no row: they float over the top-right corner, so
+# the content starts at the top edge, and appear on hover or when keyboard focus
+# is inside the tile. They stay focusable while transparent so Tab reaches and
+# reveals them.
+_TILE_CSS = """
 :host(.flowdash-tile-framed) {
   background-color: var(--mui-palette-background-paper, var(--panel-surface-color, #fff));
   border: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.12));
   border-radius: 12px;
   box-sizing: border-box;
+}
+:host(.flowdash-tile-floating) {
+  position: relative;
+}
+:host(.flowdash-tile-floating) .flowdash-tile-header {
+  background-color: var(--mui-palette-background-paper, var(--panel-surface-color, #fff));
+  border: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.12));
+  border-radius: 8px;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute !important;
+  right: 4px;
+  top: 4px;
+  transition: opacity 120ms;
+  width: auto !important;
+  z-index: 20;
+}
+:host(.flowdash-tile-floating:hover) .flowdash-tile-header,
+:host(.flowdash-tile-floating:focus-within) .flowdash-tile-header {
+  opacity: 1;
+  pointer-events: auto;
 }
 """
 
@@ -71,10 +96,15 @@ def status_chip_sx(color: str) -> dict:
 class Tile(pn.Column):
     """A component's view in a frame with a title bar.
 
-    The title bar holds the title, an optional subtitle, a status chip and
+    The title bar holds an optional title and subtitle, a status chip and
     the tile actions: Inspect, Expand (a full-screen dialog of the tile) and
-    a More menu. Callers choose which actions apply with :meth:`set_actions`
-    and react to them through ``on_inspect`` and ``on_show_in_editor``.
+    a More menu with what has no button of its own (Show in editor), which
+    is left out when it would be empty. :meth:`set_style` chooses whether
+    the tile is a framed card and whether it shows its title. Only a titled
+    card gives the title bar a row; otherwise the bar floats over the
+    tile's top-right corner on hover or keyboard focus and takes no space.
+    Callers choose which actions apply with :meth:`set_actions` and react to
+    them through ``on_inspect`` and ``on_show_in_editor``.
 
     ``title`` may be a reactive expression; ``label`` is the plain name the
     actions' accessible names and the expand dialog use. ``view`` is the
@@ -98,19 +128,24 @@ class Tile(pn.Column):
         self.on_show_in_editor = on_show_in_editor
         self._inspect = False
         self._show_in_editor = False
+        self._arranging = False
+        self._framed = True
+        self._titled = False
         self.title = pmui.Typography(
             title,
             variant="subtitle1",
             margin=0,
+            visible=False,
             sx={"fontWeight": 500, "lineHeight": 1.4, **_ELLIPSIS},
         )
         self.subtitle = pmui.Typography(
             subtitle or "",
             variant="caption",
             margin=0,
-            visible=bool(subtitle),
+            visible=False,
             sx={"color": "text.secondary", "display": "block", **_ELLIPSIS},
         )
+        self._has_subtitle = bool(subtitle)
         self.status = pmui.Typography(
             "",
             variant="caption",
@@ -145,10 +180,12 @@ class Tile(pn.Column):
             variant="text",
             margin=0,
             align="center",
+            visible=False,
             sx=_MORE_SX,
         )
+        self.titles = pn.Column(self.title, self.subtitle, margin=0, sizing_mode="stretch_width")
         self.header = pn.Row(
-            pn.Column(self.title, self.subtitle, margin=0, sizing_mode="stretch_width"),
+            self.titles,
             self.status,
             self.inspect_button,
             self.expand_button,
@@ -175,27 +212,60 @@ class Tile(pn.Column):
         self.expand_button.on_click(self.expand)
         self.more_menu.on_click(self._on_menu)
         self.expand_dialog.param.watch(self._on_dialog_open, "open")
-        params.setdefault("css_classes", ["flowdash-tile", "flowdash-tile-framed"])
+        params.setdefault("css_classes", ["flowdash-tile"])
         super().__init__(
             self.header,
             self.body,
             self.expand_dialog,
             margin=0,
             sizing_mode="stretch_both",
-            stylesheets=[_FRAME_CSS],
+            stylesheets=[_TILE_CSS],
             **params,
         )
         self._sync_menu()
+        self._sync_style()
 
     @property
     def expanded(self) -> bool:
         return self.expand_dialog.open
 
+    @property
+    def framed(self) -> bool:
+        return self._framed
+
     def set_chrome(self, shown: bool):
-        """Show the frame and title bar (view mode), or leave both to the grid (arranging)."""
+        """Show the frame and actions (view mode), or leave both to the grid (arranging)."""
+        self._arranging = not shown
+        self._sync_style()
+
+    def set_style(self, *, framed: bool, titled: bool):
+        """Draw the tile as a framed card or unframed, with or without its title."""
+        self._framed = framed
+        self._titled = titled
+        self._sync_style()
+
+    def _sync_style(self):
+        shown = not self._arranging
+        titled = self._titled and self._framed
+        self.title.visible = titled
+        self.subtitle.visible = titled and self._has_subtitle
+        self.titles.visible = titled
         self.header.visible = shown
-        classes = [c for c in self.css_classes if c != "flowdash-tile-framed"]
-        self.css_classes = [*classes, "flowdash-tile-framed"] if shown else classes
+        self.header.margin = (10, 8, 6, 16) if titled else 0
+        if not self._framed:
+            self.body.margin = 0
+        else:
+            self.body.margin = (0, 8, 8, 8) if titled else 8
+        classes = [
+            c
+            for c in self.css_classes
+            if c not in ("flowdash-tile-framed", "flowdash-tile-floating")
+        ]
+        if shown and self._framed:
+            classes.append("flowdash-tile-framed")
+        if shown and not titled:
+            classes.append("flowdash-tile-floating")
+        self.css_classes = classes
 
     def set_actions(self, *, inspect: bool, show_in_editor: bool):
         """Offer Inspect and Show in editor only where they apply to the current viewer."""
@@ -230,18 +300,13 @@ class Tile(pn.Column):
             self.on_inspect()
 
     def _sync_menu(self):
-        items = [{"label": "Expand", "icon": "open_in_full", "action": "expand"}]
-        if self._inspect:
-            items.insert(0, {"label": "Inspect data", "icon": "data_object", "action": "inspect"})
+        # Inspect and Expand have buttons of their own, so the menu only holds the rest.
+        items = []
         if self._show_in_editor:
             items.append({"label": "Show in editor", "icon": "account_tree", "action": "editor"})
-        self.more_menu.items = items
+        self.more_menu.param.update(items=items, visible=bool(items))
 
     def _on_menu(self, item):
         action = item.get("action") if isinstance(item, dict) else None
-        if action == "expand":
-            self.expand()
-        elif action == "inspect":
-            self._on_inspect()
-        elif action == "editor" and self.on_show_in_editor is not None:
+        if action == "editor" and self.on_show_in_editor is not None:
             self.on_show_in_editor()

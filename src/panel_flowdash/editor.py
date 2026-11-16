@@ -562,6 +562,21 @@ class FlowDash(Viewer):
         the model for the caller to persist.""",
     )
 
+    tile_cards = param.Boolean(
+        default=True,
+        doc="""
+        Default of the ``tile_cards`` dashboard setting for dashboards that do
+        not store one: whether tiles are drawn as framed cards. Each dashboard
+        can change it in its settings.""",
+    )
+
+    tile_titles = param.Boolean(
+        default=False,
+        doc="""
+        Default of the ``tile_titles`` dashboard setting for dashboards that do
+        not store one: whether a tile's card shows its title.""",
+    )
+
     toolbar = param.Boolean(
         default=True,
         doc="""
@@ -1556,8 +1571,25 @@ class FlowDash(Viewer):
         if tile is None or tile.view is not view:
             tile = self._inspect_tiles[instance_id] = self._make_tile(item, spec, view, bounds)
         tile.set_chrome(not self._tile_grid.editable)
+        tile.set_style(framed=self.settings.tile_cards, titled=self.settings.tile_titles)
         self._sync_tile(tile, spec)
         return tile
+
+    @param.depends("tile_cards", "tile_titles", watch=True, on_init=True)
+    def _seed_tile_settings(self):
+        """Apply the editor's tile defaults to the dashboard settings shown now."""
+        loading = getattr(self, "_loading_settings", False)
+        self._loading_settings = True
+        try:
+            self.settings.param.update(tile_cards=self.tile_cards, tile_titles=self.tile_titles)
+        finally:
+            self._loading_settings = loading
+
+    @param.depends("settings.tile_cards", "settings.tile_titles", watch=True)
+    def _sync_tile_style(self):
+        # Also fires while the editor is being constructed, before there are tiles.
+        for tile in getattr(self, "_inspect_tiles", {}).values():
+            tile.set_style(framed=self.settings.tile_cards, titled=self.settings.tile_titles)
 
     def _can_inspect(self) -> bool:
         """Whether this session may inspect outputs: editors always, viewers if the dashboard allows."""
@@ -2177,7 +2209,7 @@ class FlowDash(Viewer):
         """Load a dashboard's stored settings, falling back to defaults for the rest."""
         # A fresh instance doubles as the validator, so a bad stored value falls back
         # to its default instead of keeping the previous dashboard's value.
-        fresh = self.settings_class()
+        fresh = self.settings_class(tile_cards=self.tile_cards, tile_titles=self.tile_titles)
         for name, value in (stored or {}).items():
             if name not in self._settings_names:
                 logger.debug("Ignoring unknown dashboard setting '%s'", name)

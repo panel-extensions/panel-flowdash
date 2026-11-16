@@ -98,7 +98,7 @@ def _view_tiles(editor):
 
 
 class TestTileFrame:
-    def test_view_mode_frames_every_tile_with_a_title_bar(self, editor):
+    def test_view_mode_frames_every_tile_without_a_title_by_default(self, editor):
         editor.add_component("Test/source")
         editor.editable = False
 
@@ -106,9 +106,59 @@ class TestTileFrame:
         assert isinstance(tile, Tile)
         assert tile.header.visible
         assert "flowdash-tile-framed" in tile.css_classes
+        assert "flowdash-tile-floating" in tile.css_classes
+        assert not tile.titles.visible
+        assert not tile.title.visible and not tile.subtitle.visible
+
+    def test_titles_are_opt_in_per_dashboard(self, editor):
+        editor.add_component("Test/source")
+        (tile,) = _view_tiles(editor).values()
+
+        editor.settings.tile_titles = True
+
+        assert tile.titles.visible
         assert tile.title.object == "Source"
         assert tile.subtitle.object == "Loads the frame."
         assert tile.subtitle.visible
+        assert "flowdash-tile-floating" not in tile.css_classes
+        assert editor.dirty
+        assert editor.to_model().settings["tile_titles"] is True
+
+    def test_unframed_tiles_float_their_actions(self, editor):
+        editor.add_component("Test/source")
+        (tile,) = _view_tiles(editor).values()
+
+        editor.settings.tile_cards = False
+
+        assert "flowdash-tile-framed" not in tile.css_classes
+        assert "flowdash-tile-floating" in tile.css_classes
+        assert tile.header.visible and tile.inspect_button.visible
+        assert tile.body.margin == 0
+
+        editor.settings.tile_titles = True
+        assert not tile.titles.visible
+        assert "flowdash-tile-floating" in tile.css_classes
+
+        editor.settings.tile_cards = True
+        assert "flowdash-tile-framed" in tile.css_classes
+        assert "flowdash-tile-floating" not in tile.css_classes
+        assert tile.titles.visible
+
+    def test_editor_default_applies_to_dashboards_without_the_setting(self):
+        editor = FlowDash(
+            COMPONENTS, notifications=False, include_builtin_components=False, tile_cards=False
+        )
+        assert editor.settings.tile_cards is False
+        assert not editor.dirty
+        editor.load_model(DashboardModel(dashboard_id="a", user_id="u", title="A"))
+        assert editor.settings.tile_cards is False
+        editor.load_model(
+            DashboardModel(dashboard_id="b", user_id="u", title="B", settings={"tile_cards": True})
+        )
+        assert editor.settings.tile_cards is True
+
+    def test_setting_is_offered_in_the_settings_form(self, editor):
+        assert {"tile_cards", "tile_titles"} <= set(editor._settings_form._widgets)
 
     def test_arranging_leaves_the_frame_to_the_grid(self, editor):
         instance_id = editor.add_component("Test/source")
@@ -118,12 +168,16 @@ class TestTileFrame:
         assert not tile.header.visible
         assert "flowdash-tile-framed" not in tile.css_classes
 
+        editor.settings.tile_cards = False
+        assert "flowdash-tile-floating" not in tile.css_classes
+
         editor.editable = False
         assert tile.header.visible
-        assert "flowdash-tile-framed" in tile.css_classes
+        assert "flowdash-tile-floating" in tile.css_classes
 
     def test_title_follows_the_configured_title(self, editor):
         instance_id = editor.add_component("Test/table", {"title": "Top projects"})
+        editor.settings.tile_titles = True
         tile = _view_tiles(editor)[editor._tile_objects[0]]
         assert tile.title.object == "Top projects"
         assert tile.inspect_button.description == "Inspect data for Top projects"
@@ -156,12 +210,25 @@ class TestTileFrame:
         assert tile.body.objects == [view]
         assert tile.expand_dialog.objects == []
 
-    def test_more_menu_offers_expand_and_inspect(self, editor):
+    def test_menu_never_repeats_a_visible_button(self, editor):
         editor.add_component("Test/source")
         (tile,) = _view_tiles(editor).values()
 
-        assert [item["action"] for item in tile.more_menu.items] == ["inspect", "expand"]
-        tile._on_menu({"label": "Inspect data", "action": "inspect"})
+        assert tile.inspect_button.visible and tile.expand_button.visible
+        assert tile.more_menu.items == []
+        assert not tile.more_menu.visible
+
+        editor.show_in_editor = lambda _: None
+
+        assert [item["label"] for item in tile.more_menu.items] == ["Show in editor"]
+        assert tile.more_menu.visible
+
+    def test_inspect_button_opens_the_sheet(self, editor):
+        editor.add_component("Test/source")
+        (tile,) = _view_tiles(editor).values()
+
+        tile.inspect_button.clicks += 1
+
         assert editor._inspect_dialog.open
 
     def test_no_inspect_action_without_outputs_to_inspect(self):
@@ -170,7 +237,8 @@ class TestTileFrame:
         (tile,) = _view_tiles(editor).values()
 
         assert not tile.inspect_button.visible
-        assert [item["action"] for item in tile.more_menu.items] == ["expand"]
+        assert tile.expand_button.visible
+        assert not tile.more_menu.visible
 
     def test_restricted_placeholder_is_framed_under_its_own_title(self):
         editor = FlowDash(

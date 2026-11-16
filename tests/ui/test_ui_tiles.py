@@ -63,18 +63,61 @@ def _editor(**params):
     return editor
 
 
-def test_tile_has_a_title_bar_with_named_actions(page):
+def test_framed_tile_has_named_actions_and_no_title_by_default(page):
     editor = _editor(inspect_outputs=True)
     editor.add_component("Test/turbines")
     editor.editable = False
     serve_component(page, editor)
 
     tile = page.locator(".flowdash-tile")
-    expect(tile.get_by_text("Turbines", exact=True)).to_be_visible()
-    expect(tile.get_by_text("Every turbine in the state")).to_be_visible()
     expect(page.get_by_role("button", name="Inspect data for Turbines")).to_be_visible()
     expect(page.get_by_role("button", name="Expand Turbines")).to_be_visible()
-    expect(page.get_by_role("button", name="More for Turbines")).to_be_visible()
+    expect(page.get_by_role("button", name="More for Turbines")).to_be_hidden()
+    expect(tile.get_by_text("Every turbine in the state")).to_be_hidden()
+
+    editor.settings.tile_titles = True
+
+    expect(tile.get_by_text("Turbines", exact=True)).to_be_visible()
+    expect(tile.get_by_text("Every turbine in the state")).to_be_visible()
+
+
+def _opacity(locator):
+    return locator.evaluate(
+        """el => {
+            let host = el
+            while (host && !host.classList?.contains('flowdash-tile-header')) {
+                host = host.parentNode instanceof ShadowRoot ? host.parentNode.host : host.parentNode
+            }
+            return getComputedStyle(host).opacity
+        }"""
+    )
+
+
+@pytest.mark.parametrize("cards", [True, False], ids=["framed", "unframed"])
+def test_untitled_tile_gives_content_the_top_and_reveals_actions_on_hover_and_focus(page, cards):
+    editor = _editor(inspect_outputs=True, tile_cards=cards)
+    editor.add_component("Test/turbines")
+    editor.editable = False
+    serve_component(page, editor)
+
+    expand = page.get_by_role("button", name="Expand Turbines")
+    content = page.get_by_text("turbines tile")
+    content.wait_for()
+    wait_until(lambda: _opacity(expand) == "0", page=page)
+    tile = page.locator(".flowdash-tile")
+    assert ("flowdash-tile-framed" in tile.get_attribute("class")) is cards
+    # No title bar row: only the card padding and the pane margins sit above the content.
+    assert content.bounding_box()["y"] - tile.bounding_box()["y"] < 32
+
+    page.get_by_text("turbines tile").hover()
+    wait_until(lambda: _opacity(expand) == "1", page=page)
+
+    page.mouse.move(0, 0)
+    wait_until(lambda: _opacity(expand) == "0", page=page)
+    expand.focus()
+    wait_until(lambda: _opacity(expand) == "1", page=page)
+    page.keyboard.press("Enter")
+    expect(page.get_by_role("dialog").get_by_text("turbines tile")).to_be_visible()
 
 
 def test_arranging_hides_the_title_bar(page):
