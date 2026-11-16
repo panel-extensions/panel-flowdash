@@ -5,14 +5,15 @@
 [![pypi-version](https://img.shields.io/pypi/v/panel-flowdash.svg?logo=pypi&logoColor=white&style=flat-square)](https://pypi.org/project/panel-flowdash)
 [![python-version](https://img.shields.io/pypi/pyversions/panel-flowdash?logoColor=white&logo=python&style=flat-square)](https://pypi.org/project/panel-flowdash)
 
-A dataflow-driven dashboard builder for [Panel](https://panel.holoviz.org). Define reusable components with typed input/output ports, wire them together visually, and persist layouts to SQLite.
+A dataflow-driven dashboard builder for [Panel](https://panel.holoviz.org). Define reusable components with typed input/output ports, wire them together visually, and persist layouts to SQLite, JSON files or a store of your own.
 
 ## Features
 
 - **Component registry** with the `@register` decorator for metadata-driven discovery
 - **Typed ports** with automatic introspection from `param.output` decorators and Viewer params
 - **Dataflow engine** with cycle detection, type checking, single-source-per-input validation, and runtime error reporting
-- **SQLite persistence** for dashboard layouts, edges, and tile configurations
+- **Edge transforms** that reshape the value carried along a connection (pick a column, filter, sort, aggregate, format) without writing a component
+- **Persistence** of dashboard layouts, edges, and tile configurations to SQLite, a folder of JSON files, or your own store
 - **CLI** (`flowdash serve`) to launch a project directory as a full dashboard app
 - **Embeddable editor** (`FlowDash`) for using the canvas and layout editor inside your own Panel app
 
@@ -39,21 +40,30 @@ Define components with typed ports:
 # Analytics/selector.py
 from panel_flowdash import register
 
-@register(component=True, provides=[{"key": "company", "type": "str"}])
+@register(page=False, component=True, provides=[{"key": "company", "type": "str"}])
 def app(config):
     import panel_material_ui as pmui
-    return pmui.Select(name="Company", options=["ACME", "Globex"])
+
+    select = pmui.Select(label="Company", options=["ACME", "Globex"])
+    config.company = select.param.value  # publish the selection on the output port
+    return select
 ```
 
 ```python
 # Analytics/chart.py
 from panel_flowdash import register
 
-@register(component=True, requires=[{"key": "company", "type": "str"}])
+@register(page=False, component=True, requires=[{"key": "company", "type": "str"}])
 def app(config):
     import panel as pn
-    return pn.pane.Markdown(f"# Chart for {config.get('company', '...')}")
+
+    def title(company):
+        return f"# Chart for {company}"
+
+    return pn.pane.Markdown(pn.bind(title, config.param.company))
 ```
+
+`config` holds one parameter per port. A component publishes an output by assigning to it, and reacts to an input by depending on `config.param.<port>`.
 
 Serve it:
 
@@ -68,6 +78,7 @@ Components can also be Panel `Viewer` subclasses. Ports are introspected automat
 ```python
 import param
 import panel as pn
+import panel_material_ui as pmui
 from panel_flowdash import register
 
 @register(component=True)
@@ -79,7 +90,7 @@ class StockFilter(pn.viewable.Viewer):
         ...
 
     def __panel__(self):
-        return pn.widgets.TextInput.from_param(self.param.ticker)
+        return pmui.TextInput.from_param(self.param.ticker)
 ```
 
 ## Embedding the editor
@@ -89,7 +100,7 @@ The project-directory workflow is optional. `FlowDash` is the editor on its own,
 ```python
 from panel_flowdash import FlowDash
 
-editor = FlowDash([selector, chart], store="dashboards.db")
+editor = FlowDash("my_project/", store="dashboards.db")
 
 src = editor.add_component("Analytics/selector")
 dst = editor.add_component("Analytics/chart")

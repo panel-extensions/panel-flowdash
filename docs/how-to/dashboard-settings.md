@@ -14,7 +14,7 @@ dashboard. It has one built-in parameter, `refresh_period`, the number of second
 between automatic refreshes. The default of 0 turns automatic refreshing off.
 
 ```python
-editor = FlowDash(components)
+editor = FlowDash(components, store="dashboards.db")
 editor.load("sales")
 editor.settings.refresh_period  # 30.0, if the saved dashboard sets it
 editor.settings.refresh_period = 10  # marks the dashboard as having unsaved changes
@@ -39,7 +39,8 @@ Subclass `DashboardSettings` and hand the class to the editor:
 
 ```python
 import param
-from panel_flowdash import DashboardSettings, FlowDash, FlowDashApp
+from panel_flowdash import DashboardSettings, DashboardStore, FlowDash
+from panel_flowdash.app import FlowDashApp
 
 
 class SalesSettings(DashboardSettings):
@@ -47,7 +48,11 @@ class SalesSettings(DashboardSettings):
 
 
 editor = FlowDash(components, settings_class=SalesSettings)
-app = FlowDashApp(project_dir="my_project", settings_class=SalesSettings)
+app = FlowDashApp(
+    project_dir="my_project",
+    store=DashboardStore("my_project/dashboards.db"),
+    settings_class=SalesSettings,
+)
 ```
 
 The new parameters appear in the settings form and are stored with the dashboard.

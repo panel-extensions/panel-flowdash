@@ -7,9 +7,20 @@ a display. It demonstrates chained propagation and runtime error handling.
 
 ## Components
 
+The three modules live in a `Pipeline` section of a project directory:
+
+```
+my_project/
+    Pipeline/
+        __init__.py
+        source.py
+        transform.py
+        display.py
+```
+
 ### Data Source
 
-Produces a list of numbers:
+Produces the list of numbers from 1 to the chosen count:
 
 ```python title="Pipeline/source.py"
 from panel_flowdash import register
@@ -21,13 +32,20 @@ from panel_flowdash import register
     provides=[{"key": "numbers", "type": "list"}],
 )
 def app(config):
+    import panel as pn
     import panel_material_ui as pmui
-    return pmui.IntInput(name="Count", value=5, start=1, end=100)
+
+    count = pmui.IntInput(label="Count", value=5, start=1, end=100)
+    config.numbers = pn.bind(lambda n: list(range(1, n + 1)), count)
+    return count
 ```
+
+Assigning a bound function to the output keeps it up to date: every time the
+count changes, the list is recomputed and published.
 
 ### Transformer
 
-Receives a list and applies a transformation:
+Receives a list, squares every number and publishes the result:
 
 ```python title="Pipeline/transform.py"
 from panel_flowdash import register
@@ -36,19 +54,27 @@ from panel_flowdash import register
     page=False,
     component=True,
     title="Squarer",
-    requires=[{"key": "numbers", "type": "list"}],
+    requires=[{"key": "numbers", "type": "list", "multiple": False}],
     provides=[{"key": "result", "type": "list"}],
 )
 def app(config):
     import panel as pn
-    numbers = config.get("numbers", [])
-    squared = [x**2 for x in numbers]
-    return pn.pane.Str(str(squared))
+
+    def square(numbers):
+        return [x**2 for x in numbers or []]
+
+    config.result = pn.bind(square, config.param.numbers)
+    return pn.pane.Str(config.param.result)
 ```
+
+An input typed `list` normally collects the values of every edge connected to
+it into one list, which suits a summary fed by several sources. Here each list
+arrives over a single edge and is used as it is, so the inputs set
+`"multiple": False`.
 
 ### Display
 
-Shows the final result:
+Shows the sum of the result:
 
 ```python title="Pipeline/display.py"
 from panel_flowdash import register
@@ -57,13 +83,19 @@ from panel_flowdash import register
     page=False,
     component=True,
     title="Result Display",
-    requires=[{"key": "result", "type": "list"}],
+    requires=[{"key": "result", "type": "list", "multiple": False}],
 )
 def app(config):
     import panel as pn
-    result = config.get("result", [])
-    return pn.pane.Markdown(f"**Sum:** {sum(result)}")
+
+    def total(result):
+        return f"**Sum:** {sum(result or [])}"
+
+    return pn.pane.Markdown(pn.bind(total, config.param.result))
 ```
+
+A reduction this simple can also happen on the edge itself, with an
+*Aggregate* step, see [Transform Edges](../how-to/transform-edges.md).
 
 ---
 
@@ -86,7 +118,7 @@ specs = {
         title="Transform",
         description=None, icon=None, tags=[],
         outputs=[OutputPort(name="result", type="list")],
-        inputs=[InputPort(name="numbers", type="list")],
+        inputs=[InputPort(name="numbers", type="list", multiple=False)],
         default_size=None,
     ),
     "display": ComponentSpec(
@@ -94,7 +126,7 @@ specs = {
         title="Display",
         description=None, icon=None, tags=[],
         outputs=[],
-        inputs=[InputPort(name="result", type="list")],
+        inputs=[InputPort(name="result", type="list", multiple=False)],
         default_size=None,
     ),
 }
@@ -114,7 +146,7 @@ assert graph.add_edge("tfm_1", "result", "dsp_1", "result") is True
 src_state = graph.get_state("src_1")
 src_state.numbers = [1, 2, 3, 4, 5]
 
-# After propagation:
+# The value arrives on the transformer's input:
 tfm_state = graph.get_state("tfm_1")
 assert tfm_state.numbers == [1, 2, 3, 4, 5]
 ```
@@ -123,16 +155,20 @@ assert tfm_state.numbers == [1, 2, 3, 4, 5]
 
 ## Error handling
 
-If a type mismatch slips past compile-time checking (e.g. untyped ports), the
-runtime validation catches it:
+Invalid connections are refused when they are wired, and `add_edge` returns
+the reason instead of `True`:
 
 ```python
-# Attempting to connect incompatible typed ports fails at wire time:
 result = graph.add_edge("src_1", "numbers", "dsp_1", "result")
-# Returns error: "Input 'result' already has a connection..."
+assert result == "Input 'result' already has a connection. Disconnect it first."
+```
 
-# Runtime errors on value propagation are caught by on_error:
-assert len(errors) == 0  # no errors if types are compatible
+Errors raised while a value propagates, such as an input rejecting it, are
+passed to the `on_error` callback instead of raising, so one failing edge does
+not stop the others:
+
+```python
+assert errors == []  # nothing has failed so far
 ```
 
 ---
@@ -140,5 +176,5 @@ assert len(errors) == 0  # no errors if types are compatible
 ## Serving the pipeline
 
 ```bash
-flowdash serve Pipeline/ --title "Data Pipeline"
+flowdash serve my_project/ --title "Data Pipeline"
 ```

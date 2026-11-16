@@ -100,7 +100,7 @@ def editor(data, schema, *, id, type, on_patch):
     # build and return a custom editor view; call on_patch({...}) to apply changes
     ...
 
-@register(component=True, config=["title"], config_editor=editor, ...)
+@register(component=True, config=["title"], config_editor=editor)
 class app(pn.viewable.Viewer):
     ...
 ```
