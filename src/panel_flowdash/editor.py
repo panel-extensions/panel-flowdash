@@ -64,6 +64,7 @@ from panel_flowdash.registry import RegistryEntry
 from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transform_editor import TransformEditor
 from panel_flowdash.transforms import parse_transform, summarize_transform
+from panel_flowdash.ui.palette import ComponentPalette, palette_entry, palette_items
 from panel_flowdash.util import (
     close_dialog,
     gate_view,
@@ -253,21 +254,6 @@ _NODE_DEFAULTS = {
 _SIDE_PANEL_WIDTH = 250
 # Sits where the tile's close handle does in edit mode, which hides the button.
 _INSPECT_BUTTON_STYLES = {"position": "absolute", "top": "4px", "right": "4px", "z-index": "5"}
-_PALETTE_SX = {
-    "& .MuiListItemButton-root": {"py": 0.25, "minHeight": 0},
-    "& .MuiListItemText-root": {"my": 0},
-    "& .MuiListItemText-primary": {"fontSize": "0.85rem"},
-    "& .MuiListItemIcon-root .MuiIcon-root": {"fontSize": "1.1rem"},
-    # Section headers are the list's direct children; components sit in their collapses.
-    "& > .MuiListItemButton-root .MuiListItemText-primary": {
-        "fontSize": "0.72rem",
-        "fontWeight": 600,
-        "letterSpacing": "0.06em",
-        "textTransform": "uppercase",
-        "color": "text.secondary",
-    },
-}
-
 _FLOW_STYLESHEET = """\
 .react-flow__node {
   padding: 0;
@@ -902,42 +888,20 @@ class FlowDash(Viewer):
             pn.extension(*extensions)
 
     def _make_palette(self):
-        palette = pmui.MenuList(
-            draggable=True,
+        self._palette_panel = ComponentPalette(
             drag_type=_PALETTE_DRAG_TYPE,
-            highlight=False,
-            level_indent=8,
-            sizing_mode="stretch_width",
-            margin=0,
-            sx=_PALETTE_SX,
+            items=self._palette_items,
+            on_click=self._on_palette_clicked,
         )
-        palette.on_click(self._on_palette_clicked)
-        return palette
+        return self._palette_panel.menu
 
     def _palette_items(self) -> list[dict]:
-        placed = self._placed_singletons()
-        sections: dict[str, list[dict]] = {}
+        placed = {item["component_id"] for item in self._tile_items}
+        entries = []
         for app_id, entry in self._component_entries.items():
-            meta = entry.metadata
-            sections.setdefault(entry.section.replace("_", " "), []).append(
-                {
-                    "label": entry.title,
-                    "icon": meta.icon,
-                    "tooltip": meta.description,
-                    "component_id": app_id,
-                    "draggable": app_id not in placed,
-                }
-            )
-        return [
-            {
-                "label": section,
-                "icon": None,
-                "draggable": False,
-                "selectable": False,
-                "items": items,
-            }
-            for section, items in sections.items()
-        ]
+            spec = self._component_specs.get(app_id)
+            entries.append(palette_entry(entry, spec, placed=app_id in placed))
+        return palette_items(entries, self._palette_panel.query)
 
     def _node_types_from_specs(self):
         node_types = {}
@@ -1777,16 +1741,10 @@ class FlowDash(Viewer):
             margin=10,
             sx={"alignItems": "center", "borderRadius": 2, "px": 0.5},
         )
-        self._palette_section = pn.Column(
-            pmui.Typography(
-                "Drag a component onto the canvas, or onto a port to connect it.",
-                variant="caption",
-                sx={"color": "text.secondary"},
-                margin=(10, 10, 0, 10),
-            ),
-            self._palette,
-            sizing_mode="stretch_width",
-        )
+        self._palette_section = self._palette_panel
+        # Specs registered after a lazy import replace the node types, and give
+        # the palette real ports in place of the ones declared on `@register`.
+        self._flow.param.watch(lambda _event: self._palette_panel.refresh(), "node_types")
         self._side_panel = pmui.Column(
             self._palette_section,
             width=_SIDE_PANEL_WIDTH,

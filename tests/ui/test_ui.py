@@ -2,6 +2,7 @@
 # import time
 
 import json
+import re
 
 import panel as pn
 import panel_material_ui as pmui
@@ -144,6 +145,12 @@ def test_editor_drag_validation_rejects_untyped_value_of_wrong_type(page):
     assert editor._flow.edges == []
 
 
+def _palette_item(page, title):
+    # Matched on the title alone: the "Data sources" header also contains "source".
+    primary = page.locator(".MuiListItemText-primary", has_text=re.compile(f"^{title}$"))
+    return page.locator(".MuiListItemButton-root", has=primary)
+
+
 def test_palette_click_places_component_inside_panned_viewport(page):
     editor = FlowDash(
         {"Test/source": source_component}, notifications=False, include_builtin_components=False
@@ -164,7 +171,7 @@ def test_palette_click_places_component_inside_panned_viewport(page):
     page.mouse.up()
     wait_until(lambda: editor._flow.viewport["x"] > initial_x + 500, timeout=8000)
 
-    page.locator(".MuiListItemButton-root").filter(has_text="Source").click()
+    _palette_item(page, "source").click()
     wait_until(lambda: len(editor._flow.nodes) == 2, timeout=8000)
 
     new_node = page.locator(".react-flow__node").nth(1)
@@ -211,12 +218,11 @@ def test_palette_drag_adds_and_wires_components(page):
     sink = editor.add_component("Test/sink", position=(300, 100))
     serve_component(page, editor)
 
-    palette = page.locator(".MuiListItemButton-root")
     pane = page.locator(".react-flow__pane")
     expect_count = page.locator(".react-flow__node")
     wait_until(lambda: expect_count.count() == 1, timeout=8000)
 
-    palette.filter(has_text="Source").drag_to(
+    _palette_item(page, "source").drag_to(
         page.locator(f".react-flow__node[data-id='{sink}'] .react-flow__handle-left")
     )
     wait_until(lambda: len(editor.graph.edges) == 1, timeout=8000)
@@ -224,7 +230,7 @@ def test_palette_drag_adds_and_wires_components(page):
     assert editor.graph.edges[0]["target"] == sink
     assert next(n for n in editor._flow.nodes if n["id"] == source)["position"]["x"] < 300
 
-    palette.filter(has_text="Sink").drag_to(pane, target_position={"x": 40, "y": 40})
+    _palette_item(page, "sink").drag_to(pane, target_position={"x": 40, "y": 40})
     wait_until(lambda: len(editor._tile_items) == 3, timeout=8000)
     assert len(editor.graph.edges) == 1
 
