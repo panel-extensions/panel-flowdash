@@ -40,11 +40,14 @@ class app(pn.viewable.Viewer):
         return pmui.IntInput.from_param(self.param.min_capacity)
 ```
 
-In dashboard mode, a `sidebar=True` component's view is rendered in the Page
-sidebar instead of the tile grid, and the sidebar opens automatically whenever at
-least one sidebar component is present. The component still participates in the
-dataflow exactly like any other node, its ports wire up the same way; only its
-placement changes.
+In view mode and on the Layout tab, a `sidebar=True` component's view is rendered
+in a controls bar above the tiles instead of in the tile grid. The controls sit in
+a row that wraps on narrow screens, and the bar is hidden while it has nothing to
+show. In view mode it also holds a pipeline strip, source to transforms to views
+with a status dot per stage. The component still participates in the dataflow
+exactly like any other node, its ports wire up the same way; only its placement
+changes. Pass `controls_bar=False` (through `editor_options` for a `FlowDashApp`)
+to render these views in the page sidebar instead.
 
 The `complex_dataflow` example uses this for its data source and all three
 filters, keeping the main grid for the table, chart, and map.

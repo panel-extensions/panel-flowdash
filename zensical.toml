@@ -25,6 +25,7 @@ nav = [
   ]},
   {"Examples" = [
     {"Gallery" = "examples/index.md"},
+    {"Wind Energy Explorer" = "examples/wind-energy.md"},
     {"Viewer Components" = "examples/viewer-components.md"},
     {"Multi-step Pipeline" = "examples/pipeline.md"}
   ]},

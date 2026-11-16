@@ -42,13 +42,15 @@ class RecordingApp(FlowDashApp):
 AUTH = AuthConfig(user_groups={"erin": ["sales"], "frank": ["sales"]})
 
 
-def _serve_edit(page, tmp_path, store, dashboard):
+def _serve_edit(page, tmp_path, store, dashboard, suffix=None):
     """Serve the app's routes, opened on *dashboard* in edit mode; return the apps created."""
     RecordingApp.instances = []
     routes = RecordingApp.build_routes(
         tmp_path, registry=REGISTRY, store=store, auth_config=AUTH, notifications=False
     )
-    serve_component(page, routes, suffix=f"/dash/{dashboard.dashboard_id}?edit=true")
+    if suffix is None:
+        suffix = f"/dash/{dashboard.dashboard_id}?edit=true"
+    serve_component(page, routes, suffix=suffix)
     return RecordingApp.instances
 
 
@@ -111,7 +113,7 @@ def test_roles_and_the_everyone_switch_map_to_the_permission(page):
 def test_share_and_settings_open_the_same_dialog_on_their_sections(page, tmp_path):
     store = MemoryDashboardStore()
     dashboard = store.create_dashboard(resolve_identity(AUTH).user, "Plant")
-    _serve_edit(page, tmp_path, store, dashboard)
+    _serve_edit(page, tmp_path, store, dashboard, suffix=f"/dash/{dashboard.dashboard_id}")
 
     page.get_by_role("button", name="Share").click()
     dialog = page.get_by_role("dialog")
@@ -122,9 +124,52 @@ def test_share_and_settings_open_the_same_dialog_on_their_sections(page, tmp_pat
     dialog.get_by_role("button", name="Cancel").click()
     expect(dialog).to_be_hidden()
 
+    page.get_by_role("button", name="More actions").click()
+    page.get_by_role("menuitem", name="Settings").click()
+    expect(dialog.get_by_label("Name")).to_have_value("Plant")
+    expect(dialog.get_by_label("Link")).to_be_hidden()
+    dialog.get_by_role("button", name="Cancel").click()
+    expect(dialog).to_be_hidden()
+
+    page.get_by_role("button", name="Edit").click()
     page.get_by_role("button", name="Settings").click()
     expect(dialog.get_by_label("Name")).to_have_value("Plant")
     expect(dialog.get_by_label("Link")).to_be_hidden()
+
+
+def test_launcher_share_opens_the_sharing_section(page, tmp_path):
+    store = MemoryDashboardStore()
+    dashboard = store.create_dashboard(resolve_identity(AUTH).user, "Plant")
+    _serve_edit(page, tmp_path, store, dashboard, suffix="/")
+
+    page.get_by_role("button", name="More actions for Plant").click()
+    page.get_by_role("menuitem", name="Share").click()
+    dialog = page.get_by_role("dialog")
+    expect(dialog.get_by_text("Plant, owned by you")).to_be_visible()
+    expect(dialog.get_by_label("Link")).to_have_value(
+        f"{page.url.rstrip('/')}/dash/{dashboard.dashboard_id}"
+    )
+
+
+def test_tile_switches_change_the_tile_settings(page, tmp_path):
+    store = MemoryDashboardStore()
+    dashboard = store.create_dashboard(resolve_identity(AUTH).user, "Plant")
+    dashboard.items = [DashboardItem(instance_id="m1", component_id="Test/meter")]
+    store.save_dashboard(dashboard)
+    _serve_edit(page, tmp_path, store, dashboard)
+
+    page.get_by_role("button", name="Settings").click()
+    dialog = page.get_by_role("dialog")
+    titles = dialog.get_by_role("switch", name="Show tile titles")
+    expect(titles).to_be_enabled()
+    dialog.get_by_role("switch", name="Frame tiles").click()
+    expect(titles).to_be_disabled()
+    dialog.get_by_role("button", name="Save settings").click()
+
+    wait_until(
+        lambda: store._load_any(dashboard.dashboard_id).settings.get("tile_cards") is False,
+        page,
+    )
 
 
 def test_refresh_presets_set_the_period_and_save_it(page, tmp_path):

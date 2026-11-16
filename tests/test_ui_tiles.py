@@ -158,7 +158,7 @@ class TestTileFrame:
         assert editor.settings.tile_cards is True
 
     def test_setting_is_offered_in_the_settings_form(self, editor):
-        assert {"tile_cards", "tile_titles"} <= set(editor._settings_form._widgets)
+        assert {"tile_cards", "tile_titles"} <= set(editor._settings_view._extra_form._widgets)
 
     def test_arranging_leaves_the_frame_to_the_grid(self, editor):
         instance_id = editor.add_component("Test/source")

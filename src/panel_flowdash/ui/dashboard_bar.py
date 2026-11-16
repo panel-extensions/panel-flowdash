@@ -11,6 +11,7 @@ import panel_material_ui as pmui
 import param
 from panel.viewable import Viewer
 
+from panel_flowdash.ui.health import DashboardHealth
 from panel_flowdash.util import close_dialog, confirm, open_dialog
 
 # Overflow menus show only an icon: MenuButton always renders a dropdown arrow.
@@ -44,6 +45,49 @@ _DIRTY_DOT_SX = {
         "mr": "6px",
     },
 }
+
+
+_PERIODS = [
+    ("Off", 0),
+    ("Every minute", 60),
+    ("Every 5 min", 300),
+    ("Every 15 min", 900),
+    ("Every hour", 3600),
+]
+
+_HEALTH_COLORS = {"ok": "success", "waiting": "warning", "failed": "error"}
+
+
+def format_period(seconds: float) -> str:
+    """Return a refresh period as "15 min", "1 hour" or "30 s"."""
+    seconds = int(seconds)
+    if seconds % 3600 == 0:
+        hours = seconds // 3600
+        return f"{hours} hour{'' if hours == 1 else 's'}"
+    if seconds % 60 == 0:
+        return f"{seconds // 60} min"
+    return f"{seconds} s"
+
+
+def _health_chip_sx(status: str) -> dict:
+    color = _HEALTH_COLORS[status]
+    return {
+        "display": "inline-flex",
+        "alignItems": "center",
+        "gap": "6px",
+        "px": "8px",
+        "borderRadius": "8px",
+        "fontWeight": 500,
+        "color": f"{color}.main",
+        "bgcolor": f"color-mix(in srgb, var(--mui-palette-{color}-main) 12%, transparent)",
+        "&::before": {
+            "content": '""',
+            "width": "8px",
+            "height": "8px",
+            "borderRadius": "50%",
+            "bgcolor": f"{color}.main",
+        },
+    }
 
 
 class DashboardBar(Viewer):
@@ -92,11 +136,42 @@ class DashboardBar(Viewer):
         self.save_state = pmui.Typography(
             variant="caption", sx={"color": "text.secondary"}, margin=0
         )
+        self.description = pmui.Typography(
+            variant="body2",
+            margin=0,
+            sx={"color": "text.secondary"},
+            styles={"flex-basis": "100%"},
+        )
+        self.health = DashboardHealth(editor)
+        self.health_chip = pmui.Typography(variant="caption", margin=0)
+        self._refreshed_at: str | None = None
 
+        # Refresh and the period menu sit flush, as one split button.
         self.refresh_button = pmui.Button(
-            label="Refresh", icon="refresh", variant="outlined", size="small", margin=(0, 4)
+            label="Refresh",
+            icon="refresh",
+            variant="outlined",
+            size="small",
+            margin=(0, 0, 0, 4),
+            sx={"borderTopRightRadius": 0, "borderBottomRightRadius": 0},
         )
         self.refresh_button.on_click(lambda _event: editor.param.trigger("refresh"))
+        self.refresh_period = pmui.MenuButton(
+            label="Off",
+            variant="outlined",
+            size="small",
+            description="Update automatically",
+            margin=(0, 4, 0, 0),
+            sx={
+                "borderTopLeftRadius": 0,
+                "borderBottomLeftRadius": 0,
+                "ml": "-1px",
+                "minWidth": 0,
+                "whiteSpace": "nowrap",
+                "color": "text.secondary",
+            },
+        )
+        self.refresh_period.on_click(self._on_period_chosen)
         self.mode_toggle = pmui.RadioButtonGroup(
             options={":material/visibility: View": "view", ":material/edit: Edit": "edit"},
             value="view",
@@ -155,9 +230,11 @@ class DashboardBar(Viewer):
             visible=False,
         )
 
-        self._title_block = pn.Column(
-            self.title, pn.Row(margin=0), margin=(0, 8, 0, 0), min_width=0
+        # A wrapping line, so the view meta can put the description on a line of its own.
+        meta = pn.FlexBox(
+            align_items="center", flex_wrap="wrap", gap="2px 12px", margin=0, sizing_mode=None
         )
+        self._title_block = pn.Column(self.title, meta, margin=(0, 8, 0, 0), min_width=0)
         self._actions = pn.FlexBox(
             align_items="center",
             flex_wrap="wrap",
@@ -185,19 +262,24 @@ class DashboardBar(Viewer):
         )
         editor.param.watch(self._on_dashboard_changed, "dashboard")
         editor.param.watch(self._on_saved, "saved")
+        editor.settings.param.watch(self._sync_view_meta, ["description", "refresh_period"])
+        self.health.param.watch(self._sync_view_meta, ["failed", "tiles", "waiting"])
 
     # ------------------------------------------------------------------
     # Sections, the extension points
     # ------------------------------------------------------------------
 
     def _view_meta(self) -> list:
-        """Items on the line under the title in view mode."""
-        return [self.refresh_label]
+        """Items under the title in view mode: the description, health and refresh state."""
+        items = [self.description] if self.description.object else []
+        if self.health_chip.object:
+            items.append(self.health_chip)
+        return [*items, self.refresh_label]
 
     def _view_actions(self) -> list:
         """Actions on the right in view mode."""
         editor = self.editor
-        actions = [self.refresh_button, *editor.toolbar_extra]
+        actions = [self.refresh_button, self.refresh_period, *editor.toolbar_extra]
         if not editor.read_only:
             actions.append(self.mode_toggle)
         if self._overflow_items():
@@ -271,6 +353,7 @@ class DashboardBar(Viewer):
             object=state,
             sx={"color": "text.secondary", **(_DIRTY_DOT_SX if dirty else {})},
         )
+        self._update_view_meta()
         sub = self._edit_status() if editing else self._view_meta()
         line = self._title_block[1]
         if list(line) != sub:
@@ -300,6 +383,57 @@ class DashboardBar(Viewer):
         if editor.dashboard is not None:
             return "All changes saved", False
         return "", False
+
+    def _update_view_meta(self):
+        settings = self.editor.settings
+        period = settings.refresh_period
+        text = f"Refreshed {self._refreshed_at}" if self._refreshed_at else ""
+        if text and period:
+            text += f", auto-refresh every {format_period(period)}"
+        self.refresh_label.object = text
+        self.description.object = settings.description.strip()
+        health = self.health
+        status = "failed" if health.failed else "waiting" if health.waiting else "ok"
+        self.health_chip.param.update(object=health.summary(), sx=_health_chip_sx(status))
+        self.refresh_period.param.update(
+            label=format_period(period) if period else "Off",
+            items=[
+                {
+                    "label": label,
+                    "icon": "radio_button_checked"
+                    if seconds == period
+                    else "radio_button_unchecked",
+                    "period": seconds,
+                }
+                for label, seconds in _PERIODS
+            ],
+        )
+
+    def _sync_view_meta(self, *_events):
+        if self.editor.editable:
+            return
+        self._update_view_meta()
+        line = self._title_block[1]
+        sub = self._view_meta()
+        if list(line) != sub:
+            line[:] = sub
+
+    def stamp_refresh(self):
+        """Record that the dashboard was refreshed now."""
+        self._refreshed_at = time.strftime("%H:%M")
+        with pn.io.hold():
+            self._update_view_meta()
+
+    def _on_period_chosen(self, item):
+        """Set the auto-refresh period for this session, without marking the dashboard changed."""
+        if not isinstance(item, dict) or "period" not in item:
+            return
+        editor = self.editor
+        editor._loading_settings = True
+        try:
+            editor.settings.refresh_period = item["period"]
+        finally:
+            editor._loading_settings = False
 
     def _on_dashboard_changed(self, _event):
         self._saved_at = None

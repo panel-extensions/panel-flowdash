@@ -47,14 +47,19 @@ class TestDashboardBarSections:
     async def test_view_section(self, editor):
         editor.editable = False
         bar = editor._dashboard_bar
-        assert bar._actions.objects == [bar.refresh_button, bar.mode_toggle, bar.overflow]
+        assert bar._actions.objects == [
+            bar.refresh_button,
+            bar.refresh_period,
+            bar.mode_toggle,
+            bar.overflow,
+        ]
         assert bar._title_block[1].objects == [bar.refresh_label]
         assert bar.title.variant == "h5"
 
     async def test_view_section_of_a_read_only_dashboard(self, editor):
         editor.param.update(editable=False, read_only=True)
         bar = editor._dashboard_bar
-        assert bar._actions.objects == [bar.refresh_button]
+        assert bar._actions.objects == [bar.refresh_button, bar.refresh_period]
 
     async def test_title_follows_the_dashboard(self, store_editor):
         assert store_editor._dashboard_bar.title.object == "Plant"
