@@ -64,8 +64,8 @@ from panel_flowdash.registry import RegistryEntry
 from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transform_editor import TransformEditor
 from panel_flowdash.transforms import parse_transform, summarize_transform
-from panel_flowdash.ui.palette import ComponentPalette, palette_entry, palette_items
 from panel_flowdash.ui.dashboard_bar import DashboardBar
+from panel_flowdash.ui.palette import ComponentPalette, palette_entry, palette_items
 from panel_flowdash.util import (
     close_dialog,
     gate_view,
