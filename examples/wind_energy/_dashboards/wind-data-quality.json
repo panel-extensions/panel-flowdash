@@ -1,0 +1,222 @@
+{
+  "version": 3,
+  "title": "Data Quality",
+  "items": [
+    {
+      "instance_id": "turbines",
+      "component_id": "Sources/turbines",
+      "x": 0,
+      "y": 300,
+      "config": {}
+    },
+    {
+      "instance_id": "state",
+      "component_id": "Controls/state_picker",
+      "x": 0,
+      "y": 0,
+      "config": {
+        "initial_state": "All"
+      }
+    },
+    {
+      "instance_id": "filter",
+      "component_id": "Transforms/filter_turbines",
+      "x": 520,
+      "y": 120,
+      "config": {}
+    },
+    {
+      "instance_id": "gate",
+      "component_id": "Transforms/quality_gate",
+      "x": 1040,
+      "y": 120,
+      "config": {
+        "min_turbines": 100,
+        "max_missing": 0.1
+      }
+    },
+    {
+      "instance_id": "status",
+      "component_id": "Views/gate_status",
+      "x": 1560,
+      "y": 0,
+      "config": {}
+    },
+    {
+      "instance_id": "completeness",
+      "component_id": "Views/completeness",
+      "x": 1040,
+      "y": 560,
+      "config": {}
+    },
+    {
+      "instance_id": "kpi_checked",
+      "component_id": "Views/kpi",
+      "x": 1560,
+      "y": 240,
+      "config": {
+        "metric": "turbines",
+        "label": "Turbines passing the gate"
+      }
+    },
+    {
+      "instance_id": "timeline",
+      "component_id": "Views/capacity_timeline",
+      "x": 1560,
+      "y": 480,
+      "config": {}
+    },
+    {
+      "instance_id": "manufacturers",
+      "component_id": "Views/manufacturers",
+      "x": 2160,
+      "y": 480,
+      "config": {}
+    },
+    {
+      "instance_id": "export",
+      "component_id": "Views/raw_export",
+      "x": 1040,
+      "y": 980,
+      "config": {}
+    }
+  ],
+  "edges": [
+    {
+      "source": "turbines",
+      "source_port": "turbines",
+      "target": "filter",
+      "target_port": "turbines"
+    },
+    {
+      "source": "turbines",
+      "source_port": "turbines",
+      "target": "state",
+      "target_port": "turbines"
+    },
+    {
+      "source": "state",
+      "source_port": "state",
+      "target": "filter",
+      "target_port": "state"
+    },
+    {
+      "source": "filter",
+      "source_port": "filtered",
+      "target": "gate",
+      "target_port": "turbines"
+    },
+    {
+      "source": "filter",
+      "source_port": "filtered",
+      "target": "completeness",
+      "target_port": "turbines"
+    },
+    {
+      "source": "filter",
+      "source_port": "filtered",
+      "target": "export",
+      "target_port": "turbines"
+    },
+    {
+      "source": "gate",
+      "source_port": "checked",
+      "target": "status",
+      "target_port": "checked"
+    },
+    {
+      "source": "gate",
+      "source_port": "checked",
+      "target": "kpi_checked",
+      "target_port": "turbines"
+    },
+    {
+      "source": "gate",
+      "source_port": "checked",
+      "target": "timeline",
+      "target_port": "turbines"
+    },
+    {
+      "source": "gate",
+      "source_port": "checked",
+      "target": "manufacturers",
+      "target_port": "turbines"
+    }
+  ],
+  "tile_layout": [
+    {
+      "instance_id": "status",
+      "index": 0,
+      "width": 34,
+      "height": 170,
+      "visible": true
+    },
+    {
+      "instance_id": "kpi_checked",
+      "index": 1,
+      "width": 33,
+      "height": 170,
+      "visible": true
+    },
+    {
+      "instance_id": "export",
+      "index": 2,
+      "width": 33,
+      "height": 170,
+      "visible": true
+    },
+    {
+      "instance_id": "gate",
+      "index": 3,
+      "width": 34,
+      "height": 330,
+      "visible": true
+    },
+    {
+      "instance_id": "completeness",
+      "index": 4,
+      "width": 66,
+      "height": 330,
+      "visible": true
+    },
+    {
+      "instance_id": "timeline",
+      "index": 5,
+      "width": 60,
+      "height": 360,
+      "visible": true
+    },
+    {
+      "instance_id": "manufacturers",
+      "index": 6,
+      "width": 40,
+      "height": 360,
+      "visible": true
+    },
+    {
+      "instance_id": "turbines",
+      "index": 7,
+      "width": 33.33,
+      "height": 150,
+      "visible": false
+    },
+    {
+      "instance_id": "filter",
+      "index": 8,
+      "width": 33.33,
+      "height": 150,
+      "visible": false
+    }
+  ],
+  "breakpoints": [
+    768,
+    1200
+  ],
+  "responsive_layouts": {},
+  "reference_width": 1200,
+  "settings": {
+    "refresh_period": 0,
+    "capacity_unit": "GW",
+    "color_scheme": "greens"
+  }
+}
