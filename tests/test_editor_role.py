@@ -225,12 +225,19 @@ class TestApp:
         def actions(identity):
             app = _app(store, identity)
             item = next(i for i in app._get_dashboard_menu_items() if i["label"] == "Shared")
-            return [a["label"] for a in item.get("actions", [])]
+            return ["---" if a is None else a["label"] for a in item.get("actions", [])]
 
-        assert actions(ALICE) == ["Edit", "Rename", "Delete"]
-        assert actions(BOB) == ["Edit"]
+        assert actions(ALICE) == [
+            "Edit",
+            "Rename",
+            "Duplicate",
+            "Share",
+            "Download as file",
+            "Delete",
+        ]
+        assert actions(BOB) == ["Edit", "Duplicate", "Download as file"]
         store.set_permission(did, Permission())
-        assert actions(DAVE) == []
+        assert actions(DAVE) == ["Duplicate", "Download as file"]
 
     async def test_editor_actions_include_viewer_actions(self, shared, location):
         class CopyApp(FlowDashApp):
@@ -259,7 +266,7 @@ class TestApp:
 class TestInspectPermission:
     def _button(self, editor):
         editor.editable = False
-        return editor._inspect_tiles["s1"][1]
+        return editor._inspect_tiles["s1"].inspect_button
 
     def _editor(self, **params):
         editor = FlowDash(COMPONENTS, notifications=False, inspect_outputs=True, **params)
@@ -298,7 +305,7 @@ class TestInspectPermission:
         dashboard.items = [DashboardItem(instance_id="b1", component_id=BOUNDED)]
         editor.load_model(dashboard)
         editor.editable = False
-        button = editor._inspect_tiles["b1"][1]
+        button = editor._inspect_tiles["b1"].inspect_button
         editor.settings.viewers_can_inspect = True
         assert not button.visible
 
@@ -320,16 +327,16 @@ class TestInspectPermission:
         viewer = _app(store, DAVE, **options)
         await viewer._load_dashboard(did)
         assert viewer._editor.read_only
-        assert not viewer._editor._inspect_tiles["s1"][1].visible
+        assert not viewer._editor._inspect_tiles["s1"].inspect_button.visible
 
         editor = _app(store, BOB, **options)
         await editor._load_dashboard(did)
         assert not editor._editor.read_only
-        assert editor._editor._inspect_tiles["s1"][1].visible
+        assert editor._editor._inspect_tiles["s1"].inspect_button.visible
 
         dashboard = store._load_any(did)
         dashboard.settings = {"viewers_can_inspect": True}
         store.save_dashboard(dashboard)
         viewer = _app(store, DAVE, **options)
         await viewer._load_dashboard(did)
-        assert viewer._editor._inspect_tiles["s1"][1].visible
+        assert viewer._editor._inspect_tiles["s1"].inspect_button.visible

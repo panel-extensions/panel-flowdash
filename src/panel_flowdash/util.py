@@ -14,6 +14,7 @@ import panel_material_ui as pmui
 import param
 
 from panel_flowdash.session_state import check_requirements
+from panel_flowdash.ui.waiting import WaitingPlaceholder
 
 if t.TYPE_CHECKING:
     from collections.abc import Callable
@@ -167,22 +168,7 @@ def gate_view(
     if not ports:
         return view, None
 
-    placeholder = pmui.Typography(
-        variant="body2",
-        sizing_mode="stretch_both",
-        # Canvas nodes shrink to their content, so a stretching placeholder
-        # needs its own minimum size to leave the node any room.
-        min_height=64,
-        min_width=200,
-        sx={
-            "alignItems": "center",
-            "color": "text.secondary",
-            "display": "flex",
-            "justifyContent": "center",
-            "p": 1,
-            "textAlign": "center",
-        },
-    )
+    placeholder = WaitingPlaceholder()
     # The view is wrapped rather than toggled itself, since a component may
     # manage the `visible` of the objects it returns.
     body = pn.Column(view, margin=0, sizing_mode="stretch_both")
@@ -190,10 +176,9 @@ def gate_view(
     def update(*_):
         missing = missing_inputs(state, ports)
         with pn.io.hold():
-            placeholder.param.update(
-                object=message or f"Waiting for {', '.join(missing)}",
-                visible=bool(missing),
-            )
+            if missing:
+                placeholder.show(missing, message)
+            placeholder.visible = bool(missing)
             body.visible = not missing
 
     update()

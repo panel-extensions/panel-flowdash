@@ -10,12 +10,22 @@ shared `refresh` signal.
 ## Settings
 
 `FlowDash.settings` is a `param.Parameterized` instance filled from the loaded
-dashboard. It has two built-in parameters: `refresh_period`, the number of seconds
+dashboard. Its built-in parameters include `refresh_period`, the number of seconds
 between automatic refreshes (the default of 0 turns automatic refreshing off), and
 `viewers_can_inspect`, which opens output inspection to people who may only view
 the dashboard (see [Inspecting outputs](embed-the-editor.md#inspecting-outputs)).
 The form only offers `viewers_can_inspect` when the editor has `inspect_outputs`
 on.
+
+Two more control how tiles look in view mode. `tile_cards` (on by default) draws
+each tile as a framed card; turn it off to render tiles as the components' own
+views. `tile_titles` (off by default) adds a row with the tile's title and the
+component's description to each card. Without it a tile's actions take no space:
+Inspect, Expand and, when there is something to put in it, a More menu float
+over the tile's top-right corner on hover or keyboard focus. Set the defaults
+for dashboards that have not saved these settings with
+`FlowDash(tile_cards=..., tile_titles=...)`, or through `editor_options` in a
+`FlowDashApp`.
 
 ```python
 editor = FlowDash(components, store="dashboards.db")

@@ -2343,26 +2343,26 @@ class TestRequiredInputPlaceholder:
         target = editor.add_component("Demo/function")
         view = editor._tile_objects[0]
         placeholder, _ = view
-        assert placeholder.object == "Waiting for Company, Region"
+        assert placeholder.headline.object == "This tile needs Company and Region"
 
         editor.graph.get_state(target).company = "ACME"
 
-        assert placeholder.object == "Waiting for Region"
+        assert placeholder.headline.object == "This tile needs Region"
 
     async def test_viewer_message_uses_the_param_label(self, editor):
         editor.add_component("Demo/viewer")
         placeholder, _ = editor._tile_objects[0]
-        assert placeholder.object == "Waiting for Company"
+        assert placeholder.headline.object == "This tile needs Company"
 
     async def test_registered_message_replaces_the_default(self, editor):
         target = editor.add_component("Demo/message")
         view = editor._tile_objects[0]
         placeholder, _ = view
-        assert placeholder.object == "Pick a company to start"
+        assert placeholder.headline.object == "Pick a company to start"
 
         editor.graph.get_state(target).company = "ACME"
         assert self._shown(view) == (False, True)
-        assert placeholder.object == "Pick a company to start"
+        assert placeholder.headline.object == "Pick a company to start"
 
     async def test_component_is_instantiated_while_blocked(self, editor):
         editor.add_component("Demo/viewer")
@@ -2398,7 +2398,7 @@ class TestRequiredInputPlaceholder:
     async def test_required_but_non_blocking_inputs_do_not_gate(self, editor):
         editor.add_component("Demo/function")
         placeholder, _ = editor._tile_objects[0]
-        assert placeholder.object == "Waiting for Company, Region"
+        assert placeholder.headline.object == "This tile needs Company and Region"
 
     async def test_fallback_satisfies_a_blocking_input(self, editor):
         target = editor.add_component("Demo/fallback")
@@ -2432,7 +2432,7 @@ class TestRequiredInputPlaceholder:
     async def test_gated_view_reaches_the_tile_grid(self, editor):
         editor.add_component("Demo/viewer")
         editor.mode = "dashboard"
-        assert editor._tile_grid[0] is editor._tile_objects[0]
+        assert editor._tile_grid[0].view is editor._tile_objects[0]
 
     async def test_saved_dashboard_loads_gated(self, editor):
         source = editor.add_component("Demo/source")
@@ -2535,15 +2535,21 @@ BROKEN = "Demo/broken"
 GATED = "Demo/gated"
 
 
-def _texts(dialog):
-    """The text of every pane in the dialog, in document order."""
-    return [str(pane.object) for pane in dialog.select(pn.pane.base.PaneBase)]
+def _texts(sheet):
+    """The text of every pane in the sheet, in document order."""
+    return [str(pane.object) for pane in sheet.select(pn.pane.base.PaneBase)]
 
 
 def _tile(editor, index=0):
-    """The grid's view of a tile, as an inspect wrapper when it has one."""
+    """The grid's framed tile, in view mode."""
     editor.editable = False
     return editor._tile_grid.objects[index]
+
+
+def _sections(sheet):
+    """The sheet's output tabs, as (label, section) pairs."""
+    (tabs,) = sheet.select(pmui.Tabs)
+    return list(zip(tabs._names, tabs.objects, strict=True))
 
 
 class TestInspectOutputs:
@@ -2561,37 +2567,40 @@ class TestInspectOutputs:
         )
 
     def _click(self, editor, instance_id):
-        editor._inspect_tiles[instance_id][1].clicks += 1
+        editor._inspect_tiles[instance_id].inspect_button.clicks += 1
 
-    async def test_off_by_default_leaves_tiles_untouched(self):
+    async def test_off_by_default_tiles_have_no_inspect_action(self):
         editor = FlowDash(COMPONENTS, notifications=False)
         editor.add_component(SELECTOR)
         editor.editable = False
 
-        assert editor._tile_grid.objects == editor._tile_objects
+        (tile,) = editor._tile_grid.objects
+        assert tile.view is editor._tile_objects[0]
+        assert not tile.inspect_button.visible
+        assert "inspect" not in [item["action"] for item in tile.more_menu.items]
         assert editor._inspect_dialog not in editor._workspace_area.objects
 
-    async def test_button_only_on_components_with_outputs(self, editor):
+    async def test_action_only_on_components_with_outputs(self, editor):
         editor.add_component(SELECTOR)
         editor.add_component(CHART)
         editor.editable = False
 
         with_outputs, without = editor._tile_grid.objects
-        assert isinstance(with_outputs, pn.Column)
-        assert isinstance(with_outputs[1], pmui.IconButton)
-        assert without is editor._tile_objects[1]
+        assert with_outputs.inspect_button.visible
+        assert not without.inspect_button.visible
+        assert without.view is editor._tile_objects[1]
 
-    async def test_button_is_hidden_while_arranging_tiles(self, editor):
+    async def test_title_bar_is_hidden_while_arranging_tiles(self, editor):
         instance_id = editor.add_component(SELECTOR)
         editor.mode = "dashboard"
-        button = editor._inspect_tiles[instance_id][1]
-        assert not button.visible
+        tile = editor._inspect_tiles[instance_id]
+        assert not tile.header.visible
 
         editor.preview = True
-        assert button.visible
+        assert tile.header.visible and tile.inspect_button.visible
 
         editor.param.update(preview=False, editable=False)
-        assert button.visible
+        assert tile.header.visible and tile.inspect_button.visible
 
     async def test_tiles_are_not_rebuilt_across_mode_switches(self, editor):
         editor.add_component(SELECTOR)
@@ -2603,45 +2612,50 @@ class TestInspectOutputs:
 
         assert editor._tile_grid.objects[0] is first
 
-    async def test_enabling_at_runtime_wraps_the_tiles(self):
+    async def test_enabling_at_runtime_offers_inspect(self):
         editor = FlowDash(COMPONENTS, notifications=False)
         instance_id = editor.add_component(SELECTOR)
         editor.editable = False
-        assert editor._tile_grid.objects == editor._tile_objects
+        tile = editor._inspect_tiles[instance_id]
+        assert not tile.inspect_button.visible
 
         editor.inspect_outputs = True
 
-        assert editor._tile_grid.objects == [editor._inspect_tiles[instance_id]]
+        assert editor._tile_grid.objects == [tile]
+        assert tile.inspect_button.visible
         assert editor._inspect_dialog in editor._workspace_area.objects
 
-    async def test_dialog_is_mounted_for_both_modes(self, editor):
+    async def test_sheet_is_mounted_for_both_modes(self, editor):
         assert editor._inspect_dialog in editor._workspace_area.objects
         editor.mode = "dashboard"
         assert editor._inspect_dialog in editor._workspace_area.objects
 
-    async def test_dialog_lists_outputs_with_current_values(self, editor):
+    async def test_sheet_lists_outputs_with_current_values(self, editor):
         instance_id = editor.add_component(EXPLAINED)
         editor.graph.get_state(instance_id).value = 5
         _tile(editor)
 
         self._click(editor, instance_id)
 
-        dialog = editor._inspect_dialog
-        assert dialog.open
-        assert dialog.title == "Explained Totals"
-        texts = _texts(dialog)
-        assert "**doubled**  \n*Integer*" in texts
-        assert "**label**  \n*String*" in texts
-        assert 10 in [pane.object for pane in dialog.select(pn.pane.JSON)]
-        assert "fixed" in [pane.object for pane in dialog.select(pn.pane.JSON)]
+        sheet = editor._inspect_dialog
+        assert sheet.open
+        assert "Explained Totals" in _texts(sheet)
+        assert [label for label, _ in _sections(sheet)] == ["doubled", "label"]
+        (doubled, label) = [section for _, section in _sections(sheet)]
+        assert "Computed" in _texts(doubled)
+        assert "int" in _texts(doubled)
+        assert [p.object for p in doubled.select(pn.pane.JSON)] == [10]
+        assert [p.object for p in label.select(pn.pane.JSON)] == ["fixed"]
 
-    async def test_unset_output_shows_the_placeholder(self, editor):
+    async def test_unset_output_says_it_has_no_value(self, editor):
         instance_id = editor.add_component(SELECTOR)
         _tile(editor)
 
         self._click(editor, instance_id)
 
-        assert "*No value yet*" in _texts(editor._inspect_dialog)
+        ((_, section),) = _sections(editor._inspect_dialog)
+        assert "No value yet" in _texts(section)
+        assert not section.select(pn.pane.JSON)
 
     async def test_value_repr_renders_every_value(self, editor):
         editor.value_repr = lambda value: f"custom: {value}"
@@ -2654,7 +2668,7 @@ class TestInspectOutputs:
         assert "custom: 4" in texts
         assert "custom: fixed" in texts
 
-    async def test_dialog_is_a_snapshot_taken_at_click_time(self, editor):
+    async def test_sheet_is_a_snapshot_taken_at_click_time(self, editor):
         instance_id = editor.add_component(EXPLAINED)
         state = editor.graph.get_state(instance_id)
         _tile(editor)
@@ -2663,22 +2677,23 @@ class TestInspectOutputs:
         shown = list(editor._inspect_dialog.objects)
         state.value = 50
 
-        assert [p.object for p in shown[0].select(pn.pane.JSON)] == [4]
+        assert [p.object for p in pn.Column(*shown).select(pn.pane.JSON)] == [4, "fixed"]
         self._click(editor, instance_id)
         assert 100 in [p.object for p in editor._inspect_dialog.select(pn.pane.JSON)]
 
-    async def test_one_dialog_serves_every_tile(self, editor):
+    async def test_one_sheet_serves_every_tile(self, editor):
         a = editor.add_component(EXPLAINED)
         b = editor.add_component(SELECTOR)
         _tile(editor)
-        dialog = editor._inspect_dialog
+        sheet = editor._inspect_dialog
 
         self._click(editor, a)
-        assert dialog.title == "Explained Totals"
+        assert "Explained Totals" in _texts(sheet)
         self._click(editor, b)
 
-        assert dialog.title == "Ticker"
-        assert editor._workspace_area.objects.count(dialog) == 1
+        assert "Ticker" in _texts(sheet)
+        assert "Explained Totals" not in _texts(sheet)
+        assert editor._workspace_area.objects.count(sheet) == 1
 
     async def test_hook_content_follows_the_default_rendering(self, editor):
         instance_id = editor.add_component(EXPLAINED)
@@ -2686,10 +2701,10 @@ class TestInspectOutputs:
 
         self._click(editor, instance_id)
 
-        section = editor._inspect_dialog.objects[0]
+        _, section = _sections(editor._inspect_dialog)[0]
         assert isinstance(section[-1], pn.pane.Markdown)
         assert section[-1].object == "value * 2, with value = 2"
-        assert isinstance(section[1], pn.pane.JSON)
+        assert isinstance(section[-2][-1], pn.pane.JSON)
 
     async def test_hook_returning_none_keeps_only_the_default(self, editor):
         instance_id = editor.add_component(EXPLAINED)
@@ -2697,8 +2712,12 @@ class TestInspectOutputs:
 
         self._click(editor, instance_id)
 
-        label_section = editor._inspect_dialog.objects[1]
-        assert len(label_section) == 2
+        _, label_section = _sections(editor._inspect_dialog)[1]
+        assert isinstance(label_section[-1][-1], pn.pane.JSON)
+        assert not any(
+            isinstance(obj, pn.pane.Markdown) and not isinstance(obj, pmui.Typography)
+            for obj in label_section
+        )
 
     async def test_hook_error_is_logged_and_shown_without_propagating(self, editor, caplog):
         instance_id = editor.add_component(BROKEN)
@@ -2707,14 +2726,14 @@ class TestInspectOutputs:
         with caplog.at_level("ERROR", logger="panel_flowdash"):
             self._click(editor, instance_id)
 
-        dialog = editor._inspect_dialog
-        assert dialog.open
-        alerts = dialog.select(pmui.Alert)
+        sheet = editor._inspect_dialog
+        assert sheet.open
+        alerts = sheet.select(pmui.Alert)
         assert len(alerts) == 2
         assert "no explanation today" in alerts[0].objects[0].object
         assert alerts[0].severity == "error"
         assert "Inspecting output 'doubled'" in caplog.text
-        assert any(isinstance(p, pn.pane.JSON) for p in dialog.select())
+        assert any(isinstance(p, pn.pane.JSON) for p in sheet.select())
 
     async def test_function_components_have_no_hook_and_still_inspect(self, editor):
         instance_id = editor.add_component(SELECTOR)
@@ -2723,9 +2742,9 @@ class TestInspectOutputs:
         self._click(editor, instance_id)
 
         assert editor._inspect_dialog.open
-        assert len(editor._inspect_dialog.objects[0]) == 2
+        assert len(_sections(editor._inspect_dialog)) == 1
 
-    async def test_removing_a_component_forgets_its_button(self, editor):
+    async def test_removing_a_component_forgets_its_tile(self, editor):
         instance_id = editor.add_component(SELECTOR)
         _tile(editor)
         assert instance_id in editor._inspect_tiles
@@ -2742,9 +2761,10 @@ class TestInspectOutputs:
 
         self._click(editor, instance_id)
 
-        assert editor._inspect_dialog.objects[0][-1].object == "value * 2, with value = 7"
+        _, section = _sections(editor._inspect_dialog)[0]
+        assert section[-1].object == "value * 2, with value = 7"
 
-    async def test_dispose_forgets_every_button(self, editor):
+    async def test_dispose_forgets_every_tile(self, editor):
         editor.add_component(EXPLAINED)
         _tile(editor)
 
@@ -2753,7 +2773,7 @@ class TestInspectOutputs:
         assert editor._inspect_tiles == {}
         assert editor._component_instances == {}
 
-    async def test_session_end_forgets_every_button(self, editor):
+    async def test_session_end_forgets_every_tile(self, editor):
         editor.add_component(EXPLAINED)
         _tile(editor)
 
@@ -2771,20 +2791,21 @@ class TestInspectOutputs:
             )
 
         editor.load_model(model("A"))
-        old_button = _tile(editor)[1]
+        old_button = _tile(editor).inspect_button
         editor.load_model(model("B"))
         _tile(editor)
 
         old_button.clicks += 1
 
         assert not editor._inspect_dialog.open
-        editor._inspect_tiles["g1"][1].clicks += 1
+        editor._inspect_tiles["g1"].inspect_button.clicks += 1
         assert editor._inspect_dialog.open
 
-    async def test_loading_another_dashboard_closes_the_dialog(self, editor):
+    async def test_loading_another_dashboard_closes_the_sheet(self, editor):
         instance_id = editor.add_component(EXPLAINED)
         _tile(editor)
         self._click(editor, instance_id)
+        assert "flowdash-inspecting" in editor._workspace_area.css_classes
 
         editor.load_model(
             DashboardModel(dashboard_id="other", user_id="u", title="Other", items=[])
@@ -2792,8 +2813,9 @@ class TestInspectOutputs:
 
         assert not editor._inspect_dialog.open
         assert editor._inspect_dialog.objects == []
+        assert "flowdash-inspecting" not in editor._workspace_area.css_classes
 
-    async def test_removing_the_inspected_component_closes_the_dialog(self, editor):
+    async def test_removing_the_inspected_component_closes_the_sheet(self, editor):
         inspected = editor.add_component(EXPLAINED)
         other = editor.add_component(SELECTOR)
         _tile(editor)
@@ -2805,29 +2827,29 @@ class TestInspectOutputs:
         editor.remove_component(inspected)
         assert not editor._inspect_dialog.open
 
-    async def test_gated_tile_keeps_its_button_and_says_what_it_waits_for(self, editor):
+    async def test_gated_tile_keeps_its_action_and_says_what_it_waits_for(self, editor):
         instance_id = editor.add_component(GATED)
         tile = _tile(editor)
         gated = editor._tile_objects[0]
-        assert tile[0] is gated
+        assert tile.view is gated
         placeholder, body = gated
         assert placeholder.visible and not body.visible
-        assert tile[1].visible
+        assert tile.inspect_button.visible
 
         self._click(editor, instance_id)
 
-        dialog = editor._inspect_dialog
-        notice = dialog.objects[0]
+        sheet = editor._inspect_dialog
+        notice = sheet.objects[1]
         assert isinstance(notice, pmui.Alert)
         assert notice.severity == "info"
         assert "Waiting for Company" in notice.objects[0].object
-        assert "*No value yet*" in _texts(dialog)
+        assert "No value yet" in _texts(sheet)
 
         editor.graph.get_state(instance_id).company = "ACME"
         self._click(editor, instance_id)
 
-        assert not dialog.select(pmui.Alert)
-        assert 4 in [pane.object for pane in dialog.select(pn.pane.JSON)]
+        assert not sheet.select(pmui.Alert)
+        assert 4 in [pane.object for pane in sheet.select(pn.pane.JSON)]
 
     async def test_app_passes_the_switch_to_its_editor(self):
         from panel_flowdash.app import FlowDashApp
@@ -2937,10 +2959,9 @@ FAILING_COMPONENTS = {
 
 
 def _overlay_text(view):
-    """The message of a tile's failure overlay and whether it is showing."""
+    """The details of a tile's failure overlay and whether it is showing."""
     overlay = next(obj for obj in view.select(pn.Column) if "flowdash-failure" in obj.css_classes)
-    (message,) = overlay.select(pmui.Typography)
-    return message.object, overlay.visible
+    return view.details.object, overlay.visible
 
 
 def _edge_style(editor, edge_id):
@@ -3241,10 +3262,9 @@ class TestFailurePropagation:
         src = self._failing_source(editor)
         editor.editable = False
         editor.mode = "dashboard"
-        editor._inspect_tiles[src][1].clicks += 1
+        editor._inspect_tiles[src].inspect_button.clicks += 1
 
-        (section,) = editor._inspect_dialog.objects
-        (alert,) = [obj for obj in section.select(pmui.Alert)]
+        (alert,) = editor._inspect_dialog.select(pmui.Alert)
         assert alert.severity == "error"
         assert "ZeroDivisionError" in alert.objects[0].object
 
@@ -3500,19 +3520,20 @@ def _drop(editor, component_id=None, *, path=None, position=(10, 20), target=Non
 
 
 class TestPalette:
-    async def test_palette_groups_components_by_section(self, editor):
-        sections = {s["label"]: s for s in editor._palette.items}
-        assert {"Demo", "Widgets"} <= set(sections)
-        demo = sections["Demo"]
-        assert demo["draggable"] is False
-        assert [i["component_id"] for i in demo["items"]] == [SELECTOR, CHART, SHOUTER]
-        assert all(i["draggable"] for i in demo["items"])
+    async def test_palette_groups_components_by_role(self, editor):
+        groups = {g["label"]: g for g in editor._palette.items}
+        assert list(groups) == ["Data sources", "Transforms", "Views", "Widgets"]
+        assert all(g["draggable"] is False for g in groups.values())
+        assert [i["component_id"] for i in groups["Data sources"]["items"]] == [SELECTOR]
+        assert [i["component_id"] for i in groups["Transforms"]["items"]] == [SHOUTER]
+        assert [i["component_id"] for i in groups["Views"]["items"]] == [CHART]
+        assert all(i["draggable"] for g in groups.values() for i in g["items"])
         assert editor._palette.drag_type in editor._flow.drop_types
 
     async def test_placed_singleton_is_not_draggable(self):
         editor = FlowDash({SINGLETON: page_header}, notifications=False)
         editor.add_component(SINGLETON)
-        (item,) = next(s for s in editor._palette.items if s["label"] == "Demo")["items"]
+        (item,) = next(s for s in editor._palette.items if s["label"] == "Views")["items"]
         assert item["draggable"] is False
 
     async def test_clicking_placed_singleton_does_not_add_it_again(self):
@@ -3892,6 +3913,8 @@ class TestDashboardSettings:
             "description": "",
             "refresh_period": 3,
             "retired": True,
+            "tile_cards": True,
+            "tile_titles": False,
             "viewers_can_inspect": False,
         }
 
@@ -3925,6 +3948,8 @@ class TestDashboardSettings:
         assert saved.settings == {
             "description": "",
             "refresh_period": 45,
+            "tile_cards": True,
+            "tile_titles": False,
             "viewers_can_inspect": False,
             "accent": "red",
             "density": 1,
@@ -3954,6 +3979,8 @@ class TestDashboardSettings:
         assert data["settings"] == {
             "description": "",
             "refresh_period": 15,
+            "tile_cards": True,
+            "tile_titles": False,
             "viewers_can_inspect": False,
         }
         other = FlowDash(COMPONENTS, notifications=False)
@@ -3984,7 +4011,14 @@ class TestSettingsForm:
     async def test_form_is_generated_from_the_settings(self):
         editor = FlowDash(COMPONENTS, notifications=False, settings_class=BrandSettings)
         form = editor._settings_dialog.objects[0]
-        assert set(form._widgets) == {"description", "refresh_period", "accent", "density"}
+        assert set(form._widgets) == {
+            "description",
+            "refresh_period",
+            "tile_cards",
+            "tile_titles",
+            "accent",
+            "density",
+        }
 
     async def test_form_edits_the_settings_and_marks_dirty(self, editor):
         form = editor._settings_dialog.objects[0]

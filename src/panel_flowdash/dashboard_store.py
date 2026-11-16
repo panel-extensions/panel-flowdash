@@ -13,6 +13,7 @@ import weakref
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -178,6 +179,9 @@ class DashboardModel:
     settings: dict[str, Any] = field(default_factory=dict)
     # Bumped by the store on every save; None saves without a conflict check.
     revision: int | None = None
+    # When the store last wrote the dashboard (UTC), filled in by the store on
+    # load. Not part of the dashboard's content, so not serialized or compared.
+    updated_at: datetime | None = field(default=None, compare=False)
 
     @property
     def owner(self) -> str:
@@ -223,6 +227,14 @@ class DashboardModel:
             settings=decode_settings(data.get("settings")),
             revision=_decode_revision(data.get("revision")),
         )
+
+
+def _parse_sqlite_time(value: Any) -> datetime | None:
+    """Parse a SQLite ``datetime('now')`` value, which is UTC without an offset."""
+    try:
+        return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
 
 
 def _decode_revision(value: Any) -> int | None:
@@ -489,6 +501,7 @@ class MemoryDashboardStore(BaseDashboardStore):
             revision = check_revision(dashboard, None if stored is None else stored.revision)
             self._dashboards[dashboard.dashboard_id] = copy.deepcopy(dashboard)
             self._dashboards[dashboard.dashboard_id].revision = revision
+            self._dashboards[dashboard.dashboard_id].updated_at = datetime.now(timezone.utc)
             # Re-inserting moves the dashboard to the front of the recency order.
             if dashboard.dashboard_id in self._order:
                 self._order.remove(dashboard.dashboard_id)
@@ -516,6 +529,7 @@ class MemoryDashboardStore(BaseDashboardStore):
         if model is None or model.user_id != user_id:
             return False
         model.title = new_title
+        model.updated_at = datetime.now(timezone.utc)
         return True
 
     def set_permission(self, dashboard_id: str, permission: Permission) -> bool:
@@ -523,6 +537,7 @@ class MemoryDashboardStore(BaseDashboardStore):
         if model is None:
             return False
         model.permission = copy.deepcopy(permission)
+        model.updated_at = datetime.now(timezone.utc)
         return True
 
 
@@ -828,6 +843,7 @@ class DashboardStore(BaseDashboardStore):
             permission=permission,
             settings=self._row_settings(row) if "settings_json" in keys else {},
             revision=row["revision"] if "revision" in keys else 0,
+            updated_at=_parse_sqlite_time(row["updated_at"]),
         )
 
     def _row_settings(self, row: sqlite3.Row) -> dict[str, Any]:
