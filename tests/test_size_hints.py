@@ -160,8 +160,9 @@ class TestBounds:
 
         sized, plain_view = editor._tile_grid.objects
         assert (sized.min_width, sized.max_width) == (240, 960)
-        assert not sized[1].visible
-        assert isinstance(plain_view, pn.pane.Markdown)
+        assert not sized.inspect_button.visible
+        assert isinstance(plain_view.view, pn.pane.Markdown)
+        assert plain_view.min_width is None
 
     def test_bounded_tile_keeps_its_inspect_button(self):
         editor = _editor(inspect_outputs=True)
@@ -171,4 +172,4 @@ class TestBounds:
 
         (tile,) = editor._tile_grid.objects
         assert (tile.min_width, tile.max_width) == (240, 960)
-        assert tile[1].visible
+        assert tile.inspect_button.visible

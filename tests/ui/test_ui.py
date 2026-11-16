@@ -481,7 +481,7 @@ class CustomMessageReport(CompanyReport):
 @pytest.mark.filterwarnings("ignore:reference already known")
 @pytest.mark.parametrize(
     ("report", "message"),
-    [(CompanyReport, "Waiting for Company"), (CustomMessageReport, "Pick a company to start")],
+    [(CompanyReport, "This tile needs Company"), (CustomMessageReport, "Pick a company to start")],
     ids=["default", "custom"],
 )
 @pytest.mark.parametrize("mode", ["dashboard", "wiring"])
@@ -528,24 +528,25 @@ class Gauge(Viewer):
         return "gauge tile"
 
 
-def test_inspect_button_opens_dialog_with_current_value(page):
+@pytest.mark.filterwarnings("ignore:reference already known")
+def test_inspect_button_opens_sheet_with_current_value(page):
     editor = FlowDash({"Test/gauge": Gauge}, notifications=False, inspect_outputs=True)
     instance_id = editor.add_component("Test/gauge")
     editor.editable = False
     serve_component(page, editor)
 
-    page.get_by_role("button", name="Inspect outputs").click()
+    page.get_by_role("button", name="Inspect data for Gauge").click()
 
-    dialog = page.get_by_role("dialog")
-    dialog.get_by_text("Gauge", exact=True).wait_for()
-    dialog.get_by_text("doubled is reading * 2").wait_for()
-    assert dialog.get_by_text("14").is_visible()
+    sheet = page.locator(".MuiDrawer-paper")
+    sheet.get_by_text("Gauge", exact=True).wait_for()
+    sheet.get_by_text("doubled is reading * 2").wait_for()
+    assert sheet.get_by_text("14").is_visible()
 
     editor.graph.get_state(instance_id).reading = 8
-    page.keyboard.press("Escape")
-    page.get_by_role("dialog").wait_for(state="hidden")
-    page.get_by_role("button", name="Inspect outputs").click()
-    page.get_by_role("dialog").get_by_text("16").wait_for()
+    page.get_by_role("button", name="Close inspector").click()
+    sheet.wait_for(state="hidden")
+    page.get_by_role("button", name="Inspect data for Gauge").click()
+    sheet.get_by_text("16").wait_for()
 
 
 def test_inspect_button_is_absent_by_default(page):
@@ -555,7 +556,7 @@ def test_inspect_button_is_absent_by_default(page):
     serve_component(page, editor)
 
     page.get_by_text("gauge tile").wait_for()
-    assert page.get_by_role("button", name="Inspect outputs").count() == 0
+    assert not page.get_by_role("button", name="Inspect data for Gauge").is_visible()
 
 
 # The app re-renders the editor as it loads the dashboard, so the click reaches
@@ -584,9 +585,9 @@ def test_inspect_button_in_app_dashboard_page(page):
 
     serve_component(page, app)
 
-    page.get_by_role("button", name="Inspect outputs").click()
+    page.get_by_role("button", name="Inspect data for Gauge").click()
 
-    page.get_by_role("dialog").get_by_text("14").wait_for()
+    page.locator(".MuiDrawer-paper").get_by_text("14").wait_for()
 
 
 @register(page=False, component=True, title="Divider")

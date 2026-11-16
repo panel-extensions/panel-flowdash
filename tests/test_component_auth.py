@@ -199,7 +199,7 @@ class TestOnLoad:
         editor = self._editor(inspect_outputs=True)
         editor.load_model(_shared_model())
         editor.editable = False
-        assert "s1" not in editor._inspect_tiles
+        assert not editor._inspect_tiles["s1"].inspect_button.visible
 
     async def test_authorized_user_gets_the_component(self):
         editor = FlowDash(COMPONENTS, notifications=False, include_builtin_components=False)
