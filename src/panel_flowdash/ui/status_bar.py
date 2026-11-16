@@ -13,6 +13,7 @@ import param
 from panel.viewable import Viewer
 
 from panel_flowdash.ui.node_card import NodeCard
+from panel_flowdash.ui.tile_layout import GRID_COLUMNS, layout_summary
 
 _KEYS_CSS = """
 .fd-keys { display: flex; align-items: center; gap: 12px; white-space: nowrap;
@@ -155,6 +156,8 @@ class StatusBar(Viewer):
     (clicking the count selects the first component or connection with an
     issue), counts the components and connections, lists key hints and shows
     the zoom.
+    In the Layout tab it describes the tile grid instead: its columns, the
+    tiles on it and the components without a tile.
     The canvas follows the page's light or dark theme through it, since it is
     a Material component shown alongside the canvas in every edit session.
     """
@@ -190,6 +193,13 @@ class StatusBar(Viewer):
         self.zoom = pmui.Typography(
             variant="caption", margin=0, styles={"flex": "none"}, sx=_NOWRAP
         )
+        self.grid_label = pmui.Typography(
+            f"{GRID_COLUMNS}-column grid",
+            variant="caption",
+            margin=(0, 12, 0, 0),
+            styles={"flex": "none"},
+            sx=_NOWRAP,
+        )
         self.minimap_toggle = pmui.ToggleIcon(
             icon="map",
             active_icon="map",
@@ -201,6 +211,7 @@ class StatusBar(Viewer):
         )
         self.minimap_toggle.link(flow, value="show_minimap", bidirectional=True)
         self._bar = pn.FlexBox(
+            self.grid_label,
             self.issues_button,
             self.counts,
             pn.layout.HSpacer(),
@@ -225,6 +236,12 @@ class StatusBar(Viewer):
         flow.param.watch(self._sync_zoom, "viewport")
         self._sync_zoom()
         self._watcher = CanvasWatcher(flow, self.sync)
+        self.editor.param.watch(lambda _event: self.sync(), "mode")
+        self.editor._tile_grid.param.watch(self._on_tile_layout, ["layout", "objects"])
+
+    def _on_tile_layout(self, _event):
+        if self.editor.mode == "dashboard":
+            self.sync()
 
     def _follow_theme(self, event):
         self.editor._flow.color_mode = "dark" if event.new else "light"
@@ -240,6 +257,13 @@ class StatusBar(Viewer):
         if not self.visible:
             return
         editor = self.editor
+        layout = editor.mode == "dashboard"
+        self.grid_label.visible = layout
+        for item in (self.issues_button, self.keys, self.zoom, self.minimap_toggle):
+            item.visible = not layout
+        if layout:
+            self.counts.object = layout_summary(editor)
+            return
         issues = canvas_issues(editor)
         if issues:
             label = f"1 issue: {issues[0].title}" if len(issues) == 1 else f"{len(issues)} issues"

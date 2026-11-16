@@ -18,6 +18,31 @@ The breakpoint toolbar (XS / SM / MD / AUTO) appears at the top of the layout
 tab; the sidebar filters on the left are the components
 marked `sidebar=True`, described next.
 
+## Arranging tiles
+
+In the *Layout* tab every tile has a dashed frame, a drag handle at the top
+and a resize grip in its bottom-right corner. Drag a tile by its handle to
+move it, and drag the grip to resize it.
+
+The panel on the right edits one tile at a time:
+
+- **Selected tile** picks a tile (it starts with the component selected on the
+  *Dataflow* canvas, if any) and sets its **Width** in columns of a 12-column
+  grid and its **Height** in pixels, or *Automatic* to size it to its content.
+  The heights offered stay within the component's `min_size` and `max_size`.
+  **Hide tile** takes the tile off the dashboard without removing the
+  component from the dataflow.
+- **Not on the dashboard** lists the placed components that have no tile and
+  why: *in controls bar* for `sidebar=True` components (*in sidebar* when
+  `controls_bar` is off), and *hidden by you* for tiles you hid, with a
+  **Show** action that puts the tile back.
+
+The status bar under the grid summarizes it, e.g. "12-column grid, 4 tiles,
+2 components hidden". Changes made in the panel edit the authored layout (see
+[Responsive layouts](#responsive-layouts)) and, like dragging, mark the
+dashboard as having unsaved changes. Fold the panel with its arrow button to
+give the grid more room.
+
 ---
 
 ## Sidebar components
@@ -97,6 +122,10 @@ The grid's `breakpoints` divide the viewport into bands; the default `[768, 1200
 - The band containing `reference_width` is marked **base**. Editing while it's shown changes the authored layout.
 - Other bands show the generated layout. Editing one saves a custom layout for that band, marked **custom**, and **Reset** discards it again.
 - **AUTO** returns to the natural width.
+
+In AUTO the band follows the grid's own width, which the side panels of the
+editor narrow. To change the authored layout on a smaller screen, pick the
+**base** chip first, or fold the layout panel.
 
 Custom layouts are stored in `responsive_layouts`, a mapping from band label to a list of tile entries. Each entry records a tile's index, width (as a percentage of the row), height in pixels, and visibility:
 
