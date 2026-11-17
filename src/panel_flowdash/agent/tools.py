@@ -12,7 +12,7 @@ import typing as t
 from dataclasses import dataclass, field, replace
 
 import yaml
-from panel_agents import ApprovalPolicy, ApprovalRule
+from panel_agents import ApprovalPolicy, ApprovalRule, register_renderer
 from panel_agents.adapters.pydantic_ai import artifact_return
 from panel_agents.artifacts import Change, StructuredDiff, register_diff
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
@@ -100,6 +100,17 @@ def approval_policy(
 
             extra.append(ApprovalRule("set_config", when=configures_sensitive))
     return ApprovalPolicy([*APPROVAL_TOOLS, *extra, *rules])
+
+
+@register_renderer(kind=ARTIFACT_KIND)
+def render_dashboard(value: t.Any, **options) -> t.Any:
+    """Show a dashboard version as read-only YAML."""
+    import panel as pn
+
+    text = value if isinstance(value, str) else yaml.safe_dump(value or {}, sort_keys=False)
+    return pn.widgets.CodeEditor(
+        value=text, language="yaml", readonly=True, sizing_mode="stretch_both", min_height=300
+    )
 
 
 @register_diff(ARTIFACT_KIND)

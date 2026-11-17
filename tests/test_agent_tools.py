@@ -389,3 +389,11 @@ async def test_a_run_stops_when_the_user_opens_another_dashboard(store, monkeypa
 async def test_replacing_needs_the_revision_line(ops):
     runner = _runner(ops, ("replace_dashboard", {"dashboard_yaml": "flowdash: 1\n"}))
     assert "keep its '# revision:' line" in await runner.run("Clear")
+
+
+def test_dashboard_versions_render_as_yaml_code():
+    import panel as pn
+    from panel_agents.components import render
+
+    view = render("flowdash: 1\n# revision: abc\n", kind=ARTIFACT_KIND)
+    assert isinstance(view, pn.widgets.CodeEditor) and view.language == "yaml"
