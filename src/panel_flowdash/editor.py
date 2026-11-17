@@ -821,6 +821,8 @@ class FlowDash(Viewer):
         # Held back until the canvas exists, and resolved from an id if needed.
         dashboard = params.pop("dashboard", None)
         params["settings"] = params.get("settings_class", type(self).settings_class)()
+        # A tab the host asked for wins over the one remembered by the browser.
+        self._restore_split = "mode" not in params
 
         super().__init__(**params)
 
@@ -1838,7 +1840,7 @@ class FlowDash(Viewer):
         if controls is None or controls.position == self.settings.controls_position:
             return
         controls.position = self.settings.controls_position
-        if self.mode == "dashboard" or not self.editable:
+        if self._grid_on_screen:
             self._apply_mode_state()
 
     @param.depends("settings.tile_cards", "settings.tile_titles", watch=True)
@@ -2415,6 +2417,7 @@ class FlowDash(Viewer):
         self._layout_panel.visible = interactive and showing_grid and not split
         self._status_bar.visible = self.editable
         self._split_view.events.active = split
+        self._view_controls.beside_canvas = split
         if split != self._split_shown:
             self._split_shown = split
             self._fold_inspector(split)
@@ -2445,6 +2448,8 @@ class FlowDash(Viewer):
 
     @param.depends("mode", watch=True)
     def _remember_mode(self):
+        # A tab chosen before the browser's preferences arrived is not overridden by them.
+        self._restore_split = False
         if self.mode != "split":
             self._mode_before_split = self.mode
         self._split_view.preferences.split = self.mode == "split"
@@ -2464,7 +2469,16 @@ class FlowDash(Viewer):
         self._split_view.restore()
 
     def _on_split_preferences_loaded(self):
-        if self._split_view.preferences.split and self.mode != "split":
+        self._restore_split = self._restore_split and self._split_view.preferences.split
+        self._apply_stored_split()
+
+    @param.depends("editable", watch=True)
+    def _apply_stored_split(self):
+        """Reopen the Split tab remembered by the browser, once, when the editor is editable."""
+        if not (self.editable and self._restore_split and self._split_view.loaded):
+            return
+        self._restore_split = False
+        if self.mode != "split":
             self.mode = "split"
 
     def _fit_canvas(self):

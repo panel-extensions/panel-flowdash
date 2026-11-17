@@ -16,6 +16,7 @@ pane changed size, so the canvas can fit its view to the new width.
 from __future__ import annotations
 
 import json
+import math
 import typing as t
 
 import panel as pn
@@ -25,6 +26,21 @@ from panel.viewable import Viewer
 from panel_splitjs import HSplit
 
 STORAGE_KEY = "panel-flowdash.editor.split"
+
+
+def storage_key() -> str:
+    """Return the local storage key for the app being served.
+
+    Apps served from one origin share local storage, so the key carries the
+    app's path, except for an app at the root, which keeps the plain key.
+    """
+    try:
+        app = (pn.state.app_url or "").strip("/")
+    except AttributeError:
+        # A document with a partial session context, e.g. one made up in tests.
+        app = ""
+    return f"{STORAGE_KEY}:/{app}" if app else STORAGE_KEY
+
 
 DEFAULT_SIZES = (55.0, 45.0)
 
@@ -82,10 +98,13 @@ def valid_sizes(sizes: t.Any) -> tuple[float, float] | None:
     """
     if not isinstance(sizes, (list, tuple)) or len(sizes) != 2:
         return None
-    if not all(isinstance(s, (int, float)) and not isinstance(s, bool) for s in sizes):
+    if not all(
+        isinstance(s, (int, float)) and not isinstance(s, bool) and math.isfinite(s) and s >= 0
+        for s in sizes
+    ):
         return None
     total = sum(sizes)
-    if total <= 0:
+    if not math.isfinite(total) or total <= 0:
         return None
     left = round(100 * sizes[0] / total, 2)
     right = round(100 - left, 2)
@@ -134,11 +153,19 @@ class LocalPreference(JSComponent):
       function measure() {
         if (model.window_width !== window.innerWidth) { model.window_width = window.innerWidth }
       }
+      let timer = null
+      function onResize() {
+        clearTimeout(timer)
+        timer = setTimeout(measure, 150)
+      }
       measure()
       model.send_msg({type: "load", value: read()})
       model.on("value", write)
-      window.addEventListener("resize", measure)
-      model.on("remove", () => window.removeEventListener("resize", measure))
+      window.addEventListener("resize", onResize)
+      model.on("remove", () => {
+        clearTimeout(timer)
+        window.removeEventListener("resize", onResize)
+      })
     }
     """
 
@@ -264,8 +291,9 @@ class SplitView(Viewer):
 
     *on_collapse* is called with the pane that was collapsed (0 for the
     canvas, 1 for the grid), *on_load* once the preferences stored in the
-    browser were applied, *on_tile* with the key of a clicked tile and
-    *on_resize* when the canvas pane was shown or changed width.
+    browser were read and any usable ones applied, *on_tile* with the key
+    of a clicked tile and *on_resize* when the canvas pane was shown or
+    changed width.
     """
 
     preferences = param.ClassSelector(class_=SplitPreferences, doc="The remembered state.")
@@ -302,7 +330,9 @@ class SplitView(Viewer):
         )
         self.split.param.watch(self._on_split_changed, ["sizes", "collapsed"])
         self.events = SplitEvents(on_tile=on_tile, on_resize=on_resize)
-        self.storage = LocalPreference(on_load=self._on_stored)
+        # Applied once: a re-render must not pull in what another tab stored since.
+        self.loaded = False
+        self.storage = LocalPreference(on_load=self._on_stored, key=storage_key())
         self.preferences.param.watch(self._store, ["split", "sizes"])
 
     def _on_split_changed(self, *_events):
@@ -331,9 +361,11 @@ class SplitView(Viewer):
         self.split.param.update(collapsed=None, sizes=sizes, expanded_sizes=sizes)
 
     def _on_stored(self, value: str | None):
-        if value is None or not self.preferences.load(value):
+        if self.loaded:
             return
-        self.restore()
+        self.loaded = True
+        if value is not None and self.preferences.load(value):
+            self.restore()
         if self.on_load is not None:
             self.on_load()
 
