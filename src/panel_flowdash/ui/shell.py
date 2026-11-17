@@ -87,6 +87,8 @@ _CURRENT_CRUMB_SX = {
 }
 
 # The switcher's arrow sits in the padding, so the ellipsis stops before it.
+# The block layout gives the icon's box the text's line height, so it centres
+# its arrow itself rather than leaving it at the top of that box.
 _SWITCHER_SX = {
     **_CURRENT_CRUMB_SX,
     "pr": "28px",
@@ -96,6 +98,8 @@ _SWITCHER_SX = {
         "top": "50%",
         "transform": "translateY(-50%)",
         "m": 0,
+        "display": "flex",
+        "alignItems": "center",
     },
 }
 
@@ -450,6 +454,7 @@ class AppShell:
                     pmui.Typography(
                         "\u203a",
                         margin=0,
+                        align="center",
                         sx={"color": "text.secondary", "fontSize": "1.25rem", "lineHeight": 1},
                         stylesheets=[_HIDE_WHEN_NARROW],
                     )

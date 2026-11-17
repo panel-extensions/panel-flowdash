@@ -2291,7 +2291,9 @@ class FlowDash(Viewer):
             enabled=not self.editable, margin=0, height=0, toggle_class=toggle_class
         )
         self._fullscreen_controller.param.watch(self._on_fullscreen_changed, "active")
-        self._fullscreen_overlay = PresentationOverlay(bar.title, bar.health_chip)
+        self._fullscreen_overlay = PresentationOverlay(bar.health_chip)
+        bar.title.param.watch(self._name_fullscreen_overlay, "object")
+        self._name_fullscreen_overlay()
         self._split_view = SplitView(
             on_collapse=self._on_split_collapsed,
             on_load=self._on_split_preferences_loaded,
@@ -2327,6 +2329,10 @@ class FlowDash(Viewer):
 
     def _on_fullscreen_changed(self, event):
         self.fullscreen = event.new
+
+    def _name_fullscreen_overlay(self, *_):
+        title = self.dashboard.title if self.dashboard is not None else "Untitled dashboard"
+        self._fullscreen_controller.overlay_label = f"{title}, full screen controls"
 
     @pn.io.hold()
     @param.depends("fullscreen", "editable", watch=True)

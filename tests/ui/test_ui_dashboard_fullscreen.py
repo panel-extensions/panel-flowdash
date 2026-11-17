@@ -9,7 +9,7 @@ from panel_flowdash.app import FlowDashApp
 from panel_flowdash.auth import resolve_identity
 from panel_flowdash.component_library import normalize_components
 
-from .util import serve_component
+from .util import serve_component, stable_box
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect
@@ -98,17 +98,19 @@ def test_button_enters_full_screen_and_leaving_it_restores_the_layout(page, head
 
 
 @pytest.mark.parametrize("header_layout", ["compact", "full"])
-def test_overlay_shows_title_health_and_exit(page, header_layout):
+def test_overlay_shows_health_and_exit_without_the_title(page, header_layout):
     app = _serve(page, header_layout=header_layout)
     # Before full screen the health text is only in the dashboard bar.
     expect(page.get_by_text("1/1 up to date", exact=True)).to_have_count(1)
     page.get_by_role("button", name="Full screen").click()
     _presenting(page, app)
     page.mouse.move(200, 200)
-    overlay = page.locator(".fd-fullscreen-overlay")
-    expect(overlay).to_contain_text("Plant")
+    overlay = page.get_by_role("region", name="Plant, full screen controls")
+    expect(overlay).not_to_contain_text("Plant")
     expect(overlay).to_contain_text("1/1 up to date")
     expect(overlay).to_have_css("opacity", "1")
+    # One line: the health chip's dot and text sit side by side.
+    assert stable_box(overlay, page)["height"] <= 48
     page.get_by_role("button", name="Exit full screen").click()
     _restored(page, app)
 
@@ -183,6 +185,10 @@ def test_kiosk_link_opens_the_presentation_layout(page):
     _presenting(page, app)
     # Without a gesture the browser grants no real full screen; the layout covers the window.
     assert not _native(page)
+    page.mouse.move(200, 200)
+    overlay = page.get_by_role("region", name="Plant, full screen controls")
+    expect(overlay).to_contain_text("1/1 up to date")
+    expect(overlay).not_to_contain_text("Plant")
     page.keyboard.press("Escape")
     _restored(page, app)
     wait_until(lambda: "kiosk" not in page.url, page)
