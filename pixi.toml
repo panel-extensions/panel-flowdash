@@ -49,6 +49,10 @@ pytest-asyncio = ">=0.23"
 test = "pytest"
 test-coverage = "pytest --cov=panel_flowdash --cov-report=xml --cov-report=term-missing"
 
+[feature.agent.pypi-dependencies]
+# Development only: points at the panel-agents 1.0 branches until they are released.
+panel-agents = { git = "https://github.com/panel-extensions/panel-agents", branch = "agents/next", extras = ["pydantic-ai"] }
+
 [feature.build.dependencies]
 python-build = "*"
 twine = "*"
@@ -117,12 +121,12 @@ docs = "zensical serve"
 docs-build = "zensical build"
 
 [environments]
-default = ["test"]
+default = ["test", "agent"]
 test-310 = ["py310", "test"]
-test-311 = ["py311", "test"]
-test-312 = ["py312", "test"]
-test-313 = ["py313", "test"]
-test-314 = ["py314", "test"]
+test-311 = ["py311", "test", "agent"]
+test-312 = ["py312", "test", "agent"]
+test-313 = ["py313", "test", "agent"]
+test-314 = ["py314", "test", "agent"]
 test-param-dev = ["py314", "test", "param-dev"]
 test-ui = ["py312", "test", "test-ui"]
 docs = ["docs"]
