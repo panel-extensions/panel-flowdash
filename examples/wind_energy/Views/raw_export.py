@@ -36,14 +36,14 @@ class app(pn.viewable.Viewer):
 
     def __panel__(self):
         turbines = self.param.turbines
-        return pn.Column(
-            heading("Raw data export", pn.bind(self._caption, turbines)),
-            pmui.FileDownload(
-                callback=self._csv,
-                filename="turbines.csv",
-                label="Download CSV",
-                variant="outlined",
-                margin=(4, 10),
-                visible=pn.bind(lambda df: df is not None, turbines),
-            ),
+        download = pmui.FileDownload(
+            callback=self._csv,
+            filename="turbines.csv",
+            label="Download CSV",
+            margin=(4, 10),
+            visible=pn.bind(lambda df: df is not None, turbines),
         )
+        # Released Panel warns about `button_style` when a Material FileDownload is
+        # constructed with `variant`; drop once holoviz/panel#8752 is the minimum.
+        download.variant = "outlined"
+        return pn.Column(heading("Raw data export", pn.bind(self._caption, turbines)), download)
