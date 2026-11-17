@@ -69,13 +69,13 @@ class TestEditor:
         assert editor._view_controls.__panel__() in editor._workspace_area
         assert editor._tile_grid in editor._workspace_area
 
-    async def test_overlay_shows_the_title_and_health(self, editor):
+    async def test_overlay_shows_the_health_and_is_named_by_the_title(self, editor):
         editor.new_dashboard("Plant")
         editor.add_component(SELECTOR)
         editor.editable = False
         editor.fullscreen = True
-        name, chip, exit_button = editor._fullscreen_overlay
-        assert name.object == "Plant"
+        chip, exit_button = editor._fullscreen_overlay
+        assert editor._fullscreen_controller.overlay_label == "Plant, full screen controls"
         assert chip.object == editor._dashboard_bar.health_chip.label == "1/1 up to date"
         assert chip.sx == editor._dashboard_bar.health_chip.sx
         assert EXIT_CLASS in exit_button.css_classes

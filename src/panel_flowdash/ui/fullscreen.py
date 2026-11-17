@@ -84,6 +84,13 @@ class FullscreenController(JSComponent):
         default=False, doc="Set by the browser: whether it offers full screen for elements."
     )
 
+    overlay_label = param.String(
+        default="",
+        doc="""
+        The accessible name of the overlay, e.g. the dashboard's title, which
+        the overlay does not show.""",
+    )
+
     toggle_class = param.String(
         default="",
         doc="""
@@ -189,6 +196,13 @@ class FullscreenController(JSComponent):
 
       let timer = null
       const overlay = () => target()?.shadowRoot?.querySelector(".{OVERLAY_CLASS}")
+      function name() {{
+        const box = overlay()
+        if (box) {{
+          box.setAttribute("role", "region")
+          box.setAttribute("aria-label", model.overlay_label)
+        }}
+      }}
       function rest() {{
         const el = target()
         const box = overlay()
@@ -203,6 +217,7 @@ class FullscreenController(JSComponent):
       }}
       function show() {{
         clearTimeout(timer)
+        name()
         const el = target()
         if (el) {{
           el.style.cursor = ""
@@ -362,6 +377,7 @@ class FullscreenController(JSComponent):
         sync()
         show()
       }})
+      model.on("overlay_label", name)
       model.on("remove", () => {{
         clearTimeout(timer)
         document.removeEventListener("fullscreenchange", onChange)
@@ -389,22 +405,23 @@ class FullscreenController(JSComponent):
 
 
 class PresentationOverlay(pn.Row):
-    """The overlay shown in full screen: the dashboard's title, its health and an exit button.
+    """The overlay shown in full screen: the dashboard's health and an exit button.
 
-    *title* is the dashboard bar's title and *health_chip* its health chip,
-    whose text and style the overlay follows. The overlay holds its items only while it
-    is shown, so the page never carries a hidden copy of the bar's text.
+    *health_chip* is the dashboard bar's health chip, whose text and style the
+    overlay follows. The overlay holds its items only while it is shown, so the
+    page never carries a hidden copy of the bar's text. It shows no title; the
+    :class:`FullscreenController` names it for screen readers instead.
     """
 
-    def __init__(self, title, health_chip, **params):
-        self._items = _overlay_items(title, health_chip)
+    def __init__(self, health_chip, **params):
+        self._items = _overlay_items(health_chip)
         super().__init__(
             css_classes=[OVERLAY_CLASS],
             margin=0,
             visible=False,
             styles={
                 "align-items": "center",
-                "padding": "4px 4px 4px 8px",
+                "padding": "4px",
                 "border-radius": "20px",
                 "border": "1px solid var(--mui-palette-divider)",
                 "background": "var(--mui-palette-background-paper)",
@@ -420,26 +437,20 @@ class PresentationOverlay(pn.Row):
             self.visible = shown
 
 
-def _overlay_items(title, health_chip) -> list:
-    name = pmui.Typography(
-        title.param.object,
-        variant="subtitle1",
-        margin=(0, 4, 0, 8),
-        align="center",
-        sx={
-            "fontWeight": 500,
-            "maxWidth": "40vw",
-            "whiteSpace": "nowrap",
-            "overflow": "hidden",
-            "textOverflow": "ellipsis",
-        },
-    )
+# The chip's style is the bar's button style; laid out as a flex row like the
+# button, its dot and text sit on one line inside one rounded background.
+_CHIP_CSS = ".MuiTypography-root { display: inline-flex; align-items: center; } p { margin: 0; }"
+
+
+def _overlay_items(health_chip) -> list:
     chip = pmui.Typography(
         health_chip.param.label,
         variant="caption",
-        margin=(0, 4),
+        # As far from the edge as from the top and bottom, so the pills nest.
+        margin=(0, 4, 0, 2),
         align="center",
         sx=health_chip.param.sx,
+        stylesheets=[_CHIP_CSS],
     )
     exit_button = pmui.IconButton(
         icon="fullscreen_exit",
@@ -449,4 +460,4 @@ def _overlay_items(title, health_chip) -> list:
         align="center",
         css_classes=[EXIT_CLASS],
     )
-    return [name, chip, exit_button]
+    return [chip, exit_button]
