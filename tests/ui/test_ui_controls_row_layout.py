@@ -1,11 +1,12 @@
 """UI tests for the size, look and alignment of the controls in the row above the tiles."""
 
+import panel as pn
 import panel_material_ui as pmui
 import param
 import pytest
 from panel.viewable import Viewer
 
-from panel_flowdash import DashboardEdge, DashboardItem, MemoryDashboardStore, register
+from panel_flowdash import DashboardItem, MemoryDashboardStore, register
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.auth import resolve_identity
 from panel_flowdash.component_library import normalize_components
@@ -20,48 +21,46 @@ pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference alrea
 LONG_STATE = "TX (18,315 turbines)"
 
 
-# Like most controls, Viewers whose widget stretches to the width it is given and
-# whose options come from another component, so the editor wraps the view in a
-# column that shows a placeholder until they arrive.
+# A control's view is often wrapped in a column sized like the widget, e.g. by
+# the failure overlay, which then keeps the widget's default 300px as its minimum.
+def _wrapped(widget):
+    return pn.Column(widget, width=widget.width, sizing_mode="stretch_width", margin=0)
+
+
 @register(page=False, component=True, sidebar=True, title="State")
 class StatePicker(Viewer):
-    rows = param.List(default=None, allow_None=True)
-
     state = param.Selector(default=LONG_STATE, objects=["All states", LONG_STATE])
 
     def __panel__(self):
-        return pmui.Select.from_param(
-            self.param.state, label="State", searchable=True, sizing_mode="stretch_width"
+        return _wrapped(
+            pmui.Select.from_param(
+                self.param.state, label="State", searchable=True, sizing_mode="stretch_width"
+            )
         )
 
 
 @register(page=False, component=True, sidebar=True, title="Project")
 class ProjectPicker(Viewer):
-    rows = param.List(default=None, allow_None=True)
-
     project = param.String(default=None, allow_None=True)
 
     def __panel__(self):
-        return pmui.AutocompleteInput.from_param(
-            self.param.project,
-            options=["Alpha", "Beta"],
-            label="Project",
-            placeholder="Type a project name",
-            sizing_mode="stretch_width",
+        return _wrapped(
+            pmui.AutocompleteInput.from_param(
+                self.param.project,
+                options=["Alpha", "Beta"],
+                label="Project",
+                placeholder="Type a project name",
+                sizing_mode="stretch_width",
+            )
         )
 
 
-@register(page=False, component=True, title="Rows")
-class Rows(Viewer):
-    @param.output(param.List)
-    def rows(self):
-        return ["TX", "CA"]
-
-    def __panel__(self):
-        return "rows tile"
+@register(page=False, component=True, title="Note")
+def note(config):
+    return "note tile"
 
 
-COMPONENTS = {"Test/state": StatePicker, "Test/project": ProjectPicker, "Test/rows": Rows}
+COMPONENTS = {"Test/state": StatePicker, "Test/project": ProjectPicker, "Test/note": note}
 
 
 def _serve(page, width, header_layout, copies=1):
@@ -74,12 +73,7 @@ def _serve(page, width, header_layout, copies=1):
             for i in range(copies)
             for name in ("state", "project")
         ),
-        DashboardItem(instance_id="rows", component_id="Test/rows"),
-    ]
-    model.edges = [
-        DashboardEdge("rows", "rows", f"{name}{i}", "rows")
-        for i in range(copies)
-        for name in ("state", "project")
+        DashboardItem(instance_id="note", component_id="Test/note"),
     ]
     store.save_dashboard(model)
 
@@ -89,8 +83,6 @@ def _serve(page, width, header_layout, copies=1):
             store=store,
             notifications=False,
             header_layout=header_layout,
-            # Covers each view with a failure message, in a wrapper sized like the view.
-            propagate_failures=True,
         )
 
     serve_component(
