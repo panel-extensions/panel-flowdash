@@ -219,7 +219,7 @@ def test_overflow_downloads_and_clears(page, tmp_path):
 
     with page.expect_download() as download:
         _overflow(page).click()
-        page.get_by_role("menuitem", name="Download").click()
+        page.get_by_role("menuitem", name=re.compile(r"Download$")).click()
     assert download.value.suggested_filename == "Wired_pair.json"
     path = tmp_path / "export.json"
     download.value.save_as(path)
@@ -227,7 +227,7 @@ def test_overflow_downloads_and_clears(page, tmp_path):
 
     _overflow(page).click()
     clear = page.get_by_role("menuitem", name="Clear canvas")
-    download_item = page.get_by_role("menuitem", name="Download")
+    download_item = page.get_by_role("menuitem", name=re.compile(r"Download$"))
     style = "el => getComputedStyle(el).color"
     assert clear.evaluate(style) != download_item.evaluate(style)
     clear.click()

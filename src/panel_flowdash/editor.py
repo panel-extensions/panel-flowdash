@@ -407,10 +407,23 @@ def export_model(model: DashboardModel, restricted: t.Collection[str] = ()) -> d
     return data
 
 
-def export_filename(title: str) -> str:
-    """File name a downloaded dashboard titled *title* is saved under."""
+# The file extensions a dashboard file may have, JSON first.
+DASHBOARD_FILE_EXTENSIONS = (".json", ".yaml", ".yml")
+
+
+def export_filename(title: str, extension: str = "json") -> str:
+    """File name a downloaded dashboard titled *title* is saved under, as JSON or YAML."""
     stem = re.sub(r"[^\w-]+", "_", title).strip("_") or "dashboard"
-    return f"{stem}.json"
+    return f"{stem}.{extension}"
+
+
+def export_text(data: dict, extension: str = "json", restricted_edges=()) -> str:
+    """Return a dashboard export as the text of a JSON or YAML file."""
+    if extension == "yaml":
+        from panel_flowdash.agent.yaml_format import dashboard_to_yaml
+
+        return dashboard_to_yaml(data, restricted_edges)
+    return json.dumps(data, indent=2)
 
 
 # The editor whose component is being created, for `current_dashboard`.
@@ -841,6 +854,8 @@ class FlowDash(Viewer):
         self._components_loaded = False
         self._failed_components: set[str] = set()
 
+        # The format the Download action writes, "json" or "yaml".
+        self._download_format = "json"
         self._muted = False
         self._canvas_batch: tuple[list[dict], list[dict]] | None = None
         self._grid_populated = False
@@ -3778,13 +3793,21 @@ class FlowDash(Viewer):
 
     def _download_callback(self):
         data = self.export_dashboard()
-        self._download_button.filename = export_filename(data["title"])
-        return io.StringIO(json.dumps(data, indent=2))
+        extension = self._download_format
+        self._download_button.filename = export_filename(data["title"], extension)
+        if extension == "yaml":
+            from panel_flowdash.agent.yaml_format import editor_restricted_edges
+
+            return io.StringIO(export_text(data, "yaml", editor_restricted_edges(self)))
+        return io.StringIO(export_text(data))
 
     def _on_files_dropped(self, files: list[dict]):
-        file = next((f for f in files if f.get("name", "").lower().endswith(".json")), None)
+        file = next(
+            (f for f in files if f.get("name", "").lower().endswith(DASHBOARD_FILE_EXTENSIONS)),
+            None,
+        )
         if file is None:
-            self._notify("warning", "Drop a downloaded dashboard .json file to load it.")
+            self._notify("warning", "Drop a downloaded dashboard .json or .yaml file to load it.")
             return
         try:
             model = self._imported_model(file.get("content", ""))

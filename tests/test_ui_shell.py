@@ -104,14 +104,14 @@ class TestDashboardBarSections:
 
 class TestOverflow:
     async def test_edit_items(self, editor):
-        assert _labels(editor) == ["Download", "Import file"]
+        assert _labels(editor) == ["Download", "Download as YAML", "Import file"]
         editor.add_component(SELECTOR)
-        assert _labels(editor) == ["Download", "Import file", "Clear canvas"]
+        assert _labels(editor) == ["Download", "Download as YAML", "Import file", "Clear canvas"]
         assert editor._dashboard_bar.overflow.stylesheets
 
     async def test_view_items(self, editor):
         editor.editable = False
-        assert _labels(editor) == ["Download", "Settings"]
+        assert _labels(editor) == ["Download", "Download as YAML", "Settings"]
         editor.read_only = True
         assert _labels(editor) == []
 

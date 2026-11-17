@@ -467,8 +467,8 @@ class DashboardBar(Viewer):
         """
         editor = self.editor
         if not editor.editable:
-            return [] if editor.read_only else [_DOWNLOAD, _SETTINGS]
-        items = [_DOWNLOAD, _IMPORT]
+            return [] if editor.read_only else [_DOWNLOAD, _DOWNLOAD_YAML, _SETTINGS]
+        items = [_DOWNLOAD, _DOWNLOAD_YAML, _IMPORT]
         if editor._tile_items:
             items += [None, _CLEAR]
         return items
@@ -477,6 +477,8 @@ class DashboardBar(Viewer):
         action = item.get("action") if isinstance(item, dict) else None
         if action == "download":
             self.download()
+        elif action == "download_yaml":
+            self.download("yaml")
         elif action == "import":
             self.open_import()
         elif action == "clear":
@@ -707,8 +709,9 @@ class DashboardBar(Viewer):
             editor.load_model(model)
         editor.dirty = False
 
-    def download(self):
-        """Send the canvas to the browser as a dashboard file."""
+    def download(self, extension: str = "json"):
+        """Send the canvas to the browser as a dashboard file, JSON or YAML."""
+        self.editor._download_format = extension
         button = self.download_button
         # Resending identical data would not change the property, so no download would start.
         button.data = None
@@ -717,7 +720,10 @@ class DashboardBar(Viewer):
     def open_import(self):
         """Ask for a dashboard file to replace the canvas with."""
         chooser = pmui.FileInput(
-            label="Choose file", accept=".json", icon="upload_file", variant="outlined"
+            label="Choose file",
+            accept=".json,.yaml,.yml",
+            icon="upload_file",
+            variant="outlined",
         )
 
         def _on_file(event):
@@ -749,6 +755,7 @@ class DashboardBar(Viewer):
 
 
 _DOWNLOAD = {"label": "Download", "icon": "download", "action": "download"}
+_DOWNLOAD_YAML = {"label": "Download as YAML", "icon": "data_object", "action": "download_yaml"}
 _IMPORT = {"label": "Import file", "icon": "upload_file", "action": "import"}
 _SETTINGS = {"label": "Settings", "icon": "tune", "action": "settings"}
 _CLEAR = {
