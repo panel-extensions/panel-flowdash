@@ -6,12 +6,16 @@ Needs the ``panel-flowdash[agent]`` extra.
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
 import typing as t
 
 import panel as pn
-from panel_agents import AgentDrawer, RunState
+from panel_agents import AgentDrawer, MessageState, RunState, events as ev
 from panel_agents.adapters.pydantic_ai import ActionToolset, AgentRunner
+from pydantic_ai.exceptions import ModelAPIError, RunCancelled
 
+from panel_flowdash.ui.text import escape_markdown
 from panel_flowdash.util import confirm
 
 from .actions import palette_actions
@@ -27,6 +31,39 @@ if t.TYPE_CHECKING:
     from pydantic_ai import Agent
 
     from panel_flowdash.app import FlowDashApp
+
+logger = logging.getLogger("panel_flowdash")
+
+#: Whether panel-agents itself logs a failed run and shows it in the chat
+#: (panel-extensions/panel-agents#12); until it does, the session runner does.
+_REPORTS_RUN_ERRORS = "error" in MessageState.param.kind.objects
+
+
+#: Characters of an error message shown in the chat.
+ERROR_LIMIT = 300
+
+_URL_TAIL = re.compile(r"(https?://[^\s?#]+)[?#]\S*")
+
+
+def describe_error(error: BaseException) -> str:
+    """Return a short message for a failed request to the agent.
+
+    A model provider's refusal is reduced to the provider's own message and
+    status, without the request details pydantic-ai adds; URLs lose their
+    query string and the message is cut at :data:`ERROR_LIMIT` characters.
+    """
+    text = str(error) or type(error).__name__
+    if isinstance(error, ModelAPIError):
+        body = error.body
+        if isinstance(body, dict) and isinstance(body.get("error"), dict):
+            body = body["error"]
+        message = body.get("message") if isinstance(body, dict) else None
+        status = getattr(error, "status_code", None)
+        text = "The model provider refused the request" + (f" ({status})" if status else "")
+        if isinstance(message, str) and message.strip():
+            text += f": {message.strip()}"
+    text = _URL_TAIL.sub(r"\1", " ".join(text.split()))
+    return text if len(text) <= ERROR_LIMIT else text[: ERROR_LIMIT - 1] + "…"
 
 
 def resolve_agent(agent: t.Any, model: str | None) -> Agent | None:
@@ -77,7 +114,14 @@ class AgentSession:
             approval_policy=approval_policy(
                 sensitive_components=app.agent_sensitive_components, ops=self.ops
             ),
-            run_kwargs={"toolsets": [ActionToolset(self.actions)]},
+            run_kwargs={
+                "toolsets": [ActionToolset(self.actions)],
+                **(
+                    {"model_settings": app.agent_model_settings}
+                    if app.agent_model_settings
+                    else {}
+                ),
+            },
         )
         self.drawer = AgentDrawer(
             self.runner, title="Assistant", variant="persistent", on_apply=self.apply_version
@@ -156,7 +200,9 @@ class AgentSession:
 class _SessionRunner(AgentRunner):
     """Publishes the user's own edits before each request, so versions stay truthful.
 
-    Each request is pinned to the dashboard open when the user sent it.
+    Each request is pinned to the dashboard open when the user sent it. A
+    request that fails, e.g. because the provider refused it, is logged with
+    its traceback and answered in the chat with the error.
     """
 
     def __init__(self, session: AgentSession, *args, **kwargs):
@@ -167,6 +213,21 @@ class _SessionRunner(AgentRunner):
         self._session.publish_user_edits()
         self.deps.start_request()
         try:
-            return await super().run(prompt, **kwargs)
+            output = await super().run(prompt, **kwargs)
         finally:
             self.deps.end_request()
+        error = self.error
+        if error is not None and not isinstance(error, RunCancelled) and not _REPORTS_RUN_ERRORS:
+            self._report_error(error)
+        return output
+
+    def _report_error(self, error: BaseException):
+        logger.error("The assistant's run %s failed", self.run_id, exc_info=error)
+        message_id = f"{self.run_id}-error"
+        text = escape_markdown(f"Sorry, that failed. {describe_error(error)}")
+        for event in (
+            ev.TextMessageStart(message_id=message_id, run_id=self.run_id),
+            ev.TextMessageContent(message_id=message_id, delta=text, run_id=self.run_id),
+            ev.TextMessageEnd(message_id=message_id, run_id=self.run_id),
+        ):
+            self.state.apply(event)
