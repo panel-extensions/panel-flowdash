@@ -247,6 +247,8 @@ class TestAppShell:
         assert app.nav_variant == "rail"
         assert app._page.header == app._shell.header
         assert app._shell.search_slot in app._page.header
+        assert app._page.header_color == "paper"
+        assert list(app._page.rail) == app._shell.rail_content
         for key, value in HEADER_SX.items():
             assert app._page.sx[key] == value
 
@@ -315,9 +317,9 @@ class TestAppShell:
         assert app._shell.dashboard_switcher.label == "Renamed"
         assert app._editor._dashboard_bar.title.object == "Renamed"
 
-    async def test_rail_wraps_page_content(self, app):
+    async def test_page_content_is_not_wrapped(self, app):
         content = pn.pane.Markdown("x")
-        assert list(app._nav_content(content)) == [app._shell.rail, content]
+        assert app._nav_content(content) is content
 
     async def test_dashboard_parts_join_the_top_bar(self, app):
         bar = app._editor._dashboard_bar
@@ -381,19 +383,25 @@ class TestAppShell:
                 app = FlowDashApp(project_dir=tmp_path, store=store, nav_variant=variant)
                 assert app._shell is None
                 assert app._editor._dashboard_bar.placement == "row"
+                assert app._page.rail == []
+                assert app._page.header_color == "primary"
         finally:
             sys.path.remove(str(tmp_path))
 
 
-class TestAppSidebarToggle:
-    async def test_hidden_while_the_sidebar_is_empty(self, app):
-        assert app._page.sx["& .header .MuiIconButton-edgeStart"] == {"display": "none"}
+class TestAppSidebar:
+    async def test_empty_by_default(self, app):
+        assert app._page.sidebar == []
 
-    async def test_shown_with_sidebar_content(self, app):
-        app._sidebar_container.objects = [pn.pane.Markdown("filter")]
-        assert "& .header .MuiIconButton-edgeStart" not in app._page.sx
-        app._sidebar_container.objects = []
-        assert "& .header .MuiIconButton-edgeStart" in app._page.sx
+    async def test_app_items_come_before_dashboard_views(self, app):
+        item, view = pn.pane.Markdown("app"), pn.pane.Markdown("filter")
+        app._set_sidebar_views([view])
+        app.sidebar = [item]
+        assert app._page.sidebar == [item, view]
+        app._set_sidebar_views([])
+        assert app._page.sidebar == [item]
+        app.sidebar = []
+        assert app._page.sidebar == []
 
 
 class TestAppModes:

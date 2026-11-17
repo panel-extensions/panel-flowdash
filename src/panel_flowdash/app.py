@@ -364,7 +364,8 @@ class FlowDashApp(Viewer):
         self._session_state = self._session_state_class()
         self._identity = resolve_identity(self.auth_config)
         self._user_id = self._resolve_user_id()
-        self._sidebar_container = pn.Column(sizing_mode="stretch_width")
+        # Views of the open dashboard's sidebar components, shown after `sidebar`.
+        self._sidebar_views: list = []
         self._sidebar_open_before_fullscreen: bool | None = None
         self._share_button = pmui.Button(
             label="Share",
@@ -412,8 +413,8 @@ class FlowDashApp(Viewer):
         self._build_dialog()
         self._build_unsaved_dialog()
         self._build_share_dialog()
-        # Not in the page header: Material UI gives header children an inverted
-        # palette, which would turn the dialog into a header-coloured box.
+        # Not in the page header: outside the rail variant the header is
+        # primary-coloured and gives its children an inverted palette.
         shared_dialog = page_dialog()
         self._page_dialogs = [] if shared_dialog is None else [shared_dialog]
         self._page_dialogs.append(self._build_downloader())
@@ -424,60 +425,47 @@ class FlowDashApp(Viewer):
             "title": self.title,
             "theme_config": {"palette": {"primary": {"main": "#0072B5"}}},
             "sidebar_open": False,
-            "sidebar": self.param.sidebar.rx() + [self._sidebar_container],  # noqa: RUF005
+            "sidebar": list(self.sidebar),
             "contextbar": self.param.contextbar.rx(),
-            # A persistent contextbar reserves its width even while empty, which
-            # pushes the main area past the viewport when the sidebar is open.
-            "contextbar_variant": param.bind(
-                lambda items: "persistent" if items else "temporary", self.param.contextbar
-            ),
+            "contextbar_variant": "persistent",
             "contextbar_open": self.param.contextbar_open,
-            **self.page_options,
         }
-        overflow_patch = {".main-content": {"overflow-x": "hidden"}}
-        if "sx" in page_kwargs:
-            page_kwargs["sx"].update(**overflow_patch)
-        else:
-            page_kwargs["sx"] = {".main-content": {"overflow-x": "hidden"}}
         if self._menu_bar is not None:
-            page_kwargs.setdefault("header", [self._menu_bar])
+            page_kwargs["header"] = [self._menu_bar]
         if self._shell is not None:
-            page_kwargs.setdefault("header", self._shell.header)
-            page_kwargs["sx"] = {**HEADER_SX, **page_kwargs["sx"]}
-        elif self._agent_session is not None:
+            page_kwargs.update(
+                header=self._shell.header,
+                header_color="paper",
+                rail=self._shell.rail_content,
+                sx=HEADER_SX,
+            )
+        page_kwargs.update(self.page_options)
+        if self._shell is None and self._agent_session is not None:
             page_kwargs["header"] = [
                 *page_kwargs.get("header", []),
                 self._agent_session.drawer.toggle,
             ]
-        self._page_sx = page_kwargs["sx"]
-        page_kwargs["sx"] = self._page_sx_for_sidebar()
-        self._page = pmui.Page(**page_kwargs)
-        self.param.watch(self._sync_sidebar_toggle, "sidebar")
-        self._sidebar_container.param.watch(self._sync_sidebar_toggle, "objects")
+        self._page_sx = {**page_kwargs.get("sx", {}), **self.page_options.get("sx", {})}
+        self._page = pmui.Page(**{**page_kwargs, "sx": self._header_sx()})
+        self.param.watch(self._sync_page_sidebar, "sidebar")
         pn.state.onload(self._load_page_layout)
 
-    def _page_sx_for_sidebar(self) -> dict:
-        """Return the page's ``sx``, hiding the sidebar's menu button while the sidebar is empty.
+    def _set_sidebar_views(self, views: list):
+        self._sidebar_views = list(views)
+        self._sync_page_sidebar()
 
-        The sidebar keeps its (empty) container rather than dropping it: changing
-        the page's children re-renders it, which blanks views that move between
-        layouts in the same update.
-        """
+    def _sync_page_sidebar(self, *_events):
+        self._page.sidebar = [*self.sidebar, *self._sidebar_views]
+
+    def _header_sx(self) -> dict:
+        """Return the page's ``sx``, making room for a dashboard's actions in the top bar."""
         header_sx = {None: {}, "view": DASHBOARD_HEADER_SX, "edit": DASHBOARD_EDIT_HEADER_SX}
-        sx = {**self._page_sx, **header_sx[self._dashboard_header]}
-        if self.sidebar or self._sidebar_container.objects:
-            return sx
-        return {**sx, "& .header .MuiIconButton-edgeStart": {"display": "none"}}
+        return {**self._page_sx, **header_sx[self._dashboard_header]}
 
     def _set_dashboard_header(self, mode: str | None):
         """Make room in the top bar for the dashboard's "view" or "edit" actions, or None."""
         self._dashboard_header = mode
-        if getattr(self, "_page", None) is not None:
-            self._sync_sidebar_toggle()
-
-    def _sync_sidebar_toggle(self, *_events):
-        sx = self._page_sx_for_sidebar()
-        if sx != self._page.sx:
+        if getattr(self, "_page", None) is not None and self._page.sx != (sx := self._header_sx()):
             self._page.sx = sx
 
     def _begin_navigation(self) -> int:
@@ -542,16 +530,14 @@ class FlowDashApp(Viewer):
     def _nav_content(self, content):
         """Wrap page content with the navigation rail or docked nav drawer.
 
-        In menubar mode navigation lives in the page header, so the content is
-        returned as-is; in the 'rail' variant it follows the navigation rail
-        and in the 'left'/'right' variants it is paired with the docked drawer
-        on that side. With an agent, its drawer is docked on the right.
+        In the 'menubar' and 'rail' variants navigation lives in the page
+        header and rail, so the content is returned as-is; in the 'left'/'right'
+        variants it is paired with the docked drawer on that side. With an
+        agent, its drawer is docked on the right.
         """
-        if self._shell is not None:
-            content = self._shell.wrap(content)
-        elif self.nav_variant == "left":
+        if self.nav_variant == "left":
             content = pn.Row(self._nav_drawer, content, sizing_mode="stretch_both")
-        elif not self._menubar_mode:
+        elif self.nav_variant == "right":
             content = pn.Row(content, self._nav_drawer, sizing_mode="stretch_both")
         if self._agent_session is not None:
             content = self._agent_session.dock(content)
@@ -871,7 +857,7 @@ class FlowDashApp(Viewer):
         """
         editor = self._editor
         views = [] if editor.controls_bar or editor.fullscreen else list(editor.sidebar)
-        had_views = bool(self._sidebar_container.objects)
+        had_views = bool(self._sidebar_views)
         restore = None
         if any(event.name == "fullscreen" for event in events):
             if editor.fullscreen:
@@ -880,7 +866,7 @@ class FlowDashApp(Viewer):
             else:
                 restore = self._sidebar_open_before_fullscreen
                 self._sidebar_open_before_fullscreen = None
-        self._sidebar_container.objects = views
+        self._set_sidebar_views(views)
         if not views:
             self._page.sidebar_open = False
         elif not had_views:
@@ -965,7 +951,7 @@ class FlowDashApp(Viewer):
     def _reset_canvas(self):
         """Clear the editor canvas and the mirrored page sidebar."""
         self._editor._reset_canvas()
-        self._sidebar_container.objects = []
+        self._set_sidebar_views([])
 
     async def _ensure_components_loaded(self, component_ids: t.Iterable[str] | None = None):
         """Load component modules and build their specs, if not done yet.
@@ -1078,7 +1064,7 @@ class FlowDashApp(Viewer):
             return False
         self._begin_navigation()
         self._editor._start_dashboard(dashboard)
-        self._sidebar_container.objects = []
+        self._set_sidebar_views([])
 
         self._notify("success", f'Created new dashboard "{dashboard.title}".', duration=3000)
         # Leave the launcher's route first, so the menus refresh without
@@ -1251,7 +1237,7 @@ class FlowDashApp(Viewer):
             if not self._is_current_navigation(generation):
                 return
             self._leave_dashboard()
-            self._sidebar_container.objects = []
+            self._set_sidebar_views([])
             self._page.sidebar_open = False
             launcher = self._build_launcher()
             self._apply_layout_config(launcher, pathname)
@@ -1304,7 +1290,7 @@ class FlowDashApp(Viewer):
                 return
 
         self._leave_dashboard()
-        self._sidebar_container.objects = []
+        self._set_sidebar_views([])
         key = tuple(pathname.strip("/").split("/"))
         if len(key) == 2 and self._entry_from_key(key):
             content = await self._render_page(key)

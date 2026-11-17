@@ -154,7 +154,7 @@ def test_controls_bar_holds_the_sidebar_components_and_the_pipeline(page):
     expect(pipeline.get_by_text("Pipeline")).to_be_visible()
     expect(pipeline.get_by_text("Unit Picker")).to_be_visible()
     expect(pipeline.get_by_text("Output Chart")).to_be_visible()
-    assert apps[-1]._sidebar_container.objects == []
+    assert apps[-1]._page.sidebar == []
 
 
 def test_controls_bar_moves_to_the_sidebar_when_switched_off(page):
@@ -172,6 +172,11 @@ def test_controls_bar_moves_to_the_sidebar_when_switched_off(page):
     page.get_by_text("output chart tile").first.wait_for()
     expect(page.locator(".fd-controls-bar").get_by_text("unit picker control")).to_have_count(0)
     page.get_by_text("unit picker control").wait_for(state="attached")
+    # The control moves into the page sidebar without blanking the tiles.
+    expect(
+        page.locator(".MuiDrawer-paper.sidebar").get_by_text("unit picker control")
+    ).to_be_visible()
+    expect(page.get_by_text("output chart tile").first).to_be_visible()
 
 
 def test_issue_banner_scrolls_to_and_highlights_the_waiting_tile(page):

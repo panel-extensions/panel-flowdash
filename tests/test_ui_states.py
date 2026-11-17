@@ -317,8 +317,8 @@ class TestLoading:
         async with app._loading_screen():
             await asyncio.sleep(0.05)
             content = app._page.main[0]
-            assert content[0] is app._shell.rail
-            assert "flowdash-loading" in content[1].css_classes
+            assert "flowdash-loading" in content.css_classes
+            assert list(app._page.rail) == app._shell.rail_content
             assert _shows_progress(app)
 
     def test_skeleton_tiles(self):

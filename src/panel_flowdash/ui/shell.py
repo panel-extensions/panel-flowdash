@@ -15,7 +15,8 @@ if t.TYPE_CHECKING:
 
 DOCS_URL = "https://panel-extensions.github.io/panel-flowdash/"
 
-# Below this width the rail is hidden behind a menu button in the top bar.
+# Material UI's sm breakpoint, below which the page moves its rail into the
+# sidebar drawer: the rail buttons show above it, the navigation list below it.
 NARROW_BREAKPOINT = 600
 
 _HIDE_WHEN_NARROW = (
@@ -25,22 +26,11 @@ _HIDE_WHEN_WIDE = (
     f"@media (min-width: {NARROW_BREAKPOINT}px) {{ :host {{ display: none !important; }} }}"
 )
 
-# Material UI gives header children an inverted palette unless the app bar is
-# styled exactly like this; the second rule then gives it the page's own colours.
 HEADER_SX = {
-    ".MuiAppBar-root": {"bgcolor": "primary.contrastText", "color": "primary.main"},
-    "& .MuiAppBar-root.header": {
-        "bgcolor": "background.paper",
-        "backgroundImage": "none",
-        "color": "text.primary",
-        "boxShadow": "none",
-        "borderBottom": 1,
-        "borderColor": "divider",
-    },
     # The top bar is one 56px row; the page's spacers below it follow suit.
     "& .MuiToolbar-root": {"minHeight": "56px"},
     "& .header .MuiToolbar-root": {"gap": "4px"},
-    "& .header .title": {"color": "text.primary", "fontSize": "1.25rem", "fontWeight": 600},
+    "& .header .title": {"fontSize": "1.25rem", "fontWeight": 600},
     # The header items may get narrower than their content, so the breadcrumb
     # can truncate, while the brand keeps its width.
     "& .header .MuiToolbar-root > .MuiBox-root": {"minWidth": 0},
@@ -148,11 +138,11 @@ class Crumb(t.NamedTuple):
 class AppShell:
     """The chrome around a FlowDashApp page in the ``rail`` navigation variant.
 
-    It provides the top bar content placed in the page header (a menu button
-    for narrow screens, the breadcrumb with a dashboard switcher, and
-    :attr:`search_slot`) and the navigation rail placed left of the page
-    content by :meth:`wrap`. The theme and contextbar toggles are the page's
-    own and follow the header content.
+    It provides the top bar content placed in the page header (the breadcrumb
+    with a dashboard switcher, and :attr:`search_slot`) and the navigation
+    placed in the page's rail (:attr:`rail_content`): the rail buttons, and on
+    narrow screens, where the page moves its rail into the sidebar drawer, a
+    navigation list. The menu, theme and contextbar toggles are the page's own.
 
     Call :meth:`sync` with the route after every navigation and
     :meth:`refresh` when the dashboards or pages the user can see change.
@@ -163,14 +153,6 @@ class AppShell:
         location = pn.state.location
         self._path = "/" + (location.pathname if location is not None else "").strip("/")
 
-        self.menu_button = pmui.IconButton(
-            icon="menu",
-            description="Open navigation",
-            size="medium",
-            margin=(0, 4, 0, 0),
-            stylesheets=[_HIDE_WHEN_WIDE],
-        )
-        self.menu_button.on_click(lambda _event: self.nav_drawer.param.update(open=True))
         self.breadcrumb = pn.Row(margin=0, align="center", min_width=0, stylesheets=[_SHRINK])
         self.dashboard_switcher = pmui.MenuButton(
             label="",
@@ -191,41 +173,35 @@ class AppShell:
         self.rail = pmui.Paper(
             direction="column",
             elevation=0,
-            width=80,
             margin=0,
-            sizing_mode="stretch_height",
+            sizing_mode="stretch_both",
             sx={
                 "alignItems": "center",
                 "gap": 1,
                 "py": 1.5,
                 "borderRadius": 0,
-                "borderRight": 1,
-                "borderColor": "divider",
-                "bgcolor": "background.paper",
-                "flexShrink": 0,
+                "bgcolor": "transparent",
             },
             stylesheets=[_HIDE_WHEN_NARROW],
         )
         self._nav_list = pmui.MenuList(items=[], dense=False, on_click=self._on_nav_list_click)
-        self.nav_drawer = pmui.Drawer(
-            pmui.Typography(app.title, variant="h6", margin=(16, 16, 8, 16)),
+        self.nav_list = pn.Column(
+            pmui.Typography(app.title, variant="h6", margin=(8, 16, 8, 16)),
             self._nav_list,
-            anchor="left",
-            variant="temporary",
-            size=280,
+            sizing_mode="stretch_width",
+            margin=0,
+            stylesheets=[_HIDE_WHEN_WIDE],
         )
         app._editor._dashboard_bar.param.watch(
             lambda _event: self._render_dashboard_slots(), "layout"
         )
         app._editor.param.watch(lambda _event: self._render_dashboard_slots(), "editable")
         self._header = [
-            self.menu_button,
             self.breadcrumb,
             self.dashboard_lead,
             pn.layout.HSpacer(),
             self.dashboard_actions,
             self.search_slot,
-            self.nav_drawer,
         ]
         self.refresh()
 
@@ -238,9 +214,10 @@ class AppShell:
         """Items for the page header, left to right."""
         return self._header
 
-    def wrap(self, content):
-        """Pair page *content* with the navigation rail."""
-        return pn.Row(self.rail, content, sizing_mode="stretch_both", margin=0)
+    @property
+    def rail_content(self) -> list:
+        """Items for the page rail: the rail buttons and, for narrow screens, the list."""
+        return [self.rail, self.nav_list]
 
     # ------------------------------------------------------------------
     # State
@@ -404,7 +381,8 @@ class AppShell:
     def _on_nav_list_click(self, item):
         if "path" not in item:
             return
-        self.nav_drawer.open = False
+        # On narrow screens the list sits in the page's temporary sidebar drawer.
+        self._app._page.sidebar_open = False
         self._navigate(item["path"])
 
     def _on_menu_item(self, item):

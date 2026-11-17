@@ -296,7 +296,8 @@ pages the user may open) and **Help**, the item for the current route
 highlighted. The top bar shows where you are as a breadcrumb, for example
 *Dashboards › Sales*, where the dashboard title opens a switcher listing every
 dashboard the user can see, or *Home › Components* on other routes. On screens
-narrower than 600 px the rail moves behind a menu button in the top bar.
+narrower than 600 px the rail moves into the page's side drawer, which the
+menu button in the top bar opens, above any sidebar content of the page.
 
 With the default `header_layout="compact"` the top bar is the dashboard's
 header too, so there is a single row above the tiles. Next to the title it shows an info button holding the
