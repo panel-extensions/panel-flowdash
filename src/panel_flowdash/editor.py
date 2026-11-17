@@ -2444,7 +2444,26 @@ class FlowDash(Viewer):
                 stylesheets=[GRID_EDIT_CSS],
             )
             self._tile__grid.param.watch(self._on_tile_layout, "layout")
+            self._tile__grid.param.watch(self._fit_split_grid, ["reference_width", "breakpoints"])
         return self._tile__grid
+
+    def _fit_split_grid(self, *_events):
+        """Lay the grid out at the main layout's reference width while it is in the Split tab.
+
+        Beside the canvas the pane is narrower than the dashboard's breakpoints,
+        so a grid as wide as the pane would show, and let the user edit, a
+        narrow-screen layout. At the reference width the grid shows the main
+        layout as the Layout tab does and edits write to it; the pane scrolls
+        sideways when it is narrower. TileGrid measures its tiles in layout
+        pixels, so the grid cannot be scaled down to fit instead.
+        """
+        grid = self._tile_grid
+        if self.editable and self.mode == "split":
+            width = _reference_width(grid.reference_width, grid.breakpoints)
+        else:
+            width = None
+        if (grid.min_width, grid.max_width) != (width, width):
+            grid.param.update(min_width=width, max_width=width)
 
     def _sized_layout(self, layout: list[dict]) -> list[dict]:
         """Apply the size hints of the tiles on the grid to its positional *layout*."""
@@ -2522,11 +2541,8 @@ class FlowDash(Viewer):
         if split != self._split_shown:
             self._split_shown = split
             self._fold_inspector(split)
-        # Beside the canvas the grid is narrower than the layout is authored at,
-        # so arranging it there would edit a narrow breakpoint's layout instead;
-        # it previews the dashboard, and tiles are arranged in the Layout tab.
-        arranging = interactive and not split
-        self._tile_grid.param.update(editable=arranging, card=arranging)
+        self._tile_grid.param.update(editable=interactive, card=interactive)
+        self._fit_split_grid()
         # Column children rather than Row children, so the dialogs take no flex space.
         dialogs = [self._clear_dialog, self._import_dialog, self._settings_dialog]
         if self.inspect_outputs:

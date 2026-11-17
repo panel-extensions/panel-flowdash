@@ -328,8 +328,14 @@ class SplitView(Viewer):
         self.on_resize = on_resize
         sizes = self.preferences.sizes
         self.left = pn.Column(margin=0, sizing_mode="stretch_both")
-        # Tiles keep their minimum widths, so a narrow grid pane scrolls sideways too.
-        self.right = pn.Column(margin=0, sizing_mode="stretch_both", scroll="both-auto")
+        # The grid keeps the width of the dashboard's layout, so a narrow pane
+        # scrolls sideways; the pane must not take on the grid's minimum width.
+        self.right = pn.Column(
+            margin=0,
+            sizing_mode="stretch_both",
+            scroll="both-auto",
+            stylesheets=[":host { min-width: 0 !important; }"],
+        )
         self.split = HSplit(
             self.left,
             self.right,
