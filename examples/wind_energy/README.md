@@ -30,7 +30,7 @@ gate's failures are only logged.
 | Dashboard settings and refresh | `WindSettings` adds a capacity unit and a colour scheme, which charts and KPIs follow; *Fleet Overview* refreshes every 15 minutes and the turbine source reloads on every refresh |
 | Sidebar widgets as controls | *Year Range*, *State Picker* and *Project Picker* (`sidebar=True`) |
 | Outputs declared on a Parameter | `state`, `years` and `project` use `metadata={"flowdash": {"output": True}}` |
-| Port types | `register_port_type` in `Sources/__init__.py`: a `Turbines` table feeds any DataFrame input, but only `StatePopulation` feeds *Join State Population*'s population input |
+| Port types | `register_port_type` in the project `__init__.py`: a `Turbines` table feeds any DataFrame input, but only `StatePopulation` feeds *Join State Population*'s population input |
 | Multi-input wiring | *Join State Population* joins the turbines with the Census population table into watts per person (*State Deep Dive*, State ranking) |
 | Built-in edge transforms | *Fleet Overview*: sort by capacity and keep the first 10 rows into *Largest projects*; *State Deep Dive*: filter turbines of 3 MW and up into a KPI |
 | Node configuration | KPI `metric` and `label`, map `color_by` and `basemap`, gate thresholds, table `columns`; one KPI component placed several times with different settings |
