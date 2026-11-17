@@ -18,7 +18,10 @@ _PANEL_WIDTH = 320
 # Panel makes stretch to match) would collapse to nothing and the content
 # would spill onto the tiles below; in the left panel's column each wrapper
 # would instead take an equal share of the height. Sizing the wrapper and the
-# view to their content keeps the controls as tall as they are.
+# view to their content keeps the controls as tall as they are. Widths go the
+# other way: a stretched widget keeps its default width as a minimum, which
+# would spill out of the wrapper onto the next control, so the view may not
+# get wider than the wrapper.
 _FIT_CONTENT = """
 :host {
   height: auto;
@@ -29,6 +32,25 @@ _FIT_CONTENT = """
   height: auto;
   max-height: none;
   flex: 0 0 auto;
+  min-width: 0 !important;
+  max-width: 100% !important;
+}
+"""
+
+# Material UI shows an outlined input's label inside the empty box and hides
+# its placeholder, and moves the label into the notch once there is a value,
+# so in a row of controls an empty one looks unlike its neighbours. These rules
+# keep every label in the notch, with the placeholder shown while empty.
+_NOTCHED_LABEL = """
+.MuiInputLabel-outlined[data-shrink="false"] {
+  transform: translate(14px, -9px) scale(0.75);
+  max-width: calc(133% - 32px);
+}
+.MuiOutlinedInput-notchedOutline > legend {
+  max-width: 100% !important;
+}
+:host label[data-shrink="false"] + .MuiInputBase-formControl .MuiInputBase-input::placeholder {
+  opacity: 0.6 !important;
 }
 """
 
@@ -36,10 +58,15 @@ POSITIONS = ("top", "left")
 
 
 def compact_inputs(view):
-    """Switch the Material UI widgets in *view* to their small size, where they have one."""
+    """Switch the Material UI widgets in *view* to their small size, where they have one.
+
+    Their labels also stay in the outline's notch, as a filled input shows it.
+    """
     if not hasattr(view, "select"):
         return
     for widget in view.select(MaterialWidget):
+        if _NOTCHED_LABEL not in widget.stylesheets:
+            widget.stylesheets = [*widget.stylesheets, _NOTCHED_LABEL]
         # Selects keep the number of visible rows in `size` and the MUI size in `visual_size`.
         for name in ("visual_size", "size"):
             size = widget.param[name] if name in widget.param else None
@@ -86,11 +113,14 @@ class ControlsBar(Viewer):
             flex_wrap="wrap",
             margin=0,
             sizing_mode="stretch_width",
-            gap="8px 16px",
+            # The widgets' own margins space them as far apart as the tiles.
+            gap="0px",
         )
         self._row = pn.Column(
             self._controls,
-            margin=(4, 16, 0, 16),
+            # Widgets keep a 10px margin of their own, so the outlines start
+            # where the tiles do.
+            margin=(4, 16, 0, 0),
             sizing_mode="stretch_width",
             visible=False,
             css_classes=["fd-controls-bar"],
