@@ -75,6 +75,7 @@ agent_model = "anthropic:<model>"
 | `agent` | `None` (default): the default agent when a model is configured. `True`: the default agent, and an error saying how to configure a model when none is. A string: the default agent with that model. `False`: no agent, even if a model is configured. A `pydantic_ai.Agent`: your own agent. |
 | `agent_authorize` | Called with the signed-in user's `Identity`; only sessions for which it returns True get the agent. |
 | `agent_sensitive_components` | Component ids or glob patterns (`"Sources/*"`) of components whose config can reach outside the dashboard, see [Untrusted text](#untrusted-text). |
+| `agent_approval_rules` | More calls that need the user's approval: tool names such as `"remove_node"`, or `panel_agents.ApprovalRule("run_command", when=lambda args: ...)` for calls with particular arguments. Saving, deleting and sharing always need it. |
 
 To give the default agent knowledge about your project, build it yourself and pass
 extra instructions:
