@@ -31,8 +31,7 @@ def test_the_agent_adds_a_component_from_the_drawer(page):
     _serve_app(page, store, f"/dash/{dash}", apps, agent=agent)
 
     page.get_by_text("note tile").first.wait_for()
-    # The drawer's toggle is a robot icon in the top bar.
-    page.get_by_text("smart_toy", exact=True).click(force=True)
+    page.get_by_role("button", name="Assistant", exact=True).click()
     chat = page.get_by_role("textbox").last
     chat.fill("Add another note")
     chat.press("Enter")
@@ -42,3 +41,15 @@ def test_the_agent_adds_a_component_from_the_drawer(page):
     page.get_by_text("Done: Added node 'note'.").wait_for(timeout=20000)
     assert apps[0]._editor.editable
     assert errors == []
+
+    # Closed, the drawer gives the page its whole width back.
+    page.get_by_role("button", name="Assistant", exact=True).click()
+    wait_until(
+        lambda: (
+            page.get_by_text("Unsaved changes").bounding_box()["x"]
+            < page.viewport_size["width"] / 2
+        ),
+        page,
+    )
+    tile_bar = page.get_by_role("button", name="Done")
+    wait_until(lambda: tile_bar.bounding_box()["x"] > page.viewport_size["width"] - 200, page)
