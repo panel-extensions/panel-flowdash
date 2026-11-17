@@ -111,7 +111,11 @@ def test_header_shows_description_health_and_refresh(page, header_layout):
     _serve(page, store, dash, [], header_layout=header_layout)
 
     if header_layout == "compact":
-        expect(page.get_by_role("button", name="Output per unit, live.")).to_be_visible()
+        page.get_by_role("button", name="About this dashboard").click()
+        about = page.get_by_role("dialog", name="About this dashboard")
+        expect(about.get_by_text("Output per unit, live.")).to_be_visible()
+        page.keyboard.press("Escape")
+        expect(about).to_be_hidden()
     else:
         bar = page.locator(".fd-dashboard-bar")
         expect(bar.get_by_text("Output per unit, live.")).to_be_visible()

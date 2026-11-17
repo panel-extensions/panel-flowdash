@@ -75,16 +75,17 @@ class TestDescription:
     async def test_behind_an_info_button_next_to_the_title(self, editor):
         editor.settings.description = "What the plant produced today."
         bar = _view(editor)
-        assert bar.info_button.description == "What the plant produced today."
-        assert bar.lead.objects[:2] == [bar.title, bar.info_button]
+        assert bar._about.object == "What the plant produced today."
+        assert bar.lead.objects[:2] == [bar.title, bar.info]
+        assert bar.info_button.description == "About this dashboard"
 
     async def test_left_out_when_empty(self, editor):
         bar = _view(editor)
-        assert bar.info_button not in bar.lead.objects
+        assert bar.info not in bar.lead.objects
 
     async def test_not_shown_in_edit_mode(self, editor):
         editor.settings.description = "Shown only when viewing."
-        assert editor._dashboard_bar.info_button not in editor._dashboard_bar.lead
+        assert editor._dashboard_bar.info not in editor._dashboard_bar.lead
 
     async def test_is_a_saved_setting(self, editor):
         editor.new_dashboard("Plant")
