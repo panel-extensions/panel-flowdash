@@ -6,6 +6,7 @@ import asyncio
 import dataclasses
 import inspect
 import logging
+import os
 import pathlib
 import traceback
 import typing as t
@@ -112,8 +113,55 @@ _COMPONENT_PALETTE_CARD_CSS = """
 """
 
 
+# Logged when an agent is configured but its dependencies are missing.
+AGENT_EXTRA_MISSING = (
+    "The FlowDash agent needs Python 3.11 or newer and the agent extra: "
+    "pip install 'panel-flowdash[agent]', plus the client of your model provider, "
+    "e.g. 'pydantic-ai-slim[openai]'"
+)
+
+
 class FlowDashApp(Viewer):
     """FlowDash application: scans a project directory and serves its pages and components."""
+
+    agent = param.Parameter(
+        default=None,
+        doc="""
+        The AI agent that helps the signed-in user build and change
+        dashboards, with that user's rights (needs ``panel-flowdash[agent]``).
+        None gives the default agent when `agent_model` (or the
+        ``FLOWDASH_AGENT_MODEL`` environment variable) names a model and no
+        agent otherwise; True requires a model; a string is the default
+        agent's model, e.g. ``"openai:gpt-5"``; False turns the agent off; a
+        ``pydantic_ai.Agent`` built with `panel_flowdash.agent.create_agent`
+        (or taking ``FlowDashDeps``) is used as is.""",
+    )
+
+    agent_authorize = param.Callable(
+        default=None,
+        doc="""
+        Called with the signed-in `Identity` to decide whether this session
+        gets the agent, e.g. to roll it out to some groups first. None offers
+        it to everyone when an agent is configured.""",
+    )
+
+    agent_sensitive_components = param.List(
+        default=[],
+        item_type=str,
+        doc="""
+        Ids of components whose config can reach outside the dashboard, such
+        as a SQL source or one fetching a URL. The agent needs the user's
+        approval to place one, change its config or load YAML that places one.""",
+    )
+
+    agent_model = param.String(
+        default=None,
+        allow_None=True,
+        doc="""
+        The model of the default agent, e.g. ``"anthropic:<model>"`` or
+        ``"openai:<model>"``. Defaults to the ``FLOWDASH_AGENT_MODEL``
+        environment variable.""",
+    )
 
     auth_config = param.ClassSelector(
         class_=AuthConfig,
@@ -338,6 +386,9 @@ class FlowDashApp(Viewer):
             self._editor._dashboard_bar.placement = "header"
         self._shell = AppShell(self) if self.nav_variant == "rail" else None
         self._command_palette = CommandPaletteController.install(self)
+        self._agent_session = self._build_agent_session()
+        if self._agent_session is not None and self._shell is not None:
+            self._shell.search_slot.append(self._agent_session.drawer.toggle)
         self._build_dialog()
         self._build_unsaved_dialog()
         self._build_share_dialog()
@@ -373,6 +424,11 @@ class FlowDashApp(Viewer):
         if self._shell is not None:
             page_kwargs.setdefault("header", self._shell.header)
             page_kwargs["sx"] = {**HEADER_SX, **page_kwargs["sx"]}
+        elif self._agent_session is not None:
+            page_kwargs["header"] = [
+                *page_kwargs.get("header", []),
+                self._agent_session.drawer.toggle,
+            ]
         self._page_sx = page_kwargs["sx"]
         page_kwargs["sx"] = self._page_sx_for_sidebar()
         self._page = pmui.Page(**page_kwargs)
@@ -469,17 +525,17 @@ class FlowDashApp(Viewer):
         In menubar mode navigation lives in the page header, so the content is
         returned as-is; in the 'rail' variant it follows the navigation rail
         and in the 'left'/'right' variants it is paired with the docked drawer
-        on that side.
+        on that side. With an agent, its drawer is docked on the right.
         """
         if self._shell is not None:
-            return self._shell.wrap(content)
-        if self._menubar_mode:
-            return content
-        if self.nav_variant == "left":
-            objects = [self._nav_drawer, content]
-        else:
-            objects = [content, self._nav_drawer]
-        return pn.Row(*objects, sizing_mode="stretch_both")
+            content = self._shell.wrap(content)
+        elif self.nav_variant == "left":
+            content = pn.Row(self._nav_drawer, content, sizing_mode="stretch_both")
+        elif not self._menubar_mode:
+            content = pn.Row(content, self._nav_drawer, sizing_mode="stretch_both")
+        if self._agent_session is not None:
+            content = self._agent_session.dock(content)
+        return content
 
     def _resolve_user_id(self) -> str:
         return self._identity.user
@@ -763,6 +819,28 @@ class FlowDashApp(Viewer):
         editor.param.watch(self._on_editor_sidebar, ["controls_bar", "fullscreen", "sidebar"])
         editor.param.watch(self._on_editor_saved, "saved")
         return editor
+
+    def _build_agent_session(self):
+        """Connect this session to the configured agent, or return None when there is none."""
+        if self.agent is False or (
+            self.agent is None and not (self.agent_model or os.environ.get("FLOWDASH_AGENT_MODEL"))
+        ):
+            return None
+        if self.agent_authorize is not None:
+            try:
+                allowed = bool(self.agent_authorize(self._identity))
+            except Exception:
+                logger.exception("agent_authorize failed; leaving the agent out")
+                allowed = False
+            if not allowed:
+                return None
+        try:
+            from panel_flowdash.agent.session import AgentSession, resolve_agent
+        except ImportError as exc:
+            logger.error("%s (%s)", AGENT_EXTRA_MISSING, exc)
+            return None
+        agent = resolve_agent(self.agent, self.agent_model)
+        return None if agent is None else AgentSession(self, agent)
 
     def _on_editor_sidebar(self, *events):
         """Mirror the editor's sidebar views into the page sidebar, unless its controls bar shows them.
