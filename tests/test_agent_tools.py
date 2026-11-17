@@ -249,7 +249,7 @@ async def test_reverting_a_version_restores_the_dashboard(ops):
     assert [i["component_id"] for i in ops.editor._tile_items] == ["T/number"]
 
 
-def _app(store, monkeypatch, user="alice", components=COMPONENTS):
+def _app(store, monkeypatch, user="alice", components=COMPONENTS, **params):
     identity = Identity(user=user, oauth_user=user)
     monkeypatch.setattr("panel_flowdash.app.resolve_identity", lambda _config: identity)
     return FlowDashApp(
@@ -258,6 +258,7 @@ def _app(store, monkeypatch, user="alice", components=COMPONENTS):
         auth_config=AuthConfig(),
         notifications=False,
         include_builtin_components=False,
+        **params,
     )
 
 

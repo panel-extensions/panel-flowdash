@@ -6,6 +6,7 @@ import asyncio
 import dataclasses
 import inspect
 import logging
+import os
 import pathlib
 import traceback
 import typing as t
@@ -114,6 +115,28 @@ _COMPONENT_PALETTE_CARD_CSS = """
 
 class FlowDashApp(Viewer):
     """FlowDash application: scans a project directory and serves its pages and components."""
+
+    agent = param.Parameter(
+        default=None,
+        doc="""
+        The AI agent that helps the signed-in user build and change
+        dashboards, with that user's rights (needs ``panel-flowdash[agent]``).
+        None gives the default agent when `agent_model` (or the
+        ``FLOWDASH_AGENT_MODEL`` environment variable) names a model and no
+        agent otherwise; True requires a model; a string is the default
+        agent's model, e.g. ``"openai:gpt-5"``; False turns the agent off; a
+        ``pydantic_ai.Agent`` built with `panel_flowdash.agent.create_agent`
+        (or taking ``FlowDashDeps``) is used as is.""",
+    )
+
+    agent_model = param.String(
+        default=None,
+        allow_None=True,
+        doc="""
+        The model of the default agent, e.g. ``"anthropic:<model>"`` or
+        ``"openai:<model>"``. Defaults to the ``FLOWDASH_AGENT_MODEL``
+        environment variable.""",
+    )
 
     auth_config = param.ClassSelector(
         class_=AuthConfig,
@@ -338,6 +361,7 @@ class FlowDashApp(Viewer):
             self._editor._dashboard_bar.placement = "header"
         self._shell = AppShell(self) if self.nav_variant == "rail" else None
         self._command_palette = CommandPaletteController.install(self)
+        self._agent_session = self._build_agent_session()
         self._build_dialog()
         self._build_unsaved_dialog()
         self._build_share_dialog()
@@ -763,6 +787,24 @@ class FlowDashApp(Viewer):
         editor.param.watch(self._on_editor_sidebar, ["controls_bar", "fullscreen", "sidebar"])
         editor.param.watch(self._on_editor_saved, "saved")
         return editor
+
+    def _build_agent_session(self):
+        """Connect this session to the configured agent, or return None when there is none."""
+        if self.agent is False or (
+            self.agent is None and not (self.agent_model or os.environ.get("FLOWDASH_AGENT_MODEL"))
+        ):
+            return None
+        try:
+            from panel_flowdash.agent.session import AgentSession, resolve_agent
+        except ImportError as exc:
+            logger.error(
+                "The FlowDash agent needs the agent extra (pip install "
+                "'panel-flowdash[agent]'): %s",
+                exc,
+            )
+            return None
+        agent = resolve_agent(self.agent, self.agent_model)
+        return None if agent is None else AgentSession(self, agent)
 
     def _on_editor_sidebar(self, *events):
         """Mirror the editor's sidebar views into the page sidebar, unless its controls bar shows them.

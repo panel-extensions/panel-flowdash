@@ -32,6 +32,8 @@ _EXCLUDED_ARGS = ("files", "--args")
 # ``sidebar`` and ``contextbar`` are left out because module-level Panel objects
 # would be shared by every session; ``configure_layout`` sets them per session.
 PROJECT_OPTIONS = (
+    "agent",
+    "agent_model",
     "breakpoints",
     "configure_layout",
     "controls_position",
