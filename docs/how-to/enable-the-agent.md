@@ -46,9 +46,9 @@ agent_model = "anthropic:<model>"
 | Option | Meaning |
 | --- | --- |
 | `agent_model` | The model of the default agent. Defaults to `FLOWDASH_AGENT_MODEL`. |
-| `agent` | `None` (default): the default agent when a model is configured. A string: the default agent with that model. `False`: no agent, even if a model is configured. A `pydantic_ai.Agent`: your own agent. |
+| `agent` | `None` (default): the default agent when a model is configured. `True`: the default agent, and an error saying how to configure a model when none is. A string: the default agent with that model. `False`: no agent, even if a model is configured. A `pydantic_ai.Agent`: your own agent. |
 | `agent_authorize` | Called with the signed-in user's `Identity`; only sessions for which it returns True get the agent. |
-| `agent_sensitive_components` | Component ids whose config can reach outside the dashboard, see [Untrusted text](#untrusted-text). |
+| `agent_sensitive_components` | Component ids or glob patterns (`"Sources/*"`) of components whose config can reach outside the dashboard, see [Untrusted text](#untrusted-text). |
 
 To give the default agent knowledge about your project, build it yourself and pass
 extra instructions:
@@ -86,9 +86,13 @@ unsaved-changes review work as for the user's own edits.
   such as opening a dashboard, refreshing or switching to view mode.
 - **Store**: save, delete and share dashboards, each only after the user approves
   the call. The save approval lists what is stored and calls out changes of who can
-  see the dashboard's data; delete and share approvals name the dashboard's title.
-  Sharing adds and removes people and keeps a private dashboard private unless the
-  call sets `everyone`, which the approval shows.
+  see the dashboard's data. If the agent changes the dashboard between asking and
+  saving, the save is refused and the agent has to ask again, so what the user
+  approved is what is stored. Delete and share approvals name the dashboard's title.
+- **Share**: add viewers and editors and take people off the list. A private
+  dashboard stays private unless the call sets `everyone`; blocked people stay blocked
+  unless the call names them in `unblock`; both show in the approval. Empty names
+  and `group:` without a group are refused.
 
 Every edit publishes the dashboard's YAML as a new version. The user can compare
 versions, see what changed in the dashboard's terms ("Connected filter.filtered →
@@ -96,8 +100,11 @@ map.turbines", "kpi: metric: turbines → capacity") and apply an earlier or lat
 version, which loads it like an imported file. If the dashboard has changes made
 after the agent's last edit, the user confirms that applying the version drops them.
 
-Each request to the agent stays on the dashboard it started on: if the user opens
-another dashboard meanwhile, the agent stops instead of changing that one. When the
+Each request to the agent stays on the dashboard that was open when the user sent it:
+if the user opens another dashboard while the agent works, every further tool call
+and palette command of that request is refused, so the agent stops instead of
+changing the dashboard on screen. Only a dashboard the agent opens itself, at the
+user's request, becomes the one it works on. When the
 agent rewrites a whole dashboard from YAML it read earlier and the user has edited the
 dashboard since, the rewrite is refused and the agent reads it again.
 
@@ -134,8 +141,11 @@ of it as data, but plan for it to be fooled sometimes:
 - Unapproved edits only change the open canvas, which the user sees and can discard.
 - Components run as soon as they are placed, with the user's rights. If a component's
   config can reach outside the dashboard (a SQL source, a URL fetch, an expression),
-  list it in `agent_sensitive_components`, so placing it, changing its config or
-  loading YAML that places it needs the user's approval.
+  list it in `agent_sensitive_components`. Then each of these needs the user's
+  approval: placing it with a tool or from the command palette, previewing or loading
+  YAML that places it, changing its config, and connecting or transforming an edge
+  into one of its inputs. Former ids of a renamed component (its `aliases`) count as
+  the component.
 
 ---
 
@@ -170,5 +180,24 @@ agent = Agent("openai:<model>", deps_type=FlowDashDeps, toolsets=[dashboard_tool
 result = agent.run_sync("Add a KPI of the total capacity", deps=FlowDashDeps(ops))
 ```
 
-Run it through a panel-agents `AgentRunner(agent, deps=..., approval_policy=approval_policy())`
-to have the user approve every save, delete and sharing change.
+Run it through a panel-agents `AgentRunner` to have the user approve every save,
+delete and sharing change. `approval_policy` takes rules of your own, and with
+`sensitive_components` also needs the operations, to resolve component ids:
+
+```python
+from panel_agents import RunState
+from panel_agents.adapters.pydantic_ai import AgentRunner
+
+from panel_flowdash.agent import approval_policy
+
+deps = FlowDashDeps(ops)
+runner = AgentRunner(
+    agent,
+    RunState(),
+    deps=deps,
+    approval_policy=approval_policy(sensitive_components=["Sources/sql"], ops=ops),
+)
+```
+
+Call `deps.start_request()` when the user sends a request and `deps.end_request()`
+when it is done, so each request keeps to the dashboard it was sent on.
