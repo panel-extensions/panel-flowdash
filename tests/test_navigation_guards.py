@@ -4,7 +4,6 @@ import sys
 
 import panel as pn
 import pytest
-from panel.util import edit_readonly
 
 from panel_flowdash.app import COMPONENTS_ROUTE, DASH_ROUTE_PREFIX, FlowDashApp
 from panel_flowdash.dashboard_store import DashboardStore
@@ -159,8 +158,7 @@ class TestCurrentDashboardWhileEditing:
 
 def _confirm_create(app, title):
     app._open_create_dialog()
-    with edit_readonly(app._dialog_name_input):
-        app._dialog_name_input.value_input = title
+    app._dialog_name_input._process_events({"value_input": title})
     app._dialog_confirm_button.clicks += 1
 
 
