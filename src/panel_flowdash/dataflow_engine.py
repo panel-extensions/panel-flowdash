@@ -349,6 +349,10 @@ class DataflowGraph:
         if state is not None:
             _release_refs(state)
         self._dispose_edges(edges)
+        # An edge awaiting disposal keeps its source's relay, which would
+        # follow the old state if a node is added again under this id.
+        for source in [key for key in self._relays if key[0] == instance_id]:
+            self._release_relay(source)
 
     def _input_port(self, target_id: str, target_port: str):
         spec = self._node_specs.get(target_id)
@@ -446,7 +450,14 @@ class DataflowGraph:
 
         def _forward(event):
             with hold():
-                relay.value = event.new
+                if event.type == "triggered":
+                    # A trigger, e.g. after mutating a list in place, carries a
+                    # value equal to the relay's, which assigning would not forward.
+                    with param.discard_events(relay):
+                        relay.value = event.new
+                    relay.param.trigger("value")
+                else:
+                    relay.value = event.new
 
         watcher = state.param.watch(_forward, port)
         self._relays[(node_id, port)] = (relay, partial(state.param.unwatch, watcher))

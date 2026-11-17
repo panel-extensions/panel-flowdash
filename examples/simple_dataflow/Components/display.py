@@ -3,6 +3,7 @@
 import panel as pn
 
 from panel_flowdash import register
+from panel_flowdash.ui.text import escape_markdown
 
 
 @register(
@@ -13,4 +14,5 @@ from panel_flowdash import register
 )
 def app(config):
     category = getattr(config, "category", None) or "nothing selected"
-    return pn.pane.Markdown(f"## Selected: {category}")
+    # The value comes from another component, so it is shown as text, not Markdown.
+    return pn.pane.Markdown(f"## Selected: {escape_markdown(category)}")

@@ -28,6 +28,7 @@ from panel_flowdash.transforms import (
     parse_transform,
 )
 from panel_flowdash.ui.node_card import port_label
+from panel_flowdash.ui.text import escape_markdown, text_typography
 from panel_flowdash.util import is_failure
 
 if t.TYPE_CHECKING:
@@ -315,13 +316,9 @@ def _filter_value(text: str, comparison: str, series: pd.Series | None) -> t.Any
     return _coerce(text, series) if text.strip() else None
 
 
-def _markdown(text: str) -> str:
-    return "".join("\\" + c if c in "\\`*_[]<>#|~" else c for c in text)
-
-
 def _caption(text: str, **kwargs) -> pmui.Typography:
     kwargs.setdefault("sx", {"color": "text.secondary"})
-    return pmui.Typography(_markdown(text), variant="caption", **kwargs)
+    return text_typography(text, variant="caption", **kwargs)
 
 
 class TransformEditor(Viewer):
@@ -501,9 +498,7 @@ class TransformEditor(Viewer):
 
     @staticmethod
     def _shape_line(text: str) -> pmui.Typography:
-        return pmui.Typography(
-            _markdown(text), variant="caption", sx=_SHAPE_SX, margin=(0, 0, 0, 0)
-        )
+        return text_typography(text, variant="caption", sx=_SHAPE_SX, margin=(0, 0, 0, 0))
 
     def _consequence(self, rejected: bool) -> pmui.Paper:
         revert = pmui.Button(
@@ -517,7 +512,7 @@ class TransformEditor(Viewer):
         revert.on_click(lambda _event: self.reset())
         lines = []
         if rejected and self._rejection:
-            lines.append(pmui.Typography(_markdown(self._rejection), variant="body2", margin=0))
+            lines.append(text_typography(self._rejection, variant="body2", margin=0))
         lines.append(
             _caption(
                 f"Not applied yet. {self._target_title()} keeps its last value until this "
@@ -549,7 +544,8 @@ class TransformEditor(Viewer):
         expanded = id(step) in self._expanded
         detail = step_detail(step)
         title = pmui.Typography(
-            f"**{_markdown(step.label)}** {_markdown(detail)}".rstrip(),
+            f"**{escape_markdown(step.label)}** {escape_markdown(detail)}".rstrip(),
+            disable_math=True,
             variant="body2",
             margin=(6, 4, 0, 0),
             sizing_mode="stretch_width",
@@ -589,11 +585,9 @@ class TransformEditor(Viewer):
             ]
         if check.error:
             content.append(
-                pmui.Typography(
-                    _markdown(check.error)
-                    + (
-                        f" Did you mean {_markdown(check.suggestion)}?" if check.suggestion else ""
-                    ),
+                text_typography(
+                    check.error
+                    + (f" Did you mean {check.suggestion}?" if check.suggestion else ""),
                     variant="body2",
                     margin=(4, 0, 0, 0),
                     sx={"color": "error.main"},

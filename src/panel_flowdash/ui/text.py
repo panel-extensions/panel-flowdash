@@ -118,6 +118,25 @@ def text_alert(text: t.Any, **params) -> pmui.Alert:
     return pmui.Alert(object=escape_markdown(text), **params)
 
 
+def code_span(text: t.Any) -> str:
+    """Return ``text`` as inline Markdown code that it cannot close early.
+
+    Line breaks become spaces, since a blank line would end the paragraph and
+    with it the span.
+    """
+    text = re.sub(r"[\r\n]", " ", "" if text is None else str(text))
+    longest = max((len(run) for run in re.findall(r"`+", text)), default=0)
+    fence = "`" * (longest + 1)
+    # Markdown strips one space from each end of a span that starts and ends with one.
+    pad = (
+        text.startswith("`")
+        or text.endswith("`")
+        or (text[:1] == text[-1:] == " " and bool(text.strip()))
+    )
+    space = " " if pad else ""
+    return f"{fence}{space}{text}{space}{fence}"
+
+
 def code_block(text: t.Any) -> str:
     """Return ``text`` as a fenced Markdown code block that it cannot close early."""
     text = "" if text is None else str(text)

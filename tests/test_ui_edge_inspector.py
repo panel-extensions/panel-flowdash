@@ -18,6 +18,7 @@ from panel_flowdash.transform_editor import (
 )
 from panel_flowdash.transforms import TRANSFORMS, parse_transform
 from panel_flowdash.ui.status_bar import canvas_issues, select_on_canvas
+from panel_flowdash.ui.text import escape_markdown
 
 TURBINES = pd.DataFrame(
     {
@@ -133,8 +134,8 @@ class TestEdgeInspector:
         assert "Turbines to Chart" in texts
         assert "turbines (DataFrame) into Rows (DataFrame)" in texts
         assert "**First rows** 2" in texts
-        assert "In: 4 rows, 3 columns" in texts
-        assert "Out: 2 rows" in texts
+        assert escape_markdown("In: 4 rows, 3 columns") in texts
+        assert escape_markdown("Out: 2 rows") in texts
 
     async def test_the_canvas_shows_no_edge_editor(self):
         editor, _, edge_id, _ = _edge([{"op": "head", "n": 2}])
@@ -171,8 +172,8 @@ class TestEdgeInspector:
             [{"op": "filter", "column": "p_year", "comparison": ">=", "value": 2005}]
         )
         assert not view._body.select(pmui.TextInput)
-        assert "**Filter rows** p\\_year ≥ 2005" in _texts(view._body)
-        assert "Out: 3 rows" in _texts(view._body)
+        assert f"**Filter rows** {escape_markdown('p_year ≥ 2005')}" in _texts(view._body)
+        assert escape_markdown("Out: 3 rows") in _texts(view._body)
 
         view._toggle(0)
         (value,) = view._body.select(pmui.TextInput)
@@ -218,7 +219,7 @@ class TestEdgeInspector:
         view._set_argument(0, "column", "t_capacity")
 
         texts = _texts(view._body)
-        assert "No column named t\\_capacity. Did you mean t\\_cap?" in texts
+        assert escape_markdown("No column named t_capacity. Did you mean t_cap?") in texts
         assert "Not applied yet. Chart keeps its last value until this is fixed." in texts
         assert editor.graph.get_edge_transform(*key)[0]["column"] == "t_cap"
         assert view.issue == "Sort step"
@@ -284,8 +285,8 @@ class TestEdgeInspector:
     async def test_shapes_follow_the_source(self):
         editor, key, _, view = _edge([{"op": "head", "n": 2}])
         editor.graph.get_state(key[0]).frame = TURBINES.head(1)
-        assert "In: 1 row, 3 columns" in _texts(view._body)
-        assert "Out: 1 row" in _texts(view._body)
+        assert escape_markdown("In: 1 row, 3 columns") in _texts(view._body)
+        assert escape_markdown("Out: 1 row") in _texts(view._body)
 
     async def test_editor_is_disposed_with_its_edge(self):
         editor, key, edge_id, view = _edge([{"op": "head", "n": 2}])

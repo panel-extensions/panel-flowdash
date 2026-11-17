@@ -205,31 +205,52 @@ def _as_deferred(awaitable) -> Callable:
 
 
 class _SteppedParamMethod(pn.pane.ParamMethod):
-    """A ``ParamMethod`` whose every evaluation of an async method runs inside ``step()``."""
+    """A ``ParamMethod`` whose every evaluation of an async method runs step by step.
+
+    *run* is called at each evaluation and returns the step factory for that run,
+    see :func:`stepped`. ``ParamMethod.eval`` is a classmethod; it is overridden
+    with an instance method here, which works since Panel only calls it as
+    ``self.eval`` and detects the wrapped awaitable or async generator as such.
+    """
 
     def __init__(
-        self, object=None, *, step: Callable[[], AbstractContextManager] | None = None, **params
+        self,
+        object=None,
+        *,
+        run: Callable[[], Callable[[], AbstractContextManager]] | None = None,
+        **params,
     ):
-        self._step = step
+        self._run = run
         super().__init__(object, **params)
+
+    def clone(self, object=None, **params):
+        return super().clone(object, run=self._run, **params)
 
     def eval(self, ref):
         result = super().eval(ref)
-        return result if self._step is None else _stepped_result(result, self._step)
+        return result if self._run is None else _stepped_result(result, self._run())
 
 
-def panel_viewer(instance, step: Callable[[], AbstractContextManager] | None = None) -> Viewable:
+def panel_viewer(
+    instance,
+    step: Callable[[], AbstractContextManager] | None = None,
+    *,
+    runs: Callable[[], Callable[[], AbstractContextManager]] | None = None,
+) -> Viewable:
     """Return a renderable view of a ``Viewer``, awaiting an async ``__panel__``.
 
     ``pn.panel`` calls ``__panel__`` synchronously, so an ``async def __panel__``
     would be wrapped un-awaited. ``ParamMethod`` handles both, and additionally
     re-renders when the method declares ``param.depends``. With *step*, every
     run of an async ``__panel__`` executes inside ``step()``, as `stepped`
-    does for async function components.
+    does for async function components. *runs* instead is called as each run
+    starts and returns the step for that run.
     """
     if is_async(instance.__panel__):
-        if step is not None:
-            return _SteppedParamMethod(instance.__panel__, step=step)
+        if runs is None and step is not None:
+            runs = lambda: step
+        if runs is not None:
+            return _SteppedParamMethod(instance.__panel__, run=runs)
         return pn.pane.ParamMethod(instance.__panel__)
     return pn.panel(instance)
 

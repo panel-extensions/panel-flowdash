@@ -137,7 +137,8 @@ async def test_every_rerender_of_an_async_viewer_is_tracked(editor):
     editor._component_instances[node].count = 1
     await _settle()
     editor.param.trigger("refresh")
-    assert sorted(FIRED) == ["viewer 0", "viewer 1"]
+    # The view of the first run was replaced, and its subscription released.
+    assert FIRED == ["viewer 1"]
 
     FIRED.clear()
     editor.remove_component(node)

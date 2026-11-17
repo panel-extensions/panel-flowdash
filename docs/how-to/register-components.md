@@ -183,6 +183,18 @@ its data the same way. Toggle `visible` to swap in a message while there is
 nothing to show. The views of the
 [wind energy example](../examples/wind-energy.md) follow this pattern.
 
+Sending the updates together means the tiles fed by one output wait for each
+other. When the change does not come from a widget in the browser, for example
+from a `Viewer` control's parameter, an automatic refresh or a server started
+with `--num-threads`, a slow sync consumer delays every other tile fed by the
+same output until it returns, and its loading spinner never shows, since the
+spinner is turned on and off before anything is sent. Make components that do
+slow work per update `async`, as described in
+[Slow components and the event loop](#slow-components-and-the-event-loop), so
+the fast tiles update at once and the slow one shows its spinner while it
+works. This applies per output: tiles fed by different outputs, or by one
+component setting several outputs at once, are sent output by output.
+
 ---
 
 ## Decorator overrides on Viewer classes
