@@ -3,7 +3,7 @@
 import pytest
 from panel.tests.util import wait_until
 
-from tests.test_node_previews import card, demo_editor
+from tests.test_node_previews import FAILURES, card, demo_editor
 from tests.ui.util import serve_component
 
 pytest.importorskip("playwright")
@@ -72,7 +72,8 @@ def test_previews_render_and_handles_stay_beside_their_labels(page):
     expect(_node(page, ids["states"]).locator(".fd-pv-chip")).to_have_count(5)
     expect(_node(page, ids["stats"])).to_contain_text("mean:")
     expect(_node(page, ids["note"])).to_contain_text("<b>this</b>")
-    expect(_node(page, ids["inverse"])).to_contain_text("inverse: Failed")
+    if FAILURES:
+        expect(_node(page, ids["inverse"])).to_contain_text("inverse: Failed")
     _assert_lined_up(page, 7)
 
     toggle = page.locator("[aria-label='Preview values on the canvas']")

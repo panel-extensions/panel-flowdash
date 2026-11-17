@@ -37,7 +37,11 @@ from panel_flowdash.ui.node_preview import (
     hook_preview,
     sparkline_svg,
 )
+from panel_flowdash.util import ReactiveError
 from tests.untrusted_payloads import PAYLOADS
+
+# Carrying failures along edges, which marks the failed node, needs param >= 2.5.
+FAILURES = ReactiveError is not None
 
 PAYLOAD = 'Q3 <img src=x onerror="document.title=\'pwned\'"> *draft* & "quoted"'
 
@@ -209,7 +213,7 @@ DEMO = {
 
 def demo_editor(**params) -> tuple[FlowDash, dict[str, str]]:
     """Place one component of each kind of preview, a failed one and a waiting one."""
-    editor = FlowDash(DEMO, notifications=False, propagate_failures=True, **params)
+    editor = FlowDash(DEMO, notifications=False, propagate_failures=FAILURES, **params)
     ids = {
         "turbines": editor.add_component("Demo/turbines", position=(0, 0)),
         "slider": editor.add_component(
@@ -443,10 +447,10 @@ class TestCards:
             "table": "table",
             "waiting": None,
             "zero": "value",
-            "inverse": None,
+            "inverse": None if FAILURES else "value",
             "note": "text",
         }
-        assert card(editor, ids["inverse"]).status == "failed"
+        assert card(editor, ids["inverse"]).status == ("failed" if FAILURES else "ok")
         assert card(editor, ids["waiting"]).status == "waiting"
         assert "Showing 5 rows, 4 columns" in card(editor, ids["table"]).preview.html
 
