@@ -65,6 +65,8 @@ Serving and API:
 - A tile shows a placeholder instead of its component while a blocking input is `None`: function components use the `required` and `blocking` fields of `requires`, Viewers declare `param.Parameter(metadata={"flowdash": {"required": True}})` (ignored on a metadata output), and `@register(placeholder=...)` replaces the default "Waiting for ..." text
 - The `default_size`, `min_size` and `max_size` hints of `@register` set a new tile's size and bound resizing and stored layouts
 - Mutable `requires` fallbacks and input defaults are copied per session and per node instead of shared
+- Built-in text components: Markdown (rendered without raw HTML or math, with `{{ value }}` placeholders filled from an optional input), Notes (rich text typed into the tile while editing, read-only for viewers), Heading and Divider
+- A Viewer config param declared with `metadata={"flowdash": {"two_way": True}}` is synced back to the node's config when the component changes it, so it is saved with the dashboard
 
 ### Dataflow
 

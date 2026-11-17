@@ -367,7 +367,7 @@ def test_edge_transform_editor_applies_changes(page):
     page.get_by_text("Out: number 40").wait_for()
 
     page.get_by_role("button", name="Add step").click()
-    page.get_by_role("button", name="Format").click()
+    page.get_by_role("button", name="Format", exact=True).click()
 
     page.get_by_text("Total does not accept text.").wait_for()
     assert editor.graph.get_state(dst).total == 40

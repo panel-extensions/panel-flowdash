@@ -36,7 +36,9 @@ from panel_flowdash.dashboard_store import (
 )
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.placeholders import PLACEHOLDER_NODE_TYPE
+from panel_flowdash.text_components import TEXT_COMPONENTS
 from panel_flowdash.ui.text import escape_markdown
+from panel_flowdash.ui.waiting import WaitingPlaceholder
 from panel_flowdash.widgets import BUILTIN_COMPONENTS
 
 
@@ -2488,7 +2490,10 @@ class TestRequiredInputPlaceholder:
         for component_id in BUILTIN_COMPONENTS:
             editor.add_component(component_id)
 
-        assert not any(isinstance(view, pn.Column) for view in editor._tile_objects)
+        assert not any(
+            isinstance(view, pn.Column) and len(view) and isinstance(view[0], WaitingPlaceholder)
+            for view in editor._tile_objects
+        )
 
     async def test_gated_view_reaches_the_tile_grid(self, editor):
         editor.add_component("Demo/viewer")
@@ -3589,14 +3594,15 @@ class TestPalette:
         assert all(g["draggable"] is False for g in groups.values())
         assert [i["component_id"] for i in groups["Data sources"]["items"]] == [SELECTOR]
         assert [i["component_id"] for i in groups["Transforms"]["items"]] == [SHOUTER]
-        assert [i["component_id"] for i in groups["Views"]["items"]] == [CHART]
+        assert [i["component_id"] for i in groups["Views"]["items"]] == [CHART, *TEXT_COMPONENTS]
         assert all(i["draggable"] for g in groups.values() for i in g["items"])
         assert editor._palette.drag_type in editor._flow.drop_types
 
     async def test_placed_singleton_is_not_draggable(self):
         editor = FlowDash({SINGLETON: page_header}, notifications=False)
         editor.add_component(SINGLETON)
-        (item,) = next(s for s in editor._palette.items if s["label"] == "Views")["items"]
+        views = next(s for s in editor._palette.items if s["label"] == "Views")["items"]
+        item = next(i for i in views if i["component_id"] == SINGLETON)
         assert item["draggable"] is False
 
     async def test_clicking_placed_singleton_does_not_add_it_again(self):
