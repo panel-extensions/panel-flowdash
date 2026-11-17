@@ -142,6 +142,13 @@ computed and cannot be inspected, and its edges stay in place. If an editor
 without access saves the dashboard, the placeholder is written back unchanged,
 so the restricted tile and its wiring survive.
 
+Downloading and importing dashboard files follow the same rule. A file that
+user downloads holds only the id and position of the restricted item, without
+its component, config or edges. Importing a file never adds or changes a
+restricted item: an item the stored dashboard already has keeps its stored
+config and wiring, and any other restricted item in the file is left out, with
+a warning.
+
 A component without rules may be used by everyone who can edit a dashboard,
 even under `default_allow = False`: the default policy governs pages and
 dashboards, while unrestricted components (including the built-in widgets) stay

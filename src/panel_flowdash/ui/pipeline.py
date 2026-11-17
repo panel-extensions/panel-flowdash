@@ -10,6 +10,7 @@ import panel_material_ui as pmui
 from panel.viewable import Viewer
 
 from panel_flowdash.ui.health import FAILED, OK, WAITING, worst
+from panel_flowdash.ui.text import text_typography
 
 _DOT_COLORS = {OK: "success.main", WAITING: "warning.main", FAILED: "error.main"}
 
@@ -102,7 +103,7 @@ def pipeline_stages(
 
 
 def _stage_chip(stage: Stage) -> pmui.Typography:
-    return pmui.Typography(
+    return text_typography(
         stage.label,
         variant="caption",
         margin=0,

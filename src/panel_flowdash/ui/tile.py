@@ -7,6 +7,8 @@ import typing as t
 import panel as pn
 import panel_material_ui as pmui
 
+from panel_flowdash.ui.text import text_typography
+
 if t.TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -131,14 +133,14 @@ class Tile(pn.Column):
         self._arranging = False
         self._framed = True
         self._titled = False
-        self.title = pmui.Typography(
+        self.title = text_typography(
             title,
             variant="subtitle1",
             margin=0,
             visible=False,
             sx={"fontWeight": 500, "lineHeight": 1.4, **_ELLIPSIS},
         )
-        self.subtitle = pmui.Typography(
+        self.subtitle = text_typography(
             subtitle or "",
             variant="caption",
             margin=0,

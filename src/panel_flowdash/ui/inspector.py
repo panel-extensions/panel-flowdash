@@ -34,6 +34,7 @@ from panel_flowdash.ui.status_bar import (
     connection_title,
     select_on_canvas,
 )
+from panel_flowdash.ui.text import escape_markdown, text_typography
 from panel_flowdash.ui.tile_layout import tile_entry, update_tile
 
 if t.TYPE_CHECKING:
@@ -75,11 +76,11 @@ _SECTION_SX = {"color": "text.secondary", "fontWeight": 500}
 
 
 def _caption(text: str, **kwargs) -> pmui.Typography:
-    return pmui.Typography(text, variant="caption", sx={"color": "text.secondary"}, **kwargs)
+    return text_typography(text, variant="caption", sx={"color": "text.secondary"}, **kwargs)
 
 
 def _heading(text: str, margin=(16, 0, 4, 0)) -> pmui.Typography:
-    return pmui.Typography(text, variant="subtitle2", margin=margin, sx=_SECTION_SX)
+    return text_typography(text, variant="subtitle2", margin=margin, sx=_SECTION_SX)
 
 
 def _avatar(icon: str) -> pn.pane.HTML:
@@ -227,7 +228,7 @@ class Inspector(Viewer):
         dashboard = editor.dashboard
         nodes, edges = len(editor._flow.nodes), len(editor._flow.edges)
         objects: list[Viewable] = [
-            pmui.Typography(
+            text_typography(
                 dashboard.title if dashboard is not None else "Untitled dashboard",
                 variant="h6",
                 margin=(0, 0, 4, 0),
@@ -268,7 +269,7 @@ class Inspector(Viewer):
             severity = "info"
         label = f"{issue.title}: {issue.detail}"
         if issue.instance_id is None and issue.edge_id is None:
-            return pmui.Alert(label, severity=severity, margin=(0, 0, 6, 0))
+            return pmui.Alert(escape_markdown(label), severity=severity, margin=(0, 0, 6, 0))
         button = pmui.Button(
             label=label,
             icon={"error": "error_outline", "warning": "hourglass_empty"}.get(severity, "info"),
@@ -294,7 +295,7 @@ class Inspector(Viewer):
         return next((i for i in self.editor._tile_items if i["instance_id"] == instance_id), None)
 
     def _header(self, icon: str, title: str, description: str | None) -> Viewable:
-        lines = [pmui.Typography(title, variant="subtitle1", margin=0, sx={"fontWeight": 500})]
+        lines = [text_typography(title, variant="subtitle1", margin=0, sx={"fontWeight": 500})]
         if description:
             lines.append(_caption(description, margin=(2, 0, 0, 0)))
         self._status_chip = pmui.Chip(size="small", margin=(8, 0, 0, 0))
@@ -442,7 +443,7 @@ class Inspector(Viewer):
     def _input_row(self, port, wired, state) -> Viewable:
         editor = self.editor
         name = port_label(port) + (" *" if port.required else "")
-        title = pmui.Typography(
+        title = text_typography(
             f"{name}  {port.type or ''}".rstrip(),
             variant="body2",
             margin=0,
@@ -642,7 +643,7 @@ class Inspector(Viewer):
             _avatar("functions"),
             pn.Column(
                 _caption("Connection", margin=0),
-                pmui.Typography(
+                text_typography(
                     connection_title(editor, mapping),
                     variant="subtitle1",
                     margin=(2, 0, 0, 0),

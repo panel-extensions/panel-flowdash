@@ -15,6 +15,7 @@ import panel_material_ui as pmui
 from panel.viewable import Viewable
 
 from panel_flowdash.dashboard_store import DashboardEdge
+from panel_flowdash.ui.text import escape_markdown
 
 # Node type of placeholder nodes on the canvas. Component node types are derived
 # from component ids, which never contain a colon.
@@ -57,7 +58,7 @@ class UnresolvedEdge:
 def placeholder_view(placeholder: Placeholder) -> Viewable:
     """Build what a placeholder node and tile display."""
     return pmui.Alert(
-        placeholder.message,
+        escape_markdown(placeholder.message),
         title=placeholder.title,
         severity="warning",
         sizing_mode="stretch_width",
@@ -84,7 +85,7 @@ def unresolved_summary(items: int, edges: int) -> str | None:
 def broken_edges_panel(lines: list[str], hidden: int, on_discard) -> Viewable:
     """Build the listing of saved edges that could not be wired, with a discard action."""
     count = len(lines) + hidden
-    text = "\n".join(f"- {line}" for line in lines)
+    text = "\n".join(f"- {escape_markdown(line)}" for line in lines)
     if hidden:
         text += f"\n- {hidden} connection{'s' if hidden != 1 else ''} to unavailable components"
     button = pmui.Button(

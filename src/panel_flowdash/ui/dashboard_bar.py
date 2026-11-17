@@ -12,6 +12,7 @@ import param
 from panel.viewable import Viewer
 
 from panel_flowdash.ui.health import DashboardHealth
+from panel_flowdash.ui.text import escape_markdown
 from panel_flowdash.util import close_dialog, confirm, open_dialog
 
 # Overflow menus show only an icon: MenuButton always renders a dropdown arrow.
@@ -342,7 +343,9 @@ class DashboardBar(Viewer):
         editing = editor.editable
         dashboard = editor.dashboard
         self.title.param.update(
-            object=dashboard.title if dashboard is not None else "Untitled dashboard",
+            object=escape_markdown(dashboard.title)
+            if dashboard is not None
+            else "Untitled dashboard",
             variant="subtitle1" if editing else "h5",
             sx={
                 "whiteSpace": "nowrap",
@@ -394,7 +397,7 @@ class DashboardBar(Viewer):
         if text and period:
             text += f", auto-refresh every {format_period(period)}"
         self.refresh_label.object = text
-        self.description.object = settings.description.strip()
+        self.description.object = escape_markdown(settings.description.strip())
         health = self.health
         status = "failed" if health.failed else "waiting" if health.waiting else "ok"
         self.health_chip.param.update(object=health.summary(), sx=_health_chip_sx(status))

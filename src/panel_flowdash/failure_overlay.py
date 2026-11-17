@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 import panel as pn
 import panel_material_ui as pmui
 
+from panel_flowdash.ui.text import escape_markdown
+
 if t.TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -68,7 +70,7 @@ class FailureMessage:
 def _sentence(sources: list[str]) -> str:
     if not sources:
         return "An upstream step failed, so this shows its last result."
-    names = [f"**{name}**" for name in sources]
+    names = [f"**{escape_markdown(name)}**" for name in sources]
     joined = names[0] if len(names) == 1 else f"{', '.join(names[:-1])} and {names[-1]}"
     return f"{joined} stopped the data, so this shows its last result."
 
@@ -110,7 +112,7 @@ class FailureOverlay(pn.Column):
             sx={"color": "text.secondary", "textAlign": "center"},
         )
         self.details = pmui.Typography(
-            message.rx.pipe(lambda m: m.details),
+            message.rx.pipe(lambda m: escape_markdown(m.details)),
             css_classes=["flowdash-failure-details"],
             variant="caption",
             align="center",

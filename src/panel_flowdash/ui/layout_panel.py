@@ -15,6 +15,7 @@ import panel_material_ui as pmui
 import param
 from panel.viewable import Viewer
 
+from panel_flowdash.ui.text import text_typography
 from panel_flowdash.ui.tile_layout import (
     GRID_COLUMNS,
     HIDDEN,
@@ -296,7 +297,7 @@ class LayoutPanel(Viewer):
         objects: list[Viewable] = [
             icon,
             pn.Column(
-                pmui.Typography(entry.title, variant="body2", margin=0),
+                text_typography(entry.title, variant="body2", margin=0),
                 _caption(entry.reason, margin=0),
                 margin=0,
                 sizing_mode="stretch_width",

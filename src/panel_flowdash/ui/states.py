@@ -14,6 +14,7 @@ from panel.custom import JSComponent
 from panel.viewable import Viewer
 
 from panel_flowdash.auth import ANONYMOUS_USER
+from panel_flowdash.ui.text import text_typography
 from panel_flowdash.widgets import BUILTIN_COMPONENTS
 
 if t.TYPE_CHECKING:
@@ -82,14 +83,14 @@ class EmptyState(Viewer):
                 **_TONES[self.tone],
             },
         )
-        self._title = pmui.Typography(
+        self._title = text_typography(
             self.title,
             variant="h5",
             margin=(16, 0, 0, 0),
             align="center",
             styles={"text-align": "center"},
         )
-        self._text = pmui.Typography(
+        self._text = text_typography(
             self.text,
             variant="body1",
             margin=(8, 0, 0, 0),
@@ -392,7 +393,7 @@ class StartCard(Viewer):
         locked = editor.read_only and editor.dashboard is not None
         self._source = None if locked else first_data_source(editor)
         entry = editor._component_entries.get(self._source) if self._source else None
-        name = f"<b>{entry.title}</b>" if entry is not None else "a data source"
+        name = f"<b>{html.escape(entry.title)}</b>" if entry is not None else "a data source"
         if locked:
             self._title.object = "This dashboard is empty"
             self._steps.object = (
