@@ -99,7 +99,7 @@ class DashboardBar(Viewer):
     refreshed) and the view actions: the View/Edit control, Refresh, the editor's
     ``toolbar_extra`` items, Full screen and an overflow menu (Download,
     Settings). In edit mode it shows
-    the title with the save state, the Dataflow/Layout tabs and the edit
+    the title with the save state, the Dataflow/Layout/Split tabs and the edit
     actions: Settings, an overflow menu (Download, Import file, Clear canvas),
     Discard, Save and Done.
 
@@ -197,6 +197,7 @@ class DashboardBar(Viewer):
             options={
                 ":material/account_tree: Dataflow": "wiring",
                 ":material/dashboard: Layout": "dashboard",
+                ":material/vertical_split: Split": "split",
             },
             value=editor.mode,
             size="small",

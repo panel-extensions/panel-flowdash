@@ -1197,7 +1197,8 @@ class FlowDashApp(Viewer):
         """Open the current dashboard on its wiring canvas, from a tile's "Show in editor"."""
         if self._current_dashboard is None:
             return
-        self._editor.mode = "wiring"
+        if self._editor.mode != "split":
+            self._editor.mode = "wiring"
         self._show_edit_mode()
 
     def _dashboard_rights(self, dashboard: str | DashboardModel) -> tuple[bool, bool]:

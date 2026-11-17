@@ -23,11 +23,12 @@ SHORTCUTS = [
     {"group": "Viewing", "label": "Full screen", "keys": ["F"]},
     {"group": "Viewing", "label": "Keyboard shortcuts", "keys": ["?"]},
     {"group": "Editing", "label": "Save", "keys": ["Mod", "S"]},
+    {"group": "Editing", "label": "Dataflow and Layout side by side", "keys": ["S"]},
     {"group": "Editing", "label": "Back to view mode", "keys": ["Esc"]},
 ]
 
 # Shortcuts the browser sends, each running the action of the same name.
-_SHORTCUT_ACTIONS = frozenset({"refresh", "edit", "view", "save"})
+_SHORTCUT_ACTIONS = frozenset({"refresh", "edit", "view", "save", "split"})
 
 
 class CommandPalette(JSComponent):
@@ -40,10 +41,11 @@ class CommandPalette(JSComponent):
 
     Shortcuts are registered on the document and ignored while typing in a
     text field: Ctrl/Cmd+K opens the palette, ``?`` lists the shortcuts, and
-    R (refresh), E (edit), Esc (back to view, outside dialogs) and Ctrl/Cmd+S
-    (save, in edit mode) are sent to *on_command* as ``shortcut:<name>``.
-    F and the ``action:fullscreen`` item toggle the dashboard's full screen
-    in the browser, which only grants it during the key press or click.
+    R (refresh), E (edit), Esc (back to view, outside dialogs), S (split view,
+    in edit mode) and Ctrl/Cmd+S (save, in edit mode) are sent to *on_command*
+    as ``shortcut:<name>``. F and the ``action:fullscreen`` item toggle the
+    dashboard's full screen in the browser, which only grants it during the
+    key press or click.
     """
 
     items = param.List(
@@ -279,6 +281,19 @@ class CommandPaletteController:
                             "keys": ["Mod", "S"],
                         }
                     )
+                splitting = editor.mode == "split"
+                actions.append(
+                    {
+                        "id": "action:split",
+                        "title": "Close split view" if splitting else "Split view",
+                        "subtitle": "Back to one tab"
+                        if splitting
+                        else "Dataflow and Layout side by side",
+                        "icon": "vertical_split",
+                        "keywords": "split side by side canvas grid layout dataflow",
+                        "keys": ["S"],
+                    }
+                )
                 actions.append(
                     {
                         "id": "action:view",
@@ -403,6 +418,8 @@ class CommandPaletteController:
             editor._dashboard_bar.request_mode("edit")
         elif action == "view" and editor.editable:
             editor._dashboard_bar.request_mode("view")
+        elif action == "split" and editor.editable:
+            editor.toggle_split()
         elif action == "save" and editor.editable:
             app._save_current_dashboard()
         elif action == "fullscreen" and not editor.editable:
