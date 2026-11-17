@@ -143,6 +143,16 @@ function inDialog(path) {
   ))
 }
 
+// The element in full screen, which may sit in shadow roots, or rather its
+// shadow root, where an appended element is rendered.
+function fullscreenRoot() {
+  let node = document.fullscreenElement
+  while (node?.shadowRoot?.fullscreenElement) {
+    node = node.shadowRoot.fullscreenElement
+  }
+  return node ? (node.shadowRoot ?? node) : null
+}
+
 function editing() {
   return new URLSearchParams(window.location.search).get("edit") === "true"
 }
@@ -344,6 +354,12 @@ export function render({model, el: root}) {
       return
     }
     close()
+    if (item.id === "action:fullscreen") {
+      // Full screen is only granted during the user's gesture, so it is
+      // requested here rather than after a round trip to the server.
+      document.dispatchEvent(new CustomEvent("flowdash:fullscreen", {cancelable: true}))
+      return
+    }
     model.send_msg({type: "run", id: item.id})
   }
 
@@ -389,8 +405,11 @@ export function render({model, el: root}) {
     input.addEventListener("input", () => renderResults())
     state = {help, input, results, backdrop, flat: [], active: -1}
     shadow.append(backdrop)
-    if (!host.isConnected) {
-      document.body.append(host)
+    // In full screen the rest of the page is hidden and inert, so the dialog
+    // goes inside the full screen element.
+    const parent = fullscreenRoot() ?? document.body
+    if (host.parentNode !== parent) {
+      parent.append(host)
     }
     if (help) {
       dialog.tabIndex = -1
@@ -469,6 +488,8 @@ export function render({model, el: root}) {
       model.send_msg({type: "shortcut", name: "refresh"})
     } else if (key === "e") {
       model.send_msg({type: "shortcut", name: "edit"})
+    } else if (key === "f" && !editing()) {
+      document.dispatchEvent(new CustomEvent("flowdash:fullscreen", {cancelable: true}))
     } else if (event.key === "Escape" && editing()) {
       model.send_msg({type: "shortcut", name: "view"})
     }

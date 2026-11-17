@@ -258,7 +258,7 @@ The hook is called once per output port while the sheet is built, on the live co
 
 ## Fitting it into your own layout
 
-The dashboard bar runs across the top of the editor. In view mode (`editable=False`) it shows the dashboard title, when it was last refreshed, a *Refresh* button, a *View*/*Edit* control (unless the editor is `read_only`) and a menu with *Download*. In edit mode it shows the title with the save state (*Unsaved changes*, *Saved 16:24* or *Read-only*), the *Dataflow*/*Layout* tabs that switch `mode`, *Settings*, a menu with *Download*, *Import file* and *Clear canvas*, and *Discard* (reloads the saved dashboard after asking), *Save* (enabled while there are unsaved changes) and *Done*, which returns to view mode and asks first when there are unsaved changes. Hide the bar with `toolbar=False`, leaving only the component palette, or extend it with your own controls through `toolbar_extra`, which places them in the bar's actions in both modes. Small text buttons match the built-in actions:
+The dashboard bar runs across the top of the editor. In view mode (`editable=False`) it shows the dashboard title, when it was last refreshed, a *Refresh* button, a full screen button, a *View*/*Edit* control (unless the editor is `read_only`) and a menu with *Download*. In edit mode it shows the title with the save state (*Unsaved changes*, *Saved 16:24* or *Read-only*), the *Dataflow*/*Layout* tabs that switch `mode`, *Settings*, a menu with *Download*, *Import file* and *Clear canvas*, and *Discard* (reloads the saved dashboard after asking), *Save* (enabled while there are unsaved changes) and *Done*, which returns to view mode and asks first when there are unsaved changes. Hide the bar with `toolbar=False`, leaving only the component palette, or extend it with your own controls through `toolbar_extra`, which places them in the bar's actions in both modes. Small text buttons match the built-in actions:
 
 ```python
 import panel_material_ui as pmui
@@ -279,6 +279,14 @@ editor.param.watch(lambda e: sidebar.param.update(objects=list(e.new)), "sidebar
 
 pmui.Page(main=[editor], sidebar=[sidebar]).servable()
 ```
+
+In full screen the editor fills the screen with the tiles and the controls bar
+alone, hiding the dashboard bar and anything around the editor; see
+[Full screen](serve-project.md#full-screen). The `fullscreen` param follows it
+and can be set too. Set in response to a click, for example from a button's
+`on_click`, it asks the browser for full screen; when the browser refuses, or
+when it is set at load time, the editor covers the browser window instead. It
+only applies in view mode.
 
 Set `notifications=False` to route the editor's user-facing messages to the
 logger instead of Panel notifications, which is what you want in a notebook or

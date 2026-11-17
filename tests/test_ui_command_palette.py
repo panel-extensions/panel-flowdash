@@ -111,6 +111,7 @@ class TestItems:
         assert _ids(controller, "Actions") == [
             "action:refresh",
             "action:edit",
+            "action:fullscreen",
             "action:settings",
             "action:theme",
             "action:home",
@@ -145,6 +146,7 @@ class TestItems:
         app._editor.read_only = True
         assert _ids(app._command_palette, "Actions") == [
             "action:refresh",
+            "action:fullscreen",
             "action:theme",
             "action:home",
         ]

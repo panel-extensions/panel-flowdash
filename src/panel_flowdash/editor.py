@@ -67,6 +67,12 @@ from panel_flowdash.transform_editor import TransformEditor
 from panel_flowdash.transforms import parse_transform, summarize_transform
 from panel_flowdash.ui.controls_bar import ControlsBar
 from panel_flowdash.ui.dashboard_bar import DashboardBar
+from panel_flowdash.ui.fullscreen import (
+    PRESENTATION_CSS,
+    PRESENTING_CLASS,
+    FullscreenController,
+    PresentationOverlay,
+)
 from panel_flowdash.ui.inspect_sheet import (
     dataframe_preview,
     describe_value,
@@ -578,6 +584,19 @@ class FlowDash(Viewer):
         doc="""
         Whether the dashboard can be edited. When False the side panel is hidden
         and the tile grid is shown locked, giving a pure view of the dashboard.""",
+    )
+
+    fullscreen = param.Boolean(
+        default=False,
+        doc="""
+        Whether the dashboard is presented on its own: the tiles and the
+        controls bar fill the screen, without the dashboard bar or the page
+        around the editor, and a small overlay shows the title, the health and
+        an exit button while the pointer moves. Turning it on from a click
+        also puts the editor into the browser's full screen; otherwise, e.g.
+        when set at load time, the editor covers the browser window. Leaving
+        the browser's full screen turns it off. Only available in view mode:
+        switching to edit mode turns it off.""",
     )
 
     mode = param.Selector(
@@ -2069,6 +2088,11 @@ class FlowDash(Viewer):
         self._inspector = Inspector(editor=self)
         self._layout_panel = LayoutPanel(editor=self)
         self._status_bar = StatusBar(editor=self)
+        self._fullscreen_controller = FullscreenController(
+            enabled=not self.editable, margin=0, height=0
+        )
+        self._fullscreen_controller.param.watch(self._on_fullscreen_changed, "active")
+        self._fullscreen_overlay = PresentationOverlay(bar.title, bar.health_chip)
 
         self._sync_toolbar_extra()
         self._sync_toolbar_state()
@@ -2086,8 +2110,29 @@ class FlowDash(Viewer):
                 sizing_mode="stretch_both",
             ),
             self._status_bar,
+            self._fullscreen_overlay,
+            self._fullscreen_controller,
             sizing_mode="stretch_both",
+            stylesheets=[PRESENTATION_CSS],
         )
+
+    def _on_fullscreen_changed(self, event):
+        self.fullscreen = event.new
+
+    @pn.io.hold()
+    @param.depends("fullscreen", "editable", watch=True)
+    def _apply_fullscreen(self):
+        """Show the presentation layout, or the normal one, in view mode only."""
+        if self.fullscreen and self.editable:
+            self.fullscreen = False
+            return
+        presenting = self.fullscreen
+        self._fullscreen_controller.param.update(active=presenting, enabled=not self.editable)
+        self._fullscreen_overlay.show(presenting)
+        self._dashboard_bar.visible = self.toolbar and not presenting
+        view = self._view
+        classes = [c for c in view.css_classes if c != PRESENTING_CLASS]
+        view.css_classes = [*classes, PRESENTING_CLASS] if presenting else classes
 
     def _mark_rearranged(self):
         if self.editable:
@@ -2249,7 +2294,7 @@ class FlowDash(Viewer):
         """Reconcile the dashboard bar, side panel and workspace with the display params."""
         interactive = self.editable and not self.preview
         showing_grid = self.mode == "dashboard" or not self.editable
-        self._dashboard_bar.visible = self.toolbar
+        self._dashboard_bar.visible = self.toolbar and not self.fullscreen
         self._dashboard_bar.sync()
         self._side_panel.visible = not showing_grid
         self._inspector.visible = not showing_grid
