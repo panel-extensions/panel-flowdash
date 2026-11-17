@@ -43,7 +43,8 @@ dependencies = [
     "packaging",
     "panel >=1.9.3",
     "panel-material-ui >=0.16.0",
-    "panel-reactflow >=0.5.1",
+    # ReactFlow.fit_view, add_nodes/add_edges and graph validation arrived in 0.6.0.
+    "panel-reactflow >=0.6.0",
     "panel-tiles >=0.4.0",
     # Parameter.metadata, read for output port declarations, arrived in 2.3.
     "param >=2.3.0",

@@ -35,6 +35,7 @@ from panel_flowdash.dashboard_store import (
     MemoryDashboardStore,
 )
 from panel_flowdash.editor import FlowDash
+from panel_flowdash.placeholders import PLACEHOLDER_NODE_TYPE
 from panel_flowdash.widgets import BUILTIN_COMPONENTS
 
 
@@ -1308,7 +1309,7 @@ class TestModelRoundTrip:
         state.ticker = "abc"
         assert fresh.graph.get_state(ids[-1]).ticker == "ABC"
 
-    async def test_load_model_skips_node_with_invalid_data(self, editor, caplog):
+    async def test_load_model_shows_node_with_invalid_data_as_failed(self, editor, caplog):
         # panel-reactflow only validates node data when jsonschema is installed.
         pytest.importorskip("jsonschema")
         model = DashboardModel(
@@ -1324,7 +1325,13 @@ class TestModelRoundTrip:
             }
         }
         editor.load_model(model)
-        assert editor._flow.nodes == []
+        # Like any item that fails to load, it stays on the canvas as a placeholder.
+        assert [(n["id"], n["type"]) for n in editor._flow.nodes] == [
+            ("n1", PLACEHOLDER_NODE_TYPE)
+        ]
+        assert editor._placeholders()["n1"].reason == "failed"
+        assert "n1" not in editor.graph.node_ids
+        assert "n1" not in editor._component_instances
 
     async def test_load_model_warns_once_without_node_validator(self, editor, monkeypatch, caplog):
         import panel_flowdash.editor as editor_module
