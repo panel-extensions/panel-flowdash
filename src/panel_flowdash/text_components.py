@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import html
 import math
 import numbers
 import re
+import secrets
 import typing as t
+import weakref
 from collections.abc import Mapping
 from html.parser import HTMLParser
 
@@ -17,13 +20,14 @@ from panel.viewable import Viewer
 
 from panel_flowdash.registry import register
 from panel_flowdash.ui.node_card import summarize_value
-from panel_flowdash.ui.text import escape_markdown, markdown_pane, text_typography
+from panel_flowdash.ui.text import escape_markdown, text_typography
 from panel_flowdash.util import is_failure
 
 _PLACEHOLDER = re.compile(r"\{\{\s*value(?:\.([\w-]+))?\s*(?::([^{}]*?))?\s*\}\}")
-# Every ASCII punctuation character can be backslash-escaped in CommonMark, which
-# keeps a substituted value from forming emphasis, links, lists or headings.
-_PUNCTUATION = re.compile(r"([!-/:-@\[-`{-~])")
+# A format spec asking for thousands of characters would make the server build them.
+_HUGE_SPEC = re.compile(r"\d{4,}")
+# Raw HTML is shown as text; math is never typeset since the HTML pane leaves it alone.
+_MARKDOWN = MarkdownIt("gfm-like", {"html": False})
 
 _TEMPLATE_DOC = """
 Placeholders are filled from the connected `value` input: `{{ value }}` shows
@@ -47,7 +51,7 @@ def format_value(value: t.Any, spec: str = "") -> str:
     """Return *value* as the text a placeholder shows, formatted by *spec* if it applies."""
     if value is None or is_failure(value):
         return ""
-    if spec:
+    if spec and not _HUGE_SPEC.search(spec):
         try:
             return format(value, spec)
         except (TypeError, ValueError):
@@ -75,9 +79,41 @@ def fill_template(template: str, value: t.Any, escape: t.Callable[[str], str] = 
     return _PLACEHOLDER.sub(replace, template or "")
 
 
-def escape_inline_markdown(text: str) -> str:
-    """Escape *text* for a Markdown pane that renders raw HTML as text, keeping it on one line."""
-    return _PUNCTUATION.sub(r"\\\1", " ".join(text.split()))
+def render_markdown(template: str, value: t.Any) -> str:
+    """Render *template* as HTML, filling its placeholders from *value*.
+
+    Placeholders are filled after parsing, so a value is always literal text: it
+    cannot add markup, and inside a code span or block it keeps its backslashes.
+    A placeholder in a link or image URL is dropped rather than filled, so
+    showing the text never sends upstream data to another site.
+    """
+    fills: list[str] = []
+    nonce = secrets.token_hex(4)
+
+    def mark(match: re.Match) -> str:
+        key, spec = match.group(1), (match.group(2) or "").strip()
+        fills.append(format_value(_lookup(value, key), spec))
+        return f"fdph{nonce}n{len(fills) - 1}e"
+
+    marker = re.compile(f"fdph{nonce}n(\\d+)e")
+
+    def fill(text: str) -> str:
+        return marker.sub(lambda m: fills[int(m.group(1))], text)
+
+    def walk(tokens):
+        for token in tokens:
+            token.content = fill(token.content)
+            for name, attr in list((token.attrs or {}).items()):
+                if isinstance(attr, str):
+                    token.attrs[name] = (
+                        fill(attr) if name in ("alt", "title") else marker.sub("", attr)
+                    )
+            if token.children:
+                walk(token.children)
+
+    tokens = _MARKDOWN.parse(_PLACEHOLDER.sub(mark, template or ""))
+    walk(tokens)
+    return _MARKDOWN.renderer.render(tokens, _MARKDOWN.options, {})
 
 
 _MARKDOWN_CSS = """
@@ -91,6 +127,9 @@ _MARKDOWN_CSS = """
 :host > div {
   box-sizing: border-box;
   padding: 0 12px;
+}
+:host > div > :first-child {
+  margin-top: 0;
 }
 h1, h2, h3, h4, h5, h6 {
   font-weight: 500;
@@ -121,9 +160,6 @@ img {
   max-width: 100%;
 }
 """
-
-
-_PREVIEW_PARSER = MarkdownIt("gfm-like", {"html": False})
 
 
 class MultilineText(param.String):
@@ -163,7 +199,7 @@ class Markdown(Viewer):
     """Markdown text, optionally filled with values from upstream components."""
 
     text = MultilineText(
-        default="## Notes\n\nWrite **Markdown** here.",
+        default="Write **Markdown** here.",
         label="Text",
         doc="The Markdown to show." + _TEMPLATE_DOC,
     )
@@ -172,17 +208,15 @@ class Markdown(Viewer):
 
     def __init__(self, **params):
         super().__init__(**params)
-        self._pane = markdown_pane(
+        self._pane = pn.pane.HTML(
             self._render(),
-            renderer_options={"html": False},
-            disable_anchors=True,
             sizing_mode="stretch_both",
             margin=0,
             stylesheets=[_MARKDOWN_CSS],
         )
 
     def _render(self) -> str:
-        return fill_template(self.text, self.value, escape_inline_markdown)
+        return render_markdown(self.text, self.value)
 
     @param.depends("text", "value", watch=True)
     def _update(self):
@@ -190,7 +224,7 @@ class Markdown(Viewer):
 
     def __flowdash_preview__(self) -> str:
         """Return the text of the Markdown with its placeholders filled in, without markup."""
-        return html_to_text(_PREVIEW_PARSER.render(self._render()))
+        return html_to_text(self._render())
 
     def __panel__(self):
         """Return the rendered Markdown."""
@@ -229,7 +263,10 @@ class Heading(Viewer):
     )
 
     alignment = param.Selector(
-        default="left", objects=["left", "center", "right"], label="Alignment"
+        default="left",
+        objects=["left", "center", "right"],
+        label="Alignment",
+        doc="How the heading and subtitle are aligned in the tile.",
     )
 
     value = param.Parameter(default=None, doc="The value filled into the text's placeholders.")
@@ -251,9 +288,10 @@ class Heading(Viewer):
             variant=_HEADING_VARIANTS[self.size],
             sx={**sx, "fontWeight": 500},
         )
+        subtitle = fill_template(self.subtitle, self.value)
         self._subtitle.param.update(
-            object=escape_markdown(fill_template(self.subtitle, self.value)),
-            visible=bool(self.subtitle),
+            object=escape_markdown(subtitle),
+            visible=bool(subtitle.strip()),
             sx=sx,
         )
 
@@ -302,19 +340,31 @@ class Divider(Viewer):
         return self._divider
 
 
+# Elements whose content is never text to show.
+_HIDDEN = frozenset({"script", "style", "template", "iframe", "object", "noscript", "svg", "math"})
+
+
 class _TextExtractor(HTMLParser):
     _BLOCKS = frozenset({"p", "div", "br", "li", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote"})
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.parts: list[str] = []
+        self._hidden = 0
 
     def handle_starttag(self, tag, attrs):
-        if tag in self._BLOCKS:
+        if tag in _HIDDEN:
+            self._hidden += 1
+        elif tag in self._BLOCKS:
             self.parts.append("\n")
 
+    def handle_endtag(self, tag):
+        if tag in _HIDDEN and self._hidden:
+            self._hidden -= 1
+
     def handle_data(self, data):
-        self.parts.append(data)
+        if not self._hidden:
+            self.parts.append(data)
 
 
 def html_to_text(markup: str) -> str:
@@ -324,6 +374,93 @@ def html_to_text(markup: str) -> str:
     parser.close()
     lines = (" ".join(line.split()) for line in "".join(parser.parts).splitlines())
     return "\n".join(line for line in lines if line)
+
+
+_NOTES_TAGS = frozenset(
+    {
+        "p",
+        "br",
+        "h1",
+        "h2",
+        "h3",
+        "strong",
+        "em",
+        "u",
+        "s",
+        "ol",
+        "ul",
+        "li",
+        "a",
+        "blockquote",
+        "code",
+    }
+)
+_NOTES_CLASS = re.compile(r"^ql-(indent-[1-8]|align-(center|right|justify))$")
+_NOTES_LIST = frozenset({"bullet", "ordered"})
+_SAFE_HREF = re.compile(r"^(https?:|mailto:)", re.IGNORECASE)
+
+
+class _NotesSanitizer(HTMLParser):
+    """Rebuild notes HTML from the formats the Notes toolbar offers, dropping everything else."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._open: list[str | None] = []
+        self._hidden = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in _HIDDEN:
+            self._hidden += 1
+            return
+        if self._hidden or tag not in _NOTES_TAGS:
+            return
+        kept = []
+        for name, value in attrs:
+            value = value or ""
+            if name == "class":
+                classes = [c for c in value.split() if _NOTES_CLASS.match(c)]
+                if classes:
+                    kept.append(("class", " ".join(classes)))
+            elif name == "data-list" and tag == "li" and value in _NOTES_LIST:
+                kept.append((name, value))
+            elif name == "href" and tag == "a" and _SAFE_HREF.match(value.strip()):
+                kept += [
+                    ("href", value.strip()),
+                    ("rel", "noopener noreferrer"),
+                    ("target", "_blank"),
+                ]
+        rendered = "".join(f' {name}="{html.escape(value)}"' for name, value in kept)
+        self.parts.append(f"<{tag}{rendered}>")
+        if tag != "br":
+            self._open.append(tag)
+
+    def handle_endtag(self, tag):
+        if tag in _HIDDEN:
+            self._hidden = max(0, self._hidden - 1)
+        elif tag in self._open:
+            while self._open:
+                closed = self._open.pop()
+                self.parts.append(f"</{closed}>")
+                if closed == tag:
+                    break
+
+    def handle_data(self, data):
+        if not self._hidden:
+            self.parts.append(html.escape(data, quote=False))
+
+    def close(self):
+        super().close()
+        self.parts += [f"</{tag}>" for tag in reversed(self._open)]
+        self._open = []
+
+
+def sanitize_notes(markup: str) -> str:
+    """Return *markup* reduced to the elements, links and classes the Notes editor produces."""
+    sanitizer = _NotesSanitizer()
+    sanitizer.feed(markup or "")
+    sanitizer.close()
+    return "".join(sanitizer.parts)
 
 
 _NOTES_CSS = """
@@ -354,6 +491,9 @@ _NOTES_CSS = """
 }
 .ql-editor ol {
   padding-left: 0;
+}
+.ql-editor > :first-child {
+  margin-top: 0;
 }
 .ql-editor.ql-blank::before {
   left: 12px;
@@ -412,8 +552,9 @@ class Notes(Viewer):
         label="Text",
         doc="""
             The notes as HTML, typed into the tile itself rather than edited in
-            the inspector. Only paragraphs, headings (h1 to h3), strong, em, u,
-            s, ol/ul/li lists, links, blockquote and inline code are kept.""",
+            the inspector. Only p, br, h1 to h3, strong, em, u, s, ol/ul/li,
+            blockquote, inline code and http(s) or mailto links are kept;
+            other elements, images, styles and attributes are dropped.""",
         precedence=-1,
         metadata={"flowdash": {"two_way": True}},
     )
@@ -427,7 +568,7 @@ class Notes(Viewer):
     def __init__(self, **params):
         super().__init__(**params)
         self._editor = pn.widgets.TextEditor(
-            value=self.text,
+            value=sanitize_notes(self.text),
             mode="bubble",
             toolbar=_NOTES_TOOLBAR,
             sizing_mode="stretch_both",
@@ -438,7 +579,8 @@ class Notes(Viewer):
         from panel_flowdash.editor import current_dashboard
 
         dashboard = current_dashboard()
-        self._dashboard = dashboard
+        # Weak, so notes kept by the app do not keep a discarded editor alive.
+        self._dashboard = None if dashboard is None else weakref.ref(dashboard)
         if dashboard is not None:
             dashboard.param.watch(self._sync_editable, ["editable", "read_only"])
         self._sync_editable()
@@ -446,8 +588,10 @@ class Notes(Viewer):
     @property
     def editing(self) -> bool:
         """Whether the notes can be edited, as they can while the dashboard is."""
-        dashboard = self._dashboard
-        return dashboard is None or (dashboard.editable and not dashboard.read_only)
+        if self._dashboard is None:
+            return True
+        dashboard = self._dashboard()
+        return dashboard is not None and dashboard.editable and not dashboard.read_only
 
     def _sync_editable(self, *events):
         editing = self.editing
@@ -459,12 +603,20 @@ class Notes(Viewer):
 
     def _edited(self, event):
         if self.editing:
-            self.text = event.new
+            # The editor keeps showing what was typed; only what is saved is sanitized.
+            self._typing = True
+            try:
+                self.text = sanitize_notes(event.new)
+            finally:
+                self._typing = False
 
     @param.depends("text", watch=True)
     def _update_text(self):
-        if self._editor.value != self.text:
-            self._editor.value = self.text
+        if getattr(self, "_typing", False):
+            return
+        markup = sanitize_notes(self.text)
+        if self._editor.value != markup:
+            self._editor.value = markup
 
     @param.depends("placeholder", watch=True)
     def _update_placeholder(self):

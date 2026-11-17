@@ -2101,8 +2101,15 @@ class FlowDash(Viewer):
     @staticmethod
     def _config_edited_by_component(editor_ref, node_id, event):
         editor = editor_ref()
-        if editor is not None:
+        if editor is None:
+            return
+        if editor.editable and not editor.read_only:
             editor._apply_config_patch(node_id, {event.name: event.new})
+            return
+        # Viewers cannot change the dashboard, so the component goes back to the saved value.
+        config_state = editor._dataflow_graph.get_config_state(node_id)
+        if config_state is not None:
+            setattr(event.obj, event.name, getattr(config_state, event.name))
 
     # ------------------------------------------------------------------
     # Component instantiation

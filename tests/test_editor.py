@@ -2491,7 +2491,7 @@ class TestRequiredInputPlaceholder:
             editor.add_component(component_id)
 
         assert not any(
-            isinstance(view, pn.Column) and isinstance(view[0], WaitingPlaceholder)
+            isinstance(view, pn.Column) and len(view) and isinstance(view[0], WaitingPlaceholder)
             for view in editor._tile_objects
         )
 
