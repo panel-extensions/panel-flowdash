@@ -413,8 +413,12 @@ class TestControlsBar:
         text, select = pmui.TextInput(label="Find"), pmui.Select(options=["a", "b"])
         compact_inputs(pn.Column(text, select))
         assert text.size == "small"
-        assert select.visual_size == "small"
-        assert select.size == 1
+        # Newer releases keep a select's MUI size in `visual_size` and its row count in `size`.
+        if "visual_size" in select.param:
+            assert select.visual_size == "small"
+            assert select.size == 1
+        else:
+            assert select.size == "small"
 
 
 class TestHeaderLayout:
