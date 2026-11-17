@@ -7,10 +7,8 @@ gutter's buttons or by dragging it to the edge, falls back to the tab of the
 pane that is left: collapsing the grid leaves the Dataflow tab, collapsing the
 canvas the Layout tab, and the split keeps its last sizes for next time.
 
-The grid has no notion of a selection, so :class:`SplitEvents` reports which
-tile was clicked; the editor selects that component on the canvas, and the
-canvas selection outlines the tile in turn. It also reports when the canvas
-pane changed size, so the canvas can fit its view to the new width.
+:class:`SplitEvents` reports when the canvas pane changed size, so the canvas
+can fit its view to the new width.
 """
 
 from __future__ import annotations
@@ -47,8 +45,6 @@ DEFAULT_SIZES = (55.0, 45.0)
 # Narrower than this, a pane counts as collapsed; split.js reports a collapsed
 # pane at 0 to 1 percent and a pane dragged into its snap zone at under 5.
 _COLLAPSED = 5.0
-
-TILE_KEY_PREFIX = "flowdash-tile-key-"
 
 
 class SplitPreferences(param.Parameterized):
@@ -198,106 +194,80 @@ class LocalPreference(JSComponent):
 
 
 class SplitEvents(JSComponent):
-    """Reports clicks on tiles, and when the canvas pane is shown or the window resized.
+    """Reports when the canvas pane is shown or the window resized.
 
-    Tiles carry their key as a CSS class (``flowdash-tile-key-<n>``), so a
-    listener on the page finds the clicked tile in the event's composed path,
-    through the shadow roots of the grid and the tile, and sends the key to
-    *on_tile*. Placed in the canvas pane, the component calls *on_resize*
-    once the pane has its size and whenever the window changes width, but
-    not when a panel beside the split opens or closes, so the canvas does not
-    move under the pointer. :attr:`pane_size` follows every size change of
-    the pane. It takes no space on the page.
+    Placed in the canvas pane, the component calls *on_resize* once the pane
+    has its size and whenever the window changes width, but not when a panel
+    beside the split opens or closes, so the canvas does not move under the
+    pointer. :attr:`pane_size` follows every size change of the pane. It
+    takes no space on the page.
     """
 
-    active = param.Boolean(default=False, doc="Whether clicks and resizes are reported.")
+    active = param.Boolean(default=False, doc="Whether resizes are reported.")
 
     pane_size = param.List(
         default=[], item_type=(int, float), doc="Width and height of the canvas pane in pixels."
     )
 
-    _esm = f"""
-    export function render({{ model, el }}) {{
-      const PREFIX = "{TILE_KEY_PREFIX}"
-      function onPointerDown(event) {{
-        if (!model.active) {{ return }}
-        for (const node of event.composedPath()) {{
-          const key = [...(node.classList || [])].find((c) => c.startsWith(PREFIX))
-          if (key) {{
-            model.send_msg({{type: "tile", key: key.slice(PREFIX.length)}})
-            return
-          }}
-        }}
-      }}
+    _esm = """
+    export function render({ model, el }) {
       let timer = null
-      function report() {{
+      function report() {
         clearTimeout(timer)
-        timer = setTimeout(() => {{
-          if (model.active) {{ model.send_msg({{type: "resize"}}) }}
-        }}, 200)
-      }}
-      const observer = new ResizeObserver(([entry]) => {{
-        if (entry.contentRect.width) {{
+        timer = setTimeout(() => {
+          if (model.active) { model.send_msg({type: "resize"}) }
+        }, 200)
+      }
+      const observer = new ResizeObserver(([entry]) => {
+        if (entry.contentRect.width) {
           observer.disconnect()
           report()
-        }}
-      }})
+        }
+      })
       observer.observe(el)
       // The component sits in the pane's Column, whose host is as large as the pane.
       const pane = el.getRootNode()?.host?.getRootNode()?.host
       let sizeTimer = null
-      const sizeObserver = new ResizeObserver(([entry]) => {{
+      const sizeObserver = new ResizeObserver(([entry]) => {
         clearTimeout(sizeTimer)
-        sizeTimer = setTimeout(() => {{
+        sizeTimer = setTimeout(() => {
           const size = [Math.round(entry.contentRect.width), Math.round(entry.contentRect.height)]
-          if (size[0] && (size[0] !== model.pane_size[0] || size[1] !== model.pane_size[1])) {{
+          if (size[0] && (size[0] !== model.pane_size[0] || size[1] !== model.pane_size[1])) {
             model.pane_size = size
-          }}
-        }}, 100)
-      }})
-      if (pane) {{ sizeObserver.observe(pane) }}
+          }
+        }, 100)
+      })
+      if (pane) { sizeObserver.observe(pane) }
       // The grid and the splitter dispatch resize events of their own, at an unchanged width.
       let windowWidth = window.innerWidth
-      function onWindowResize() {{
-        if (window.innerWidth !== windowWidth) {{
+      function onWindowResize() {
+        if (window.innerWidth !== windowWidth) {
           windowWidth = window.innerWidth
           report()
-        }}
-      }}
-      window.addEventListener("pointerdown", onPointerDown, true)
+        }
+      }
       window.addEventListener("resize", onWindowResize)
-      model.on("remove", () => {{
+      model.on("remove", () => {
         clearTimeout(timer)
         clearTimeout(sizeTimer)
         observer.disconnect()
         sizeObserver.disconnect()
-        window.removeEventListener("pointerdown", onPointerDown, true)
         window.removeEventListener("resize", onWindowResize)
-      }})
-    }}
+      })
+    }
     """
 
-    def __init__(
-        self,
-        on_tile: t.Callable[[str], None] | None = None,
-        on_resize: t.Callable[[], None] | None = None,
-        **params,
-    ):
+    def __init__(self, on_resize: t.Callable[[], None] | None = None, **params):
         params.setdefault("height", 0)
         params.setdefault("margin", 0)
         params.setdefault("sizing_mode", "stretch_width")
         super().__init__(**params)
-        self.on_tile = on_tile
         self.on_resize = on_resize
 
     def _handle_msg(self, msg):
         if not isinstance(msg, dict):
             return
-        if msg.get("type") == "tile" and self.on_tile is not None:
-            key = msg.get("key")
-            if isinstance(key, str):
-                self.on_tile(key)
-        elif msg.get("type") == "resize" and self.on_resize is not None:
+        if msg.get("type") == "resize" and self.on_resize is not None:
             self.on_resize()
 
 
@@ -306,9 +276,8 @@ class SplitView(Viewer):
 
     *on_collapse* is called with the pane that was collapsed (0 for the
     canvas, 1 for the grid), *on_load* once the preferences stored in the
-    browser were read and any usable ones applied, *on_tile* with the key
-    of a clicked tile and *on_resize* when the canvas pane was shown or
-    changed width.
+    browser were read and any usable ones applied, and *on_resize* when the
+    canvas pane was shown or changed width.
     """
 
     preferences = param.ClassSelector(class_=SplitPreferences, doc="The remembered state.")
@@ -317,7 +286,6 @@ class SplitView(Viewer):
         self,
         on_collapse: t.Callable[[int], None] | None = None,
         on_load: t.Callable[[], None] | None = None,
-        on_tile: t.Callable[[str], None] | None = None,
         on_resize: t.Callable[[], None] | None = None,
         **params,
     ):
@@ -328,14 +296,8 @@ class SplitView(Viewer):
         self.on_resize = on_resize
         sizes = self.preferences.sizes
         self.left = pn.Column(margin=0, sizing_mode="stretch_both")
-        # The grid keeps the width of the dashboard's layout, so a narrow pane
-        # scrolls sideways; the pane must not take on the grid's minimum width.
-        self.right = pn.Column(
-            margin=0,
-            sizing_mode="stretch_both",
-            scroll="both-auto",
-            stylesheets=[":host { min-width: 0 !important; }"],
-        )
+        # Tiles keep their minimum widths, so a narrow grid pane scrolls sideways too.
+        self.right = pn.Column(margin=0, sizing_mode="stretch_both", scroll="both-auto")
         self.split = HSplit(
             self.left,
             self.right,
@@ -350,7 +312,7 @@ class SplitView(Viewer):
             margin=0,
         )
         self.split.param.watch(self._on_split_changed, ["sizes", "collapsed"])
-        self.events = SplitEvents(on_tile=on_tile, on_resize=on_resize)
+        self.events = SplitEvents(on_resize=on_resize)
         # Applied once: a re-render must not pull in what another tab stored since.
         self.loaded = False
         key = storage_key()
