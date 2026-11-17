@@ -209,7 +209,10 @@ def test_add_to_a_new_dashboard(page):
     app = apps[0]
     wait_until(lambda: app._current_dashboard is not None, page, timeout=10000)
     assert app._current_dashboard.title == "Turbines dashboard"
-    assert [i["component_id"] for i in app._editor._tile_items] == ["Test/source"]
+    # The top bar shows Done as soon as the dashboard opens, before the component is placed.
+    wait_until(
+        lambda: [i["component_id"] for i in app._editor._tile_items] == ["Test/source"], page
+    )
 
 
 def test_detail_panel_covers_the_page_on_narrow_screens(page):

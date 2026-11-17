@@ -228,7 +228,22 @@ class DashboardBar(Viewer):
         )
         self.mode_tabs.link(editor, value="mode", bidirectional=True)
         self.settings_button = pmui.Button(
-            label="Settings", icon="tune", variant="text", size="small", margin=(0, 4)
+            label="Settings",
+            icon="tune",
+            variant="text",
+            size="small",
+            margin=(0, 4),
+            description="Settings",
+            # On narrower screens only the icon shows, so the edit actions fit one row.
+            sx={
+                "@media (max-width: 1279.95px)": {
+                    "fontSize": 0,
+                    "minWidth": 0,
+                    "px": 1,
+                    "& .MuiButton-startIcon": {"m": 0},
+                    "& .MuiButton-startIcon > *": {"fontSize": "18px"},
+                }
+            },
         )
         self.discard_button = pmui.Button(
             label="Discard", variant="outlined", size="small", margin=(0, 4)
