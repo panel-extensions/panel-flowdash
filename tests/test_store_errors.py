@@ -127,7 +127,7 @@ class TestCreateRefused:
         store = RefusingStore()
         app, model = await _app_with_dashboard(make_app, store)
         app._editor.add_component("Analytics/selector")
-        sidebar = list(app._sidebar_container.objects)
+        sidebar = list(app._page.sidebar)
         menu = app._menu_list.items
         main = list(app._page.main)
         location.pathname = f"{DASH_ROUTE_PREFIX}{model.dashboard_id}"
@@ -139,7 +139,7 @@ class TestCreateRefused:
         assert app._current_dashboard.dashboard_id == model.dashboard_id
         assert len(app._editor._flow.nodes) == 1
         assert app._dirty
-        assert list(app._sidebar_container.objects) == sidebar
+        assert list(app._page.sidebar) == sidebar
         assert app._menu_list.items == menu
         assert list(app._page.main) == main
         assert location.pathname == f"{DASH_ROUTE_PREFIX}{model.dashboard_id}"

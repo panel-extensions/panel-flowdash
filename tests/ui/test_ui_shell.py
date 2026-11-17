@@ -147,9 +147,11 @@ def test_rail_collapses_behind_a_menu_button_on_narrow_screens(page):
     _serve_app(page, store, "/")
 
     expect(page.get_by_role("button", name="Components")).to_be_hidden()
-    page.get_by_role("button", name="Open navigation").click()
+    page.get_by_role("button", name="Open drawer").click()
     page.locator(".MuiListItemButton-root").filter(has_text="Components").click()
     wait_until(lambda: _path(page) == "/components", page, timeout=10000)
+    # Navigating closes the drawer again.
+    expect(page.locator(".MuiDrawer-paper.sidebar")).to_be_hidden()
 
 
 def test_standalone_editor_view_mode_offers_edit(page):

@@ -573,14 +573,15 @@ class TestApp:
         app = await make_app()
         _open_with_picker(app)
         assert len(app._editor.sidebar) == 1
-        assert app._sidebar_container.objects == []
+        assert app._sidebar_views == []
+        assert app._page.sidebar == []
         assert not app._page.sidebar_open
         assert app._editor._view_controls.controls == app._editor.sidebar
 
     async def test_page_sidebar_when_the_controls_bar_is_off(self, make_app):
         app = await make_app(editor_options={"controls_bar": False})
         _open_with_picker(app)
-        assert app._sidebar_container.objects == list(app._editor.sidebar)
+        assert app._page.sidebar == list(app._editor.sidebar)
         assert app._page.sidebar_open
 
     async def test_loading_raises_no_notification(self, make_app):
@@ -606,12 +607,11 @@ class TestApp:
         assert editor.mode == "wiring"
         assert pn.state.location.search == "?edit=true"
 
-    async def test_contextbar_only_reserves_space_when_configured(self, make_app):
+    async def test_contextbar_is_persistent_unless_configured(self, make_app):
         app = await make_app()
-        assert app._page.contextbar_variant == "temporary"
-        app.contextbar = [pn.pane.Markdown("Assistant")]
         assert app._page.contextbar_variant == "persistent"
-        app.contextbar = []
-        assert app._page.contextbar_variant == "temporary"
-        configured = await make_app(page_options={"contextbar_variant": "persistent"})
-        assert configured._page.contextbar_variant == "persistent"
+        assert app._page.contextbar == []
+        app.contextbar = [pn.pane.Markdown("Assistant")]
+        assert len(app._page.contextbar) == 1
+        configured = await make_app(page_options={"contextbar_variant": "temporary"})
+        assert configured._page.contextbar_variant == "temporary"

@@ -167,6 +167,8 @@ _CARD_CSS = (
 
 _LAYOUT_CSS = """
 :host { box-sizing: border-box; padding: 24px 32px 64px; }
+/* Auto margins on a stretched flex item shrink it to its content. */
+:host { width: 100% !important; }
 @media (max-width: 600px) {
   :host { padding: 16px 16px 48px; }
 }

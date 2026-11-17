@@ -42,7 +42,8 @@ classifiers = [
 dependencies = [
     "packaging",
     "panel >=1.9.3",
-    "panel-material-ui >=0.16.0",
+    # Page.rail and Page.header_color arrived in 0.17.0b3.
+    "panel-material-ui >=0.17.0b3",
     # ReactFlow.fit_view, add_nodes/add_edges and graph validation arrived in 0.6.0.
     "panel-reactflow >=0.6.0",
     # collapse_threshold, which the Split tab's collapse buttons rely on, arrived in 0.4.0.

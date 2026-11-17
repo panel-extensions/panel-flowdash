@@ -14,11 +14,11 @@ async def test_leaving_full_screen_restores_the_page_sidebar(make_app, was_open)
     app._page.sidebar_open = was_open
 
     app._editor.fullscreen = True
-    assert app._sidebar_container.objects == []
+    assert app._sidebar_views == []
     assert not app._page.sidebar_open
 
     app._editor.fullscreen = False
-    assert app._sidebar_container.objects == views
+    assert app._sidebar_views == views
     assert app._page.sidebar_open is was_open
 
 
@@ -27,5 +27,5 @@ async def test_new_sidebar_views_keep_a_collapsed_sidebar_collapsed(make_app):  
     _open_with_picker(app)
     app._page.sidebar_open = False
     app._editor.add_component("Plant/picker")
-    assert len(app._sidebar_container.objects) == 2
+    assert len(app._sidebar_views) == 2
     assert not app._page.sidebar_open

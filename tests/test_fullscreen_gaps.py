@@ -60,13 +60,13 @@ class TestWithoutControlsBar:
         editor = app._editor
         sidebar = [pn.pane.Markdown("control")]
         editor.param.update(controls_bar=False, sidebar=sidebar)
-        assert app._sidebar_container.objects == sidebar
+        assert app._sidebar_views == sidebar
 
         editor.fullscreen = True
-        assert app._sidebar_container.objects == []
+        assert app._sidebar_views == []
 
         editor.fullscreen = False
-        assert app._sidebar_container.objects == sidebar
+        assert app._sidebar_views == sidebar
 
 
 class TestKioskQuery:

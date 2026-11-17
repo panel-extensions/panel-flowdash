@@ -103,7 +103,7 @@ class TestCanvasReset:
         assert list(editor.graph.node_ids) == []
         assert editor._flow.nodes == []
         assert editor._flow.edges == []
-        assert app._sidebar_container.objects == []
+        assert app._sidebar_views == []
 
     async def test_create_new_dashboard_resets_canvas(self, app):
         """Creating a dashboard while another has nodes must clear the canvas."""
@@ -691,11 +691,11 @@ class TestNavSide:
         wrapped = right_nav_app._nav_content(content)
         assert list(wrapped) == [content, right_nav_app._nav_drawer]
 
-    async def test_default_places_rail_before_content(self, app):
+    async def test_default_puts_the_rail_in_the_page_rail(self, app):
         assert app.nav_variant == "rail"
         content = pn.pane.Markdown("x")
-        wrapped = app._nav_content(content)
-        assert list(wrapped) == [app._shell.rail, content]
+        assert app._nav_content(content) is content
+        assert list(app._page.rail) == app._shell.rail_content
 
     async def test_left_anchors_drawer_left(self, left_nav_app):
         assert left_nav_app._nav_drawer.anchor == "left"
