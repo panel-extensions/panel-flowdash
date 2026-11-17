@@ -58,6 +58,8 @@ def test_dashboard_tile_and_column_text_is_not_rendered_as_html(page):
         notifications=False,
         include_builtin_components=False,
         inspect_outputs=True,
+        # The full layout shows the description as text rather than in a tooltip.
+        header_layout="full",
     )
     editor.load_model(DashboardModel(dashboard_id="d", user_id="u", title=PAYLOAD))
     editor.settings.description = PAYLOAD

@@ -504,7 +504,7 @@ class DashboardBar(Viewer):
         description = settings.description.strip()
         # The tooltip also names the button for assistive technology.
         self.info_button.description = description or None
-        self.description.object = description
+        self.description.object = escape_markdown(description)
         self.refresh_period.param.update(
             label=format_period(period) if period else "Off",
             items=[
