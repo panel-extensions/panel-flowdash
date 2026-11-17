@@ -7,6 +7,8 @@ import typing as t
 import panel as pn
 import panel_material_ui as pmui
 
+from panel_flowdash.ui.text import escape_markdown, text_typography
+
 if t.TYPE_CHECKING:
     from .session import AgentSession
 
@@ -41,9 +43,10 @@ class SessionChrome:
     - While the drawer is open the editor's inspector is folded, so the canvas
       keeps its width; it opens again when the drawer closes, unless the user
       opened or closed it in the meantime.
-    - In full screen the drawer is out of sight, so a new approval shows a
+    - In full screen the drawer is out of sight, so a pending approval shows a
       notice whose Review button leaves full screen and opens the drawer.
-    - The command palette offers to ask the assistant whatever was typed.
+    - The command palette offers to ask the assistant whatever was typed. A
+      question asked while the assistant is busy is sent once it is done.
     """
 
     def __init__(self, session: AgentSession):
@@ -51,11 +54,15 @@ class SessionChrome:
         self._folded = False
         self._expected: bool | None = None
         self._pending_seen = len(session.runner.state.pending_approvals)
+        self._queued: list[str] = []
         drawer = session.drawer
         drawer.param.watch(self._on_open, "open")
-        session.runner.state.param.watch(self._on_pending, "pending_approvals")
+        state = session.runner.state
+        state.param.watch(self._on_pending, "pending_approvals")
+        state.param.watch(self._on_running, "running")
 
-        self._notice_text = pmui.Typography(variant="body2", margin=0, sx={"color": "inherit"})
+        # The description may come from a third-party tool: show it as plain text.
+        self._notice_text = text_typography("", variant="body2", margin=0, sx={"color": "inherit"})
         self.notice = pmui.Row(
             self._notice_text,
             pmui.Button(
@@ -102,11 +109,22 @@ class SessionChrome:
             return
         drawer = self.session.drawer
         drawer.param.update(open=True, tab="chat")
+        if self.session.runner.state.running:
+            self._queued.append(text)
+            return
+        self._submit(text)
+
+    def _submit(self, text: str):
+        chat = self.session.drawer.chat
 
         async def submit():
-            await drawer.chat.submit(text)
+            await chat.submit(text)
 
         pn.state.execute(submit)
+
+    def _on_running(self, event):
+        if not event.new and self._queued:
+            self._submit(self._queued.pop(0))
 
     # ------------------------------------------------------------------
     # Full screen
@@ -124,17 +142,22 @@ class SessionChrome:
         pending = len(event.new)
         editor = self.session.app._editor
         if pending > self._pending_seen and editor is not None and editor.fullscreen:
-            request = event.new[-1]
-            self._notice_text.object = (
-                f"The assistant is waiting for your approval: {_summary(request)}"
-            )
-            self.notice.visible = True
+            self._show_notice(event.new[-1])
         elif not pending:
             self.notice.visible = False
         self._pending_seen = pending
 
+    def _show_notice(self, request):
+        self._notice_text.object = escape_markdown(
+            f"The assistant is waiting for your approval: {_summary(request)}"
+        )
+        self.notice.visible = True
+
     def _on_fullscreen(self, event):
-        if not event.new:
+        pending = self.session.runner.state.pending_approvals
+        if event.new and pending:
+            self._show_notice(pending[-1])
+        elif not event.new:
             self.notice.visible = False
 
     # ------------------------------------------------------------------
