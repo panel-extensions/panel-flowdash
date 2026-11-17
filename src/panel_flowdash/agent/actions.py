@@ -1,0 +1,82 @@
+"""The command palette's commands as front-end actions, for the agent to drive the page.
+
+The agent sees exactly what the palette offers at the moment it asks, and
+running a command takes the palette's own path, so the two cannot drift
+apart. Needs the ``panel-flowdash[agent]`` extra.
+"""
+
+from __future__ import annotations
+
+import typing as t
+
+from panel_agents import ActionRegistry
+
+from panel_flowdash.ui.command_palette import CommandPaletteController
+
+if t.TYPE_CHECKING:
+    from panel_flowdash.app import FlowDashApp
+
+
+def _controller(app: FlowDashApp) -> CommandPaletteController:
+    return getattr(app, "_command_palette", None) or CommandPaletteController(app)
+
+
+def palette_actions(app: FlowDashApp, registry: ActionRegistry | None = None) -> ActionRegistry:
+    """Register the command palette of *app* as two actions and return the registry.
+
+    ``list_commands`` returns the commands the palette offers right now (open
+    a dashboard, add a component while editing, inspect a tile, refresh,
+    edit, save, full screen, switch theme, ...), and ``run_command`` runs one
+    of them by id, through the palette, so its permission checks and the
+    unsaved-changes dialog apply. Create the registry inside the user's
+    session.
+
+    Parameters
+    ----------
+    app
+        The app whose palette to expose.
+    registry
+        The registry to add the actions to; a new one by default.
+    """
+    controller = _controller(app)
+    registry = ActionRegistry() if registry is None else registry
+
+    def list_commands(query: str = "") -> list[dict[str, str]]:
+        """List what the command palette offers the user right now.
+
+        Args:
+            query: Only list commands whose title, group or subtitle contain all of these words.
+        """
+        words = query.lower().split()
+        listed = []
+        for item in controller.items():
+            text = " ".join(
+                str(item.get(key) or "") for key in ("title", "group", "subtitle", "keywords")
+            ).lower()
+            if all(word in text for word in words):
+                listed.append(
+                    {
+                        key: item[key]
+                        for key in ("id", "group", "title", "subtitle")
+                        if item.get(key)
+                    }
+                )
+        return listed
+
+    def run_command(command: str) -> str:
+        """Run a command of the command palette for the user, by the id list_commands gives.
+
+        Args:
+            command: The command's id, e.g. "action:refresh" or "dashboard:<id>".
+        """
+        offered = {item["id"]: item for item in controller.items()}
+        if command not in offered:
+            raise ValueError(
+                f"The palette does not offer {command!r} right now; call list_commands."
+            )
+        controller.run(command)
+        return f"Ran '{offered[command]['title']}'."
+
+    registry.add(list_commands)
+    registry.add(run_command)
+    return registry
