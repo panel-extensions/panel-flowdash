@@ -84,3 +84,18 @@ async def test_the_agent_edits_the_open_dashboard_and_versions_can_be_applied(st
     (artifact,) = session.runner.state.artifacts
     assert session.apply_version(artifact, artifact.versions[0])
     assert [i["component_id"] for i in app._editor._tile_items] == ["T/number"]
+
+
+def test_the_drawer_docks_beside_every_page(store, monkeypatch):
+    monkeypatch.setenv("FLOWDASH_AGENT_MODEL", "test")
+    app = _app(store, monkeypatch)
+    drawer = app._agent_session.drawer
+    assert drawer.toggle in app._shell.search_slot
+    page = app._nav_content("content")
+    assert page is drawer and drawer.main is not None
+
+
+def test_without_an_agent_pages_are_unchanged(store, monkeypatch):
+    app = _app(store, monkeypatch)
+    assert app._nav_content("content") is not None
+    assert len(app._shell.search_slot) == 1

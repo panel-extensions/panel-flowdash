@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import typing as t
 
-from panel_agents import RunState
+from panel_agents import AgentDrawer, RunState
 from panel_agents.adapters.pydantic_ai import ActionToolset, AgentRunner
 
 from .actions import palette_actions
@@ -53,7 +53,9 @@ class AgentSession:
 
     The agent works through :class:`~panel_flowdash.agent.live.LiveDashboardOps`
     with the signed-in user's rights, can run what the command palette offers,
-    and needs the user's approval to save, delete or share. Every edit
+    and needs the user's approval to save, delete or share. Its chat, the
+    versions it publishes and the pending approvals are in a drawer docked to
+    the right of the page, opened from a button in the header. Every edit
     publishes a version of the dashboard YAML, and applying an earlier or
     later version loads it into the editor as an import.
     """
@@ -69,6 +71,14 @@ class AgentSession:
             approval_policy=approval_policy(),
             run_kwargs={"toolsets": [ActionToolset(self.actions)]},
         )
+        self.drawer = AgentDrawer(
+            self.runner, title="Assistant", variant="persistent", on_apply=self.apply_version
+        )
+
+    def dock(self, content):
+        """Return the page *content* with the agent's drawer docked to its right."""
+        self.drawer.main = content
+        return self.drawer
 
     def apply_version(self, artifact: Artifact, version: ArtifactVersion) -> bool:
         """Make the open dashboard match a published *version* of it, as an import."""

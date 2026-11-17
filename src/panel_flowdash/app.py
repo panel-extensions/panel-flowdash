@@ -362,6 +362,8 @@ class FlowDashApp(Viewer):
         self._shell = AppShell(self) if self.nav_variant == "rail" else None
         self._command_palette = CommandPaletteController.install(self)
         self._agent_session = self._build_agent_session()
+        if self._agent_session is not None and self._shell is not None:
+            self._shell.search_slot.append(self._agent_session.drawer.toggle)
         self._build_dialog()
         self._build_unsaved_dialog()
         self._build_share_dialog()
@@ -397,6 +399,11 @@ class FlowDashApp(Viewer):
         if self._shell is not None:
             page_kwargs.setdefault("header", self._shell.header)
             page_kwargs["sx"] = {**HEADER_SX, **page_kwargs["sx"]}
+        elif self._agent_session is not None:
+            page_kwargs["header"] = [
+                *page_kwargs.get("header", []),
+                self._agent_session.drawer.toggle,
+            ]
         self._page_sx = page_kwargs["sx"]
         page_kwargs["sx"] = self._page_sx_for_sidebar()
         self._page = pmui.Page(**page_kwargs)
@@ -493,17 +500,17 @@ class FlowDashApp(Viewer):
         In menubar mode navigation lives in the page header, so the content is
         returned as-is; in the 'rail' variant it follows the navigation rail
         and in the 'left'/'right' variants it is paired with the docked drawer
-        on that side.
+        on that side. With an agent, its drawer is docked on the right.
         """
         if self._shell is not None:
-            return self._shell.wrap(content)
-        if self._menubar_mode:
-            return content
-        if self.nav_variant == "left":
-            objects = [self._nav_drawer, content]
-        else:
-            objects = [content, self._nav_drawer]
-        return pn.Row(*objects, sizing_mode="stretch_both")
+            content = self._shell.wrap(content)
+        elif self.nav_variant == "left":
+            content = pn.Row(self._nav_drawer, content, sizing_mode="stretch_both")
+        elif not self._menubar_mode:
+            content = pn.Row(content, self._nav_drawer, sizing_mode="stretch_both")
+        if self._agent_session is not None:
+            content = self._agent_session.dock(content)
+        return content
 
     def _resolve_user_id(self) -> str:
         return self._identity.user

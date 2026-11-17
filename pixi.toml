@@ -128,7 +128,7 @@ test-312 = ["py312", "test", "agent"]
 test-313 = ["py313", "test", "agent"]
 test-314 = ["py314", "test", "agent"]
 test-param-dev = ["py314", "test", "param-dev"]
-test-ui = ["py312", "test", "test-ui"]
+test-ui = ["py312", "test", "test-ui", "agent"]
 docs = ["docs"]
 build = ["build"]
 lint = { features = ["lint"], no-default-feature = true }
