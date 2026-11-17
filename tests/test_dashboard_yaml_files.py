@@ -1,5 +1,7 @@
 """Dashboard files in the YAML format: importing, dropping and downloading them."""
 
+import asyncio
+
 import yaml
 
 from panel_flowdash import MemoryDashboardStore
@@ -16,11 +18,17 @@ async def test_export_filename_takes_the_format():
     assert export_filename("Plant A", "yaml") == "Plant_A.yaml"
 
 
-def test_dropping_a_yaml_file_loads_it():
+async def test_dropping_a_yaml_file_loads_it():
     editor = _editor()
     editor.new_dashboard("mine")
     editor._on_files_dropped([{"name": "board.yml", "content": YAML_FILE}])
+    # With a running loop the import is scheduled on it.
+    for _ in range(50):
+        if editor._tile_items:
+            break
+        await asyncio.sleep(0.01)
     assert [i["component_id"] for i in editor._tile_items] == ["T/open"]
+    editor.dispose()
 
 
 async def test_the_editor_downloads_yaml_with_restricted_stand_ins(store):  # noqa: F811
