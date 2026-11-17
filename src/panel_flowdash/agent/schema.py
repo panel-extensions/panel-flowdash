@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import typing as t
+from collections import defaultdict
 
 import param
 
@@ -18,7 +19,10 @@ SCHEMA_ID = (
     f"https://panel-extensions.github.io/panel-flowdash/schema/dashboard-{FORMAT_VERSION}.json"
 )
 
-_PORT_REF = r"^[A-Za-z_][A-Za-z0-9_-]*\..+$"
+# "<node>.<port>", or a bare "<node>" for the hidden end of a restricted node's connection.
+_PORT_REF = r"^[A-Za-z_][A-Za-z0-9_-]*(\.[^.]+)?$"
+# Keys starting with "x-" are accepted, and ignored, in the format's own mappings.
+_EXTENSIONS = {"^x-": {}}
 
 
 _JSON_TYPES = {"array", "boolean", "integer", "null", "number", "object", "string"}
@@ -143,6 +147,8 @@ def _tile_schema(names: dict[str, t.Any]) -> dict[str, t.Any]:
             "height": {"type": "number", "exclusiveMinimum": 0},
             "visible": {"type": "boolean"},
         },
+        "patternProperties": _EXTENSIONS,
+        "additionalProperties": False,
     }
 
 
@@ -168,6 +174,7 @@ def dashboard_schema(
     settings_class: type[DashboardSettings] = DashboardSettings,
     *,
     controls: t.Collection[str] = (),
+    aliases: t.Mapping[str, str] | None = None,
 ) -> dict[str, t.Any]:
     """Return the JSON Schema (draft 2020-12) of dashboards built from *specs*.
 
@@ -184,16 +191,22 @@ def dashboard_schema(
         The class of the dashboard settings.
     controls
         The ids of the components shown in the controls bar.
+    aliases
+        Former component ids mapped to current ones, accepted like the current ids.
     """
+    former = defaultdict(list)
+    for old, new in (aliases or {}).items():
+        former[new].append(old)
     node_variants = [
         {
             "type": "object",
             "required": ["component"],
             "properties": {
-                "component": {"const": component_id},
+                "component": {"enum": [component_id, *sorted(former[component_id])]},
                 "config": config_schema(spec),
                 "position": {"$ref": "#/$defs/position"},
             },
+            "patternProperties": _EXTENSIONS,
             "additionalProperties": False,
         }
         for component_id, spec in sorted(specs.items())
@@ -207,6 +220,7 @@ def dashboard_schema(
                 "component": {"const": "flowdash:restricted"},
                 "position": {"$ref": "#/$defs/position"},
             },
+            "patternProperties": _EXTENSIONS,
             "additionalProperties": False,
         }
     )
@@ -219,6 +233,7 @@ def dashboard_schema(
         "title": "FlowDash dashboard",
         "type": "object",
         "required": ["flowdash"],
+        "patternProperties": _EXTENSIONS,
         "additionalProperties": False,
         "properties": {
             "flowdash": {"const": FORMAT_VERSION},
@@ -232,6 +247,7 @@ def dashboard_schema(
             "edges": {"type": "array", "items": {"$ref": "#/$defs/edge"}},
             "layout": {
                 "type": "object",
+                "patternProperties": _EXTENSIONS,
                 "additionalProperties": False,
                 "properties": {
                     "tiles": {"type": "array", "items": tile},
@@ -255,6 +271,7 @@ def dashboard_schema(
             "edge": {
                 "type": "object",
                 "required": ["from", "to"],
+                "patternProperties": _EXTENSIONS,
                 "additionalProperties": False,
                 "properties": {
                     "from": {"type": "string", "pattern": _PORT_REF},
@@ -272,3 +289,6 @@ def dashboard_schema(
             for component_id, spec in sorted(specs.items())
         },
     }
+
+
+__all__ = ["SCHEMA_ID", "component_schema", "dashboard_schema"]

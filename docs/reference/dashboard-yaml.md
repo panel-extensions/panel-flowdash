@@ -6,9 +6,11 @@ content as the JSON export, keyed by readable node names instead of generated id
 and loading it goes through the same path as importing a downloaded file, so the
 same permission checks apply.
 
-This page specifies version 1 of the format. Every file starts with `flowdash: 1`.
-A later version that changes the meaning of an existing key gets a new number; keys
-added in a backwards compatible way do not.
+This page specifies version 1 of the format. Every file starts with `flowdash: 1`,
+the integer 1. Every change to the format, including a new optional key, comes with a
+new version number. A release reads the versions it knows and rejects a file with a
+later version, or with keys it does not know, saying that a newer FlowDash may have
+written it.
 
 ```yaml
 flowdash: 1
@@ -66,8 +68,19 @@ layout:
 | `edges` | no | The connections between ports, a list. |
 | `layout` | no | How the tiles are arranged on the dashboard. |
 
-Keys not listed here are rejected. The file never holds the dashboard's id, owner,
-sharing rules or revision: those belong to the dashboard it is loaded into.
+Keys not listed here are rejected, except keys starting with `x-`, which are accepted
+and ignored in every mapping of the format (the top level, nodes, edges, the layout
+and tiles, but not `config` or `settings`), for tools that annotate dashboard files.
+The file never holds the dashboard's id, owner, sharing rules or revision: those
+belong to the dashboard it is loaded into.
+
+## Values
+
+A file holds only what JSON can: strings, finite numbers, `true`/`false`, `null`,
+lists and mappings with string keys. Dates such as `2024-01-01` are read as strings.
+A file is refused if it is larger than 1,000,000 characters, nests deeper than 32
+levels, defines a key twice in one mapping, or uses anchors and aliases (`&`, `*`) or
+tags such as `!!set` and `!!binary`. Comments are ignored.
 
 ## Nodes
 
@@ -75,10 +88,12 @@ A node name is unique within the file, starts with a letter or underscore and
 contains only letters, digits, `_` and `-`. Node order matters: the controls bar
 shows control components (registered with `sidebar=True`) in node order.
 
-A node keeps its name for as long as it exists, and a name is never given to
-another node. Nodes placed in the editor are named after their component plus the
-random part of their id, e.g. `kpi_3fa2c1`; a node created from a file keeps the
-name the file gave it.
+A node's name comes from its id alone, so it is the same for everyone who reads the
+dashboard, does not change when its component is renamed and is never given to
+another node. Nodes placed in the editor have generated ids such as
+`Views__kpi_3fa2c1` and are named after their last part, `kpi_3fa2c1`; a node created
+from a file keeps the name the file gave it. New names may not contain `__`, which
+marks generated ids.
 
 | Key | Required | Meaning |
 | --- | --- | --- |
@@ -89,6 +104,9 @@ name the file gave it.
 A component the person exporting the file may not use is written as
 `component: flowdash:restricted` without its config. Loading the file back into the
 same dashboard keeps the stored component unchanged; anywhere else it is left out.
+Validated against the dashboard it is loaded into, a file must keep each restricted
+node as a stand-in with its connections: it cannot replace one with another component,
+leave one out, or add a stand-in for a node the dashboard does not have.
 
 ## Edges
 
@@ -119,7 +137,7 @@ feed takes no other edge.
 Each tile has a `node` naming its node, plus any of `width` (percent of the row,
 greater than 0 and at most 100), `height` (pixels) and `visible` (`false` hides the
 tile while keeping its component in the dataflow). Other keys are rejected, except
-ones starting with `x-`, which are kept for extensions. Nodes without a tile entry get
+`x-` keys, which are ignored. Nodes without a tile entry get
 their component's default size, after the listed tiles. Control components have no
 tile.
 

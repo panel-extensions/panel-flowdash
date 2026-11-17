@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import math
 import re
 import typing as t
 from collections import defaultdict
@@ -27,15 +28,22 @@ TOP_LEVEL_KEYS = ("flowdash", "title", "settings", "nodes", "edges", "layout")
 NODE_KEYS = ("component", "config", "position")
 EDGE_KEYS = ("from", "to", "transform")
 LAYOUT_KEYS = ("tiles", "reference_width", "breakpoints", "responsive")
-# Keys starting with "x-" are also accepted on tiles and kept, for extensions.
 TILE_KEYS = ("node", "width", "height", "visible")
+# Keys starting with this are accepted, and ignored, in every mapping of the format
+# except config and settings, for tools that annotate dashboard files.
+EXTENSION_PREFIX = "x-"
+
+# Limits on the text a dashboard is read from.
+MAX_SIZE = 1_000_000
+MAX_DEPTH = 32
 
 # The component a file names for a node the exporting user may not use.
 RESTRICTED_COMPONENT = "flowdash:restricted"
 
 NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
-# Instance ids the editor generates for placed components: "<type key>_<6 hex>".
-_GENERATED_ID = re.compile(r"^.+_(?P<suffix>[0-9a-f]{6})$")
+# Instance ids the editor generates for placed components: "<type key>_<6 hex>",
+# where the type key is the component id with "/" replaced by "__".
+_GENERATED_ID = re.compile(r"^.*__(?P<tail>[^_].*_[0-9a-f]{6})$")
 
 # Canvas spacing of the nodes that are laid out because the file gives no position.
 _COLUMN_SPACING = 360
@@ -73,39 +81,41 @@ def _hash(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:6]
 
 
-def _derived_name(item: dict) -> str:
-    instance_id = item["instance_id"]
-    component = str(item.get("component_id", "node")).rsplit("/", 1)[-1].split(":")[-1]
+def _own_name(instance_id: str) -> str:
+    """Return the name an instance id gives its node, before names are made unique."""
     generated = _GENERATED_ID.match(instance_id)
-    suffix = generated["suffix"] if generated else _hash(instance_id)
-    return f"{_slug(component)}_{suffix}"
+    if generated and NAME_PATTERN.match(generated["tail"]):
+        return generated["tail"]
+    if NAME_PATTERN.match(instance_id) and "__" not in instance_id:
+        return instance_id
+    return f"{_slug(instance_id)}_{_hash(instance_id)}"
 
 
 def node_names(items: t.Iterable[dict]) -> dict[str, str]:
     """Return a readable, unique name for each exported item, keyed by instance id.
 
-    An instance id that is already readable is its own name. Ids the editor
-    generates, like ``Views__kpi_3fa2c1``, are named after their component and
-    keep the random part of the id (``kpi_3fa2c1``), and other ids get a short
-    hash of themselves. A node's name therefore depends only on the node, so
-    it never changes and is never reused while other nodes come and go.
+    The name comes from the instance id alone, so it is the same for every
+    user, whatever the component is called now, and never changes. An id
+    that is already readable is its own name; an id the editor generated,
+    like ``Views__kpi_3fa2c1``, is named after its last part (``kpi_3fa2c1``);
+    any other id gets a short hash of itself. When two ids would get the same
+    name, the one that sorts later gets a hash of its id appended.
     """
-    items = list(items)
-    names: dict[str, str] = {}
-    readable = {
-        item["instance_id"]
-        for item in items
-        if NAME_PATTERN.match(item["instance_id"]) and not _GENERATED_ID.match(item["instance_id"])
-    }
-    for item in items:
-        instance_id = item["instance_id"]
-        if instance_id in readable:
-            names[instance_id] = instance_id
+    ids = sorted({item["instance_id"] for item in items})
+    wanted = {iid: _own_name(iid) for iid in ids}
+    # Ids that are their own name keep it, whatever sorts first.
+    names = {iid: name for iid, name in wanted.items() if name == iid}
+    taken = set(names.values())
+    for iid in ids:
+        if iid in names:
             continue
-        name = _derived_name(item)
-        if name in readable:
-            name = f"{name}_{_hash(instance_id)}"
-        names[instance_id] = name
+        name = wanted[iid]
+        while name in taken:
+            name = f"{name}_{_hash(iid + name)}"
+        names[iid] = name
+        taken.add(name)
+    if len(set(names.values())) != len(names):
+        raise AssertionError("Node names are not unique.")
     return names
 
 
@@ -129,13 +139,34 @@ def editor_restricted_edges(editor) -> list[dict]:
     ]
 
 
+def editor_restricted(editor) -> tuple[set[str], list[dict]]:
+    """Return the restricted nodes of an editor's canvas by name, and their connections as YAML edges.
+
+    Pass them as ``restricted_nodes`` and ``restricted_edges`` to
+    :func:`~panel_flowdash.agent.validate_dashboard`, so YAML meant for this
+    canvas is checked against what the canvas holds rather than what the text says.
+    """
+    data = editor.export_dashboard()
+    doc = dashboard_to_dict(data, editor_restricted_edges(editor))
+    nodes = doc.get("nodes") or {}
+    restricted = {
+        name for name, node in nodes.items() if node["component"] == RESTRICTED_COMPONENT
+    }
+    edges = [
+        {"from": e["from"], "to": e["to"]}
+        for e in doc.get("edges") or []
+        if "." not in e["from"] or "." not in e["to"]
+    ]
+    return restricted, edges
+
+
 def _tile(entry: dict, names: dict[str, str]) -> dict | None:
     instance_id = entry.get("instance_id")
     if instance_id not in names:
         return None
     tile = {"node": names[instance_id]}
     for key, value in entry.items():
-        if key in TILE_KEYS or str(key).startswith("x-"):
+        if key in TILE_KEYS:
             tile[key] = copy.deepcopy(value)
     return tile
 
@@ -176,11 +207,12 @@ def dashboard_to_dict(source: t.Any, restricted_edges: t.Iterable[dict] = ()) ->
     items = list(data.get("items") or [])
     names = node_names(items)
     doc: dict[str, t.Any] = {"flowdash": FORMAT_VERSION}
-    if data.get("title"):
+    if isinstance(data.get("title"), str):
         doc["title"] = data["title"]
     if data.get("settings"):
         doc["settings"] = copy.deepcopy(data["settings"])
     nodes = {}
+    assert len(set(names.values())) == len(items), "two items share an instance id"
     for item in items:
         node: dict[str, t.Any] = {"component": item["component_id"]}
         if item.get("config"):
@@ -235,10 +267,16 @@ def dashboard_to_dict(source: t.Any, restricted_edges: t.Iterable[dict] = ()) ->
 
 
 class _Dumper(yaml.SafeDumper):
-    """Writes block style with indented lists, but short lists of scalars such as positions inline."""
+    """Writes block style with indented lists, but short lists of scalars such as positions inline.
+
+    It never writes anchors and aliases, which the reader refuses.
+    """
 
     def increase_indent(self, flow=False, indentless=False):
         return super().increase_indent(flow, False)
+
+    def ignore_aliases(self, data):
+        return True
 
 
 def _represent_list(dumper, value):
@@ -246,8 +284,15 @@ def _represent_list(dumper, value):
     return dumper.represent_sequence("tag:yaml.org,2002:seq", value, flow_style=flow)
 
 
+# Characters YAML reads as line breaks; only a double-quoted string keeps them.
+_BREAKS = ("\x85", "\u2028", "\u2029")
+
+
 def _represent_str(dumper, value):
-    style = "|" if "\n" in value else None
+    if any(c in value for c in _BREAKS):
+        style = '"'
+    else:
+        style = "|" if "\n" in value else None
     return dumper.represent_scalar("tag:yaml.org,2002:str", value, style=style)
 
 
@@ -279,12 +324,103 @@ def dashboard_to_yaml(source: t.Any, restricted_edges: t.Iterable[dict] = ()) ->
     )
 
 
-def parse_yaml(text: str | bytes) -> dict:
-    """Parse YAML text into a dashboard document, checking only that it is one."""
+class _Loader(yaml.SafeLoader):
+    """A loader for JSON-compatible YAML.
+
+    It refuses anchors and aliases, nesting deeper than ``MAX_DEPTH``,
+    duplicate and non-string keys and every tag beyond strings, numbers,
+    booleans, null, lists and mappings, and reads dates as strings.
+    """
+
+    def __init__(self, stream):
+        super().__init__(stream)
+        self._depth = 0
+
+    def compose_node(self, parent, index):
+        event = self.peek_event()
+        if isinstance(event, yaml.AliasEvent) or getattr(event, "anchor", None) is not None:
+            raise _LoadError(
+                f"line {event.start_mark.line + 1}: anchors and aliases (& and *) are not supported."
+            )
+        self._depth += 1
+        if self._depth > MAX_DEPTH:
+            raise _LoadError(
+                f"line {event.start_mark.line + 1}: nested deeper than {MAX_DEPTH} levels."
+            )
+        try:
+            return super().compose_node(parent, index)
+        finally:
+            self._depth -= 1
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            if not isinstance(key, str):
+                raise _LoadError(
+                    f"line {key_node.start_mark.line + 1}: keys must be strings, got {key!r}."
+                )
+            if key in seen:
+                raise _LoadError(f"line {key_node.start_mark.line + 1}: {key!r} is defined twice.")
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
+class _LoadError(yaml.YAMLError):
+    pass
+
+
+def _refuse_tag(loader, node):
+    raise _LoadError(
+        f"line {node.start_mark.line + 1}: {node.tag!r} values are not supported; "
+        "use strings, numbers, true/false, null, lists and mappings."
+    )
+
+
+_Loader.yaml_implicit_resolvers = {
+    first: [(tag, regexp) for tag, regexp in resolvers if not tag.endswith(":timestamp")]
+    for first, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+}
+_Loader.yaml_constructors = {
+    tag: (
+        _refuse_tag
+        if tag is None
+        or tag.rsplit(":", 1)[-1] not in ("null", "bool", "int", "float", "str", "seq", "map")
+        else constructor
+    )
+    for tag, constructor in yaml.SafeLoader.yaml_constructors.items()
+}
+_Loader.yaml_constructors[None] = _refuse_tag
+
+
+def load_yaml(text: str | bytes) -> t.Any:
+    """Parse YAML text into JSON-compatible data, within the format's limits.
+
+    Raises
+    ------
+    DashboardYAMLError
+        If the text is larger than ``MAX_SIZE``, is not valid YAML, or uses
+        anything JSON cannot hold: anchors and aliases, tags such as sets or
+        binary, non-string or duplicate keys, or nesting deeper than
+        ``MAX_DEPTH``. Dates are read as strings.
+    """
+    if len(text) > MAX_SIZE:
+        raise DashboardYAMLError(
+            "document", f"Too large: {len(text):,} characters, at most {MAX_SIZE:,}."
+        )
     try:
-        doc = yaml.safe_load(text)
+        return yaml.load(text, Loader=_Loader)
+    except _LoadError as exc:
+        raise DashboardYAMLError("document", str(exc)) from exc
     except yaml.YAMLError as exc:
         raise DashboardYAMLError("document", f"Not valid YAML: {exc}") from exc
+    except RecursionError as exc:
+        raise DashboardYAMLError("document", "Nested too deeply.") from exc
+
+
+def parse_yaml(text: str | bytes) -> dict:
+    """Parse YAML text into a dashboard document, checking only that it is one, see :func:`load_yaml`."""
+    doc = load_yaml(text)
     if not isinstance(doc, dict) or "flowdash" not in doc:
         raise DashboardYAMLError(
             "document", "Not a FlowDash dashboard: the file must start with 'flowdash: 1'."
@@ -318,12 +454,31 @@ def _sequence(value, path: str) -> list:
 
 
 def _unknown_keys(value: dict, allowed: t.Sequence[str], path: str):
-    unknown = [k for k in value if k not in allowed]
+    unknown = [k for k in value if k not in allowed and not str(k).startswith(EXTENSION_PREFIX)]
     if unknown:
         _fail(
             path,
-            f"unknown key {', '.join(repr(k) for k in unknown)}; expected {', '.join(allowed)}.",
+            f"unknown key {', '.join(repr(k) for k in unknown)}; expected "
+            f"{', '.join(allowed)}. This file may have been written by a newer FlowDash.",
         )
+
+
+def _json_value(value: t.Any, path: str):
+    """Fail unless *value* is JSON: strings, finite numbers, booleans, null, lists and mappings."""
+    stack = [(value, path)]
+    while stack:
+        item, where = stack.pop()
+        if isinstance(item, dict):
+            for key, child in item.items():
+                if not isinstance(key, str):
+                    _fail(where, f"keys must be strings, got {key!r}.")
+                stack.append((child, f"{where}.{key}"))
+        elif isinstance(item, list):
+            stack.extend((child, f"{where}[{i}]") for i, child in enumerate(item))
+        elif isinstance(item, float) and not math.isfinite(item):
+            _fail(where, f"must be a finite number, got {item!r}.")
+        elif item is not None and not isinstance(item, (str, int, float, bool)):
+            _fail(where, f"must be JSON data, got a {type(item).__name__}.")
 
 
 def split_port(ref: t.Any, path: str) -> tuple[str, str]:
@@ -360,21 +515,28 @@ def _auto_positions(names: list[str], edges: list[tuple[str, str]]) -> dict[str,
         if source != target:
             upstream[target].add(source)
     depth: dict[str, int] = {}
-
-    def depth_of(name: str, seen: frozenset = frozenset()) -> int:
-        if name in depth:
-            return depth[name]
-        if name in seen:
-            return 0
-        parents = upstream.get(name, ())
-        value = 1 + max((depth_of(p, seen | {name}) for p in parents), default=-1)
-        depth[name] = value
-        return value
-
+    for start in names:
+        # Iterative depth-first walk, so long chains cannot overflow the stack.
+        stack, visiting = [start], {start}
+        while stack:
+            name = stack[-1]
+            if name in depth:
+                stack.pop()
+                visiting.discard(name)
+                continue
+            pending = [p for p in upstream.get(name, ()) if p not in depth and p not in visiting]
+            if pending:
+                stack.extend(pending)
+                visiting.update(pending)
+                continue
+            parents = [depth[p] for p in upstream.get(name, ()) if p in depth]
+            depth[name] = 1 + max(parents, default=-1)
+            stack.pop()
+            visiting.discard(name)
     rows: dict[int, int] = defaultdict(int)
     positions = {}
     for name in names:
-        column = depth_of(name)
+        column = depth[name]
         positions[name] = [column * _COLUMN_SPACING, rows[column] * _ROW_SPACING]
         rows[column] += 1
     return positions
@@ -393,10 +555,8 @@ def _layout_entries(tiles: list, path: str, ids: dict[str, str]) -> list[dict]:
         name = tile.get("node")
         if not isinstance(name, str) or name not in ids:
             _fail(f"{tile_path}.node", f"names no node: {name!r}.")
-        _unknown_keys(
-            {k: v for k, v in tile.items() if not str(k).startswith("x-")}, TILE_KEYS, tile_path
-        )
-        entry = {k: copy.deepcopy(v) for k, v in tile.items() if k != "node"}
+        _unknown_keys(tile, TILE_KEYS, tile_path)
+        entry = {k: copy.deepcopy(v) for k, v in tile.items() if k in TILE_KEYS and k != "node"}
         for key in ("width", "height"):
             if key in entry and entry[key] is not None:
                 _number(entry[key], f"{tile_path}.{key}")
@@ -426,14 +586,18 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
     doc = _mapping(doc, "document")
     _unknown_keys(doc, TOP_LEVEL_KEYS, "document")
     version = doc.get("flowdash")
-    if version != FORMAT_VERSION:
-        _fail("flowdash", f"unsupported format version {version!r}; this release reads 1.")
+    if type(version) is not int or version != FORMAT_VERSION:
+        newer = type(version) is int and version > FORMAT_VERSION
+        _fail(
+            "flowdash",
+            f"unsupported format version {version!r}; this release reads {FORMAT_VERSION}."
+            + (" The file was written by a newer FlowDash." if newer else ""),
+        )
     title = doc.get("title")
     if title is not None and not isinstance(title, str):
         _fail("title", f"must be a string, got {title!r}.")
     settings = _mapping(doc.get("settings"), "settings")
-    if not all(isinstance(k, str) for k in settings):
-        _fail("settings", "keys must be setting names.")
+    _json_value(settings, "settings")
 
     base_items = []
     if base is not None:
@@ -453,6 +617,11 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
                 f"nodes.{name}",
                 "node names start with a letter or underscore and contain only "
                 "letters, digits, '_' and '-'.",
+            )
+        if name not in known and "__" in name:
+            _fail(
+                f"nodes.{name}",
+                "new node names may not contain '__', which marks ids the editor generates.",
             )
         instance_id = known.get(name, name)
         while instance_id in used:
@@ -507,6 +676,7 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
         if not isinstance(component, str) or not component:
             _fail(f"{path}.component", "is required and names a component, e.g. 'Views/kpi'.")
         config = _mapping(node.get("config"), f"{path}.config")
+        _json_value(config, f"{path}.config")
         position = node.get("position")
         if position is None:
             position = auto[name]
@@ -527,8 +697,11 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
     layout = _mapping(doc.get("layout"), "layout")
     _unknown_keys(layout, LAYOUT_KEYS, "layout")
     reference_width = layout.get("reference_width")
-    if reference_width is not None:
-        _number(reference_width, "layout.reference_width")
+    if reference_width is not None and _number(reference_width, "layout.reference_width") <= 0:
+        _fail(
+            "layout.reference_width",
+            f"must be a positive number of pixels, got {reference_width}.",
+        )
     breakpoints = _sequence(layout.get("breakpoints"), "layout.breakpoints")
     for i, value in enumerate(breakpoints):
         _number(value, f"layout.breakpoints[{i}]")
@@ -538,7 +711,7 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
     }
     return {
         "version": _MODEL_VERSION,
-        "title": title or "Untitled",
+        "title": "Untitled" if title is None else title,
         "items": items,
         "edges": edges,
         "tile_layout": _layout_entries(layout.get("tiles"), "layout.tiles", ids),
@@ -570,3 +743,6 @@ def dashboard_from_yaml(text: str | bytes, *, base: DashboardModel | dict | None
         offending key.
     """
     return dashboard_from_dict(parse_yaml(text), base=base)
+
+
+__all__ = ["FORMAT_VERSION", "DashboardYAMLError", "dashboard_from_yaml", "dashboard_to_yaml"]

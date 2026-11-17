@@ -71,7 +71,11 @@ def _check_value(p: param.Parameter, value) -> str | None:
 
 
 class _Checker:
-    def __init__(self, specs, settings_class, aliases, singletons):
+    def __init__(
+        self, specs, settings_class, aliases, singletons, restricted_nodes, restricted_edges
+    ):
+        self.restricted_nodes = None if restricted_nodes is None else set(restricted_nodes)
+        self.restricted_edges = None if restricted_edges is None else list(restricted_edges)
         self.specs = specs
         self.settings_class = settings_class
         self.aliases = dict(aliases or {})
@@ -158,12 +162,64 @@ class _Checker:
                 if reason:
                     self.error(f"{path}.config.{key}", reason)
 
+    def check_restricted(self, doc: dict):
+        """Check the document keeps the canvas's restricted nodes and their connections."""
+        if self.restricted_nodes is None:
+            return
+        nodes = doc.get("nodes") or {}
+        for name in sorted(self.restricted_nodes):
+            node = nodes.get(name)
+            if node is None:
+                self.error(
+                    f"nodes.{name}",
+                    f"'{name}' is a restricted node and must stay in the YAML as "
+                    f"{{component: {RESTRICTED}}}; use remove_node to remove it.",
+                )
+            elif node.get("component") != RESTRICTED:
+                self.error(
+                    f"nodes.{name}.component",
+                    f"'{name}' is a restricted node, whose stored component and config you "
+                    f"cannot see; it cannot be replaced. Keep 'component: {RESTRICTED}'.",
+                )
+        for name, node in nodes.items():
+            if node.get("component") == RESTRICTED and name not in self.restricted_nodes:
+                self.error(
+                    f"nodes.{name}.component",
+                    f"'{name}' names no restricted node of this dashboard, so it would be "
+                    f"dropped; '{RESTRICTED}' only stands in for stored nodes.",
+                )
+        bare = [
+            (e["from"], e["to"])
+            for e in doc.get("edges") or []
+            if isinstance(e, dict)
+            and ("." not in str(e.get("from")) or "." not in str(e.get("to")))
+        ]
+        for edge in self.restricted_edges or ():
+            if (edge["from"], edge["to"]) not in bare:
+                self.error(
+                    "edges",
+                    f"keep {{from: {edge['from']}, to: {edge['to']}}}: connections of "
+                    "restricted nodes cannot be removed or changed.",
+                )
+        stored = {(e["from"], e["to"]) for e in self.restricted_edges or ()}
+        for pair in bare:
+            if pair not in stored:
+                self.error(
+                    "edges",
+                    f"{{from: {pair[0]}, to: {pair[1]}}} is not a stored connection of a "
+                    "restricted node; those can be kept but not added or moved.",
+                )
+
     def check_edges(self, doc: dict):
         nodes = doc.get("nodes") or {}
         components = {name: node["component"] for name, node in nodes.items()}
         incoming = defaultdict(list)
         # Inputs fed by a restricted node, through an edge whose source port is hidden.
         hidden: dict[tuple[str, str], str] = {}
+        for edge in self.restricted_edges or ():
+            target, _, port = edge["to"].partition(".")
+            if port and target in components:
+                hidden[(target, port)] = f"{{from: {edge['from']}, to: {edge['to']}}}"
         seen = set()
         graph = defaultdict(set)
         for i, edge in enumerate(doc.get("edges") or []):
@@ -189,7 +245,7 @@ class _Checker:
             if restricted:
                 # A stored connection with a hidden port: the input it feeds is taken.
                 graph[source].add(target)
-                if target_port is not None:
+                if target_port is not None and self.restricted_edges is None:
                     target_spec = self.spec_for(components[target])
                     port = target_spec.resolve_name(target_port) if target_spec else target_port
                     hidden[(target, port)] = path
@@ -290,15 +346,22 @@ class _Checker:
 
     def check_cycles(self, graph: dict[str, set[str]]):
         state: dict[str, int] = {}
-        stack: list[str] = []
         reported = set()
-
-        def visit(node: str):
-            state[node] = 1
-            stack.append(node)
-            for nxt in sorted(graph.get(node, ())):
+        for root in sorted(graph):
+            if root in state:
+                continue
+            # Iterative depth-first search, so long chains cannot overflow the stack.
+            path: list[str] = [root]
+            branches = [iter(sorted(graph.get(root, ())))]
+            state[root] = 1
+            while branches:
+                nxt = next(branches[-1], None)
+                if nxt is None:
+                    state[path.pop()] = 2
+                    branches.pop()
+                    continue
                 if state.get(nxt) == 1:
-                    cycle = [*stack[stack.index(nxt) :], nxt]
+                    cycle = [*path[path.index(nxt) :], nxt]
                     key = frozenset(cycle)
                     if key not in reported:
                         reported.add(key)
@@ -308,13 +371,9 @@ class _Checker:
                             "flow one way; remove one of these edges.",
                         )
                 elif nxt not in state:
-                    visit(nxt)
-            stack.pop()
-            state[node] = 2
-
-        for node in sorted(graph):
-            if node not in state:
-                visit(node)
+                    state[nxt] = 1
+                    path.append(nxt)
+                    branches.append(iter(sorted(graph.get(nxt, ()))))
 
     def check_layout(self, doc: dict, controls: t.Collection[str]):
         layout = doc.get("layout") or {}
@@ -371,6 +430,8 @@ def validate_dashboard(
     aliases: t.Mapping[str, str] | None = None,
     controls: t.Collection[str] = (),
     singletons: t.Collection[str] = (),
+    restricted_nodes: t.Collection[str] | None = None,
+    restricted_edges: t.Collection[dict] | None = None,
 ) -> list[Issue]:
     """Check a dashboard in the YAML format and return the problems found.
 
@@ -397,6 +458,14 @@ def validate_dashboard(
         The ids of the components shown in the controls bar rather than as tiles.
     singletons
         The ids of the components that can be placed once per dashboard.
+    restricted_nodes, restricted_edges
+        The restricted nodes of the dashboard the document will be loaded
+        into, by name, and their connections, as the edges
+        :func:`~panel_flowdash.agent.dashboard_to_yaml` writes for them
+        (``{"from": "secret", "to": "table.data"}``). With them the document
+        must keep both unchanged, and the inputs they feed count as taken
+        whatever the document says. Without them, the document's own bare
+        edges are trusted.
 
     Returns
     -------
@@ -404,7 +473,9 @@ def validate_dashboard(
         Empty when the dashboard is valid. Only issues with severity
         ``"error"`` stop it from loading as written.
     """
-    checker = _Checker(specs, settings_class, aliases, singletons)
+    checker = _Checker(
+        specs, settings_class, aliases, singletons, restricted_nodes, restricted_edges
+    )
     try:
         doc = parse_yaml(data) if isinstance(data, (str, bytes)) else data
         if not is_dashboard_yaml(doc):
@@ -416,6 +487,10 @@ def validate_dashboard(
         return [Issue(exc.path, exc.reason)]
     checker.check_settings(doc.get("settings") or {})
     checker.check_nodes(doc.get("nodes") or {})
+    checker.check_restricted(doc)
     checker.check_edges(doc)
     checker.check_layout(doc, set(controls))
     return checker.issues
+
+
+__all__ = ["Issue", "validate_dashboard"]

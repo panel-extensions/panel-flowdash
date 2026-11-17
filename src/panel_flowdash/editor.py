@@ -3623,6 +3623,8 @@ class FlowDash(Viewer):
         if isinstance(data, (str, bytes)):
             try:
                 data = json.loads(data)
+            except RecursionError as exc:
+                raise ValueError("Not a dashboard file: nested too deeply.") from exc
             except (json.JSONDecodeError, UnicodeDecodeError) as exc:
                 text = data.decode("utf-8", "replace") if isinstance(data, bytes) else data
                 if text.lstrip().startswith(("{", "[")):
