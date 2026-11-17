@@ -6,7 +6,7 @@ import param
 
 from panel_flowdash import register
 
-from ._common import heading, message, setting, vega
+from ._common import has_rows, heading, is_empty, message, setting, vega
 
 
 def manufacturer_share(df, top_n, unit):
@@ -45,11 +45,11 @@ class app(pn.viewable.Viewer):
         self._unit = setting("capacity_unit", "GW")
         self._scheme = setting("color_scheme", "teals")
 
-    def _chart(self, df, top_n, unit, scheme):
-        if df is None or df.empty:
-            return message("No turbines to chart.")
+    def _spec(self, df, top_n, unit, scheme):
+        if is_empty(df):
+            return None
         frame = manufacturer_share(df, top_n, unit)
-        spec = {
+        return {
             "data": {"values": frame.to_dict(orient="records")},
             "mark": {"type": "bar", "cornerRadiusEnd": 2},
             "encoding": {
@@ -68,19 +68,21 @@ class app(pn.viewable.Viewer):
                 ],
             },
         }
-        return vega(spec)
 
     def _caption(self, df, unit):
-        if df is None or df.empty:
-            return heading("Manufacturers")
+        if is_empty(df):
+            return ""
         leader = manufacturer_share(df, 1, unit).iloc[0]
-        return heading(
-            "Manufacturers", f"{leader['manufacturer']} built {leader['share']:.0%} of capacity"
-        )
+        return f"{leader['manufacturer']} built {leader['share']:.0%} of capacity"
 
     def __panel__(self):
+        turbines = self.param.turbines
         return pn.Column(
-            pn.bind(self._caption, self.param.turbines, self._unit),
-            pn.bind(self._chart, self.param.turbines, self.param.top_n, self._unit, self._scheme),
+            heading("Manufacturers", pn.bind(self._caption, turbines, self._unit)),
+            vega(
+                pn.bind(self._spec, turbines, self.param.top_n, self._unit, self._scheme),
+                visible=pn.bind(has_rows, turbines),
+            ),
+            message("No turbines to chart.", visible=pn.bind(is_empty, turbines)),
             sizing_mode="stretch_both",
         )

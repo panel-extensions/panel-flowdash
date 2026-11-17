@@ -61,24 +61,38 @@ class app(pn.viewable.Viewer):
             raise QualityGateError("Selection failed the quality gate: " + "; ".join(failed))
         return self.turbines
 
-    def _checks(self, turbines, min_turbines, max_missing):
-        if turbines is None:
-            return pn.pane.Markdown("Waiting for turbines", margin=(0, 10))
-        rows = [
-            pmui.Typography(
-                f"{'✓' if ok else '✗'}  {name}",
-                variant="body2",
-                color="success" if ok else "error",
-                margin=(0, 10),
-            )
-            for name, ok in check(turbines, min_turbines, max_missing)
-        ]
-        return pn.Column(*rows, margin=0)
+    # The (description, passed) pair of each check, None until turbines arrive.
+    _results = param.List(default=None, allow_None=True)
+
+    @param.depends("turbines", "min_turbines", "max_missing", watch=True, on_init=True)
+    def _run_checks(self):
+        if self.turbines is None:
+            self._results = None
+        else:
+            self._results = check(self.turbines, self.min_turbines, self.max_missing)
 
     def __panel__(self):
+        results = self.param._results
+
+        def line(index):
+            # One line per check, updated in place as the selection changes.
+            return pmui.Typography(
+                pn.bind(lambda r: r and f"{'✓' if r[index][1] else '✗'}  {r[index][0]}", results),
+                color=pn.bind(lambda r: "success" if r and r[index][1] else "error", results),
+                variant="body2",
+                margin=(0, 10),
+            )
+
         return pn.Column(
             pmui.Typography("Quality checks", variant="subtitle2", margin=(4, 10, 0, 10)),
-            pn.bind(
-                self._checks, self.param.turbines, self.param.min_turbines, self.param.max_missing
+            pn.pane.Markdown(
+                "Waiting for turbines",
+                margin=(0, 10),
+                visible=pn.bind(lambda r: r is None, results),
+            ),
+            pn.Column(
+                *(line(index) for index in range(1 + len(CHECKED_FIELDS))),
+                margin=0,
+                visible=pn.bind(lambda r: r is not None, results),
             ),
         )

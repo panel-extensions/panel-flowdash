@@ -6,7 +6,7 @@ import param
 
 from panel_flowdash import register
 
-from ._common import heading, message
+from ._common import has_rows, heading, is_empty, message
 
 COLOR_COLUMNS = {"year": "p_year", "capacity": "t_cap"}
 
@@ -74,17 +74,17 @@ class app(pn.viewable.Viewer):
         )[["xlong", "ylat", "r", "g", "b", "p_name", "t_manu", "p_year", "t_cap"]]
 
     @param.depends("turbines", "color_by", "basemap", "max_points")
-    def _map(self):
+    def _spec(self):
         df = self.turbines
-        if df is None or df.empty:
-            return message("No turbines to show.")
+        if is_empty(df):
+            return None
         points = self._points(df)
         # Frame the middle 98% of the points, so a few outliers (Alaska, Hawaii,
         # Guam) do not zoom a single state's map out to the whole Pacific.
         lon = points["xlong"].quantile([0.01, 0.99])
         lat = points["ylat"].quantile([0.01, 0.99])
         span = max(lon.iat[1] - lon.iat[0], (lat.iat[1] - lat.iat[0]) * 1.6, 0.5)
-        spec = {
+        return {
             "initialViewState": {
                 "longitude": float(lon.mean()),
                 "latitude": float(lat.mean()),
@@ -105,25 +105,26 @@ class app(pn.viewable.Viewer):
             ],
             "mapStyle": BASEMAPS[self.basemap],
         }
-        return pn.pane.DeckGL(
-            spec,
-            tooltips={"html": "<b>{p_name}</b><br>{t_manu}, {t_cap} kW<br>Commissioned {p_year}"},
-            sizing_mode="stretch_both",
-            min_height=240,
-            margin=(0, 10, 10, 10),
-        )
 
     def _caption(self, turbines, color_by):
         if turbines is None:
-            return heading("Turbine locations")
-        return heading(
-            "Turbine locations",
-            f"{len(turbines):,} turbines, coloured by {color_by} from purple (lowest) to yellow (highest)",
-        )
+            return ""
+        return f"{len(turbines):,} turbines, coloured by {color_by} from purple (lowest) to yellow (highest)"
 
     def __panel__(self):
+        turbines = self.param.turbines
         return pn.Column(
-            pn.bind(self._caption, self.param.turbines, self.param.color_by),
-            self._map,
+            heading("Turbine locations", pn.bind(self._caption, turbines, self.param.color_by)),
+            pn.pane.DeckGL(
+                self._spec,
+                tooltips={
+                    "html": "<b>{p_name}</b><br>{t_manu}, {t_cap} kW<br>Commissioned {p_year}"
+                },
+                sizing_mode="stretch_both",
+                min_height=240,
+                margin=(0, 10, 10, 10),
+                visible=pn.bind(has_rows, turbines),
+            ),
+            message("No turbines to show.", visible=pn.bind(is_empty, turbines)),
             sizing_mode="stretch_both",
         )

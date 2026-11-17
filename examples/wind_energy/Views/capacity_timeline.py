@@ -5,7 +5,7 @@ import param
 
 from panel_flowdash import register
 
-from ._common import heading, message, setting, vega
+from ._common import has_rows, heading, is_empty, message, setting, vega
 
 
 def yearly_capacity(df, unit):
@@ -40,9 +40,9 @@ class app(pn.viewable.Viewer):
         self._unit = setting("capacity_unit", "GW")
         self._scheme = setting("color_scheme", "teals")
 
-    def _chart(self, df, cumulative, unit, scheme):
-        if df is None or df.empty:
-            return message("No turbines to chart.")
+    def _spec(self, df, cumulative, unit, scheme):
+        if is_empty(df):
+            return None
         data = yearly_capacity(df, unit).to_dict(orient="records")
         x = {
             "field": "year",
@@ -87,23 +87,23 @@ class app(pn.viewable.Viewer):
         spec = {"data": {"values": data}, "layer": layers}
         if cumulative:
             spec["resolve"] = {"scale": {"y": "independent"}}
-        return vega(spec)
+        return spec
 
     def _caption(self, df, unit):
-        if df is None or df.empty:
-            return heading("Capacity over time")
+        if is_empty(df):
+            return ""
         frame = yearly_capacity(df, unit)
         peak = frame.loc[frame["added"].idxmax()]
-        return heading(
-            "Capacity over time",
-            f"{frame['total'].iat[-1]:,.1f} {unit} in total, peak year {int(peak['year'])}",
-        )
+        return f"{frame['total'].iat[-1]:,.1f} {unit} in total, peak year {int(peak['year'])}"
 
     def __panel__(self):
+        turbines = self.param.turbines
         return pn.Column(
-            pn.bind(self._caption, self.param.turbines, self._unit),
-            pn.bind(
-                self._chart, self.param.turbines, self.param.cumulative, self._unit, self._scheme
+            heading("Capacity over time", pn.bind(self._caption, turbines, self._unit)),
+            vega(
+                pn.bind(self._spec, turbines, self.param.cumulative, self._unit, self._scheme),
+                visible=pn.bind(has_rows, turbines),
             ),
+            message("No turbines to chart.", visible=pn.bind(is_empty, turbines)),
             sizing_mode="stretch_both",
         )

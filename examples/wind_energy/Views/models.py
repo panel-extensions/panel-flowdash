@@ -5,7 +5,7 @@ import param
 
 from panel_flowdash import register
 
-from ._common import heading, message
+from ._common import has_rows, heading, is_empty, message
 
 
 def model_table(df, top_n):
@@ -53,28 +53,32 @@ class app(pn.viewable.Viewer):
     top_n = param.Integer(default=15, bounds=(5, 50), doc="Number of models listed.")
 
     @param.depends("turbines", "top_n")
-    def _table(self):
-        df = self.turbines
-        if df is None or df.empty:
-            return message("No turbines to list.")
-        table = model_table(df, self.top_n)
-        return pn.Column(
-            heading(
-                "Turbine models",
-                f"Top {len(table)} of {df['t_model'].nunique():,} models; median kW, rotor and hub in metres",
-            ),
-            pn.widgets.Tabulator(
-                table,
-                formatters={"Since": {"type": "plaintext"}},
-                disabled=True,
-                show_index=False,
-                layout="fit_columns",
-                theme="simple",
-                sizing_mode="stretch_both",
-                margin=(0, 10, 10, 10),
-            ),
-            sizing_mode="stretch_both",
-        )
+    def _models(self):
+        if is_empty(self.turbines):
+            return None
+        return model_table(self.turbines, self.top_n)
+
+    def _caption(self, table):
+        if table is None:
+            return ""
+        models = self.turbines["t_model"].nunique()
+        return f"Top {len(table)} of {models:,} models; median kW, rotor and hub in metres"
 
     def __panel__(self):
-        return pn.panel(self._table, sizing_mode="stretch_both")
+        table = pn.widgets.Tabulator(
+            self._models,
+            formatters={"Since": {"type": "plaintext"}},
+            disabled=True,
+            show_index=False,
+            layout="fit_columns",
+            theme="simple",
+            sizing_mode="stretch_both",
+            margin=(0, 10, 10, 10),
+            visible=pn.bind(has_rows, self.param.turbines),
+        )
+        return pn.Column(
+            heading("Turbine models", pn.bind(self._caption, table.param.value)),
+            table,
+            message("No turbines to list.", visible=pn.bind(is_empty, self.param.turbines)),
+            sizing_mode="stretch_both",
+        )

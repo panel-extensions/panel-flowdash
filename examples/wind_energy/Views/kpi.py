@@ -64,28 +64,32 @@ class app(pn.viewable.Viewer):
         super().__init__(**params)
         self._unit = setting("capacity_unit", "GW")
 
-    def _render(self, df, metric, label, unit):
+    def _reading(self, df, metric, unit):
         if df is None:
-            value, caption = "…", "waiting for data"
-        else:
-            value, caption = compute(df, metric, unit)
+            return "…", "waiting for data"
+        return compute(df, metric, unit)
+
+    def __panel__(self):
+        metric = self.param.metric
+        reading = (self.param.turbines, metric, self._unit)
         return pn.Column(
             pmui.Typography(
-                label or METRICS[metric],
+                pn.bind(lambda label, metric: label or METRICS[metric], self.param.label, metric),
                 variant="overline",
                 sx={"color": "text.secondary", "lineHeight": 1.6},
                 margin=(6, 12, 0, 12),
             ),
-            pmui.Typography(value, variant="h4", sx={"fontWeight": 500}, margin=(0, 12)),
             pmui.Typography(
-                caption, variant="caption", sx={"color": "text.secondary"}, margin=(0, 12)
+                pn.bind(lambda *args: self._reading(*args)[0], *reading),
+                variant="h4",
+                sx={"fontWeight": 500},
+                margin=(0, 12),
+            ),
+            pmui.Typography(
+                pn.bind(lambda *args: self._reading(*args)[1], *reading),
+                variant="caption",
+                sx={"color": "text.secondary"},
+                margin=(0, 12),
             ),
             margin=0,
-        )
-
-    def __panel__(self):
-        return pn.panel(
-            pn.bind(
-                self._render, self.param.turbines, self.param.metric, self.param.label, self._unit
-            )
         )

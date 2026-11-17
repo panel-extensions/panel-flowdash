@@ -31,20 +31,19 @@ class app(pn.viewable.Viewer):
         buffer.seek(0)
         return buffer
 
-    @param.depends("turbines")
-    def _view(self):
-        if self.turbines is None:
-            return heading("Raw data export", "Waiting for turbines")
+    def _caption(self, turbines):
+        return "Waiting for turbines" if turbines is None else f"{len(turbines):,} records"
+
+    def __panel__(self):
+        turbines = self.param.turbines
         return pn.Column(
-            heading("Raw data export", f"{len(self.turbines):,} records"),
+            heading("Raw data export", pn.bind(self._caption, turbines)),
             pmui.FileDownload(
                 callback=self._csv,
                 filename="turbines.csv",
                 label="Download CSV",
                 variant="outlined",
                 margin=(4, 10),
+                visible=pn.bind(lambda df: df is not None, turbines),
             ),
         )
-
-    def __panel__(self):
-        return pn.panel(self._view)

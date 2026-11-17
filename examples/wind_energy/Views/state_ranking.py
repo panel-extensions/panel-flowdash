@@ -5,7 +5,7 @@ import param
 
 from panel_flowdash import register
 
-from ._common import heading, message, vega
+from ._common import has_rows, heading, is_empty, message, vega
 
 METRICS = {
     "capacity_mw": "Capacity (MW)",
@@ -35,19 +35,19 @@ class app(pn.viewable.Viewer):
 
     top_n = param.Integer(default=15, bounds=(5, 52), doc="Number of states shown.")
 
-    @param.depends("by_state", "metric", "top_n")
-    def _chart(self):
-        df = self.by_state
-        if df is None or df.empty:
-            return message("No states to rank.")
-        top = df.sort_values(self.metric, ascending=False).head(self.top_n)
-        title = METRICS[self.metric]
-        spec = {
-            "data": {"values": top.to_dict(orient="records")},
+    def _top(self, df, metric, top_n):
+        return df.sort_values(metric, ascending=False).head(top_n)
+
+    def _spec(self, df, metric, top_n):
+        if is_empty(df):
+            return None
+        title = METRICS[metric]
+        return {
+            "data": {"values": self._top(df, metric, top_n).to_dict(orient="records")},
             "mark": {"type": "bar", "cornerRadiusEnd": 2},
             "encoding": {
                 "y": {"field": "name", "type": "nominal", "sort": "-x", "title": None},
-                "x": {"field": self.metric, "type": "quantitative", "title": title},
+                "x": {"field": metric, "type": "quantitative", "title": title},
                 "color": {
                     "field": "region",
                     "type": "nominal",
@@ -64,12 +64,18 @@ class app(pn.viewable.Viewer):
                 ],
             },
         }
-        leader = top.iloc[0]
-        return pn.Column(
-            heading("State ranking", f"{leader['name']} leads on {title.lower()}"),
-            vega(spec),
-            sizing_mode="stretch_both",
-        )
+
+    def _caption(self, df, metric, top_n):
+        if is_empty(df):
+            return ""
+        leader = self._top(df, metric, top_n).iloc[0]
+        return f"{leader['name']} leads on {METRICS[metric].lower()}"
 
     def __panel__(self):
-        return pn.panel(self._chart, sizing_mode="stretch_both")
+        ranking = (self.param.by_state, self.param.metric, self.param.top_n)
+        return pn.Column(
+            heading("State ranking", pn.bind(self._caption, *ranking)),
+            vega(pn.bind(self._spec, *ranking), visible=pn.bind(has_rows, self.param.by_state)),
+            message("No states to rank.", visible=pn.bind(is_empty, self.param.by_state)),
+            sizing_mode="stretch_both",
+        )
