@@ -1,5 +1,8 @@
 """The dashboard operations API: editing through the editor, previews and the user's rights."""
 
+import gc
+import weakref
+
 import param
 import pytest
 import yaml
@@ -208,6 +211,19 @@ class TestPreview:
         assert report["status"] == "ok"
         assert report["nodes"]["d"]["outputs"]["doubled"]["value"] == 42
         assert ops.editor._tile_items == []
+
+    def test_previewing_yaml_keeps_the_sessions_editor(self, ops):
+        from bokeh.document import Document
+        from panel.io.state import set_curdoc
+
+        from panel_flowdash.editor import _SESSION_EDITORS, current_dashboard
+
+        doc = Document()
+        with set_curdoc(doc):
+            _SESSION_EDITORS[doc] = weakref.ref(ops.editor)
+            ops.preview("flowdash: 1\nnodes:\n  n: {component: T/number}\n")
+            gc.collect()
+            assert current_dashboard() is ops.editor
 
     def test_dataframe_samples_show_shape_columns_and_head(self):
         pd = pytest.importorskip("pandas")

@@ -11,8 +11,15 @@ from __future__ import annotations
 import copy
 import typing as t
 
+import panel as pn
+
 from panel_flowdash.dashboard_store import DashboardModel
-from panel_flowdash.editor import FlowDash, _ReadOnlyEditorError, export_model
+from panel_flowdash.editor import (
+    _SESSION_EDITORS,
+    FlowDash,
+    _ReadOnlyEditorError,
+    export_model,
+)
 from panel_flowdash.ui import tile_layout
 
 from .preview import preview_editor
@@ -292,6 +299,8 @@ class DashboardOps:
     def _scratch_editor(self) -> FlowDash:
         """Build an editor with the same components and rights, which nobody sees and nothing saves."""
         editor = self.editor
+        doc = pn.state.curdoc
+        session_editor = _SESSION_EDITORS.get(doc) if doc is not None else None
         scratch = type(editor)(
             components=editor._registry,
             include_builtin_components=False,
@@ -303,6 +312,9 @@ class DashboardOps:
             notifications=False,
             user=editor.user,
         )
+        # The session's components keep finding the editor on screen, not this one.
+        if session_editor is not None:
+            _SESSION_EDITORS[doc] = session_editor
         if editor.dashboard is not None:
             scratch.dashboard = copy.deepcopy(editor.dashboard)
         return scratch
