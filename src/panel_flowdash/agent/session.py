@@ -65,12 +65,13 @@ class AgentSession:
     def __init__(self, app: FlowDashApp, agent: Agent):
         self.app = app
         self.ops = LiveDashboardOps(app)
-        self.actions = palette_actions(app)
+        deps = FlowDashDeps(self.ops)
+        self.actions = palette_actions(app, deps=deps)
         self.runner = _SessionRunner(
             self,
             agent,
             RunState(),
-            deps=FlowDashDeps(self.ops),
+            deps=deps,
             approval_policy=approval_policy(
                 sensitive_components=app.agent_sensitive_components, ops=self.ops
             ),
@@ -149,7 +150,10 @@ class AgentSession:
 
 
 class _SessionRunner(AgentRunner):
-    """Publishes the user's own edits before each request, so versions stay truthful."""
+    """Publishes the user's own edits before each request, so versions stay truthful.
+
+    Each request is pinned to the dashboard open when the user sent it.
+    """
 
     def __init__(self, session: AgentSession, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -157,4 +161,8 @@ class _SessionRunner(AgentRunner):
 
     async def run(self, prompt=None, **kwargs):
         self._session.publish_user_edits()
-        return await super().run(prompt, **kwargs)
+        self.deps.start_request()
+        try:
+            return await super().run(prompt, **kwargs)
+        finally:
+            self.deps.end_request()

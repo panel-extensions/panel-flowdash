@@ -188,3 +188,25 @@ def test_the_missing_model_error_says_how_to_set_one():
 async def test_agent_true_without_a_model_explains(store, monkeypatch):
     with pytest.raises(ValueError, match="FLOWDASH_AGENT_MODEL"):
         _app(store, monkeypatch, agent=True)
+
+
+async def test_a_request_keeps_to_the_dashboard_it_was_sent_on(store, monkeypatch):
+    first = store.create_dashboard("alice", "First")
+    second = store.create_dashboard("alice", "Second")
+    app = _app(store, monkeypatch)
+    app._load_dashboard_sync(first.dashboard_id)
+
+    def switch_while_thinking(results):
+        app._load_dashboard_sync(second.dashboard_id)
+        return {"component": "T/number"}
+
+    agent = Agent(
+        scripted(("add_node", switch_while_thinking)),
+        deps_type=FlowDashDeps,
+        toolsets=[dashboard_toolset()],
+    )
+    session = AgentSession(app, agent)
+    output = await session.runner.run("Add a number")
+    assert "switched to another dashboard" in output
+    assert app._editor._tile_items == []
+    assert session.runner.deps.check_pin() is None

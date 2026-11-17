@@ -2,6 +2,7 @@
 
 import re
 
+import panel as pn
 import pytest
 from panel.tests.util import wait_until
 
@@ -13,9 +14,14 @@ expect = pytest.importorskip("playwright.sync_api").expect
 from pydantic_ai import Agent
 
 from panel_flowdash.agent import FlowDashDeps, dashboard_toolset
+from panel_flowdash.app import FlowDashApp
+from panel_flowdash.component_library import normalize_components
 
-from ..test_agent_tools import scripted
-from .test_ui_shell import _serve_app, _store_with
+from ..test_agent_tools import responses, scripted
+from ..untrusted_payloads import ALL, PAYLOADS
+from .test_ui_shell import COMPONENTS, _serve_app, _store_with
+from .test_ui_text_math_escaping import _FOUND
+from .util import serve_component
 
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
@@ -55,3 +61,56 @@ def test_the_agent_adds_a_component_from_the_drawer(page):
     wait_until(
         lambda: (box := zoom.bounding_box()) and box["x"] + box["width"] > width - 120, page
     )
+
+
+def test_untrusted_text_reaches_the_drawer_as_text(page):
+    # Other people's titles, descriptions and config reach the drawer through
+    # tool results, versions and approvals; none of it may run, load or link.
+    store, (dash,) = _store_with("Plant " + PAYLOADS["raw_html"] + " " + PAYLOADS["dd_href"])
+    model = store._load_any(dash)
+    model.description = ALL
+    store.save_dashboard(model)
+    agent = Agent(
+        responses(
+            [("get_dashboard", {}), ("list_dashboards", {})],
+            [("set_settings", {"settings": {"description": "new " + ALL}})],
+            [("remove_node", {"name": PAYLOADS["raw_html"]})],
+            [("save_dashboard", {})],
+        ),
+        deps_type=FlowDashDeps,
+        toolsets=[dashboard_toolset()],
+    )
+    requests = []
+    page.on("request", lambda r: requests.append(r.url) if "evil.test" in r.url else None)
+    page.route("**/*evil.test*/**", lambda route: route.abort())
+    apps = []
+
+    def factory():
+        pn.extension("mathjax")
+        app = FlowDashApp(
+            registry=normalize_components(COMPONENTS),
+            store=store,
+            notifications=False,
+            agent=agent,
+        )
+        apps.append(app)
+        return app
+
+    serve_component(page, {"/dash/[^/]+": factory}, suffix=f"/dash/{dash}")
+    page.get_by_text("note tile").first.wait_for()
+    page.get_by_role("button", name="Assistant", exact=True).click()
+    chat = page.get_by_placeholder(re.compile("^Ask the agent"))
+    chat.fill("Tidy up " + PAYLOADS["raw_html"])
+    chat.press("Enter")
+    session = apps[0]._agent_session
+    wait_until(lambda: bool(session.runner.state.pending_approvals), page, timeout=30000)
+    for tab in ("chat", "artifacts", "approvals"):
+        session.drawer.param.update(tab=tab)
+        page.wait_for_timeout(1500)
+        found = page.evaluate(_FOUND)
+        assert found["math"] == 0, tab
+        assert found["images"] == [], tab
+        assert not [h for h in found["links"] if not h.startswith("https://evil.test/")], tab
+    page.wait_for_timeout(500)
+    assert page.evaluate("() => window.__pwned || []") == []
+    assert requests == []
