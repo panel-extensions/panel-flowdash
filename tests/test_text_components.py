@@ -148,8 +148,8 @@ class TestMarkdown:
         assert " ".join(payload.split()) in _text(rendered)
 
     def test_preview_is_the_filled_text(self):
-        markdown = Markdown(text="# {{ value }}", value="Texas")
-        assert markdown.__flowdash_preview__() == "# Texas"
+        markdown = Markdown(text="# {{ value }}\n\nSome **bold** <b>x</b>", value="Texas")
+        assert markdown.__flowdash_preview__() == "Texas\nSome bold <b>x</b>"
 
 
 class TestHeading:

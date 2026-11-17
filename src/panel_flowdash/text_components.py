@@ -12,6 +12,7 @@ from html.parser import HTMLParser
 import panel as pn
 import panel_material_ui as pmui
 import param
+from markdown_it import MarkdownIt
 from panel.viewable import Viewer
 
 from panel_flowdash.registry import register
@@ -122,6 +123,9 @@ img {
 """
 
 
+_PREVIEW_PARSER = MarkdownIt("gfm-like", {"html": False})
+
+
 class MultilineText(param.String):
     """A String edited in a multi-line text area."""
 
@@ -185,8 +189,8 @@ class Markdown(Viewer):
         self._pane.object = self._render()
 
     def __flowdash_preview__(self) -> str:
-        """Return the Markdown text with its placeholders filled in."""
-        return self._render()
+        """Return the text of the Markdown with its placeholders filled in, without markup."""
+        return html_to_text(_PREVIEW_PARSER.render(self._render()))
 
     def __panel__(self):
         """Return the rendered Markdown."""
