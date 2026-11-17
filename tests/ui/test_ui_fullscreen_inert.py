@@ -170,8 +170,13 @@ def test_menus_selects_and_dialogs_work_in_full_screen(page):
     expect(page.get_by_role("combobox", name="Pick")).to_have_text("b")
 
     page.get_by_role("button", name="Ask").click()
-    page.get_by_role("button", name="Confirm").click()
+    confirm = page.get_by_role("button", name="Confirm")
+    confirm.click()
     wait_until(lambda: ANSWERS == ["yes"], page)
+    # The server closes the dialog before calling on_confirm, but the browser
+    # unmounts it a round trip and a transition later, and its focus trap then
+    # restores the focus, which would take it from a palette opened before.
+    expect(confirm).to_have_count(0)
 
     page.keyboard.press("Control+k")
     palette = page.get_by_role("combobox", name="Search")
