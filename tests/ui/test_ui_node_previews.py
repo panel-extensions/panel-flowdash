@@ -76,6 +76,13 @@ def test_previews_render_and_handles_stay_beside_their_labels(page):
         expect(_node(page, ids["inverse"])).to_contain_text("inverse: Failed")
     _assert_lined_up(page, 7)
 
+    # Every icon is one glyph wide, so each title starts right after it.
+    for instance_id in (ids["turbines"], ids["filter"], ids["note"]):
+        icon = _node(page, instance_id).locator(".fd-icon").bounding_box()
+        title = _node(page, instance_id).locator(".fd-title").bounding_box()
+        assert abs(icon["width"] - icon["height"]) < 1
+        assert 0 < title["x"] - (icon["x"] + icon["width"]) < icon["width"]
+
     toggle = page.locator("[aria-label='Preview values on the canvas']")
     toggle.click()
     wait_until(lambda: not editor.settings.node_previews, page, timeout=8000)

@@ -37,6 +37,7 @@ from panel_flowdash.ui.node_preview import (
     hook_preview,
     sparkline_svg,
 )
+from panel_flowdash.ui.roles import ROLE_ICONS
 from panel_flowdash.util import ReactiveError
 from tests.untrusted_payloads import PAYLOADS
 
@@ -518,6 +519,15 @@ class TestCards:
         pane.param.watch(events.append, ["object", "height", "css_classes"])
         editor.graph.get_state(src).param.trigger("rows")
         assert events == []
+
+    async def test_role_icons_match_the_palette(self):
+        editor, ids = demo_editor()
+        icons = {name: card(editor, ids[name]).icon for name in ("turbines", "filter", "table")}
+        assert icons == {
+            "turbines": ROLE_ICONS["source"],
+            "filter": ROLE_ICONS["transform"],
+            "table": ROLE_ICONS["view"],
+        }
 
     async def test_settings_dialog_offers_the_switch(self):
         editor = FlowDash(DEMO, notifications=False)

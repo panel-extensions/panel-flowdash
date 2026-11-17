@@ -39,6 +39,7 @@ from panel_flowdash.ui.node_preview import (
     hook_preview,
     summarize_value,
 )
+from panel_flowdash.ui.roles import ROLE_ICONS
 from panel_flowdash.util import is_failure, missing_inputs
 
 if t.TYPE_CHECKING:
@@ -64,8 +65,6 @@ STATUS_TEXT = {
     "failed": "Failed",
     "unavailable": "Unavailable",
 }
-
-_ICON_BY_ROLE = {"source": "database", "transform": "transform", "view": "insert_chart"}
 
 _CARD_CSS = (
     """
@@ -96,6 +95,10 @@ _CARD_CSS = (
   border-bottom: 1px solid var(--fd-divider);
 }
 .fd-icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  overflow: hidden;
   font-family: "Material Icons";
   font-size: 18px;
   line-height: 1;
@@ -220,7 +223,7 @@ def component_role(spec: ComponentSpec) -> str:
 
 def component_icon(spec: ComponentSpec) -> str:
     """Return the component's own icon, or one for its role."""
-    return spec.icon or _ICON_BY_ROLE[component_role(spec)]
+    return spec.icon or ROLE_ICONS[component_role(spec)]
 
 
 def port_label(port: InputPort | OutputPort) -> str:
