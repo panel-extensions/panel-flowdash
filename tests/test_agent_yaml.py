@@ -235,7 +235,7 @@ class TestRestricted:
     def test_export_writes_a_stand_in_and_marks_its_connections(self, store):
         editor, _ = self._loaded(store, allowed=False)
         text = dashboard_to_yaml(editor)
-        assert "secret" not in text and "out" not in text
+        assert "SELECT secret" not in text and "r1.out" not in text and "T/restricted" not in text
         doc = yaml.safe_load(text)
         assert doc["nodes"]["r1"] == {"component": RESTRICTED_COMPONENT_ID, "position": [0, 0]}
         assert {"from": "r1", "to": "l2.value"} in doc["edges"]
