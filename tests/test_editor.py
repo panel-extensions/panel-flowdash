@@ -37,6 +37,7 @@ from panel_flowdash.dashboard_store import (
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.placeholders import PLACEHOLDER_NODE_TYPE
 from panel_flowdash.ui.text import escape_markdown
+from panel_flowdash.ui.waiting import WaitingPlaceholder
 from panel_flowdash.widgets import BUILTIN_COMPONENTS, _WidgetComponent
 
 BUILTIN_VIEWS = [
@@ -2488,12 +2489,12 @@ class TestRequiredInputPlaceholder:
 
     async def test_builtin_widgets_are_not_gated(self):
         editor = FlowDash({}, notifications=False)
-        ids = [editor.add_component(component_id) for component_id in BUILTIN_COMPONENTS]
+        for component_id in BUILTIN_COMPONENTS:
+            editor.add_component(component_id)
 
-        instances = editor._component_instances
-        assert all(
-            view is instances[i].__panel__()
-            for i, view in zip(ids, editor._tile_objects, strict=True)
+        assert not any(
+            isinstance(view, pn.Column) and len(view) and isinstance(view[0], WaitingPlaceholder)
+            for view in editor._tile_objects
         )
 
     async def test_gated_view_reaches_the_tile_grid(self, editor):

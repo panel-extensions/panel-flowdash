@@ -12,6 +12,7 @@ import param
 from panel.viewable import Viewer
 
 from panel_flowdash.registry import register
+from panel_flowdash.text_components import TEXT_COMPONENTS
 
 _COMMON_CONFIG = ["label", "description", "min_widget_width"]
 _SLIDER_FORMAT = pmui.FloatSlider.param.format.default
@@ -1234,4 +1235,5 @@ BUILTIN_COMPONENTS = {
     "Widgets/TextInput": TextInput,
     "Widgets/KPI": KPI,
     "Widgets/Image": Image,
+    **TEXT_COMPONENTS,
 }

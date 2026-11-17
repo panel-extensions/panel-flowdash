@@ -6,7 +6,7 @@ import param
 import pytest
 from panel.viewable import Viewer
 
-from panel_flowdash import register
+from panel_flowdash import normalize_components, register
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.registry import RegistryEntry
 from panel_flowdash.ui.palette import (
@@ -19,10 +19,14 @@ from panel_flowdash.ui.palette import (
 from panel_flowdash.ui.roles import component_role
 from panel_flowdash.widgets import BUILTIN_COMPONENTS
 
-BUILTIN_ROLES = {"view": [], "widget": []}
-for _cid, _app in BUILTIN_COMPONENTS.items():
-    _role = component_role(RegistryEntry.from_app(_app, app_id=_cid), (), ())
-    BUILTIN_ROLES[_role].append(_cid)
+
+def _builtin(role):
+    """The ids of the built-in components with *role*, in palette order."""
+    return [
+        app_id
+        for app_id, entry in normalize_components(BUILTIN_COMPONENTS).items()
+        if component_role(entry, (), ()) == role
+    ]
 
 
 @register(
@@ -142,8 +146,8 @@ class TestRoles:
         assert _groups(editor) == {
             "Data sources": ["Demo/prices", "Demo/feed"],
             "Transforms": ["Demo/filter", "Demo/shouter"],
-            "Views": ["Demo/chart", "Demo/header", *BUILTIN_ROLES["view"]],
-            "Widgets": BUILTIN_ROLES["widget"],
+            "Views": ["Demo/chart", "Demo/header", *_builtin("view")],
+            "Widgets": _builtin("widget"),
         }
 
     def test_groups_are_headers_that_cannot_be_dragged(self, editor):
@@ -275,7 +279,7 @@ class TestSearch:
     def test_typing_in_the_field_filters(self, editor):
         editor._palette_panel.search._process_events({"value_input": "slider"})
         assert _groups(editor) == {
-            "Widgets": [cid for cid in BUILTIN_ROLES["widget"] if "slider" in cid.lower()]
+            "Widgets": [cid for cid in _builtin("widget") if "slider" in cid.lower()]
         }
 
     def test_placing_keeps_the_filter(self, editor):

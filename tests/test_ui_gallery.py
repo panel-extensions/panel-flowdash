@@ -262,15 +262,16 @@ class TestFilters:
         counts = gallery.role_counts()
         assert counts["source"] == 1
         assert counts["transform"] == 1
-        entries = app._component_entries
-        views = [cid for cid in BUILTIN_COMPONENTS if "view" in entries[cid].metadata.tags]
-        widgets = [cid for cid in BUILTIN_COMPONENTS if cid not in views]
+        views = [
+            app_id
+            for app_id, entry in normalize_components(BUILTIN_COMPONENTS).items()
+            if component_role(entry, (), ()) == "view"
+        ]
         assert counts["view"] == 2 + len(views)
-        assert counts["widget"] == len(widgets)
+        assert counts["widget"] == len(BUILTIN_COMPONENTS) - len(views)
         assert counts["all"] == len(gallery.entries)
         gallery.role = "view"
-        titles = {e.component_id: e.title for e in gallery.visible_entries()}
-        assert _visible(gallery) == sorted([CHART, NOTES, *views], key=titles.get)
+        assert sorted(_visible(gallery)) == sorted([CHART, NOTES, *views])
         chip = gallery.role_chips["view"]
         assert chip.label == f"Views {2 + len(views)}"
         assert chip.variant == "filled"

@@ -60,7 +60,7 @@ role their ports suggest:
 |-------|------------|
 | Data sources | Outputs but no inputs |
 | Transforms | Inputs and outputs |
-| Views | No outputs, including the built-in KPI and Image |
+| Views | No outputs, including the built-in Markdown, Notes, Heading, Divider, KPI and Image |
 | Widgets | The built-in controls listed below |
 
 A `source`, `transform`, `view` or `widget` tag overrides this, for example
@@ -87,8 +87,8 @@ Viewer without them is listed under *Components* until its ports are known.
 
 ### Built-in widgets and views
 
-Every editor offers these components under the `Widgets/` id prefix, unless
-`include_builtin_components=False`. Inputs are optional: a control uses its
+Every editor offers these components under the `Widgets/` id prefix, beside
+the text views under `Text/`, unless `include_builtin_components=False`. Inputs are optional: a control uses its
 configured options or bounds until something is wired to them.
 
 | Component | Inputs | Output | Notes |
