@@ -16,6 +16,13 @@ from .tools import FlowDashDeps, dashboard_toolset
 # Names the default agent's model, e.g. ``openai:gpt-5``.
 MODEL_ENV = "FLOWDASH_AGENT_MODEL"
 
+# Overrides the default agent's ``max_tokens``.
+MAX_TOKENS_ENV = "FLOWDASH_AGENT_MAX_TOKENS"
+
+#: Tokens a reply of the default agent may take. Without a limit pydantic-ai asks
+#: for the model's maximum, which providers reserve against the account's credit.
+DEFAULT_MAX_TOKENS = 4096
+
 INSTRUCTIONS = """\
 You help people build and change FlowDash dashboards in the app they are using.
 
@@ -66,6 +73,17 @@ NO_MODEL = (
 def default_model() -> str | None:
     """Return the model the default agent uses, from ``FLOWDASH_AGENT_MODEL``, or None."""
     return os.environ.get(MODEL_ENV) or None
+
+
+def default_model_settings() -> dict[str, t.Any]:
+    """Return the default agent's model settings: ``max_tokens`` from ``FLOWDASH_AGENT_MAX_TOKENS`` or 4096."""
+    value = os.environ.get(MAX_TOKENS_ENV)
+    if not value:
+        return {"max_tokens": DEFAULT_MAX_TOKENS}
+    try:
+        return {"max_tokens": int(value)}
+    except ValueError:
+        raise ValueError(f"{MAX_TOKENS_ENV} must be a whole number, not {value!r}.") from None
 
 
 def _signature(component: dict[str, t.Any]) -> str:
@@ -121,6 +139,7 @@ def create_agent(
     model: t.Any = None,
     *,
     instructions: str | None = None,
+    model_settings: dict[str, t.Any] | None = None,
     **kwargs: t.Any,
 ) -> Agent[FlowDashDeps, str]:
     """Create the default FlowDash agent.
@@ -136,6 +155,9 @@ def create_agent(
         to ``FLOWDASH_AGENT_MODEL``.
     instructions
         Extra instructions appended to the defaults, e.g. about the project's data.
+    model_settings
+        pydantic-ai model settings, merged over the defaults: ``max_tokens``
+        of 4096, or ``FLOWDASH_AGENT_MAX_TOKENS``.
     **kwargs
         Passed on to ``pydantic_ai.Agent``.
     """
@@ -148,6 +170,7 @@ def create_agent(
         name="FlowDash",
         instructions=INSTRUCTIONS + (f"\n{instructions}" if instructions else ""),
         toolsets=[dashboard_toolset(), *kwargs.pop("toolsets", [])],
+        model_settings={**default_model_settings(), **(model_settings or {})},
         **kwargs,
     )
 

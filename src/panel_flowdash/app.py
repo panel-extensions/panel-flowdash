@@ -163,6 +163,16 @@ class FlowDashApp(Viewer):
         environment variable.""",
     )
 
+    agent_model_settings = param.Dict(
+        default=None,
+        allow_None=True,
+        doc="""
+        pydantic-ai model settings for every request to the agent, e.g.
+        ``{"max_tokens": 8192, "temperature": 0}``, merged over the agent's
+        own. The default agent limits ``max_tokens`` to 4096, or to the
+        ``FLOWDASH_AGENT_MAX_TOKENS`` environment variable.""",
+    )
+
     auth_config = param.ClassSelector(
         class_=AuthConfig,
         doc="""

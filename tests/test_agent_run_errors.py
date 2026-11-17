@@ -58,3 +58,28 @@ async def test_a_failed_request_shows_in_the_chat_and_the_log(monkeypatch, caplo
     assert [t for t in texts if ERROR in t] == texts[1:] and len(texts) == 2
     assert [r.exc_info[1] for r in caplog.records if r.exc_info] == [error]
     assert not session.runner.state.running
+
+
+def test_a_providers_refusal_reads_as_its_own_message():
+    from pydantic_ai.exceptions import ModelHTTPError
+
+    from panel_flowdash.agent.session import ERROR_LIMIT, describe_error
+
+    error = ModelHTTPError(
+        402,
+        "anthropic/claude-haiku-5.5",
+        {
+            "message": "You requested up to 65536 tokens, but can only afford 5385. To increase, "
+            "visit https://openrouter.ai/settings/credits?session=abc123&from=api and upgrade",
+            "code": 402,
+        },
+    )
+    assert describe_error(error) == (
+        "The model provider refused the request (402): You requested up to 65536 tokens, but "
+        "can only afford 5385. To increase, visit https://openrouter.ai/settings/credits and upgrade"
+    )
+    assert describe_error(ModelHTTPError(500, "m", {"error": {"message": "down"}})).endswith(
+        "(500): down"
+    )
+    long = describe_error(RuntimeError("x" * 1000))
+    assert len(long) == ERROR_LIMIT and long.endswith("…")

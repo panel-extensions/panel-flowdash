@@ -35,6 +35,7 @@ PROJECT_OPTIONS = (
     "agent",
     "agent_authorize",
     "agent_model",
+    "agent_model_settings",
     "agent_sensitive_components",
     "breakpoints",
     "configure_layout",
