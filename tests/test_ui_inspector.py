@@ -21,6 +21,7 @@ from panel_flowdash.ui.node_card import (
     summarize_value,
 )
 from panel_flowdash.ui.status_bar import canvas_issues, select_on_canvas
+from panel_flowdash.ui.text import escape_markdown
 from tests.test_editor import CHART, COMPONENTS, FAILING_COMPONENTS, SELECTOR
 
 
@@ -333,7 +334,7 @@ class TestInspector:
         select_on_canvas(editor._flow, edge_id=edge_id)
         texts = _texts(editor._inspector._body)
         assert "Rows to Table" in texts
-        assert "In: 3 rows, 2 columns" in texts
+        assert escape_markdown("In: 3 rows, 2 columns") in texts
 
     async def test_edge_view_can_be_replaced(self, editor):
         src, table = editor.add_component(ROWS), editor.add_component(TABLE)
