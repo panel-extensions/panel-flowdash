@@ -1301,7 +1301,7 @@ class FlowDash(Viewer):
         )
         flow.on("drop", self._on_component_dropped)
         flow.add_connection_validator(
-            lambda payload, _flow: self._dataflow_graph.validate_connection(
+            lambda payload, _flow: self._validate_connection(
                 payload["source"],
                 payload["sourceHandle"],
                 payload["target"],
@@ -1318,7 +1318,9 @@ class FlowDash(Viewer):
             src_handle = edge.get("sourceHandle", "")
             tgt_handle = edge.get("targetHandle", "")
             if src_id and tgt_id and src_handle and tgt_handle:
-                result = self._dataflow_graph.add_edge(src_id, src_handle, tgt_id, tgt_handle)
+                result = self._restricted_input_error(tgt_id, tgt_handle) or (
+                    self._dataflow_graph.add_edge(src_id, src_handle, tgt_id, tgt_handle)
+                )
             else:
                 result = "Connection requires source and target ports."
             if result is True:
@@ -1380,6 +1382,37 @@ class FlowDash(Viewer):
         flow.on("edge_unhovered", self._on_inspection_unhovered)
 
         return flow
+
+    def _restricted_input_error(self, target_id: str, target_port: str) -> str | None:
+        """Return why *target_port* takes no edge because a restricted component feeds it, or None.
+
+        The stored connection of a component this session may not use is kept
+        as stored and never wired, so the graph does not see it; an input it
+        feeds is still taken unless it accepts a list.
+        """
+        if self._dataflow_graph._is_list_input(target_id, target_port):
+            return None
+        private = {iid for iid, p in self._placeholders().items() if p.private}
+        for unresolved in self._unresolved_edges:
+            edge = unresolved.edge
+            if (
+                edge.source in private
+                and edge.target == target_id
+                and self._resolve_port_name(target_id, edge.target_port) == target_port
+            ):
+                return (
+                    f"Input '{target_port}' is already fed by a component you do not have "
+                    "access to, so it takes no other connection."
+                )
+        return None
+
+    def _validate_connection(self, source_id, source_port, target_id, target_port, transform=None):
+        """Return why a connection would be refused, or None, including restricted inputs."""
+        return self._restricted_input_error(
+            target_id, target_port
+        ) or self._dataflow_graph.validate_connection(
+            source_id, source_port, target_id, target_port, transform
+        )
 
     @contextmanager
     def _muted_canvas(self):
@@ -2957,8 +2990,12 @@ class FlowDash(Viewer):
         bool or str
             ``True`` on success, or a message explaining the rejection (unknown
             port, type mismatch, cycle, an input that is already connected, or
-            an invalid transform).
+            an invalid transform). An input fed by a component this session may
+            not use counts as connected.
         """
+        restricted = self._restricted_input_error(target_id, target_port)
+        if restricted is not None:
+            return restricted
         result = self._dataflow_graph.add_edge(
             source_id, source_port, target_id, target_port, transform
         )
@@ -3788,7 +3825,7 @@ class FlowDash(Viewer):
             candidates = [(node_id, handle_id, instance_id, port.name) for port in spec.inputs]
         reasons = []
         for candidate in candidates:
-            reason = self._dataflow_graph.validate_connection(*candidate)
+            reason = self._validate_connection(*candidate)
             if reason is None:
                 result = self.connect(*candidate)
                 if result is True:
