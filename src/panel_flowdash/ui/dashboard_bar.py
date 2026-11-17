@@ -14,6 +14,7 @@ from panel.viewable import Viewer
 from panel_flowdash.ui.fullscreen import TOGGLE_CLASS
 from panel_flowdash.ui.health import DashboardHealth
 from panel_flowdash.ui.health_popover import HealthPopover
+from panel_flowdash.ui.popover_access import NON_MODAL_POPUP_SX, PopoverAccess, link_popup
 from panel_flowdash.ui.text import escape_markdown
 from panel_flowdash.util import close_dialog, confirm, open_dialog
 
@@ -32,6 +33,15 @@ li.MuiMenuItem-root:last-of-type {
   color: var(--mui-palette-error-main);
 }
 """
+
+# Below this width the edit actions only fit one row with Settings as an icon.
+_WIDE_BREAKPOINT = 1280
+_HIDE_WHEN_NARROW = (
+    f"@media (max-width: {_WIDE_BREAKPOINT - 0.05}px) {{ :host {{ display: none !important; }} }}"
+)
+_HIDE_WHEN_WIDE = (
+    f"@media (min-width: {_WIDE_BREAKPOINT}px) {{ :host {{ display: none !important; }} }}"
+)
 
 _TOGGLE_SX = {"& .MuiToggleButton-root": {"textTransform": "none", "px": 1.5}}
 
@@ -73,7 +83,7 @@ def format_period(seconds: float) -> str:
 class DashboardBar(Viewer):
     """One row of dashboard controls, with a view and an edit section.
 
-    In view mode it shows the dashboard title, an info button with the
+    In view mode it shows the dashboard title, an info button opening the
     description, the health chip (whose popover holds the pipeline and any
     issues) and the view actions: the View/Edit control, Refresh (its tooltip
     says when the dashboard was last refreshed) with the auto-refresh period,
@@ -152,8 +162,51 @@ class DashboardBar(Viewer):
             size="small",
             margin=0,
             color="default",
+            description="About this dashboard",
             css_classes=["fd-description"],
             sx={"color": "text.secondary"},
+        )
+        self.info_button.on_click(
+            lambda _event: self.info_popup.param.update(open=not self.info_popup.open)
+        )
+        self._about = pmui.Typography(
+            variant="body2", margin=0, sx={"color": "text.secondary", "whiteSpace": "pre-wrap"}
+        )
+        self.info_popup = pmui.Popup(
+            self._about,
+            anchor_origin={"horizontal": "left", "vertical": "bottom"},
+            transform_origin={"horizontal": "left", "vertical": "top"},
+            elevation=4,
+            hide_backdrop=True,
+            css_classes=["fd-description-popover"],
+            sx={
+                **NON_MODAL_POPUP_SX,
+                "& .MuiPopover-paper": {
+                    **NON_MODAL_POPUP_SX["& .MuiPopover-paper"],
+                    "p": 2,
+                    "mt": 1,
+                    "maxWidth": "min(420px, calc(100vw - 32px))",
+                    "borderRadius": "12px",
+                },
+            },
+        )
+        info_access = PopoverAccess(
+            button_class="fd-description",
+            popup_class="fd-description-popover",
+            label="About this dashboard",
+            margin=0,
+            width=0,
+            height=0,
+        )
+        link_popup(self.info_popup, info_access)
+        # The popup anchors to its parent, so it sits next to the button.
+        self.info = pn.Row(
+            self.info_button,
+            self.info_popup,
+            info_access,
+            margin=0,
+            align="center",
+            styles={"width": "fit-content", "flex": "0 0 auto"},
         )
         self.description = pmui.Typography(
             variant="body2",
@@ -234,17 +287,18 @@ class DashboardBar(Viewer):
             size="small",
             margin=(0, 4),
             description="Settings",
-            # On narrower screens only the icon shows, so the edit actions fit one row.
-            sx={
-                "@media (max-width: 1279.95px)": {
-                    "fontSize": 0,
-                    "minWidth": 0,
-                    "px": 1,
-                    "& .MuiButton-startIcon": {"m": 0},
-                    "& .MuiButton-startIcon > *": {"fontSize": "18px"},
-                }
-            },
+            stylesheets=[_HIDE_WHEN_NARROW],
         )
+        # On narrower screens only the icon shows, so the edit actions fit one row.
+        self.settings_icon_button = pmui.IconButton(
+            icon="tune",
+            size="small",
+            margin=(0, 4),
+            color="primary",
+            description="Settings",
+            stylesheets=[_HIDE_WHEN_WIDE],
+        )
+        self.settings_icon_button.on_click(lambda _event: self._click_settings())
         self.discard_button = pmui.Button(
             label="Discard", variant="outlined", size="small", margin=(0, 4)
         )
@@ -361,8 +415,8 @@ class DashboardBar(Viewer):
         """
         full = self.layout == "full"
         items = []
-        if self.info_button.description:
-            items.append(self.description if full else self.info_button)
+        if self._about.object:
+            items.append(self.description if full else self.info)
         if self.health.tiles:
             items.append(self.health_popover.__panel__())
         if full and self.refresh_label.object:
@@ -396,6 +450,7 @@ class DashboardBar(Viewer):
         return [
             self.mode_tabs,
             self.settings_button,
+            self.settings_icon_button,
             *self.editor.toolbar_extra,
             self.overflow,
             self._divider,
@@ -469,6 +524,7 @@ class DashboardBar(Viewer):
         self.save_button.disabled = editor.read_only or not editor.dirty
         self.discard_button.disabled = not editor.dirty
         self.settings_button.disabled = editor.read_only
+        self.settings_icon_button.disabled = editor.read_only
         if self.mode_toggle.value != "view":
             self.mode_toggle.value = "view"
 
@@ -519,11 +575,14 @@ class DashboardBar(Viewer):
         self.refresh_label.object = text
         self.refresh_button.description = f"Refresh now. {text}." if text else "Refresh now"
         description = settings.description.strip()
-        # The tooltip also names the button for assistive technology.
-        self.info_button.description = description or None
-        self.description.object = escape_markdown(description)
+        self.description.object = self._about.object = escape_markdown(description)
+        if not description:
+            self.info_popup.open = False
+        label = format_period(period) if period else "Off"
         self.refresh_period.param.update(
-            label=format_period(period) if period else "Off",
+            label=label,
+            # The name includes the visible label.
+            description=f"Update automatically: {label}",
             items=[
                 {
                     "label": label,
@@ -549,6 +608,9 @@ class DashboardBar(Viewer):
             self._update_view_meta()
             if not self.editor.editable:
                 self._sync_lead()
+
+    def _click_settings(self):
+        self.settings_button.clicks += 1
 
     def _on_period_chosen(self, item):
         """Set the auto-refresh period for this session, without marking the dashboard changed."""

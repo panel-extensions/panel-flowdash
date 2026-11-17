@@ -10,6 +10,7 @@ from panel.viewable import Viewer
 from panel_flowdash.ui.health import FAILED, OK, WAITING, DashboardHealth
 from panel_flowdash.ui.issue_banner import IssueBanner, mark_issue_targets
 from panel_flowdash.ui.pipeline import PipelineStrip, pipeline_stages
+from panel_flowdash.ui.popover_access import NON_MODAL_POPUP_SX, PopoverAccess, link_popup
 
 _COLORS = {OK: "success", WAITING: "warning", FAILED: "error"}
 
@@ -97,10 +98,12 @@ class HealthPopover(Viewer):
             anchor_origin={"horizontal": "left", "vertical": "bottom"},
             transform_origin={"horizontal": "left", "vertical": "top"},
             elevation=4,
-            hide_backdrop=False,
+            hide_backdrop=True,
             css_classes=["fd-health-popover"],
             sx={
+                **NON_MODAL_POPUP_SX,
                 "& .MuiPopover-paper": {
+                    **NON_MODAL_POPUP_SX["& .MuiPopover-paper"],
                     "p": 2,
                     "mt": 1,
                     "maxWidth": "min(560px, calc(100vw - 32px))",
@@ -108,15 +111,25 @@ class HealthPopover(Viewer):
                     "flexDirection": "column",
                     "gap": 1.5,
                     "borderRadius": "12px",
-                }
+                },
             },
         )
         self.banner._banner.margin = 0
+        self._access = PopoverAccess(
+            button_class="fd-health-chip",
+            popup_class="fd-health-popover",
+            label="Dashboard health",
+            margin=0,
+            width=0,
+            height=0,
+        )
+        link_popup(self.popup, self._access)
         # The popup anchors to its parent, and the focus helper must stay mounted
         # while the popup is closed, so both sit next to the chip.
         self._view = pn.Row(
             self.chip,
             self.popup,
+            self._access,
             self.banner._focus,
             margin=0,
             align="center",

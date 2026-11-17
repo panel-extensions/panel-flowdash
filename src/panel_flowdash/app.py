@@ -46,7 +46,12 @@ from panel_flowdash.ui.launcher import (
     unique_title,
 )
 from panel_flowdash.ui.settings_dialog import SharingAccess, share_link
-from panel_flowdash.ui.shell import DASHBOARD_HEADER_SX, HEADER_SX, AppShell
+from panel_flowdash.ui.shell import (
+    DASHBOARD_EDIT_HEADER_SX,
+    DASHBOARD_HEADER_SX,
+    HEADER_SX,
+    AppShell,
+)
 from panel_flowdash.ui.states import (
     LeavePageGuard,
     LoadingSkeleton,
@@ -306,7 +311,7 @@ class FlowDashApp(Viewer):
         if self.nav_variant == "menubar":
             self._build_nav_bar()
         self._menubar_mode = self.nav_variant == "menubar"
-        self._dashboard_header = False
+        self._dashboard_header: str | None = None
         if self.nav_variant == "rail":
             # The top bar shows the dashboard's title (the breadcrumb) and actions.
             self._editor._dashboard_bar.placement = "header"
@@ -361,14 +366,15 @@ class FlowDashApp(Viewer):
         the page's children re-renders it, which blanks views that move between
         layouts in the same update.
         """
-        sx = {**self._page_sx, **DASHBOARD_HEADER_SX} if self._dashboard_header else self._page_sx
+        header_sx = {None: {}, "view": DASHBOARD_HEADER_SX, "edit": DASHBOARD_EDIT_HEADER_SX}
+        sx = {**self._page_sx, **header_sx[self._dashboard_header]}
         if self.sidebar or self._sidebar_container.objects:
             return sx
         return {**sx, "& .header .MuiIconButton-edgeStart": {"display": "none"}}
 
-    def _set_dashboard_header(self, showing: bool):
-        """Make room in the top bar for the dashboard's actions while one is shown."""
-        self._dashboard_header = showing
+    def _set_dashboard_header(self, mode: str | None):
+        """Make room in the top bar for the dashboard's "view" or "edit" actions, or None."""
+        self._dashboard_header = mode
         if getattr(self, "_page", None) is not None:
             self._sync_sidebar_toggle()
 

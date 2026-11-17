@@ -18,7 +18,16 @@ expect = pytest.importorskip("playwright.sync_api").expect
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
 VIEW_ACTIONS = ["View", "Edit", "Refresh now", "Update automatically", "Share", "More actions"]
-EDIT_ACTIONS = ["Dataflow", "Layout", "Settings", "More actions", "Discard", "Save", "Done"]
+EDIT_ACTIONS = [
+    "Dataflow",
+    "Layout",
+    "Split",
+    "Settings",
+    "More actions",
+    "Discard",
+    "Save",
+    "Done",
+]
 TOP_BAR = ["Search", "Toggle theme"]
 
 

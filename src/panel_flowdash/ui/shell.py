@@ -41,16 +41,29 @@ HEADER_SX = {
     "& .MuiToolbar-root": {"minHeight": "56px"},
     "& .header .MuiToolbar-root": {"gap": "4px"},
     "& .header .title": {"color": "text.primary", "fontSize": "1.25rem", "fontWeight": 600},
+    # The header items may get narrower than their content, so the breadcrumb
+    # can truncate, while the brand keeps its width.
+    "& .header .MuiToolbar-root > .MuiBox-root": {"minWidth": 0},
+    "& .header .MuiToolbar-root > .MuiBox-root:has(.title)": {"flexShrink": 0},
     f"@media (max-width: {NARROW_BREAKPOINT - 0.05}px)": {"& .header .title": {"display": "none"}},
 }
 
 # On a dashboard the top bar also holds the dashboard's actions, so the brand
-# gives way to them on screens narrower than this.
+# gives way to them on screens narrower than this. The edit actions are wider.
 _BRAND_BREAKPOINT = 1280
+_EDIT_BRAND_BREAKPOINT = 1600
 
-DASHBOARD_HEADER_SX = {
-    f"@media (max-width: {_BRAND_BREAKPOINT - 0.05}px)": {"& .header .title": {"display": "none"}},
-}
+
+def _hide_brand_below(width: int) -> dict:
+    return {f"@media (max-width: {width - 0.05}px)": {"& .header .title": {"display": "none"}}}
+
+
+DASHBOARD_HEADER_SX = _hide_brand_below(_BRAND_BREAKPOINT)
+DASHBOARD_EDIT_HEADER_SX = _hide_brand_below(_EDIT_BRAND_BREAKPOINT)
+
+# The breadcrumb is the one part of the top bar that gives way when space
+# runs out: its current crumb truncates with an ellipsis.
+_SHRINK = ":host { flex: 0 1 auto !important; min-width: 0 !important; }"
 
 _CRUMB_SX = {
     "textTransform": "none",
@@ -62,7 +75,29 @@ _CRUMB_SX = {
     "whiteSpace": "nowrap",
 }
 
-_CURRENT_CRUMB_SX = {**_CRUMB_SX, "color": "text.primary", "fontWeight": 500}
+_CURRENT_CRUMB_SX = {
+    **_CRUMB_SX,
+    "color": "text.primary",
+    "fontWeight": 500,
+    # Block layout, as text-overflow cannot ellipsize the text of a flex container.
+    "display": "block",
+    "maxWidth": "100%",
+    "overflow": "hidden",
+    "textOverflow": "ellipsis",
+}
+
+# The switcher's arrow sits in the padding, so the ellipsis stops before it.
+_SWITCHER_SX = {
+    **_CURRENT_CRUMB_SX,
+    "pr": "28px",
+    "& .MuiButton-endIcon": {
+        "position": "absolute",
+        "right": "4px",
+        "top": "50%",
+        "transform": "translateY(-50%)",
+        "m": 0,
+    },
+}
 
 _RAIL_ITEM_SX = {
     "flexDirection": "column",
@@ -132,13 +167,14 @@ class AppShell:
             stylesheets=[_HIDE_WHEN_WIDE],
         )
         self.menu_button.on_click(lambda _event: self.nav_drawer.param.update(open=True))
-        self.breadcrumb = pn.Row(margin=0, align="center", min_width=0)
+        self.breadcrumb = pn.Row(margin=0, align="center", min_width=0, stylesheets=[_SHRINK])
         self.dashboard_switcher = pmui.MenuButton(
             label="",
             variant="text",
             size="small",
             margin=0,
-            sx={**_CURRENT_CRUMB_SX, "& .MuiButton-endIcon": {"ml": 0}},
+            sx=_SWITCHER_SX,
+            stylesheets=[_SHRINK],
         )
         self.dashboard_switcher.on_click(self._on_switch)
         # Filled by the command palette with its search field.
@@ -177,6 +213,7 @@ class AppShell:
         app._editor._dashboard_bar.param.watch(
             lambda _event: self._render_dashboard_slots(), "layout"
         )
+        app._editor.param.watch(lambda _event: self._render_dashboard_slots(), "editable")
         self._header = [
             self.menu_button,
             self.breadcrumb,
@@ -420,6 +457,8 @@ class AppShell:
             if last and self._is_dashboard_route():
                 self.dashboard_switcher.param.update(
                     label=crumb.label,
+                    # The full title, should the crumb be truncated.
+                    description=crumb.label,
                     items=[*self._dashboard_items(), None, _ALL_DASHBOARDS],
                 )
                 parts.append(self.dashboard_switcher)
@@ -433,7 +472,8 @@ class AppShell:
                 sx=(_CURRENT_CRUMB_SX if last else _CRUMB_SX)
                 if crumb.path is not None
                 else {**(_CURRENT_CRUMB_SX if last else _CRUMB_SX), "pointerEvents": "none"},
-                stylesheets=[] if last else [_HIDE_WHEN_NARROW],
+                stylesheets=[_SHRINK] if last else [_HIDE_WHEN_NARROW],
+                description=crumb.label if last else None,
             )
             if crumb.path is not None:
                 button.on_click(lambda _event, path=crumb.path: self._navigate(path))
@@ -462,7 +502,8 @@ class AppShell:
         for palette in self.search_slot:
             if "compact" in palette.param:
                 palette.compact = showing
-        self._app._set_dashboard_header(showing)
+        editing = self._app._editor.editable
+        self._app._set_dashboard_header(("edit" if editing else "view") if showing else None)
 
     def _is_dashboard_route(self) -> bool:
         return self._path.startswith(app_module.DASH_ROUTE_PREFIX) or (
