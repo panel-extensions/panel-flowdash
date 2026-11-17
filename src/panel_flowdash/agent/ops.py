@@ -311,7 +311,7 @@ class DashboardOps:
         """Check YAML against the components the user may place; defaults to the editor's dashboard."""
         editor = self.editor
         entries = editor._component_entries
-        return validate_dashboard(
+        issues = validate_dashboard(
             dashboard_to_yaml(self.editor) if text is None else text,
             self._authorized_specs(),
             settings_class=editor.settings_class,
@@ -319,6 +319,20 @@ class DashboardOps:
             controls=[cid for cid, e in entries.items() if e.metadata.sidebar],
             singletons=[cid for cid, e in entries.items() if e.metadata.singleton],
         )
+        # A node already on the canvas whose component is not offered (any more)
+        # is kept as is, like on import, so it does not stop the YAML loading.
+        names = self._names()
+        unavailable = {
+            f"nodes.{names[item['instance_id']]}.component"
+            for item in editor._tile_items
+            if "placeholder" in item and not item["placeholder"].private
+        }
+        return [
+            Issue(i.path, f"{i.message} It is kept on the dashboard as is.", "warning")
+            if i.path in unavailable and i.message.startswith("Unknown component")
+            else i
+            for i in issues
+        ]
 
     def preview(self, text: str | None = None, *, rows: int = 5) -> dict[str, t.Any]:
         """Run a dashboard without showing it and report the health of each node.

@@ -419,3 +419,17 @@ def test_stored_dashboards_mark_restricted_connections(store):
     ops = DashboardOps(_editor(store))
     doc = yaml.safe_load(ops.get_dashboard(model.dashboard_id))
     assert doc["edges"] == [{"from": "secret", "to": "double.value"}]
+
+
+def test_nodes_of_components_no_longer_offered_do_not_block_replacing(store):
+    (model,) = store._all_dashboards()
+    model.items.append(DashboardItem("gone", "T/retired"))
+    store.save_dashboard(model)
+    ops = DashboardOps(_editor(store))
+    ops.open_dashboard(model.dashboard_id)
+    text = ops.get_dashboard()
+    assert [i.severity for i in ops.validate(text) if i.path == "nodes.gone.component"] == [
+        "warning"
+    ]
+    ops.replace_yaml(text)
+    assert any(i["instance_id"] == "gone" for i in ops.editor._tile_items)
