@@ -36,6 +36,9 @@ logger = logging.getLogger(__name__)
 APPROVAL_TOOLS = ("save_dashboard", "delete_dashboard", "share_dashboard")
 
 
+# Command palette commands that do the same, run through the run_command action.
+APPROVAL_COMMANDS = ("action:save*", "action:delete*", "action:share*", "action:publish*")
+
 # Settings whose change widens who sees what, called out when saving.
 ACCESS_SETTINGS = ("viewers_can_inspect",)
 
@@ -77,6 +80,10 @@ class FlowDashDeps:
         self._run_id = run_id
         self._abandoned = False
 
+    def repin(self):
+        """Move the pin to the dashboard open now, after the agent itself opened it."""
+        self._pinned = _open_id(self.ops)
+
     def check_pin(self, run_id: str | None = None) -> str | None:
         """Return why the request may not act any more, or None while the user is on its dashboard."""
         open_id = _open_id(self.ops)
@@ -104,12 +111,20 @@ def _components_in(text: t.Any) -> set[str]:
     return {str(n.get("component")) for n in nodes.values() if isinstance(n, dict)}
 
 
+def _stores(args: dict[str, t.Any]) -> bool:
+    command = str(args.get("command", ""))
+    return any(fnmatch.fnmatchcase(command, pattern) for pattern in APPROVAL_COMMANDS)
+
+
 def approval_policy(
     *rules: ApprovalRule | str,
     sensitive_components: t.Collection[str] = (),
     ops: DashboardOps | None = None,
 ) -> ApprovalPolicy:
     """Return the policy asking the user before every save, delete and sharing change.
+
+    It covers the dashboard tools and the command palette commands that save,
+    delete, share or publish, so neither path skips the approval.
 
     Parameters
     ----------
@@ -119,8 +134,9 @@ def approval_policy(
         Ids, or glob patterns such as ``"Sources/*"``, of components whose
         config can reach outside the dashboard, e.g. a SQL source or a
         component fetching a URL. Former ids that resolve to them count too.
-        Placing one, previewing or loading YAML that places one, changing the
-        config of one and connecting or transforming an edge into one need
+        Placing one (with a tool or the command palette), previewing or
+        loading YAML that places one, changing the config of one and
+        connecting or transforming an edge into one need
         the user's approval, since the agent's input may come from text other
         people wrote.
     ops
@@ -145,6 +161,10 @@ def approval_policy(
         def target_is_sensitive(args: dict[str, t.Any]) -> bool:
             return node_is_sensitive(str(args.get("target", "")).partition(".")[0])
 
+        def adds_sensitive(args: dict[str, t.Any]) -> bool:
+            command = str(args.get("command", ""))
+            return command.startswith("component:") and sensitive(command[len("component:") :])
+
         def places_sensitive(args: dict[str, t.Any]) -> bool:
             return any(sensitive(c) for c in _components_in(args.get("dashboard_yaml")))
 
@@ -155,8 +175,10 @@ def approval_policy(
             ApprovalRule("set_config", when=lambda args: node_is_sensitive(args.get("name"))),
             ApprovalRule("connect", when=target_is_sensitive),
             ApprovalRule("set_transform", when=target_is_sensitive),
+            ApprovalRule("run_command", when=adds_sensitive),
         ]
-    return ApprovalPolicy([*APPROVAL_TOOLS, *extra, *rules])
+    stores = ApprovalRule("run_command", when=_stores)
+    return ApprovalPolicy([*APPROVAL_TOOLS, stores, *extra, *rules])
 
 
 def _sensitive_matcher(patterns: t.Sequence[str], ops: DashboardOps) -> t.Callable[[str], bool]:
@@ -244,7 +266,7 @@ def _guarded(func: t.Callable) -> t.Callable:
         except PermissionError as exc:
             return f"Refused: {exc}"
         if func is open_dashboard:
-            deps._pinned = _open_id(deps.ops)
+            deps.repin()
         return result
 
     return wrapper
