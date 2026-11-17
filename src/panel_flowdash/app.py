@@ -129,6 +129,23 @@ class FlowDashApp(Viewer):
         (or taking ``FlowDashDeps``) is used as is.""",
     )
 
+    agent_authorize = param.Callable(
+        default=None,
+        doc="""
+        Called with the signed-in `Identity` to decide whether this session
+        gets the agent, e.g. to roll it out to some groups first. None offers
+        it to everyone when an agent is configured.""",
+    )
+
+    agent_sensitive_components = param.List(
+        default=[],
+        item_type=str,
+        doc="""
+        Ids of components whose config can reach outside the dashboard, such
+        as a SQL source or one fetching a URL. The agent needs the user's
+        approval to place one, change its config or load YAML that places one.""",
+    )
+
     agent_model = param.String(
         default=None,
         allow_None=True,
@@ -801,6 +818,14 @@ class FlowDashApp(Viewer):
             self.agent is None and not (self.agent_model or os.environ.get("FLOWDASH_AGENT_MODEL"))
         ):
             return None
+        if self.agent_authorize is not None:
+            try:
+                allowed = bool(self.agent_authorize(self._identity))
+            except Exception:
+                logger.exception("agent_authorize failed; leaving the agent out")
+                allowed = False
+            if not allowed:
+                return None
         try:
             from panel_flowdash.agent.session import AgentSession, resolve_agent
         except ImportError as exc:

@@ -1,5 +1,7 @@
 """UI test of the agent drawer: chatting with the agent edits the open dashboard."""
 
+import re
+
 import pytest
 from panel.tests.util import wait_until
 
@@ -38,7 +40,7 @@ def test_the_agent_adds_a_component_from_the_drawer(page):
 
     wait_until(lambda: len(apps[0]._editor._tile_items) == 2, page, timeout=20000)
     expect(page.get_by_text("Unsaved changes")).to_be_visible(timeout=20000)
-    page.get_by_text("Done: Added node 'note'.").wait_for(timeout=20000)
+    page.get_by_text(re.compile(r"Done: Added node 'note_[0-9a-f]{6}'\.")).wait_for(timeout=20000)
     assert apps[0]._editor.editable
     assert errors == []
 

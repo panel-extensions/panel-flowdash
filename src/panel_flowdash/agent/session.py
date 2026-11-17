@@ -5,14 +5,19 @@ Needs the ``panel-flowdash[agent]`` extra.
 
 from __future__ import annotations
 
+import asyncio
 import typing as t
 
+import panel as pn
 from panel_agents import AgentDrawer, RunState
 from panel_agents.adapters.pydantic_ai import ActionToolset, AgentRunner
+
+from panel_flowdash.util import confirm
 
 from .actions import palette_actions
 from .assistant import create_agent
 from .live import LiveDashboardOps
+from .ops import read_revision
 from .tools import FlowDashDeps, approval_policy
 
 if t.TYPE_CHECKING:
@@ -68,7 +73,9 @@ class AgentSession:
             agent,
             RunState(),
             deps=FlowDashDeps(self.ops),
-            approval_policy=approval_policy(),
+            approval_policy=approval_policy(
+                sensitive_components=app.agent_sensitive_components, ops=self.ops
+            ),
             run_kwargs={"toolsets": [ActionToolset(self.actions)]},
         )
         self.drawer = AgentDrawer(
@@ -80,10 +87,41 @@ class AgentSession:
         self.drawer.main = content
         return self.drawer
 
-    def apply_version(self, artifact: Artifact, version: ArtifactVersion) -> bool:
-        """Make the open dashboard match a published *version* of it, as an import."""
+    async def apply_version(self, artifact: Artifact, version: ArtifactVersion) -> bool:
+        """Make the open dashboard match a published *version* of it, as an import.
+
+        When the canvas has changes the agent did not publish, typically the
+        user's own edits, the user confirms that applying the version drops them.
+        """
         current = self.app._current_dashboard
         if current is None or artifact.artifact_id != f"dashboard:{current.dashboard_id}":
             raise ValueError("That version belongs to a dashboard that is not open.")
-        self.ops.replace_yaml(version.value)
+        latest = artifact.applied_version
+        based_on = read_revision(latest.value) if latest is not None else None
+        if based_on != self.ops.revision() and not await self._confirm_overwrite(version):
+            return False
+        self.ops.replace_yaml(version.value, revision=self.ops.revision())
         return True
+
+    async def _confirm_overwrite(self, version: ArtifactVersion) -> bool:
+        if pn.state.curdoc is None or pn.state.curdoc.session_context is None:
+            return False
+        answer = asyncio.get_running_loop().create_future()
+
+        def decide(value):
+            def handler(_event):
+                if not answer.done():
+                    answer.set_result(value)
+
+            return handler
+
+        confirm(
+            f"Apply version {version.version}?",
+            "The dashboard has changes made after the assistant's last edit. "
+            "Applying this version replaces them.",
+            on_confirm=decide(True),
+            on_cancel=decide(False),
+            confirm_label="Apply and drop changes",
+            cancel_label="Keep my changes",
+        )
+        return await answer
