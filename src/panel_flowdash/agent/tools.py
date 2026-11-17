@@ -12,9 +12,9 @@ import typing as t
 from dataclasses import dataclass
 
 import yaml
+from panel_agents import ApprovalPolicy
 from panel_agents.adapters.pydantic_ai import artifact_return
 from panel_agents.artifacts import Change, StructuredDiff, register_diff
-from panel_agents.policy import ApprovalPolicy
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 
 from .diff import dashboard_changes
