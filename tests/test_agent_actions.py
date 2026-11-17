@@ -12,7 +12,7 @@ from pydantic_ai import Agent
 from panel_flowdash import MemoryDashboardStore
 from panel_flowdash.agent.actions import palette_actions
 
-from .test_agent_tools import _app, scripted
+from .test_agent_tools import WITH_FETCH, _app, scripted
 
 
 @pytest.fixture
@@ -88,3 +88,32 @@ async def test_an_agent_saving_through_the_palette_waits_for_approval(monkeypatc
     assert request.args == {"command": "action:save"}
     stored = store._load_any(mine.dashboard_id)
     assert [i.component_id for i in stored.items] == (["T/number"] if approved else [])
+
+
+async def test_adding_a_sensitive_component_from_the_palette_needs_approval(monkeypatch):
+    from panel_flowdash.agent.live import LiveDashboardOps
+    from panel_flowdash.agent.tools import approval_policy
+
+    app = _app(MemoryDashboardStore(), monkeypatch, components=WITH_FETCH)
+    policy = approval_policy(sensitive_components=["T/fetch"], ops=LiveDashboardOps(app))
+    assert policy.requires_approval("run_command", {"command": "component:T/fetch"})
+    assert policy.requires_approval("run_command", {"command": "component:Old/fetch"})
+    assert not policy.requires_approval("run_command", {"command": "component:T/number"})
+
+
+async def test_commands_keep_to_the_dashboard_the_request_was_sent_on(monkeypatch):
+    from panel_flowdash.agent.live import LiveDashboardOps
+    from panel_flowdash.agent.tools import FlowDashDeps
+
+    store = MemoryDashboardStore()
+    first = store.create_dashboard("alice", "First")
+    second = store.create_dashboard("alice", "Second")
+    app = _app(store, monkeypatch)
+    app._load_dashboard_sync(first.dashboard_id, edit=True)
+    deps = FlowDashDeps(LiveDashboardOps(app))
+    registry = palette_actions(app, deps=deps)
+    deps.start_request()
+    app._load_dashboard_sync(second.dashboard_id, edit=True)
+    output = await registry.invoke("run_command", {"command": "component:T/number"})
+    assert "switched to another dashboard" in output
+    assert app._editor._tile_items == []
