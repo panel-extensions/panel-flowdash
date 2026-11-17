@@ -185,10 +185,15 @@ editor = FlowDash("my_project/", store="dashboards.db", user="alice")
 ops = DashboardOps(editor)
 # Refuses while the editor has unsaved changes, unless discard=True.
 ops.open_dashboard("wind-overview")
-name = ops.add_node("Views/kpi", {"metric": "capacity"})
-ops.connect("filter.filtered", f"{name}.turbines")
-print(ops.preview()["nodes"][name]["status"])
+ops.add_node("Views/kpi", {"metric": "capacity"}, name="total_capacity")
+ops.connect("filter.filtered", "total_capacity.turbines")
+print(ops.preview()["nodes"]["total_capacity"]["status"])
 ```
+
+Without `name`, `add_node` gives the node a generated name such as `kpi_3fa2c1` and
+returns it. A chosen name follows the rules for
+[node names](../reference/dashboard-yaml.md#nodes) and is at most 64 characters long,
+and a name another node has is refused with a free variant suggested.
 
 `dashboard_toolset()` wraps them as a pydantic-ai toolset that runs against
 `FlowDashDeps(ops)`:
