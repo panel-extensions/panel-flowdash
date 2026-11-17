@@ -37,7 +37,14 @@ from panel_flowdash.dashboard_store import (
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.placeholders import PLACEHOLDER_NODE_TYPE
 from panel_flowdash.ui.text import escape_markdown
-from panel_flowdash.widgets import BUILTIN_COMPONENTS
+from panel_flowdash.widgets import BUILTIN_COMPONENTS, _WidgetComponent
+
+BUILTIN_VIEWS = [
+    cid for cid, cls in BUILTIN_COMPONENTS.items() if "view" in cls.__panel_app_metadata__.tags
+]
+INPUT_WIDGETS = [
+    cid for cid, cls in BUILTIN_COMPONENTS.items() if issubclass(cls, _WidgetComponent)
+]
 
 
 @register(page=False, component=True, title="Ticker", provides=[{"key": "ticker", "type": "str"}])
@@ -298,13 +305,11 @@ class TestBuiltinWidgets:
         editor.disconnect(src_start, "bound", dst, "start")
         assert widget.start == 10
 
-    @pytest.mark.parametrize(
-        "component_id", ["Widgets/Select", "Widgets/MultiChoice", "Widgets/Slider"]
-    )
+    @pytest.mark.parametrize("component_id", INPUT_WIDGETS)
     def test_widgets_have_a_minimum_width_for_the_canvas(self, component_id):
         editor = FlowDash({}, notifications=False)
         instance_id = editor.add_component(component_id)
-        widget = editor._tile_objects[-1]
+        widget = editor._component_instances[instance_id]._widget
         assert (widget.min_width, widget.sizing_mode) == (240, "stretch_width")
 
         editor.graph.get_config_state(instance_id).min_widget_width = 320
@@ -313,9 +318,7 @@ class TestBuiltinWidgets:
     # panel-reactflow's form passes both `name` and `label` to its widgets, which
     # Panel 1.9 warns about; warnings-as-errors would force the JSON fallback.
     @pytest.mark.filterwarnings("ignore:Both 'name' and 'label':PendingDeprecationWarning")
-    @pytest.mark.parametrize(
-        "component_id", ["Widgets/Select", "Widgets/MultiChoice", "Widgets/Slider"]
-    )
+    @pytest.mark.parametrize("component_id", list(BUILTIN_COMPONENTS))
     def test_widget_config_renders_a_schema_form(self, component_id):
         editor = FlowDash({}, notifications=False)
         instance_id = editor.add_component(component_id)
@@ -2485,10 +2488,13 @@ class TestRequiredInputPlaceholder:
 
     async def test_builtin_widgets_are_not_gated(self):
         editor = FlowDash({}, notifications=False)
-        for component_id in BUILTIN_COMPONENTS:
-            editor.add_component(component_id)
+        ids = [editor.add_component(component_id) for component_id in BUILTIN_COMPONENTS]
 
-        assert not any(isinstance(view, pn.Column) for view in editor._tile_objects)
+        instances = editor._component_instances
+        assert all(
+            view is instances[i].__panel__()
+            for i, view in zip(ids, editor._tile_objects, strict=True)
+        )
 
     async def test_gated_view_reaches_the_tile_grid(self, editor):
         editor.add_component("Demo/viewer")
@@ -3589,14 +3595,15 @@ class TestPalette:
         assert all(g["draggable"] is False for g in groups.values())
         assert [i["component_id"] for i in groups["Data sources"]["items"]] == [SELECTOR]
         assert [i["component_id"] for i in groups["Transforms"]["items"]] == [SHOUTER]
-        assert [i["component_id"] for i in groups["Views"]["items"]] == [CHART]
+        assert [i["component_id"] for i in groups["Views"]["items"]] == [CHART, *BUILTIN_VIEWS]
         assert all(i["draggable"] for g in groups.values() for i in g["items"])
         assert editor._palette.drag_type in editor._flow.drop_types
 
     async def test_placed_singleton_is_not_draggable(self):
         editor = FlowDash({SINGLETON: page_header}, notifications=False)
         editor.add_component(SINGLETON)
-        (item,) = next(s for s in editor._palette.items if s["label"] == "Views")["items"]
+        views = next(s for s in editor._palette.items if s["label"] == "Views")["items"]
+        item = next(i for i in views if i["component_id"] == SINGLETON)
         assert item["draggable"] is False
 
     async def test_clicking_placed_singleton_does_not_add_it_again(self):

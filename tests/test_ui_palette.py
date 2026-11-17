@@ -17,6 +17,12 @@ from panel_flowdash.ui.palette import (
     palette_items,
 )
 from panel_flowdash.ui.roles import component_role
+from panel_flowdash.widgets import BUILTIN_COMPONENTS
+
+BUILTIN_ROLES = {"view": [], "widget": []}
+for _cid, _app in BUILTIN_COMPONENTS.items():
+    _role = component_role(RegistryEntry.from_app(_app, app_id=_cid), (), ())
+    BUILTIN_ROLES[_role].append(_cid)
 
 
 @register(
@@ -136,8 +142,8 @@ class TestRoles:
         assert _groups(editor) == {
             "Data sources": ["Demo/prices", "Demo/feed"],
             "Transforms": ["Demo/filter", "Demo/shouter"],
-            "Views": ["Demo/chart", "Demo/header"],
-            "Widgets": ["Widgets/Select", "Widgets/MultiChoice", "Widgets/Slider"],
+            "Views": ["Demo/chart", "Demo/header", *BUILTIN_ROLES["view"]],
+            "Widgets": BUILTIN_ROLES["widget"],
         }
 
     def test_groups_are_headers_that_cannot_be_dragged(self, editor):
@@ -268,7 +274,9 @@ class TestSearch:
 
     def test_typing_in_the_field_filters(self, editor):
         editor._palette_panel.search._process_events({"value_input": "slider"})
-        assert _groups(editor) == {"Widgets": ["Widgets/Slider"]}
+        assert _groups(editor) == {
+            "Widgets": [cid for cid in BUILTIN_ROLES["widget"] if "slider" in cid.lower()]
+        }
 
     def test_placing_keeps_the_filter(self, editor):
         editor._palette_panel.query = "chart"

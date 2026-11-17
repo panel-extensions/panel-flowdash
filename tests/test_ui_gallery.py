@@ -23,6 +23,7 @@ from panel_flowdash.ui.gallery import (
 from panel_flowdash.ui.launcher import component_role as launcher_role
 from panel_flowdash.ui.palette import palette_entry
 from panel_flowdash.ui.roles import component_role
+from panel_flowdash.widgets import BUILTIN_COMPONENTS
 from tests.test_navigation import FakeLocation
 
 SOURCE = "Test/source"
@@ -261,13 +262,17 @@ class TestFilters:
         counts = gallery.role_counts()
         assert counts["source"] == 1
         assert counts["transform"] == 1
-        assert counts["view"] == 2
-        assert counts["widget"] == 3
+        entries = app._component_entries
+        views = [cid for cid in BUILTIN_COMPONENTS if "view" in entries[cid].metadata.tags]
+        widgets = [cid for cid in BUILTIN_COMPONENTS if cid not in views]
+        assert counts["view"] == 2 + len(views)
+        assert counts["widget"] == len(widgets)
         assert counts["all"] == len(gallery.entries)
         gallery.role = "view"
-        assert _visible(gallery) == [CHART, NOTES]
+        titles = {e.component_id: e.title for e in gallery.visible_entries()}
+        assert _visible(gallery) == sorted([CHART, NOTES, *views], key=titles.get)
         chip = gallery.role_chips["view"]
-        assert chip.label == "Views 2"
+        assert chip.label == f"Views {2 + len(views)}"
         assert chip.variant == "filled"
         assert gallery.role_chips["all"].variant == "outlined"
 
