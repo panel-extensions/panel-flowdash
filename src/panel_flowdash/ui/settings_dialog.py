@@ -122,9 +122,10 @@ def permission_from_entries(
     }
     prefix = {"view": "allow", "edit": "allow_edit", "blocked": "deny"}
     for entry in entries:
-        if entry.role == "view" and everyone:
+        name = entry.name.strip()
+        if not name or (entry.role == "view" and everyone):
             continue
-        lists[f"{prefix[entry.role]}_{entry.kind}s"].add(entry.name)
+        lists[f"{prefix[entry.role]}_{entry.kind}s"].add(name)
     if not everyone and not (lists["allow_users"] or lists["allow_groups"]):
         lists["allow_users"].add(owner)
     return Permission.from_spec(**lists)
