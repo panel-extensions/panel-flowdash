@@ -36,6 +36,9 @@ logger = logging.getLogger(__name__)
 APPROVAL_TOOLS = ("save_dashboard", "delete_dashboard", "share_dashboard")
 
 
+# Command palette commands that do the same, run through the run_command action.
+APPROVAL_COMMANDS = ("action:save*", "action:delete*", "action:share*", "action:publish*")
+
 # Settings whose change widens who sees what, called out when saving.
 ACCESS_SETTINGS = ("viewers_can_inspect",)
 
@@ -104,12 +107,20 @@ def _components_in(text: t.Any) -> set[str]:
     return {str(n.get("component")) for n in nodes.values() if isinstance(n, dict)}
 
 
+def _stores(args: dict[str, t.Any]) -> bool:
+    command = str(args.get("command", ""))
+    return any(fnmatch.fnmatchcase(command, pattern) for pattern in APPROVAL_COMMANDS)
+
+
 def approval_policy(
     *rules: ApprovalRule | str,
     sensitive_components: t.Collection[str] = (),
     ops: DashboardOps | None = None,
 ) -> ApprovalPolicy:
     """Return the policy asking the user before every save, delete and sharing change.
+
+    It covers the dashboard tools and the command palette commands that save,
+    delete, share or publish, so neither path skips the approval.
 
     Parameters
     ----------
@@ -156,7 +167,8 @@ def approval_policy(
             ApprovalRule("connect", when=target_is_sensitive),
             ApprovalRule("set_transform", when=target_is_sensitive),
         ]
-    return ApprovalPolicy([*APPROVAL_TOOLS, *extra, *rules])
+    stores = ApprovalRule("run_command", when=_stores)
+    return ApprovalPolicy([*APPROVAL_TOOLS, stores, *extra, *rules])
 
 
 def _sensitive_matcher(patterns: t.Sequence[str], ops: DashboardOps) -> t.Callable[[str], bool]:

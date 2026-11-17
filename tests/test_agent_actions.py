@@ -56,3 +56,11 @@ async def test_an_agent_drives_the_palette(app):
     output = await AgentRunner(agent, RunState(flush_interval=0)).run("Toggle the theme")
     assert output.startswith("Done: Ran 'Switch to")
     assert app._page.dark_theme is not dark
+
+
+def test_saving_through_the_palette_needs_approval_too():
+    from panel_flowdash.agent.tools import approval_policy
+
+    policy = approval_policy()
+    assert policy.requires_approval("run_command", {"command": "action:save"})
+    assert not policy.requires_approval("run_command", {"command": "action:refresh"})
