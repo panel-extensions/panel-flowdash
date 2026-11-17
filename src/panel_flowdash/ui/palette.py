@@ -350,7 +350,7 @@ class ComponentPalette(Viewer):
             margin=0,
             sx=_SEARCH_SX,
         )
-        self.search.link(self, value_input="query", bidirectional=True)
+        self.search.param.watch(self._on_search_input, "value_input")
         self._shortcut = SearchShortcut(
             search=self.search, sizing_mode="stretch_width", margin=(12, 12, 4, 12)
         )
@@ -402,6 +402,21 @@ class ComponentPalette(Viewer):
             sizing_mode="stretch_both",
             margin=0,
         )
+
+    def _on_search_input(self, event):
+        self.query = event.new or ""
+
+    @param.depends("query", watch=True)
+    def _sync_search(self):
+        # value_input is read-only, so set the text through value. value may
+        # already hold the query while the field shows other typed text, then
+        # re-triggering value pushes it into value_input again.
+        if self.search.value_input == self.query:
+            return
+        if self.search.value == self.query:
+            self.search.param.trigger("value")
+        else:
+            self.search.value = self.query
 
     @param.depends("query", watch=True)
     def refresh(self):

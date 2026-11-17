@@ -273,7 +273,7 @@ class TestFilters:
 
     async def test_search_updates_cards_and_counts(self, app):
         gallery = _gallery(app)
-        gallery.search.value_input = "geo"
+        gallery.search._process_events({"value_input": "geo"})
         assert gallery.query == "geo"
         assert _visible(gallery) == [FILTER]
         assert gallery._cards[FILTER].visible

@@ -267,7 +267,7 @@ class TestSearch:
         assert not editor._palette_panel._empty.visible
 
     def test_typing_in_the_field_filters(self, editor):
-        editor._palette_panel.search.value_input = "slider"
+        editor._palette_panel.search._process_events({"value_input": "slider"})
         assert _groups(editor) == {"Widgets": ["Widgets/Slider"]}
 
     def test_placing_keeps_the_filter(self, editor):

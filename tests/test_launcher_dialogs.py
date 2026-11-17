@@ -4,7 +4,6 @@ import sys
 
 import panel as pn
 import pytest
-from panel.util import edit_readonly
 
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.dashboard_store import (
@@ -46,9 +45,8 @@ async def app(tmp_path):
 
 
 def _type(widget, text):
-    """Set ``value_input`` the way a keystroke in the browser does."""
-    with edit_readonly(widget):
-        widget.value_input = text
+    """Send ``value_input`` the way a keystroke in the browser does."""
+    widget._process_events({"value_input": text})
 
 
 def _dashboard(app, title="Sales"):
