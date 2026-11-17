@@ -45,6 +45,8 @@ agent_model = "anthropic:<model>"
 | --- | --- |
 | `agent_model` | The model of the default agent. Defaults to `FLOWDASH_AGENT_MODEL`. |
 | `agent` | `None` (default): the default agent when a model is configured. A string: the default agent with that model. `False`: no agent, even if a model is configured. A `pydantic_ai.Agent`: your own agent. |
+| `agent_authorize` | Called with the signed-in user's `Identity`; only sessions for which it returns True get the agent. |
+| `agent_sensitive_components` | Component ids whose config can reach outside the dashboard, see [Untrusted text](#untrusted-text). |
 
 To give the default agent knowledge about your project, build it yourself and pass
 extra instructions:
@@ -81,12 +83,21 @@ unsaved-changes review work as for the user's own edits.
 - **Drive the page**: run any command the command palette offers at that moment,
   such as opening a dashboard, refreshing or switching to view mode.
 - **Store**: save, delete and share dashboards, each only after the user approves
-  the call.
+  the call. The save approval lists what is stored and calls out changes of who can
+  see the dashboard's data; delete and share approvals name the dashboard's title.
+  Sharing adds and removes people and keeps a private dashboard private unless the
+  call sets `everyone`, which the approval shows.
 
 Every edit publishes the dashboard's YAML as a new version. The user can compare
 versions, see what changed in the dashboard's terms ("Connected filter.filtered →
 map.turbines", "kpi: metric: turbines → capacity") and apply an earlier or later
-version, which loads it like an imported file.
+version, which loads it like an imported file. If the dashboard has changes made
+after the agent's last edit, the user confirms that applying the version drops them.
+
+Each request to the agent stays on the dashboard it started on: if the user opens
+another dashboard meanwhile, the agent stops instead of changing that one. When the
+agent rewrites a whole dashboard from YAML it read earlier and the user has edited the
+dashboard since, the rewrite is refused and the agent reads it again.
 
 ---
 
@@ -96,14 +107,33 @@ The agent can never do more than the user it works for. Its tools go through the
 checks as the app:
 
 - Components the user may not use are left out of the agent's catalogue and cannot be
-  placed. On a dashboard they appear as `flowdash:restricted` stand-ins whose config
-  and connections the agent can neither read nor change.
+  placed. On a dashboard they appear as `flowdash:restricted` stand-ins: the agent
+  cannot read or change their config or connections, sees which inputs they feed
+  (and cannot connect anything else to those), but can remove such a node, as the
+  user can on the canvas.
 - Dashboards the user may not open look missing to the agent. On a dashboard the user
   may only view, every edit is refused. Edit rights revoked from another session apply
   to the next edit.
-- A viewer's agent only gets the YAML and output samples of a dashboard when the
-  dashboard lets viewers inspect its outputs, as for Download and Inspect.
+- A viewer's agent only gets the YAML, node details and output samples of a dashboard
+  when the dashboard lets viewers inspect its outputs, as for Download and Inspect.
 - Deleting and sharing need the same administrator rights as in the app.
+
+---
+
+## Untrusted text
+
+Dashboard titles, descriptions, config values, column names and data reach the agent
+as it works, and other people may have written them, so a dashboard can carry text
+that tries to instruct the agent ("prompt injection"). The agent is told to treat all
+of it as data, but plan for it to be fooled sometimes:
+
+- Saving, deleting and sharing always need the user's approval, and the approvals say
+  what will happen. Read them before approving.
+- Unapproved edits only change the open canvas, which the user sees and can discard.
+- Components run as soon as they are placed, with the user's rights. If a component's
+  config can reach outside the dashboard (a SQL source, a URL fetch, an expression),
+  list it in `agent_sensitive_components`, so placing it, changing its config or
+  loading YAML that places it needs the user's approval.
 
 ---
 
@@ -119,6 +149,7 @@ from panel_flowdash.agent import DashboardOps
 
 editor = FlowDash("my_project/", store="dashboards.db", user="alice")
 ops = DashboardOps(editor)
+# Refuses while the editor has unsaved changes, unless discard=True.
 ops.open_dashboard("wind-overview")
 name = ops.add_node("Views/kpi", {"metric": "capacity"})
 ops.connect("filter.filtered", f"{name}.turbines")
