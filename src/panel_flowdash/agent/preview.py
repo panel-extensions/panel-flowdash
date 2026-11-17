@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import math
 import typing as t
 
@@ -13,6 +14,10 @@ if t.TYPE_CHECKING:
 
 _MAX_TEXT = 200
 _MAX_ITEMS = 10
+_MAX_COLUMNS = 50
+_MAX_ROWS = 20
+# Characters of JSON a whole report may take; samples are dropped past it.
+_MAX_REPORT = 20_000
 
 
 def _scalar(value: t.Any) -> t.Any:
@@ -44,17 +49,21 @@ def sample_value(value: t.Any, rows: int = 5) -> dict[str, t.Any]:
         import pandas as pd
     except ImportError:
         pd = None
+    rows = max(0, min(rows, _MAX_ROWS))
     if pd is not None and isinstance(value, pd.DataFrame):
-        head = value.head(rows)
-        return {
+        shown = value.iloc[:rows, :_MAX_COLUMNS]
+        sample = {
             "type": "DataFrame",
             "rows": int(value.shape[0]),
-            "columns": {str(c): str(dtype) for c, dtype in value.dtypes.items()},
+            "columns": {str(c): str(dtype) for c, dtype in shown.dtypes.items()},
             "head": [
                 {str(k): _scalar(v) for k, v in record.items()}
-                for record in head.to_dict(orient="records")
+                for record in shown.to_dict(orient="records")
             ],
         }
+        if value.shape[1] > _MAX_COLUMNS:
+            sample["columns_not_shown"] = int(value.shape[1] - _MAX_COLUMNS)
+        return sample
     if pd is not None and isinstance(value, pd.Series):
         return {
             "type": "Series",
@@ -98,7 +107,9 @@ def preview_editor(
         Whether to include the current value of each output. Leave it off
         for someone the dashboard hides its outputs from.
     rows
-        How many rows or items each sample shows.
+        How many rows or items each sample shows, at most 20. A DataFrame
+        shows at most 50 columns, and samples are left out once the report
+        grows past about 20,000 characters.
 
     Returns
     -------
@@ -142,4 +153,11 @@ def preview_editor(
         nodes[name] = entry
     order = ["ok", "waiting", "missing", "restricted", "failed", "error"]
     status = max((n["status"] for n in nodes.values()), key=order.index, default="ok")
+    size = len(json.dumps(nodes, default=str))
+    for entry in reversed(list(nodes.values())):
+        if size <= _MAX_REPORT:
+            break
+        if "outputs" in entry:
+            size -= len(json.dumps(entry["outputs"], default=str))
+            entry["outputs"] = "omitted, the report is too long; preview fewer nodes"
     return {"status": status, "nodes": nodes}

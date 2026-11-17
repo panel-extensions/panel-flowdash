@@ -1,5 +1,6 @@
 """The dashboard operations API: editing through the editor, previews and the user's rights."""
 
+import asyncio
 import gc
 import weakref
 
@@ -128,19 +129,30 @@ class TestEditing:
         ops.place_tile(scaled, width=50, height=200, index=0)
         ops.set_settings({"description": "Doubles a number"})
         doc = yaml.safe_load(ops.get_dashboard())
-        assert list(doc["nodes"]) == ["number", "doubler", "scaled"]
-        assert doc["nodes"]["scaled"]["config"] == {"factor": 3}
+        assert list(doc["nodes"]) == [source, target, scaled]
+        assert source.startswith("number_") and scaled.startswith("scaled_")
+        assert doc["nodes"][scaled]["config"] == {"factor": 3}
         assert doc["edges"][1]["transform"] == [{"op": "round", "digits": 0}]
-        assert doc["layout"]["tiles"][0] == {"node": "scaled", "width": 50, "height": 200}
+        assert doc["layout"]["tiles"][0] == {"node": scaled, "width": 50, "height": 200}
         assert doc["settings"]["description"] == "Doubles a number"
         assert ops.editor.dirty
 
-        ops.set_transform("doubler.doubled", "scaled.value", [])
-        ops.disconnect("number.value", "doubler.value")
-        ops.remove_node("number")
+        ops.set_transform(f"{target}.doubled", f"{scaled}.value", [])
+        ops.disconnect(f"{source}.value", f"{target}.value")
+        ops.remove_node(source)
         doc = yaml.safe_load(ops.get_dashboard())
-        assert list(doc["nodes"]) == ["doubler", "scaled"]
-        assert doc["edges"] == [{"from": "doubler.doubled", "to": "scaled.value"}]
+        assert list(doc["nodes"]) == [target, scaled]
+        assert doc["edges"] == [{"from": f"{target}.doubled", "to": f"{scaled}.value"}]
+
+    def test_names_stay_with_their_node(self, ops):
+        first = ops.add_node("T/number")
+        second = ops.add_node("T/number")
+        ops.remove_node(first)
+        third = ops.add_node("T/number")
+        assert third not in (first, second)
+        with pytest.raises(OperationError, match=f"No node '{first}'"):
+            ops.set_config(first, {})
+        assert second in yaml.safe_load(ops.get_dashboard())["nodes"]
 
     def test_refusals_say_how_to_fix_them(self, ops):
         node = ops.add_node("T/number")
@@ -151,9 +163,9 @@ class TestEditing:
             ops.add_node("T/scaled", {"size": 3})
         with pytest.raises(OperationError, match="Config 'factor'"):
             ops.add_node("T/scaled", {"factor": 50})
-        with pytest.raises(OperationError, match="'number' \\(Number\\) has no input 'value'"):
+        with pytest.raises(OperationError, match=f"'{node}' \\(Number\\) has no input 'value'"):
             ops.connect(f"{doubler}.doubled", f"{node}.value")
-        with pytest.raises(OperationError, match=r"No node 'doubl'\. Did you mean 'doubler'"):
+        with pytest.raises(OperationError, match=f"No node 'doubl'. Did you mean '{doubler}'"):
             ops.connect(f"{node}.value", "doubl.value")
         with pytest.raises(OperationError, match="There is no edge"):
             ops.disconnect(f"{node}.value", f"{doubler}.value")
@@ -196,12 +208,12 @@ class TestPreview:
     def test_reports_health_and_samples(self, ops):
         number = ops.add_node("T/number")
         doubler = ops.add_node("T/doubler")
-        ops.add_node("T/doubler")
+        idle = ops.add_node("T/doubler")
         ops.connect(f"{number}.value", f"{doubler}.value")
         report = ops.preview()
         assert report["status"] == "waiting"
-        assert report["nodes"]["doubler"]["outputs"] == {"doubled": {"type": "int", "value": 42}}
-        assert report["nodes"]["doubler_2"]["status"] == "waiting"
+        assert report["nodes"][doubler]["outputs"] == {"doubled": {"type": "int", "value": 42}}
+        assert report["nodes"][idle]["status"] == "waiting"
 
     def test_previewing_yaml_leaves_the_editor_alone(self, ops):
         report = ops.preview(
@@ -331,10 +343,74 @@ class TestRights:
         ops, _ = self._opened(store, finance=True, access=access, inspect_outputs=True)
         with pytest.raises(PermissionError, match="Only people who can edit"):
             ops.get_dashboard(model.dashboard_id)
-        assert "outputs" not in ops.preview()["nodes"]["double"]
+        report = ops.preview()
+        assert "nodes" not in report and "T/" not in str(report)
 
         model.settings["viewers_can_inspect"] = True
         store.save_dashboard(model)
         ops, _ = self._opened(store, finance=True, access=access, inspect_outputs=True)
         assert "double" in ops.get_dashboard(model.dashboard_id)
         assert "outputs" in ops.preview()["nodes"]["double"]
+
+
+class TestConcurrentEdits:
+    def test_yaml_read_before_the_users_edits_is_refused(self, ops):
+        ops.add_node("T/number")
+        text = ops.get_dashboard()
+        ops.editor.add_component("T/doubler")
+        with pytest.raises(OperationError, match="changed since this YAML was read"):
+            ops.replace_yaml(text)
+        assert len(ops.editor._tile_items) == 2
+        ops.replace_yaml(ops.get_dashboard())
+
+    async def test_replacing_asynchronously(self, ops):
+        number = ops.add_node("T/number")
+        text = ops.get_dashboard() + "  extra:\n    component: T/doubler\nedges:\n"
+        text += f"  - {{from: {number}.value, to: extra.value}}\n"
+        assert await ops.replace_yaml_async(text) == []
+        assert ops.editor.graph.edges
+
+    def test_opening_another_dashboard_keeps_unsaved_changes(self, store, ops):
+        ops.add_node("T/number")
+        (model,) = store._all_dashboards()
+        ops.editor.store = store
+        with pytest.raises(OperationError, match="unsaved changes"):
+            ops.open_dashboard(model.dashboard_id)
+        ops.open_dashboard(model.dashboard_id, discard=True)
+
+
+class TestPreviewBounds:
+    def test_wide_frames_are_cut(self):
+        pd = pytest.importorskip("pandas")
+        from panel_flowdash.agent.preview import sample_value
+
+        sample = sample_value(pd.DataFrame([list(range(80))] * 30), rows=500)
+        assert len(sample["columns"]) == 50 and sample["columns_not_shown"] == 30
+        assert len(sample["head"]) == 20
+
+    async def test_slow_imports_time_out(self, ops, monkeypatch):
+        async def slow(*args, **kwargs):
+            await asyncio.sleep(1)
+
+        monkeypatch.setattr(type(ops.editor), "load_model_async", slow)
+        with pytest.raises(OperationError, match=r"longer than 0\.05 seconds"):
+            await ops.preview_async(
+                "flowdash: 1\nnodes:\n  n: {component: T/number}\n", timeout=0.05
+            )
+
+
+def test_reading_another_dashboard_while_viewing_one(store):
+    mine = store.create_dashboard("alice", "Mine")
+    (theirs,) = [m for m in store._all_dashboards() if m.owner == "bob"]
+    editor = _editor(store, inspect_outputs=True, access={theirs.dashboard_id: "view"})
+    ops = DashboardOps(editor)
+    ops.open_dashboard(theirs.dashboard_id)
+    assert editor.read_only
+    assert "flowdash: 1" in ops.get_dashboard(mine.dashboard_id)
+
+
+def test_stored_dashboards_mark_restricted_connections(store):
+    (model,) = store._all_dashboards()
+    ops = DashboardOps(_editor(store))
+    doc = yaml.safe_load(ops.get_dashboard(model.dashboard_id))
+    assert doc["edges"] == [{"from": "secret", "to": "double.value"}]

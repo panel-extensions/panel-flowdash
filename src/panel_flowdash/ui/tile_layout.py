@@ -42,6 +42,24 @@ def update_tile(editor, instance_id: str, **patch):
     editor.dirty = True
 
 
+def move_tile(editor, instance_id: str, index: int):
+    """Move a component's tile to position *index* among the tiles, 0 for the first."""
+    layout = [dict(e) for e in _layout(editor)]
+    tiles = [item["instance_id"] for item in editor._tile_items if not _in_sidebar(editor, item)]
+    ranked = {e["instance_id"]: e.get("index") for e in layout if "instance_id" in e}
+    order = sorted(
+        tiles, key=lambda iid: (ranked.get(iid) is None, ranked.get(iid) or 0, tiles.index(iid))
+    )
+    order.remove(instance_id)
+    order.insert(max(0, min(index, len(order))), instance_id)
+    by_id = {e["instance_id"]: e for e in layout if "instance_id" in e}
+    for position, iid in enumerate(order):
+        by_id.setdefault(iid, {"instance_id": iid})["index"] = position
+    editor._pending_tile_layout = [*by_id.values(), *(e for e in layout if "instance_id" not in e)]
+    editor._rebuild_tile_grid()
+    editor.dirty = True
+
+
 def to_columns(width: float | None) -> int:
     """Return how many of the grid's columns a tile *width* in percent of the row spans."""
     if width is None:
