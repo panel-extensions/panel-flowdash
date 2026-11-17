@@ -632,6 +632,7 @@ class TestMenuBarVariant:
             "Duplicate",
             "Share",
             "Download as file",
+            "Download as YAML",
             "Delete",
         ]
         assert (
@@ -955,6 +956,7 @@ class TestLauncherCardMenu:
             "Duplicate",
             "Share",
             "Download as file",
+            "Download as YAML",
             "---",
             "Delete",
         ]
@@ -964,7 +966,7 @@ class TestLauncherCardMenu:
         app._can_administer_dashboard = lambda dashboard_id: False
         app._can_edit_dashboard = lambda dashboard: False
         (menu,) = _launcher_menus(app)
-        assert _labels(menu.items) == ["Open", "Duplicate", "Download as file"]
+        assert _labels(menu.items) == ["Open", "Duplicate", "Download as file", "Download as YAML"]
 
     async def test_viewer_card_lists_subclass_viewer_action(self, copy_app):
         copy_app.store.create_dashboard(copy_app._user_id, "Dash A")
@@ -1078,6 +1080,7 @@ class TestSubclassAction:
             "Duplicate",
             "Share",
             "Download as file",
+            "Download as YAML",
             "Delete",
             "Copy",
         ]
@@ -1124,6 +1127,7 @@ class TestSubclassAction:
             "Duplicate",
             "Share",
             "Download as file",
+            "Download as YAML",
             "Delete",
             "Copy",
         ]

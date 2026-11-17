@@ -11,7 +11,7 @@ from .test_import_restricted_components import _app, _editor, _loaded, store  # 
 YAML_FILE = "flowdash: 1\ntitle: From YAML\nnodes:\n  o: {component: T/open}\n"
 
 
-def test_export_filename_takes_the_format():
+async def test_export_filename_takes_the_format():
     assert export_filename("Plant A") == "Plant_A.json"
     assert export_filename("Plant A", "yaml") == "Plant_A.yaml"
 
@@ -23,7 +23,7 @@ def test_dropping_a_yaml_file_loads_it():
     assert [i["component_id"] for i in editor._tile_items] == ["T/open"]
 
 
-def test_the_editor_downloads_yaml_with_restricted_stand_ins(store):  # noqa: F811
+async def test_the_editor_downloads_yaml_with_restricted_stand_ins(store):  # noqa: F811
     editor, _ = _loaded(store)
     editor._download_format = "yaml"
     text = editor._download_callback().getvalue()
@@ -34,7 +34,7 @@ def test_the_editor_downloads_yaml_with_restricted_stand_ins(store):  # noqa: F8
     assert "SELECT secret" not in text
 
 
-def test_the_launcher_reads_yaml_files():
+async def test_the_launcher_reads_yaml_files():
     model = parse_dashboard_file(YAML_FILE, "alice")
     assert model.title == "From YAML" and [i.component_id for i in model.items] == ["T/open"]
 
