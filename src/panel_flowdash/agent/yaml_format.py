@@ -9,6 +9,7 @@ loading YAML is importing a dashboard file.
 from __future__ import annotations
 
 import copy
+import hashlib
 import re
 import typing as t
 from collections import defaultdict
@@ -26,10 +27,15 @@ TOP_LEVEL_KEYS = ("flowdash", "title", "settings", "nodes", "edges", "layout")
 NODE_KEYS = ("component", "config", "position")
 EDGE_KEYS = ("from", "to", "transform")
 LAYOUT_KEYS = ("tiles", "reference_width", "breakpoints", "responsive")
+# Keys starting with "x-" are also accepted on tiles and kept, for extensions.
+TILE_KEYS = ("node", "width", "height", "visible")
+
+# The component a file names for a node the exporting user may not use.
+RESTRICTED_COMPONENT = "flowdash:restricted"
 
 NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 # Instance ids the editor generates for placed components: "<type key>_<6 hex>".
-_GENERATED_ID = re.compile(r"^.+_[0-9a-f]{6}$")
+_GENERATED_ID = re.compile(r"^.+_(?P<suffix>[0-9a-f]{6})$")
 
 # Canvas spacing of the nodes that are laid out because the file gives no position.
 _COLUMN_SPACING = 360
@@ -63,41 +69,64 @@ def _slug(text: str) -> str:
     return slug
 
 
+def _hash(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:6]
+
+
+def _derived_name(item: dict) -> str:
+    instance_id = item["instance_id"]
+    component = str(item.get("component_id", "node")).rsplit("/", 1)[-1].split(":")[-1]
+    generated = _GENERATED_ID.match(instance_id)
+    suffix = generated["suffix"] if generated else _hash(instance_id)
+    return f"{_slug(component)}_{suffix}"
+
+
 def node_names(items: t.Iterable[dict]) -> dict[str, str]:
     """Return a readable, unique name for each exported item, keyed by instance id.
 
     An instance id that is already readable is its own name. Ids the editor
-    generated, like ``Views__kpi_3fa2c1``, are named after their component,
-    numbered from the second one on (``kpi``, ``kpi_2``).
+    generates, like ``Views__kpi_3fa2c1``, are named after their component and
+    keep the random part of the id (``kpi_3fa2c1``), and other ids get a short
+    hash of themselves. A node's name therefore depends only on the node, so
+    it never changes and is never reused while other nodes come and go.
     """
     items = list(items)
     names: dict[str, str] = {}
-    taken: set[str] = set()
-    pending = []
+    readable = {
+        item["instance_id"]
+        for item in items
+        if NAME_PATTERN.match(item["instance_id"]) and not _GENERATED_ID.match(item["instance_id"])
+    }
     for item in items:
         instance_id = item["instance_id"]
-        if NAME_PATTERN.match(instance_id) and not _GENERATED_ID.match(instance_id):
+        if instance_id in readable:
             names[instance_id] = instance_id
-            taken.add(instance_id)
-        else:
-            pending.append(item)
-    for item in pending:
-        base = _slug(str(item.get("component_id", "node")).rsplit("/", 1)[-1].split(":")[-1])
-        name, n = base, 1
-        while name in taken:
-            n += 1
-            name = f"{base}_{n}"
-        names[item["instance_id"]] = name
-        taken.add(name)
+            continue
+        name = _derived_name(item)
+        if name in readable:
+            name = f"{name}_{_hash(instance_id)}"
+        names[instance_id] = name
     return names
 
 
-def _export_dict(source: dict | DashboardModel) -> dict:
+def _export_dict(source: t.Any) -> dict:
     if isinstance(source, DashboardModel):
         from panel_flowdash.editor import export_model
 
         return export_model(source)
+    if hasattr(source, "export_dashboard"):
+        return source.export_dashboard()
     return source
+
+
+def editor_restricted_edges(editor) -> list[dict]:
+    """Return the edges of an editor's canvas that touch items its user may not use."""
+    private = {iid for iid, p in editor._placeholders().items() if p.private}
+    return [
+        u.edge.to_dict()
+        for u in editor._unresolved_edges
+        if {u.edge.source, u.edge.target} & private
+    ]
 
 
 def _tile(entry: dict, names: dict[str, str]) -> dict | None:
@@ -106,7 +135,7 @@ def _tile(entry: dict, names: dict[str, str]) -> dict | None:
         return None
     tile = {"node": names[instance_id]}
     for key, value in entry.items():
-        if key not in ("instance_id", "index"):
+        if key in TILE_KEYS or str(key).startswith("x-"):
             tile[key] = copy.deepcopy(value)
     return tile
 
@@ -124,18 +153,26 @@ def _position(item: dict) -> list:
     return [item.get("x", 0), item.get("y", 0)]
 
 
-def dashboard_to_dict(source: dict | DashboardModel) -> dict:
+def dashboard_to_dict(source: t.Any, restricted_edges: t.Iterable[dict] = ()) -> dict:
     """Return the YAML document for a dashboard export, as plain data.
 
     Parameters
     ----------
     source
-        A dashboard export, as written by
+        A :class:`~panel_flowdash.editor.FlowDash` editor, whose canvas is
+        exported with its user's rights, a dashboard export, as written by
         :meth:`~panel_flowdash.editor.FlowDash.export_dashboard`, or a
         :class:`~panel_flowdash.dashboard_store.DashboardModel`, which is
-        exported first.
+        exported as is.
+    restricted_edges
+        The stored edges (export dicts) touching restricted items, which the
+        export leaves out. They are written with only the restricted node's
+        name on that end, so the file shows which inputs are taken without
+        revealing the hidden ports.
     """
     data = _export_dict(source)
+    if hasattr(source, "export_dashboard") and not restricted_edges:
+        restricted_edges = editor_restricted_edges(source)
     items = list(data.get("items") or [])
     names = node_names(items)
     doc: dict[str, t.Any] = {"flowdash": FORMAT_VERSION}
@@ -163,6 +200,20 @@ def dashboard_to_dict(source: dict | DashboardModel) -> dict:
         if edge.get("transform"):
             entry["transform"] = copy.deepcopy(edge["transform"])
         edges.append(entry)
+    restricted = {
+        item["instance_id"] for item in items if item["component_id"] == RESTRICTED_COMPONENT
+    }
+    for edge in restricted_edges:
+        ends = []
+        for node, port in (
+            (edge["source"], edge["source_port"]),
+            (edge["target"], edge["target_port"]),
+        ):
+            if node not in names:
+                break
+            ends.append(names[node] if node in restricted else f"{names[node]}.{port}")
+        else:
+            edges.append({"from": ends[0], "to": ends[1]})
     if edges:
         doc["edges"] = edges
     layout: dict[str, t.Any] = {}
@@ -204,20 +255,22 @@ _Dumper.add_representer(list, _represent_list)
 _Dumper.add_representer(str, _represent_str)
 
 
-def dashboard_to_yaml(source: dict | DashboardModel) -> str:
+def dashboard_to_yaml(source: t.Any, restricted_edges: t.Iterable[dict] = ()) -> str:
     """Write a dashboard export as YAML text.
 
     Parameters
     ----------
     source
-        A dashboard export, as written by
-        :meth:`~panel_flowdash.editor.FlowDash.export_dashboard`, or a
-        :class:`~panel_flowdash.dashboard_store.DashboardModel`. Export through
-        the editor when the dashboard may hold components the user may not use,
-        so they are written as restricted stand-ins.
+        A :class:`~panel_flowdash.editor.FlowDash` editor, a dashboard export
+        or a :class:`~panel_flowdash.dashboard_store.DashboardModel`, see
+        :func:`dashboard_to_dict`. Pass the editor when the dashboard may hold
+        components the user may not use, so they are written as restricted
+        stand-ins with their connections marked.
+    restricted_edges
+        The stored edges touching restricted items, see :func:`dashboard_to_dict`.
     """
     return yaml.dump(
-        dashboard_to_dict(source),
+        dashboard_to_dict(source, restricted_edges),
         Dumper=_Dumper,
         sort_keys=False,
         allow_unicode=True,
@@ -275,12 +328,23 @@ def _unknown_keys(value: dict, allowed: t.Sequence[str], path: str):
 
 def split_port(ref: t.Any, path: str) -> tuple[str, str]:
     """Split a ``<node>.<port>`` reference, raising DashboardYAMLError if it is not one."""
-    if not isinstance(ref, str) or "." not in ref:
-        _fail(path, f"must be '<node>.<port>', got {ref!r}.")
-    node, port = ref.split(".", 1)
-    if not node or not port:
+    node, port = split_ref(ref, path)
+    if port is None:
         _fail(path, f"must be '<node>.<port>', got {ref!r}.")
     return node, port
+
+
+def split_ref(ref: t.Any, path: str) -> tuple[str, str | None]:
+    """Split an edge end into node and port; the port is None for a bare node name.
+
+    A bare name is how a file marks the hidden port of a restricted node.
+    """
+    if not isinstance(ref, str) or not ref:
+        _fail(path, f"must be '<node>.<port>', got {ref!r}.")
+    node, _, port = ref.partition(".")
+    if not node or (not port and "." in ref):
+        _fail(path, f"must be '<node>.<port>', got {ref!r}.")
+    return node, port or None
 
 
 def _number(value, path: str):
@@ -316,6 +380,11 @@ def _auto_positions(names: list[str], edges: list[tuple[str, str]]) -> dict[str,
     return positions
 
 
+def _component(nodes: dict, name: str) -> t.Any:
+    node = nodes.get(name)
+    return node.get("component") if isinstance(node, dict) else None
+
+
 def _layout_entries(tiles: list, path: str, ids: dict[str, str]) -> list[dict]:
     entries = []
     for i, tile in enumerate(_sequence(tiles, path)):
@@ -324,6 +393,9 @@ def _layout_entries(tiles: list, path: str, ids: dict[str, str]) -> list[dict]:
         name = tile.get("node")
         if not isinstance(name, str) or name not in ids:
             _fail(f"{tile_path}.node", f"names no node: {name!r}.")
+        _unknown_keys(
+            {k: v for k, v in tile.items() if not str(k).startswith("x-")}, TILE_KEYS, tile_path
+        )
         entry = {k: copy.deepcopy(v) for k, v in tile.items() if k != "node"}
         for key in ("width", "height"):
             if key in entry and entry[key] is not None:
@@ -397,15 +469,21 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
         for key in ("from", "to"):
             if key not in edge:
                 _fail(f"{path}.{key}", "is required.")
-        source, source_port = split_port(edge["from"], f"{path}.from")
-        target, target_port = split_port(edge["to"], f"{path}.to")
-        for name, key in ((source, "from"), (target, "to")):
+        source, source_port = split_ref(edge["from"], f"{path}.from")
+        target, target_port = split_ref(edge["to"], f"{path}.to")
+        for name, port, key in ((source, source_port, "from"), (target, target_port, "to")):
             if name not in ids:
                 _fail(f"{path}.{key}", f"names no node: {name!r}.")
+            if port is None and _component(nodes, name) != RESTRICTED_COMPONENT:
+                _fail(f"{path}.{key}", f"must be '<node>.<port>', got {name!r}.")
         transform = _sequence(edge.get("transform"), f"{path}.transform")
         for j, step in enumerate(transform):
             if not isinstance(step, dict) or "op" not in step:
                 _fail(f"{path}.transform[{j}]", "must be a mapping with an 'op'.")
+        wiring.append((source, target))
+        if source_port is None or target_port is None:
+            # A stored connection of a restricted node: kept as stored on import.
+            continue
         entry = {
             "source": ids[source],
             "source_port": source_port,
@@ -415,7 +493,6 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
         if transform:
             entry["transform"] = copy.deepcopy(transform)
         edges.append(entry)
-        wiring.append((source, target))
 
     unplaced = [
         n for n, node in nodes.items() if _mapping(node, f"nodes.{n}").get("position") is None

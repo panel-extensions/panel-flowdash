@@ -3624,10 +3624,10 @@ class FlowDash(Viewer):
             try:
                 data = json.loads(data)
             except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-                try:
-                    data = parse_yaml(data)
-                except ValueError:
+                text = data.decode("utf-8", "replace") if isinstance(data, bytes) else data
+                if text.lstrip().startswith(("{", "[")):
                     raise ValueError(f"Not valid JSON: {exc}") from exc
+                data = parse_yaml(data)
         if is_dashboard_yaml(data):
             # Names map back to the ids of the canvas they were exported from.
             data = dashboard_from_dict(data, base=self.export_dashboard())

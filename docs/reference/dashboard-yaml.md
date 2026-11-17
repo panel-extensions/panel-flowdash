@@ -75,6 +75,11 @@ A node name is unique within the file, starts with a letter or underscore and
 contains only letters, digits, `_` and `-`. Node order matters: the controls bar
 shows control components (registered with `sidebar=True`) in node order.
 
+A node keeps its name for as long as it exists, and a name is never given to
+another node. Nodes placed in the editor are named after their component plus the
+random part of their id, e.g. `kpi_3fa2c1`; a node created from a file keeps the
+name the file gave it.
+
 | Key | Required | Meaning |
 | --- | --- | --- |
 | `component` | yes | The id of a registered component, e.g. `Views/kpi`. A former id the component declares in `aliases` also works. |
@@ -82,9 +87,8 @@ shows control components (registered with `sidebar=True`) in node order.
 | `position` | no | `[x, y]` position on the Dataflow canvas. Nodes without one are laid out in columns following the dataflow. |
 
 A component the person exporting the file may not use is written as
-`component: flowdash:restricted` without its config or edges. Loading the file back
-into the same dashboard keeps the stored component unchanged; anywhere else it is
-left out.
+`component: flowdash:restricted` without its config. Loading the file back into the
+same dashboard keeps the stored component unchanged; anywhere else it is left out.
 
 ## Edges
 
@@ -97,6 +101,12 @@ left out.
 An input takes one edge, unless it accepts a list, in which case every edge
 connected to it contributes one item.
 
+The connections of a restricted node are written with the node's name alone on its
+end, e.g. `from: restricted_3fa2c1` and `to: table.data`, so the file shows that
+`table.data` is taken without revealing the restricted node's port. They are kept
+as stored when the file is loaded, cannot be added or changed, and an input they
+feed takes no other edge.
+
 ## Layout
 
 | Key | Required | Meaning |
@@ -108,7 +118,8 @@ connected to it contributes one item.
 
 Each tile has a `node` naming its node, plus any of `width` (percent of the row,
 greater than 0 and at most 100), `height` (pixels) and `visible` (`false` hides the
-tile while keeping its component in the dataflow). Nodes without a tile entry get
+tile while keeping its component in the dataflow). Other keys are rejected, except
+ones starting with `x-`, which are kept for extensions. Nodes without a tile entry get
 their component's default size, after the listed tiles. Control components have no
 tile.
 
@@ -119,7 +130,7 @@ Loading YAML replaces the dashboard's contents, as importing a downloaded file d
 ```python
 from panel_flowdash.agent import dashboard_to_yaml
 
-text = dashboard_to_yaml(editor.export_dashboard())
+text = dashboard_to_yaml(editor)
 editor.import_dashboard(text)
 ```
 

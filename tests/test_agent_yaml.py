@@ -18,6 +18,7 @@ from panel_flowdash.agent import (
     dashboard_to_yaml,
     validate_dashboard,
 )
+from panel_flowdash.agent.yaml_format import node_names
 from panel_flowdash.dashboard_store import DashboardEdge, DashboardItem
 from panel_flowdash.editor import RESTRICTED_COMPONENT_ID
 from panel_flowdash.port_types import port_types_compatible
@@ -168,18 +169,30 @@ class TestNames:
         b = editor.add_component("T/number")
         c = editor.add_component("T/label")
         editor.connect(b, "value", c, "value")
-        doc = yaml.safe_load(dashboard_to_yaml(editor.export_dashboard()))
-        assert list(doc["nodes"]) == ["number", "number_2", "label"]
-        assert doc["edges"] == [{"from": "number_2.value", "to": "label.value"}]
-        assert {a, b, c}.isdisjoint(doc["nodes"])
+        doc = yaml.safe_load(dashboard_to_yaml(editor))
+        assert list(doc["nodes"]) == [f"number_{a[-6:]}", f"number_{b[-6:]}", f"label_{c[-6:]}"]
+        assert doc["edges"] == [{"from": f"number_{b[-6:]}.value", "to": f"label_{c[-6:]}.value"}]
+
+    def test_names_never_move_to_another_node(self):
+        editor = _editor()
+        a = editor.add_component("T/number")
+        b = editor.add_component("T/number")
+        before = node_names(editor.export_dashboard()["items"])
+        editor.remove_component(a)
+        c = editor.add_component("T/number")
+        after = node_names(editor.export_dashboard()["items"])
+        assert after[b] == before[b]
+        assert after[c] != before[a]
 
     def test_names_map_back_to_the_ids_they_were_exported_from(self):
         editor = _editor()
         source = editor.add_component("T/number")
         target = editor.add_component("T/label")
-        text = dashboard_to_yaml(editor.export_dashboard())
+        text = dashboard_to_yaml(editor)
         text = text.replace("nodes:\n", "nodes:\n  extra:\n    component: T/number\n", 1)
-        text += "edges:\n  - from: number.value\n    to: label.value\n"
+        text += (
+            f"edges:\n  - from: number_{source[-6:]}.value\n    to: label_{target[-6:]}.value\n"
+        )
         editor.import_dashboard(text)
         ids = [item["instance_id"] for item in editor._tile_items]
         assert ids == ["extra", source, target]
@@ -204,8 +217,12 @@ class TestRestricted:
             DashboardItem("r1", "T/restricted", config={"query": "SELECT secret"}),
             DashboardItem("n1", "T/number"),
             DashboardItem("l1", "T/label"),
+            DashboardItem("l2", "T/label"),
         ]
-        model.edges = [DashboardEdge("n1", "value", "l1", "value")]
+        model.edges = [
+            DashboardEdge("n1", "value", "l1", "value"),
+            DashboardEdge("r1", "out", "l2", "value"),
+        ]
         store.save_dashboard(model)
         return store, model.dashboard_id
 
@@ -215,19 +232,40 @@ class TestRestricted:
         editor.load(did)
         return editor, did
 
-    def test_export_writes_a_stand_in(self, store):
+    def test_export_writes_a_stand_in_and_marks_its_connections(self, store):
         editor, _ = self._loaded(store, allowed=False)
-        text = dashboard_to_yaml(editor.export_dashboard())
-        assert "secret" not in text
-        assert yaml.safe_load(text)["nodes"]["r1"] == {
-            "component": RESTRICTED_COMPONENT_ID,
-            "position": [0, 0],
-        }
+        text = dashboard_to_yaml(editor)
+        assert "secret" not in text and "out" not in text
+        doc = yaml.safe_load(text)
+        assert doc["nodes"]["r1"] == {"component": RESTRICTED_COMPONENT_ID, "position": [0, 0]}
+        assert {"from": "r1", "to": "l2.value"} in doc["edges"]
+
+    def test_an_input_fed_by_a_restricted_node_takes_no_other_edge(self, store):
+        editor, _ = self._loaded(store, allowed=False)
+        doc = yaml.safe_load(dashboard_to_yaml(editor))
+        catalog = {"specs": editor.component_specs}
+        issues = validate_dashboard(doc, **catalog)
+        assert not [i for i in issues if i.path.startswith("nodes.l2")]
+        doc["edges"].append({"from": "n1.value", "to": "l2.value"})
+        errors = _errors(validate_dashboard(doc, **catalog))
+        assert errors == [
+            f"edges[{len(doc['edges']) - 1}]: Input 'value' of 'l2' is already fed by a "
+            "restricted node (edges[1]), which you cannot change; an input takes one edge "
+            "unless it accepts a list."
+        ]
+
+    def test_loading_keeps_the_restricted_connections(self, store):
+        editor, did = self._loaded(store, allowed=False)
+        editor.import_dashboard(dashboard_to_yaml(editor))
+        editor.save()
+        saved = editor.store._load_any(did)
+        assert sorted((e.source, e.target) for e in saved.edges) == [("n1", "l1"), ("r1", "l2")]
 
     def test_editing_the_stand_in_cannot_change_the_stored_item(self, store):
         editor, did = self._loaded(store, allowed=False)
-        doc = yaml.safe_load(dashboard_to_yaml(editor.export_dashboard()))
+        doc = yaml.safe_load(dashboard_to_yaml(editor))
         doc["nodes"]["r1"] = {"component": "T/restricted", "config": {"query": "DROP"}}
+        doc["edges"] = [e for e in doc["edges"] if "." in e["from"]]
         doc["edges"].append({"from": "r1.out", "to": "l1.value"})
         editor.import_dashboard(yaml.safe_dump(doc, sort_keys=False))
         editor.save()
@@ -236,7 +274,7 @@ class TestRestricted:
             "r1",
             {"query": "SELECT secret"},
         )
-        assert [(e.source, e.target) for e in saved.edges] == [("n1", "l1")]
+        assert sorted((e.source, e.target) for e in saved.edges) == [("n1", "l1"), ("r1", "l2")]
 
     def test_new_restricted_nodes_are_left_out(self):
         editor = _editor(allowed=False)
@@ -266,9 +304,14 @@ class TestValidate:
             "flowdash: unsupported format version 2; this release reads 1."
         ]
         assert _validate("nodes: {}\n")[0].startswith("document:")
-        assert _validate("flowdash: 1\nedges:\n  - {from: a, to: b.c}\n") == [
-            "edges[0].from: must be '<node>.<port>', got 'a'."
-        ]
+        assert _validate(
+            "flowdash: 1\nnodes:\n  a: {component: T/number}\n  b: {component: T/label}\n"
+            "edges:\n  - {from: a, to: b.value}\n"
+        ) == ["edges[0].from: must be '<node>.<port>', got 'a'."]
+        assert _validate(
+            "flowdash: 1\nnodes:\n  a: {component: T/number}\n"
+            "layout:\n  tiles:\n    - {node: a, colour: red}\n"
+        ) == ["layout.tiles[0]: unknown key 'colour'; expected node, width, height, visible."]
 
     def test_unknown_component_suggests_a_close_match(self):
         (error,) = _validate("flowdash: 1\nnodes:\n  a: {component: T/numbers}\n")
@@ -373,3 +416,11 @@ class TestSchema:
         doc["nodes"]["map"]["config"] = {"color_by": "rainbow"}
         assert list(validator.iter_errors(doc))
         editor.dispose()
+
+
+def test_yaml_errors_are_reported_as_yaml():
+    editor = _editor()
+    with pytest.raises(ValueError, match="Not valid YAML"):
+        editor.import_dashboard("flowdash: 1\nnodes: [unclosed\n")
+    with pytest.raises(ValueError, match="Not valid JSON"):
+        editor.import_dashboard("{not json")

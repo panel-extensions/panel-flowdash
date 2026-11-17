@@ -21,7 +21,7 @@ from .yaml_format import (
     dashboard_from_dict,
     is_dashboard_yaml,
     parse_yaml,
-    split_port,
+    split_ref,
 )
 
 RESTRICTED = "flowdash:restricted"
@@ -158,18 +158,18 @@ class _Checker:
                 if reason:
                     self.error(f"{path}.config.{key}", reason)
 
-    def check_edges(self, doc: dict, export: dict):
+    def check_edges(self, doc: dict):
         nodes = doc.get("nodes") or {}
         components = {name: node["component"] for name, node in nodes.items()}
         incoming = defaultdict(list)
+        # Inputs fed by a restricted node, through an edge whose source port is hidden.
+        hidden: dict[tuple[str, str], str] = {}
         seen = set()
         graph = defaultdict(set)
-        for i, (edge, entry) in enumerate(
-            zip(doc.get("edges") or [], export["edges"], strict=True)
-        ):
+        for i, edge in enumerate(doc.get("edges") or []):
             path = f"edges[{i}]"
-            source, source_port = split_port(edge["from"], f"{path}.from")
-            target, target_port = split_port(edge["to"], f"{path}.to")
+            source, source_port = split_ref(edge["from"], f"{path}.from")
+            target, target_port = split_ref(edge["to"], f"{path}.to")
             key = (source, source_port, target, target_port)
             if key in seen:
                 self.error(path, f"Duplicate of an earlier edge {edge['from']} -> {edge['to']}.")
@@ -179,12 +179,20 @@ class _Checker:
                 self.error(path, "An edge cannot connect a node to itself.")
                 continue
             restricted = [n for n in (source, target) if components.get(n) == RESTRICTED]
-            if restricted:
+            if restricted and source_port is not None and target_port is not None:
                 self.error(
                     path,
                     f"'{restricted[0]}' is restricted: its connections are kept as stored "
                     "and cannot be added or changed. Remove this edge.",
                 )
+                continue
+            if restricted:
+                # A stored connection with a hidden port: the input it feeds is taken.
+                graph[source].add(target)
+                if target_port is not None:
+                    target_spec = self.spec_for(components[target])
+                    port = target_spec.resolve_name(target_port) if target_spec else target_port
+                    hidden[(target, port)] = path
                 continue
             graph[source].add(target)
             source_spec = self.spec_for(components[source])
@@ -228,7 +236,7 @@ class _Checker:
                         f"{path}.to",
                         f"'{target}' ({target_spec.title}) has no input '{target_port}'.{hint}",
                     )
-            transform = entry.get("transform") or []
+            transform = edge.get("transform") or []
             try:
                 parse_transform(transform)
             except ValueError as exc:
@@ -246,7 +254,17 @@ class _Checker:
         for (target, port), paths in incoming.items():
             target_spec = self.spec_for(components[target])
             input_ = next(p for p in target_spec.inputs if p.name == port)
-            if len(paths) > 1 and not _is_list_port(input_):
+            if _is_list_port(input_):
+                continue
+            if (target, port) in hidden:
+                for extra in paths:
+                    self.error(
+                        extra,
+                        f"Input '{port}' of '{target}' is already fed by a restricted node "
+                        f"({hidden[target, port]}), which you cannot change; an input takes "
+                        "one edge unless it accepts a list.",
+                    )
+            elif len(paths) > 1:
                 for extra in paths[1:]:
                     self.error(
                         extra,
@@ -259,7 +277,11 @@ class _Checker:
             if spec is None:
                 continue
             for port in spec.inputs:
-                if port.required and (name, port.name) not in incoming:
+                if (
+                    port.required
+                    and (name, port.name) not in incoming
+                    and (name, port.name) not in hidden
+                ):
                     self.warn(
                         f"nodes.{name}",
                         f"Required input '{port.name}' is not connected, so '{name}' "
@@ -389,11 +411,11 @@ def validate_dashboard(
             raise DashboardYAMLError(
                 "document", "must be a mapping that starts with 'flowdash: 1'."
             )
-        export = dashboard_from_dict(doc)
+        dashboard_from_dict(doc)
     except DashboardYAMLError as exc:
         return [Issue(exc.path, exc.reason)]
     checker.check_settings(doc.get("settings") or {})
     checker.check_nodes(doc.get("nodes") or {})
-    checker.check_edges(doc, export)
+    checker.check_edges(doc)
     checker.check_layout(doc, set(controls))
     return checker.issues
