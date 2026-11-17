@@ -309,9 +309,33 @@ one. Outside text fields these shortcuts also work:
 |---|---|
 | <kbd>R</kbd> | Refresh the dashboard |
 | <kbd>E</kbd> | Edit the dashboard, for users who may edit it |
+| <kbd>F</kbd> | Show the dashboard in full screen, or leave it |
 | <kbd>Esc</kbd> | Back to view mode while editing (asks first when there are unsaved changes) |
 | <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd> | Save, in edit mode |
 | <kbd>?</kbd> | List the keyboard shortcuts |
+
+### Full screen
+
+To present a dashboard, or show it on a wall display, open it in full screen
+with the full screen button next to *Refresh* and *Share*, *Full screen* in
+the command palette, or <kbd>F</kbd>. The tiles and the controls bar
+then fill the screen, reflowed to its size, without the top bar, the
+navigation rail or the dashboard bar. Moving the pointer shows a small overlay
+in the bottom-right corner with the dashboard's title, its health and an exit
+button; it hides again, with the pointer, after a few seconds. Menus, dialogs
+such as Expand and Inspect, and the command palette open inside full screen,
+in the current light or dark theme, and auto-refresh keeps running. Leave with
+<kbd>Esc</kbd>, the browser's own control, the exit button or <kbd>F</kbd>.
+
+Full screen is part of view mode: it is not offered while editing, and
+switching to edit mode or to another page leaves it.
+
+Browsers only grant full screen in response to a click or key press, so a link
+cannot open it. Add `?kiosk=1` to a dashboard's URL, for example
+`/dash/<id>?kiosk=1`, to open it in the same layout covering the browser
+window, which is what a wall display running the browser in its own kiosk
+mode needs. <kbd>F</kbd> then switches to real full screen, and
+<kbd>Esc</kbd> or the exit button returns to the normal page.
 
 The other variants keep the earlier navigation: `left` and `right` dock a
 navigation tree in a drawer on that side of the page, and `menubar` puts

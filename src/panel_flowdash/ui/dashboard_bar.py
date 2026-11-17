@@ -11,6 +11,7 @@ import panel_material_ui as pmui
 import param
 from panel.viewable import Viewer
 
+from panel_flowdash.ui.fullscreen import TOGGLE_CLASS
 from panel_flowdash.ui.health import DashboardHealth
 from panel_flowdash.ui.text import escape_markdown
 from panel_flowdash.util import close_dialog, confirm, open_dialog
@@ -96,7 +97,8 @@ class DashboardBar(Viewer):
 
     In view mode it shows the dashboard title, a meta line (when it was last
     refreshed) and the view actions: the View/Edit control, Refresh, the editor's
-    ``toolbar_extra`` items and an overflow menu (Download, Settings). In edit mode it shows
+    ``toolbar_extra`` items, Full screen and an overflow menu (Download,
+    Settings). In edit mode it shows
     the title with the save state, the Dataflow/Layout tabs and the edit
     actions: Settings, an overflow menu (Download, Import file, Clear canvas),
     Discard, Save and Done.
@@ -173,6 +175,15 @@ class DashboardBar(Viewer):
             },
         )
         self.refresh_period.on_click(self._on_period_chosen)
+        # The browser handles the click, as full screen needs the user's gesture.
+        self.fullscreen_button = pmui.IconButton(
+            icon="fullscreen",
+            description="Full screen",
+            size="small",
+            margin=(0, 4),
+            align="center",
+            css_classes=[TOGGLE_CLASS],
+        )
         self.mode_toggle = pmui.RadioButtonGroup(
             options={":material/visibility: View": "view", ":material/edit: Edit": "edit"},
             value="view",
@@ -285,7 +296,12 @@ class DashboardBar(Viewer):
         """
         editor = self.editor
         actions = [] if editor.read_only else [self.mode_toggle]
-        actions += [self.refresh_button, self.refresh_period, *editor.toolbar_extra]
+        actions += [
+            self.refresh_button,
+            self.refresh_period,
+            *editor.toolbar_extra,
+            self.fullscreen_button,
+        ]
         if self._overflow_items():
             actions.append(self.overflow)
         return actions

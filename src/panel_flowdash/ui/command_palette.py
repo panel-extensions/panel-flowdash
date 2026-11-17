@@ -20,6 +20,7 @@ SHORTCUTS = [
     {"group": "Viewing", "label": "Search and commands", "keys": ["Mod", "K"]},
     {"group": "Viewing", "label": "Refresh", "keys": ["R"]},
     {"group": "Viewing", "label": "Edit mode", "keys": ["E"]},
+    {"group": "Viewing", "label": "Full screen", "keys": ["F"]},
     {"group": "Viewing", "label": "Keyboard shortcuts", "keys": ["?"]},
     {"group": "Editing", "label": "Save", "keys": ["Mod", "S"]},
     {"group": "Editing", "label": "Back to view mode", "keys": ["Esc"]},
@@ -41,6 +42,8 @@ class CommandPalette(JSComponent):
     text field: Ctrl/Cmd+K opens the palette, ``?`` lists the shortcuts, and
     R (refresh), E (edit), Esc (back to view, outside dialogs) and Ctrl/Cmd+S
     (save, in edit mode) are sent to *on_command* as ``shortcut:<name>``.
+    F and the ``action:fullscreen`` item toggle the dashboard's full screen
+    in the browser, which only grants it during the key press or click.
     """
 
     items = param.List(
@@ -284,13 +287,26 @@ class CommandPaletteController:
                         "keys": ["Esc"],
                     }
                 )
-            elif self._can_edit():
+            else:
+                if self._can_edit():
+                    actions.append(
+                        {
+                            "id": "action:edit",
+                            "title": "Edit dashboard",
+                            "icon": "edit",
+                            "keys": ["E"],
+                        }
+                    )
                 actions.append(
                     {
-                        "id": "action:edit",
-                        "title": "Edit dashboard",
-                        "icon": "edit",
-                        "keys": ["E"],
+                        "id": "action:fullscreen",
+                        "title": "Exit full screen" if editor.fullscreen else "Full screen",
+                        "subtitle": ""
+                        if editor.fullscreen
+                        else "Show only the tiles and controls",
+                        "icon": "fullscreen_exit" if editor.fullscreen else "fullscreen",
+                        "keys": ["F"],
+                        "keywords": "present presentation kiosk wall display maximize",
                     }
                 )
             if not editor.read_only:
@@ -389,5 +405,7 @@ class CommandPaletteController:
             editor._dashboard_bar.request_mode("view")
         elif action == "save" and editor.editable:
             app._save_current_dashboard()
+        elif action == "fullscreen" and not editor.editable:
+            editor.fullscreen = not editor.fullscreen
         elif action == "settings" and not editor.read_only:
             editor._settings_button.clicks += 1

@@ -72,6 +72,8 @@ if t.TYPE_CHECKING:
 ACCESS_DENIED_ROUTE = "/access-denied"
 COMPONENTS_ROUTE = "/components"
 DASH_ROUTE_PREFIX = "/dash/"
+#: Opens a dashboard in the full screen layout, e.g. for a wall display.
+KIOSK_QUERY = "kiosk=1"
 
 _COMPONENT_PALETTE_CARD_CSS = """
 :host {
@@ -261,6 +263,7 @@ class FlowDashApp(Viewer):
         self._editor = self._build_editor()
         self._editor._dashboard_bar.on_mode = self._on_dashboard_bar_mode
         self._editor.show_in_editor = self._show_in_editor
+        self._editor.param.watch(self._on_fullscreen, "fullscreen")
         self._menu_bar = None
         self._nav_menu = self._build_nav_menu()
         self._nav_drawer = pmui.Drawer(
@@ -346,6 +349,8 @@ class FlowDashApp(Viewer):
         if self._main_task is not None and not self._main_task.done():
             self._main_task.cancel()
         self._main_task = None
+        # Full screen belongs to the dashboard on screen, not to the next page.
+        self._editor.fullscreen = False
         # A dialog opened by the previous page's components must not outlive it,
         # nor an unanswered confirmation act on components that are being replaced.
         for dialog in self._page_dialogs:
@@ -857,6 +862,8 @@ class FlowDashApp(Viewer):
             ]
             return
 
+        location = pn.state.location
+        kiosk = not edit and location is not None and KIOSK_QUERY in (location.search or "")
         # Before loading, so only someone who may save it is told about items it
         # could not restore.
         self._editor.read_only = not self._can_edit_dashboard(dashboard_id)
@@ -865,6 +872,9 @@ class FlowDashApp(Viewer):
             self._show_edit_mode()
         else:
             self._show_view_mode()
+        if kiosk:
+            location.search = f"?{KIOSK_QUERY}"
+            self._editor.fullscreen = True
         self._sync_menu_active(f"{DASH_ROUTE_PREFIX}{dashboard_id}")
         self._apply_layout_config(self._component_view, f"{DASH_ROUTE_PREFIX}{dashboard_id}")
         self._page.main = [
@@ -1162,6 +1172,12 @@ class FlowDashApp(Viewer):
         self._editor.param.update(editable=False, read_only=current is not None and not can_edit)
         if pn.state.location is not None:
             pn.state.location.param.update(search="")
+
+    def _on_fullscreen(self, event):
+        """Drop ``?kiosk=1`` once the full screen layout it opened is left."""
+        location = pn.state.location
+        if not event.new and location is not None and KIOSK_QUERY in (location.search or ""):
+            location.search = ""
 
     def _on_dashboard_bar_mode(self, mode: str):
         """Switch modes from the dashboard bar, keeping ``?edit=true`` in step.
