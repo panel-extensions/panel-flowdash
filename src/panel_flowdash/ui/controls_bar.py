@@ -16,14 +16,16 @@ _PANEL_WIDTH = 320
 # Views are laid out for a tile, which most fill with stretch_both. Inside the
 # bar there is no height to fill, so the stretched view (and the wrapper, which
 # Panel makes stretch to match) would collapse to nothing and the content
-# would spill onto the tiles below. Sizing both to their content keeps the bar
-# as tall as its controls.
+# would spill onto the tiles below; in the left panel's column each wrapper
+# would instead take an equal share of the height. Sizing the wrapper and the
+# view to their content keeps the controls as tall as they are.
 _FIT_CONTENT = """
 :host {
   height: auto;
   max-height: none;
+  flex: 0 0 auto;
 }
-.bk-panel-models-layout-Column {
+[class*="bk-"] {
   height: auto;
   max-height: none;
   flex: 0 0 auto;
@@ -67,6 +69,14 @@ class ControlsBar(Viewer):
     )
 
     collapsed = param.Boolean(default=False, doc="Whether the left panel is collapsed.")
+
+    beside_canvas = param.Boolean(
+        default=False,
+        doc="""
+        Whether the grid is shown beside the canvas (the editor's Split tab).
+        The pane is too narrow for a panel there, so the controls sit in the
+        row above the grid whatever the position.""",
+    )
 
     def __init__(self, **params):
         super().__init__(**params)
@@ -131,6 +141,11 @@ class ControlsBar(Viewer):
             css_classes=["fd-controls-strip"],
             sx={**panel_sx, "alignItems": "center"},
         )
+        # Built once: a new Row on every layout would re-render the grid and all its tiles.
+        self._grid_slot = pn.Column(margin=0, sizing_mode="stretch_both")
+        self._left_row = pn.Row(
+            self._panel, self._strip, self._grid_slot, margin=0, sizing_mode="stretch_both"
+        )
         self.editor.param.watch(lambda _event: self.sync(), ["controls_bar", "fullscreen"])
 
     @property
@@ -156,15 +171,19 @@ class ControlsBar(Viewer):
             )
         return wrapper
 
+    @property
+    def _left(self) -> bool:
+        return self.position == "left" and not self.beside_canvas
+
     @pn.io.hold()
-    @param.depends("position", "collapsed", watch=True)
+    @param.depends("position", "collapsed", "beside_canvas", watch=True)
     def sync(self):
         """Re-read the editor's controls and lay them out for the position."""
         editor = self.editor
         views = list(editor.sidebar) if editor.controls_bar or editor.fullscreen else []
         wrappers = [self._wrap(view) for view in views]
         self._wrappers = {id(w[0]): w for w in wrappers}
-        left = self.position == "left"
+        left = self._left
         for wrapper in wrappers:
             # In the panel a control takes its full width; in the row about a select's.
             wrapper.param.update(
@@ -183,16 +202,13 @@ class ControlsBar(Viewer):
 
     def layout(self, grid) -> list:
         """Return the workspace items placing the controls around *grid*."""
-        if self.position == "left":
-            return [
-                pn.Row(
-                    self._panel,
-                    self._strip,
-                    pn.Column(grid, margin=0, sizing_mode="stretch_both"),
-                    margin=0,
-                    sizing_mode="stretch_both",
-                )
-            ]
+        if self._left:
+            if list(self._grid_slot) != [grid]:
+                self._grid_slot[:] = [grid]
+            return [self._left_row]
+        if len(self._grid_slot):
+            # The grid may only have one parent once it moves to the row's side.
+            self._grid_slot[:] = []
         return [self._row, grid]
 
     def __panel__(self):
