@@ -82,8 +82,11 @@ channels = [{ channel = "pyviz/label/dev", priority = -1 }]
 [feature.param-dev.dependencies]
 param = { version = ">=2.5.0b5", channel = "pyviz/label/dev" }
 
+# "if-necessary" refuses panel_reactflow >=0.6.0b0 while a stable 0.5 exists, so this
+# environment cannot be solved from scratch. Go back to "if-necessary" once
+# panel-reactflow 0.6.0 is released.
 [feature.param-dev.pypi-options]
-prerelease-mode = "if-necessary"
+prerelease-mode = "if-necessary-or-explicit"
 
 [feature.test-ui]
 channels = ["microsoft"]
