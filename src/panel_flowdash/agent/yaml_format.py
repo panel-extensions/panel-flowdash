@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import math
 import re
 import typing as t
@@ -71,9 +72,11 @@ class DashboardYAMLError(ValueError):
 
 
 def _slug(text: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", text).strip("_-").lower()
-    if not slug or not re.match(r"[A-Za-z_]", slug):
-        slug = f"n_{slug}" if slug else "node"
+    """Return *text* as a valid node name that contains no ``__``."""
+    slug = re.sub(r"[^A-Za-z0-9_-]+", "_", text).strip("_-")
+    slug = re.sub(r"_{2,}", "_", slug)
+    if not slug or not re.match(r"[A-Za-z]", slug):
+        slug = f"n_{slug}".rstrip("_")
     return slug
 
 
@@ -84,11 +87,17 @@ def _hash(text: str) -> str:
 def _own_name(instance_id: str) -> str:
     """Return the name an instance id gives its node, before names are made unique."""
     generated = _GENERATED_ID.match(instance_id)
-    if generated and NAME_PATTERN.match(generated["tail"]):
-        return generated["tail"]
-    if NAME_PATTERN.match(instance_id) and "__" not in instance_id:
+    if generated:
+        tail = generated["tail"]
+        return tail if _readable(tail) else _slug(tail)
+    if _readable(instance_id):
         return instance_id
     return f"{_slug(instance_id)}_{_hash(instance_id)}"
+
+
+def _readable(name: str) -> bool:
+    """Whether *name* can be a node name a file gives, i.e. one the reader accepts as new."""
+    return bool(NAME_PATTERN.match(name)) and "__" not in name
 
 
 def node_names(items: t.Iterable[dict]) -> dict[str, str]:
@@ -377,10 +386,33 @@ def _refuse_tag(loader, node):
     )
 
 
-_Loader.yaml_implicit_resolvers = {
-    first: [(tag, regexp) for tag, regexp in resolvers if not tag.endswith(":timestamp")]
-    for first, resolvers in yaml.SafeLoader.yaml_implicit_resolvers.items()
+# Plain scalars are typed by the YAML 1.2 core schema, with integers in plain decimal
+# (no leading zeros), 0o octal or 0x hex. Anything else, such as yes/no, 12:30, 017
+# or 2024-01-01, is a string.
+_CORE_SCALARS = {
+    "tag:yaml.org,2002:null": (r"^(?:~|null|Null|NULL|)$", list("~nN")),
+    "tag:yaml.org,2002:bool": (r"^(?:true|True|TRUE|false|False|FALSE)$", list("tTfF")),
+    "tag:yaml.org,2002:int": (
+        r"^(?:[-+]?(?:0|[1-9][0-9]*)|0o[0-7]+|0x[0-9a-fA-F]+)$",
+        list("-+0123456789"),
+    ),
+    "tag:yaml.org,2002:float": (
+        r"^(?:[-+]?(?:\.[0-9]+|[0-9]+\.[0-9]*)(?:[eE][-+]?[0-9]+)?|[-+]?[0-9]+[eE][-+]?[0-9]+"
+        r"|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$",
+        list("-+.0123456789"),
+    ),
 }
+_Loader.yaml_implicit_resolvers = {}
+for _tag, (_pattern, _first) in _CORE_SCALARS.items():
+    _Loader.add_implicit_resolver(_tag, re.compile(_pattern), _first)
+# The writer quotes every string either YAML 1.1 or the core schema would read as
+# another type, so files stay unambiguous to other YAML readers too.
+for _tag, (_pattern, _first) in _CORE_SCALARS.items():
+    _Dumper.add_implicit_resolver(_tag, re.compile(_pattern), _first)
+# A plain "" (empty) scalar has no first character to index the resolver by.
+_Loader.add_implicit_resolver(
+    "tag:yaml.org,2002:null", re.compile(_CORE_SCALARS["tag:yaml.org,2002:null"][0]), [None]
+)
 _Loader.yaml_constructors = {
     tag: (
         _refuse_tag
@@ -391,6 +423,34 @@ _Loader.yaml_constructors = {
     for tag, constructor in yaml.SafeLoader.yaml_constructors.items()
 }
 _Loader.yaml_constructors[None] = _refuse_tag
+
+
+def _construct_int(loader, node):
+    value = loader.construct_scalar(node)
+    sign, digits = (-1, value[1:]) if value[:1] == "-" else (1, value.lstrip("+"))
+    base = {"0o": 8, "0x": 16}.get(digits[:2], 10)
+    return sign * int(digits[2:] if base != 10 else digits, base)
+
+
+def _construct_float(loader, node):
+    value = loader.construct_scalar(node).lower()
+    if value.endswith(".nan"):
+        return math.nan
+    if value.endswith(".inf"):
+        return -math.inf if value.startswith("-") else math.inf
+    return float(value)
+
+
+def _construct_bool(loader, node):
+    value = loader.construct_scalar(node).lower()
+    if value not in ("true", "false"):
+        raise _LoadError(f"line {node.start_mark.line + 1}: {value!r} is not true or false.")
+    return value == "true"
+
+
+_Loader.yaml_constructors["tag:yaml.org,2002:int"] = _construct_int
+_Loader.yaml_constructors["tag:yaml.org,2002:float"] = _construct_float
+_Loader.yaml_constructors["tag:yaml.org,2002:bool"] = _construct_bool
 
 
 def load_yaml(text: str | bytes) -> t.Any:
@@ -405,8 +465,9 @@ def load_yaml(text: str | bytes) -> t.Any:
         ``MAX_DEPTH``. Dates are read as strings.
     """
     if len(text) > MAX_SIZE:
+        unit = "bytes" if isinstance(text, bytes) else "characters"
         raise DashboardYAMLError(
-            "document", f"Too large: {len(text):,} characters, at most {MAX_SIZE:,}."
+            "document", f"Too large: {len(text):,} {unit}, at most {MAX_SIZE:,}."
         )
     try:
         return yaml.load(text, Loader=_Loader)
@@ -416,6 +477,8 @@ def load_yaml(text: str | bytes) -> t.Any:
         raise DashboardYAMLError("document", f"Not valid YAML: {exc}") from exc
     except RecursionError as exc:
         raise DashboardYAMLError("document", "Nested too deeply.") from exc
+    except (ValueError, KeyError, TypeError) as exc:
+        raise DashboardYAMLError("document", f"Not valid YAML: {exc}") from exc
 
 
 def parse_yaml(text: str | bytes) -> dict:
@@ -426,6 +489,38 @@ def parse_yaml(text: str | bytes) -> dict:
             "document", "Not a FlowDash dashboard: the file must start with 'flowdash: 1'."
         )
     return doc
+
+
+def read_dashboard_text(text: str | bytes) -> t.Any:
+    """Read the text of a dashboard file: a JSON export, or a dashboard in the YAML format.
+
+    A JSON document with a ``flowdash`` key is a YAML-format dashboard written
+    as JSON and is read by :func:`load_yaml`, under the same limits and rules.
+
+    Raises
+    ------
+    ValueError
+        With "Not valid JSON" when the text is neither JSON nor a YAML-format
+        dashboard, or the :class:`DashboardYAMLError` of a YAML-format dashboard.
+    """
+    try:
+        data = json.loads(text)
+    except RecursionError as exc:
+        raise ValueError("Not a dashboard file: nested too deeply.") from exc
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        try:
+            return parse_yaml(text)
+        except DashboardYAMLError as yaml_exc:
+            plain = text.decode("utf-8", "replace") if isinstance(text, bytes) else text
+            looks_like_json = plain.lstrip().startswith(("{", "["))
+            if yaml_exc.reason.startswith("Not a FlowDash dashboard") or (
+                looks_like_json and yaml_exc.reason.startswith("Not valid YAML")
+            ):
+                raise ValueError(f"Not valid JSON: {exc}") from exc
+            raise
+    if is_dashboard_yaml(data):
+        return parse_yaml(text)
+    return data
 
 
 def is_dashboard_yaml(data: t.Any) -> bool:
@@ -458,8 +553,7 @@ def _unknown_keys(value: dict, allowed: t.Sequence[str], path: str):
     if unknown:
         _fail(
             path,
-            f"unknown key {', '.join(repr(k) for k in unknown)}; expected "
-            f"{', '.join(allowed)}. This file may have been written by a newer FlowDash.",
+            f"unknown key {', '.join(repr(k) for k in unknown)}; expected {', '.join(allowed)}.",
         )
 
 
@@ -503,8 +597,8 @@ def split_ref(ref: t.Any, path: str) -> tuple[str, str | None]:
 
 
 def _number(value, path: str):
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        _fail(path, f"must be a number, got {value!r}.")
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        _fail(path, f"must be a finite number, got {value!r}.")
     return value
 
 
@@ -584,7 +678,6 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
         instance ids, so loading an edited export keeps every node's identity.
     """
     doc = _mapping(doc, "document")
-    _unknown_keys(doc, TOP_LEVEL_KEYS, "document")
     version = doc.get("flowdash")
     if type(version) is not int or version != FORMAT_VERSION:
         newer = type(version) is int and version > FORMAT_VERSION
@@ -593,6 +686,7 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
             f"unsupported format version {version!r}; this release reads {FORMAT_VERSION}."
             + (" The file was written by a newer FlowDash." if newer else ""),
         )
+    _unknown_keys(doc, TOP_LEVEL_KEYS, "document")
     title = doc.get("title")
     if title is not None and not isinstance(title, str):
         _fail("title", f"must be a string, got {title!r}.")
@@ -650,6 +744,11 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
             if not isinstance(step, dict) or "op" not in step:
                 _fail(f"{path}.transform[{j}]", "must be a mapping with an 'op'.")
         wiring.append((source, target))
+        if (source_port is None or target_port is None) and transform:
+            _fail(
+                f"{path}.transform",
+                "a restricted node's connection keeps its stored transform; remove 'transform'.",
+            )
         if source_port is None or target_port is None:
             # A stored connection of a restricted node: kept as stored on import.
             continue

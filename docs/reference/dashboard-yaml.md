@@ -77,10 +77,26 @@ belong to the dashboard it is loaded into.
 ## Values
 
 A file holds only what JSON can: strings, finite numbers, `true`/`false`, `null`,
-lists and mappings with string keys. Dates such as `2024-01-01` are read as strings.
-A file is refused if it is larger than 1,000,000 characters, nests deeper than 32
-levels, defines a key twice in one mapping, or uses anchors and aliases (`&`, `*`) or
-tags such as `!!set` and `!!binary`. Comments are ignored.
+lists and mappings with string keys. A file is refused if it is larger than
+1,000,000 characters (or bytes), nests deeper than 32 levels, defines a key twice in
+one mapping, or uses anchors and aliases (`&`, `*`) or tags such as `!!set` and
+`!!binary`. Comments are ignored.
+
+Unquoted values are typed by the YAML 1.2 core schema, with these integers:
+
+| Written | Read as |
+| --- | --- |
+| `true`, `false` (also `True`, `TRUE`, ...) | a boolean |
+| `null`, `~` or nothing | null |
+| `12`, `-3`, `0o17`, `0x1f` | an integer |
+| `3.5`, `.5`, `1e3`, `.inf`, `.nan` | a number (`.inf` and `.nan` are refused where a number is expected) |
+| anything else, e.g. `yes`, `no`, `017`, `12:30`, `1_000`, `2024-01-01` | a string |
+
+Quote a value to make it a string whatever it looks like. The writer quotes every
+string another YAML reader could take for a different type.
+
+A file in this format may also be written as JSON with the same keys; it is read
+under the same rules. Flow-style YAML (`{flowdash: 1, ...}`) is read too.
 
 ## Nodes
 
@@ -91,9 +107,13 @@ shows control components (registered with `sidebar=True`) in node order.
 A node's name comes from its id alone, so it is the same for everyone who reads the
 dashboard, does not change when its component is renamed and is never given to
 another node. Nodes placed in the editor have generated ids such as
-`Views__kpi_3fa2c1` and are named after their last part, `kpi_3fa2c1`; a node created
-from a file keeps the name the file gave it. New names may not contain `__`, which
-marks generated ids.
+`Views__kpi_3fa2c1` and are named after their last part, `kpi_3fa2c1` (prefixed with
+`n_` when it starts with a digit); a node created from a file keeps the name the file
+gave it. New names may not contain `__`, which marks generated ids, and names the
+format writes never do, so a file always loads into another dashboard. The editor
+picks new ids whose names no node has; if two ids that came from elsewhere, such as
+an imported JSON file, still want the same name, the one that sorts first keeps it
+and the other gets a short hash of its id appended.
 
 | Key | Required | Meaning |
 | --- | --- | --- |
@@ -122,8 +142,9 @@ connected to it contributes one item.
 The connections of a restricted node are written with the node's name alone on its
 end, e.g. `from: restricted_3fa2c1` and `to: table.data`, so the file shows that
 `table.data` is taken without revealing the restricted node's port. They are kept
-as stored when the file is loaded, cannot be added or changed, and an input they
-feed takes no other edge.
+as stored when the file is loaded, with their stored transform (a `transform` on such
+an edge is refused), cannot be added or changed, and an input they feed takes no
+other edge, in the editor too.
 
 ## Layout
 

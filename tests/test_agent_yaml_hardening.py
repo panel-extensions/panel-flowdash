@@ -271,3 +271,134 @@ def test_long_chains_validate_without_recursion():
         f"flowdash: 1\nnodes:\n{nodes}edges:\n{edges}", _editor().component_specs
     )
     assert all(i.path != "document" for i in issues)
+
+
+class TestWrittenNamesLoad:
+    IDS = (
+        "Views__3d_plot_4ceaca",
+        "Views__kpi_3fa2c1",
+        "Views__kpi",
+        "my__thing",
+        "a___b",
+        "9lives",
+        "__private",
+        "x y",
+        "-dash",
+        "Ünïcode__ok_1a2b3c",
+        "plain",
+        "kpi_3fa2c1",
+        "Explore__kpi_3fa2c1",
+    )
+
+    @pytest.mark.parametrize("instance_id", IDS)
+    def test_every_written_name_loads_as_a_new_name(self, instance_id):
+        name = node_names([{"instance_id": instance_id}])[instance_id]
+        data = dashboard_from_yaml(f"flowdash: 1\nnodes:\n  {name}: {{component: T/number}}\n")
+        assert [i["instance_id"] for i in data["items"]] == [name]
+
+    def test_a_whole_export_of_odd_ids_loads_into_a_fresh_dashboard(self):
+        items = [
+            {"instance_id": iid, "component_id": "T/number", "x": 0, "y": 0, "config": {}}
+            for iid in self.IDS
+        ]
+        text = dashboard_to_yaml({"title": "t", "items": items, "edges": []})
+        assert len(dashboard_from_yaml(text)["items"]) == len(self.IDS)
+
+    def test_new_nodes_never_take_an_existing_name(self, monkeypatch):
+        import uuid as uuid_module
+
+        editor = _editor()
+        first = editor.add_component("T/number")
+        suffix = first[-6:]
+        real = uuid_module.uuid4
+
+        class Fixed:
+            def __init__(self, value):
+                self.hex = value + "0" * 26
+
+        draws_left = [suffix, suffix]
+
+        def uuid4():
+            return Fixed(draws_left.pop()) if draws_left else real()
+
+        monkeypatch.setattr(uuid_module, "uuid4", uuid4)
+        second = editor.add_component("T/number")
+        names = node_names(editor.export_dashboard()["items"])
+        assert second != first and names[first] == f"number_{suffix}"
+        assert names[second] != names[first]
+
+
+class TestScalars:
+    @pytest.mark.parametrize(
+        ("text", "value"),
+        [
+            ("12:30", "12:30"),
+            ("017", "017"),
+            ("yes", "yes"),
+            ("no", "no"),
+            ("1_000", "1_000"),
+            ("2024-01-01", "2024-01-01"),
+            ("0o17", 15),
+            ("0x1f", 31),
+            ("1e3", 1000.0),
+            ("-3", -3),
+            ("True", True),
+            ("~", None),
+        ],
+    )
+    def test_core_schema_typing(self, text, value):
+        assert load_yaml(f"a: {text}")["a"] == value
+
+    @pytest.mark.parametrize("value", ["12:30", "017", "yes", "0o17", "1e3", "true", "~", ""])
+    def test_strings_that_look_typed_are_quoted(self, value):
+        export = {"title": "t", "items": [], "edges": [], "settings": {"s": value}}
+        assert load_yaml(dashboard_to_yaml(export))["settings"]["s"] == value
+
+    @pytest.mark.parametrize("text", ["!!int abc", "!!float abc", "!!bool maybe", "9" * 5000])
+    def test_bad_scalars_are_issues(self, text):
+        (issue,) = validate_dashboard(f"flowdash: 1\ntitle: {text}\n", _editor().component_specs)
+        assert issue.path == "document"
+
+    @pytest.mark.parametrize(
+        "doc",
+        [
+            "nodes:\n  a: {component: T/number, position: [.nan, 0]}\n",
+            "layout:\n  reference_width: .inf\n",
+            "layout:\n  breakpoints: [.nan]\n",
+            "nodes:\n  a: {component: T/number}\nlayout:\n  tiles:\n    - {node: a, height: .inf}\n",
+        ],
+    )
+    def test_numbers_must_be_finite(self, doc):
+        with pytest.raises(DashboardYAMLError, match="finite number"):
+            dashboard_from_yaml("flowdash: 1\n" + doc)
+
+    def test_the_size_limit_counts_bytes_for_bytes(self):
+        with pytest.raises(DashboardYAMLError, match="bytes"):
+            load_yaml(b"# " + b"x" * MAX_SIZE)
+
+
+def test_a_transform_on_a_restricted_connection_is_refused():
+    with pytest.raises(DashboardYAMLError, match="keeps its stored transform"):
+        dashboard_from_yaml(
+            "flowdash: 1\nnodes:\n  r: {component: 'flowdash:restricted'}\n"
+            "  l: {component: T/label}\nedges:\n"
+            "  - {from: r, to: l.value, transform: [{op: head, n: 1}]}\n"
+        )
+
+
+class TestJsonSpelling:
+    def test_json_with_a_version_follows_the_yaml_rules(self):
+        editor = _editor()
+        editor.new_dashboard("mine")
+        with pytest.raises(ValueError, match="'title' is defined twice"):
+            editor.import_dashboard('{"flowdash": 1, "title": "a", "title": "b"}')
+
+    def test_flow_style_yaml_is_read_as_yaml(self):
+        editor = _editor()
+        editor.new_dashboard("mine")
+        editor.import_dashboard("{flowdash: 1, nodes: {a: {component: T/number}}}")
+        assert [i["instance_id"] for i in editor._tile_items] == ["a"]
+
+    def test_broken_json_still_says_json(self):
+        with pytest.raises(ValueError, match="Not valid JSON"):
+            _editor().import_dashboard('{"items": [}')

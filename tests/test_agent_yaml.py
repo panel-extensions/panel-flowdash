@@ -298,8 +298,7 @@ def _validate(text):
 class TestValidate:
     def test_structural_errors_name_the_key(self):
         assert _validate("flowdash: 1\nnodes:\n  a: {component: T/number, colour: red}\n") == [
-            "nodes.a: unknown key 'colour'; expected component, config, position. "
-            "This file may have been written by a newer FlowDash."
+            "nodes.a: unknown key 'colour'; expected component, config, position."
         ]
         assert _validate("flowdash: 2\n") == [
             "flowdash: unsupported format version 2; this release reads 1. "
@@ -313,10 +312,7 @@ class TestValidate:
         assert _validate(
             "flowdash: 1\nnodes:\n  a: {component: T/number}\n"
             "layout:\n  tiles:\n    - {node: a, colour: red}\n"
-        ) == [
-            "layout.tiles[0]: unknown key 'colour'; expected node, width, height, visible. "
-            "This file may have been written by a newer FlowDash."
-        ]
+        ) == ["layout.tiles[0]: unknown key 'colour'; expected node, width, height, visible."]
 
     def test_unknown_component_suggests_a_close_match(self):
         (error,) = _validate("flowdash: 1\nnodes:\n  a: {component: T/numbers}\n")
