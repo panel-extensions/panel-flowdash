@@ -18,9 +18,10 @@ PRESENTING_CLASS = "fd-presenting"
 #: Dispatched on the document to toggle full screen, e.g. by the F shortcut.
 TOGGLE_EVENT = "flowdash:fullscreen"
 
-# Applied to the editor's root column. Real full screen already makes the
-# element fill the screen; without it (no gesture, or no Fullscreen API) the
-# same rules lay the dashboard over the page so the app's chrome is covered.
+# Applied to the editor's root column, they lay the dashboard over the page so
+# the app's chrome is covered. Real full screen is requested for the whole
+# page rather than the editor, so what the page shows above the dashboard,
+# like notifications, stays visible there as it does in the window.
 PRESENTATION_CSS = f"""
 :host(.{PRESENTING_CLASS}) {{
   position: fixed !important;
@@ -50,10 +51,10 @@ PRESENTATION_CSS = f"""
 class FullscreenController(JSComponent):
     """Puts the layout it is placed in into the browser's full screen and back.
 
-    ``active`` is the presentation layout the editor shows. Turning it on
-    requests full screen for the parent element (the editor), turning it off
-    leaves full screen, and leaving full screen in the browser (Esc, the
-    browser's own control) turns it off again. Browsers only grant full screen
+    ``active`` is the presentation layout the editor shows, which covers the
+    browser window. Turning it on also requests full screen for the page,
+    turning it off leaves full screen, and leaving full screen in the browser
+    (Esc, the browser's own control) turns it off again. Browsers only grant full screen
     for a user gesture, so clicks on elements with :data:`TOGGLE_CLASS` or
     :data:`EXIT_CLASS` inside the parent, and the :data:`TOGGLE_EVENT` on the
     document, are handled here in the browser rather than on the server. When
@@ -61,7 +62,11 @@ class FullscreenController(JSComponent):
     covers the browser window instead, which is also how ``?kiosk=1`` opens.
 
     While active the overlay (the element with :data:`OVERLAY_CLASS`) is shown
-    after the pointer moves and hidden, with the pointer, once it rests.
+    after the pointer moves, a tap or a key press and hidden, with the
+    pointer, once they rest. Focus cannot move to the page behind the
+    layout, only into it and the dialogs and menus it opens. With several
+    editors on a page, the :data:`TOGGLE_EVENT` toggles the one holding the
+    focus, else the one presenting, else the first.
     """
 
     active = param.Boolean(default=False, doc="Whether the presentation layout is shown.")
@@ -88,23 +93,49 @@ class FullscreenController(JSComponent):
     _esm = f"""
     const IDLE_MS = 2500
 
+    // Every controller on the page, in the order they were rendered.
+    const CONTROLLERS = (globalThis.__flowdashFullscreen ??= [])
+
     function typing(target) {{
       const tag = target?.tagName
       return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || !!target?.isContentEditable
     }}
 
+    // Dialogs, menus and popovers the dashboard opens may be rendered outside it.
+    function inOverlay(path) {{
+      return path.some((node) => node instanceof Element && (
+        node.getAttribute("role") === "dialog" || node.getAttribute("aria-modal") === "true" ||
+        node.getAttribute("role") === "presentation" || node.hasAttribute("popover") ||
+        node.classList.contains("MuiPopover-root") || node.classList.contains("MuiPopper-root")
+      ))
+    }}
+
+    // The focused element, which may sit in shadow roots, and its ancestors.
+    function focusPath() {{
+      const path = []
+      let node = document.activeElement
+      while (node?.shadowRoot?.activeElement) {{
+        node = node.shadowRoot.activeElement
+      }}
+      while (node) {{
+        path.push(node)
+        node = node.parentNode ?? node.host
+      }}
+      return path
+    }}
+
     export function render({{model, view}}) {{
       const target = () => view.parent?.el
-      const isNative = () => {{
-        const el = target()
-        return !!el && document.fullscreenElement != null && el.matches(":fullscreen")
-      }}
-      model.supported = !!(document.fullscreenEnabled && Element.prototype.requestFullscreen)
+      const page = document.documentElement
+      model.supported = !!(document.fullscreenEnabled && page.requestFullscreen)
+
+      // Whether this controller put the page into full screen.
+      let owned = false
+      const isNative = () => owned && document.fullscreenElement === page
 
       let pending = false
       function requestNative() {{
-        const el = target()
-        if (!model.supported || !el || pending || isNative()) {{
+        if (!model.supported || pending || document.fullscreenElement != null) {{
           return
         }}
         // Without a gesture (a ?kiosk=1 link) the browser refuses, so the
@@ -113,7 +144,10 @@ class FullscreenController(JSComponent):
           return
         }}
         pending = true
-        el.requestFullscreen({{navigationUI: "hide"}}).catch(() => {{}}).finally(() => {{ pending = false }})
+        page.requestFullscreen({{navigationUI: "hide"}})
+          .then(() => {{ owned = true; onChange() }})
+          .catch(() => {{}})
+          .finally(() => {{ pending = false }})
       }}
       function exitNative() {{
         if (isNative()) {{
@@ -171,6 +205,9 @@ class FullscreenController(JSComponent):
 
       let wasNative = false
       const onChange = () => {{
+        if (document.fullscreenElement !== page) {{
+          owned = false
+        }}
         const now = isNative()
         if (model.native !== now) {{
           model.native = now
@@ -209,8 +246,19 @@ class FullscreenController(JSComponent):
           }}
         }}
       }}
+      const self = {{model, target}}
+      CONTROLLERS.push(self)
+      function chosen() {{
+        const live = CONTROLLERS.filter((c) => c.target()?.isConnected && c.model.enabled)
+        const path = focusPath()
+        return (
+          live.find((c) => path.includes(c.target())) ??
+          live.find((c) => c.model.active) ??
+          live[0]
+        )
+      }}
       const onRequest = (event) => {{
-        if (!event.defaultPrevented && target()?.isConnected && model.enabled) {{
+        if (!event.defaultPrevented && chosen() === self) {{
           event.preventDefault()
           toggle()
         }}
@@ -233,12 +281,35 @@ class FullscreenController(JSComponent):
           show()
         }}
       }}
+      const onFocus = (event) => {{
+        const el = target()
+        if (!model.active || !el) {{
+          return
+        }}
+        const path = event.composedPath()
+        if (path.includes(el)) {{
+          show()
+        }} else if (!inOverlay(path)) {{
+          // Tabbed out to the page behind the layout: bring the focus back.
+          show()
+          const exit = overlay()?.shadowRoot?.querySelector(".{EXIT_CLASS}")
+          const button = exit?.shadowRoot?.querySelector("button") ?? exit
+          if (button?.focus) {{
+            button.focus()
+          }} else {{
+            event.target?.blur?.()
+          }}
+        }}
+      }}
 
       document.addEventListener("fullscreenchange", onChange)
       document.addEventListener("click", onClick, true)
       document.addEventListener("{TOGGLE_EVENT}", onRequest)
       document.addEventListener("keydown", onKey)
       document.addEventListener("pointermove", onMove)
+      document.addEventListener("pointerdown", onMove, true)
+      document.addEventListener("keydown", onMove, true)
+      document.addEventListener("focusin", onFocus, true)
       model.on("active", () => {{
         if (model.active) {{
           requestNative()
@@ -254,6 +325,10 @@ class FullscreenController(JSComponent):
         document.removeEventListener("{TOGGLE_EVENT}", onRequest)
         document.removeEventListener("keydown", onKey)
         document.removeEventListener("pointermove", onMove)
+        document.removeEventListener("pointerdown", onMove, true)
+        document.removeEventListener("keydown", onMove, true)
+        document.removeEventListener("focusin", onFocus, true)
+        CONTROLLERS.splice(CONTROLLERS.indexOf(self), 1)
       }})
       if (model.active) {{
         // Opened in the presentation layout; no gesture, so no real full screen.

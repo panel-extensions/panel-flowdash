@@ -539,7 +539,9 @@ class FlowDash(Viewer):
         Whether to show the views of components registered with
         ``sidebar=True`` beside the tiles (see `controls_position`), while
         the dashboard is viewed or laid out. Turn it off to render the
-        `sidebar` views in a layout of your own instead.""",
+        `sidebar` views in a layout of your own instead. In full screen the
+        editor shows them either way, since nothing around it is visible, so
+        leave them out of your layout while `fullscreen` is on.""",
     )
 
     controls_position = param.Selector(
@@ -869,6 +871,8 @@ class FlowDash(Viewer):
             self.ensure_components_loaded()
 
         self._apply_mode_state()
+        # A watcher only runs on changes, so `fullscreen=True` given here is applied by hand.
+        self._apply_fullscreen()
         if dashboard is not None:
             self._init_dashboard(dashboard)
 

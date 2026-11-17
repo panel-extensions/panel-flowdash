@@ -12,7 +12,7 @@ import typing as t
 from contextlib import asynccontextmanager
 from functools import cache, partial
 from html import escape
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, parse_qsl, urlencode
 
 import panel as pn
 import panel_material_ui as pmui
@@ -74,6 +74,21 @@ COMPONENTS_ROUTE = "/components"
 DASH_ROUTE_PREFIX = "/dash/"
 #: Opens a dashboard in the full screen layout, e.g. for a wall display.
 KIOSK_QUERY = "kiosk=1"
+
+
+def _is_kiosk(search: str | None) -> bool:
+    return parse_qs((search or "").lstrip("?")).get("kiosk") == ["1"]
+
+
+def _without_query(search: str | None, *names: str) -> str:
+    """*search* without the parameters *names*, keeping every other one in order."""
+    kept = [
+        (k, v)
+        for k, v in parse_qsl((search or "").lstrip("?"), keep_blank_values=True)
+        if k not in names
+    ]
+    return f"?{urlencode(kept)}" if kept else ""
+
 
 _COMPONENT_PALETTE_CARD_CSS = """
 :host {
@@ -732,14 +747,14 @@ class FlowDashApp(Viewer):
                 "toolbar_extra": toolbar_extra,
             },
         )
-        editor.param.watch(self._on_editor_sidebar, ["controls_bar", "sidebar"])
+        editor.param.watch(self._on_editor_sidebar, ["controls_bar", "fullscreen", "sidebar"])
         editor.param.watch(self._on_editor_saved, "saved")
         return editor
 
-    def _on_editor_sidebar(self, _event):
+    def _on_editor_sidebar(self, *_events):
         """Mirror the editor's sidebar views into the page sidebar, unless its controls bar shows them."""
         editor = self._editor
-        views = [] if editor.controls_bar else list(editor.sidebar)
+        views = [] if editor.controls_bar or editor.fullscreen else list(editor.sidebar)
         self._sidebar_container.objects = views
         self._page.sidebar_open = bool(views)
 
@@ -899,7 +914,8 @@ class FlowDashApp(Viewer):
             return
 
         location = pn.state.location
-        kiosk = not edit and location is not None and KIOSK_QUERY in (location.search or "")
+        search = location.search if location is not None else ""
+        kiosk = not edit and _is_kiosk(search)
         # Before loading, so only someone who may save it is told about items it
         # could not restore.
         self._editor.read_only = not self._can_edit_dashboard(dashboard_id)
@@ -909,7 +925,8 @@ class FlowDashApp(Viewer):
         else:
             self._show_view_mode()
         if kiosk:
-            location.search = f"?{KIOSK_QUERY}"
+            # View mode clears the query; the link's other parameters are kept.
+            location.search = _without_query(search, "edit")
             self._editor.fullscreen = True
         self._sync_menu_active(f"{DASH_ROUTE_PREFIX}{dashboard_id}")
         self._apply_layout_config(self._component_view, f"{DASH_ROUTE_PREFIX}{dashboard_id}")
@@ -1212,8 +1229,8 @@ class FlowDashApp(Viewer):
     def _on_fullscreen(self, event):
         """Drop ``?kiosk=1`` once the full screen layout it opened is left."""
         location = pn.state.location
-        if not event.new and location is not None and KIOSK_QUERY in (location.search or ""):
-            location.search = ""
+        if not event.new and location is not None and _is_kiosk(location.search):
+            location.search = _without_query(location.search, "kiosk")
 
     def _on_dashboard_bar_mode(self, mode: str):
         """Switch modes from the dashboard bar, keeping ``?edit=true`` in step.

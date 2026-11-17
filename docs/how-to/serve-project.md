@@ -341,12 +341,14 @@ To present a dashboard, or show it on a wall display, open it in full screen
 with the full screen button next to *Refresh* and *Share*, *Full screen* in
 the command palette, or <kbd>F</kbd>. The tiles and the controls bar
 then fill the screen, reflowed to its size, without the top bar, the
-navigation rail or the dashboard bar. Moving the pointer shows a small overlay
-in the bottom-right corner with the dashboard's title, its health and an exit
-button; it hides again, with the pointer, after a few seconds. Menus, dialogs
-such as Expand and Inspect, and the command palette open inside full screen,
-in the current light or dark theme, and auto-refresh keeps running. Leave with
-<kbd>Esc</kbd>, the browser's own control, the exit button or <kbd>F</kbd>.
+navigation rail or the dashboard bar. Moving the pointer, a tap or a key press
+shows a small overlay in the bottom-right corner with the dashboard's title,
+its health and an exit button; it hides again, with the pointer, after a few
+seconds. Menus, dialogs such as Expand and Inspect, the command palette and
+notifications show in full screen, in the current light or dark theme, and
+auto-refresh keeps running. <kbd>Tab</kbd> moves through the dashboard only,
+never into the page behind it. Leave with <kbd>Esc</kbd>, the browser's own
+control, the exit button or <kbd>F</kbd>.
 
 Full screen is part of view mode: it is not offered while editing, and
 switching to edit mode or to another page leaves it.

@@ -149,9 +149,13 @@ function inDialog(path) {
 }
 
 // The element in full screen, which may sit in shadow roots, or rather its
-// shadow root, where an appended element is rendered.
+// shadow root, where an appended element is rendered. A dashboard puts the
+// whole page in full screen, where the body is shown as usual.
 function fullscreenRoot() {
   let node = document.fullscreenElement
+  if (node === document.documentElement) {
+    return null
+  }
   while (node?.shadowRoot?.fullscreenElement) {
     node = node.shadowRoot.fullscreenElement
   }
