@@ -1,9 +1,15 @@
-"""Render user- and data-supplied strings as literal text.
+r"""Render user- and data-supplied strings as literal text.
 
 ``pmui.Typography``, ``pmui.Alert`` and the Markdown panes render their object as
 Markdown with raw HTML allowed, so a dashboard title, a column name or an error
 message must be escaped before it reaches them. ``pn.pane.HTML`` takes HTML, so
 text interpolated into its markup goes through ``html.escape`` instead.
+
+Markdown panes also typeset TeX found between ``\(``, ``\[``, ``$$`` or
+``\begin{...}`` with MathJax, whose ``\style`` and ``\href`` commands can load
+remote resources or run script. FlowDash's own Markdown never contains math, so its
+panes come from :func:`markdown_pane` with math turned off, and escaped text cannot
+form a delimiter either.
 """
 
 from __future__ import annotations
@@ -12,22 +18,82 @@ import html
 import re
 import typing as t
 
+import panel as pn
 import panel_material_ui as pmui
 import param
 
 # Underscores inside a word never emphasise, so names like ``wind_speed`` stay as typed.
-_INLINE = re.compile(r"([\\`*\[\]~|]|(?<![^\W_])_|_(?![^\W_]))")
+# ``:`` starts links (``https:``), emoji (``:smile:``) and definition list items.
+_INLINE = re.compile(r"([`*\[\]~|:]|(?<![^\W_])_|_(?![^\W_]))")
+# A backslash or dollar sign is wrapped in its own element, so no MathJax delimiter
+# (``\(``, ``\[``, ``\begin``, ``$$``) survives in the rendered HTML or in a text node.
+_MATH = re.compile(r"[\\$]")
+_RAW = re.compile(r"[\\$\r\n]")
 _BLOCK = re.compile(r"^([ \t]*)([#+=-])", re.MULTILINE)
 _ORDERED = re.compile(r"^([ \t]*\d+)([.)])", re.MULTILINE)
+# Indentation would start a code block; as character references it is plain text.
+_INDENT = re.compile(r"^[ \t]+", re.MULTILINE)
+
+
+def _math_char(match: re.Match) -> str:
+    return f"<span>&#{ord(match.group(0))};</span>"
 
 
 def escape_markdown(text: t.Any) -> str:
-    """Escape ``text`` so a Markdown pane shows it verbatim, without HTML or formatting."""
+    """Escape ``text`` so a Markdown pane shows it verbatim, without HTML, formatting or math."""
     text = "" if text is None else str(text)
+    text = html.escape(text, quote=False)
+    text = _MATH.sub(_math_char, text)
     text = _INLINE.sub(r"\\\1", text)
     text = _BLOCK.sub(r"\1\\\2", text)
     text = _ORDERED.sub(r"\1\\\2", text)
-    return html.escape(text, quote=False)
+    return _INDENT.sub(lambda m: "".join(f"&#{ord(c)};" for c in m.group(0)), text)
+
+
+class _NoMathMarkdown(pn.pane.Markdown):
+    # Panel's Markdown only applies disable_math to its own parser and never sends it
+    # to the browser, where MathJax would still typeset \(...\), \[...\] and $$...$$.
+    _rename: t.ClassVar[dict[str, str | None]] = {
+        **pn.pane.Markdown._rename,
+        "disable_math": "disable_math",
+    }
+
+    # Never chosen by pn.panel for arbitrary strings.
+    priority = 0
+
+
+class _NoMathAlert(pn.pane.Alert):
+    _rename: t.ClassVar[dict[str, str | None]] = {
+        **pn.pane.Alert._rename,
+        "disable_math": "disable_math",
+    }
+
+    priority = 0
+
+
+def escape_html(text: t.Any) -> str:
+    """Escape ``text`` for raw HTML inside a Markdown pane, such as a ``<pre>`` block.
+
+    Line breaks become character references too: a blank line would end the HTML
+    block and hand the rest of the text to Markdown.
+    """
+    text = html.escape("" if text is None else str(text), quote=False)
+    return _RAW.sub(lambda m: f"&#{ord(m.group(0))};", text)
+
+
+def markdown_pane(object: t.Any = "", **params) -> pn.pane.Markdown:
+    """Return a Markdown pane for FlowDash's own markup, with MathJax turned off in the browser.
+
+    Interpolate user or data text into ``object`` only through :func:`escape_markdown`.
+    """
+    params.setdefault("disable_math", True)
+    return _NoMathMarkdown(object, **params)
+
+
+def alert_pane(object: t.Any = "", **params) -> pn.pane.Alert:
+    """Return a Panel ``Alert`` pane with MathJax turned off in the browser, like :func:`markdown_pane`."""
+    params.setdefault("disable_math", True)
+    return _NoMathAlert(object, **params)
 
 
 def text_typography(text: t.Any, **params) -> pmui.Typography:
@@ -38,7 +104,18 @@ def text_typography(text: t.Any, **params) -> pmui.Typography:
         text = param.bind(escape_markdown, text)
     else:
         text = escape_markdown(text)
+    params.setdefault("disable_math", True)
     return pmui.Typography(text, **params)
+
+
+def text_alert(text: t.Any, **params) -> pmui.Alert:
+    """Return a ``pmui.Alert`` whose message is ``text`` shown as literal text.
+
+    The message goes to the alert's own ``object``: passed positionally a string
+    becomes a child pane chosen by ``pn.panel``, which renders a string ending in
+    ``.png`` as a remote image and other strings as Markdown with math.
+    """
+    return pmui.Alert(object=escape_markdown(text), **params)
 
 
 def code_block(text: t.Any) -> str:

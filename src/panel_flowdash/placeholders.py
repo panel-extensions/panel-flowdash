@@ -15,7 +15,7 @@ import panel_material_ui as pmui
 from panel.viewable import Viewable
 
 from panel_flowdash.dashboard_store import DashboardEdge
-from panel_flowdash.ui.text import escape_markdown
+from panel_flowdash.ui.text import escape_markdown, markdown_pane, text_alert
 
 # Node type of placeholder nodes on the canvas. Component node types are derived
 # from component ids, which never contain a colon.
@@ -57,8 +57,8 @@ class UnresolvedEdge:
 
 def placeholder_view(placeholder: Placeholder) -> Viewable:
     """Build what a placeholder node and tile display."""
-    return pmui.Alert(
-        escape_markdown(placeholder.message),
+    return text_alert(
+        placeholder.message,
         title=placeholder.title,
         severity="warning",
         sizing_mode="stretch_width",
@@ -94,7 +94,7 @@ def broken_edges_panel(lines: list[str], hidden: int, on_discard) -> Viewable:
     button.on_click(lambda _event: on_discard())
     return pn.Column(
         pmui.Alert(
-            pn.pane.Markdown(text, margin=0),
+            markdown_pane(text, margin=0),
             title=(
                 f"{count} saved connection{'s' if count != 1 else ''} could not be "
                 "restored and will be saved unchanged"

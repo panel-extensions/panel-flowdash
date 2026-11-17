@@ -94,7 +94,13 @@ from panel_flowdash.ui.settings_dialog import SettingsDialog
 from panel_flowdash.ui.split_view import TILE_KEY_PREFIX, SplitView
 from panel_flowdash.ui.states import StartCard
 from panel_flowdash.ui.status_bar import StatusBar, select_on_canvas
-from panel_flowdash.ui.text import code_block, escape_markdown, text_typography
+from panel_flowdash.ui.text import (
+    code_block,
+    escape_markdown,
+    markdown_pane,
+    text_alert,
+    text_typography,
+)
 from panel_flowdash.ui.tile import Tile
 from panel_flowdash.util import (
     close_dialog,
@@ -1544,7 +1550,7 @@ class FlowDash(Viewer):
             except Exception:
                 logger.exception("Value popup representation failed")
         if value is None:
-            return pn.pane.Markdown("*No value yet*", margin=0)
+            return markdown_pane("*No value yet*", margin=0)
         if is_failure(value):
             return pmui.Alert(
                 text_typography(failure_text(value), variant="body2", margin=0),
@@ -1557,7 +1563,7 @@ class FlowDash(Viewer):
 
             if isinstance(value, pd.DataFrame):
                 return pn.Column(
-                    pn.pane.Markdown(
+                    markdown_pane(
                         f"DataFrame · {value.shape[0]} rows x {value.shape[1]} cols",
                         margin=(0, 0, 6, 0),
                     ),
@@ -1574,14 +1580,14 @@ class FlowDash(Viewer):
             text = repr(value)
             if len(text) > 2000:
                 text = text[:2000] + "…"
-            return pn.pane.Markdown(code_block(text))
+            return markdown_pane(code_block(text))
 
     def _build_value_popup(self, title: str, subtitle: str | None, value: t.Any) -> Viewable:
         header = f"**{escape_markdown(title)}**"
         if subtitle:
             header += f"  \n*{escape_markdown(subtitle)}*"
         return pn.Column(
-            pn.pane.Markdown(header, margin=(0, 0, 6, 0)),
+            markdown_pane(header, margin=(0, 0, 6, 0)),
             self._value_preview(value),
             sizing_mode="stretch_width",
         )
@@ -1596,8 +1602,8 @@ class FlowDash(Viewer):
             return None if content is None else pn.panel(content)
         except Exception as exc:
             logger.exception("Inspecting output '%s' of %s failed", port_name, instance_id)
-            return pmui.Alert(
-                escape_markdown(f"Could not describe this output: {exc}"),
+            return text_alert(
+                f"Could not describe this output: {exc}",
                 severity="error",
                 margin=(6, 0, 0, 0),
             )
@@ -1676,7 +1682,7 @@ class FlowDash(Viewer):
         missing = missing_inputs(self._dataflow_graph.get_state(instance_id), spec.inputs)
         if missing:
             notice = f"Waiting for {', '.join(missing)}; the outputs may not be computed yet."
-            objects.append(pmui.Alert(notice, severity="info", margin=(0, 0, 6, 0)))
+            objects.append(text_alert(notice, severity="info", margin=(0, 0, 6, 0)))
         objects.append(
             pmui.Tabs(
                 *self._inspection_sections(instance_id, spec),
@@ -2164,7 +2170,7 @@ class FlowDash(Viewer):
         self._save_button.on_click(lambda _event: self._on_save_clicked())
         self._clear_dialog = self._build_clear_dialog()
         self._pending_import: DashboardModel | None = None
-        self._import_message = pn.pane.Markdown()
+        self._import_message = markdown_pane()
         self._import_dialog = self._build_import_dialog()
         self._inspect_dialog = make_inspect_sheet()
         # Saving is only offered with unsaved changes, and rearranging is a change.
@@ -2271,7 +2277,7 @@ class FlowDash(Viewer):
         confirm.on_click(_on_confirm)
         return pmui.Dialog(
             objects=[
-                pn.pane.Markdown(
+                markdown_pane(
                     "Remove every component and connection from the canvas? "
                     "Unsaved work will be lost."
                 ),
@@ -2601,7 +2607,7 @@ class FlowDash(Viewer):
                 continue
             view = self._tile_objects[i] if i < len(self._tile_objects) else None
             if view is None:
-                view = pn.pane.Markdown(f"*{escape_markdown(entry.title)}*")
+                view = markdown_pane(f"*{escape_markdown(entry.title)}*")
             sidebar_views.append(view)
         self.sidebar = sidebar_views
         self._view_controls.sync()
@@ -2624,7 +2630,7 @@ class FlowDash(Viewer):
                 continue
             view = self._tile_objects[i] if i < len(self._tile_objects) else None
             if view is None:
-                view = pn.pane.Markdown(f"*{escape_markdown(entry.title)}*")
+                view = markdown_pane(f"*{escape_markdown(entry.title)}*")
             grid_views.append(self._grid_view(item, view))
             grid_ids.append(item["instance_id"])
         self._tile_grid[:] = grid_views
@@ -3838,7 +3844,7 @@ class FlowDash(Viewer):
         open_dialog(
             "Dashboard changed since you opened it",
             pn.Column(
-                pn.pane.Markdown(
+                markdown_pane(
                     "Someone else saved this dashboard after you opened it, so saving "
                     "would overwrite their changes. **Reload** discards your changes "
                     "and shows the latest version. **Save as copy** keeps your "

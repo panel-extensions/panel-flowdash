@@ -11,7 +11,6 @@ import traceback
 import typing as t
 from contextlib import asynccontextmanager
 from functools import cache, partial
-from html import escape
 from urllib.parse import parse_qs, parse_qsl, urlencode
 
 import panel as pn
@@ -62,7 +61,7 @@ from panel_flowdash.ui.states import (
     page_not_found,
     similar_dashboards,
 )
-from panel_flowdash.ui.text import escape_markdown
+from panel_flowdash.ui.text import alert_pane, escape_html, escape_markdown, markdown_pane
 from panel_flowdash.util import notify, page_dialog, panel_call, panel_viewer
 
 logger = logging.getLogger("panel_flowdash")
@@ -678,8 +677,8 @@ class FlowDashApp(Viewer):
         blocking = [u for u in unsatisfied if u["blocking"]]
         if blocking:
             keys = ", ".join(u["key"] for u in blocking)
-            return pn.pane.Alert(
-                f"**{entry.title}** is waiting for: `{keys}`",
+            return alert_pane(
+                f"**{escape_markdown(entry.title)}** is waiting for: {escape_markdown(keys)}",
                 alert_type="warning",
             )
 
@@ -701,7 +700,7 @@ class FlowDashApp(Viewer):
     async def _render_page(self, key):
         entry = self._entry_from_key(key)
         if entry is None:
-            return escape_markdown(f"Unknown page: {'/'.join(key)}")
+            return markdown_pane(escape_markdown(f"Unknown page: {'/'.join(key)}"))
 
         if self._unresolved(entry):
             # A failed import leaves the rules pending and access is refused below.
@@ -717,8 +716,8 @@ class FlowDashApp(Viewer):
         except Exception as e:
             logger.exception("Error rendering page '%s'", "/".join(key))
             err_name = type(e).__name__
-            return pn.pane.Alert(
-                f"**{err_name}**: {escape_markdown(e)}\n<hr>\n<pre> {escape(traceback.format_exc())}</pre>\n",
+            return alert_pane(
+                f"**{err_name}**: {escape_markdown(e)}\n<hr>\n<pre> {escape_html(traceback.format_exc())}</pre>\n",
                 alert_type="danger",
                 styles={"color": "black"},
             )
