@@ -75,8 +75,10 @@ def test_create_validates_after_typing_and_submits_on_enter(page):
     expect(create).to_be_enabled()
     name.press("Enter")
 
-    expect(page.get_by_role("dialog")).to_have_count(0)
     wait_until(lambda: _titles(store) == ["Fresh", "Sales"], page)
+    # The dialog closes in the same update that mounts the editor, which on a
+    # loaded Windows runner takes longer than the default five seconds.
+    expect(page.get_by_role("dialog")).to_have_count(0, timeout=15000)
 
 
 def test_rename_accepts_the_unchanged_name(page):
