@@ -4,6 +4,7 @@ import datetime as dt
 import html
 import math
 import re
+import weakref
 
 import panel as pn
 import panel_material_ui as pmui
@@ -22,6 +23,21 @@ _ISO_DATE = r"^(\d{4}-\d{2}-\d{2})?$"
 _FIELD_SIZE = {"width": 360, "height": 90}
 _SLIDER_SIZE = {"width": 360, "height": 100}
 _TOGGLE_SIZE = {"width": 360, "height": 72}
+
+
+class _ISODate(param.String):
+    """A date as a YYYY-MM-DD string, or empty, that must name a real day."""
+
+    def __init__(self, default="", **params):
+        super().__init__(default=default, regex=_ISO_DATE, **params)
+
+    def _validate_value(self, val, allow_None):
+        super()._validate_value(val, allow_None)
+        if val:
+            dt.date.fromisoformat(val)
+
+    def schema(self, safe=False, subset=None, mode="json"):
+        return self._serializers[mode].param_schema("String", self, safe=safe, subset=subset)
 
 
 class _WidgetComponent(Viewer):
@@ -236,8 +252,7 @@ class MultiChoice(_OptionsWidget):
     ],
     provides=[{"key": "selected"}],
     requires=[{"key": "options", "type": "List", "multiple": False, "required": False}],
-    # Room for the options to wrap onto a second line in a narrow tile.
-    default_size={"width": 360, "height": 130},
+    default_size=_SLIDER_SIZE,
 )
 class RadioGroup(_OptionsWidget):
     """Pick one of a few options shown side by side."""
@@ -289,7 +304,12 @@ class _NumberWidget(_WidgetComponent):
         Whether the widget selects integers or floats. Auto picks integers when
         the bounds, step and default value are all whole numbers.""",
     )
-    step = param.Number(default=1, bounds=(0, None), inclusive_bounds=(False, True))
+    step = param.Number(
+        default=1,
+        bounds=(0, None),
+        inclusive_bounds=(False, True),
+        doc="Increment between selectable values, e.g. 1 or 0.5.",
+    )
     format = param.String(
         default="",
         doc="Numeral.js format of the value, e.g. '0.0' or '0%'. Empty picks one for the number type.",
@@ -319,7 +339,9 @@ class _BoundedSlider(_NumberWidget):
     default_start = param.Number(default=0, doc="Lower bound while no start is wired.")
     default_end = param.Number(default=100, doc="Upper bound while no end is wired.")
     show_value = param.Boolean(default=True, doc="Show the current value next to the label.")
-    color = param.Selector(default="primary", objects=_COLORS)
+    color = param.Selector(
+        default="primary", objects=_COLORS, doc="Theme color of the track and handles."
+    )
 
     _widget_config = ("show_value", "color")
 
@@ -536,6 +558,13 @@ class NumberInput(_NumberWidget):
     def _whole_numbers(self) -> tuple:
         return (self.step, self.default_value)
 
+    def _pull_value(self, event):
+        self.value = self._number(event.new)
+        # Rounding to an integer may leave the value unchanged, which would not
+        # update the field, so the rounded number is written back explicitly.
+        if self._widget.value != self.value:
+            self._widget.value = self.value
+
     @param.depends("default_value", watch=True)
     def _apply_default_value(self):
         self.value = self.default_value
@@ -595,6 +624,10 @@ class Toggle(_WidgetComponent):
     _rebuild_config = ("style",)
     _value_param = "_value"
 
+    def __init__(self, **params):
+        params.setdefault("_value", params.get("default_value", False))
+        super().__init__(**params)
+
     def _build_widget(self):
         widget = pmui.Checkbox if self.style == "checkbox" else pmui.Switch
         return widget(value=self._value, sizing_mode="stretch_width")
@@ -650,12 +683,21 @@ class TextInput(_WidgetComponent):
     _widget_config = ("placeholder", "variant", "size")
     _value_param = "_value"
 
+    def __init__(self, **params):
+        params.setdefault("_value", params.get("default_value", ""))
+        super().__init__(**params)
+
     def _build_widget(self):
-        return pmui.TextInput(sizing_mode="stretch_width")
+        return pmui.TextInput(value=self._value, sizing_mode="stretch_width")
 
     def _link_widget(self):
         super()._link_widget()
         self._widget.param.watch(self._on_typing, "value_input")
+
+    def _push_value(self, event):
+        # Text typed into the field is already there, so it is not sent back to it.
+        if event.new != self._widget.value_input:
+            super()._push_value(event)
 
     def _on_typing(self, event):
         if self.update_on == "typing":
@@ -739,23 +781,16 @@ class DateRange(_WidgetComponent):
         doc="""
         Range selected when the dashboard opens. Relative periods end today, 'all'
         spans the bounds (no selection without bounds), and 'custom' uses
-        custom_start and custom_end. A period outside the bounds selects them all.""",
+        custom_start and custom_end. A period outside the bounds selects
+        all of them, or just the nearest bound when only one is set.""",
     )
-    custom_start = param.String(
-        default="", regex=_ISO_DATE, doc="First date of the 'custom' period, as YYYY-MM-DD."
-    )
-    custom_end = param.String(
-        default="", regex=_ISO_DATE, doc="Last date of the 'custom' period, as YYYY-MM-DD."
-    )
-    default_start = param.String(
-        default="",
-        regex=_ISO_DATE,
+    custom_start = _ISODate(doc="First date of the 'custom' period, as YYYY-MM-DD.")
+    custom_end = _ISODate(doc="Last date of the 'custom' period, as YYYY-MM-DD.")
+    default_start = _ISODate(
         label="Earliest date",
         doc="Earliest selectable date as YYYY-MM-DD while no start is wired; empty for none.",
     )
-    default_end = param.String(
-        default="",
-        regex=_ISO_DATE,
+    default_end = _ISODate(
         label="Latest date",
         doc="Latest selectable date as YYYY-MM-DD while no end is wired; empty for none.",
     )
@@ -822,12 +857,15 @@ class DateRange(_WidgetComponent):
         start, end = self._widget.start, self._widget.end
         if value is not None:
             low, high = (_as_date(v) for v in value)
-            if (start is not None and high < start) or (end is not None and low > end):
-                low, high = start or low, end or high
-            value = (
-                low if start is None else max(low, start),
-                high if end is None else min(high, end),
-            )
+            if start is not None and high < start:
+                # The period lies before the bounds, so select all of them.
+                low, high = start, end if end is not None else start
+            elif end is not None and low > end:
+                low, high = start if start is not None else end, end
+            else:
+                low = low if start is None else max(low, start)
+                high = high if end is None else min(high, end)
+            value = (low, high)
         self.value = value
 
     @param.output(param.DateRange)
@@ -1001,15 +1039,16 @@ class KPI(Viewer):
         )
 
     def _color(self, value) -> str | None:
+        thresholds = []
         for pair in self.thresholds:
-            if not isinstance(pair, (list, tuple)) or len(pair) != 2:
-                continue
-            limit, color = pair
-            try:
-                if value <= float(limit):
-                    return _css_color(color)
-            except (TypeError, ValueError):
-                continue
+            if isinstance(pair, (list, tuple)) and len(pair) == 2:
+                try:
+                    thresholds.append((float(pair[0]), pair[1]))
+                except (TypeError, ValueError):
+                    continue
+        for limit, color in sorted(thresholds, key=lambda pair: pair[0]):
+            if value <= limit:
+                return _css_color(color)
         return None
 
     def _delta_html(self, value) -> str:
@@ -1017,7 +1056,9 @@ class KPI(Viewer):
         if self.delta == "none" or reference is None or not math.isfinite(reference):
             return ""
         change = value - reference
-        if self.delta == "percent" and reference != 0:
+        if self.delta == "percent":
+            if reference == 0:
+                return ""
             amount = f"{abs(change) / abs(reference):.1%}"
         else:
             amount = _format_number(abs(change), self.format)
@@ -1068,7 +1109,7 @@ class KPI(Viewer):
 
 _SAFE_URL = re.compile(
     r"^(https?://|/|\./|\.\./|data:image/(png|jpe?g|gif|webp|svg\+xml|avif);base64,)"
-    r"|^[A-Za-z0-9_][A-Za-z0-9_./%-]*$",
+    r"|^[A-Za-z0-9_][A-Za-z0-9_./%-]*([?#][^\s\"'<>]*)?$",
     re.IGNORECASE,
 )
 
@@ -1134,22 +1175,45 @@ class Image(Viewer):
     )
     url = param.String(default=None, allow_None=True)
 
+    _editing = param.Boolean(default=True)
+
     def __init__(self, **params):
         super().__init__(**params)
         self._pane = pn.pane.HTML(
             self._html(), stylesheets=[_IMAGE_CSS], sizing_mode="stretch_both", margin=0
         )
+        self._follow_editor()
+
+    def _follow_editor(self):
+        from panel_flowdash.editor import current_dashboard
+
+        editor = current_dashboard()
+        if editor is None:
+            return
+        self._editing = editor.editable
+        # Weak, so that the editor's watcher does not keep a removed image alive.
+        image = weakref.ref(self)
+
+        def follow(event):
+            if (target := image()) is None:
+                editor.param.unwatch(watcher)
+            else:
+                target._editing = event.new
+
+        watcher = editor.param.watch(follow, "editable")
 
     def _html(self) -> str:
         url = safe_image_url(self.default_url if self.url is None else self.url)
         if url is None:
-            return '<div class="fd-image"><span class="fd-image-empty">No image</span></div>'
+            # The placeholder only helps while the dashboard is being edited.
+            empty = '<span class="fd-image-empty">No image</span>' if self._editing else ""
+            return f'<div class="fd-image">{empty}</div>'
         return (
             f'<div class="fd-image"><img src="{html.escape(url, quote=True)}" '
             f'alt="{html.escape(self.alt, quote=True)}" style="object-fit: {self.fit}"></div>'
         )
 
-    @param.depends("default_url", "alt", "fit", "url", watch=True)
+    @param.depends("default_url", "alt", "fit", "url", "_editing", watch=True)
     def _update(self):
         self._pane.object = self._html()
 

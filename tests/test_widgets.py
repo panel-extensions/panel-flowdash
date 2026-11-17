@@ -170,6 +170,12 @@ class TestNumberInput:
         assert state.selected == 2.5
         assert widget.format == "0,0.0[000]"
 
+    def test_integer_input_shows_the_rounded_value(self, editor):
+        node, number = _place(editor, "Widgets/NumberInput", default_value=4)
+        number._widget.value = 3.7
+        assert editor.graph.get_state(node).selected == 4
+        assert number._widget.value == 4
+
     def test_cleared_input_outputs_none(self, editor):
         node, number = _place(editor, "Widgets/NumberInput")
         number._widget.value = None
@@ -193,8 +199,24 @@ class TestToggle:
         toggle._widget.value = False
         assert state.checked is False
 
+    def test_default_value_given_to_the_constructor(self):
+        toggle = BUILTIN_COMPONENTS["Widgets/Toggle"](default_value=True)
+        assert toggle.checked() is True
+        assert toggle._widget.value is True
+
 
 class TestTextInput:
+    def test_default_value_given_to_the_constructor(self):
+        text = BUILTIN_COMPONENTS["Widgets/TextInput"](default_value="wind")
+        assert (text.text(), text._widget.value) == ("wind", "wind")
+
+    def test_typing_is_not_sent_back_to_the_field(self, editor):
+        _, text = _place(editor, "Widgets/TextInput", update_on="typing")
+        sent = []
+        text._widget.param.watch(lambda e: sent.append(e.new), "value")
+        text._widget._process_events({"value_input": "wi"})
+        assert sent == []
+
     def test_sends_on_enter_by_default(self, editor):
         node, text = _place(editor, "Widgets/TextInput", placeholder="Search", default_value="x")
         widget = text._widget
@@ -258,6 +280,29 @@ class TestDateRange:
         editor.graph.get_state(end).day = dt.date(2020, 6, 30)
         assert editor.graph.get_state(node).selected == (dt.date(2020, 3, 1), dt.date(2020, 6, 30))
 
+    @pytest.mark.parametrize(
+        ("bounds", "expected"),
+        [
+            ({"default_end": "2024-12-31"}, (dt.date(2024, 12, 31), dt.date(2024, 12, 31))),
+            ({"default_start": "2999-01-01"}, (dt.date(2999, 1, 1), dt.date(2999, 1, 1))),
+            (
+                {"default_start": "2000-01-01"},
+                (TODAY - dt.timedelta(days=29), TODAY),
+            ),
+        ],
+    )
+    def test_one_sided_bounds(self, editor, bounds, expected):
+        node, picker = _place(editor, "Widgets/DateRange", **bounds)
+        assert editor.graph.get_state(node).selected == expected
+        assert picker._widget.value == expected
+
+    def test_period_after_a_wired_start(self, editor):
+        node, _ = _place(editor, "Widgets/DateRange")
+        start = _source(editor, "Test/date", "day", TODAY + dt.timedelta(days=10))
+        assert editor.connect(start, "day", node, "start") is True
+        low, high = editor.graph.get_state(node).selected
+        assert low == high == TODAY + dt.timedelta(days=10)
+
     def test_all_without_bounds_selects_nothing(self, editor):
         node, _ = _place(editor, "Widgets/DateRange", default_period="all")
         assert editor.graph.get_state(node).selected is None
@@ -267,6 +312,9 @@ class TestDateRange:
         config = editor.graph.get_config_state(node)
         with pytest.raises(ValueError):
             config.custom_start = "01/02/2024"
+        with pytest.raises(ValueError):
+            config.default_end = "2026-13-45"
+        config.default_end = "2026-02-28"
 
 
 class TestKPI:
@@ -302,7 +350,7 @@ class TestKPI:
         assert "▼ 10<" in html()
 
     def test_thresholds_color_the_value(self, editor):
-        thresholds = [[50, "error"], [80, "#ff9900"], [100, "url(javascript:x)"]]
+        thresholds = [[80, "#ff9900"], [50, "error"], [100, "url(javascript:x)"]]
         kpi, html = self._html(editor, thresholds=thresholds)
         kpi.value = 40
         assert "color: var(--mui-palette-error-main, #d84a3a)" in html()
@@ -310,6 +358,11 @@ class TestKPI:
         assert "color: #ff9900" in html()
         kpi.value = 90
         assert "style=" not in html()
+
+    def test_no_percent_change_from_zero(self, editor):
+        kpi, html = self._html(editor)
+        kpi.param.update(value=5, reference=0)
+        assert "fd-kpi-change" not in html()
 
     def test_text_is_escaped(self, editor):
         kpi, html = self._html(editor, label="<b>x</b>", prefix="<img src=x>")
@@ -327,7 +380,13 @@ class TestKPI:
 class TestImage:
     @pytest.mark.parametrize(
         "url",
-        ["https://example.com/a.png", "/assets/logo.svg", "logo.png", "data:image/png;base64,AA"],
+        [
+            "https://example.com/a.png",
+            "/assets/logo.svg",
+            "logo.png",
+            "img/logo.png?v=2#top",
+            "data:image/png;base64,AA",
+        ],
     )
     def test_accepts_image_urls(self, url):
         assert safe_image_url(url) == url
@@ -351,6 +410,14 @@ class TestImage:
         assert "<img" not in image._pane.object
         assert "No image" in image._pane.object
 
+    def test_placeholder_only_while_editing(self, editor):
+        _, image = _place(editor, "Widgets/Image")
+        assert "No image" in image._pane.object
+        editor.editable = False
+        assert "No image" not in image._pane.object
+        editor.editable = True
+        assert "No image" in image._pane.object
+
 
 CONFIGS = {
     "Widgets/RadioGroup": {"default_options": ["A", "B"], "style": "buttons"},
@@ -363,7 +430,11 @@ CONFIGS = {
         "default_end": "2024-12-31",
     },
     "Widgets/Toggle": {"default_value": True, "style": "checkbox"},
-    "Widgets/TextInput": {"placeholder": "Search", "update_on": "typing"},
+    "Widgets/TextInput": {
+        "placeholder": "Search",
+        "update_on": "typing",
+        "default_value": "on load",
+    },
     "Widgets/KPI": {"label": "Sales", "thresholds": [[10, "error"]], "delta": "absolute"},
     "Widgets/Image": {"default_url": "https://example.com/a.png", "fit": "cover"},
 }
@@ -383,6 +454,13 @@ def test_config_round_trips_through_json(editor):
             state = restored.graph.get_config_state(item["instance_id"])
             assert item["component_id"] == component_id
             assert {k: getattr(state, k) for k in config} == config
+        outputs = {
+            item["component_id"]: restored.graph.get_state(item["instance_id"])
+            for item in restored._tile_items
+        }
+        assert outputs["Widgets/Toggle"].checked is True
+        assert outputs["Widgets/TextInput"].text == "on load"
+        assert outputs["Widgets/DateRange"].selected == (dt.date(2024, 1, 1), dt.date(2024, 1, 31))
     finally:
         restored.dispose()
 

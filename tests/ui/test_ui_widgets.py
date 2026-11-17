@@ -92,3 +92,29 @@ def test_kpi_and_image_render_wired_values(page):
     tile = _tile(page, editor, image)
     expect(tile).to_contain_text("No image")
     assert tile.locator("img").count() == 0
+
+
+def test_range_slider_and_date_range_send_browser_values(page):
+    editor = FlowDash({}, notifications=False)
+    rng = editor.add_component("Widgets/RangeSlider", config={"label": "Capacity"})
+    dates = editor.add_component(
+        "Widgets/DateRange",
+        config={
+            "default_period": "custom",
+            "custom_start": "2024-03-04",
+            "custom_end": "2024-03-08",
+        },
+    )
+    editor.mode = "dashboard"
+    serve_component(page, editor)
+    state = editor.graph.get_state
+
+    page.get_by_role("slider").first.press("ArrowRight")
+    wait_until(lambda: state(rng).selected == (1, 100), page)
+    assert all(type(v) is int for v in state(rng).selected)
+
+    _tile(page, editor, dates).locator("input").first.click()
+    march = page.get_by_role("grid").first
+    march.get_by_text("11", exact=True).click()
+    march.get_by_text("15", exact=True).click()
+    wait_until(lambda: state(dates).selected == (dt.date(2024, 3, 11), dt.date(2024, 3, 15)), page)
