@@ -34,7 +34,7 @@ def test_the_agent_adds_a_component_from_the_drawer(page):
 
     page.get_by_text("note tile").first.wait_for()
     page.get_by_role("button", name="Assistant", exact=True).click()
-    chat = page.get_by_role("textbox").last
+    chat = page.get_by_placeholder(re.compile("^Ask the agent"))
     chat.fill("Add another note")
     chat.press("Enter")
 
@@ -44,14 +44,14 @@ def test_the_agent_adds_a_component_from_the_drawer(page):
     assert apps[0]._editor.editable
     assert errors == []
 
-    # Closed, the drawer gives the page its whole width back.
+    # Closed, the drawer takes no width: none of its controls is visible (so none can
+    # take focus) and the editor's status bar, which spans the main area, reaches the
+    # right edge of the window.
     page.get_by_role("button", name="Assistant", exact=True).click()
+    expect(chat).to_be_hidden()
+    expect(page.get_by_role("button", name="New conversation")).to_be_hidden()
+    zoom = page.get_by_text(re.compile(r"^Zoom \d+%$"))
+    width = page.viewport_size["width"]
     wait_until(
-        lambda: (
-            page.get_by_text("Unsaved changes").bounding_box()["x"]
-            < page.viewport_size["width"] / 2
-        ),
-        page,
+        lambda: (box := zoom.bounding_box()) and box["x"] + box["width"] > width - 120, page
     )
-    tile_bar = page.get_by_role("button", name="Done")
-    wait_until(lambda: tile_bar.bounding_box()["x"] > page.viewport_size["width"] - 200, page)
