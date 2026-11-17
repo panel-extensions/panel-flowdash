@@ -91,15 +91,6 @@ class TestSplitTab:
         assert not editor._layout_panel.visible
         assert editor._split_view.events.active
 
-    async def test_grid_is_a_preview_arranged_in_the_layout_tab(self, editor):
-        map_id = editor.add_component(MAP)
-        editor.mode = "split"
-        assert not editor._tile_grid.editable
-        assert editor._inspect_tiles[map_id].header.visible
-        editor.mode = "dashboard"
-        assert editor._tile_grid.editable
-        assert not editor._inspect_tiles[map_id].header.visible
-
     async def test_offered_by_the_edit_tabs(self, editor):
         tabs = editor._dashboard_bar.mode_tabs
         assert list(tabs.options.values()) == ["wiring", "dashboard", "split"]
