@@ -15,6 +15,7 @@ import re
 import typing as t
 
 import panel as pn
+import yaml
 
 from panel_flowdash.dashboard_store import DashboardModel
 from panel_flowdash.editor import (
@@ -457,8 +458,9 @@ class DashboardOps:
             it is based on; nothing is changed.
         """
         self._check_replace(text, revision)
+        title = self._title_issue(text)
         self.editor.import_dashboard(text)
-        return self._warnings()
+        return title + self._warnings()
 
     async def replace_yaml_async(
         self, text: str, *, revision: str | None = None, timeout: float = DEFAULT_TIMEOUT
@@ -471,9 +473,27 @@ class DashboardOps:
             editor.ensure_components_loaded_async({item.component_id for item in model.items}),
             timeout,
         )
+        title = self._title_issue(text)
         editor.load_model(model)
         editor.dirty = True
-        return self._warnings()
+        return title + self._warnings()
+
+    def _title_issue(self, text: str) -> list[Issue]:
+        current = self.editor.dashboard
+        try:
+            title = (yaml.safe_load(text) or {}).get("title")
+        except (yaml.YAMLError, AttributeError):
+            return []
+        if current is None or title in (None, current.title):
+            return []
+        return [
+            Issue(
+                "title",
+                f"is ignored: the dashboard keeps its title {current.title!r}. Only the user "
+                "can rename it.",
+                "warning",
+            )
+        ]
 
     def _warnings(self) -> list[Issue]:
         return [i for i in self.validate() if i.severity != "error"]

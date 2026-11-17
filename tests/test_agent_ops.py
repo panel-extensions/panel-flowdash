@@ -191,6 +191,11 @@ class TestEditing:
         assert ops.editor._tile_items[0]["instance_id"] == instance_id
         assert [w.path for w in warnings] == ["nodes.waiting"]
 
+    def test_a_changed_title_is_reported(self, ops):
+        warnings = ops.replace_yaml("flowdash: 1\ntitle: Renamed\n")
+        assert [(w.path, w.severity) for w in warnings] == [("title", "warning")]
+        assert ops.editor.dashboard.title == "Mine"
+
     def test_replace_yaml_with_errors_changes_nothing(self, ops):
         ops.add_node("T/number")
         before = ops.get_dashboard()
