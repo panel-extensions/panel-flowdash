@@ -64,3 +64,27 @@ def test_saving_through_the_palette_needs_approval_too():
     policy = approval_policy()
     assert policy.requires_approval("run_command", {"command": "action:save"})
     assert not policy.requires_approval("run_command", {"command": "action:refresh"})
+
+
+@pytest.mark.parametrize("approved", [True, False])
+async def test_an_agent_saving_through_the_palette_waits_for_approval(monkeypatch, approved):
+    from panel_flowdash.agent.tools import approval_policy
+
+    from .test_agent_tools import _resolve
+
+    store = MemoryDashboardStore()
+    mine = store.create_dashboard("alice", "Mine")
+    app = _app(store, monkeypatch)
+    app._load_dashboard_sync(mine.dashboard_id, edit=True)
+    app._editor.add_component("T/number")
+    agent = Agent(
+        scripted(("run_command", {"command": "action:save"})),
+        toolsets=[ActionToolset(palette_actions(app))],
+    )
+    runner = AgentRunner(agent, RunState(flush_interval=0), approval_policy=approval_policy())
+    _resolve(runner.state, approved)
+    await runner.run("Save")
+    (request,) = runner.state.approvals.values()
+    assert request.args == {"command": "action:save"}
+    stored = store._load_any(mine.dashboard_id)
+    assert [i.component_id for i in stored.items] == (["T/number"] if approved else [])
