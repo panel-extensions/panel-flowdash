@@ -11,9 +11,10 @@ signed-in user.
 
 ## Install and choose a model
 
-The agent needs the `agent` extra, which brings in
+The agent needs Python 3.11 or newer and the `agent` extra, which brings in
 [panel-agents](https://github.com/panel-extensions/panel-agents) and
-[pydantic-ai](https://ai.pydantic.dev), plus the client of the model provider you use:
+[pydantic-ai](https://ai.pydantic.dev), plus the client of the model provider you use.
+FlowDash itself still runs on Python 3.10, without the agent:
 
 ```bash
 pip install "panel-flowdash[agent]" "pydantic-ai-slim[openai]"
@@ -28,7 +29,8 @@ flowdash serve my_project/
 ```
 
 Any model pydantic-ai supports works, written as `<provider>:<model>`. Without a
-model configured, the app runs without an agent.
+model configured, the app runs without an agent. If the extra is missing, the server
+logs what to install instead of starting the agent.
 
 ---
 
