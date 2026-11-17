@@ -243,7 +243,7 @@ class TestSharing:
     """Sharing through the agent keeps a dashboard private unless asked to open it."""
 
     @pytest.fixture
-    def shared(self, store, monkeypatch):
+    async def shared(self, store, monkeypatch):
         mine = store.create_dashboard("alice", "Mine")
         return LiveDashboardOps(_app(store, monkeypatch)), mine.dashboard_id
 
@@ -254,7 +254,7 @@ class TestSharing:
         identity = Identity(user=user, oauth_user=user)
         return is_authorized(model.permission, identity, default_allow=True, owner=model.owner)
 
-    def test_adding_an_editor_keeps_the_dashboard_private(self, shared, store):
+    async def test_adding_an_editor_keeps_the_dashboard_private(self, shared, store):
         ops, did = shared
         ops.share_dashboard(did, everyone=False)
         access = ops.share_dashboard(did, add_editors=["bob"])
@@ -264,18 +264,18 @@ class TestSharing:
         ops.share_dashboard(did)
         assert not self._can_view(store, did, "mallory")
 
-    def test_sharing_adds_to_the_existing_access(self, shared, store):
+    async def test_sharing_adds_to_the_existing_access(self, shared, store):
         ops, did = shared
         ops.share_dashboard(did, add_viewers=["carol"], everyone=False)
         access = ops.share_dashboard(did, add_viewers=["group:ops"], remove=["nobody"])
         assert access["viewers"] == ["carol", "group:ops"]
         assert ops.share_dashboard(did, remove=["carol"])["viewers"] == ["group:ops"]
 
-    def test_a_public_dashboard_says_so(self, shared, store):
+    async def test_a_public_dashboard_says_so(self, shared, store):
         ops, did = shared
         assert ops.share_dashboard(did, add_editors=["bob"])["everyone"] is True
 
-    def test_only_everyone_true_opens_it(self, shared, store):
+    async def test_only_everyone_true_opens_it(self, shared, store):
         ops, did = shared
         ops.share_dashboard(did, everyone=False)
         assert not self._can_view(store, did, "mallory")
