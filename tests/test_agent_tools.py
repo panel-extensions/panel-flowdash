@@ -23,7 +23,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.models.function import DeltaToolCall, FunctionModel
 
 from panel_flowdash import MemoryDashboardStore
-from panel_flowdash.agent import DashboardOps
+from panel_flowdash.agent import DashboardOps, OperationError
 from panel_flowdash.agent.live import LiveDashboardOps
 from panel_flowdash.agent.tools import (
     ARTIFACT_KIND,
@@ -192,6 +192,12 @@ async def test_live_edits_switch_the_app_to_edit_mode(store, monkeypatch):
     assert app._editor.editable and app._has_unsaved_changes()
     assert ops.save() == model.dashboard_id
     assert [i.component_id for i in store._load_any(model.dashboard_id).items] == ["T/number"]
+
+
+async def test_live_edits_need_an_open_dashboard(store, monkeypatch):
+    ops = LiveDashboardOps(_app(store, monkeypatch))
+    with pytest.raises(OperationError, match="No dashboard is open"):
+        ops.add_node("T/number")
 
 
 async def test_live_delete_and_share_need_administrator_rights(store, monkeypatch):

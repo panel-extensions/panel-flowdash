@@ -33,7 +33,9 @@ class LiveDashboardOps(DashboardOps):
     def _require_edit(self):
         app = self.app
         current = app._current_dashboard
-        if current is not None and not self.editor.editable and app._can_edit_dashboard(current):
+        if current is None:
+            raise OperationError("No dashboard is open; open one with open_dashboard first.")
+        if not self.editor.editable and app._can_edit_dashboard(current):
             app._show_edit_mode()
         super()._require_edit()
 
