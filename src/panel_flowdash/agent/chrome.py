@@ -12,6 +12,45 @@ from panel_flowdash.ui.text import escape_markdown, text_typography
 if t.TYPE_CHECKING:
     from .session import AgentSession
 
+#: Below this window width the drawer overlays the app instead of narrowing it.
+OVERLAY_BELOW = 1200
+
+
+def _node(value: t.Any) -> str:
+    return str(value or "").split(".")[0] or "a node"
+
+
+def _keys(config: t.Any) -> str:
+    return ", ".join(map(str, config)) if isinstance(config, dict) and config else "its config"
+
+
+#: The assistant's steps in the user's words, by tool name. Imperative, so a label
+#: reads right whether the step is running, done, failed or waiting for approval.
+TOOL_LABELS: dict[str, str | t.Callable[[dict], str]] = {
+    "list_components": "Look up components",
+    "list_dashboards": "List dashboards",
+    "get_dashboard": "Read the dashboard",
+    "open_dashboard": "Open a dashboard",
+    "validate_dashboard": "Check the dashboard",
+    "preview_dashboard": "Preview the dashboard",
+    "add_node": lambda a: f"Add {str(a.get('component', 'a component')).split('/')[-1]}",
+    "remove_node": lambda a: f"Remove {a['name']}",
+    "set_config": lambda a: f"Change {a['name']}: {_keys(a.get('config'))}",
+    "connect": lambda a: f"Connect {_node(a.get('source'))} to {_node(a.get('target'))}",
+    "disconnect": lambda a: f"Disconnect {_node(a.get('source'))} from {_node(a.get('target'))}",
+    "set_transform": lambda a: (
+        f"Change the steps from {_node(a.get('source'))} to {_node(a.get('target'))}"
+    ),
+    "place_tile": lambda a: f"Place the tile of {a['name']}",
+    "set_settings": lambda a: f"Change the settings: {_keys(a.get('settings'))}",
+    "replace_dashboard": "Rewrite the dashboard",
+    "save_dashboard": "Save the dashboard",
+    "delete_dashboard": lambda a: f"Delete {a['title']}",
+    "share_dashboard": "Change who can see the dashboard",
+    "list_commands": "Look up commands",
+    "run_command": lambda a: f"Run {a['command']}",
+}
+
 _NOTICE_STYLES = {
     "position": "fixed",
     "left": "50%",
@@ -40,6 +79,8 @@ def _summary(request) -> str:
 class SessionChrome:
     """Connects a session's drawer to the parts of the app it shares the screen with.
 
+    - Below :data:`OVERLAY_BELOW` pixels the drawer overlays the app, and the
+      assistant's steps are named with :data:`TOOL_LABELS`.
     - While the drawer is open the editor's inspector is folded, so the canvas
       keeps its width; it opens again when the drawer closes, unless the user
       opened or closed it in the meantime.
@@ -56,6 +97,8 @@ class SessionChrome:
         self._pending_seen = len(session.runner.state.pending_approvals)
         self._queued: list[str] = []
         drawer = session.drawer
+        drawer.overlay_below = OVERLAY_BELOW
+        drawer.chat.tool_labels = TOOL_LABELS
         drawer.param.watch(self._on_open, "open")
         state = session.runner.state
         state.param.watch(self._on_pending, "pending_approvals")
