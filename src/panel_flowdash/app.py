@@ -604,14 +604,15 @@ class FlowDashApp(Viewer):
     def _missing_dashboard_view(self, dashboard_id: str):
         """Explain why *dashboard_id* cannot be shown: it does not exist, or it is not shared.
 
-        When the store's ids are random, only someone given a link learns that
-        a dashboard exists, so they are told who owns it, to ask for access,
-        but not its title or contents. When ids can be guessed (see
-        `BaseDashboardStore.random_ids`), a dashboard the user may not open
+        When the id is random, only someone given a link learns that the
+        dashboard exists, so they are told who owns it, to ask for access, but
+        not its title or contents. When it can be guessed (see
+        `BaseDashboardStore.guessable_id`), a dashboard the user may not open
         gets the same not-found page as a missing id, so guessing a title
         reveals nothing.
         """
-        owner = self.store.get_owner(dashboard_id) if self.store.random_ids else None
+        guessable = self.store.guessable_id(dashboard_id)
+        owner = None if guessable else self.store.get_owner(dashboard_id)
         if owner is not None:
             return self._access_denied_view(owner=owner)
         accessible = self.store.list_accessible(

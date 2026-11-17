@@ -6,6 +6,7 @@ import copy
 import json
 import logging
 import os
+import re
 import sqlite3
 import threading
 import uuid
@@ -20,6 +21,9 @@ from typing import Any
 from panel_flowdash.auth import Identity, Permission, can_administer, can_edit, is_authorized
 
 logger = logging.getLogger(__name__)
+
+# The ids `BaseDashboardStore.create_dashboard` makes.
+_RANDOM_ID = re.compile(r"[0-9a-f]{12}")
 
 # Titles already warned about as ambiguous, so a home page visit does not log each time.
 _AMBIGUOUS_TITLES: set[str] = set()
@@ -272,7 +276,19 @@ class BaseDashboardStore(ABC):
     The default :meth:`create_dashboard` makes random ids. A store whose ids
     can be guessed (derived from titles, say) sets this to False, and the app
     then answers a dashboard someone may not open exactly like a missing one,
-    rather than saying it exists and who owns it."""
+    rather than saying it exists and who owns it. Even with random ids, an id
+    a caller chose when saving (see :meth:`guessable_id`) is treated so."""
+
+    def guessable_id(self, dashboard_id: str) -> bool:
+        """Whether *dashboard_id* could be guessed rather than only learned from a link.
+
+        Only ids of the form :meth:`create_dashboard` makes count as random in
+        a store with :attr:`random_ids`. Any store saves whatever id a model
+        carries, so one chosen by the caller, like the slug an example seeds
+        its dashboards under, can be guessed. A store whose own ids look
+        different overrides this.
+        """
+        return not self.random_ids or _RANDOM_ID.fullmatch(dashboard_id) is None
 
     @abstractmethod
     def save_dashboard(self, dashboard: DashboardModel) -> None:
