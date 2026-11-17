@@ -58,5 +58,5 @@ def test_identical_versions_have_no_changes():
 
 def test_paths_point_into_the_yaml():
     paths = {c.label: c.path for c in dashboard_changes(OLD, NEW)}
-    assert paths["kpi: metric: turbines → capacity"] == "nodes.kpi.config.metric"
-    assert paths["Setting refresh_period: 0 → 60"] == "settings.refresh_period"
+    assert paths["kpi: metric: turbines → capacity"] == ("nodes", "kpi", "config", "metric")
+    assert paths["Setting refresh_period: 0 → 60"] == ("settings", "refresh_period")

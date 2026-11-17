@@ -409,7 +409,7 @@ def unsaved_changes(ops: DashboardOps) -> list[str]:
         stored = dashboard_to_yaml(export_model(model, restricted=restricted))
     lines = []
     for change in dashboard_changes(stored, ops.get_dashboard()):
-        if change.path.split(".")[-1] in ACCESS_SETTINGS:
+        if change.path[-1] in ACCESS_SETTINGS:
             lines.append(f"{change.label} (changes who can see the dashboard's data)")
         else:
             lines.append(change.label)

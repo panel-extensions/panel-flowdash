@@ -19,7 +19,7 @@ class DashboardChange:
     op
         ``"add"``, ``"remove"`` or ``"change"``.
     path
-        Where, in the YAML format, e.g. ``nodes.kpi.config.metric``.
+        Where, as keys into the YAML document, e.g. ``("nodes", "kpi", "config", "metric")``.
     label
         The change in a few words, e.g. ``"kpi: metric turbines → capacity"``.
     old, new
@@ -27,7 +27,7 @@ class DashboardChange:
     """
 
     op: str
-    path: str
+    path: tuple[str, ...]
     label: str
     old: t.Any = None
     new: t.Any = None
@@ -52,7 +52,7 @@ def _edge_key(edge: dict) -> str:
 
 
 def _mapping_changes(
-    old: dict, new: dict, path: str, describe: t.Callable[[str], str]
+    old: dict, new: dict, path: tuple[str, ...], describe: t.Callable[[str], str]
 ) -> list[DashboardChange]:
     changes = []
     for key in [*old, *(k for k in new if k not in old)]:
@@ -65,7 +65,7 @@ def _mapping_changes(
             op, label = "add", f"{describe(key)} set to {_short(after)}"
         else:
             op, label = "change", f"{describe(key)}: {_short(before)} → {_short(after)}"
-        changes.append(DashboardChange(op, f"{path}.{key}", label, before, after))
+        changes.append(DashboardChange(op, (*path, str(key)), label, before, after))
     return changes
 
 
@@ -90,7 +90,7 @@ def dashboard_changes(old: str | _Doc | None, new: str | _Doc | None) -> list[Da
         changes.append(
             DashboardChange(
                 "change",
-                "title",
+                ("title",),
                 f"Renamed to {_short(after.get('title'))}",
                 before.get("title"),
                 after.get("title"),
@@ -101,7 +101,7 @@ def dashboard_changes(old: str | _Doc | None, new: str | _Doc | None) -> list[Da
         if name not in old_nodes:
             changes.append(
                 DashboardChange(
-                    "add", f"nodes.{name}", f"Added {name} ({node.get('component')})", None, node
+                    "add", ("nodes", name), f"Added {name} ({node.get('component')})", None, node
                 )
             )
     for name, node in old_nodes.items():
@@ -109,7 +109,7 @@ def dashboard_changes(old: str | _Doc | None, new: str | _Doc | None) -> list[Da
             changes.append(
                 DashboardChange(
                     "remove",
-                    f"nodes.{name}",
+                    ("nodes", name),
                     f"Removed {name} ({node.get('component')})",
                     node,
                     None,
@@ -123,7 +123,7 @@ def dashboard_changes(old: str | _Doc | None, new: str | _Doc | None) -> list[Da
             changes.append(
                 DashboardChange(
                     "change",
-                    f"nodes.{name}.component",
+                    ("nodes", name, "component"),
                     f"{name}: {previous.get('component')} → {node.get('component')}",
                     previous.get("component"),
                     node.get("component"),
@@ -132,14 +132,14 @@ def dashboard_changes(old: str | _Doc | None, new: str | _Doc | None) -> list[Da
         changes += _mapping_changes(
             previous.get("config") or {},
             node.get("config") or {},
-            f"nodes.{name}.config",
+            ("nodes", name, "config"),
             lambda key, name=name: f"{name}: {key}",
         )
         if previous.get("position") != node.get("position"):
             changes.append(
                 DashboardChange(
                     "change",
-                    f"nodes.{name}.position",
+                    ("nodes", name, "position"),
                     f"{name} moved on the canvas",
                     previous.get("position"),
                     node.get("position"),
@@ -149,10 +149,12 @@ def dashboard_changes(old: str | _Doc | None, new: str | _Doc | None) -> list[Da
     new_edges = {_edge_key(e): e for e in after.get("edges") or []}
     for key, edge in new_edges.items():
         if key not in old_edges:
-            changes.append(DashboardChange("add", "edges", f"Connected {key}", None, edge))
+            changes.append(DashboardChange("add", ("edges",), f"Connected {key}", None, edge))
     for key, edge in old_edges.items():
         if key not in new_edges:
-            changes.append(DashboardChange("remove", "edges", f"Disconnected {key}", edge, None))
+            changes.append(
+                DashboardChange("remove", ("edges",), f"Disconnected {key}", edge, None)
+            )
     for key, edge in new_edges.items():
         previous = old_edges.get(key)
         if previous is not None and previous.get("transform") != edge.get("transform"):
@@ -162,7 +164,7 @@ def dashboard_changes(old: str | _Doc | None, new: str | _Doc | None) -> list[Da
             )
             changes.append(
                 DashboardChange(
-                    "change", "edges", label, previous.get("transform"), edge.get("transform")
+                    "change", ("edges",), label, previous.get("transform"), edge.get("transform")
                 )
             )
     old_layout, new_layout = before.get("layout") or {}, after.get("layout") or {}
@@ -173,7 +175,7 @@ def dashboard_changes(old: str | _Doc | None, new: str | _Doc | None) -> list[Da
             changes.append(
                 DashboardChange(
                     "change",
-                    f"layout.tiles.{name}",
+                    ("layout", "tiles", name),
                     f"Tile {name} laid out differently",
                     old_tiles.get(name),
                     new_tiles.get(name),
@@ -184,13 +186,13 @@ def dashboard_changes(old: str | _Doc | None, new: str | _Doc | None) -> list[Da
     ) == set(new_tiles):
         changes.append(
             DashboardChange(
-                "change", "layout.tiles", "Tiles reordered", list(old_tiles), list(new_tiles)
+                "change", ("layout", "tiles"), "Tiles reordered", list(old_tiles), list(new_tiles)
             )
         )
     changes += _mapping_changes(
         before.get("settings") or {},
         after.get("settings") or {},
-        "settings",
+        ("settings",),
         lambda key: f"Setting {key}",
     )
     return changes
