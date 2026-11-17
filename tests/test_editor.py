@@ -36,6 +36,7 @@ from panel_flowdash.dashboard_store import (
 )
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.placeholders import PLACEHOLDER_NODE_TYPE
+from panel_flowdash.ui.text import escape_markdown
 from panel_flowdash.widgets import BUILTIN_COMPONENTS
 
 
@@ -3137,7 +3138,7 @@ class TestFailurePropagation:
 
         text, visible = _overlay_text(view)
         assert visible
-        assert text == (
+        assert text == escape_markdown(
             "Input 'value' is stale: 'inverse' of 'inverse' failed "
             "(ZeroDivisionError: division by zero)"
         )

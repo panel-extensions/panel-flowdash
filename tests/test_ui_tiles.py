@@ -22,6 +22,7 @@ from panel_flowdash.ui.inspect_sheet import (
     reserve_space,
     short_dtype,
 )
+from panel_flowdash.ui.text import escape_markdown
 from panel_flowdash.ui.tile import Tile
 from panel_flowdash.ui.waiting import WaitingPlaceholder, join_labels
 
@@ -362,7 +363,7 @@ class TestFailureOverlay:
         assert overlay.summary.object == (
             "**Quality Gate** stopped the data, so this shows its last result."
         )
-        assert overlay.details.object == "ValueError: too few"
+        assert overlay.details.object == escape_markdown("ValueError: too few")
         assert not overlay.details.visible
 
         overlay.details_toggle.clicks += 1
