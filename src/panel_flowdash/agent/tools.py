@@ -58,6 +58,10 @@ class FlowDashDeps:
     """
 
     ops: DashboardOps
+    #: Called with the open dashboard's YAML just before and after each edit a tool makes.
+    edit_listeners: list[t.Callable[[str | None, str], None]] = field(
+        default_factory=list, repr=False
+    )
     _pinned: t.Any = field(default=_UNPINNED, repr=False)
     _explicit: bool = field(default=False, repr=False)
     _run_id: str | None = field(default=None, repr=False)
@@ -257,6 +261,8 @@ def _guarded(func: t.Callable) -> t.Callable:
         refusal = deps.check_pin(ctx.run_id)
         if refusal is not None:
             return refusal
+        listen = func in EDIT_TOOLS and bool(deps.edit_listeners)
+        before = _snapshot(deps.ops) if listen else None
         try:
             result = func(ctx, *args, **kwargs)
             if inspect.isawaitable(result):
@@ -267,9 +273,23 @@ def _guarded(func: t.Callable) -> t.Callable:
             return f"Refused: {exc}"
         if func is open_dashboard:
             deps.repin()
+        after = _snapshot(deps.ops) if listen else None
+        if after is not None:
+            for listener in list(deps.edit_listeners):
+                try:
+                    listener(before, after)
+                except Exception:
+                    logger.exception("An edit listener failed")
         return result
 
     return wrapper
+
+
+def _snapshot(ops: DashboardOps) -> str | None:
+    try:
+        return ops.get_dashboard()
+    except (OperationError, PermissionError):
+        return None
 
 
 def _text(value: t.Any) -> str:
@@ -610,6 +630,18 @@ def share_dashboard(
     )
     return f"{title!r} is now shared as follows: {_text(access)}"
 
+
+EDIT_TOOLS = (
+    add_node,
+    remove_node,
+    set_config,
+    connect,
+    disconnect,
+    set_transform,
+    place_tile,
+    set_settings,
+    replace_dashboard,
+)
 
 TOOLS = (
     list_components,
