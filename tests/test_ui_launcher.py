@@ -447,17 +447,18 @@ class TestLauncher:
             "Duplicate",
             "Share",
             "Download as file",
+            "Download as YAML",
             "---",
             "Delete",
         ]
         assert menu.stylesheets == [
-            ".MuiMenu-list > :nth-child(8) { color: var(--mui-palette-error-main); }"
+            ".MuiMenu-list > :nth-child(9) { color: var(--mui-palette-error-main); }"
         ]
 
     async def test_viewer_menu(self, app):
         _dashboard(app, "Theirs", owner="maya")
         (menu,) = app._build_launcher()._menus.values()
-        assert _labels(menu.items) == ["Open", "Duplicate", "Download as file"]
+        assert _labels(menu.items) == ["Open", "Duplicate", "Download as file", "Download as YAML"]
         assert menu.stylesheets == []
 
     async def test_nav_menus_have_no_dividers(self, app):
@@ -471,7 +472,13 @@ class TestLauncher:
         _dashboard(app, "Theirs", owner="maya")
         app._can_edit_dashboard = lambda dashboard: True
         (menu,) = app._build_launcher()._menus.values()
-        assert _labels(menu.items) == ["Open", "Edit", "Duplicate", "Download as file"]
+        assert _labels(menu.items) == [
+            "Open",
+            "Edit",
+            "Duplicate",
+            "Download as file",
+            "Download as YAML",
+        ]
 
     async def test_card_click_opens_dashboard(self, app, location):
         model = _dashboard(app, "Mine")

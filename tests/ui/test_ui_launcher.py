@@ -72,7 +72,16 @@ def test_card_menu_lists_actions(page, tmp_path):
     menu = _open_menu(page, "Sales")
 
     # Each item's text starts with its icon's ligature name.
-    labels = ["Open", "Edit", "Rename", "Duplicate", "Share", "Download as file", "Delete"]
+    labels = [
+        "Open",
+        "Edit",
+        "Rename",
+        "Duplicate",
+        "Share",
+        "Download as file",
+        "Download as YAML",
+        "Delete",
+    ]
     expect(menu.get_by_role("menuitem")).to_have_text(
         [re.compile(f"{label}$") for label in labels]
     )

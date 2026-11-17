@@ -235,11 +235,12 @@ class TestApp:
             "Duplicate",
             "Share",
             "Download as file",
+            "Download as YAML",
             "Delete",
         ]
-        assert actions(BOB) == ["Edit", "Duplicate", "Download as file"]
+        assert actions(BOB) == ["Edit", "Duplicate", "Download as file", "Download as YAML"]
         store.set_permission(did, Permission())
-        assert actions(DAVE) == ["Duplicate", "Download as file"]
+        assert actions(DAVE) == ["Duplicate", "Download as file", "Download as YAML"]
 
     async def test_editor_actions_include_viewer_actions(self, shared, location):
         class CopyApp(FlowDashApp):

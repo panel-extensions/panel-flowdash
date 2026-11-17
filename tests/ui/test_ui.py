@@ -285,7 +285,7 @@ def test_downloaded_dashboard_recreated_by_dropping_it(page, tmp_path):
 
     with page.expect_download() as download:
         page.get_by_role("button", name="More actions").click()
-        page.get_by_role("menuitem", name="Download").click()
+        page.get_by_role("menuitem", name=re.compile(r"Download$")).click()
     assert download.value.suggested_filename == "Wired_pair.json"
     path = tmp_path / "export.json"
     download.value.save_as(path)

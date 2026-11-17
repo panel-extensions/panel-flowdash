@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import io
-import json
 import typing as t
 import uuid
 from datetime import datetime, timezone
@@ -19,7 +18,7 @@ from panel.viewable import Viewer
 from panel_flowdash.auth import Permission
 from panel_flowdash.component_spec import _ports_from_metadata
 from panel_flowdash.dashboard_store import BaseDashboardStore, DashboardModel
-from panel_flowdash.editor import export_filename, export_model
+from panel_flowdash.editor import export_filename, export_model, export_text
 from panel_flowdash.ui import roles
 from panel_flowdash.ui.settings_dialog import entries_from_permission
 
@@ -296,15 +295,22 @@ def copy_dashboard(
 def parse_dashboard_file(content: str | bytes, user: str) -> DashboardModel:
     """Parse a downloaded dashboard file into a model owned by *user*.
 
+    The file is a JSON export or a dashboard in the YAML format.
+
     Raises
     ------
     ValueError
-        If *content* is not valid JSON or not a dashboard export.
+        If *content* is neither a dashboard export nor a dashboard in the YAML format.
     """
-    try:
-        data = json.loads(content)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise ValueError(f"Not valid JSON: {exc}") from exc
+    from panel_flowdash.agent.yaml_format import (
+        dashboard_from_dict,
+        is_dashboard_yaml,
+        read_dashboard_text,
+    )
+
+    data = read_dashboard_text(content)
+    if is_dashboard_yaml(data):
+        data = dashboard_from_dict(data)
     if not isinstance(data, dict) or not isinstance(data.get("items"), list):
         raise ValueError("Not a FlowDash dashboard export.")
     title = data.get("title")
@@ -335,17 +341,22 @@ def build_downloader() -> pmui.FileDownload:
 
 
 def send_download(
-    downloader: pmui.FileDownload, model: DashboardModel, restricted: t.Collection[str] = ()
+    downloader: pmui.FileDownload,
+    model: DashboardModel,
+    restricted: t.Collection[str] = (),
+    extension: str = "json",
 ):
     """Make the browser save *model* as the same file the editor's Download writes.
 
     The items in *restricted* are written as :func:`export_model` describes.
+    *extension* is ``"json"`` or ``"yaml"``.
     """
-    payload = json.dumps(export_model(model, restricted), indent=2)
+    hidden = [e.to_dict() for e in model.edges if {e.source, e.target} & set(restricted)]
+    payload = export_text(export_model(model, restricted), extension, hidden)
     # Clearing first makes downloading the same file twice a change the browser sees.
     downloader.data = None
     downloader.param.update(
-        callback=lambda: io.StringIO(payload), filename=export_filename(model.title)
+        callback=lambda: io.StringIO(payload), filename=export_filename(model.title, extension)
     )
     downloader.transfer(download=True)
 
@@ -780,7 +791,7 @@ class Launcher(Viewer):
         file_input = pmui.FileInput(
             label=label,
             icon="upload_file",
-            accept=".json,application/json",
+            accept=".json,.yaml,.yml,application/json",
             variant="outlined",
             margin=0,
             css_classes=["flowdash-import"],

@@ -1296,6 +1296,7 @@ class FlowDashApp(Viewer):
         {"label": "Duplicate", "icon": "content_copy"},
         {"label": "Share", "icon": "person_add"},
         {"label": "Download as file", "icon": "download"},
+        {"label": "Download as YAML", "icon": "data_object"},
         {"label": "Delete", "icon": "delete", "color": "error"},
     )
 
@@ -1304,6 +1305,7 @@ class FlowDashApp(Viewer):
     _VIEWER_DASHBOARD_ACTIONS = (
         {"label": "Duplicate", "icon": "content_copy"},
         {"label": "Download as file", "icon": "download"},
+        {"label": "Download as YAML", "icon": "data_object"},
     )
 
     def _dashboard_actions(
@@ -1409,6 +1411,8 @@ class FlowDashApp(Viewer):
             self._open_share_dialog(dashboard_id, title)
         elif action == "Download as file":
             self._download_dashboard(dashboard_id)
+        elif action == "Download as YAML":
+            self._download_dashboard(dashboard_id, "yaml")
         elif action == "Delete":
             self._open_delete_dialog(dashboard_id, title)
 
@@ -1448,12 +1452,17 @@ class FlowDashApp(Viewer):
         self._notify("success", f'Created "{model.title}".', duration=3000)
         return model
 
-    def _download_dashboard(self, dashboard_id: str) -> bool:
+    def _download_dashboard(self, dashboard_id: str, extension: str = "json") -> bool:
         """Download the saved dashboard as the file the editor's Download button writes."""
         model = self._copyable_dashboard(dashboard_id)
         if model is None:
             return False
-        send_download(self._downloader, model, restricted=self._editor._restricted_ids(model))
+        send_download(
+            self._downloader,
+            model,
+            restricted=self._editor._restricted_ids(model),
+            extension=extension,
+        )
         return True
 
     def _import_dashboard_file(self, filename: str, content: str | bytes) -> DashboardModel | None:
