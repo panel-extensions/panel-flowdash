@@ -14,6 +14,21 @@ if t.TYPE_CHECKING:
 _OPEN_TIMEOUT = 10
 
 
+def share_key(name: str) -> tuple[str, str]:
+    """Return the name and kind of a user name or ``group:<name>``, refusing empty names."""
+    if not isinstance(name, str):
+        raise OperationError(f"{name!r} is not a user or group name.")
+    kind = "user"
+    if name.startswith("group:"):
+        name, kind = name[6:], "group"
+    if not name.strip() or name != name.strip():
+        raise OperationError(
+            f"{name!r} is not a {kind} name; name users as they log in and groups as "
+            '"group:<name>".'
+        )
+    return name, kind
+
+
 class LiveDashboardOps(DashboardOps):
     """:class:`DashboardOps` on the editor of a running :class:`~panel_flowdash.app.FlowDashApp`.
 
@@ -102,6 +117,7 @@ class LiveDashboardOps(DashboardOps):
         add_viewers: t.Collection[str] = (),
         add_editors: t.Collection[str] = (),
         remove: t.Collection[str] = (),
+        unblock: t.Collection[str] = (),
         everyone: bool | None = None,
     ) -> dict[str, t.Any]:
         """Change who a dashboard is shared with, as the Sharing settings do, and return the result.
@@ -116,7 +132,11 @@ class LiveDashboardOps(DashboardOps):
         add_viewers, add_editors
             People and groups to give view or edit access.
         remove
-            People and groups to take off the list.
+            People and groups to take off the viewers and editors. A blocked
+            name stays blocked.
+        unblock
+            Blocked people and groups to take off the list, which may let them
+            view the dashboard again.
         everyone
             True lets everyone who may use the app view the dashboard, False
             limits it to the people listed, None keeps it as it is.
@@ -132,22 +152,25 @@ class LiveDashboardOps(DashboardOps):
             permission_from_entries,
         )
 
+        for name in (*add_viewers, *add_editors, *remove, *unblock):
+            share_key(name)
         model = self._stored(dashboard_id)
         app = self.app
         if not app._can_administer_dashboard(model):
             raise PermissionError("Only the dashboard's owner or an administrator may share it.")
         entries, current_everyone = entries_from_permission(model.permission, model.owner)
 
-        def key(name: str) -> tuple[str, str]:
-            return (name[6:], "group") if name.startswith("group:") else (name, "user")
-
         roles = {(e.name, e.kind): e.role for e in entries}
         for name in remove:
-            roles.pop(key(name), None)
+            if roles.get(share_key(name)) in ("view", "edit"):
+                del roles[share_key(name)]
+        for name in unblock:
+            if roles.get(share_key(name)) == "blocked":
+                del roles[share_key(name)]
         for names, role in ((add_viewers, "view"), (add_editors, "edit")):
             for name in names:
-                if roles.get(key(name)) != "blocked":
-                    roles[key(name)] = role
+                if roles.get(share_key(name)) != "blocked":
+                    roles[share_key(name)] = role
         if everyone is None:
             everyone = current_everyone
         everyone = bool(everyone) and app._default_allow()

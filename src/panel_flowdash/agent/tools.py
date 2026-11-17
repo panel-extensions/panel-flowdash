@@ -5,9 +5,11 @@ Needs the ``panel-flowdash[agent]`` extra (panel-agents and pydantic-ai).
 
 from __future__ import annotations
 
+import fnmatch
 import functools
 import inspect
 import json
+import logging
 import typing as t
 from dataclasses import dataclass, field, replace
 
@@ -23,10 +25,12 @@ from panel_flowdash.editor import export_model
 from .diff import dashboard_changes
 from .live import LiveDashboardOps
 from .ops import DashboardOps, OperationError, read_revision
-from .yaml_format import dashboard_to_yaml
+from .yaml_format import DashboardYAMLError, dashboard_to_yaml, parse_yaml
 
 # The artifact kind the dashboard YAML is published under, with its own diff.
 ARTIFACT_KIND = "flowdash-dashboard"
+
+logger = logging.getLogger(__name__)
 
 # Tools that change what is stored or who can see it: the user approves each call.
 APPROVAL_TOOLS = ("save_dashboard", "delete_dashboard", "share_dashboard")
@@ -36,24 +40,62 @@ APPROVAL_TOOLS = ("save_dashboard", "delete_dashboard", "share_dashboard")
 ACCESS_SETTINGS = ("viewers_can_inspect",)
 
 
+_UNPINNED = object()
+
+
 @dataclass
 class FlowDashDeps:
-    """What the dashboard tools run against: the operations of one user's session."""
+    """What the dashboard tools run against: the operations of one user's session.
+
+    Each request to the agent is pinned to the dashboard open when it was
+    sent (see :meth:`start_request`). Once the user is on another dashboard,
+    every tool refuses for the rest of the request, so the agent never
+    changes a dashboard the user did not ask about.
+    """
 
     ops: DashboardOps
-    # The dashboard each run started on, by run id; a run stops when the user leaves it.
-    _pins: dict[str, str | None] = field(default_factory=dict, repr=False)
+    _pinned: t.Any = field(default=_UNPINNED, repr=False)
+    _abandoned: bool = field(default=False, repr=False)
+    _save_revision: str | None = field(default=None, repr=False)
+
+    def start_request(self):
+        """Pin the next request to the dashboard open now. Call it when the user sends one."""
+        self._pinned = _open_id(self.ops)
+        self._abandoned = False
+        self._save_revision = None
+
+    def end_request(self):
+        """Forget the request's pin once it is done."""
+        self._pinned = _UNPINNED
+        self._abandoned = False
+        self._save_revision = None
+
+    def check_pin(self) -> str | None:
+        """Return why the request may not act any more, or None while the user is on its dashboard."""
+        open_id = _open_id(self.ops)
+        if self._pinned is _UNPINNED:
+            # Without start_request, the request is pinned when it first acts.
+            self._pinned = open_id
+        if not self._abandoned and self._pinned != open_id:
+            self._abandoned = True
+        if self._abandoned:
+            return (
+                "Refused: the user switched to another dashboard during this request. Stop and "
+                "ask the user what to do with the dashboard they are looking at now."
+            )
+        return None
 
 
 def _components_in(text: t.Any) -> set[str]:
+    # The same reader the operations use, so the policy sees what they would place.
     try:
-        doc = yaml.safe_load(text) if isinstance(text, str) else None
-    except yaml.YAMLError:
+        doc = parse_yaml(text) if isinstance(text, str) else None
+    except DashboardYAMLError:
         return set()
     nodes = doc.get("nodes") if isinstance(doc, dict) else None
     if not isinstance(nodes, dict):
         return set()
-    return {n.get("component") for n in nodes.values() if isinstance(n, dict)}
+    return {str(n.get("component")) for n in nodes.values() if isinstance(n, dict)}
 
 
 def approval_policy(
@@ -68,38 +110,61 @@ def approval_policy(
     *rules
         More rules of your own, checked after the built-in ones.
     sensitive_components
-        Ids of components whose config can reach outside the dashboard, e.g. a
-        SQL source or a component fetching a URL. Placing one, loading YAML
-        that places one, and (given *ops*) changing the config of one need
+        Ids, or glob patterns such as ``"Sources/*"``, of components whose
+        config can reach outside the dashboard, e.g. a SQL source or a
+        component fetching a URL. Former ids that resolve to them count too.
+        Placing one, previewing or loading YAML that places one, changing the
+        config of one and connecting or transforming an edge into one need
         the user's approval, since the agent's input may come from text other
         people wrote.
     ops
-        The operations the tools run against, used to find the component of
-        the node a ``set_config`` call names.
+        The operations the tools run against, used to resolve former
+        component ids and the component of a node. Required with
+        *sensitive_components*.
     """
-    sensitive = set(sensitive_components)
+    patterns = list(sensitive_components)
     extra: list[ApprovalRule | str] = []
-    if sensitive:
-        extra.append(
-            ApprovalRule("add_node", when=lambda args: args.get("component") in sensitive)
-        )
-        extra.append(
-            ApprovalRule(
-                "replace_dashboard",
-                when=lambda args: bool(_components_in(args.get("dashboard_yaml")) & sensitive),
-            )
-        )
-        if ops is not None:
+    if patterns:
+        if ops is None:
+            raise ValueError("approval_policy(sensitive_components=...) needs ops=.")
+        sensitive = _sensitive_matcher(patterns, ops)
 
-            def configures_sensitive(args: dict[str, t.Any]) -> bool:
-                try:
-                    instance_id = ops._instance(str(args.get("name")))
-                except OperationError:
-                    return False
-                return ops._item(instance_id)["component_id"] in sensitive
+        def node_is_sensitive(name: t.Any) -> bool:
+            try:
+                instance_id = ops._instance(str(name))
+            except OperationError:
+                return False
+            return sensitive(ops._item(instance_id)["component_id"])
 
-            extra.append(ApprovalRule("set_config", when=configures_sensitive))
+        def target_is_sensitive(args: dict[str, t.Any]) -> bool:
+            return node_is_sensitive(str(args.get("target", "")).partition(".")[0])
+
+        def places_sensitive(args: dict[str, t.Any]) -> bool:
+            return any(sensitive(c) for c in _components_in(args.get("dashboard_yaml")))
+
+        extra += [
+            ApprovalRule("add_node", when=lambda args: sensitive(str(args.get("component")))),
+            ApprovalRule("replace_dashboard", when=places_sensitive),
+            ApprovalRule("preview_dashboard", when=places_sensitive),
+            ApprovalRule("set_config", when=lambda args: node_is_sensitive(args.get("name"))),
+            ApprovalRule("connect", when=target_is_sensitive),
+            ApprovalRule("set_transform", when=target_is_sensitive),
+        ]
     return ApprovalPolicy([*APPROVAL_TOOLS, *extra, *rules])
+
+
+def _sensitive_matcher(patterns: t.Sequence[str], ops: DashboardOps) -> t.Callable[[str], bool]:
+    """Return whether a component id, or a former id of it, matches one of *patterns*."""
+
+    def matches(component_id: str) -> bool:
+        current = ops.editor._resolve_component_id(component_id)
+        return any(
+            fnmatch.fnmatchcase(candidate, pattern)
+            for candidate in {component_id, current}
+            for pattern in patterns
+        )
+
+    return matches
 
 
 @register_renderer(kind=ARTIFACT_KIND)
@@ -153,22 +218,17 @@ def _open_id(ops: DashboardOps) -> str | None:
 def _guarded(func: t.Callable) -> t.Callable:
     """Turn refusals into messages: a fixable request is retried, a forbidden one is reported.
 
-    A run is pinned to the dashboard open when it first used a tool, so once
-    the user leaves that dashboard the run cannot change the next one.
+    Every tool first checks the request's pin, see :class:`FlowDashDeps`. Only
+    ``open_dashboard``, called while the user is still on the pinned
+    dashboard, moves the pin to the dashboard it opens.
     """
 
     @functools.wraps(func)
     async def wrapper(ctx: RunContext[FlowDashDeps], *args, **kwargs):
         deps = ctx.deps
-        pins = deps._pins
-        run = ctx.run_id or ""
-        open_id = _open_id(deps.ops)
-        pins.setdefault(run, open_id)
-        if func is not open_dashboard and pins[run] != open_id:
-            return (
-                "Refused: the user switched to another dashboard during this run. Stop and "
-                "ask the user what to do with the dashboard they are looking at now."
-            )
+        refusal = deps.check_pin()
+        if refusal is not None:
+            return refusal
         try:
             result = func(ctx, *args, **kwargs)
             if inspect.isawaitable(result):
@@ -177,7 +237,8 @@ def _guarded(func: t.Callable) -> t.Callable:
             raise ModelRetry(str(exc)) from exc
         except PermissionError as exc:
             return f"Refused: {exc}"
-        pins[run] = _open_id(deps.ops)
+        if func is open_dashboard:
+            deps._pinned = _open_id(deps.ops)
         return result
 
     return wrapper
@@ -406,7 +467,13 @@ async def replace_dashboard(ctx: RunContext[FlowDashDeps], dashboard_yaml: str) 
 
 def save_dashboard(ctx: RunContext[FlowDashDeps]) -> str:
     """Save the open dashboard. The user approves each save."""
-    return f"Saved dashboard '{ctx.deps.ops.save()}'."
+    deps = ctx.deps
+    if deps._save_revision is not None and deps._save_revision != deps.ops.revision():
+        raise OperationError(
+            "The dashboard changed after the user was shown what saving stores. Call "
+            "save_dashboard again, on its own, so the user approves what is saved now."
+        )
+    return f"Saved dashboard '{deps.ops.save()}'."
 
 
 def unsaved_changes(ops: DashboardOps) -> list[str]:
@@ -418,8 +485,16 @@ def unsaved_changes(ops: DashboardOps) -> list[str]:
     if model is not None:
         restricted = editor._restricted_ids(model)
         stored = dashboard_to_yaml(export_model(model, restricted=restricted))
+    defaults = editor.settings_class(**editor._layout_defaults())
     lines = []
     for change in dashboard_changes(stored, ops.get_dashboard()):
+        if (
+            change.path[0] == "settings"
+            and change.old is None
+            and change.new == getattr(defaults, change.path[-1], None)
+        ):
+            # A setting never stored is at its default, which the canvas writes out.
+            continue
         if change.path[-1] in ACCESS_SETTINGS:
             lines.append(f"{change.label} (changes who can see the dashboard's data)")
         else:
@@ -430,14 +505,19 @@ def unsaved_changes(ops: DashboardOps) -> list[str]:
 async def _describe_save(
     ctx: RunContext[FlowDashDeps], tool_def: ToolDefinition
 ) -> ToolDefinition:
+    deps = ctx.deps
     try:
-        changes = unsaved_changes(ctx.deps.ops)
+        changes = unsaved_changes(deps.ops)
+        deps._save_revision = deps.ops.revision()
     except Exception:
+        logger.exception("Could not describe what saving the dashboard stores")
+        deps._save_revision = None
         return tool_def
-    summary = "\n".join(f"- {line}" for line in changes[:30]) or "- No changes"
+    shown = changes[:30]
     if len(changes) > 30:
-        summary += f"\n- and {len(changes) - 30} more"
-    return replace(tool_def, description=f"{tool_def.description}\n\nIt stores:\n{summary}")
+        shown.append(f"and {len(changes) - 30} more")
+    summary = "; ".join(shown) or "no changes"
+    return replace(tool_def, description=f"{tool_def.description} It stores: {summary}.")
 
 
 def _check_title(ops: DashboardOps, dashboard_id: str, title: str):
@@ -471,6 +551,7 @@ def share_dashboard(
     add_viewers: list[str] | None = None,
     add_editors: list[str] | None = None,
     remove: list[str] | None = None,
+    unblock: list[str] | None = None,
     everyone: bool | None = None,
 ) -> str:
     """Change who a dashboard is shared with and return who has access. The user approves each change.
@@ -482,7 +563,8 @@ def share_dashboard(
         title: Its title, from list_dashboards, shown to the user for approval.
         add_viewers: People and groups to give view access.
         add_editors: People and groups to give edit access.
-        remove: People and groups to take off the list.
+        remove: People and groups to take off the viewers and editors; blocked ones stay blocked.
+        unblock: Blocked people and groups to unblock, which may let them view it again.
         everyone: True makes the dashboard visible to everyone who uses the app,
             False limits it to the people listed; leave it out to keep it as it is.
     """
@@ -495,6 +577,7 @@ def share_dashboard(
         add_viewers=add_viewers or (),
         add_editors=add_editors or (),
         remove=remove or (),
+        unblock=unblock or (),
         everyone=everyone,
     )
     return f"{title!r} is now shared as follows: {_text(access)}"

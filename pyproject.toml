@@ -63,7 +63,7 @@ Source = "https://github.com/panel-extensions/panel-flowdash"
 [project.optional-dependencies]
 # The AI agent of panel_flowdash.agent.tools. panel-agents needs Python 3.11.
 agent = [
-    "panel-agents[pydantic-ai]; python_version >= '3.11'",
+    "panel-agents[pydantic-ai]>=0.1.0b0; python_version >= '3.11'",
 ]
 dev = [
     "pre-commit",

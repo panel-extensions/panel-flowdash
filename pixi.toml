@@ -50,9 +50,8 @@ test = "pytest"
 test-coverage = "pytest --cov=panel_flowdash --cov-report=xml --cov-report=term-missing"
 
 [feature.agent.pypi-dependencies]
-# Development only: the tip of the panel-agents 1.0 branches (agents/next) until they
-# are released; point this at the panel-agents 1.0 release before merging.
-panel-agents = { git = "https://github.com/panel-extensions/panel-agents", rev = "7ae22f7a27df926ba60673ed9715bc32a8b75885", extras = ["pydantic-ai"] }
+# panel-agents main until 0.1.0b0 is on PyPI.
+panel-agents = { git = "https://github.com/panel-extensions/panel-agents", rev = "b70a006d55439fc9cdc5ca885be4d5992424c562", extras = ["pydantic-ai"] }
 
 [feature.build.dependencies]
 python-build = "*"
