@@ -15,6 +15,7 @@ Look and defaults. Dashboards saved with rc2 load unchanged, but several default
 - Port popups on the wiring canvas open on click (`FlowDash.popup_trigger="click"`); set `popup_trigger="hover"` for the rc2 behaviour. Node configuration moved from a popup into a persistent inspector, and nodes no longer embed their live views
 - Inspecting outputs opens a side sheet from the tile's Inspect action instead of a dialog behind an info button
 - The canvas minimap is off when the editor opens and is toggled from the status bar; it can no longer be turned on by default
+- Dashboard titles, descriptions, tile titles, share names, data column names and error messages are shown as plain text: Markdown and HTML in them are no longer rendered. Component titles, port labels and docstrings written in code render as before
 - Settings and sharing are one Dashboard settings dialog. Saving it saves the dashboard immediately, and turning on "Everyone can view" drops the explicit Can view entries on save
 - New global keyboard shortcuts apply outside text fields and dialogs: Ctrl/Cmd+K, `/`, `?`, R, E and Esc, and Ctrl/Cmd+S saves in edit mode instead of opening the browser's save dialog.
 - The `complex_dataflow` example's assistant panel starts closed and opens from the top bar
@@ -25,6 +26,9 @@ Permissions. Deployments with authentication should review these:
 - Listings and `can_edit_model` check rights through `BaseDashboardStore.can_administer_model`, so a store subclass that only overrides `can_administer` should override `can_administer_model` as well
 - Editors without admin rights can no longer rename, delete or share, and an edit link opened by a viewer falls back to view mode
 - Component `allow_*` / `deny_*` rules and `authorize` callbacks now also apply in the editor: refused components are left out of the palette, `FlowDash.add_component` raises `PermissionError`, and saved items using them load as locked placeholders that are saved back unchanged. Components without rules stay usable under `default_allow = False`. `authorize_component` is set by `FlowDashApp` and is refused in `editor_options`; override `FlowDashApp._can_use_component` instead
+- Importing a dashboard file never adds or changes a component the user may not use, and Download writes such items as a `flowdash:restricted` stand-in with only their id and position and none of their edges
+- `FlowDash` has a new `authorize_dashboard` hook that `save()`, reload and discard check against the stored dashboard's current rules, so someone whose edit rights were revoked while the dashboard was open can no longer save it. Like `authorize_component`, it is set by `FlowDashApp` and refused in `editor_options`
+- With `inspect_outputs` on, viewers only get Duplicate and Download on dashboards that allow `viewers_can_inspect`, since a copy would otherwise give them inspect rights. `FlowDashApp._dashboard_actions` takes a new `can_copy` keyword
 - `Permission` gains `allow_edit_users` and `allow_edit_groups`, and `Permission.is_empty` counts them
 - `make_authorize_callback(..., denied_route=...)` returns a redirect URL instead of `False` for refused requests; without `denied_route` it behaves as before
 
@@ -32,6 +36,7 @@ Stores and saved data:
 
 - Saved items and edges that cannot be restored (a missing or failing component, a renamed port, a type that no longer fits) are kept as placeholders and saved back unchanged instead of being dropped with a warning. Remove them in the editor to delete them
 - `BaseDashboardStore.find_by_id_or_title(ref)` became `find_by_id_or_title(ref, identity=None, *, default_allow=True)`. Custom stores that override it must accept the new arguments, or `FlowDashApp` raises `TypeError` when `home_dashboard` is set
+- Stores declare `BaseDashboardStore.random_ids` (default `True`; `False` for `JSONFolderDashboardStore`, whose ids are title slugs). When ids can be guessed, a dashboard the user may not open gets the same not-found page as a missing one instead of naming its owner, so a custom store with guessable ids should set `random_ids = False`
 - `save_dashboard` raises `DashboardConflictError` when the model's `revision` is stale. Custom stores should store and check `DashboardModel.revision` the same way; a store that ignores it stays last-writer-wins
 - SQLite databases gain `settings_json` and `revision` columns, added automatically on open; the migration is one-way, so back up a database you may want to open with rc2 again. JSON dashboard files gain `settings` and `revision` and keep unresolved items, and on Windows a `.flowdash.lock` file appears in the folder
 - `tile_layout` and `responsive_layouts` entries are keyed by `instance_id`. Layouts saved by rc2 are mapped by position on load and saved in the keyed form from then on, which rc2 cannot read back correctly
@@ -44,6 +49,7 @@ Serving and API:
 - `ComponentSpec`, `InputPort` and `PanelAppMetadata` gained fields in the middle of their argument lists (`max_size` and `min_size` before `config`, `handles_failures` before `parameter`, and `placeholder`, `handles_failures`, `aliases` and `port_aliases`). Pass their arguments by keyword
 - The `default_size`, `min_size` and `max_size` hints of `@register` take `{"width": ..., "height": ...}` in pixels; the old `{"w", "h"}` keys never had an effect and are ignored with a warning
 - The private `_on_action_edit`, `_on_action_rename`, `_on_action_delete` and `_on_action_create` methods of `FlowDashApp` were removed in favour of `_on_dashboard_action`
+- A Viewer component receives a new input inside `pn.io.hold()`, so the whole downstream cascade reaches the browser as one patch. Intermediate updates a component makes during the cascade, such as a progress message, are no longer shown separately
 - With pandas older than 3 and copy-on-write off, the built-in transforms copy their input frame on every hop so edges never share a mutable frame
 
 ### Components and ports
@@ -67,6 +73,7 @@ Serving and API:
 - `FlowDash(propagate_failures=True)`, also a `FlowDashApp` parameter, carries a failing output or edge transform downstream as a `param.ReactiveError` instead of leaving connected inputs on stale values. Inputs listed in `@register(handles_failures=[...])` receive the failure; any other input keeps its last value, its tile explains which upstream component failed, and the failed node and edge are outlined on the canvas. Needs Param 2.5 or later
 - Edge transforms are edited in the editor's inspector as numbered steps that show the value's shape between them; operations that cannot follow the current value are disabled, and a failing step shows the reason with a closest-column suggestion and is not applied until fixed. A new how-to covers the built-in steps and custom `Transform` subclasses
 - Switching dashboards in an open editor places them in one canvas update (500 nodes in about 1 s instead of 20 s), `DataflowGraph.batch()` binds list inputs once, and very deep chains finish on the next tick instead of raising `RecursionError`
+- Changing a control updates every affected tile in the same frame instead of tile by tile
 - A component whose watcher raises no longer stops its siblings from receiving the value, and async outputs no longer run twice per input change
 
 ### Editor
@@ -95,21 +102,23 @@ Serving and API:
 - `FlowDashApp` has an app shell with a navigation rail (Home, Dashboards, Components, Pages, Help), a breadcrumb with a dashboard switcher, and a Ctrl/Cmd+K command palette for dashboards, components and actions. R refreshes, E edits, Esc returns to view mode, Ctrl/Cmd+S saves and `?` lists the shortcuts
 - The launcher lists dashboards as cards with a layout thumbnail, last edit, owner, component count and sharing, with filters (All, Owned by me, Shared with me), sorting, a list view and a first-run state. Card actions are Open, Edit, Rename, Duplicate, Share, Download as file and Delete, which asks you to type the dashboard's name
 - `/components` is a component gallery with search, role and "Accepts <type>" filters, and a detail panel with the ports, the dashboards using a component, and Add to dashboard
-- Not found, access denied (naming the owner to ask, never the contents), unknown URLs (still status 404) and loading each have their own page; restricted code pages redirect to an in-app access-denied page
+- Not found, access denied (naming the owner to ask, never the contents, and only for stores with random ids), unknown URLs (still status 404) and loading each have their own page; restricted code pages redirect to an in-app access-denied page
 - `FlowDashApp.editor_options` passes keyword arguments through to the embedded `FlowDash` editor, and `FlowDashApp.editor_class` substitutes a `FlowDash` subclass
 - Dashboard actions from the launcher card, navigation and dashboard bar menus all dispatch through `FlowDashApp._on_dashboard_action`, so a subclass adds an action by extending `_ADMIN_DASHBOARD_ACTIONS` or `_VIEWER_DASHBOARD_ACTIONS` and overriding that one method; editors and viewers see the actions their role allows
 - A slow dashboard load no longer overwrites a newer navigation
-- The `wind_energy` example is an offline showcase project with three dashboards, two pages and 20 components built on the US Wind Turbine Database
+- The `wind_energy` example is an offline showcase project with three dashboards, two pages and 20 components built on the US Wind Turbine Database. Its charts, map and tables update in place, and its port types are registered in the project `__init__.py` so its components connect before any source is placed
 
 ### Sharing and permissions
 
 - Dashboards can be shared with edit rights (`Permission.allow_edit_users`, `allow_edit_groups`). Editors can change and save a dashboard; renaming, deleting and sharing stay with the owner and `admin_groups`
 - The Dashboard settings dialog combines general settings, a refresh period and sharing, with "Everyone can view" and Owner, Can view, Can edit and Blocked roles for people and groups that map onto the stored allow, edit and deny rules
-- Component permissions apply in the palette, on placement and on load, and the component gallery only lists components the user may place
+- Component permissions apply in the palette, on placement, on load and on import and download, and the component gallery only lists components the user may place
+- Text stored in dashboards and data is escaped wherever it is shown, so markup in a title or column name cannot run script in another user's session
 - Page rules that `@register` cannot read statically (module constants, expressions, `authorize` callables) now fail closed until the module is imported, and the HTTP gate checks the live registry and `authorize` on every request
 - An OAuth user no longer also carries the server's OS account name, so they no longer match rules or ownership keyed to it
 - A lone string in a permission rule, `admin_groups`, `user_groups` or `group_claims` is read as one name, and `default_allow = "False"` is read as false
-- Saving from an open editor keeps sharing and title changes made elsewhere in the meantime
+- Saving from an open editor keeps sharing and title changes made elsewhere in the meantime, and re-checks edit rights, so revoking them applies to dashboards already open. A refused save keeps the changes and switches the editor to read-only
+- The launcher's sharing chip counts the viewers and editors the settings dialog shows
 - A home dashboard configured by title only resolves to a dashboard the user may open, and an ambiguous title shows the launcher
 
 ### Stores
