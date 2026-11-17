@@ -159,3 +159,25 @@ async def test_a_question_asked_while_the_assistant_is_busy_is_sent_after(sessio
     for _ in range(5):
         await asyncio.sleep(0)
     assert sent == ["And the table?"]
+
+
+async def test_steps_are_labelled_and_a_narrow_window_overlays_the_drawer(session):
+    from panel_flowdash.agent.chrome import OVERLAY_BELOW, TOOL_LABELS
+
+    assert session.drawer.overlay_below == OVERLAY_BELOW
+    labels = session.drawer.chat.tool_labels
+    assert labels is TOOL_LABELS
+    assert labels["set_config"]({"name": "kpi", "config": {"label": "x"}}) == "Change kpi: label"
+    assert (
+        labels["connect"]({"source": "filter.filtered", "target": "map.turbines"})
+        == "Connect filter to map"
+    )
+    assert labels["add_node"]({"component": "Views/kpi"}) == "Add kpi"
+
+
+async def test_every_tool_and_palette_action_has_a_label(session):
+    from panel_flowdash.agent.chrome import TOOL_LABELS
+    from panel_flowdash.agent.tools import dashboard_toolset
+
+    names = set(dashboard_toolset().tools) | {action.name for action in session.actions}
+    assert names <= set(TOOL_LABELS)
