@@ -291,6 +291,7 @@ class FlowDashApp(Viewer):
         self._identity = resolve_identity(self.auth_config)
         self._user_id = self._resolve_user_id()
         self._sidebar_container = pn.Column(sizing_mode="stretch_width")
+        self._sidebar_open_before_fullscreen: bool | None = None
         self._share_button = pmui.Button(
             label="Share",
             icon="share",
@@ -757,12 +758,29 @@ class FlowDashApp(Viewer):
         editor.param.watch(self._on_editor_saved, "saved")
         return editor
 
-    def _on_editor_sidebar(self, *_events):
-        """Mirror the editor's sidebar views into the page sidebar, unless its controls bar shows them."""
+    def _on_editor_sidebar(self, *events):
+        """Mirror the editor's sidebar views into the page sidebar, unless its controls bar shows them.
+
+        The sidebar opens when it gets views and closes when it has none.
+        Full screen shows the views in the controls bar, so the page sidebar
+        is emptied meanwhile and reopened, or left collapsed, as the user had it.
+        """
         editor = self._editor
         views = [] if editor.controls_bar or editor.fullscreen else list(editor.sidebar)
+        had_views = bool(self._sidebar_container.objects)
+        restore = None
+        if any(event.name == "fullscreen" for event in events):
+            if editor.fullscreen:
+                if had_views:
+                    self._sidebar_open_before_fullscreen = self._page.sidebar_open
+            else:
+                restore = self._sidebar_open_before_fullscreen
+                self._sidebar_open_before_fullscreen = None
         self._sidebar_container.objects = views
-        self._page.sidebar_open = bool(views)
+        if not views:
+            self._page.sidebar_open = False
+        elif not had_views:
+            self._page.sidebar_open = True if restore is None else restore
 
     def _on_editor_saved(self, _event):
         """Follow the editor to a dashboard it saved under a new id ("Save as copy")."""

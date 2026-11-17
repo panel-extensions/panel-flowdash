@@ -63,8 +63,9 @@ class FullscreenController(JSComponent):
 
     While active the overlay (the element with :data:`OVERLAY_CLASS`) is shown
     after the pointer moves, a tap or a key press and hidden, with the
-    pointer, once they rest. Focus cannot move to the page behind the
-    layout, only into it and the dialogs and menus it opens. With several
+    pointer, once they rest. The page behind the layout is inert, so focus,
+    clicks and screen readers only reach the layout and the dialogs, menus,
+    palette and notifications it opens. With several
     editors on a page, the :data:`TOGGLE_EVENT` toggles the one holding the
     focus, else the one presenting, else the first.
     """
@@ -108,6 +109,17 @@ class FullscreenController(JSComponent):
         node.getAttribute("role") === "presentation" || node.hasAttribute("popover") ||
         node.classList.contains("MuiPopover-root") || node.classList.contains("MuiPopper-root")
       ))
+    }}
+
+    // Never made inert while presenting: what the layout opens lives outside it.
+    const LIVE_TAGS = new Set(["SCRIPT", "STYLE", "LINK", "HEAD", "TEMPLATE"])
+    const LIVE_SELECTORS = [
+      ".dialog", ".notification-area", "#notistack-container", ".flowdash-command-palette", ".MuiModal-root",
+    ]
+
+    // A node and, for Panel's wrappers, the component elements directly inside it.
+    function hosts(node) {{
+      return [node, ...node.children].filter((el) => el.shadowRoot)
     }}
 
     // The focused element, which may sit in shadow roots, and its ancestors.
@@ -281,26 +293,58 @@ class FullscreenController(JSComponent):
           show()
         }}
       }}
-      const onFocus = (event) => {{
-        const el = target()
-        if (!model.active || !el) {{
-          return
+      // While presenting, everything outside the layout is inert: it takes no
+      // focus or clicks and is hidden from screen readers. That is every sibling
+      // at each level from the layout up to the body, across shadow roots.
+      // Portals, the palette, dialogs and notifications stay live; siblings
+      // rendered later, e.g. a header that is re-rendered, are made inert too.
+      let inerted = []
+      let observers = []
+      function inertable(node) {{
+        if (!(node instanceof HTMLElement) || node.inert || LIVE_TAGS.has(node.tagName)) {{
+          return false
         }}
-        const path = event.composedPath()
-        if (path.includes(el)) {{
-          show()
-        }} else if (!inOverlay(path)) {{
-          // Tabbed out to the page behind the layout: bring the focus back.
-          show()
-          const exit = overlay()?.shadowRoot?.querySelector(".{EXIT_CLASS}")
-          const button = exit?.shadowRoot?.querySelector("button") ?? exit
-          if (button?.focus) {{
-            button.focus()
-          }} else {{
-            event.target?.blur?.()
-          }}
+        return !inOverlay([node]) && !LIVE_SELECTORS.some((sel) => (
+          node.matches(sel) || hosts(node).some((host) => [...host.shadowRoot.children].some((el) => el.matches(sel)))
+        ))
+      }}
+      function makeInert(node) {{
+        if (inertable(node)) {{
+          node.inert = true
+          inerted.push(node)
         }}
       }}
+      function contain() {{
+        release()
+        let node = target()
+        while (node && node !== document.body) {{
+          const parent = node.parentNode
+          if (parent == null) {{
+            break
+          }}
+          const keep = node
+          for (const sibling of parent.children) {{
+            if (sibling !== keep) {{
+              makeInert(sibling)
+            }}
+          }}
+          const observer = new MutationObserver((records) => {{
+            for (const record of records) {{
+              record.addedNodes.forEach((added) => added !== keep && makeInert(added))
+            }}
+          }})
+          observer.observe(parent, {{childList: true}})
+          observers.push(observer)
+          node = parent instanceof ShadowRoot ? parent.host : parent
+        }}
+      }}
+      function release() {{
+        observers.forEach((observer) => observer.disconnect())
+        inerted.forEach((node) => {{ node.inert = false }})
+        observers = []
+        inerted = []
+      }}
+      const sync = () => (model.active && target() ? contain() : release())
 
       document.addEventListener("fullscreenchange", onChange)
       document.addEventListener("click", onClick, true)
@@ -309,13 +353,13 @@ class FullscreenController(JSComponent):
       document.addEventListener("pointermove", onMove)
       document.addEventListener("pointerdown", onMove, true)
       document.addEventListener("keydown", onMove, true)
-      document.addEventListener("focusin", onFocus, true)
       model.on("active", () => {{
         if (model.active) {{
           requestNative()
         }} else {{
           exitNative()
         }}
+        sync()
         show()
       }})
       model.on("remove", () => {{
@@ -327,12 +371,15 @@ class FullscreenController(JSComponent):
         document.removeEventListener("pointermove", onMove)
         document.removeEventListener("pointerdown", onMove, true)
         document.removeEventListener("keydown", onMove, true)
-        document.removeEventListener("focusin", onFocus, true)
-        CONTROLLERS.splice(CONTROLLERS.indexOf(self), 1)
+        release()
+        const index = CONTROLLERS.indexOf(self)
+        if (index >= 0) {{
+          CONTROLLERS.splice(index, 1)
+        }}
       }})
       if (model.active) {{
         // Opened in the presentation layout; no gesture, so no real full screen.
-        setTimeout(show)
+        setTimeout(() => {{ sync(); show() }})
       }}
       const el = document.createElement("span")
       el.style.display = "none"
