@@ -15,7 +15,7 @@ from panel_flowdash.ui.fullscreen import TOGGLE_CLASS
 from panel_flowdash.ui.health import DashboardHealth
 from panel_flowdash.ui.health_popover import HealthPopover
 from panel_flowdash.ui.popover_access import NON_MODAL_POPUP_SX, PopoverAccess, link_popup
-from panel_flowdash.ui.text import escape_markdown
+from panel_flowdash.ui.text import escape_markdown, markdown_pane
 from panel_flowdash.util import close_dialog, confirm, open_dialog
 
 # Overflow menus show only an icon: MenuButton always renders a dropdown arrow.
@@ -680,7 +680,7 @@ class DashboardBar(Viewer):
         open_dialog(
             "Unsaved changes",
             pn.Column(
-                pn.pane.Markdown("Save your changes before returning to the dashboard?"),
+                markdown_pane("Save your changes before returning to the dashboard?"),
                 pn.Row(pn.layout.HSpacer(), keep, discard, save, sizing_mode="stretch_width"),
                 sizing_mode="stretch_width",
             ),
@@ -735,7 +735,7 @@ class DashboardBar(Viewer):
         open_dialog(
             "Import dashboard file",
             pn.Column(
-                pn.pane.Markdown(
+                markdown_pane(
                     "Choose a downloaded dashboard file. You can also drop one onto the canvas."
                 ),
                 chooser,

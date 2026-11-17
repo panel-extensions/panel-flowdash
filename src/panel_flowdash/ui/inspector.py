@@ -34,7 +34,7 @@ from panel_flowdash.ui.status_bar import (
     connection_title,
     select_on_canvas,
 )
-from panel_flowdash.ui.text import escape_markdown, text_typography
+from panel_flowdash.ui.text import text_alert, text_typography
 from panel_flowdash.ui.tile_layout import tile_entry, update_tile
 
 if t.TYPE_CHECKING:
@@ -243,7 +243,7 @@ class Inspector(Viewer):
         if not issues:
             objects.append(
                 pmui.Alert(
-                    "All outputs up to date.",
+                    object="All outputs up to date.",
                     severity="success",
                     margin=0,
                     sizing_mode="stretch_width",
@@ -269,7 +269,7 @@ class Inspector(Viewer):
             severity = "info"
         label = f"{issue.title}: {issue.detail}"
         if issue.instance_id is None and issue.edge_id is None:
-            return pmui.Alert(escape_markdown(label), severity=severity, margin=(0, 0, 6, 0))
+            return text_alert(label, severity=severity, margin=(0, 0, 6, 0))
         button = pmui.Button(
             label=label,
             icon={"error": "error_outline", "warning": "hourglass_empty"}.get(severity, "info"),

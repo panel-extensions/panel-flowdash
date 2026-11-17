@@ -2790,7 +2790,7 @@ class TestInspectOutputs:
         assert sheet.open
         alerts = sheet.select(pmui.Alert)
         assert len(alerts) == 2
-        assert "no explanation today" in alerts[0].objects[0].object
+        assert "no explanation today" in alerts[0].object
         assert alerts[0].severity == "error"
         assert "Inspecting output 'doubled'" in caplog.text
         assert any(isinstance(p, pn.pane.JSON) for p in sheet.select())
@@ -2902,7 +2902,7 @@ class TestInspectOutputs:
         notice = sheet.objects[1]
         assert isinstance(notice, pmui.Alert)
         assert notice.severity == "info"
-        assert "Waiting for Company" in notice.objects[0].object
+        assert "Waiting for Company" in notice.object
         assert "No value yet" in _texts(sheet)
 
         editor.graph.get_state(instance_id).company = "ACME"
