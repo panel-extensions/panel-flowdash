@@ -15,7 +15,6 @@ import re
 import typing as t
 
 import panel as pn
-import yaml
 
 from panel_flowdash.dashboard_store import DashboardModel
 from panel_flowdash.editor import (
@@ -29,7 +28,16 @@ from panel_flowdash.ui import tile_layout
 from .preview import preview_editor
 from .schema import component_schema
 from .validation import Issue, _check_value, _suggest, validate_dashboard
-from .yaml_format import dashboard_to_yaml, node_names, split_port
+from .yaml_format import (
+    DashboardYAMLError,
+    dashboard_from_dict,
+    dashboard_to_dict,
+    dashboard_to_yaml,
+    editor_restricted,
+    node_names,
+    parse_yaml,
+    split_port,
+)
 
 
 class OperationError(ValueError):
@@ -50,7 +58,7 @@ class NotFound(OperationError, KeyError):
 # How long a preview or a bulk replace may take to import and start its components.
 DEFAULT_TIMEOUT = 30
 
-_REVISION = re.compile(r"^# revision: (?P<token>[0-9a-f]+)\s*$", re.M)
+_REVISION = re.compile(r"# revision: (?P<token>[0-9a-f]+)\s*")
 
 
 def _revision(text: str) -> str:
@@ -58,8 +66,12 @@ def _revision(text: str) -> str:
 
 
 def read_revision(text: str) -> str | None:
-    """Return the revision a YAML text from :meth:`DashboardOps.get_dashboard` was read at."""
-    match = _REVISION.search(text)
+    """Return the revision a YAML text from :meth:`DashboardOps.get_dashboard` was read at.
+
+    Only a ``# revision: <token>`` comment on the first line counts.
+    """
+    first = text.split("\n", 1)[0]
+    match = _REVISION.fullmatch(first)
     return match["token"] if match else None
 
 
@@ -307,17 +319,39 @@ class DashboardOps:
             return f"Opened '{model.title}' read-only; its definition is hidden from viewers."
         return self.get_dashboard()
 
-    def validate(self, text: str | None = None) -> list[Issue]:
-        """Check YAML against the components the user may place; defaults to the editor's dashboard."""
+    def _parse(self, text: str | dict) -> dict:
+        """Read YAML text once, with the format's limits, into a document."""
+        if isinstance(text, dict):
+            return text
+        try:
+            return parse_yaml(text)
+        except DashboardYAMLError as exc:
+            raise OperationError(str(exc)) from exc
+
+    def validate(self, text: str | dict | None = None) -> list[Issue]:
+        """Check YAML against the components the user may place and the canvas it is meant for.
+
+        Defaults to the editor's dashboard. The canvas's restricted nodes and
+        their connections must stay as they are, see
+        :func:`~panel_flowdash.agent.validate_dashboard`.
+        """
         editor = self.editor
         entries = editor._component_entries
+        restricted_nodes, restricted_edges = editor_restricted(editor)
+        try:
+            doc = dashboard_to_dict(editor) if text is None else self._parse(text)
+        except OperationError as exc:
+            path, _, message = str(exc).partition(": ")
+            return [Issue(path, message)]
         issues = validate_dashboard(
-            dashboard_to_yaml(self.editor) if text is None else text,
+            doc,
             self._authorized_specs(),
             settings_class=editor.settings_class,
             aliases=editor._component_aliases(),
             controls=[cid for cid, e in entries.items() if e.metadata.sidebar],
             singletons=[cid for cid, e in entries.items() if e.metadata.singleton],
+            restricted_nodes=restricted_nodes,
+            restricted_edges=restricted_edges,
         )
         # A node already on the canvas whose component is not offered (any more)
         # is kept as is, like on import, so it does not stop the YAML loading.
@@ -337,14 +371,14 @@ class DashboardOps:
     def preview(self, text: str | None = None, *, rows: int = 5) -> dict[str, t.Any]:
         """Run a dashboard without showing it and report the health of each node.
 
-        In a running server use :meth:`preview_async`, which imports the
-        components off the event loop and gives up after a timeout.
+        In a running server use :meth:`preview_async`.
 
         Parameters
         ----------
         text
             YAML to run in a separate editor, leaving this one untouched.
-            Defaults to the editor's dashboard as it is now.
+            Names map to the nodes of this editor's canvas, as for
+            :meth:`replace_yaml`. Defaults to the editor's dashboard as it is now.
         rows
             How many rows or items each output sample shows, at most 20.
 
@@ -358,10 +392,10 @@ class DashboardOps:
         """
         if text is None:
             return self._preview(self.editor, rows)
-        self._refuse_invalid(text)
+        data = self._preview_data(text)
         scratch = self._scratch_editor()
         try:
-            scratch.import_dashboard(text)
+            scratch.import_dashboard(data)
             return self._preview(scratch, rows)
         finally:
             scratch.dispose()
@@ -369,17 +403,27 @@ class DashboardOps:
     async def preview_async(
         self, text: str | None = None, *, rows: int = 5, timeout: float = DEFAULT_TIMEOUT
     ) -> dict[str, t.Any]:
-        """Like :meth:`preview`, importing components off the event loop, within *timeout* seconds."""
+        """Like :meth:`preview`, importing the components' modules off the event loop.
+
+        *timeout* bounds the imports and async component bodies; creating a
+        component synchronously still runs on the event loop.
+        """
         if text is None:
             return self._preview(self.editor, rows)
-        self._refuse_invalid(text)
+        data = self._preview_data(text)
         scratch = self._scratch_editor()
         try:
-            model = scratch._imported_model(text)
+            model = scratch._imported_model(data)
             await self._within(scratch.load_model_async(model), timeout)
             return self._preview(scratch, rows)
         finally:
             scratch.dispose()
+
+    def _preview_data(self, text: str) -> dict:
+        doc = self._parse(text)
+        self._refuse_invalid(doc)
+        # Names map to this canvas, so restricted stand-ins find their stored items.
+        return dashboard_from_dict(doc, base=self.editor.export_dashboard())
 
     @staticmethod
     async def _within(awaitable, timeout: float):
@@ -410,6 +454,7 @@ class DashboardOps:
             include_builtin_components=False,
             authorize_component=editor.authorize_component,
             authorize_dashboard=editor.authorize_dashboard,
+            import_unknown_components=editor.import_unknown_components,
             settings_class=editor.settings_class,
             propagate_failures=editor.propagate_failures,
             inspect_outputs=editor.inspect_outputs,
@@ -427,29 +472,45 @@ class DashboardOps:
     # Changing
     # ------------------------------------------------------------------
 
-    def _refuse_invalid(self, text: str):
-        errors = [i for i in self.validate(text) if i.severity == "error"]
+    def _refuse_invalid(self, doc: dict):
+        errors = [i for i in self.validate(doc) if i.severity == "error"]
         if errors:
             raise OperationError(
                 "The dashboard has errors:\n" + "\n".join(f"- {issue}" for issue in errors)
             )
 
-    def _check_replace(self, text: str, revision: str | None):
+    def _check_replace(self, text: str, revision: str | None) -> tuple[dict, str, str | None]:
+        """Check a replace may go ahead and return the document, the revision and the dashboard id."""
         self._require_edit()
         revision = revision or read_revision(text)
-        if revision is not None and revision != self.revision():
+        if revision is None:
+            raise OperationError(
+                "Replacing needs the revision the YAML was read at: start from "
+                "get_dashboard's output and keep its first line, '# revision: ...'."
+            )
+        self._check_current(revision, self._dashboard_id())
+        doc = self._parse(text)
+        self._refuse_invalid(doc)
+        return doc, revision, self._dashboard_id()
+
+    def _dashboard_id(self) -> str | None:
+        current = self.editor.dashboard
+        return current.dashboard_id if current is not None else None
+
+    def _check_current(self, revision: str, dashboard_id: str | None):
+        if revision != self.revision() or dashboard_id != self._dashboard_id():
             raise OperationError(
                 "The dashboard changed since this YAML was read, e.g. by the user's own "
                 "edits. Call get_dashboard again and apply your change to that."
             )
-        self._refuse_invalid(text)
 
     def replace_yaml(self, text: str, *, revision: str | None = None) -> list[Issue]:
         """Replace the editor's dashboard with YAML, as importing a dashboard file does.
 
         Node names that are already on the canvas keep their components'
-        identity. Components the user may not use are kept as stored or left
-        out, exactly as for an imported file. In a running server use
+        identity. Restricted nodes and their connections must stay as
+        :meth:`get_dashboard` wrote them; a restricted node can only be taken
+        off with :meth:`remove_node`. In a running server use
         :meth:`replace_yaml_async`.
 
         Parameters
@@ -457,8 +518,10 @@ class DashboardOps:
         text
             The whole dashboard in the YAML format.
         revision
-            The revision the text is based on, see :meth:`get_dashboard`.
-            Defaults to the ``# revision:`` comment of *text*, if it has one.
+            The revision the text is based on. Defaults to the ``# revision:``
+            first line :meth:`get_dashboard` writes; one of the two is
+            required. Pass ``revision=ops.revision()`` to replace the canvas
+            whatever it holds now.
 
         Returns
         -------
@@ -468,36 +531,39 @@ class DashboardOps:
         Raises
         ------
         OperationError
-            If the YAML has errors, or the canvas changed since the revision
-            it is based on; nothing is changed.
+            If the YAML has errors, has no revision, or the canvas changed
+            since that revision; nothing is changed.
         """
-        self._check_replace(text, revision)
-        title = self._title_issue(text)
-        self.editor.import_dashboard(text)
+        doc, _, _ = self._check_replace(text, revision)
+        title = self._title_issue(doc)
+        self.editor.import_dashboard(doc)
         return title + self._warnings()
 
     async def replace_yaml_async(
         self, text: str, *, revision: str | None = None, timeout: float = DEFAULT_TIMEOUT
     ) -> list[Issue]:
-        """Like :meth:`replace_yaml`, importing components off the event loop, within *timeout*."""
-        self._check_replace(text, revision)
+        """Like :meth:`replace_yaml`, importing the components' modules off the event loop.
+
+        *timeout* bounds the imports. The revision and the open dashboard are
+        checked again once they are done, so edits made meanwhile are never lost.
+        """
+        doc, revision, dashboard_id = self._check_replace(text, revision)
         editor = self.editor
-        model = editor._imported_model(text)
-        await self._within(
-            editor.ensure_components_loaded_async({item.component_id for item in model.items}),
-            timeout,
-        )
-        title = self._title_issue(text)
-        editor.load_model(model)
-        editor.dirty = True
+        components = {
+            node.get("component")
+            for node in (doc.get("nodes") or {}).values()
+            if isinstance(node, dict)
+        }
+        await self._within(editor.ensure_components_loaded_async(components), timeout)
+        self._require_edit()
+        self._check_current(revision, dashboard_id)
+        title = self._title_issue(doc)
+        editor.import_dashboard(doc)
         return title + self._warnings()
 
-    def _title_issue(self, text: str) -> list[Issue]:
+    def _title_issue(self, doc: dict) -> list[Issue]:
         current = self.editor.dashboard
-        try:
-            title = (yaml.safe_load(text) or {}).get("title")
-        except (yaml.YAMLError, AttributeError):
-            return []
+        title = doc.get("title")
         if current is None or title in (None, current.title):
             return []
         return [

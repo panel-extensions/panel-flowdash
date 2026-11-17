@@ -186,13 +186,14 @@ class TestEditing:
         instance_id = ops.editor._tile_items[0]["instance_id"]
         warnings = ops.replace_yaml(
             f"flowdash: 1\nnodes:\n  {number}: {{component: T/number}}\n"
-            "  waiting: {component: T/doubler}\n"
+            "  waiting: {component: T/doubler}\n",
+            revision=ops.revision(),
         )
         assert ops.editor._tile_items[0]["instance_id"] == instance_id
         assert [w.path for w in warnings] == ["nodes.waiting"]
 
     def test_a_changed_title_is_reported(self, ops):
-        warnings = ops.replace_yaml("flowdash: 1\ntitle: Renamed\n")
+        warnings = ops.replace_yaml("flowdash: 1\ntitle: Renamed\n", revision=ops.revision())
         assert [(w.path, w.severity) for w in warnings] == [("title", "warning")]
         assert ops.editor.dashboard.title == "Mine"
 
@@ -200,8 +201,17 @@ class TestEditing:
         ops.add_node("T/number")
         before = ops.get_dashboard()
         with pytest.raises(OperationError, match=r"nodes\.x\.component: Unknown component"):
-            ops.replace_yaml("flowdash: 1\nnodes:\n  x: {component: T/nope}\n")
+            ops.replace_yaml(
+                "flowdash: 1\nnodes:\n  x: {component: T/nope}\n", revision=ops.revision()
+            )
         assert ops.get_dashboard() == before
+
+    def test_replacing_needs_a_revision_on_the_first_line(self, ops):
+        with pytest.raises(OperationError, match="needs the revision"):
+            ops.replace_yaml("flowdash: 1\n")
+        spoof = f"flowdash: 1\ntitle: |\n  # revision: {ops.revision()}\n"
+        with pytest.raises(OperationError, match="needs the revision"):
+            ops.replace_yaml(spoof)
 
     def test_list_components_filters_by_query(self, ops):
         listed = ops.list_components("fixed number")
@@ -285,7 +295,8 @@ class TestRights:
         ops, did = self._opened(store)
         ops.replace_yaml(
             "flowdash: 1\nnodes:\n  secret: {component: 'flowdash:restricted'}\n"
-            "  double: {component: T/doubler}\n"
+            "  double: {component: T/doubler}\nedges:\n  - {from: secret, to: double.value}\n",
+            revision=ops.revision(),
         )
         ops.save()
         saved = store._load_any(did)
@@ -296,7 +307,14 @@ class TestRights:
             {"query": "SELECT salary"},
         )
         with pytest.raises(OperationError, match="Unknown component 'T/secret'"):
-            ops.replace_yaml("flowdash: 1\nnodes:\n  mine: {component: T/secret}\n")
+            ops.replace_yaml(
+                "flowdash: 1\nnodes:\n  mine: {component: T/secret}\n", revision=ops.revision()
+            )
+        doc = yaml.safe_load(ops.get_dashboard())
+        doc["nodes"]["secret"] = {"component": "T/number"}
+        doc["edges"] = []
+        with pytest.raises(OperationError, match="cannot be replaced"):
+            ops.replace_yaml(yaml.safe_dump(doc), revision=ops.revision())
 
     def test_a_user_with_access_sees_everything(self, store):
         ops, _ = self._opened(store, finance=True)

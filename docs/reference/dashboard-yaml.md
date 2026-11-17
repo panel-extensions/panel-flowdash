@@ -80,7 +80,10 @@ A file holds only what JSON can: valid Unicode strings, finite numbers,
 `true`/`false`, `null`, lists and mappings with string keys. A file is refused if it is larger than
 1,000,000 characters (or bytes), nests deeper than 32 levels, defines a key twice in
 one mapping, or uses anchors and aliases (`&`, `*`) or tags such as `!!set` and
-`!!binary`. Comments are ignored.
+`!!binary`. Comments are ignored. `DashboardOps.get_dashboard` starts the YAML of an
+open canvas with a `# revision: <token>` comment naming the canvas it was read from
+(not the stored dashboard's revision); `replace_yaml` refuses text whose first line
+names a canvas that has changed since.
 
 Unquoted values are typed by the YAML 1.2 core schema, with these integers:
 

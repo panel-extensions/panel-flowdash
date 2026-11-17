@@ -129,7 +129,7 @@ def preview_editor(
             status = {"denied": "restricted", "missing": "missing"}.get(
                 placeholder.reason, "error"
             )
-            nodes[name] = {"status": status, "message": placeholder.message}
+            nodes[name] = {"status": status, "message": _scalar(placeholder.message)}
             continue
         spec = editor._component_specs.get(item["component_id"])
         state = graph.get_state(instance_id)
@@ -139,12 +139,15 @@ def preview_editor(
         waiting = missing_inputs(state, spec.inputs) if state is not None and spec else []
         if held:
             entry["status"] = "failed"
-            entry["message"] = "; ".join(
-                f"input '{port}' failed upstream: {failure.text}" for port, failure in held.items()
+            entry["message"] = _scalar(
+                "; ".join(
+                    f"input '{port}' failed upstream: {failure.text}"
+                    for port, failure in held.items()
+                )
             )
         elif waiting:
             entry["status"] = "waiting"
-            entry["message"] = f"Waiting for {', '.join(waiting)}."
+            entry["message"] = _scalar(f"Waiting for {', '.join(waiting)}.")
         if samples and spec is not None and state is not None:
             entry["outputs"] = {
                 port.name: sample_value(getattr(state, port.name, None), rows)
