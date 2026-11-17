@@ -123,6 +123,17 @@ ones starting with `x-`, which are kept for extensions. Nodes without a tile ent
 their component's default size, after the listed tiles. Control components have no
 tile.
 
+## Not in version 1
+
+A file describes what a dashboard is built from, not the state it is in:
+
+- **Control values.** Which components appear in the controls bar follows their
+  registration (`sidebar=True`) and node order; the value a viewer picks in a control
+  is not stored. A control's starting value is part of its `config`, where the
+  component has one.
+- **Publishing.** FlowDash has no published or draft state for a dashboard; who may
+  see it is its sharing, which belongs to the dashboard a file is loaded into.
+
 ## Loading a file
 
 Loading YAML replaces the dashboard's contents, as importing a downloaded file does:
