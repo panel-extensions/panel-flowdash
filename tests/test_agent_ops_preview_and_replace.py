@@ -1,4 +1,4 @@
-"""Operations against generated ids, concurrent edits, preview bounds and restricted bodies."""
+"""DashboardOps previews and bulk replaces: generated ids, concurrent edits, bounds and restricted bodies."""
 
 import asyncio
 import json
@@ -150,3 +150,24 @@ def test_preview_keeps_the_hosts_unknown_component_rule():
     editor = _editor(import_unknown_components=False)
     editor.new_dashboard("x")
     assert DashboardOps(editor)._scratch_editor().import_unknown_components is False
+
+
+def test_a_new_draft_previews_on_its_own(generated):
+    report = generated.preview("flowdash: 1\nnodes:\n  n: {component: T/number}\n")
+    assert report["status"] == "ok" and list(report["nodes"]) == ["n"]
+
+
+@pytest.mark.parametrize("secret_id", ["secret", "T__counted_a1b2c3"])
+def test_connect_refuses_an_input_a_restricted_node_feeds(secret_id):
+    store = MemoryDashboardStore()
+    model = store.create_dashboard("alice", "Fin")
+    model.items = [DashboardItem(secret_id, "T/counted"), DashboardItem("double", "T/doubler")]
+    model.edges = [DashboardEdge(secret_id, "value", "double", "value")]
+    store.save_dashboard(model)
+    ops = DashboardOps(_extra_editor(store))
+    ops.open_dashboard(model.dashboard_id)
+    number = ops.add_node("T/number")
+    with pytest.raises(OperationError, match="already fed by a component you do not have"):
+        ops.connect(f"{number}.value", "double.value")
+    assert ops.editor.graph.edges == []
+    assert not [i for i in ops.validate() if i.severity == "error"]

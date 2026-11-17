@@ -328,16 +328,19 @@ class DashboardOps:
         except DashboardYAMLError as exc:
             raise OperationError(str(exc)) from exc
 
-    def validate(self, text: str | dict | None = None) -> list[Issue]:
+    def validate(self, text: str | dict | None = None, *, standalone: bool = False) -> list[Issue]:
         """Check YAML against the components the user may place and the canvas it is meant for.
 
         Defaults to the editor's dashboard. The canvas's restricted nodes and
         their connections must stay as they are, see
-        :func:`~panel_flowdash.agent.validate_dashboard`.
+        :func:`~panel_flowdash.agent.validate_dashboard`, unless *standalone*
+        is set, for YAML of a new dashboard rather than one for this canvas.
         """
         editor = self.editor
         entries = editor._component_entries
-        restricted_nodes, restricted_edges = editor_restricted(editor)
+        restricted_nodes, restricted_edges = (
+            (None, None) if standalone else editor_restricted(editor)
+        )
         try:
             doc = dashboard_to_dict(editor) if text is None else self._parse(text)
         except OperationError as exc:
@@ -378,7 +381,8 @@ class DashboardOps:
         text
             YAML to run in a separate editor, leaving this one untouched.
             Names map to the nodes of this editor's canvas, as for
-            :meth:`replace_yaml`. Defaults to the editor's dashboard as it is now.
+            :meth:`replace_yaml`; YAML that names none of them is previewed
+            as a new dashboard. Defaults to the editor's dashboard as it is now.
         rows
             How many rows or items each output sample shows, at most 20.
 
@@ -421,9 +425,12 @@ class DashboardOps:
 
     def _preview_data(self, text: str) -> dict:
         doc = self._parse(text)
-        self._refuse_invalid(doc)
+        canvas = self.editor.export_dashboard()
+        # YAML that names none of the canvas's nodes is a new draft, previewed on its own.
+        standalone = not set(doc.get("nodes") or {}) & set(node_names(canvas["items"]).values())
+        self._refuse_invalid(doc, standalone=standalone)
         # Names map to this canvas, so restricted stand-ins find their stored items.
-        return dashboard_from_dict(doc, base=self.editor.export_dashboard())
+        return dashboard_from_dict(doc, base=None if standalone else canvas)
 
     @staticmethod
     async def _within(awaitable, timeout: float):
@@ -472,8 +479,8 @@ class DashboardOps:
     # Changing
     # ------------------------------------------------------------------
 
-    def _refuse_invalid(self, doc: dict):
-        errors = [i for i in self.validate(doc) if i.severity == "error"]
+    def _refuse_invalid(self, doc: dict, *, standalone: bool = False):
+        errors = [i for i in self.validate(doc, standalone=standalone) if i.severity == "error"]
         if errors:
             raise OperationError(
                 "The dashboard has errors:\n" + "\n".join(f"- {issue}" for issue in errors)
