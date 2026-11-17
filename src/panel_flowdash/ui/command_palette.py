@@ -65,6 +65,16 @@ class CommandPalette(JSComponent):
 
     placeholder = param.String(default=PLACEHOLDER, doc="Text in the search field.")
 
+    ask_label = param.String(
+        default=None,
+        allow_None=True,
+        doc="""
+        When set, a query is also offered as a question for an assistant, in
+        an item titled with this label and the query. It comes first when the
+        query reads like a sentence or matches nothing, and runs as
+        ``ask:<query>``.""",
+    )
+
     shortcuts = param.List(default=SHORTCUTS, doc="Shortcuts listed beside the results.")
 
     _esm = "command_palette.js"
@@ -102,6 +112,7 @@ class CommandPaletteController:
 
     def __init__(self, app: FlowDashApp):
         self._app = app
+        self._ask: t.Callable[[str], None] | None = None
         self.palette = CommandPalette(
             on_open=self.items,
             on_command=self.run,
@@ -118,6 +129,16 @@ class CommandPaletteController:
         controller = cls(app)
         shell.search_slot[:] = [controller.palette]
         return controller
+
+    @property
+    def ask(self) -> t.Callable[[str], None] | None:
+        """Called with the query when the user asks the assistant from the palette."""
+        return self._ask
+
+    @ask.setter
+    def ask(self, ask: t.Callable[[str], None] | None):
+        self._ask = ask
+        self.palette.ask_label = "Ask the assistant" if ask is not None else None
 
     # ------------------------------------------------------------------
     # State
@@ -387,6 +408,8 @@ class CommandPaletteController:
                 tile.expand()
         elif kind == "action":
             self._run_action(value)
+        elif kind == "ask" and self._ask is not None:
+            self._ask(value)
 
     def _navigate(self, path: str):
         self._app._on_nav_click({"path": path})
