@@ -74,7 +74,9 @@ The robot button in the top bar opens the assistant: a drawer beside the page wi
 the chat, the versions of the dashboard the agent published and the calls waiting for
 approval. It stays open while you move between dashboards. The agent's edits appear on the user's canvas as they happen, as unsaved changes:
 a dashboard shown in view mode switches to edit mode, and Save, Discard and the
-unsaved-changes review work as for the user's own edits.
+unsaved-changes review work as for the user's own edits. The nodes and tiles the
+agent added (green) or changed (amber) during a request stay outlined until the next
+request.
 
 - **Read**: list the components and dashboards, get a dashboard as YAML, validate
   YAML and preview a dashboard without showing it, getting each node's status and

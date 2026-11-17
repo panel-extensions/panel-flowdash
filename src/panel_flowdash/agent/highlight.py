@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import typing as t
-from functools import partial
 
 from .diff import DashboardChange, dashboard_changes
-from .ops import OperationError
 
 if t.TYPE_CHECKING:
     from panel_flowdash.editor import FlowDash
@@ -72,24 +70,22 @@ class ChangeHighlighter:
     """Outlines what the assistant's last edit added (green) or changed (amber).
 
     The outline is on the canvas node and on the dashboard tile, so the user
-    sees the change in whichever view is open. It compares each version the
-    session's agent publishes of the open dashboard with the dashboard as it
-    was when the run started, so it shows everything the run changed so far,
-    and is cleared when the next run starts, or by :meth:`clear`.
+    sees the change in whichever view is open. Each edit tool reports the
+    dashboard just before and after its change, so the user's own edits made
+    while the agent works are never outlined. The marks add up over a run,
+    on the dashboard the run edits, and are cleared when the next run starts,
+    or by :meth:`clear`.
     """
 
     def __init__(self, session: AgentSession):
         self.session = session
         self.marked: dict[str, str] = {}
         self._editor: FlowDash | None = None
-        self._store = None
-        self._watchers: list = []
-        self._baseline: str | None = None
+        self._run_marks: dict[str, str] = {}
+        self._run_dashboard: str | None = None
         self._grids: set[int] = set()
-        state = session.runner.state
-        state.param.watch(self._on_running, "running")
-        state.param.watch(lambda e: self._follow_store(), "artifacts")
-        self._follow_store()
+        session.runner.state.param.watch(self._on_running, "running")
+        session.runner.deps.edit_listeners.append(self._on_edit)
 
     def show(self, marks: dict[str, str]):
         """Mark nodes of the open dashboard, given ``{node name: "add" | "change"}``."""
@@ -123,44 +119,20 @@ class ChangeHighlighter:
         self._editor = None
 
     def _on_running(self, event):
-        if not event.new:
-            return
-        self.clear()
-        try:
-            self._baseline = self.session.ops.get_dashboard()
-        except OperationError:
-            self._baseline = None
+        if event.new:
+            self.clear()
+            self._run_marks = {}
 
-    def _follow_store(self):
-        store = self.session.runner.state.artifacts
-        if store is self._store:
-            return
-        for obj, watcher in self._watchers:
-            obj.param.unwatch(watcher)
-        self._store = store
-        self._watchers = [
-            (store, store.param.watch(lambda e: self._follow_artifacts(), "artifacts"))
-        ]
-        self._follow_artifacts()
-
-    def _follow_artifacts(self):
-        watched = {id(obj) for obj, _ in self._watchers}
-        for artifact in self._store:
-            if id(artifact) not in watched and artifact.artifact_id.startswith("dashboard:"):
-                watcher = artifact.param.watch(partial(self._on_versions, artifact), "versions")
-                self._watchers.append((artifact, watcher))
-                self._on_versions(artifact)
-
-    def _on_versions(self, artifact, *events):
-        versions = artifact.versions
-        before = (
-            self._baseline
-            if self._baseline is not None
-            else (versions[-2].value if len(versions) > 1 else None)
-        )
-        if not versions or before is None:
-            return
-        self.show(changed_nodes(dashboard_changes(before, versions[-1].value)))
+    def _on_edit(self, before: str | None, after: str):
+        current = self.session.app._current_dashboard
+        dashboard_id = current.dashboard_id if current is not None else None
+        if dashboard_id != self._run_dashboard:
+            self._run_marks = {}
+            self._run_dashboard = dashboard_id
+        for name, kind in changed_nodes(dashboard_changes(before, after)).items():
+            if self._run_marks.get(name) != "add":
+                self._run_marks[name] = kind
+        self.show(self._run_marks)
 
     @staticmethod
     def _resync_canvas(editor):

@@ -67,3 +67,30 @@ async def test_an_agent_edit_outlines_the_new_node_until_the_next_run(monkeypatc
     assert TILE_CLASSES["add"] not in tile.css_classes
     node = next(n for n in app._editor._flow.nodes if n["id"] == instance_id)
     assert "style" not in node
+
+
+async def test_the_users_own_edits_during_a_run_are_not_outlined(monkeypatch):
+    store = MemoryDashboardStore()
+    model = store.create_dashboard("alice", "Plant")
+
+    def user_adds_a_node_meanwhile(results):
+        app._editor.add_component("T/scaled")
+        return {"component": "T/doubler"}
+
+    agent = Agent(
+        scripted(
+            ("add_node", {"component": "T/number"}),
+            ("add_node", user_adds_a_node_meanwhile),
+        ),
+        deps_type=FlowDashDeps,
+        toolsets=[dashboard_toolset()],
+    )
+    app = _app(store, monkeypatch, agent=agent)
+    app._load_dashboard_sync(model.dashboard_id, edit=True)
+    session = app._agent_session
+
+    await session.runner.run("Add a number and a doubler")
+
+    components = {i["instance_id"]: i["component_id"] for i in app._editor._tile_items}
+    marked = {components[iid]: kind for iid, kind in session.highlighter.marked.items()}
+    assert marked == {"T/number": "add", "T/doubler": "add"}
