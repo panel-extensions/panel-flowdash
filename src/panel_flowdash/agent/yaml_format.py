@@ -409,6 +409,10 @@ for _tag, (_pattern, _first) in _CORE_SCALARS.items():
 # another type, so files stay unambiguous to other YAML readers too.
 for _tag, (_pattern, _first) in _CORE_SCALARS.items():
     _Dumper.add_implicit_resolver(_tag, re.compile(_pattern), _first)
+# Other readers also take signed octal and hex as integers.
+_Dumper.add_implicit_resolver(
+    "tag:yaml.org,2002:int", re.compile(r"^[-+](?:0o[0-7]+|0x[0-9a-fA-F]+)$"), list("-+")
+)
 # A plain "" (empty) scalar has no first character to index the resolver by.
 _Loader.add_implicit_resolver(
     "tag:yaml.org,2002:null", re.compile(_CORE_SCALARS["tag:yaml.org,2002:null"][0]), [None]
@@ -464,13 +468,9 @@ def load_yaml(text: str | bytes) -> t.Any:
         binary, non-string or duplicate keys, or nesting deeper than
         ``MAX_DEPTH``. Dates are read as strings.
     """
-    if len(text) > MAX_SIZE:
-        unit = "bytes" if isinstance(text, bytes) else "characters"
-        raise DashboardYAMLError(
-            "document", f"Too large: {len(text):,} {unit}, at most {MAX_SIZE:,}."
-        )
+    _check_size(text)
     try:
-        return yaml.load(text, Loader=_Loader)
+        data = yaml.load(text, Loader=_Loader)
     except _LoadError as exc:
         raise DashboardYAMLError("document", str(exc)) from exc
     except yaml.YAMLError as exc:
@@ -479,6 +479,8 @@ def load_yaml(text: str | bytes) -> t.Any:
         raise DashboardYAMLError("document", "Nested too deeply.") from exc
     except (ValueError, KeyError, TypeError) as exc:
         raise DashboardYAMLError("document", f"Not valid YAML: {exc}") from exc
+    _check_document(data)
+    return data
 
 
 def parse_yaml(text: str | bytes) -> dict:
@@ -495,7 +497,7 @@ def read_dashboard_text(text: str | bytes) -> t.Any:
     """Read the text of a dashboard file: a JSON export, or a dashboard in the YAML format.
 
     A JSON document with a ``flowdash`` key is a YAML-format dashboard written
-    as JSON and is read by :func:`load_yaml`, under the same limits and rules.
+    as JSON and is read under the same limits and rules as :func:`load_yaml`.
 
     Raises
     ------
@@ -518,9 +520,54 @@ def read_dashboard_text(text: str | bytes) -> t.Any:
             ):
                 raise ValueError(f"Not valid JSON: {exc}") from exc
             raise
-    if is_dashboard_yaml(data):
-        return parse_yaml(text)
+    if not is_dashboard_yaml(data):
+        return data
+    # A YAML-format dashboard spelled as JSON keeps json's decoding (which joins
+    # surrogate-pair escapes) and gets the reader's other rules.
+    _check_size(text)
+
+    def refuse_duplicates(pairs):
+        keys = [key for key, _ in pairs]
+        for key in keys:
+            if keys.count(key) > 1:
+                raise DashboardYAMLError("document", f"{key!r} is defined twice.")
+        return dict(pairs)
+
+    data = json.loads(text, object_pairs_hook=refuse_duplicates)
+    _check_document(data)
     return data
+
+
+def _check_size(text: str | bytes):
+    if len(text) > MAX_SIZE:
+        unit = "bytes" if isinstance(text, bytes) else "characters"
+        raise DashboardYAMLError(
+            "document", f"Too large: {len(text):,} {unit}, at most {MAX_SIZE:,}."
+        )
+
+
+def _has_surrogate(text: str) -> bool:
+    return any("\ud800" <= c <= "\udfff" for c in text)
+
+
+def _check_document(data: t.Any):
+    """Refuse nesting deeper than ``MAX_DEPTH`` and strings that are not valid Unicode."""
+    stack = [(data, 1)]
+    while stack:
+        item, depth = stack.pop()
+        if depth > MAX_DEPTH:
+            raise DashboardYAMLError("document", f"nested deeper than {MAX_DEPTH} levels.")
+        if isinstance(item, dict):
+            for key, child in item.items():
+                if isinstance(key, str) and _has_surrogate(key):
+                    raise DashboardYAMLError("document", f"key {key!r} is not valid Unicode.")
+                stack.append((child, depth + 1))
+        elif isinstance(item, list):
+            stack.extend((child, depth + 1) for child in item)
+        elif isinstance(item, str) and _has_surrogate(item):
+            raise DashboardYAMLError(
+                "document", f"{item[:40]!r} is not valid Unicode: it holds a lone surrogate."
+            )
 
 
 def is_dashboard_yaml(data: t.Any) -> bool:
@@ -571,6 +618,8 @@ def _json_value(value: t.Any, path: str):
             stack.extend((child, f"{where}[{i}]") for i, child in enumerate(item))
         elif isinstance(item, float) and not math.isfinite(item):
             _fail(where, f"must be a finite number, got {item!r}.")
+        elif isinstance(item, str) and _has_surrogate(item):
+            _fail(where, "is not valid Unicode: it holds a lone surrogate.")
         elif item is not None and not isinstance(item, (str, int, float, bool)):
             _fail(where, f"must be JSON data, got a {type(item).__name__}.")
 

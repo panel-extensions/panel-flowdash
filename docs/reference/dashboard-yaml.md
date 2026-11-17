@@ -76,8 +76,8 @@ belong to the dashboard it is loaded into.
 
 ## Values
 
-A file holds only what JSON can: strings, finite numbers, `true`/`false`, `null`,
-lists and mappings with string keys. A file is refused if it is larger than
+A file holds only what JSON can: valid Unicode strings, finite numbers,
+`true`/`false`, `null`, lists and mappings with string keys. A file is refused if it is larger than
 1,000,000 characters (or bytes), nests deeper than 32 levels, defines a key twice in
 one mapping, or uses anchors and aliases (`&`, `*`) or tags such as `!!set` and
 `!!binary`. Comments are ignored.

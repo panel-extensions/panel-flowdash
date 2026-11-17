@@ -402,3 +402,38 @@ class TestJsonSpelling:
     def test_broken_json_still_says_json(self):
         with pytest.raises(ValueError, match="Not valid JSON"):
             _editor().import_dashboard('{"items": [}')
+
+
+class TestUnicode:
+    def test_json_with_escaped_emoji_keeps_it(self):
+        editor = _editor()
+        text = json.dumps({"flowdash": 1, "title": "Wind 🌬", "settings": {"description": "🌬"}})
+        from panel_flowdash.agent.yaml_format import read_dashboard_text
+
+        assert read_dashboard_text(text)["title"] == "Wind 🌬"
+        editor.new_dashboard("mine")
+        editor.import_dashboard(text)
+        assert editor.settings.description == "🌬"
+        json.dumps(editor.export_dashboard(), ensure_ascii=False).encode("utf-8")
+
+    @pytest.mark.parametrize(
+        "text",
+        ['flowdash: 1\ntitle: "\\ud800"\n', '{"flowdash": 1, "title": "\\ud800"}'],
+    )
+    def test_lone_surrogates_are_refused(self, text):
+        editor = _editor()
+        with pytest.raises(ValueError, match="not valid Unicode"):
+            editor.import_dashboard(text)
+
+    def test_json_spelled_dashboards_follow_the_depth_limit(self):
+        nested = "[" * 40 + "]" * 40
+        with pytest.raises(ValueError, match="nested deeper than 32"):
+            _editor().import_dashboard(f'{{"flowdash": 1, "x-deep": {nested}}}')
+
+
+@pytest.mark.parametrize("value", ["-0o17", "+0x1f", "+0o7", "-0x1F"])
+def test_signed_octal_and_hex_strings_are_quoted(value):
+    export = {"title": "t", "items": [], "edges": [], "settings": {"s": value}}
+    text = dashboard_to_yaml(export)
+    assert f"s: '{value}'" in text
+    assert load_yaml(text)["settings"]["s"] == value
