@@ -5,9 +5,11 @@ whose parameters correspond to the node's declared input and output ports.
 Every edge is a ``param.rx`` expression on its source port, extended by one
 pipe per step of the edge's transform, and a connected input is bound to the
 expressions feeding it as a param reference, so param itself propagates
-values. The binding checks each value against the target first; a rejected
-value, like a failing transform step, is reported via the error callback and
-skipped, which leaves the target on its last good value.
+values. All edges leaving a port follow one relay of it, which forwards each
+value inside the graph's ``hold`` context, so a change reaches every consumer
+before the hold releases anything. The binding checks each value against the
+target first; a rejected value, like a failing transform step, is reported via
+the error callback and skipped, which leaves the target on its last good value.
 
 With ``propagate_failures`` a failure is carried along the edge instead, as a
 ``param.ReactiveError`` value. An input that handles failures receives it on
@@ -24,8 +26,9 @@ import logging
 import sys
 from collections import deque
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager, nullcontext
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 import param
@@ -50,15 +53,16 @@ _STACK_MARGIN = 100
 class Edge:
     """The transform steps of an edge and the expression after each of them.
 
-    ``stages[0]`` is the source port itself and ``stages[i]`` is the value after
-    ``i`` steps. ``expr`` is what the target receives, which is ``stages[-1]``
-    unless failures propagate, when ``carried`` replaces it with the source
-    node's failure.
+    ``stages[0]`` is the source port, as forwarded by its relay, and
+    ``stages[i]`` is the value after ``i`` steps. ``expr`` is what the target
+    receives, which is ``stages[-1]`` unless failures propagate, when
+    ``carried`` replaces it with the source node's failure.
     """
 
     steps: list[Transform]
     stages: list[param.rx]
     carried: param.rx | None = None
+    source: tuple[str, str] = ("", "")
 
     @property
     def expr(self) -> param.rx:
@@ -182,6 +186,12 @@ def _release_refs(state: param.Parameterized):
     _prune_ref_watchers(state)
 
 
+class _Relay(param.Parameterized):
+    """The value of one output port, as followed by every edge leaving it."""
+
+    value = param.Parameter()
+
+
 def build_node_state_class(spec: ComponentSpec) -> type[param.Parameterized]:
     """Create a Parameterized subclass with one param per port (inputs + outputs)."""
     params: dict[str, param.Parameter] = {}
@@ -235,6 +245,7 @@ class DataflowGraph:
         specs: dict[str, ComponentSpec],
         on_error: Callable[[str, str, str, str, Exception], None] | None = None,
         propagate_failures: bool = False,
+        hold: Callable[[], AbstractContextManager] = nullcontext,
     ):
         """Initialize the dataflow graph.
 
@@ -249,6 +260,11 @@ class DataflowGraph:
             Carry a failing output or edge transform downstream as a
             ``param.ReactiveError`` instead of skipping it. Applies to edges
             wired after construction, so set it here rather than later.
+        hold
+            Context manager every change of an output port is forwarded to
+            its edges in. FlowDash holds the document with it, so a change
+            fanning out to several consumers reaches the browser as one
+            message.
         """
         self._specs = dict(specs)
         self._state_classes: dict[str, type[param.Parameterized]] = {}
@@ -256,6 +272,8 @@ class DataflowGraph:
         self._config_states: dict[str, param.Parameterized] = {}
         self._node_specs: dict[str, ComponentSpec] = {}
         self._edges: dict[EdgeKey, Edge] = {}
+        self._hold = hold
+        self._relays: dict[tuple[str, str], tuple[_Relay, Callable[[], None]]] = {}
         # Indexes over `_edges`, kept in step by `_store_edge` and `_drop_edge`.
         self._incoming_edges: dict[tuple[str, str], dict[EdgeKey, Edge]] = {}
         self._successors: dict[str, dict[str, int]] = {}
@@ -406,6 +424,38 @@ class DataflowGraph:
         """
         for edge in edges:
             edge.dispose()
+        for source in {edge.source for edge in edges}:
+            if not any(
+                e.source == source for e in (*self._edges.values(), *self._pending_disposals)
+            ):
+                self._release_relay(source)
+
+    def _relay(self, node_id: str, port: str) -> _Relay:
+        """Return the relay the edges leaving *port* follow, creating it on first use.
+
+        Each edge watching the port itself would receive a change in its own
+        watcher call, so a hold could only cover one consumer at a time.
+        Forwarding through one watcher lets the hold cover all of them.
+        """
+        entry = self._relays.get((node_id, port))
+        if entry is not None:
+            return entry[0]
+        state = self._nodes[node_id]
+        relay = _Relay(name=f"{node_id}.{port}", value=getattr(state, port))
+        hold = self._hold
+
+        def _forward(event):
+            with hold():
+                relay.value = event.new
+
+        watcher = state.param.watch(_forward, port)
+        self._relays[(node_id, port)] = (relay, partial(state.param.unwatch, watcher))
+        return relay
+
+    def _release_relay(self, source: tuple[str, str]):
+        entry = self._relays.pop(source, None)
+        if entry is not None:
+            entry[1]()
 
     @contextmanager
     def batch(self) -> Iterator[None]:
@@ -506,7 +556,7 @@ class DataflowGraph:
                         logger.exception("Failed to update input %s.%s", target_id, target_port)
 
     def _build_edge(self, key: EdgeKey, steps: list[Transform]) -> Edge:
-        source = self._nodes[key[0]].param[key[1]]
+        source = self._relay(key[0], key[1]).param.value
         stage = (
             param.rx(source, error_mode="propagate") if self.propagate_failures else source.rx()
         )
@@ -517,7 +567,7 @@ class DataflowGraph:
         carried = None
         if self.propagate_failures:
             carried = stage.rx.pipe(self._carry_failure, self._failures[key[0]].param.failed)
-        return Edge(steps, stages, carried)
+        return Edge(steps, stages, carried, source=(key[0], key[1]))
 
     def _run_step(self, value, step: Transform, key: EdgeKey):
         try:
