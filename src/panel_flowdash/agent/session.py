@@ -6,12 +6,15 @@ Needs the ``panel-flowdash[agent]`` extra.
 from __future__ import annotations
 
 import asyncio
+import logging
 import typing as t
 
 import panel as pn
-from panel_agents import AgentDrawer, RunState
+from panel_agents import AgentDrawer, MessageState, RunState, events as ev
 from panel_agents.adapters.pydantic_ai import ActionToolset, AgentRunner
+from pydantic_ai.exceptions import RunCancelled
 
+from panel_flowdash.ui.text import escape_markdown
 from panel_flowdash.util import confirm
 
 from .actions import palette_actions
@@ -27,6 +30,12 @@ if t.TYPE_CHECKING:
     from pydantic_ai import Agent
 
     from panel_flowdash.app import FlowDashApp
+
+logger = logging.getLogger("panel_flowdash")
+
+#: Whether panel-agents itself logs a failed run and shows it in the chat
+#: (panel-extensions/panel-agents#12); until it does, the session runner does.
+_REPORTS_RUN_ERRORS = "error" in MessageState.param.kind.objects
 
 
 def resolve_agent(agent: t.Any, model: str | None) -> Agent | None:
@@ -156,7 +165,9 @@ class AgentSession:
 class _SessionRunner(AgentRunner):
     """Publishes the user's own edits before each request, so versions stay truthful.
 
-    Each request is pinned to the dashboard open when the user sent it.
+    Each request is pinned to the dashboard open when the user sent it. A
+    request that fails, e.g. because the provider refused it, is logged with
+    its traceback and answered in the chat with the error.
     """
 
     def __init__(self, session: AgentSession, *args, **kwargs):
@@ -167,6 +178,21 @@ class _SessionRunner(AgentRunner):
         self._session.publish_user_edits()
         self.deps.start_request()
         try:
-            return await super().run(prompt, **kwargs)
+            output = await super().run(prompt, **kwargs)
         finally:
             self.deps.end_request()
+        error = self.error
+        if error is not None and not isinstance(error, RunCancelled) and not _REPORTS_RUN_ERRORS:
+            self._report_error(error)
+        return output
+
+    def _report_error(self, error: BaseException):
+        logger.error("The assistant's run %s failed", self.run_id, exc_info=error)
+        message_id = f"{self.run_id}-error"
+        text = escape_markdown(f"Sorry, that failed: {str(error) or type(error).__name__}")
+        for event in (
+            ev.TextMessageStart(message_id=message_id, run_id=self.run_id),
+            ev.TextMessageContent(message_id=message_id, delta=text, run_id=self.run_id),
+            ev.TextMessageEnd(message_id=message_id, run_id=self.run_id),
+        ):
+            self.state.apply(event)
