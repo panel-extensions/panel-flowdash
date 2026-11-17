@@ -195,8 +195,10 @@ missing or set to `None` keeps its default.
 | `store` | `BaseDashboardStore` | Where dashboards are kept, see [Custom dashboard store](#custom-dashboard-store). Conflicts with `--db-path`. |
 | `breakpoints` | `list` | Responsive breakpoints of the tile grid. Default `[768, 1200]`. |
 | `configure_layout` | callable | Per-page sidebar and contextbar hook, see [Page-aware sidebar and contextbar](#page-aware-sidebar-and-contextbar). |
+| `controls_position` | `str` | Where `sidebar=True` components go: `"top"` (default) in a row above the tiles or `"left"` in a collapsible panel, see [Layout & sizing](layout-and-sizing.md#controls). Dashboards can override it in their settings. |
 | `editor_class` | `FlowDash` subclass | The editor class the app instantiates. |
 | `editor_options` | `dict` | Extra keyword arguments for the editor, see [Embed the Editor](embed-the-editor.md#configuring-the-editor-inside-flowdashapp). |
+| `header_layout` | `str` | `"compact"` (default) puts a dashboard's title, health and actions in the top bar, `"full"` in a row of their own under it, see [Navigation](#navigation). Dashboards can override it in their settings. |
 | `home_dashboard` | `str` | Dashboard id or title shown on the homepage. Overridden by `--home-dashboard`. |
 | `include_builtin_components` | `bool` | Offer the built-in widget components in the editor. Default `True`. |
 | `nav_variant` | `str` | `"rail"` (default), `"left"`, `"right"` or `"menubar"`, see [Navigation](#navigation). Overridden by `--nav-variant`. |
@@ -296,6 +298,24 @@ highlighted. The top bar shows where you are as a breadcrumb, for example
 dashboard the user can see, or *Home › Components* on other routes. On screens
 narrower than 600 px the rail moves behind a menu button in the top bar.
 
+With the default `header_layout="compact"` the top bar is the dashboard's
+header too, so there is a single row above the tiles. Next to the title it shows an info button holding the
+dashboard's description and a health chip ("9/9 up to date", or the number of
+failed and waiting tiles), which opens the pipeline and a Show issues action.
+On the right it has the View/Edit toggle, Refresh with the auto-refresh period
+(its tooltip says when the dashboard was last refreshed), Share, Full screen
+and a menu of further actions. In edit mode the same row holds the save state, the
+Dataflow/Layout tabs, Settings, Discard, Save and Done. The search field
+shrinks to an icon button on a dashboard unless the window is very wide.
+
+`header_layout="full"` gives the dashboard a row of its own under the top bar
+instead, with the same actions on the right and, on the left, a large title over
+the description, the health chip and when the dashboard was last refreshed. The
+search field then keeps its full width. It takes about 80 px more above the
+tiles, so it suits dashboards whose description should always be in view. Set
+it for the whole app (also from a project's `__init__.py`), or per dashboard
+with the *Header* choice in the dashboard's settings.
+
 The search field in the top bar, or <kbd>Ctrl</kbd>+<kbd>K</kbd>
 (<kbd>⌘</kbd>+<kbd>K</kbd> on macOS) anywhere in the app, opens a command
 palette. Typing filters dashboards the user can open, components (added to the
@@ -340,7 +360,8 @@ mode needs. <kbd>F</kbd> then switches to real full screen, and
 
 The other variants keep the earlier navigation: `left` and `right` dock a
 navigation tree in a drawer on that side of the page, and `menubar` puts
-*Navigate* and *Dashboards* menus in the page header.
+*Navigate* and *Dashboards* menus in the page header. With these the dashboard's
+title, health chip and actions sit in a row of their own above the tiles.
 
 Whichever variant you use, anything that would throw away unsaved edits asks
 first, listing what changed: opening another page or dashboard, choosing the
@@ -350,8 +371,9 @@ ask before leaving.
 
 The sidebar's menu button only appears when the sidebar has content, such as
 items set through `configure_layout`. Components registered with `sidebar=True`
-are shown in the dashboard's controls bar above the tiles, or in the sidebar
-when `editor_options={"controls_bar": False}`.
+are shown with the dashboard's tiles (above them or in a panel to their left,
+see `controls_position`), or in the sidebar when
+`editor_options={"controls_bar": False}`.
 
 ---
 

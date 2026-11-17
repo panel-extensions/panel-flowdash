@@ -56,6 +56,13 @@ class CommandPalette(JSComponent):
         chips) and ``hint`` (text on the right).""",
     )
 
+    compact = param.Boolean(
+        default=False,
+        doc="""
+        Whether the search field shrinks to an icon button unless the window
+        is very wide, leaving the top bar to a dashboard's actions.""",
+    )
+
     placeholder = param.String(default=PLACEHOLDER, doc="Text in the search field.")
 
     shortcuts = param.List(default=SHORTCUTS, doc="Shortcuts listed beside the results.")
@@ -258,7 +265,7 @@ class CommandPaletteController:
         dashboard = self._dashboard()
         actions = []
         if dashboard is not None:
-            refreshed = editor._refresh_label.object
+            refreshed = editor._dashboard_bar.refresh_text
             actions.append(
                 {
                     "id": "action:refresh",

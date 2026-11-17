@@ -1665,7 +1665,7 @@ class TestDisplayModes:
     async def test_dashboard_mode_shows_the_grid_under_the_bar(self, editor):
         editor.mode = "dashboard"
         assert editor._workspace_area.objects[:2] == [
-            editor._view_controls._view,
+            editor._view_controls._row,
             editor._tile_grid,
         ]
         assert editor._flow.top_panel == []
@@ -3972,7 +3972,9 @@ class TestDashboardSettings:
     async def test_unknown_keys_survive_a_save(self, editor):
         editor.load_model(_dashboard({"refresh_period": 3, "retired": True}))
         assert editor.save().settings == {
+            "controls_position": "top",
             "description": "",
+            "header_layout": "compact",
             "refresh_period": 3,
             "retired": True,
             "tile_cards": True,
@@ -4008,7 +4010,9 @@ class TestDashboardSettings:
         editor.settings.param.update(refresh_period=45, accent="red")
         saved = editor.save()
         assert saved.settings == {
+            "controls_position": "top",
             "description": "",
+            "header_layout": "compact",
             "refresh_period": 45,
             "tile_cards": True,
             "tile_titles": False,
@@ -4039,7 +4043,9 @@ class TestDashboardSettings:
         editor.load_model(_dashboard({"refresh_period": 15}))
         data = editor.export_dashboard()
         assert data["settings"] == {
+            "controls_position": "top",
             "description": "",
+            "header_layout": "compact",
             "refresh_period": 15,
             "tile_cards": True,
             "tile_titles": False,
@@ -4073,7 +4079,14 @@ class TestSettingsForm:
     async def test_form_is_generated_from_the_settings(self):
         editor = FlowDash(COMPONENTS, notifications=False, settings_class=BrandSettings)
         form = editor._settings_view._extra_form
-        assert set(form._widgets) == {"tile_cards", "tile_titles", "accent", "density"}
+        assert set(form._widgets) == {
+            "controls_position",
+            "header_layout",
+            "tile_cards",
+            "tile_titles",
+            "accent",
+            "density",
+        }
 
     async def test_form_edits_the_settings_on_save(self, editor):
         editor._settings_dialog.open = True
@@ -4233,22 +4246,24 @@ class TestRefreshButton:
         assert len(fired) == 1
 
     async def test_click_updates_the_indicator(self, editor):
-        editor._refresh_label.object = ""
+        bar = editor._dashboard_bar
+        bar.refresh_text = ""
         editor._refresh_button.clicks += 1
-        assert re.fullmatch(r"Refreshed \d\d:\d\d", editor._refresh_label.object)
+        assert re.fullmatch(r"Refreshed \d\d:\d\d", bar.refresh_text)
+        assert editor._refresh_button.description.startswith("Refresh now. Refreshed ")
 
     async def test_loading_a_dashboard_stamps_the_indicator(self, editor):
-        editor._refresh_label.object = ""
+        bar = editor._dashboard_bar
+        bar.refresh_text = ""
         editor.load_model(_dashboard())
-        assert editor._refresh_label.object.startswith("Refreshed ")
+        assert bar.refresh_text.startswith("Refreshed ")
 
     async def test_view_mode_shows_refresh_in_the_bar(self, editor):
         editor.editable = False
         bar = editor._dashboard_bar
         assert editor._refresh_button in bar._actions.objects
-        assert editor._refresh_label in bar._title_block[1].objects
         assert editor._workspace_area.objects[:2] == [
-            editor._view_controls._view,
+            editor._view_controls._row,
             editor._tile_grid,
         ]
 

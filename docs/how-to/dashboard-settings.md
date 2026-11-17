@@ -24,7 +24,13 @@ Inspect, Expand and, when there is something to put in it, a More menu float
 over the tile's top-right corner on hover or keyboard focus. Set the defaults
 for dashboards that have not saved these settings with
 `FlowDash(tile_cards=..., tile_titles=...)`, or through `editor_options` in a
-`FlowDashApp`.
+`FlowDashApp`. `controls_position` (`"top"` or `"left"`) places the dashboard's
+controls above the tiles or in a panel to their left, defaulting to the editor's
+`controls_position` (see [Layout & sizing](layout-and-sizing.md#controls)).
+`header_layout` (`"compact"` or `"full"`) lays out the dashboard's title, health
+and actions on one line, in a `FlowDashApp`'s top bar, or in a row of their own
+with a large title over the description and the refresh time, defaulting to the
+editor's `header_layout` (see [Serve a Project](serve-project.md#navigation)).
 
 ```python
 editor = FlowDash(components, store="dashboards.db")
@@ -41,8 +47,9 @@ In edit mode the dashboard bar has a **Settings** button that opens the
 in a `FlowDashApp` the **Share** button opens the same dialog on its Sharing
 section. A list on the left switches between its sections:
 
-- **General**: the dashboard's name, its description, **Frame tiles** and **Show
-  tile titles** (`tile_cards` and `tile_titles`), any
+- **General**: the dashboard's name, its description, **Header**
+  (`header_layout`), **Controls** (`controls_position`), **Frame tiles** and **Show tile titles** (`tile_cards`
+  and `tile_titles`), any
   [settings of your own](#add-your-own-settings), and **Viewers can inspect
   outputs**, which is only offered when the editor has `inspect_outputs` on. Only
   people who may administer the dashboard can rename it; for everyone else, and
@@ -120,19 +127,23 @@ is unloaded, the editor is disposed or the session ends. In a `FlowDashApp`,
 navigating to a page or the launcher unloads the dashboard, and a dashboard whose
 load is overtaken by a newer navigation never applies its settings.
 
-In view mode the dashboard bar shows a **Refresh** split button and, under the
-title, "Refreshed HH:MM, auto-refresh every 15 min". The button is shown whether or
+In view mode the dashboard bar shows a **Refresh** split button whose tooltip
+says "Refreshed HH:MM, auto-refresh every 15 min" (the full header layout also
+shows it under the title). The button is shown whether or
 not a period is set, because a dashboard that does not poll can still be refreshed
 by hand. Its menu picks the period (Off, every minute, 5 min, 15 min or hour) for
 the current session: it restarts the timer without marking the dashboard as
 changed, and is only saved if someone saves the dashboard afterwards.
 
-The same line carries the dashboard's `description` setting, when set, and a
-health chip: "All 5 tiles up to date", or a count such as "1 failed, 1 waiting".
-A tile has failed while one of its inputs holds a failure carried from upstream
-(see `propagate_failures`), and waits while a required input is unset. With any
-such tile a banner above the tiles says how many are affected, and its **Show
-issues** button scrolls to them and outlines them briefly.
+Next to the dashboard's title an info button shows the `description` setting,
+when set (the full header layout shows the text under the title), and a health
+chip says "5/5 up to date", or gives a count such as
+"1 failed · 1 waiting" in red or amber. A tile has failed while one of its inputs
+holds a failure carried from upstream (see `propagate_failures`), and waits
+while a required input is unset. The chip opens a popover with the pipeline,
+source to transforms to views with a status dot per stage, and, with any such
+tile, how many are affected and a **Show issues** button that scrolls to them
+and outlines them briefly.
 
 ---
 

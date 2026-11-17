@@ -129,7 +129,7 @@ def _arrow() -> pmui.Typography:
 
 
 class PipelineStrip(Viewer):
-    """The "Pipeline" strip in the controls bar, hidden while nothing is wired."""
+    """The "Pipeline" strip in the health popover, hidden while nothing is wired."""
 
     def __init__(self, **params):
         super().__init__(**params)
@@ -147,7 +147,7 @@ class PipelineStrip(Viewer):
             sizing_mode=None,
             visible=False,
             gap="6px",
-            styles={"margin-left": "auto", "max-width": "100%"},
+            styles={"max-width": "100%"},
             css_classes=["fd-pipeline"],
         )
 

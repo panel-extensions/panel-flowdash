@@ -33,6 +33,29 @@ class DashboardSettings(param.Parameterized):
         refreshing off.""",
     )
 
+    controls_position = param.Selector(
+        default="top",
+        objects=["top", "left"],
+        label="Controls position",
+        doc="""
+        Where the dashboard's controls (components registered with
+        ``sidebar=True``) go: "top" in a slim row above the tiles, "left" in
+        a collapsible panel beside them. Defaults to the editor's
+        ``controls_position``.""",
+    )
+
+    header_layout = param.Selector(
+        default="compact",
+        objects=["compact", "full"],
+        label="Header layout",
+        doc="""
+        How the dashboard's title, health and actions are laid out: "compact"
+        on one line (in a FlowDashApp's top bar with the default navigation),
+        "full" in a row of their own with a large title over the description,
+        the health chip and when the dashboard was last refreshed. Defaults to
+        the editor's ``header_layout``.""",
+    )
+
     tile_cards = param.Boolean(
         default=True,
         label="Show tiles as cards",

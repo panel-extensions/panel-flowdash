@@ -109,7 +109,6 @@ class IssueBanner(Viewer):
             self._lead,
             self._rest,
             self.show_button,
-            self._focus,
             severity="error",
             variant="outlined",
             margin=(12, 16, 0, 16),
@@ -158,8 +157,8 @@ class IssueBanner(Viewer):
         return affected
 
     def __panel__(self):
-        """Render the banner."""
-        return self._banner
+        """Render the banner and its focus helper, which must stay mounted while the banner hides."""
+        return pn.Column(self._banner, self._focus, margin=0, sizing_mode="stretch_width")
 
 
 def mark_issue_targets(views: t.Iterable[pn.viewable.Viewable], targets: t.Iterable):

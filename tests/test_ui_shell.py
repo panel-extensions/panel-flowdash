@@ -41,8 +41,12 @@ class TestDashboardBarSections:
         assert bar._actions.objects[0] is bar.mode_tabs
         for item in (bar.settings_button, bar.overflow, bar.discard_button, bar.done_button):
             assert item in bar._actions.objects
-        assert bar._actions.objects[-2:] == [editor._save_button, bar.done_button]
-        assert bar._title_block[1].objects == [bar.save_state]
+        assert bar._actions.objects[-3:] == [
+            editor._save_button,
+            bar.done_button,
+            bar.download_button,
+        ]
+        assert bar.lead.objects == [bar.title, bar.save_state]
 
     async def test_view_section(self, editor):
         editor.editable = False
@@ -53,9 +57,20 @@ class TestDashboardBarSections:
             bar.refresh_period,
             bar.fullscreen_button,
             bar.overflow,
+            bar.download_button,
         ]
-        assert bar._title_block[1].objects == [bar.refresh_label]
-        assert bar.title.variant == "h5"
+        assert bar.lead.objects == [bar.title]
+
+    async def test_header_placement_leaves_the_title_to_the_host(self, editor):
+        editor.editable = False
+        bar = editor._dashboard_bar
+        bar.placement = "header"
+        assert bar.title not in bar.lead.objects
+        assert not bar.__panel__().visible
+        assert bar.lead.visible and bar.actions.visible
+        editor.toolbar = False
+        assert not bar.lead.visible
+        assert not bar.actions.visible
 
     async def test_view_section_of_a_read_only_dashboard(self, editor):
         editor.param.update(editable=False, read_only=True)
@@ -64,6 +79,7 @@ class TestDashboardBarSections:
             bar.refresh_button,
             bar.refresh_period,
             bar.fullscreen_button,
+            bar.download_button,
         ]
 
     async def test_title_follows_the_dashboard(self, store_editor):
@@ -303,6 +319,59 @@ class TestAppShell:
         content = pn.pane.Markdown("x")
         assert list(app._nav_content(content)) == [app._shell.rail, content]
 
+    async def test_dashboard_parts_join_the_top_bar(self, app):
+        bar = app._editor._dashboard_bar
+        assert bar.placement == "header"
+        assert list(app._shell.dashboard_actions) == []
+        _open(app)
+        app._shell.sync(pn.state.location.pathname)
+        assert list(app._shell.dashboard_lead) == [bar.lead]
+        assert list(app._shell.dashboard_actions) == [bar.actions]
+        assert app._shell.search_slot[0].compact
+        assert "@media (max-width: 1279.95px)" in app._page.sx
+
+    async def test_dashboard_parts_leave_the_top_bar_off_the_dashboard(self, app):
+        _open(app)
+        app._shell.sync(pn.state.location.pathname)
+        pn.state.location.pathname = COMPONENTS_ROUTE
+        app._shell.sync(COMPONENTS_ROUTE)
+        assert list(app._shell.dashboard_lead) == []
+        assert list(app._shell.dashboard_actions) == []
+        assert not app._shell.search_slot[0].compact
+
+    async def test_full_header_layout_leaves_the_top_bar_alone(self, app):
+        _open(app)
+        app._editor.settings.header_layout = "full"
+        app._shell.sync(pn.state.location.pathname)
+        assert list(app._shell.dashboard_actions) == []
+        assert not app._shell.search_slot[0].compact
+        assert app._editor._dashboard_bar.__panel__().visible
+        app._editor.settings.header_layout = "compact"
+        assert list(app._shell.dashboard_actions) == [app._editor._dashboard_bar.actions]
+        assert app._shell.search_slot[0].compact
+
+    async def test_header_layout_reaches_the_editor(self, tmp_path):
+        _create_project(tmp_path)
+        sys.path.insert(0, str(tmp_path))
+        try:
+            store = DashboardStore(tmp_path / "test.db")
+            app = FlowDashApp(project_dir=tmp_path, store=store, header_layout="full")
+            assert app._editor.header_layout == "full"
+            assert app._editor._dashboard_bar.layout == "full"
+        finally:
+            sys.path.remove(str(tmp_path))
+
+    async def test_controls_position_reaches_the_editor(self, tmp_path):
+        _create_project(tmp_path)
+        sys.path.insert(0, str(tmp_path))
+        try:
+            store = DashboardStore(tmp_path / "test.db")
+            app = FlowDashApp(project_dir=tmp_path, store=store, controls_position="left")
+            assert app._editor.controls_position == "left"
+            assert app._editor._view_controls.position == "left"
+        finally:
+            sys.path.remove(str(tmp_path))
+
     async def test_no_shell_in_other_variants(self, tmp_path):
         _create_project(tmp_path)
         sys.path.insert(0, str(tmp_path))
@@ -311,6 +380,7 @@ class TestAppShell:
             for variant in ("left", "right", "menubar"):
                 app = FlowDashApp(project_dir=tmp_path, store=store, nav_variant=variant)
                 assert app._shell is None
+                assert app._editor._dashboard_bar.placement == "row"
         finally:
             sys.path.remove(str(tmp_path))
 

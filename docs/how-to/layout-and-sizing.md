@@ -65,14 +65,30 @@ class app(pn.viewable.Viewer):
         return pmui.IntInput.from_param(self.param.min_capacity)
 ```
 
+### Controls
+
 In view mode and on the Layout tab, a `sidebar=True` component's view is rendered
-in a controls bar above the tiles instead of in the tile grid. The controls sit in
-a row that wraps on narrow screens, and the bar is hidden while it has nothing to
-show. In view mode it also holds a pipeline strip, source to transforms to views
-with a status dot per stage. The component still participates in the dataflow
-exactly like any other node, its ports wire up the same way; only its placement
-changes. Pass `controls_bar=False` (through `editor_options` for a `FlowDashApp`)
-to render these views in the page sidebar instead.
+as a control beside the tiles instead of in the tile grid. Where depends on
+`controls_position`:
+
+- `"top"` (the default) puts the controls in one slim row above the tiles that
+  wraps on narrow screens. It suits the few filters most dashboards have and
+  keeps the tiles close to the top of the page.
+- `"left"` stacks them in a panel left of the tiles, which collapses to a narrow
+  strip. It suits dashboards with many controls.
+
+Material UI inputs among the controls switch to their small size, and nothing is
+shown while the dashboard has no controls. Set the default with
+`FlowDash(controls_position=...)` or `FlowDashApp(controls_position=...)` (also
+readable from a project's `__init__.py`); each dashboard can override it with
+the *Controls* choice in its settings, saved as the `controls_position` setting.
+
+The component still participates in the dataflow exactly like any other node,
+its ports wire up the same way; only its placement changes. Pass
+`controls_bar=False` (through `editor_options` for a `FlowDashApp`) to render
+these views in the page sidebar instead. The pipeline, source to transforms to
+views with a status dot per stage, is in the popover of the health chip next to
+the dashboard's title.
 
 The `complex_dataflow` example uses this for its data source and all three
 filters, keeping the main grid for the table, chart, and map.

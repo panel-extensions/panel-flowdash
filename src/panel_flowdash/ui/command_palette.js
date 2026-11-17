@@ -31,6 +31,11 @@ kbd {
   .fd-cmdk-field { width: 40px; padding: 0; justify-content: center; background: none; }
   .fd-cmdk-label, .fd-cmdk-field kbd { display: none; }
 }
+@media (max-width: 1679.95px) {
+  .fd-cmdk-field.compact { width: 40px; padding: 0; justify-content: center; background: none; }
+  .fd-cmdk-field.compact:hover { background: var(--mui-palette-action-hover); }
+  .fd-cmdk-field.compact .fd-cmdk-label, .fd-cmdk-field.compact kbd { display: none; }
+}
 `
 
 const DIALOG_CSS = `
@@ -271,6 +276,9 @@ export function render({model, el: root}) {
     el("kbd", {"aria-hidden": "true"}, `${MOD} K`),
   )
   root.append(style, field)
+  const syncCompact = () => field.classList.toggle("compact", model.compact)
+  syncCompact()
+  model.on("compact", syncCompact)
 
   // The dialog lives outside the app bar, so neither its stacking nor its
   // inverted palette applies; CSS variables still come from the page.

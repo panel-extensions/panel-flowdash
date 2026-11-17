@@ -1,5 +1,7 @@
 """UI tests for the view-mode header, controls bar, pipeline strip and issue banner."""
 
+import re
+
 import param
 import pytest
 from panel.tests.util import wait_until
@@ -79,10 +81,13 @@ def _store(description="", period=0, waiting=True):
     return store, model.dashboard_id
 
 
-def _serve(page, store, dash, apps, notifications=False):
+def _serve(page, store, dash, apps, notifications=False, header_layout="compact"):
     def factory():
         app = FlowDashApp(
-            registry=normalize_components(COMPONENTS), store=store, notifications=notifications
+            registry=normalize_components(COMPONENTS),
+            store=store,
+            notifications=notifications,
+            header_layout=header_layout,
         )
         apps.append(app)
         return app
@@ -91,13 +96,28 @@ def _serve(page, store, dash, apps, notifications=False):
     page.get_by_text("output chart tile").first.wait_for()
 
 
-def test_header_shows_description_health_and_refresh(page):
-    store, dash = _store(description="Output per unit, live.", period=900)
-    _serve(page, store, dash, [])
+def _refresh(page):
+    return page.get_by_role("button", name=re.compile(r"^Refresh now"))
 
-    expect(page.get_by_text("Output per unit, live.")).to_be_visible()
-    expect(page.get_by_text("1 waiting", exact=True)).to_be_visible()
-    expect(page.get_by_text(", auto-refresh every 15 min")).to_be_visible()
+
+def _open_health(page):
+    page.locator(".fd-health-chip").get_by_role("button").click()
+    expect(page.locator(".MuiPopover-paper").last).to_be_visible()
+
+
+@pytest.mark.parametrize("header_layout", ["compact", "full"])
+def test_header_shows_description_health_and_refresh(page, header_layout):
+    store, dash = _store(description="Output per unit, live.", period=900)
+    _serve(page, store, dash, [], header_layout=header_layout)
+
+    if header_layout == "compact":
+        expect(page.get_by_role("button", name="Output per unit, live.")).to_be_visible()
+    else:
+        bar = page.locator(".fd-dashboard-bar")
+        expect(bar.get_by_text("Output per unit, live.")).to_be_visible()
+        expect(bar.get_by_text(re.compile(r"auto-refresh every 15 min$"))).to_be_visible()
+    expect(page.locator(".fd-health-chip").get_by_text("1 waiting", exact=True)).to_be_visible()
+    expect(_refresh(page)).to_have_accessible_name(re.compile(r"auto-refresh every 15 min\.$"))
     expect(page.get_by_role("button", name="Update automatically")).to_contain_text("15 min")
 
 
@@ -111,7 +131,7 @@ def test_period_menu_sets_the_refresh_period(page):
     period.click()
     page.get_by_role("menuitem", name="Every 5 min").click()
     expect(period).to_contain_text("5 min")
-    expect(page.get_by_text(", auto-refresh every 5 min")).to_be_visible()
+    expect(_refresh(page)).to_have_accessible_name(re.compile(r"auto-refresh every 5 min\.$"))
     editor = apps[-1]._editor
     assert editor.settings.refresh_period == 300
     assert not editor.dirty
@@ -124,6 +144,8 @@ def test_controls_bar_holds_the_sidebar_components_and_the_pipeline(page):
 
     bar = page.locator(".fd-controls-bar")
     expect(bar.get_by_text("unit picker control")).to_be_visible()
+    expect(page.locator(".fd-pipeline")).to_be_hidden()
+    _open_health(page)
     pipeline = page.locator(".fd-pipeline")
     expect(pipeline.get_by_text("Pipeline")).to_be_visible()
     expect(pipeline.get_by_text("Unit Picker")).to_be_visible()
@@ -152,6 +174,7 @@ def test_issue_banner_scrolls_to_and_highlights_the_waiting_tile(page):
     store, dash = _store()
     _serve(page, store, dash, [])
 
+    _open_health(page)
     banner = page.locator(".fd-issue-banner")
     expect(banner.get_by_text("1 tile is waiting for input.")).to_be_visible()
     expect(banner.get_by_text("Other tiles show current data.")).to_be_visible()
@@ -166,7 +189,9 @@ def test_no_banner_and_all_up_to_date_without_issues(page):
     store, dash = _store(waiting=False)
     _serve(page, store, dash, [])
 
-    expect(page.get_by_text("1 tile up to date", exact=True)).to_be_visible()
+    expect(page.locator(".fd-health-chip").get_by_text("1/1 up to date")).to_be_visible()
+    _open_health(page)
+    expect(page.get_by_text("Every tile shows current data.")).to_be_visible()
     expect(page.locator(".fd-issue-banner")).to_be_hidden()
 
 

@@ -13,6 +13,7 @@ from panel.viewable import Viewer
 
 from panel_flowdash.ui.fullscreen import TOGGLE_CLASS
 from panel_flowdash.ui.health import DashboardHealth
+from panel_flowdash.ui.health_popover import HealthPopover
 from panel_flowdash.ui.text import escape_markdown
 from panel_flowdash.util import close_dialog, confirm, open_dialog
 
@@ -57,8 +58,6 @@ _PERIODS = [
     ("Every hour", 3600),
 ]
 
-_HEALTH_COLORS = {"ok": "success", "waiting": "warning", "failed": "error"}
-
 
 def format_period(seconds: float) -> str:
     """Return a refresh period as "15 min", "1 hour" or "30 s"."""
@@ -71,37 +70,27 @@ def format_period(seconds: float) -> str:
     return f"{seconds} s"
 
 
-def _health_chip_sx(status: str) -> dict:
-    color = _HEALTH_COLORS[status]
-    return {
-        "display": "inline-flex",
-        "alignItems": "center",
-        "gap": "6px",
-        "px": "8px",
-        "borderRadius": "8px",
-        "fontWeight": 500,
-        "color": f"{color}.main",
-        "bgcolor": f"color-mix(in srgb, var(--mui-palette-{color}-main) 12%, transparent)",
-        "&::before": {
-            "content": '""',
-            "width": "8px",
-            "height": "8px",
-            "borderRadius": "50%",
-            "bgcolor": f"{color}.main",
-        },
-    }
-
-
 class DashboardBar(Viewer):
-    """One bar above the editor's workspace, with a view and an edit section.
+    """One row of dashboard controls, with a view and an edit section.
 
-    In view mode it shows the dashboard title, a meta line (when it was last
-    refreshed) and the view actions: the View/Edit control, Refresh, the editor's
-    ``toolbar_extra`` items, Full screen and an overflow menu (Download,
-    Settings). In edit mode it shows
-    the title with the save state, the Dataflow/Layout/Split tabs and the edit
-    actions: Settings, an overflow menu (Download, Import file, Clear canvas),
-    Discard, Save and Done.
+    In view mode it shows the dashboard title, an info button with the
+    description, the health chip (whose popover holds the pipeline and any
+    issues) and the view actions: the View/Edit control, Refresh (its tooltip
+    says when the dashboard was last refreshed) with the auto-refresh period,
+    the editor's ``toolbar_extra`` items, Full screen and an overflow menu
+    (Download, Settings). In edit mode it shows the title with the save state, the
+    Dataflow/Layout/Split tabs and the edit actions: Settings, an overflow menu
+    (Download, Import file, Clear canvas), Discard, Save and Done.
+
+    ``layout`` arranges these parts. With ``"compact"`` they form one line:
+    the description sits behind an info button, and Refresh's tooltip says
+    when the dashboard was last refreshed. When a host offers its header
+    (``placement="header"``, FlowDashApp's top bar), the bar then renders
+    nothing itself: the host places :attr:`lead` after its breadcrumb, which
+    stands in for the title, and :attr:`actions` at its end (see
+    :attr:`in_header`). With ``"full"`` the bar is always its own row, with a
+    large title over a line holding the description, the health chip and
+    when the dashboard was last refreshed.
 
     Each part of a section comes from one method returning a list of
     viewables, so a feature adds an item by extending that method:
@@ -121,6 +110,23 @@ class DashboardBar(Viewer):
         when leaving edit mode with unsaved changes.""",
     )
 
+    layout = param.Selector(
+        default="compact",
+        objects=["compact", "full"],
+        doc="""
+        "compact" keeps the bar to one line and lets a host header take it,
+        "full" shows it as its own row with the title over a meta line.""",
+    )
+
+    placement = param.Selector(
+        default="row",
+        objects=["row", "header"],
+        doc="""
+        Whether a host offers its header for the bar ("header"), which then
+        takes :attr:`lead` and :attr:`actions` and shows the dashboard's title
+        while the layout is "compact", or not ("row").""",
+    )
+
     visible = param.Boolean(default=True, doc="Whether the bar is shown.")
 
     def __init__(self, **params):
@@ -129,15 +135,25 @@ class DashboardBar(Viewer):
         self._saved_at: str | None = None
 
         self.title = pmui.Typography(
-            variant="h5",
+            variant="subtitle1",
             margin=0,
-            sx={"whiteSpace": "nowrap", "overflow": "hidden", "textOverflow": "ellipsis"},
-        )
-        self.refresh_label = pmui.Typography(
-            variant="caption", sx={"color": "text.secondary"}, margin=0
+            sx={
+                "whiteSpace": "nowrap",
+                "overflow": "hidden",
+                "textOverflow": "ellipsis",
+                "fontWeight": 500,
+            },
         )
         self.save_state = pmui.Typography(
-            variant="caption", sx={"color": "text.secondary"}, margin=0
+            variant="caption", sx={"color": "text.secondary", "whiteSpace": "nowrap"}, margin=0
+        )
+        self.info_button = pmui.IconButton(
+            icon="info_outline",
+            size="small",
+            margin=0,
+            color="default",
+            css_classes=["fd-description"],
+            sx={"color": "text.secondary"},
         )
         self.description = pmui.Typography(
             variant="body2",
@@ -145,8 +161,13 @@ class DashboardBar(Viewer):
             sx={"color": "text.secondary"},
             styles={"flex-basis": "100%"},
         )
+        self.refresh_label = pmui.Typography(
+            variant="caption", sx={"color": "text.secondary"}, margin=0
+        )
         self.health = DashboardHealth(editor)
-        self.health_chip = pmui.Typography(variant="caption", margin=0)
+        self.health_popover = HealthPopover(editor=editor, health=self.health)
+        self.health_chip = self.health_popover.chip
+        self.refresh_text = ""
         self._refreshed_at: str | None = None
 
         # Refresh and the period menu sit flush, as one split button.
@@ -156,6 +177,7 @@ class DashboardBar(Viewer):
             variant="outlined",
             size="small",
             margin=(0, 0, 0, 4),
+            description="Refresh now",
             sx={"borderTopRightRadius": 0, "borderBottomRightRadius": 0},
         )
         self.refresh_button.on_click(lambda _event: editor.param.trigger("refresh"))
@@ -188,7 +210,7 @@ class DashboardBar(Viewer):
             options={":material/visibility: View": "view", ":material/edit: Edit": "edit"},
             value="view",
             size="small",
-            margin=(0, 16),
+            margin=(0, 12, 0, 4),
             sx=_TOGGLE_SX,
         )
         self.mode_toggle.param.watch(self._on_mode_toggled, "value")
@@ -201,12 +223,27 @@ class DashboardBar(Viewer):
             },
             value=editor.mode,
             size="small",
-            margin=(0, 16),
+            margin=(0, 12, 0, 4),
             sx=_TOGGLE_SX,
         )
         self.mode_tabs.link(editor, value="mode", bidirectional=True)
         self.settings_button = pmui.Button(
-            label="Settings", icon="tune", variant="text", size="small", margin=(0, 4)
+            label="Settings",
+            icon="tune",
+            variant="text",
+            size="small",
+            margin=(0, 4),
+            description="Settings",
+            # On narrower screens only the icon shows, so the edit actions fit one row.
+            sx={
+                "@media (max-width: 1279.95px)": {
+                    "fontSize": 0,
+                    "minWidth": 0,
+                    "px": 1,
+                    "& .MuiButton-startIcon": {"m": 0},
+                    "& .MuiButton-startIcon > *": {"fontSize": "18px"},
+                }
+            },
         )
         self.discard_button = pmui.Button(
             label="Discard", variant="outlined", size="small", margin=(0, 4)
@@ -243,51 +280,94 @@ class DashboardBar(Viewer):
             visible=False,
         )
 
-        # A wrapping line, so the view meta can put the description on a line of its own.
-        meta = pn.FlexBox(
+        self._lead = pn.FlexBox(
+            align_items="center",
+            flex_wrap="nowrap",
+            gap="8px",
+            margin=0,
+            sizing_mode=None,
+            styles={"min-width": "0", "flex": "0 1 auto"},
+            css_classes=["fd-dashboard-lead"],
+        )
+        # The full layout's line under the title, which wraps so the
+        # description can take a line of its own.
+        self._meta = pn.FlexBox(
             align_items="center", flex_wrap="wrap", gap="2px 12px", margin=0, sizing_mode=None
         )
-        self._title_block = pn.Column(self.title, meta, margin=(0, 8, 0, 0), min_width=0)
+        self._title_block = pn.Column(self.title, self._meta, margin=(0, 8, 0, 0), min_width=0)
         self._actions = pn.FlexBox(
             align_items="center",
             flex_wrap="wrap",
             margin=0,
             sizing_mode=None,
             styles={"width": "fit-content", "max-width": "100%"},
+            css_classes=["fd-dashboard-actions"],
         )
         # A FlexBox rather than a Paper, so the actions wrap below the title on narrow screens.
         self._bar = pn.FlexBox(
-            self._title_block,
+            self._lead,
             self._actions,
-            self.download_button,
             align_items="center",
             flex_wrap="wrap",
             justify_content="space-between",
             margin=0,
             sizing_mode="stretch_width",
-            visible=self.param.visible,
+            visible=param.bind(
+                lambda visible, *_: visible and not self.in_header,
+                self.param.visible,
+                self.param.placement,
+                self.param.layout,
+            ),
+            css_classes=["fd-dashboard-bar"],
             styles={
-                "padding": "8px 16px",
-                "row-gap": "8px",
+                "padding": "6px 16px",
+                "gap": "6px 16px",
                 "background": "var(--mui-palette-background-paper)",
                 "border-bottom": "1px solid var(--mui-palette-divider)",
             },
         )
+        self.param.watch(lambda _event: self.sync(), ["layout", "placement"])
+        # In a host header the lead and actions hide with the bar, e.g. in full screen.
+        self.param.watch(lambda _event: self._sync_lead(), "visible")
         editor.param.watch(self._on_dashboard_changed, "dashboard")
         editor.param.watch(self._on_saved, "saved")
         editor.settings.param.watch(self._sync_view_meta, ["description", "refresh_period"])
-        self.health.param.watch(self._sync_view_meta, ["failed", "tiles", "waiting"])
+        self.health.param.watch(self._sync_view_meta, ["tiles"])
+
+    @property
+    def in_header(self) -> bool:
+        """Whether a host header shows the lead and actions in place of the bar's own row."""
+        return self.placement == "header" and self.layout == "compact"
+
+    @property
+    def lead(self):
+        """The title's companions: the info button and health chip, or the save state."""
+        return self._lead
+
+    @property
+    def actions(self):
+        """The actions of the current mode."""
+        return self._actions
 
     # ------------------------------------------------------------------
     # Sections, the extension points
     # ------------------------------------------------------------------
 
     def _view_meta(self) -> list:
-        """Items under the title in view mode: the description, health and refresh state."""
-        items = [self.description] if self.description.object else []
-        if self.health_chip.object:
-            items.append(self.health_chip)
-        return [*items, self.refresh_label]
+        """Items with the title in view mode.
+
+        The description, the health chip and, in the full layout, when the
+        dashboard was last refreshed.
+        """
+        full = self.layout == "full"
+        items = []
+        if self.info_button.description:
+            items.append(self.description if full else self.info_button)
+        if self.health.tiles:
+            items.append(self.health_popover.__panel__())
+        if full and self.refresh_label.object:
+            items.append(self.refresh_label)
+        return items
 
     def _view_actions(self) -> list:
         """Actions on the right in view mode, the View/Edit control first.
@@ -359,29 +439,26 @@ class DashboardBar(Viewer):
         editor = self.editor
         editing = editor.editable
         dashboard = editor.dashboard
-        self.title.param.update(
-            object=escape_markdown(dashboard.title)
-            if dashboard is not None
-            else "Untitled dashboard",
-            variant="subtitle1" if editing else "h5",
-            sx={
-                "whiteSpace": "nowrap",
-                "overflow": "hidden",
-                "textOverflow": "ellipsis",
-                "fontWeight": 500,
-            },
+        self.title.object = (
+            escape_markdown(dashboard.title) if dashboard is not None else "Untitled dashboard"
         )
         state, dirty = self._save_state_text()
         self.save_state.param.update(
             object=state,
-            sx={"color": "text.secondary", **(_DIRTY_DOT_SX if dirty else {})},
+            sx={
+                "color": "text.secondary",
+                "whiteSpace": "nowrap",
+                **(_DIRTY_DOT_SX if dirty else {}),
+            },
         )
         self._update_view_meta()
-        sub = self._edit_status() if editing else self._view_meta()
-        line = self._title_block[1]
-        if list(line) != sub:
-            line[:] = sub
-        actions = self._edit_actions() if editing else self._view_actions()
+        self.health_popover.sync()
+        self._sync_lead()
+        # The hidden download button rides along with the actions, which are always rendered.
+        actions = [
+            *(self._edit_actions() if editing else self._view_actions()),
+            self.download_button,
+        ]
         if list(self._actions) != actions:
             self._actions[:] = actions
         items = self._overflow_items()
@@ -394,6 +471,31 @@ class DashboardBar(Viewer):
         self.settings_button.disabled = editor.read_only
         if self.mode_toggle.value != "view":
             self.mode_toggle.value = "view"
+
+    def _sync_lead(self):
+        row = not self.in_header
+        editing = self.editor.editable
+        full = self.layout == "full"
+        sub = self._edit_status() if editing else self._view_meta()
+        self.title.variant = "h5" if full and not editing else "subtitle1"
+        if full:
+            # The title over a wrapping meta line, the way a page heading reads.
+            if list(self._meta) != sub:
+                self._meta[:] = sub
+            lead, head = [], self._title_block
+        else:
+            lead, head = ([self.title, *sub] if row else sub), self._lead
+        if list(self._lead) != lead:
+            self._lead[:] = lead
+        # In header placement the host renders the lead and actions, and a
+        # model must not be rendered in two places. Hidden there, the actions
+        # still carry the download button.
+        parts = [head, self._actions] if row else []
+        if list(self._bar) != parts:
+            self._bar[:] = parts
+        shown = row or self.visible
+        self._lead.visible = shown
+        self._actions.visible = shown
 
     def _save_state_text(self) -> tuple[str, bool]:
         editor = self.editor
@@ -413,11 +515,13 @@ class DashboardBar(Viewer):
         text = f"Refreshed {self._refreshed_at}" if self._refreshed_at else ""
         if text and period:
             text += f", auto-refresh every {format_period(period)}"
+        self.refresh_text = text
         self.refresh_label.object = text
-        self.description.object = escape_markdown(settings.description.strip())
-        health = self.health
-        status = "failed" if health.failed else "waiting" if health.waiting else "ok"
-        self.health_chip.param.update(object=health.summary(), sx=_health_chip_sx(status))
+        self.refresh_button.description = f"Refresh now. {text}." if text else "Refresh now"
+        description = settings.description.strip()
+        # The tooltip also names the button for assistive technology.
+        self.info_button.description = description or None
+        self.description.object = escape_markdown(description)
         self.refresh_period.param.update(
             label=format_period(period) if period else "Off",
             items=[
@@ -436,16 +540,15 @@ class DashboardBar(Viewer):
         if self.editor.editable:
             return
         self._update_view_meta()
-        line = self._title_block[1]
-        sub = self._view_meta()
-        if list(line) != sub:
-            line[:] = sub
+        self._sync_lead()
 
     def stamp_refresh(self):
         """Record that the dashboard was refreshed now."""
         self._refreshed_at = time.strftime("%H:%M")
         with pn.io.hold():
             self._update_view_meta()
+            if not self.editor.editable:
+                self._sync_lead()
 
     def _on_period_chosen(self, item):
         """Set the auto-refresh period for this session, without marking the dashboard changed."""

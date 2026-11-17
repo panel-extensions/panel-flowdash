@@ -37,8 +37,19 @@ HEADER_SX = {
         "borderBottom": 1,
         "borderColor": "divider",
     },
+    # The top bar is one 56px row; the page's spacers below it follow suit.
+    "& .MuiToolbar-root": {"minHeight": "56px"},
+    "& .header .MuiToolbar-root": {"gap": "4px"},
     "& .header .title": {"color": "text.primary", "fontSize": "1.25rem", "fontWeight": 600},
     f"@media (max-width: {NARROW_BREAKPOINT - 0.05}px)": {"& .header .title": {"display": "none"}},
+}
+
+# On a dashboard the top bar also holds the dashboard's actions, so the brand
+# gives way to them on screens narrower than this.
+_BRAND_BREAKPOINT = 1280
+
+DASHBOARD_HEADER_SX = {
+    f"@media (max-width: {_BRAND_BREAKPOINT - 0.05}px)": {"& .header .title": {"display": "none"}},
 }
 
 _CRUMB_SX = {
@@ -132,6 +143,10 @@ class AppShell:
         self.dashboard_switcher.on_click(self._on_switch)
         # Filled by the command palette with its search field.
         self.search_slot = pn.Row(margin=0, align="center")
+        # Filled with the dashboard bar's lead (info, health or save state) and
+        # actions while a dashboard is shown; the breadcrumb is its title.
+        self.dashboard_lead = pn.Row(margin=(0, 0, 0, 4), align="center", min_width=0)
+        self.dashboard_actions = pn.Row(margin=0, align="center")
 
         self.rail = pmui.Paper(
             direction="column",
@@ -159,10 +174,15 @@ class AppShell:
             variant="temporary",
             size=280,
         )
+        app._editor._dashboard_bar.param.watch(
+            lambda _event: self._render_dashboard_slots(), "layout"
+        )
         self._header = [
             self.menu_button,
             self.breadcrumb,
+            self.dashboard_lead,
             pn.layout.HSpacer(),
+            self.dashboard_actions,
             self.search_slot,
             self.nav_drawer,
         ]
@@ -419,6 +439,30 @@ class AppShell:
                 button.on_click(lambda _event, path=crumb.path: self._navigate(path))
             parts.append(button)
         self.breadcrumb[:] = parts
+        self._render_dashboard_slots()
+
+    def _showing_dashboard(self) -> bool:
+        current = self._app._current_dashboard
+        prefix = app_module.DASH_ROUTE_PREFIX
+        if current is None:
+            return False
+        if self._path.startswith(prefix):
+            return self._path[len(prefix) :] == current.dashboard_id
+        return self._path == "/"
+
+    def _render_dashboard_slots(self):
+        """Seat the dashboard bar's parts in the top bar while a dashboard is shown."""
+        bar = self._app._editor._dashboard_bar
+        showing = self._showing_dashboard() and bar.in_header
+        lead, actions = ([bar.lead], [bar.actions]) if showing else ([], [])
+        if list(self.dashboard_lead) != lead:
+            self.dashboard_lead[:] = lead
+        if list(self.dashboard_actions) != actions:
+            self.dashboard_actions[:] = actions
+        for palette in self.search_slot:
+            if "compact" in palette.param:
+                palette.compact = showing
+        self._app._set_dashboard_header(showing)
 
     def _is_dashboard_route(self) -> bool:
         return self._path.startswith(app_module.DASH_ROUTE_PREFIX) or (
