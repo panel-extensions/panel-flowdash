@@ -432,6 +432,20 @@ def current_dashboard() -> FlowDash | None:
     return editor
 
 
+def _drop_repeated_ids(model: DashboardModel) -> int:
+    """Keep only the first item of *model* with each instance id, returning how many were dropped."""
+    seen: set[str] = set()
+    unique = []
+    for item in model.items:
+        if item.instance_id not in seen:
+            seen.add(item.instance_id)
+            unique.append(item)
+    dropped = len(model.items) - len(unique)
+    if dropped:
+        model.items = unique
+    return dropped
+
+
 @contextmanager
 def _creating(editor_ref: weakref.ref[FlowDash], instance_id: str, wiring: list):
     """Run one step of an async component body as part of creating *instance_id*.
@@ -524,6 +538,21 @@ class FlowDash(Viewer):
     )
 
     breakpoints = param.List(default=[768, 1200], doc="Responsive breakpoints for the tile grid.")
+
+    import_unknown_components = param.Boolean(
+        default=True,
+        doc="""
+        Whether importing a file may add or change items whose component this
+        editor does not offer. They are imported as they are, shown as
+        unavailable and saved back unchanged, so a dashboard keeps them until
+        the component is offered again. Set it to False when users are
+        restricted by giving each a smaller set of components rather than
+        through `authorize_component`: a component one user lacks may be one
+        another has, so such an item is then treated like a restricted one,
+        keeping its stored config and wiring or being left out of the import.
+        `authorize_component` is the better mechanism, since it also shows a
+        known but denied component as restricted rather than unavailable.""",
+    )
 
     components = param.Parameter(
         default=None,
@@ -3162,6 +3191,15 @@ class FlowDash(Viewer):
     @pn.io.hold()
     def _hydrate_model(self, model: DashboardModel):
         """Populate the canvas from *model*, assuming its components are loaded."""
+        # Every placement path, placeholders included, then sees one item per id,
+        # so the canvas and the tiles agree and a save does not write repeats back.
+        if duplicates := _drop_repeated_ids(model):
+            logger.warning(
+                "Dashboard '%s' has %d item(s) repeating the id of an earlier item; "
+                "only the first item with each id is loaded.",
+                model.dashboard_id,
+                duplicates,
+            )
         with self._muted_canvas():
             self._reset_canvas()
         # After the previous components are disposed, so none of them reacts to the
@@ -3538,15 +3576,21 @@ class FlowDash(Viewer):
         self._guard_restricted(model, stored or current)
         return model
 
-    def _restricted_ids(self, model: DashboardModel) -> set[str]:
-        """Return the ids of the items of *model* whose component this session may not use."""
+    def _restricted_ids(self, model: DashboardModel, unknown: bool = False) -> set[str]:
+        """Return the ids of the items of *model* whose component this session may not use.
+
+        With *unknown*, items whose component this session does not offer at
+        all count too, since nothing here can tell whether their users may.
+        """
         aliases = self._component_aliases()
         restricted = set()
         for item in model.items:
             component_id = self._resolve_component_id(item.component_id, aliases)
-            if item.component_id == RESTRICTED_COMPONENT_ID or (
-                component_id in self._component_entries
-                and not self._component_authorized(component_id)
+            offered = component_id in self._component_entries
+            if (
+                item.component_id == RESTRICTED_COMPONENT_ID
+                or (offered and not self._component_authorized(component_id))
+                or (unknown and not offered)
             ):
                 restricted.add(item.instance_id)
         return restricted
@@ -3554,18 +3598,32 @@ class FlowDash(Viewer):
     def _guard_restricted(self, model: DashboardModel, reference: DashboardModel | None):
         """Keep an imported *model* from adding or changing items this session may not use.
 
-        Such an item is replaced by the item with its id in *reference*, the
-        dashboard as stored, when that one is restricted too or the file holds
-        only the stand-in :func:`export_model` writes for it, and dropped
-        otherwise. Imported edges touching these items are dropped and the
-        stored edges between the kept ones and the rest restored, so the file
-        decides neither their config nor their wiring.
+        Without `import_unknown_components`, items whose component this
+        session does not offer count as ones it may not use. Each is replaced
+        by the item with its id in *reference*, the dashboard as stored, when
+        that one is restricted (or unknown) too, or the file holds only the stand-in
+        :func:`export_model` writes for it, and dropped otherwise. Imported
+        edges touching these items are dropped and the stored edges between
+        the kept ones and the rest restored, so the file decides neither their
+        config nor their wiring. Of several items sharing an id only the first
+        is kept, since placing the next would replace it.
         """
-        restricted = self._restricted_ids(model)
+        duplicates = _drop_repeated_ids(model)
+        if duplicates:
+            self._notify(
+                "warning",
+                f"Left out {duplicates} item{'s' * (duplicates != 1)} of the file that "
+                "repeat the id of another item.",
+                duration=5000,
+            )
+        unknown = not self.import_unknown_components
+        restricted = self._restricted_ids(model, unknown=unknown)
         if not restricted:
             return
         stored = {item.instance_id: item for item in reference.items} if reference else {}
-        stored_restricted = self._restricted_ids(reference) if reference else set()
+        stored_restricted = (
+            self._restricted_ids(reference, unknown=unknown) if reference else set()
+        )
         items, kept = [], set()
         for item in model.items:
             iid = item.instance_id
@@ -3591,7 +3649,7 @@ class FlowDash(Viewer):
             self._notify(
                 "warning",
                 f"Left out {dropped} component{'s' * (dropped != 1)} of the file that you "
-                "do not have access to.",
+                "do not have access to or that this app does not offer.",
                 duration=5000,
             )
 

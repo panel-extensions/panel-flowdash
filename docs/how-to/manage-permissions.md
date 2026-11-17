@@ -147,7 +147,18 @@ user downloads holds only the id and position of the restricted item, without
 its component, config or edges. Importing a file never adds or changes a
 restricted item: an item the stored dashboard already has keeps its stored
 config and wiring, and any other restricted item in the file is left out, with
-a warning.
+a warning. Of several items in a file sharing an id, only the first is
+imported.
+
+An item whose component the editor does not offer at all is imported as it
+is, shown as unavailable and saved back unchanged, so a dashboard keeps it
+until the component is offered again. In `FlowDashApp` every user gets the same
+components, so such an item cannot run for anyone. If you embed `FlowDash` and
+restrict users by giving each a smaller set of components instead of passing
+`authorize_component`, a component one user lacks may be one another has: pass
+`import_unknown_components=False` so that importing treats those items like
+restricted ones. `authorize_component` remains the better mechanism, since a
+known but denied component is then shown as restricted rather than unavailable.
 
 A component without rules may be used by everyone who can edit a dashboard,
 even under `default_allow = False`: the default policy governs pages and
@@ -224,8 +235,11 @@ and suggests accessible dashboards with a similar title or id. With
 `JSONFolderDashboardStore`, whose ids are derived from titles and so can be
 guessed, a dashboard you may not see gets that same not-found page, so trying
 `/dash/<some-title>` does not reveal whether such a dashboard exists or who owns
-it. A custom store whose ids can be guessed opts into this by setting
-`random_ids = False`.
+it. The same goes in any store for a dashboard saved under an id you chose
+yourself, such as the slugs an example seeds its dashboards under, rather than
+one the store made. A custom store whose ids can be guessed opts into this by
+setting `random_ids = False`, and one that makes random ids of its own form
+overrides `guessable_id`.
 
 ### Sharing edit rights
 

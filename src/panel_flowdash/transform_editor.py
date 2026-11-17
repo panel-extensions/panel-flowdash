@@ -329,7 +329,8 @@ class TransformEditor(Viewer):
 
     Checking the steps runs the whole transform on the source value, so a change
     of that value is only rendered while the editor is shown (see `show`).
-    Hidden, it keeps the issue from its last check and catches up when shown.
+    Hidden, it catches up when shown again, but still re-checks the `issue`
+    the canvas and status bar report while it holds a draft or an issue.
     """
 
     issue = param.String(
@@ -423,8 +424,25 @@ class TransformEditor(Viewer):
     def _on_source_changed(self, _event):
         if self._shown:
             self._render()
+            return
+        self._stale = True
+        # Without a draft the steps are the edge's own, whose failures the
+        # graph reports, so only a draft or an issue needs checking here.
+        if self.has_draft or self.issue:
+            self._update_issue(check_steps(self._steps, self._source_value()))
+
+    def _update_issue(self, checks: list[StepCheck]) -> int | None:
+        """Set `issue` and `message` from *checks*, returning the index of the failed step."""
+        failed = next((i for i, check in enumerate(checks) if check.error), None)
+        if failed is not None:
+            self.param.update(
+                issue=f"{self._steps[failed].label} step", message=checks[failed].error
+            )
+        elif self._rejection:
+            self.param.update(issue="Transform", message=self._rejection)
         else:
-            self._stale = True
+            self.param.update(issue=None, message=None)
+        return failed
 
     def _source_value(self):
         key = self._key
@@ -451,21 +469,13 @@ class TransformEditor(Viewer):
             return
         value = self._source_value()
         checks = check_steps(self._steps, value)
-        failed = next((i for i, check in enumerate(checks) if check.error), None)
         # A step that fails or still needs an argument opens, to show what to fix.
         self._expanded.update(
             id(step)
             for step, check in zip(self._steps, checks, strict=True)
             if check.error or check.missing
         )
-        if failed is not None:
-            self.param.update(
-                issue=f"{self._steps[failed].label} step", message=checks[failed].error
-            )
-        elif self._rejection:
-            self.param.update(issue="Transform", message=self._rejection)
-        else:
-            self.param.update(issue=None, message=None)
+        failed = self._update_issue(checks)
 
         rows: list[t.Any] = [self._shape_line(f"In: {shape(value)}")]
         for index, (step, check) in enumerate(zip(self._steps, checks, strict=True)):
