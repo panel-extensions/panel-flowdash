@@ -288,8 +288,12 @@ alone, hiding the dashboard bar and anything around the editor; see
 [Full screen](serve-project.md#full-screen). The `fullscreen` param follows it
 and can be set too. Set in response to a click, for example from a button's
 `on_click`, it asks the browser for full screen; when the browser refuses, or
-when it is set at load time, the editor covers the browser window instead. It
-only applies in view mode.
+when it is set at load time or in the constructor, the editor covers the
+browser window instead. It only applies in view mode. With `controls_bar=False`
+the controls bar shows the `sidebar` views while in full screen, as nothing
+around the editor is visible then, so take them out of your own layout while
+`fullscreen` is on. With several editors on a page, <kbd>F</kbd> toggles the
+one holding the focus, else the one in full screen.
 
 Set `notifications=False` to route the editor's user-facing messages to the
 logger instead of Panel notifications, which is what you want in a notebook or

@@ -54,7 +54,8 @@ class ControlsBar(Viewer):
     wraps on narrow screens; with ``position="left"`` they are stacked in a
     panel left of the grid that collapses to a narrow strip. Either way the
     inputs use Material UI's small size and the controls take no room while
-    the dashboard has none (or the editor's ``controls_bar`` is off).
+    the dashboard has none (or the editor's ``controls_bar`` is off, except in
+    full screen, where nothing around the editor is visible).
     :meth:`sync` re-reads the editor, which calls it whenever its components
     change, and :meth:`layout` places the controls around the tile grid.
     """
@@ -130,7 +131,7 @@ class ControlsBar(Viewer):
             css_classes=["fd-controls-strip"],
             sx={**panel_sx, "alignItems": "center"},
         )
-        self.editor.param.watch(lambda _event: self.sync(), ["controls_bar"])
+        self.editor.param.watch(lambda _event: self.sync(), ["controls_bar", "fullscreen"])
 
     @property
     def controls(self) -> list:
@@ -160,7 +161,7 @@ class ControlsBar(Viewer):
     def sync(self):
         """Re-read the editor's controls and lay them out for the position."""
         editor = self.editor
-        views = list(editor.sidebar) if editor.controls_bar else []
+        views = list(editor.sidebar) if editor.controls_bar or editor.fullscreen else []
         wrappers = [self._wrap(view) for view in views]
         self._wrappers = {id(w[0]): w for w in wrappers}
         left = self.position == "left"
