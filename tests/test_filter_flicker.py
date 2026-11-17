@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 from bokeh.document import Document
-from panel.io.document import set_curdoc
+from panel.io.state import set_curdoc
 
 from panel_flowdash import FlowDash, MemoryDashboardStore
 
