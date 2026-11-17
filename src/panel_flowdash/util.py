@@ -137,26 +137,41 @@ class _Stepped:
                 error = exc
 
 
+async def _stepped_gen(agen, step: Callable[[], AbstractContextManager]):
+    """Iterate *agen*, running each of its steps inside ``step()``."""
+    try:
+        while True:
+            try:
+                item = await _Stepped(agen.__anext__(), step)
+            except StopAsyncIteration:
+                return
+            yield item
+    finally:
+        await _Stepped(agen.aclose(), step)
+
+
+def _stepped_result(result, step: Callable[[], AbstractContextManager]):
+    """Wrap an awaitable or async generator *result* so it runs inside ``step()``."""
+    if inspect.isasyncgen(result):
+        return _stepped_gen(result, step)
+    if inspect.isawaitable(result):
+        return _Stepped(result, step)
+    return result
+
+
 def stepped(app: Callable, step: Callable[[], AbstractContextManager]) -> Callable:
-    """Wrap an async component callable so its body runs step by step inside ``step()``.
+    """Wrap a component callable so its asynchronous body runs step by step inside ``step()``.
 
     Both the coroutine and the async generator forms are supported and the
     wrapper keeps the form, so ``panel_call`` still defers it to render time.
-    Any other callable is returned unchanged.
+    A sync callable is called as is, but an awaitable or async generator it
+    returns runs inside ``step()`` too, wherever it is awaited.
     """
     if is_async_gen(app):
 
         async def gen_wrapper(**kwargs):
-            agen = app(**kwargs)
-            try:
-                while True:
-                    try:
-                        item = await _Stepped(agen.__anext__(), step)
-                    except StopAsyncIteration:
-                        return
-                    yield item
-            finally:
-                await _Stepped(agen.aclose(), step)
+            async for item in _stepped_gen(app(**kwargs), step):
+                yield item
 
         return gen_wrapper
 
@@ -167,7 +182,10 @@ def stepped(app: Callable, step: Callable[[], AbstractContextManager]) -> Callab
 
         return wrapper
 
-    return app
+    def sync_wrapper(**kwargs):
+        return _stepped_result(app(**kwargs), step)
+
+    return sync_wrapper
 
 
 def _as_deferred(awaitable) -> Callable:
@@ -186,14 +204,32 @@ def _as_deferred(awaitable) -> Callable:
     return view
 
 
-def panel_viewer(instance) -> Viewable:
+class _SteppedParamMethod(pn.pane.ParamMethod):
+    """A ``ParamMethod`` whose every evaluation of an async method runs inside ``step()``."""
+
+    def __init__(
+        self, object=None, *, step: Callable[[], AbstractContextManager] | None = None, **params
+    ):
+        self._step = step
+        super().__init__(object, **params)
+
+    def eval(self, ref):
+        result = super().eval(ref)
+        return result if self._step is None else _stepped_result(result, self._step)
+
+
+def panel_viewer(instance, step: Callable[[], AbstractContextManager] | None = None) -> Viewable:
     """Return a renderable view of a ``Viewer``, awaiting an async ``__panel__``.
 
     ``pn.panel`` calls ``__panel__`` synchronously, so an ``async def __panel__``
     would be wrapped un-awaited. ``ParamMethod`` handles both, and additionally
-    re-renders when the method declares ``param.depends``.
+    re-renders when the method declares ``param.depends``. With *step*, every
+    run of an async ``__panel__`` executes inside ``step()``, as `stepped`
+    does for async function components.
     """
     if is_async(instance.__panel__):
+        if step is not None:
+            return _SteppedParamMethod(instance.__panel__, step=step)
         return pn.pane.ParamMethod(instance.__panel__)
     return pn.panel(instance)
 

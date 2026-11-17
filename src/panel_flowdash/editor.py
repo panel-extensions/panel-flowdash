@@ -1984,11 +1984,11 @@ class FlowDash(Viewer):
         # is synchronous, the outputs they publish must exist before saved edges
         # are reconnected, and the dataflow graph is not thread-safe. Slow
         # components should be async (see docs/how-to/register-components.md).
-        if is_async(app_fn):
-            # The body runs at render time, after `_place` has finished tracking.
-            node_id = node_state.name
-            wiring = self._component_wiring.setdefault(node_id, [])
-            app_fn = stepped(app_fn, partial(_creating, weakref.ref(self), node_id, wiring))
+        # An async body, or an awaitable a sync component returns, runs at
+        # render time, after `_place` has finished tracking.
+        node_id = node_state.name
+        wiring = self._component_wiring.setdefault(node_id, [])
+        app_fn = stepped(app_fn, partial(_creating, weakref.ref(self), node_id, wiring))
         return panel_call(app_fn, **kwargs)
 
     def _instantiate_viewer_for_node(self, viewer_cls, entry, node_state, config_state=None):
@@ -2044,7 +2044,7 @@ class FlowDash(Viewer):
             ):
                 setattr(node_state, port.name, instance.param[port.name])
 
-        return panel_viewer(instance)
+        return panel_viewer(instance, partial(_creating, editor, node_id, wiring))
 
     def _report_input_error(self, node_id: str, port: str, exc: Exception):
         source = next(
