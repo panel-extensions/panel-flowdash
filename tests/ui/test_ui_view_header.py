@@ -81,10 +81,13 @@ def _store(description="", period=0, waiting=True):
     return store, model.dashboard_id
 
 
-def _serve(page, store, dash, apps, notifications=False):
+def _serve(page, store, dash, apps, notifications=False, header_layout="compact"):
     def factory():
         app = FlowDashApp(
-            registry=normalize_components(COMPONENTS), store=store, notifications=notifications
+            registry=normalize_components(COMPONENTS),
+            store=store,
+            notifications=notifications,
+            header_layout=header_layout,
         )
         apps.append(app)
         return app
@@ -102,11 +105,17 @@ def _open_health(page):
     expect(page.locator(".MuiPopover-paper").last).to_be_visible()
 
 
-def test_header_shows_description_health_and_refresh(page):
+@pytest.mark.parametrize("header_layout", ["compact", "full"])
+def test_header_shows_description_health_and_refresh(page, header_layout):
     store, dash = _store(description="Output per unit, live.", period=900)
-    _serve(page, store, dash, [])
+    _serve(page, store, dash, [], header_layout=header_layout)
 
-    expect(page.get_by_role("button", name="Output per unit, live.")).to_be_visible()
+    if header_layout == "compact":
+        expect(page.get_by_role("button", name="Output per unit, live.")).to_be_visible()
+    else:
+        bar = page.locator(".fd-dashboard-bar")
+        expect(bar.get_by_text("Output per unit, live.")).to_be_visible()
+        expect(bar.get_by_text(re.compile(r"auto-refresh every 15 min$"))).to_be_visible()
     expect(page.locator(".fd-health-chip").get_by_text("1 waiting", exact=True)).to_be_visible()
     expect(_refresh(page)).to_have_accessible_name(re.compile(r"auto-refresh every 15 min\.$"))
     expect(page.get_by_role("button", name="Update automatically")).to_contain_text("15 min")

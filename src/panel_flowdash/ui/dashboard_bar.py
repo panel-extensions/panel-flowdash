@@ -312,6 +312,8 @@ class DashboardBar(Viewer):
             },
         )
         self.param.watch(lambda _event: self.sync(), ["layout", "placement"])
+        # In a host header the lead and actions hide with the bar, e.g. in full screen.
+        self.param.watch(lambda _event: self._sync_lead(), "visible")
         editor.param.watch(self._on_dashboard_changed, "dashboard")
         editor.param.watch(self._on_saved, "saved")
         editor.settings.param.watch(self._sync_view_meta, ["description", "refresh_period"])

@@ -303,8 +303,8 @@ header too, so there is a single row above the tiles. Next to the title it shows
 dashboard's description and a health chip ("9/9 up to date", or the number of
 failed and waiting tiles), which opens the pipeline and a Show issues action.
 On the right it has the View/Edit toggle, Refresh with the auto-refresh period
-(its tooltip says when the dashboard was last refreshed), Share and a menu of
-further actions. In edit mode the same row holds the save state, the
+(its tooltip says when the dashboard was last refreshed), Share, Full screen
+and a menu of further actions. In edit mode the same row holds the save state, the
 Dataflow/Layout tabs, Settings, Discard, Save and Done. The search field
 shrinks to an icon button on a dashboard unless the window is very wide.
 

@@ -76,9 +76,15 @@ class TestEditor:
         editor.fullscreen = True
         name, chip, exit_button = editor._fullscreen_overlay
         assert name.object == "Plant"
-        assert chip.object == editor._dashboard_bar.health_chip.object == "1 tile up to date"
+        assert chip.object == editor._dashboard_bar.health_chip.label == "1/1 up to date"
         assert chip.sx == editor._dashboard_bar.health_chip.sx
         assert EXIT_CLASS in exit_button.css_classes
+
+    async def test_the_button_toggles_this_editor_from_outside_it(self, editor):
+        # With the compact header the button sits in the app's top bar.
+        toggle_class = editor._fullscreen_controller.toggle_class
+        assert toggle_class
+        assert toggle_class in editor._dashboard_bar.fullscreen_button.css_classes
 
     async def test_leaving_full_screen_in_the_browser_restores_the_layout(self, editor):
         editor.fullscreen = True

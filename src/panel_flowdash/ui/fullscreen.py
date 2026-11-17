@@ -78,6 +78,13 @@ class FullscreenController(JSComponent):
         default=False, doc="Set by the browser: whether it offers full screen for elements."
     )
 
+    toggle_class = param.String(
+        default="",
+        doc="""
+        A class marking toggles of this layout that sit outside it, e.g. the
+        dashboard's Full screen button in an app's top bar.""",
+    )
+
     _esm = f"""
     const IDLE_MS = 2500
 
@@ -177,6 +184,11 @@ class FullscreenController(JSComponent):
       const onClick = (event) => {{
         const el = target()
         const path = event.composedPath()
+        const own = model.toggle_class
+        if (own && path.some((node) => node instanceof Element && node.classList.contains(own))) {{
+          toggle()
+          return
+        }}
         if (!el || !path.includes(el)) {{
           return
         }}
@@ -257,8 +269,8 @@ class FullscreenController(JSComponent):
 class PresentationOverlay(pn.Row):
     """The overlay shown in full screen: the dashboard's title, its health and an exit button.
 
-    *title* and *health_chip* are the dashboard bar's typographies, whose text
-    and style the overlay follows. The overlay holds its items only while it
+    *title* is the dashboard bar's title and *health_chip* its health chip,
+    whose text and style the overlay follows. The overlay holds its items only while it
     is shown, so the page never carries a hidden copy of the bar's text.
     """
 
@@ -301,7 +313,7 @@ def _overlay_items(title, health_chip) -> list:
         },
     )
     chip = pmui.Typography(
-        health_chip.param.object,
+        health_chip.param.label,
         variant="caption",
         margin=(0, 4),
         align="center",

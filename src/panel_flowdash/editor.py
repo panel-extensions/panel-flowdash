@@ -71,6 +71,7 @@ from panel_flowdash.ui.dashboard_bar import DashboardBar
 from panel_flowdash.ui.fullscreen import (
     PRESENTATION_CSS,
     PRESENTING_CLASS,
+    TOGGLE_CLASS,
     FullscreenController,
     PresentationOverlay,
 )
@@ -2154,8 +2155,11 @@ class FlowDash(Viewer):
         self._inspector = Inspector(editor=self)
         self._layout_panel = LayoutPanel(editor=self)
         self._status_bar = StatusBar(editor=self)
+        # The Full screen button may sit in an app's top bar, outside the editor.
+        toggle_class = f"{TOGGLE_CLASS}-{id(self)}"
+        bar.fullscreen_button.css_classes = [*bar.fullscreen_button.css_classes, toggle_class]
         self._fullscreen_controller = FullscreenController(
-            enabled=not self.editable, margin=0, height=0
+            enabled=not self.editable, margin=0, height=0, toggle_class=toggle_class
         )
         self._fullscreen_controller.param.watch(self._on_fullscreen_changed, "active")
         self._fullscreen_overlay = PresentationOverlay(bar.title, bar.health_chip)

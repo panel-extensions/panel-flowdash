@@ -32,7 +32,7 @@ def name_field(config):
 COMPONENTS = {"Test/note": note, "Test/name_field": name_field}
 
 
-def _serve(page, *, components=("Test/note",), query=""):
+def _serve(page, *, components=("Test/note",), query="", header_layout="compact"):
     store = MemoryDashboardStore()
     model = store.create_dashboard(resolve_identity().user, "Plant")
     model.items = [
@@ -44,7 +44,10 @@ def _serve(page, *, components=("Test/note",), query=""):
 
     def factory():
         app = FlowDashApp(
-            registry=normalize_components(COMPONENTS), store=store, notifications=False
+            registry=normalize_components(COMPONENTS),
+            store=store,
+            notifications=False,
+            header_layout=header_layout,
         )
         apps.append(app)
         return app
@@ -83,8 +86,9 @@ def _restored(page, app):
     wait_until(lambda: not _native(page), page)
 
 
-def test_button_enters_full_screen_and_leaving_it_restores_the_layout(page):
-    app = _serve(page)
+@pytest.mark.parametrize("header_layout", ["compact", "full"])
+def test_button_enters_full_screen_and_leaving_it_restores_the_layout(page, header_layout):
+    app = _serve(page, header_layout=header_layout)
     page.get_by_role("button", name="Full screen").click()
     wait_until(lambda: _native(page), page)
     _presenting(page, app)
@@ -93,16 +97,17 @@ def test_button_enters_full_screen_and_leaving_it_restores_the_layout(page):
     _restored(page, app)
 
 
-def test_overlay_shows_title_health_and_exit(page):
-    app = _serve(page)
+@pytest.mark.parametrize("header_layout", ["compact", "full"])
+def test_overlay_shows_title_health_and_exit(page, header_layout):
+    app = _serve(page, header_layout=header_layout)
     # Before full screen the health text is only in the dashboard bar.
-    expect(page.get_by_text("1 tile up to date", exact=True)).to_have_count(1)
+    expect(page.get_by_text("1/1 up to date", exact=True)).to_have_count(1)
     page.get_by_role("button", name="Full screen").click()
     _presenting(page, app)
     page.mouse.move(200, 200)
     overlay = page.locator(".fd-fullscreen-overlay")
     expect(overlay).to_contain_text("Plant")
-    expect(overlay).to_contain_text("1 tile up to date")
+    expect(overlay).to_contain_text("1/1 up to date")
     expect(overlay).to_have_css("opacity", "1")
     page.get_by_role("button", name="Exit full screen").click()
     _restored(page, app)
