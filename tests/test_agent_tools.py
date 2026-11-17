@@ -2,6 +2,7 @@
 
 import asyncio
 import os
+import re
 
 import pytest
 
@@ -50,13 +51,28 @@ def _results(messages):
     ]
 
 
+def added(index):
+    """Args for a later call: the name of the node the *index*-th call added, with a port."""
+
+    def name(results, port):
+        return re.search(r"'([^']+)'", results[index]).group(1) + f".{port}"
+
+    return name
+
+
 def scripted(*calls):
-    """A model that makes *calls*, one per step, then reports the last tool result."""
+    """A model that makes *calls*, one per step, then reports the last tool result.
+
+    A call's args may be a callable taking the contents of the earlier tool
+    results, for args that depend on them, such as node names.
+    """
 
     def model(messages, info):
         results = _results(messages)
         if len(results) < len(calls):
             name, args = calls[len(results)]
+            if callable(args):
+                args = args([str(r.content) for r in results])
             return ModelResponse(
                 parts=[ToolCallPart(name, args, tool_call_id=f"call-{len(results) + 1}")]
             )
@@ -118,14 +134,19 @@ async def test_each_edit_publishes_an_applied_version_with_a_semantic_diff(ops):
         ops,
         ("add_node", {"component": "T/number"}),
         ("add_node", {"component": "T/doubler"}),
-        ("connect", {"source": "number.value", "target": "doubler.value"}),
+        (
+            "connect",
+            lambda r: {"source": added(0)(r, "value"), "target": added(1)(r, "value")},
+        ),
     )
-    assert await runner.run("Double a number") == "Done: Connected number.value to doubler.value."
+    output = await runner.run("Double a number")
+    source, target = (f"{i['instance_id'].split('__')[1]}" for i in ops.editor._tile_items)
+    assert output == f"Done: Connected {source}.value to {target}.value."
     (artifact,) = runner.state.artifacts
     assert artifact.kind == ARTIFACT_KIND and artifact.title == "Mine"
-    assert len(artifact.versions) == 3 and artifact.applied == 2
+    assert len(artifact.versions) == 3 and artifact.applied_version.version == 3
     changes = diff(artifact.versions[1].value, artifact.versions[2].value, kind=ARTIFACT_KIND)
-    assert [c.label for c in changes.changes] == ["Connected number.value → doubler.value"]
+    assert [c.label for c in changes.changes] == [f"Connected {source}.value → {target}.value"]
     assert ops.editor.dirty and ops.editor.graph.edges
 
 
@@ -166,7 +187,7 @@ async def test_reverting_a_version_restores_the_dashboard(ops):
     )
     await runner.run("Build")
     (artifact,) = runner.state.artifacts
-    ops.replace_yaml(artifact.versions[0].value)
+    ops.replace_yaml(artifact.versions[0].value, revision=ops.revision())
     assert [i["component_id"] for i in ops.editor._tile_items] == ["T/number"]
 
 
@@ -207,10 +228,164 @@ async def test_live_delete_and_share_need_administrator_rights(store, monkeypatc
     with pytest.raises(PermissionError):
         ops.delete_dashboard(theirs.dashboard_id)
     with pytest.raises(PermissionError):
-        ops.share_dashboard(theirs.dashboard_id, view_users=["mallory"])
-    ops.share_dashboard(mine.dashboard_id, view_users=["carol"], edit_users=["dave"])
+        ops.share_dashboard(theirs.dashboard_id, add_viewers=["mallory"])
+    ops.share_dashboard(
+        mine.dashboard_id, add_viewers=["carol"], add_editors=["dave"], everyone=False
+    )
     permission = store._load_any(mine.dashboard_id).permission
     assert permission.allow_users == {"carol"} and permission.allow_edit_users == {"dave"}
     ops.delete_dashboard(mine.dashboard_id)
     assert store._load_any(mine.dashboard_id) is None
     assert store._load_any(theirs.dashboard_id) is not None
+
+
+class TestSharing:
+    """Sharing through the agent keeps a dashboard private unless asked to open it."""
+
+    @pytest.fixture
+    def shared(self, store, monkeypatch):
+        mine = store.create_dashboard("alice", "Mine")
+        return LiveDashboardOps(_app(store, monkeypatch)), mine.dashboard_id
+
+    def _can_view(self, store, did, user):
+        from panel_flowdash.auth import is_authorized
+
+        model = store._load_any(did)
+        identity = Identity(user=user, oauth_user=user)
+        return is_authorized(model.permission, identity, default_allow=True, owner=model.owner)
+
+    def test_adding_an_editor_keeps_the_dashboard_private(self, shared, store):
+        ops, did = shared
+        ops.share_dashboard(did, everyone=False)
+        access = ops.share_dashboard(did, add_editors=["bob"])
+        assert access["everyone"] is False and access["editors"] == ["bob"]
+        assert self._can_view(store, did, "bob")
+        assert not self._can_view(store, did, "mallory")
+        ops.share_dashboard(did)
+        assert not self._can_view(store, did, "mallory")
+
+    def test_sharing_adds_to_the_existing_access(self, shared, store):
+        ops, did = shared
+        ops.share_dashboard(did, add_viewers=["carol"], everyone=False)
+        access = ops.share_dashboard(did, add_viewers=["group:ops"], remove=["nobody"])
+        assert access["viewers"] == ["carol", "group:ops"]
+        assert ops.share_dashboard(did, remove=["carol"])["viewers"] == ["group:ops"]
+
+    def test_a_public_dashboard_says_so(self, shared, store):
+        ops, did = shared
+        assert ops.share_dashboard(did, add_editors=["bob"])["everyone"] is True
+
+    def test_only_everyone_true_opens_it(self, shared, store):
+        ops, did = shared
+        ops.share_dashboard(did, everyone=False)
+        assert not self._can_view(store, did, "mallory")
+        assert ops.share_dashboard(did, everyone=True)["everyone"] is True
+        assert self._can_view(store, did, "mallory")
+
+
+def _live_runner(app, *calls, policy=None):
+    agent = Agent(scripted(*calls), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()])
+    ops = LiveDashboardOps(app)
+    return (
+        AgentRunner(
+            agent,
+            RunState(flush_interval=0),
+            deps=FlowDashDeps(ops),
+            approval_policy=policy or approval_policy(),
+        ),
+        ops,
+    )
+
+
+@pytest.mark.parametrize("approved", [True, False])
+async def test_deleting_and_sharing_wait_for_approval_and_show_the_title(
+    store, monkeypatch, approved
+):
+    mine = store.create_dashboard("alice", "Quarterly")
+    runner, _ = _live_runner(
+        _app(store, monkeypatch),
+        (
+            "share_dashboard",
+            {"dashboard_id": mine.dashboard_id, "title": "Quarterly", "everyone": True},
+        ),
+        ("delete_dashboard", {"dashboard_id": mine.dashboard_id, "title": "Quarterly"}),
+    )
+    _resolve(runner.state, approved)
+    await runner.run("Share and delete")
+    requests = list(runner.state.approvals.values())
+    assert [r.tool_name for r in requests] == ["share_dashboard", "delete_dashboard"]
+    assert all(r.args["title"] == "Quarterly" for r in requests)
+    stored = store._load_any(mine.dashboard_id)
+    assert (stored is None) is approved
+    if not approved:
+        assert stored.permission == mine.permission
+
+
+async def test_a_wrong_title_is_sent_back(store, monkeypatch):
+    mine = store.create_dashboard("alice", "Quarterly")
+    runner, _ = _live_runner(
+        _app(store, monkeypatch),
+        ("delete_dashboard", {"dashboard_id": mine.dashboard_id, "title": "Scratch"}),
+    )
+    _resolve(runner.state, True)
+    output = await runner.run("Delete Scratch")
+    assert "is titled 'Quarterly', not 'Scratch'" in output
+    assert store._load_any(mine.dashboard_id) is not None
+
+
+async def test_the_save_approval_lists_what_is_stored(store, monkeypatch):
+    mine = store.create_dashboard("alice", "Mine")
+    app = _app(store, monkeypatch)
+    app._load_dashboard_sync(mine.dashboard_id)
+    runner, _ = _live_runner(
+        app,
+        ("add_node", {"component": "T/number"}),
+        ("set_settings", {"settings": {"viewers_can_inspect": True}}),
+        ("save_dashboard", {}),
+    )
+    _resolve(runner.state, False)
+    await runner.run("Build and save")
+    (request,) = runner.state.approvals.values()
+    assert "It stores:" in request.description and "Added number_" in request.description
+    assert "viewers_can_inspect" in request.description
+    assert "changes who can see the dashboard's data" in request.description
+
+
+async def test_sensitive_components_need_approval(store, monkeypatch):
+    mine = store.create_dashboard("alice", "Mine")
+    app = _app(store, monkeypatch)
+    app._load_dashboard_sync(mine.dashboard_id)
+    runner, ops = _live_runner(app, ("add_node", {"component": "T/scaled"}))
+    runner.approval_policy = approval_policy(sensitive_components=["T/scaled"], ops=ops)
+    _resolve(runner.state, False)
+    await runner.run("Add")
+    assert [r.tool_name for r in runner.state.approvals.values()] == ["add_node"]
+    assert app._editor._tile_items == []
+    ops.add_node("T/scaled")
+    name = next(iter(ops._names().values()))
+    assert runner.approval_policy.requires_approval("set_config", {"name": name})
+    assert runner.approval_policy.requires_approval(
+        "replace_dashboard",
+        {"dashboard_yaml": "flowdash: 1\nnodes:\n  x: {component: T/scaled}\n"},
+    )
+
+
+async def test_a_run_stops_when_the_user_opens_another_dashboard(store, monkeypatch):
+    first = store.create_dashboard("alice", "First")
+    second = store.create_dashboard("alice", "Second")
+    app = _app(store, monkeypatch)
+    app._load_dashboard_sync(first.dashboard_id)
+
+    def switch(results):
+        app._load_dashboard_sync(second.dashboard_id)
+        return {"component": "T/number"}
+
+    runner, _ = _live_runner(app, ("get_dashboard", {}), ("add_node", switch))
+    output = await runner.run("Add a number")
+    assert "switched to another dashboard" in output
+    assert app._editor._tile_items == []
+
+
+async def test_replacing_needs_the_revision_line(ops):
+    runner = _runner(ops, ("replace_dashboard", {"dashboard_yaml": "flowdash: 1\n"}))
+    assert "keep its '# revision:' line" in await runner.run("Clear")

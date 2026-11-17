@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import typing as t
 
-from panel_flowdash.auth import Permission
-
 from .ops import DashboardOps, OperationError
 
 if t.TYPE_CHECKING:
@@ -69,9 +67,9 @@ class LiveDashboardOps(DashboardOps):
             return f"Opened '{model.title}' read-only; its definition is hidden from viewers."
         return self.get_dashboard()
 
-    def open_dashboard(self, dashboard_id: str) -> str:
+    def open_dashboard(self, dashboard_id: str, *, discard: bool = False) -> str:
         """Load a stored dashboard into the app's editor without navigating; see :meth:`open_dashboard_async`."""
-        if self.app._has_unsaved_changes():
+        if self.app._has_unsaved_changes() and not discard:
             raise OperationError(
                 "The open dashboard has unsaved changes. Ask the user to save or discard "
                 "them before opening another dashboard."
@@ -101,26 +99,85 @@ class LiveDashboardOps(DashboardOps):
         self,
         dashboard_id: str,
         *,
-        view_users: t.Collection[str] = (),
-        view_groups: t.Collection[str] = (),
-        edit_users: t.Collection[str] = (),
-        edit_groups: t.Collection[str] = (),
-    ) -> None:
-        """Replace who a dashboard is shared with; only its administrators may.
+        add_viewers: t.Collection[str] = (),
+        add_editors: t.Collection[str] = (),
+        remove: t.Collection[str] = (),
+        everyone: bool | None = None,
+    ) -> dict[str, t.Any]:
+        """Change who a dashboard is shared with, as the Sharing settings do, and return the result.
 
-        With no viewers and editors given, the dashboard is shared as the
-        app's default access policy decides.
+        Names are user names, or ``group:<name>`` for a group. Everyone not
+        named keeps their access, and the dashboard stays private (only the
+        people listed) unless *everyone* is True. Only the dashboard's
+        administrators may change its sharing.
+
+        Parameters
+        ----------
+        add_viewers, add_editors
+            People and groups to give view or edit access.
+        remove
+            People and groups to take off the list.
+        everyone
+            True lets everyone who may use the app view the dashboard, False
+            limits it to the people listed, None keeps it as it is.
+
+        Returns
+        -------
+        dict
+            The resulting access: ``everyone``, ``viewers``, ``editors`` and ``blocked``.
         """
-        model = self._stored(dashboard_id)
-        if not self.app._can_administer_dashboard(model):
-            raise PermissionError("Only the dashboard's owner or an administrator may share it.")
-        permission = Permission.from_spec(
-            allow_users=view_users,
-            allow_groups=view_groups,
-            deny_users=model.permission.deny_users,
-            deny_groups=model.permission.deny_groups,
-            allow_edit_users=edit_users,
-            allow_edit_groups=edit_groups,
+        from panel_flowdash.ui.settings_dialog import (
+            ShareEntry,
+            entries_from_permission,
+            permission_from_entries,
         )
-        if not self.app._save_sharing(dashboard_id, permission):
+
+        model = self._stored(dashboard_id)
+        app = self.app
+        if not app._can_administer_dashboard(model):
+            raise PermissionError("Only the dashboard's owner or an administrator may share it.")
+        entries, current_everyone = entries_from_permission(model.permission, model.owner)
+
+        def key(name: str) -> tuple[str, str]:
+            return (name[6:], "group") if name.startswith("group:") else (name, "user")
+
+        roles = {(e.name, e.kind): e.role for e in entries}
+        for name in remove:
+            roles.pop(key(name), None)
+        for names, role in ((add_viewers, "view"), (add_editors, "edit")):
+            for name in names:
+                if roles.get(key(name)) != "blocked":
+                    roles[key(name)] = role
+        if everyone is None:
+            everyone = current_everyone
+        everyone = bool(everyone) and app._default_allow()
+        permission = permission_from_entries(
+            [ShareEntry(name, kind, role) for (name, kind), role in roles.items()],
+            everyone=everyone,
+            owner=model.owner,
+        )
+        if not app._save_sharing(dashboard_id, permission):
             raise OperationError("Sharing could not be updated.")
+        return self.sharing(dashboard_id)
+
+    def sharing(self, dashboard_id: str) -> dict[str, t.Any]:
+        """Describe who may view and edit a stored dashboard."""
+        from panel_flowdash.ui.settings_dialog import entries_from_permission
+
+        model = self._stored(dashboard_id)
+        entries, everyone = entries_from_permission(model.permission, model.owner)
+
+        def named(role):
+            return sorted(
+                f"group:{e.name}" if e.kind == "group" else e.name
+                for e in entries
+                if e.role == role
+            )
+
+        return {
+            "everyone": everyone and self.app._default_allow(),
+            "owner": model.owner,
+            "viewers": named("view"),
+            "editors": named("edit"),
+            "blocked": named("blocked"),
+        }
