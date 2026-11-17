@@ -126,7 +126,8 @@ def test_the_full_screen_notice_shows_a_tools_description_as_text(page):
             raise ApprovalRequired
         return "ok"
 
-    fetch_report.__doc__ = PAYLOADS["raw_html"] + " Fetch the report. More."
+    # Short enough to reach the notice whole.
+    fetch_report.__doc__ = "<img src=x onerror=\"window.__pwned=['notice']\"> Fetch. More."
     agent = Agent(
         scripted(("fetch_report", {})), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()]
     )
