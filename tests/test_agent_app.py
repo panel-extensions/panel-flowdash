@@ -154,3 +154,24 @@ def test_without_an_agent_pages_are_unchanged(store, monkeypatch):
     app = _app(store, monkeypatch)
     assert app._nav_content("content") is not None
     assert len(app._shell.search_slot) == 1
+
+
+async def test_the_users_own_edits_become_a_version_before_the_next_request(store, monkeypatch):
+    model = store.create_dashboard("alice", "Live")
+    app = _app(store, monkeypatch)
+    app._load_dashboard_sync(model.dashboard_id)
+    agent = Agent(
+        scripted(("get_dashboard", {})), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()]
+    )
+    session = AgentSession(app, agent)
+    session.ops.add_node("T/number")
+    session.runner.state.publish_artifact(
+        f"dashboard:{model.dashboard_id}", session.ops.get_dashboard(), applied=True
+    )
+    app._editor.add_component("T/doubler")
+    await session.runner.run("What changed?")
+    (artifact,) = session.runner.state.artifacts
+    assert len(artifact.versions) == 2
+    assert "T/doubler" in artifact.applied_version.value
+    await session.runner.run("Again")
+    assert len(artifact.versions) == 2

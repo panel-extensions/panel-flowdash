@@ -18,7 +18,7 @@ from .actions import palette_actions
 from .assistant import create_agent
 from .live import LiveDashboardOps
 from .ops import read_revision
-from .tools import FlowDashDeps, approval_policy
+from .tools import ARTIFACT_KIND, FlowDashDeps, approval_policy
 
 if t.TYPE_CHECKING:
     from panel_agents import Artifact, ArtifactVersion
@@ -69,7 +69,8 @@ class AgentSession:
         self.app = app
         self.ops = LiveDashboardOps(app)
         self.actions = palette_actions(app)
-        self.runner = AgentRunner(
+        self.runner = _SessionRunner(
+            self,
             agent,
             RunState(),
             deps=FlowDashDeps(self.ops),
@@ -80,6 +81,29 @@ class AgentSession:
         )
         self.drawer = AgentDrawer(
             self.runner, title="Assistant", variant="persistent", on_apply=self.apply_version
+        )
+
+    def publish_user_edits(self):
+        """Publish the open dashboard as a version if it changed since the agent last saw it.
+
+        Runs before every request to the agent, so the versions include the
+        user's own edits and the agent is told about them.
+        """
+        current = self.app._current_dashboard
+        if current is None:
+            return
+        artifact_id = f"dashboard:{current.dashboard_id}"
+        state = self.runner.state
+        artifact = state.artifacts[artifact_id] if artifact_id in state.artifacts else None
+        latest = artifact.applied_version if artifact is not None else None
+        if latest is None or read_revision(latest.value) == self.ops.revision():
+            return
+        try:
+            text = self.ops.get_dashboard()
+        except PermissionError:
+            return
+        state.publish_artifact(
+            artifact_id, text, kind=ARTIFACT_KIND, title=current.title, applied=True
         )
 
     def dock(self, content):
@@ -125,3 +149,15 @@ class AgentSession:
             cancel_label="Keep my changes",
         )
         return await answer
+
+
+class _SessionRunner(AgentRunner):
+    """Publishes the user's own edits before each request, so versions stay truthful."""
+
+    def __init__(self, session: AgentSession, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._session = session
+
+    async def run(self, prompt=None, **kwargs):
+        self._session.publish_user_edits()
+        return await super().run(prompt, **kwargs)
