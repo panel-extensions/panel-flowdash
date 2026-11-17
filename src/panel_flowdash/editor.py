@@ -3593,7 +3593,9 @@ class FlowDash(Viewer):
     def import_dashboard(self, data: dict | str | bytes) -> DashboardModel:
         """Replace the canvas with an exported dashboard, as dropping its file does.
 
-        The loaded dashboard keeps its id, owner, title and sharing rules, so
+        *data* is a downloaded dashboard file, as JSON text or a dict, or a
+        dashboard in the YAML format (see :mod:`panel_flowdash.agent`). The
+        loaded dashboard keeps its id, owner, title and sharing rules, so
         saving writes the imported contents to it. Without a loaded dashboard
         the file's title is used and saving creates a new one. The canvas is
         marked dirty.
@@ -3601,7 +3603,8 @@ class FlowDash(Viewer):
         Raises
         ------
         ValueError
-            If *data* is not valid JSON or not a dashboard export.
+            If *data* is neither a dashboard export nor a dashboard in the YAML
+            format.
         """
         model = self._imported_model(data)
         self.load_model(model)
@@ -3610,14 +3613,26 @@ class FlowDash(Viewer):
 
     def _imported_model(self, data: dict | str | bytes) -> DashboardModel:
         """Parse an export into a model that takes the loaded dashboard's identity."""
+        from panel_flowdash.agent.yaml_format import (
+            dashboard_from_dict,
+            is_dashboard_yaml,
+            parse_yaml,
+        )
+
+        current = self.dashboard
         if isinstance(data, (str, bytes)):
             try:
                 data = json.loads(data)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"Not valid JSON: {exc}") from exc
+            except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+                try:
+                    data = parse_yaml(data)
+                except ValueError:
+                    raise ValueError(f"Not valid JSON: {exc}") from exc
+        if is_dashboard_yaml(data):
+            # Names map back to the ids of the canvas they were exported from.
+            data = dashboard_from_dict(data, base=self.export_dashboard())
         if not isinstance(data, dict) or not isinstance(data.get("items"), list):
             raise ValueError("Not a FlowDash dashboard export.")
-        current = self.dashboard
         try:
             model = DashboardModel.from_dict(
                 {
