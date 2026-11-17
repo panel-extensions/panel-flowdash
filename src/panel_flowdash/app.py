@@ -113,6 +113,14 @@ _COMPONENT_PALETTE_CARD_CSS = """
 """
 
 
+# Logged when an agent is configured but its dependencies are missing.
+AGENT_EXTRA_MISSING = (
+    "The FlowDash agent needs Python 3.11 or newer and the agent extra: "
+    "pip install 'panel-flowdash[agent]', plus the client of your model provider, "
+    "e.g. 'pydantic-ai-slim[openai]'"
+)
+
+
 class FlowDashApp(Viewer):
     """FlowDash application: scans a project directory and serves its pages and components."""
 
@@ -829,11 +837,7 @@ class FlowDashApp(Viewer):
         try:
             from panel_flowdash.agent.session import AgentSession, resolve_agent
         except ImportError as exc:
-            logger.error(
-                "The FlowDash agent needs the agent extra (pip install "
-                "'panel-flowdash[agent]'): %s",
-                exc,
-            )
+            logger.error("%s (%s)", AGENT_EXTRA_MISSING, exc)
             return None
         agent = resolve_agent(self.agent, self.agent_model)
         return None if agent is None else AgentSession(self, agent)

@@ -33,7 +33,13 @@ def __getattr__(name):
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
     import importlib
 
-    return getattr(importlib.import_module(f"{__name__}.{module}"), name)
+    try:
+        return getattr(importlib.import_module(f"{__name__}.{module}"), name)
+    except ImportError as exc:
+        raise ImportError(
+            f"panel_flowdash.agent.{name} needs Python 3.11 or newer and the agent "
+            "extra: pip install 'panel-flowdash[agent]'"
+        ) from exc
 
 
 __all__ = [

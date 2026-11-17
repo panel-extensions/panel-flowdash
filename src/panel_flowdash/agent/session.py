@@ -34,7 +34,7 @@ def resolve_agent(agent: t.Any, model: str | None) -> Agent | None:
     model is configured; ``True`` requires one; a string is the default
     agent's model; anything else is a ready-made pydantic-ai ``Agent``.
     """
-    from .assistant import default_model
+    from .assistant import NO_MODEL, default_model
 
     if agent is False:
         return None
@@ -42,10 +42,7 @@ def resolve_agent(agent: t.Any, model: str | None) -> Agent | None:
         model = model or default_model()
         if model is None:
             if agent is True:
-                raise ValueError(
-                    "FlowDashApp(agent=True) needs a model: set agent_model or "
-                    "FLOWDASH_AGENT_MODEL, e.g. to 'openai:gpt-5'."
-                )
+                raise ValueError(NO_MODEL)
             return None
         return create_agent(model)
     if isinstance(agent, str):

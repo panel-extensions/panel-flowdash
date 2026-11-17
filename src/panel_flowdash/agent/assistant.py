@@ -53,6 +53,16 @@ How to work:
 """
 
 
+NO_MODEL = (
+    "The FlowDash agent has no model. Name one as '<provider>:<model>', the way "
+    "pydantic-ai does, in one of these ways: set the environment variable "
+    f"{MODEL_ENV}=<provider>:<model> before 'flowdash serve', add "
+    "agent_model = '<provider>:<model>' to the project's __init__.py, or pass "
+    "FlowDashApp(agent_model='<provider>:<model>'). The provider's API key must be "
+    "set too, e.g. OPENAI_API_KEY or ANTHROPIC_API_KEY."
+)
+
+
 def default_model() -> str | None:
     """Return the model the default agent uses, from ``FLOWDASH_AGENT_MODEL``, or None."""
     return os.environ.get(MODEL_ENV) or None
@@ -131,10 +141,7 @@ def create_agent(
     """
     model = model if model is not None else default_model()
     if model is None:
-        raise ValueError(
-            f"No model for the FlowDash agent: pass one, or set {MODEL_ENV}, "
-            "e.g. to 'openai:gpt-5'."
-        )
+        raise ValueError(NO_MODEL)
     agent = Agent(
         model,
         deps_type=FlowDashDeps,
