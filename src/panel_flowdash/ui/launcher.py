@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import io
-import json
 import typing as t
 import uuid
 from datetime import datetime, timezone
@@ -303,20 +302,15 @@ def parse_dashboard_file(content: str | bytes, user: str) -> DashboardModel:
     ValueError
         If *content* is neither a dashboard export nor a dashboard in the YAML format.
     """
-    try:
-        data = json.loads(content)
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        text = content.decode("utf-8", "replace") if isinstance(content, bytes) else content
-        if text.lstrip().startswith(("{", "[")):
-            raise ValueError(f"Not valid JSON: {exc}") from exc
-        from panel_flowdash.agent.yaml_format import DashboardYAMLError, dashboard_from_yaml
+    from panel_flowdash.agent.yaml_format import (
+        dashboard_from_dict,
+        is_dashboard_yaml,
+        read_dashboard_text,
+    )
 
-        try:
-            data = dashboard_from_yaml(content)
-        except DashboardYAMLError as yaml_exc:
-            if yaml_exc.reason.startswith("Not a FlowDash dashboard"):
-                raise ValueError(f"Not valid JSON: {exc}") from exc
-            raise
+    data = read_dashboard_text(content)
+    if is_dashboard_yaml(data):
+        data = dashboard_from_dict(data)
     if not isinstance(data, dict) or not isinstance(data.get("items"), list):
         raise ValueError("Not a FlowDash dashboard export.")
     title = data.get("title")
