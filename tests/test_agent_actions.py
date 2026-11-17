@@ -16,13 +16,13 @@ from .test_agent_tools import _app, scripted
 
 
 @pytest.fixture
-def app(monkeypatch):
+async def app(monkeypatch):
     store = MemoryDashboardStore()
     store.create_dashboard("alice", "Mine")
     return _app(store, monkeypatch)
 
 
-def test_commands_are_the_palettes_items(app):
+async def test_commands_are_the_palettes_items(app):
     registry = palette_actions(app)
     listed = {c["id"] for c in registry["list_commands"].function()}
     assert "action:theme" in listed
