@@ -29,7 +29,10 @@ nav = [
     {"Viewer Components" = "examples/viewer-components.md"},
     {"Multi-step Pipeline" = "examples/pipeline.md"}
   ]},
-  {"Reference" = "reference/panel_flowdash.md"},
+  {"Reference" = [
+    {"API" = "reference/panel_flowdash.md"},
+    {"Dashboard YAML Format" = "reference/dashboard-yaml.md"}
+  ]},
   {"Releases" = "releases.md"}
 ]
 

@@ -2833,16 +2833,30 @@ class FlowDash(Viewer):
         if not self._component_authorized(component_id):
             title = self._component_entries[component_id].title
             raise PermissionError(f"You are not authorized to use '{title}'.")
-        type_key = component_id.replace("/", "__")
         instance_id = self._place(
-            component_id,
-            f"{type_key}_{uuid.uuid4().hex[:6]}",
-            config or {},
-            position,
+            component_id, self._new_instance_id(component_id), config or {}, position
         )
         self.dirty = True
         self._sync_placed()
         return instance_id
+
+    def _new_instance_id(self, component_id: str) -> str:
+        """Return a new instance id whose node name no node on the canvas has.
+
+        The name the dashboard YAML gives a node comes from its id, so a new
+        node must not take the name of an existing one, which would then
+        have to be renamed.
+        """
+        from panel_flowdash.agent.yaml_format import node_names
+
+        items = [{"instance_id": item["instance_id"]} for item in self._tile_items]
+        taken = set(node_names(items).values()) | {item["instance_id"] for item in items}
+        type_key = component_id.replace("/", "__")
+        while True:
+            instance_id = f"{type_key}_{uuid.uuid4().hex[:6]}"
+            name = node_names([*items, {"instance_id": instance_id}])[instance_id]
+            if instance_id not in taken and name not in taken:
+                return instance_id
 
     def _place(self, component_id, instance_id, config, position=None) -> str:
         """Instantiate a component and add it to the graph, canvas and tile list.
@@ -3593,7 +3607,9 @@ class FlowDash(Viewer):
     def import_dashboard(self, data: dict | str | bytes) -> DashboardModel:
         """Replace the canvas with an exported dashboard, as dropping its file does.
 
-        The loaded dashboard keeps its id, owner, title and sharing rules, so
+        *data* is a downloaded dashboard file, as JSON text or a dict, or a
+        dashboard in the YAML format (see :mod:`panel_flowdash.agent`). The
+        loaded dashboard keeps its id, owner, title and sharing rules, so
         saving writes the imported contents to it. Without a loaded dashboard
         the file's title is used and saving creates a new one. The canvas is
         marked dirty.
@@ -3601,7 +3617,8 @@ class FlowDash(Viewer):
         Raises
         ------
         ValueError
-            If *data* is not valid JSON or not a dashboard export.
+            If *data* is neither a dashboard export nor a dashboard in the YAML
+            format.
         """
         model = self._imported_model(data)
         self.load_model(model)
@@ -3610,14 +3627,20 @@ class FlowDash(Viewer):
 
     def _imported_model(self, data: dict | str | bytes) -> DashboardModel:
         """Parse an export into a model that takes the loaded dashboard's identity."""
+        from panel_flowdash.agent.yaml_format import (
+            dashboard_from_dict,
+            is_dashboard_yaml,
+            read_dashboard_text,
+        )
+
+        current = self.dashboard
         if isinstance(data, (str, bytes)):
-            try:
-                data = json.loads(data)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"Not valid JSON: {exc}") from exc
+            data = read_dashboard_text(data)
+        if is_dashboard_yaml(data):
+            # Names map back to the ids of the canvas they were exported from.
+            data = dashboard_from_dict(data, base=self.export_dashboard())
         if not isinstance(data, dict) or not isinstance(data.get("items"), list):
             raise ValueError("Not a FlowDash dashboard export.")
-        current = self.dashboard
         try:
             model = DashboardModel.from_dict(
                 {
