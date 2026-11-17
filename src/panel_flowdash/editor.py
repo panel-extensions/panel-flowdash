@@ -1319,13 +1319,17 @@ class FlowDash(Viewer):
             return
         for key, default in _NODE_DEFAULTS.items():
             node.setdefault(key, dict(default) if isinstance(default, dict) else default)
-        if self._flow.validate_on_add:
-            if _validate_node_data is not None:
-                node_type = self._flow.node_types.get(node["type"]) or {}
-                _validate_node_data(node["data"], node_type.get("schema"))
-            else:
-                _warn_validation_unavailable()
+        self._check_node_data(node["type"], node["data"])
         self._canvas_batch[0].append(node)
+
+    def _check_node_data(self, node_type: str, data: dict):
+        """Raise ValueError if *data* does not match the schema of *node_type* on the canvas."""
+        if not self._flow.validate_on_add:
+            return
+        if _validate_node_data is None:
+            _warn_validation_unavailable()
+            return
+        _validate_node_data(data, (self._flow.node_types.get(node_type) or {}).get("schema"))
 
     def _add_canvas_edge(self, edge: dict):
         if self._canvas_batch is None:
@@ -1352,13 +1356,8 @@ class FlowDash(Viewer):
             self._canvas_batch = None
             flow = self._flow
             with self._muted_canvas():
-                add_nodes = getattr(flow, "add_nodes", None)
-                add_edges = getattr(flow, "add_edges", None)
-                if add_nodes is not None and add_edges is not None:
-                    _add_all(add_nodes, flow.add_node, nodes)
-                    _add_all(add_edges, flow.add_edge, edges)
-                elif nodes or edges:
-                    flow.param.update(nodes=flow.nodes + nodes, edges=flow.edges + edges)
+                _add_all(flow.add_nodes, flow.add_node, nodes)
+                _add_all(flow.add_edges, flow.add_edge, edges)
 
     def _forget_node(self, node_id: str):
         """Drop a node from the graph, the tile bookkeeping and the edge map."""
@@ -2538,13 +2537,26 @@ class FlowDash(Viewer):
         return instance_id
 
     def _place(self, component_id, instance_id, config, position=None) -> str:
-        """Instantiate a component and add it to the graph, canvas and tile list."""
+        """Instantiate a component and add it to the graph, canvas and tile list.
+
+        A component already placed under *instance_id* is removed first, so
+        the new one replaces it rather than sitting next to it under the same id.
+        """
         entry = self._component_entries[component_id]
         spec = self._component_specs[component_id]
+        if any(item["instance_id"] == instance_id for item in self._tile_items):
+            self._unplace(instance_id)
 
         node_state = self._dataflow_graph.add_node(instance_id, component_id)
         config_state = self._dataflow_graph.get_config_state(instance_id)
         config_data = self._seed_config_state(instance_id, config)
+        # Checked before the component is created, so data the canvas would
+        # reject leaves nothing behind for a placeholder to share the id with.
+        try:
+            self._check_node_data(component_id.replace("/", "__"), config_data)
+        except ValueError:
+            self._dataflow_graph.remove_node(instance_id)
+            raise
         before = self._subscriptions()
         token = _INSTANTIATING.set(self)
         try:
@@ -2633,12 +2645,21 @@ class FlowDash(Viewer):
 
     def remove_component(self, instance_id: str):
         """Remove a placed component along with its edges and its tile."""
-        self._forget_node(instance_id)
-        with self._muted_canvas():
-            self._flow.remove_node(instance_id)
-        self._dispose_component(instance_id)
+        self._unplace(instance_id)
         self.dirty = True
         self._rebuild_sidebar()
+
+    def _unplace(self, instance_id: str):
+        """Take a component off the graph, canvas and tile list, and dispose it."""
+        self._forget_node(instance_id)
+        if self._canvas_batch is not None:
+            nodes, edges = self._canvas_batch
+            nodes[:] = [n for n in nodes if n["id"] != instance_id]
+            edges[:] = [e for e in edges if instance_id not in (e["source"], e["target"])]
+        if any(node["id"] == instance_id for node in self._flow.nodes):
+            with self._muted_canvas():
+                self._flow.remove_node(instance_id)
+        self._dispose_component(instance_id)
 
     def connect(
         self,

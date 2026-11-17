@@ -206,10 +206,13 @@ class TestNodeCard:
 
 class TestCanvasOptions:
     async def test_config_is_edited_in_the_inspector_not_on_the_node(self, editor):
-        editor.add_component(CUSTOM)
+        node_id = editor.add_component(CUSTOM)
         assert editor._flow.editor_mode == "side"
         assert editor._flow.node_editors == {}
-        assert editor._flow._node_editors == {next(iter(editor._flow._node_editors)): None}
+        # ReactFlow builds a node's editor once the node is selected.
+        select_on_canvas(editor._flow, node_id=node_id)
+        assert editor._flow._node_editors == {node_id: None}
+        assert editor._flow._selected_editor is None
 
     async def test_popups_open_on_click(self, editor):
         assert editor.popup_trigger == editor._flow.popup_trigger == "click"
