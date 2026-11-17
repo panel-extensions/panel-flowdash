@@ -47,6 +47,8 @@ Serving and API:
 
 - `flowdash serve` reads every `FlowDashApp` option it supports from the project's `__init__.py` and exits with an error naming the attribute when a value is invalid. `__init__.py` now runs after the registry scan, and passing `--db-path` while the project defines `store` is an error
 - `ComponentSpec`, `InputPort` and `PanelAppMetadata` gained fields in the middle of their argument lists (`max_size` and `min_size` before `config`, `handles_failures` before `parameter`, and `placeholder`, `handles_failures`, `aliases` and `port_aliases`). Pass their arguments by keyword
+- Built-in text components: Markdown (rendered without raw HTML or math, with `{{ value }}` placeholders filled from an optional input), Notes (rich text typed into the tile while editing, read-only for viewers), Heading and Divider
+- A Viewer config param declared with `metadata={"flowdash": {"two_way": True}}` is synced back to the node's config when the component changes it, so it is saved with the dashboard
 - The `default_size`, `min_size` and `max_size` hints of `@register` take `{"width": ..., "height": ...}` in pixels; the old `{"w", "h"}` keys never had an effect and are ignored with a warning
 - The private `_on_action_edit`, `_on_action_rename`, `_on_action_delete` and `_on_action_create` methods of `FlowDashApp` were removed in favour of `_on_dashboard_action`
 - A Viewer component receives a new input inside `pn.io.hold()`, so the whole downstream cascade reaches the browser as one patch. Intermediate updates a component makes during the cascade, such as a progress message, are no longer shown separately

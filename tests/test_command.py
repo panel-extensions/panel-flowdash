@@ -18,6 +18,7 @@ from panel_flowdash.dashboard_store import DashboardStore, MemoryDashboardStore
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.json_store import JSONFolderDashboardStore
 from panel_flowdash.registry import RegistryEntry
+from panel_flowdash.widgets import BUILTIN_COMPONENTS
 
 
 def _create_project(tmp_path: Path):
@@ -286,7 +287,7 @@ class TestFlowDashApp:
 
         assert app.title == "Test App"
         assert app.home_dashboard is None
-        assert len(app._component_entries) == 5
+        assert len(app._component_entries) == 2 + len(BUILTIN_COMPONENTS)
         assert len(app._page_entries) == 2
 
     async def test_builtin_widgets_can_be_disabled(self, tmp_path):
@@ -344,7 +345,7 @@ class TestFlowDashApp:
 
         assert type(app._editor) is CustomFlowDash
         assert app._editor.popup_trigger == "click"
-        assert len(app._component_entries) == 5
+        assert len(app._component_entries) == 2 + len(BUILTIN_COMPONENTS)
 
     @pytest.mark.failures
     async def test_propagate_failures_reaches_the_editor(self, tmp_path):

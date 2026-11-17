@@ -60,7 +60,7 @@ role their ports suggest:
 |-------|------------|
 | Data sources | Outputs but no inputs |
 | Transforms | Inputs and outputs |
-| Views | No outputs |
+| Views | No outputs, including the built-in Markdown, Notes, Heading and Divider |
 | Widgets | The built-in Select, MultiChoice and Slider |
 
 A `source`, `transform`, `view` or `widget` tag overrides this, for example

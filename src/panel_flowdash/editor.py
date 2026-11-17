@@ -37,7 +37,7 @@ from panel_tiles import TileGrid
 
 from panel_flowdash.auth import Permission
 from panel_flowdash.component_library import normalize_components
-from panel_flowdash.component_spec import build_component_specs
+from panel_flowdash.component_spec import _flowdash_metadata, build_component_specs
 from panel_flowdash.dashboard_store import (
     BaseDashboardStore,
     DashboardConflictError,
@@ -2067,8 +2067,13 @@ class FlowDash(Viewer):
                     logger.warning("Saved config '%s' rejected on %s: %s", key, instance_id, exc)
         return {name: getattr(config_state, name) for name in config_state.param if name != "name"}
 
-    def _bind_config_to_viewer(self, instance, config_state, wiring):
-        """Sync config-state params onto a Viewer instance, live."""
+    def _bind_config_to_viewer(self, node_id, instance, config_state, wiring):
+        """Sync config-state params onto a Viewer instance, live.
+
+        A config param the component declares ``two_way`` in its ``"flowdash"``
+        metadata is synced back too, so a value the component edits itself, such
+        as text typed into its tile, is saved with the dashboard.
+        """
         for name in config_state.param:
             if name == "name" or not hasattr(instance.param, name):
                 continue
@@ -2086,6 +2091,18 @@ class FlowDash(Viewer):
 
             watcher = config_state.param.watch(_propagate, name)
             wiring.append(partial(config_state.param.unwatch, watcher))
+            if _flowdash_metadata(instance.param[name]).get("two_way"):
+                watcher = instance.param.watch(
+                    partial(self._config_edited_by_component, weakref.ref(self), node_id),
+                    name,
+                )
+                wiring.append(partial(instance.param.unwatch, watcher))
+
+    @staticmethod
+    def _config_edited_by_component(editor_ref, node_id, event):
+        editor = editor_ref()
+        if editor is not None:
+            editor._apply_config_patch(node_id, {event.name: event.new})
 
     # ------------------------------------------------------------------
     # Component instantiation
@@ -2131,7 +2148,7 @@ class FlowDash(Viewer):
         wiring = self._component_wiring[node_id] = []
 
         if config_state is not None:
-            self._bind_config_to_viewer(instance, config_state, wiring)
+            self._bind_config_to_viewer(node_id, instance, config_state, wiring)
 
         # Weak, so a component kept by the app does not keep a discarded editor alive.
         editor = weakref.ref(self)

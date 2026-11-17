@@ -117,6 +117,12 @@ inspector updates the corresponding param on the live instance. You do not need 
 accept any extra argument, just declare the params and use them in
 `__panel__`.
 
+A config param is synced the other way too when it declares
+`metadata={"flowdash": {"two_way": True}}`. Use it for a value the component
+edits itself, like the built-in Notes component does with text typed into its
+tile: setting the param on the instance updates the node's config and marks the
+dashboard as unsaved, so the edit is saved with it.
+
 **Function components.** Declare an `instance_config` parameter to receive the
 node's config-state object (a `param.Parameterized` instance). The existing
 `config` argument still carries the shared session state, so the two are

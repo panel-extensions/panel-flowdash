@@ -6,7 +6,7 @@ import param
 import pytest
 from panel.viewable import Viewer
 
-from panel_flowdash import register
+from panel_flowdash import normalize_components, register
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.registry import RegistryEntry
 from panel_flowdash.ui.palette import (
@@ -17,6 +17,16 @@ from panel_flowdash.ui.palette import (
     palette_items,
 )
 from panel_flowdash.ui.roles import component_role
+from panel_flowdash.widgets import BUILTIN_COMPONENTS
+
+
+def _builtin(role):
+    """The ids of the built-in components with *role*, in palette order."""
+    return [
+        app_id
+        for app_id, entry in normalize_components(BUILTIN_COMPONENTS).items()
+        if component_role(entry, (), ()) == role
+    ]
 
 
 @register(
@@ -136,8 +146,8 @@ class TestRoles:
         assert _groups(editor) == {
             "Data sources": ["Demo/prices", "Demo/feed"],
             "Transforms": ["Demo/filter", "Demo/shouter"],
-            "Views": ["Demo/chart", "Demo/header"],
-            "Widgets": ["Widgets/Select", "Widgets/MultiChoice", "Widgets/Slider"],
+            "Views": ["Demo/chart", "Demo/header", *_builtin("view")],
+            "Widgets": _builtin("widget"),
         }
 
     def test_groups_are_headers_that_cannot_be_dragged(self, editor):
