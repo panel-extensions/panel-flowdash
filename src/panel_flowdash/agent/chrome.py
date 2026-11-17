@@ -26,6 +26,15 @@ _NOTICE_STYLES = {
 }
 
 
+def _summary(request) -> str:
+    """Return the first sentence of an approval's description, or its tool's name."""
+    text = (getattr(request, "description", None) or "").strip().split("\n")[0]
+    text = text.split(". ")[0].rstrip(".")
+    if not text:
+        return request.tool_name
+    return text if len(text) <= 80 else text[:79] + "…"
+
+
 class SessionChrome:
     """Connects a session's drawer to the parts of the app it shares the screen with.
 
@@ -75,6 +84,8 @@ class SessionChrome:
             editor._view.append(self.notice)
             editor.param.watch(self._on_fullscreen, "fullscreen")
             editor._inspector.param.watch(self._on_user_toggle, "collapsed")
+            # Entering edit mode with the drawer open shows the inspector beside it.
+            editor._inspector.param.watch(self._on_inspector_shown, "visible")
 
         palette = session.app._command_palette
         if palette is not None:
@@ -114,8 +125,9 @@ class SessionChrome:
         editor = self.session.app._editor
         if pending > self._pending_seen and editor is not None and editor.fullscreen:
             request = event.new[-1]
-            title = getattr(request, "description", None) or request.tool_name
-            self._notice_text.object = f"The assistant is waiting for your approval: {title}"
+            self._notice_text.object = (
+                f"The assistant is waiting for your approval: {_summary(request)}"
+            )
             self.notice.visible = True
         elif not pending:
             self.notice.visible = False
@@ -129,15 +141,23 @@ class SessionChrome:
     # The inspector
     # ------------------------------------------------------------------
 
+    def _on_inspector_shown(self, event):
+        if event.new and self.session.drawer.open:
+            self._fold(self.session.app._editor)
+
+    def _fold(self, editor):
+        inspector = editor._inspector
+        if inspector.visible and not inspector.collapsed:
+            self._set_collapsed(editor, True)
+            self._folded = True
+
     def _on_open(self, event):
         editor = self.session.app._editor
         inspector = getattr(editor, "_inspector", None)
         if inspector is None:
             return
         if event.new:
-            if inspector.visible and not inspector.collapsed:
-                self._set_collapsed(editor, True)
-                self._folded = True
+            self._fold(editor)
         elif self._folded:
             if inspector.collapsed:
                 self._set_collapsed(editor, False)

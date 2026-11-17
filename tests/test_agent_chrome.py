@@ -28,7 +28,12 @@ def request(state, call_id="t1"):
     state.apply_many(
         [
             ev.RunStarted(run_id="r"),
-            ev.ApprovalRequested(tool_call_id=call_id, tool_name="save_dashboard", run_id="r"),
+            ev.ApprovalRequested(
+                tool_call_id=call_id,
+                tool_name="save_dashboard",
+                run_id="r",
+                description="Save the open dashboard. The user approves each save.\nIt stores:\n- a",
+            ),
         ]
     )
 
@@ -37,6 +42,17 @@ def test_the_inspector_folds_while_the_drawer_is_open(session):
     inspector = session.app._editor._inspector
     inspector.visible, inspector.collapsed = True, False
     session.drawer.open = True
+    assert inspector.collapsed
+    session.drawer.open = False
+    assert not inspector.collapsed
+
+
+def test_an_inspector_shown_while_the_drawer_is_open_is_folded(session):
+    inspector = session.app._editor._inspector
+    inspector.visible, inspector.collapsed = False, False
+    session.drawer.open = True
+    assert not inspector.collapsed
+    inspector.visible = True
     assert inspector.collapsed
     session.drawer.open = False
     assert not inspector.collapsed
@@ -63,7 +79,10 @@ def test_an_approval_in_full_screen_shows_a_notice_that_leads_to_the_drawer(sess
     request(session.runner.state)
     chrome = session.chrome
     assert chrome.notice.visible
-    assert "save_dashboard" in chrome._notice_text.object
+    assert (
+        chrome._notice_text.object
+        == "The assistant is waiting for your approval: Save the open dashboard"
+    )
     chrome.review()
     assert not editor.fullscreen and not chrome.notice.visible
     assert session.drawer.open and session.drawer.tab == "chat"
