@@ -1,0 +1,767 @@
+"""Operations on dashboards, as the person using an editor may perform them.
+
+:class:`DashboardOps` is the surface an AI agent edits dashboards through. It
+works on a :class:`~panel_flowdash.editor.FlowDash` editor, so every change
+goes through the same calls, component permissions and import checks as the
+editor's own UI, and nothing it does can exceed what the editor's user may do.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import copy
+import hashlib
+import re
+import typing as t
+
+import panel as pn
+
+from panel_flowdash.dashboard_store import DashboardModel
+from panel_flowdash.editor import (
+    _SESSION_EDITORS,
+    FlowDash,
+    _ReadOnlyEditorError,
+    export_model,
+)
+from panel_flowdash.ui import tile_layout
+
+from .preview import preview_editor
+from .schema import component_schema
+from .validation import Issue, _check_value, _suggest, validate_dashboard
+from .yaml_format import (
+    DashboardYAMLError,
+    dashboard_from_dict,
+    dashboard_to_dict,
+    dashboard_to_yaml,
+    editor_restricted,
+    node_names,
+    parse_yaml,
+    split_port,
+)
+
+
+class OperationError(ValueError):
+    """An operation was refused because of what it asked for, e.g. a port that does not exist.
+
+    The message says what to change, so an agent can retry with a fix.
+    """
+
+
+class NotFound(OperationError, KeyError):
+    """The dashboard asked for does not exist, or the user may not open it."""
+
+    def __str__(self) -> str:
+        """Return the message, without the quotes ``KeyError`` adds."""
+        return str(self.args[0]) if self.args else ""
+
+
+# How long a preview or a bulk replace may take to import and start its components.
+DEFAULT_TIMEOUT = 30
+
+_REVISION = re.compile(r"# revision: (?P<token>[0-9a-f]+)\s*")
+
+
+def _revision(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+
+
+def read_revision(text: str) -> str | None:
+    """Return the revision a YAML text from :meth:`DashboardOps.get_dashboard` was read at.
+
+    Only a ``# revision: <token>`` comment on the first line counts.
+    """
+    first = text.split("\n", 1)[0]
+    match = _REVISION.fullmatch(first)
+    return match["token"] if match else None
+
+
+class DashboardOps:
+    """Read and edit dashboards through an editor, with its user's rights.
+
+    Nodes and ports are named as in the dashboard YAML (see
+    :func:`~panel_flowdash.agent.dashboard_to_yaml`): a node by its name, a
+    port as ``"<node>.<port>"``. Every change applies to the editor's canvas
+    and marks it dirty; nothing is stored until :meth:`save`.
+
+    Rights follow the editor: components its ``authorize_component`` refuses
+    can neither be listed nor placed, nodes of such components cannot be
+    changed, dashboards its ``authorize_dashboard`` does not let the user view
+    are reported as missing, and while it is ``read_only`` (the user may not
+    edit the dashboard) every change is refused.
+
+    Parameters
+    ----------
+    editor
+        The editor to work through: the one on screen, or one without a page
+        built for the purpose, e.g. ``FlowDash(components, store=store,
+        authorize_component=..., authorize_dashboard=...)``.
+    """
+
+    def __init__(self, editor: FlowDash):
+        self.editor = editor
+
+    # ------------------------------------------------------------------
+    # Rights
+    # ------------------------------------------------------------------
+
+    def _stored(self, dashboard_id: str) -> DashboardModel:
+        editor = self.editor
+        model = editor.store._load_any(dashboard_id) if editor.store is not None else None
+        # A dashboard the user may not view is answered like a missing one.
+        if model is None or not editor._dashboard_authorized(model, "view"):
+            raise NotFound(f"No dashboard '{dashboard_id}'. Call list_dashboards to see yours.")
+        return model
+
+    def _can_read_source(self, model: DashboardModel, current: bool = False) -> bool:
+        """Whether the user may see the dashboard's components and config, as Download shows them.
+
+        With *current*, *model* is the dashboard in the editor, whose
+        ``read_only`` state also applies.
+        """
+        editable = not (current and self.editor.read_only)
+        if editable and self.editor._dashboard_authorized(model, "edit"):
+            return True
+        return not self.editor.inspect_outputs or bool(
+            model.settings.get("viewers_can_inspect", False)
+        )
+
+    def _can_sample(self) -> bool:
+        """Whether the user may see output values, as the tiles' Inspect action shows them."""
+        editor = self.editor
+        return not editor.read_only or (
+            editor.inspect_outputs and editor.settings.viewers_can_inspect
+        )
+
+    def _source_visible(self) -> bool:
+        current = self.editor.dashboard
+        return current is None or self._can_read_source(self.editor.to_model(), current=True)
+
+    def _require_edit(self):
+        editor = self.editor
+        if editor.read_only:
+            raise PermissionError("You may only view this dashboard, so it cannot be changed.")
+        current = editor.dashboard
+        if current is not None and editor.store is not None:
+            stored = editor.store._load_any(current.dashboard_id)
+            if stored is not None and not editor._dashboard_authorized(stored, "edit"):
+                editor.read_only = True
+                raise PermissionError("You no longer have edit access to this dashboard.")
+
+    # ------------------------------------------------------------------
+    # Names
+    # ------------------------------------------------------------------
+
+    def _export(self) -> dict:
+        return self.editor.export_dashboard()
+
+    def _names(self) -> dict[str, str]:
+        return node_names(self._export()["items"])
+
+    def _instance(self, name: str) -> str:
+        ids = {n: iid for iid, n in self._names().items()}
+        if name not in ids:
+            raise OperationError(f"No node '{name}'." + _suggest(name, ids))
+        return ids[name]
+
+    def _item(self, instance_id: str) -> dict:
+        return next(i for i in self.editor._tile_items if i["instance_id"] == instance_id)
+
+    def _changeable(self, name: str) -> tuple[str, dict]:
+        """Return the instance id and item of a node whose component the user may use."""
+        instance_id = self._instance(name)
+        item = self._item(instance_id)
+        placeholder = item.get("placeholder")
+        if placeholder is not None:
+            if placeholder.private:
+                raise PermissionError(f"'{name}' is restricted and cannot be changed.")
+            raise OperationError(f"'{name}' could not be loaded ({placeholder.message}).")
+        return instance_id, item
+
+    def _port(self, ref: str, direction: str) -> tuple[str, str]:
+        try:
+            name, port = split_port(ref, direction)
+        except ValueError as exc:
+            raise OperationError(str(exc)) from exc
+        instance_id, item = self._changeable(name)
+        spec = self.editor.component_specs[item["component_id"]]
+        ports = spec.outputs if direction == "source" else spec.inputs
+        resolved = spec.resolve_name(port)
+        if not any(p.name == resolved for p in ports):
+            kind = "output" if direction == "source" else "input"
+            raise OperationError(
+                f"'{name}' ({spec.title}) has no {kind} '{port}'."
+                + (_suggest(port, [p.name for p in ports]) if ports else f" It has no {kind}s.")
+            )
+        return instance_id, resolved
+
+    # ------------------------------------------------------------------
+    # Reading
+    # ------------------------------------------------------------------
+
+    def _authorized_specs(self) -> dict:
+        editor = self.editor
+        return {
+            cid: spec
+            for cid, spec in editor.component_specs.items()
+            if editor._component_authorized(cid)
+        }
+
+    def list_components(self, query: str = "") -> list[dict[str, t.Any]]:
+        """List the components the user may place, with their ports and config fields.
+
+        Parameters
+        ----------
+        query
+            Only list components whose id, title, description or tags contain
+            each of its words, ignoring case.
+
+        Returns
+        -------
+        list of dict
+            One :func:`~panel_flowdash.agent.component_schema` per component.
+        """
+        words = query.lower().split()
+        entries = self.editor._component_entries
+        listed = []
+        for cid, spec in self._authorized_specs().items():
+            text = " ".join([cid, spec.title, spec.description or "", *spec.tags]).lower()
+            if all(word in text for word in words):
+                listed.append(component_schema(spec, control=entries[cid].metadata.sidebar))
+        return listed
+
+    def list_dashboards(self) -> list[dict[str, t.Any]]:
+        """List the stored dashboards the user may open, most recently changed first.
+
+        Returns
+        -------
+        list of dict
+            ``id``, ``title``, ``description`` and ``can_edit`` of each dashboard.
+        """
+        editor = self.editor
+        if editor.store is None:
+            return []
+        return [
+            {
+                "id": model.dashboard_id,
+                "title": model.title,
+                "description": model.settings.get("description", ""),
+                "can_edit": editor._dashboard_authorized(model, "edit"),
+            }
+            for model in editor.store._all_dashboards()
+            if editor._dashboard_authorized(model, "view")
+        ]
+
+    def get_dashboard(self, dashboard_id: str | None = None) -> str:
+        """Return a dashboard as YAML.
+
+        The YAML of the editor's dashboard starts with a ``# revision: <token>``
+        comment identifying the canvas it was read from; :meth:`replace_yaml`
+        refuses text read from a canvas that has changed since.
+
+        Parameters
+        ----------
+        dashboard_id
+            A stored dashboard. Defaults to the dashboard in the editor, with
+            its unsaved changes.
+
+        Raises
+        ------
+        NotFound
+            If there is no such dashboard or the user may not open it.
+        PermissionError
+            If the user may view it but it hides its components from viewers,
+            as Download does.
+        """
+        if dashboard_id is None or (
+            self.editor.dashboard is not None
+            and dashboard_id == self.editor.dashboard.dashboard_id
+        ):
+            if not self._source_visible():
+                raise PermissionError(
+                    "Only people who can edit this dashboard may read its definition."
+                )
+            text = dashboard_to_yaml(self.editor)
+            return f"# revision: {_revision(text)}\n{text}"
+        model = self._stored(dashboard_id)
+        if not self._can_read_source(model):
+            raise PermissionError(
+                "Only people who can edit this dashboard may read its definition."
+            )
+        restricted = self.editor._restricted_ids(model)
+        hidden = [e.to_dict() for e in model.edges if {e.source, e.target} & restricted]
+        return dashboard_to_yaml(export_model(model, restricted=restricted), hidden)
+
+    def revision(self) -> str:
+        """Return a token identifying the editor's canvas as it is now."""
+        return _revision(dashboard_to_yaml(self.editor))
+
+    def open_dashboard(self, dashboard_id: str, *, discard: bool = False) -> str:
+        """Load a stored dashboard into the editor and return it as YAML.
+
+        A dashboard the user may only view is opened read-only, and when it
+        hides its definition from viewers (see :meth:`get_dashboard`) a note
+        saying so is returned instead.
+
+        Raises
+        ------
+        OperationError
+            If the editor has unsaved changes and *discard* is not set.
+        """
+        model = self._stored(dashboard_id)
+        editor = self.editor
+        if editor.dirty and not discard:
+            raise OperationError(
+                "The open dashboard has unsaved changes; save them first or pass discard=True."
+            )
+        editor.read_only = not editor._dashboard_authorized(model, "edit")
+        editor.load_model(model)
+        if not self._can_read_source(model):
+            return f"Opened '{model.title}' read-only; its definition is hidden from viewers."
+        return self.get_dashboard()
+
+    def _parse(self, text: str | dict) -> dict:
+        """Read YAML text once, with the format's limits, into a document."""
+        if isinstance(text, dict):
+            return text
+        try:
+            return parse_yaml(text)
+        except DashboardYAMLError as exc:
+            raise OperationError(str(exc)) from exc
+
+    def validate(self, text: str | dict | None = None, *, standalone: bool = False) -> list[Issue]:
+        """Check YAML against the components the user may place and the canvas it is meant for.
+
+        Defaults to the editor's dashboard. The canvas's restricted nodes and
+        their connections must stay as they are, see
+        :func:`~panel_flowdash.agent.validate_dashboard`, unless *standalone*
+        is set, for YAML of a new dashboard rather than one for this canvas.
+        """
+        editor = self.editor
+        entries = editor._component_entries
+        restricted_nodes, restricted_edges = (
+            (None, None) if standalone else editor_restricted(editor)
+        )
+        try:
+            doc = dashboard_to_dict(editor) if text is None else self._parse(text)
+        except OperationError as exc:
+            path, _, message = str(exc).partition(": ")
+            return [Issue(path, message)]
+        issues = validate_dashboard(
+            doc,
+            self._authorized_specs(),
+            settings_class=editor.settings_class,
+            aliases=editor._component_aliases(),
+            controls=[cid for cid, e in entries.items() if e.metadata.sidebar],
+            singletons=[cid for cid, e in entries.items() if e.metadata.singleton],
+            restricted_nodes=restricted_nodes,
+            restricted_edges=restricted_edges,
+        )
+        # A node already on the canvas whose component is not offered (any more)
+        # is kept as is, like on import, so it does not stop the YAML loading.
+        names = self._names()
+        unavailable = {
+            f"nodes.{names[item['instance_id']]}.component"
+            for item in editor._tile_items
+            if "placeholder" in item and not item["placeholder"].private
+        }
+        return [
+            Issue(i.path, f"{i.message} It is kept on the dashboard as is.", "warning")
+            if i.path in unavailable and i.message.startswith("Unknown component")
+            else i
+            for i in issues
+        ]
+
+    def preview(self, text: str | None = None, *, rows: int = 5) -> dict[str, t.Any]:
+        """Run a dashboard without showing it and report the health of each node.
+
+        In a running server use :meth:`preview_async`.
+
+        Parameters
+        ----------
+        text
+            YAML to run in a separate editor, leaving this one untouched.
+            Names map to the nodes of this editor's canvas, as for
+            :meth:`replace_yaml`; YAML that names none of them is previewed
+            as a new dashboard. Defaults to the editor's dashboard as it is now.
+        rows
+            How many rows or items each output sample shows, at most 20.
+
+        Returns
+        -------
+        dict
+            See :func:`~panel_flowdash.agent.preview.preview_editor`. Output
+            samples are left out for someone the dashboard hides its outputs
+            from, and only the overall status is given to someone it hides
+            its definition from.
+        """
+        if text is None:
+            return self._preview(self.editor, rows)
+        data = self._preview_data(text)
+        scratch = self._scratch_editor()
+        try:
+            scratch.import_dashboard(data)
+            return self._preview(scratch, rows)
+        finally:
+            scratch.dispose()
+
+    async def preview_async(
+        self, text: str | None = None, *, rows: int = 5, timeout: float = DEFAULT_TIMEOUT
+    ) -> dict[str, t.Any]:
+        """Like :meth:`preview`, importing the components' modules off the event loop.
+
+        *timeout* bounds the imports and async component bodies; creating a
+        component synchronously still runs on the event loop.
+        """
+        if text is None:
+            return self._preview(self.editor, rows)
+        data = self._preview_data(text)
+        scratch = self._scratch_editor()
+        try:
+            model = scratch._imported_model(data)
+            await self._within(scratch.load_model_async(model), timeout)
+            return self._preview(scratch, rows)
+        finally:
+            scratch.dispose()
+
+    def _preview_data(self, text: str) -> dict:
+        doc = self._parse(text)
+        canvas = self.editor.export_dashboard()
+        # YAML that names none of the canvas's nodes is a new draft, previewed on its own.
+        standalone = not set(doc.get("nodes") or {}) & set(node_names(canvas["items"]).values())
+        self._refuse_invalid(doc, standalone=standalone)
+        # Names map to this canvas, so restricted stand-ins find their stored items.
+        return dashboard_from_dict(doc, base=None if standalone else canvas)
+
+    @staticmethod
+    async def _within(awaitable, timeout: float):
+        try:
+            await asyncio.wait_for(awaitable, timeout)
+        except asyncio.TimeoutError as exc:
+            raise OperationError(
+                f"Loading the dashboard's components took longer than {timeout:g} seconds."
+            ) from exc
+
+    def _preview(self, editor: FlowDash, rows: int) -> dict[str, t.Any]:
+        names = node_names(editor.export_dashboard()["items"])
+        if not self._source_visible():
+            report = preview_editor(editor, names, samples=False)
+            return {
+                "status": report["status"],
+                "message": "This dashboard hides its definition from viewers.",
+            }
+        return preview_editor(editor, names, samples=self._can_sample(), rows=rows)
+
+    def _scratch_editor(self) -> FlowDash:
+        """Build an editor with the same components and rights, which nobody sees and nothing saves."""
+        editor = self.editor
+        doc = pn.state.curdoc
+        session_editor = _SESSION_EDITORS.get(doc) if doc is not None else None
+        scratch = type(editor)(
+            components=editor._registry,
+            include_builtin_components=False,
+            authorize_component=editor.authorize_component,
+            authorize_dashboard=editor.authorize_dashboard,
+            import_unknown_components=editor.import_unknown_components,
+            settings_class=editor.settings_class,
+            propagate_failures=editor.propagate_failures,
+            inspect_outputs=editor.inspect_outputs,
+            notifications=False,
+            user=editor.user,
+        )
+        # The session's components keep finding the editor on screen, not this one.
+        if session_editor is not None:
+            _SESSION_EDITORS[doc] = session_editor
+        if editor.dashboard is not None:
+            scratch.dashboard = copy.deepcopy(editor.dashboard)
+        return scratch
+
+    # ------------------------------------------------------------------
+    # Changing
+    # ------------------------------------------------------------------
+
+    def _refuse_invalid(self, doc: dict, *, standalone: bool = False):
+        errors = [i for i in self.validate(doc, standalone=standalone) if i.severity == "error"]
+        if errors:
+            raise OperationError(
+                "The dashboard has errors:\n" + "\n".join(f"- {issue}" for issue in errors)
+            )
+
+    def _check_replace(self, text: str, revision: str | None) -> tuple[dict, str, str | None]:
+        """Check a replace may go ahead and return the document, the revision and the dashboard id."""
+        self._require_edit()
+        revision = revision or read_revision(text)
+        if revision is None:
+            raise OperationError(
+                "Replacing needs the revision the YAML was read at: start from "
+                "get_dashboard's output and keep its first line, '# revision: ...'."
+            )
+        self._check_current(revision, self._dashboard_id())
+        doc = self._parse(text)
+        self._refuse_invalid(doc)
+        return doc, revision, self._dashboard_id()
+
+    def _dashboard_id(self) -> str | None:
+        current = self.editor.dashboard
+        return current.dashboard_id if current is not None else None
+
+    def _check_current(self, revision: str, dashboard_id: str | None):
+        if revision != self.revision() or dashboard_id != self._dashboard_id():
+            raise OperationError(
+                "The dashboard changed since this YAML was read, e.g. by the user's own "
+                "edits. Call get_dashboard again and apply your change to that."
+            )
+
+    def replace_yaml(self, text: str, *, revision: str | None = None) -> list[Issue]:
+        """Replace the editor's dashboard with YAML, as importing a dashboard file does.
+
+        Node names that are already on the canvas keep their components'
+        identity. Restricted nodes and their connections must stay as
+        :meth:`get_dashboard` wrote them; a restricted node can only be taken
+        off with :meth:`remove_node`. In a running server use
+        :meth:`replace_yaml_async`.
+
+        Parameters
+        ----------
+        text
+            The whole dashboard in the YAML format.
+        revision
+            The revision the text is based on. Defaults to the ``# revision:``
+            first line :meth:`get_dashboard` writes; one of the two is
+            required. Pass ``revision=ops.revision()`` to replace the canvas
+            whatever it holds now.
+
+        Returns
+        -------
+        list of Issue
+            The warnings about the loaded dashboard, e.g. inputs still unconnected.
+
+        Raises
+        ------
+        OperationError
+            If the YAML has errors, has no revision, or the canvas changed
+            since that revision; nothing is changed.
+        """
+        doc, _, _ = self._check_replace(text, revision)
+        title = self._title_issue(doc)
+        self.editor.import_dashboard(doc)
+        return title + self._warnings()
+
+    async def replace_yaml_async(
+        self, text: str, *, revision: str | None = None, timeout: float = DEFAULT_TIMEOUT
+    ) -> list[Issue]:
+        """Like :meth:`replace_yaml`, importing the components' modules off the event loop.
+
+        *timeout* bounds the imports. The revision and the open dashboard are
+        checked again once they are done, so edits made meanwhile are never lost.
+        """
+        doc, revision, dashboard_id = self._check_replace(text, revision)
+        editor = self.editor
+        components = {
+            node.get("component")
+            for node in (doc.get("nodes") or {}).values()
+            if isinstance(node, dict)
+        }
+        await self._within(editor.ensure_components_loaded_async(components), timeout)
+        self._require_edit()
+        self._check_current(revision, dashboard_id)
+        title = self._title_issue(doc)
+        editor.import_dashboard(doc)
+        return title + self._warnings()
+
+    def _title_issue(self, doc: dict) -> list[Issue]:
+        current = self.editor.dashboard
+        title = doc.get("title")
+        if current is None or title in (None, current.title):
+            return []
+        return [
+            Issue(
+                "title",
+                f"is ignored: the dashboard keeps its title {current.title!r}. Only the user "
+                "can rename it.",
+                "warning",
+            )
+        ]
+
+    def _warnings(self) -> list[Issue]:
+        return [i for i in self.validate() if i.severity != "error"]
+
+    def add_node(
+        self,
+        component: str,
+        config: dict[str, t.Any] | None = None,
+        position: tuple[float, float] | None = None,
+    ) -> str:
+        """Place a component and return the name of its node.
+
+        Raises
+        ------
+        OperationError
+            If the component is unknown, placed once already when it can only
+            be placed once, or *config* is invalid.
+        PermissionError
+            If the user may not use the component, or edit the dashboard.
+        """
+        self._require_edit()
+        editor = self.editor
+        specs = self._authorized_specs()
+        component_id = editor._resolve_component_id(component)
+        if component_id not in specs:
+            raise OperationError(f"Unknown component '{component}'." + _suggest(component, specs))
+        self._check_config(specs[component_id], config or {})
+        try:
+            instance_id = editor.add_component(component_id, dict(config or {}), position)
+        except (KeyError, ValueError) as exc:
+            raise OperationError(str(exc).strip("'\"")) from exc
+        return self._names()[instance_id]
+
+    def remove_node(self, name: str) -> None:
+        """Remove a node, its edges and its tile."""
+        self._require_edit()
+        self.editor.remove_component(self._instance(name))
+
+    def _check_config(self, spec, config: dict[str, t.Any]) -> dict[str, t.Any]:
+        fields = {f.name for f in spec.config}
+        params = (
+            spec.config_state_class.param.objects("existing") if spec.config_state_class else {}
+        )
+        resolved = {}
+        for key, value in config.items():
+            name = spec.resolve_name(key)
+            if name not in fields:
+                raise OperationError(
+                    f"'{spec.title}' has no config field '{key}'."
+                    + (_suggest(key, fields) if fields else " It takes no config.")
+                )
+            if name in params and (reason := _check_value(params[name], value)):
+                raise OperationError(f"Config '{key}': {reason}")
+            resolved[name] = value
+        return resolved
+
+    def set_config(self, name: str, config: dict[str, t.Any]) -> dict[str, t.Any]:
+        """Change some config fields of a node and return its whole config."""
+        self._require_edit()
+        instance_id, item = self._changeable(name)
+        spec = self.editor.component_specs[item["component_id"]]
+        self.editor._apply_config_patch(instance_id, self._check_config(spec, config))
+        return copy.deepcopy(self._item(instance_id).get("config", {}))
+
+    def connect(
+        self, source: str, target: str, transform: list[dict[str, t.Any]] | None = None
+    ) -> None:
+        """Connect the output *source* to the input *target*, both ``"<node>.<port>"``.
+
+        Raises
+        ------
+        OperationError
+            If a port does not exist, the types do not match, the input is
+            taken, the edge would close a cycle or the transform is invalid.
+        """
+        self._require_edit()
+        result = self.editor.connect(
+            *self._port(source, "source"), *self._port(target, "target"), transform
+        )
+        if result is not True:
+            raise OperationError(result)
+
+    def _edge(self, source: str, target: str) -> tuple[str, str, str, str]:
+        key = (*self._port(source, "source"), *self._port(target, "target"))
+        if not any(
+            (e["source"], e["source_port"], e["target"], e["target_port"]) == key
+            for e in self.editor.graph.edges
+        ):
+            raise OperationError(f"There is no edge from {source} to {target}.")
+        return key
+
+    def disconnect(self, source: str, target: str) -> None:
+        """Remove the edge from the output *source* to the input *target*."""
+        self._require_edit()
+        self.editor.disconnect(*self._edge(source, target))
+
+    def set_transform(
+        self, source: str, target: str, transform: list[dict[str, t.Any]] | None
+    ) -> None:
+        """Replace the transform steps of an edge; an empty list removes them."""
+        self._require_edit()
+        result = self.editor.set_edge_transform(*self._edge(source, target), transform or [])
+        if result is not True:
+            raise OperationError(result)
+
+    def place_tile(
+        self,
+        name: str,
+        *,
+        width: float | None = None,
+        height: float | None = None,
+        visible: bool | None = None,
+        index: int | None = None,
+    ) -> dict[str, t.Any]:
+        """Change how a node's tile is laid out and return its layout entry.
+
+        Parameters
+        ----------
+        width
+            Percent of the row, greater than 0 and at most 100.
+        height
+            Height in pixels.
+        visible
+            False hides the tile; the component keeps running in the dataflow.
+        index
+            Position among the tiles, 0 for the first.
+        """
+        self._require_edit()
+        instance_id = self._instance(name)
+        editor = self.editor
+        entry = editor._component_entries.get(self._item(instance_id)["component_id"])
+        if entry is not None and entry.metadata.sidebar:
+            raise OperationError(f"'{name}' is a control, shown in the controls bar, not a tile.")
+        if width is not None and not 0 < width <= 100:
+            raise OperationError(f"width is a percentage of the row, got {width}.")
+        if height is not None and height <= 0:
+            raise OperationError(f"height must be a positive number of pixels, got {height}.")
+        patch = {
+            key: value
+            for key, value in (("width", width), ("height", height), ("visible", visible))
+            if value is not None
+        }
+        if index is not None:
+            tile_layout.move_tile(editor, instance_id, index)
+        if patch:
+            tile_layout.update_tile(editor, instance_id, **patch)
+        return {
+            k: v
+            for k, v in tile_layout.tile_entry(editor, instance_id).items()
+            if k != "instance_id"
+        }
+
+    def set_settings(self, settings: dict[str, t.Any]) -> dict[str, t.Any]:
+        """Change some dashboard settings and return them all."""
+        self._require_edit()
+        editor = self.editor
+        params = editor.settings.param.objects("existing")
+        for key, value in settings.items():
+            if key not in editor._settings_names:
+                raise OperationError(
+                    f"No setting '{key}'." + _suggest(key, editor._settings_names)
+                )
+            if reason := _check_value(params[key], value):
+                raise OperationError(f"Setting '{key}': {reason}")
+        editor.settings.param.update(**settings)
+        return editor._settings_values()
+
+    def save(self) -> str:
+        """Store the editor's dashboard and return its id.
+
+        Raises
+        ------
+        PermissionError
+            If the user may not edit the dashboard.
+        DashboardStoreError
+            If the store refuses, e.g. because it was saved from another
+            session since it was opened.
+        """
+        self._require_edit()
+        try:
+            model = self.editor.save()
+        except _ReadOnlyEditorError as exc:
+            raise PermissionError(str(exc)) from exc
+        return model.dashboard_id
