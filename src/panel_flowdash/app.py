@@ -960,12 +960,14 @@ class FlowDashApp(Viewer):
         self._sidebar_container.objects = []
 
         self._notify("success", f'Created new dashboard "{dashboard.title}".', duration=3000)
-        self._refresh_sidebar_dashboards()
+        # Leave the launcher's route first, so the menus refresh without
+        # rebuilding the launcher's cards only for the editor to replace them.
         if pn.state.location:
             pn.state.location.param.update(
                 pathname=f"{DASH_ROUTE_PREFIX}{dashboard.dashboard_id}",
                 search="?edit=true",
             )
+        self._refresh_sidebar_dashboards()
         self._show_edit_mode()
         self._sync_menu_active(f"{DASH_ROUTE_PREFIX}{dashboard.dashboard_id}")
         self._apply_layout_config(
