@@ -16,6 +16,7 @@ from panel_flowdash.transforms import (
     parse_transform,
     summarize_transform,
 )
+from panel_flowdash.ui.text import escape_markdown
 
 PLANTS = pd.DataFrame(
     {"site": ["a", "b", "c", "a"], "region": ["N", "S", "N", "S"], "mw": [10, 20, 30, 40]}
@@ -386,9 +387,9 @@ class TestTransformEditor:
         _, _, _, view = _editor_with_edge()
         view.__panel__()
         texts = _texts(view)
-        assert "In: 4 rows, 3 columns" in texts
-        assert "Out: Series of 4 values" in texts
-        assert "Out: number 100" in texts
+        assert escape_markdown("In: 4 rows, 3 columns") in texts
+        assert escape_markdown("Out: Series of 4 values") in texts
+        assert escape_markdown("Out: number 100") in texts
 
     async def test_editing_an_argument_applies_it_and_updates_the_chip(self):
         editor, key, edge_id, view = _editor_with_edge()
@@ -468,7 +469,7 @@ class TestTransformEditor:
         view.__panel__()
         view.show()
         editor.graph.get_state(key[0]).frame = PLANTS.head(1)
-        assert "In: 1 row, 3 columns" in _texts(view)
+        assert escape_markdown("In: 1 row, 3 columns") in _texts(view)
 
     async def test_editor_is_disposed_with_its_edge(self):
         editor, key, edge_id, view = _editor_with_edge()

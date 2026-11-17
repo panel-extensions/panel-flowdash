@@ -9,6 +9,7 @@ from panel.viewable import Viewer
 from panel_flowdash import register, transform_editor as transform_editor_module
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.ui.status_bar import select_on_canvas
+from panel_flowdash.ui.text import escape_markdown
 
 FRAME = pd.DataFrame({"state": ["TX", "CA", "IA"], "t_cap": [1500, 3000, 2500]})
 
@@ -86,7 +87,7 @@ async def test_only_the_shown_transform_editor_follows_the_source(checks):
     checks.clear()
     source.frame = FRAME.head(1)
     assert len(checks) == 1
-    assert "In: 1 row, 2 columns" in _texts(editor._transform_editors[second])
+    assert escape_markdown("In: 1 row, 2 columns") in _texts(editor._transform_editors[second])
 
 
 async def test_a_hidden_editor_catches_up_once_shown_again(checks):
@@ -100,7 +101,7 @@ async def test_a_hidden_editor_catches_up_once_shown_again(checks):
     checks.clear()
     select_on_canvas(editor._flow, edge_id=edge_id)
     assert len(checks) == 1
-    assert "In: 1 row, 2 columns" in _texts(view)
+    assert escape_markdown("In: 1 row, 2 columns") in _texts(view)
 
 
 async def test_hiding_the_inspector_hides_the_transform_editor(checks):

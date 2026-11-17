@@ -61,7 +61,13 @@ from panel_flowdash.ui.states import (
     page_not_found,
     similar_dashboards,
 )
-from panel_flowdash.ui.text import alert_pane, escape_html, escape_markdown, markdown_pane
+from panel_flowdash.ui.text import (
+    alert_pane,
+    code_span,
+    escape_html,
+    escape_markdown,
+    markdown_pane,
+)
 from panel_flowdash.util import notify, page_dialog, panel_call, panel_viewer
 
 logger = logging.getLogger("panel_flowdash")
@@ -677,9 +683,9 @@ class FlowDashApp(Viewer):
         unsatisfied = check_requirements(self._session_state, entry.metadata.requires)
         blocking = [u for u in unsatisfied if u["blocking"]]
         if blocking:
-            keys = ", ".join(u["key"] for u in blocking)
+            keys = ", ".join(code_span(u["key"]) for u in blocking)
             return alert_pane(
-                f"**{escape_markdown(entry.title)}** is waiting for: {escape_markdown(keys)}",
+                f"**{escape_markdown(entry.title)}** is waiting for: {keys}",
                 alert_type="warning",
             )
 

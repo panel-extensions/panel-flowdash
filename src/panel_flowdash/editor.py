@@ -485,6 +485,47 @@ def _creating(editor_ref: weakref.ref[FlowDash], instance_id: str, wiring: list)
         editor._track_subscriptions(instance_id, before, wiring)
 
 
+class _ViewRuns:
+    """The steps of the runs of an async ``__panel__``, keeping the latest run's subscriptions.
+
+    A ``__panel__`` that declares ``param.depends`` runs again whenever its
+    dependencies change, and its new view replaces the old one. Starting a run
+    releases what the previous run subscribed to, and a run that was superseded
+    while still awaiting releases its later subscriptions right away.
+    """
+
+    def __init__(self, editor_ref: weakref.ref[FlowDash], instance_id: str, wiring: list):
+        self._editor_ref = editor_ref
+        self._instance_id = instance_id
+        self._wiring = wiring
+        self._latest: list | None = None
+
+    def __call__(self) -> t.Callable[[], t.ContextManager]:
+        if self._latest is not None:
+            self._release(self._latest)
+        run = self._latest = []
+        return partial(self._step, run)
+
+    def _release(self, releases: list):
+        for release in releases:
+            # Releasing the component's wiring has run (and dropped) it already.
+            if release in self._wiring:
+                self._wiring.remove(release)
+                release()
+        releases.clear()
+
+    @contextmanager
+    def _step(self, run: list):
+        before = {id(release) for release in self._wiring}
+        try:
+            with _creating(self._editor_ref, self._instance_id, self._wiring):
+                yield
+        finally:
+            run.extend(release for release in self._wiring if id(release) not in before)
+            if run is not self._latest:
+                self._release(run)
+
+
 def _dispose_on_session_end(editor_ref: weakref.ref[FlowDash], session_context):
     editor = editor_ref()
     if editor is not None:
@@ -2133,7 +2174,7 @@ class FlowDash(Viewer):
             ):
                 setattr(node_state, port.name, instance.param[port.name])
 
-        return panel_viewer(instance, partial(_creating, editor, node_id, wiring))
+        return panel_viewer(instance, runs=_ViewRuns(editor, node_id, wiring))
 
     def _report_input_error(self, node_id: str, port: str, exc: Exception):
         source = next(

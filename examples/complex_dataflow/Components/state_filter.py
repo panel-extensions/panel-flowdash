@@ -6,6 +6,7 @@ import panel_material_ui as pmui
 import param
 
 from panel_flowdash import register
+from panel_flowdash.ui.text import escape_markdown
 
 
 @register(component=True, sidebar=True, title="State Filter", icon="filter_alt")
@@ -40,7 +41,8 @@ class app(pn.viewable.Viewer):
             pn.pane.Markdown(
                 pn.rx("**{n}** turbines in {s}").format(
                     n=pn.rx(self.filtered).rx.pipe(len),
-                    s=self.param.state,
+                    # State names come from the data, so they are shown as text.
+                    s=self.param.state.rx().rx.pipe(escape_markdown),
                 )
             ),
         )

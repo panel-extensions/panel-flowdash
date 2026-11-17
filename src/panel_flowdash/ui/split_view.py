@@ -135,6 +135,15 @@ class LocalPreference(JSComponent):
 
     key = param.String(default=STORAGE_KEY, doc="The local storage key.")
 
+    legacy_key = param.String(
+        default=None,
+        allow_None=True,
+        doc="""
+        A key the value was stored under before. While nothing is stored under
+        :attr:`key`, the value is read from it and copied to :attr:`key`. It
+        is left in place, since other apps may read it too.""",
+    )
+
     value = param.String(default=None, allow_None=True, doc="The JSON text to store.")
 
     window_width = param.Integer(
@@ -144,7 +153,13 @@ class LocalPreference(JSComponent):
     _esm = """
     export function render({ model }) {
       function read() {
-        try { return window.localStorage.getItem(model.key) } catch (e) { return null }
+        try {
+          const value = window.localStorage.getItem(model.key)
+          if (value != null || !model.legacy_key) { return value }
+          const legacy = window.localStorage.getItem(model.legacy_key)
+          if (legacy != null) { window.localStorage.setItem(model.key, legacy) }
+          return legacy
+        } catch (e) { return null }
       }
       function write() {
         if (model.value == null) { return }
@@ -332,7 +347,13 @@ class SplitView(Viewer):
         self.events = SplitEvents(on_tile=on_tile, on_resize=on_resize)
         # Applied once: a re-render must not pull in what another tab stored since.
         self.loaded = False
-        self.storage = LocalPreference(on_load=self._on_stored, key=storage_key())
+        key = storage_key()
+        # Before keys carried the app's path every app on an origin shared the plain one.
+        self.storage = LocalPreference(
+            on_load=self._on_stored,
+            key=key,
+            legacy_key=None if key == STORAGE_KEY else STORAGE_KEY,
+        )
         self.preferences.param.watch(self._store, ["split", "sizes"])
 
     def _on_split_changed(self, *_events):
