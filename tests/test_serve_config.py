@@ -36,6 +36,7 @@ breakpoints = [500, 900]
 controls_position = "left"
 editor_class = ProjectFlowDash
 editor_options = {"popup_trigger": "click"}
+header_layout = "full"
 home_dashboard = "sales"
 include_builtin_components = False
 nav_variant = "menubar"
@@ -108,6 +109,7 @@ def test_project_options_reach_build_routes(project, monkeypatch):
     assert kwargs["controls_position"] == "left"
     assert kwargs["editor_class"].__name__ == "ProjectFlowDash"
     assert kwargs["editor_options"] == {"popup_trigger": "click"}
+    assert kwargs["header_layout"] == "full"
     assert kwargs["home_dashboard"] == "sales"
     assert kwargs["include_builtin_components"] is False
     assert kwargs["nav_variant"] == "menubar"
@@ -131,6 +133,7 @@ async def test_project_options_reach_the_app_and_editor(project, monkeypatch):
     assert editor.popup_trigger == "click"
     assert editor.breakpoints == [500, 900]
     assert editor.controls_position == "left"
+    assert editor.header_layout == "full"
     assert editor.include_builtin_components is False
     assert editor.notifications is False
     assert editor.settings_class.__name__ == "ProjectSettings"

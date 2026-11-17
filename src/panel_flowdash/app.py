@@ -146,6 +146,19 @@ class FlowDashApp(Viewer):
         no effect.""",
     )
 
+    header_layout = param.Selector(
+        default="compact",
+        objects=["compact", "full"],
+        doc="""
+        How a dashboard's title, health and actions are laid out unless the
+        dashboard's settings say otherwise. "compact" puts them in the top bar
+        next to the breadcrumb (with the default "rail" navigation) and
+        shrinks the search field to an icon; "full" shows them in a row of
+        their own under the top bar, with a large title, the description and
+        when the dashboard was last refreshed. Passed to the editor, see
+        `FlowDash.header_layout`.""",
+    )
+
     home_dashboard = param.String(
         default=None,
         doc="""
@@ -712,6 +725,7 @@ class FlowDashApp(Viewer):
                 "breakpoints": self.breakpoints,
                 "notifications": self.notifications,
                 "controls_position": self.controls_position,
+                "header_layout": self.header_layout,
                 "propagate_failures": self.propagate_failures,
                 "settings_class": self.settings_class,
                 **options,

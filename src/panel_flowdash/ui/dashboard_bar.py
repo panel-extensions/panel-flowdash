@@ -82,10 +82,15 @@ class DashboardBar(Viewer):
     Dataflow/Layout/Split tabs and the edit actions: Settings, an overflow menu
     (Download, Import file, Clear canvas), Discard, Save and Done.
 
-    With ``placement="row"`` the bar renders as its own row above the
-    workspace. With ``placement="header"`` the bar renders nothing itself and
-    a host (FlowDashApp's top bar) places :attr:`lead` after its breadcrumb,
-    which then stands in for the title, and :attr:`actions` at its end.
+    ``layout`` arranges these parts. With ``"compact"`` they form one line:
+    the description sits behind an info button, and Refresh's tooltip says
+    when the dashboard was last refreshed. When a host offers its header
+    (``placement="header"``, FlowDashApp's top bar), the bar then renders
+    nothing itself: the host places :attr:`lead` after its breadcrumb, which
+    stands in for the title, and :attr:`actions` at its end (see
+    :attr:`in_header`). With ``"full"`` the bar is always its own row, with a
+    large title over a line holding the description, the health chip and
+    when the dashboard was last refreshed.
 
     Each part of a section comes from one method returning a list of
     viewables, so a feature adds an item by extending that method:
@@ -105,13 +110,21 @@ class DashboardBar(Viewer):
         when leaving edit mode with unsaved changes.""",
     )
 
+    layout = param.Selector(
+        default="compact",
+        objects=["compact", "full"],
+        doc="""
+        "compact" keeps the bar to one line and lets a host header take it,
+        "full" shows it as its own row with the title over a meta line.""",
+    )
+
     placement = param.Selector(
         default="row",
         objects=["row", "header"],
         doc="""
-        Whether the bar renders as its own row ("row") or leaves :attr:`lead`
-        and :attr:`actions` for a host to place in its header ("header"),
-        which then also shows the dashboard's title.""",
+        Whether a host offers its header for the bar ("header"), which then
+        takes :attr:`lead` and :attr:`actions` and shows the dashboard's title
+        while the layout is "compact", or not ("row").""",
     )
 
     visible = param.Boolean(default=True, doc="Whether the bar is shown.")
@@ -141,6 +154,15 @@ class DashboardBar(Viewer):
             color="default",
             css_classes=["fd-description"],
             sx={"color": "text.secondary"},
+        )
+        self.description = pmui.Typography(
+            variant="body2",
+            margin=0,
+            sx={"color": "text.secondary"},
+            styles={"flex-basis": "100%"},
+        )
+        self.refresh_label = pmui.Typography(
+            variant="caption", sx={"color": "text.secondary"}, margin=0
         )
         self.health = DashboardHealth(editor)
         self.health_popover = HealthPopover(editor=editor, health=self.health)
@@ -252,6 +274,12 @@ class DashboardBar(Viewer):
             styles={"min-width": "0", "flex": "0 1 auto"},
             css_classes=["fd-dashboard-lead"],
         )
+        # The full layout's line under the title, which wraps so the
+        # description can take a line of its own.
+        self._meta = pn.FlexBox(
+            align_items="center", flex_wrap="wrap", gap="2px 12px", margin=0, sizing_mode=None
+        )
+        self._title_block = pn.Column(self.title, self._meta, margin=(0, 8, 0, 0), min_width=0)
         self._actions = pn.FlexBox(
             align_items="center",
             flex_wrap="wrap",
@@ -270,9 +298,10 @@ class DashboardBar(Viewer):
             margin=0,
             sizing_mode="stretch_width",
             visible=param.bind(
-                lambda visible, placement: visible and placement == "row",
+                lambda visible, *_: visible and not self.in_header,
                 self.param.visible,
                 self.param.placement,
+                self.param.layout,
             ),
             css_classes=["fd-dashboard-bar"],
             styles={
@@ -282,11 +311,16 @@ class DashboardBar(Viewer):
                 "border-bottom": "1px solid var(--mui-palette-divider)",
             },
         )
-        self.param.watch(lambda _event: self.sync(), "placement")
+        self.param.watch(lambda _event: self.sync(), ["layout", "placement"])
         editor.param.watch(self._on_dashboard_changed, "dashboard")
         editor.param.watch(self._on_saved, "saved")
         editor.settings.param.watch(self._sync_view_meta, ["description", "refresh_period"])
         self.health.param.watch(self._sync_view_meta, ["tiles"])
+
+    @property
+    def in_header(self) -> bool:
+        """Whether a host header shows the lead and actions in place of the bar's own row."""
+        return self.placement == "header" and self.layout == "compact"
 
     @property
     def lead(self):
@@ -303,10 +337,19 @@ class DashboardBar(Viewer):
     # ------------------------------------------------------------------
 
     def _view_meta(self) -> list:
-        """Items after the title in view mode: the description's info button and the health chip."""
-        items = [self.info_button] if self.info_button.description else []
+        """Items with the title in view mode.
+
+        The description, the health chip and, in the full layout, when the
+        dashboard was last refreshed.
+        """
+        full = self.layout == "full"
+        items = []
+        if self.info_button.description:
+            items.append(self.description if full else self.info_button)
         if self.health.tiles:
             items.append(self.health_popover.__panel__())
+        if full and self.refresh_label.object:
+            items.append(self.refresh_label)
         return items
 
     def _view_actions(self) -> list:
@@ -413,15 +456,24 @@ class DashboardBar(Viewer):
             self.mode_toggle.value = "view"
 
     def _sync_lead(self):
-        row = self.placement == "row"
-        sub = self._edit_status() if self.editor.editable else self._view_meta()
-        lead = [self.title, *sub] if row else sub
+        row = not self.in_header
+        editing = self.editor.editable
+        full = self.layout == "full"
+        sub = self._edit_status() if editing else self._view_meta()
+        self.title.variant = "h5" if full and not editing else "subtitle1"
+        if full:
+            # The title over a wrapping meta line, the way a page heading reads.
+            if list(self._meta) != sub:
+                self._meta[:] = sub
+            lead, head = [], self._title_block
+        else:
+            lead, head = ([self.title, *sub] if row else sub), self._lead
         if list(self._lead) != lead:
             self._lead[:] = lead
         # In header placement the host renders the lead and actions, and a
         # model must not be rendered in two places. Hidden there, the actions
         # still carry the download button.
-        parts = [self._lead, self._actions] if row else []
+        parts = [head, self._actions] if row else []
         if list(self._bar) != parts:
             self._bar[:] = parts
         shown = row or self.visible
@@ -447,10 +499,12 @@ class DashboardBar(Viewer):
         if text and period:
             text += f", auto-refresh every {format_period(period)}"
         self.refresh_text = text
+        self.refresh_label.object = text
         self.refresh_button.description = f"Refresh now. {text}." if text else "Refresh now"
         description = settings.description.strip()
         # The tooltip also names the button for assistive technology.
         self.info_button.description = description or None
+        self.description.object = description
         self.refresh_period.param.update(
             label=format_period(period) if period else "Off",
             items=[
@@ -476,6 +530,8 @@ class DashboardBar(Viewer):
         self._refreshed_at = time.strftime("%H:%M")
         with pn.io.hold():
             self._update_view_meta()
+            if not self.editor.editable:
+                self._sync_lead()
 
     def _on_period_chosen(self, item):
         """Set the auto-refresh period for this session, without marking the dashboard changed."""

@@ -114,7 +114,15 @@ class HealthPopover(Viewer):
         self.banner._banner.margin = 0
         # The popup anchors to its parent, and the focus helper must stay mounted
         # while the popup is closed, so both sit next to the chip.
-        self._view = pn.Row(self.chip, self.popup, self.banner._focus, margin=0, align="center")
+        self._view = pn.Row(
+            self.chip,
+            self.popup,
+            self.banner._focus,
+            margin=0,
+            align="center",
+            # Only as wide as the chip, so the chip flows inline with the text around it.
+            styles={"width": "fit-content", "flex": "0 0 auto"},
+        )
         self.health.param.watch(self.sync, ["failed", "waiting", "tiles", "origins"])
 
     @property

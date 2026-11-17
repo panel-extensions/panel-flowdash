@@ -37,6 +37,7 @@ PROJECT_OPTIONS = (
     "controls_position",
     "editor_class",
     "editor_options",
+    "header_layout",
     "home_dashboard",
     "include_builtin_components",
     "nav_variant",

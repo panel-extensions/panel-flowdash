@@ -339,6 +339,28 @@ class TestAppShell:
         assert list(app._shell.dashboard_actions) == []
         assert not app._shell.search_slot[0].compact
 
+    async def test_full_header_layout_leaves_the_top_bar_alone(self, app):
+        _open(app)
+        app._editor.settings.header_layout = "full"
+        app._shell.sync(pn.state.location.pathname)
+        assert list(app._shell.dashboard_actions) == []
+        assert not app._shell.search_slot[0].compact
+        assert app._editor._dashboard_bar.__panel__().visible
+        app._editor.settings.header_layout = "compact"
+        assert list(app._shell.dashboard_actions) == [app._editor._dashboard_bar.actions]
+        assert app._shell.search_slot[0].compact
+
+    async def test_header_layout_reaches_the_editor(self, tmp_path):
+        _create_project(tmp_path)
+        sys.path.insert(0, str(tmp_path))
+        try:
+            store = DashboardStore(tmp_path / "test.db")
+            app = FlowDashApp(project_dir=tmp_path, store=store, header_layout="full")
+            assert app._editor.header_layout == "full"
+            assert app._editor._dashboard_bar.layout == "full"
+        finally:
+            sys.path.remove(str(tmp_path))
+
     async def test_controls_position_reaches_the_editor(self, tmp_path):
         _create_project(tmp_path)
         sys.path.insert(0, str(tmp_path))

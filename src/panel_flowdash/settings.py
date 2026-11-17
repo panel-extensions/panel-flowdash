@@ -44,6 +44,18 @@ class DashboardSettings(param.Parameterized):
         ``controls_position``.""",
     )
 
+    header_layout = param.Selector(
+        default="compact",
+        objects=["compact", "full"],
+        label="Header layout",
+        doc="""
+        How the dashboard's title, health and actions are laid out: "compact"
+        on one line (in a FlowDashApp's top bar with the default navigation),
+        "full" in a row of their own with a large title over the description,
+        the health chip and when the dashboard was last refreshed. Defaults to
+        the editor's ``header_layout``.""",
+    )
+
     tile_cards = param.Boolean(
         default=True,
         label="Show tiles as cards",

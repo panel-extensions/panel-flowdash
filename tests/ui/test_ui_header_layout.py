@@ -1,4 +1,4 @@
-"""UI tests for the dashboard actions in the app's top bar and the placement of the controls."""
+"""UI tests for the compact and full header layouts and the placement of the controls."""
 
 import re
 
@@ -79,15 +79,16 @@ def test_tiles_start_below_the_controls(page):
     assert box["y"] + box["height"] <= _first_tile_top(page)
 
 
-def test_first_tile_sits_under_the_top_bar_without_controls(page):
+@pytest.mark.parametrize(("header_layout", "top"), [("compact", 80), ("full", 160)])
+def test_first_tile_offset_without_controls(page, header_layout, top):
     store = MemoryDashboardStore()
     model = store.create_dashboard(resolve_identity().user, "Plant")
     model.items = [DashboardItem(instance_id="chart", component_id="Test/chart")]
     store.save_dashboard(model)
-    _serve(page, store, model.dashboard_id)
+    _serve(page, store, model.dashboard_id, header_layout=header_layout)
 
     expect(page.locator(".fd-controls-bar")).to_be_hidden()
-    assert _first_tile_top(page) <= 80
+    assert _first_tile_top(page) <= top
 
 
 def test_the_breadcrumb_is_the_only_title(page):
@@ -99,23 +100,39 @@ def test_the_breadcrumb_is_the_only_title(page):
     expect(page.get_by_text("Plant", exact=True).filter(visible=True)).to_have_count(1)
 
 
+@pytest.mark.parametrize("header_layout", ["compact", "full"])
 @pytest.mark.parametrize("width", [1440, 1024])
-def test_every_view_action_is_reachable(page, width):
+def test_every_view_action_is_reachable(page, width, header_layout):
     store, dash = _store()
-    _serve(page, store, dash, width=width)
+    _serve(page, store, dash, width=width, header_layout=header_layout)
 
     _assert_reachable(page, VIEW_ACTIONS + TOP_BAR)
     edit = _button(page, "Edit")
     assert stable_box(_button(page, "View"), page)["x"] < stable_box(edit, page)["x"]
 
 
+@pytest.mark.parametrize("header_layout", ["compact", "full"])
 @pytest.mark.parametrize("width", [1440, 1024])
-def test_every_edit_action_is_reachable(page, width):
+def test_every_edit_action_is_reachable(page, width, header_layout):
     store, dash = _store()
-    _serve(page, store, dash, width=width, edit=True)
+    _serve(page, store, dash, width=width, edit=True, header_layout=header_layout)
 
     expect(page.get_by_text("All changes saved")).to_be_visible()
     _assert_reachable(page, EDIT_ACTIONS + TOP_BAR)
+
+
+def test_full_layout_has_its_own_row_and_the_search_field(page):
+    store, dash = _store(description="Output per unit, live.")
+    _serve(page, store, dash, header_layout="full")
+
+    bar = page.locator(".fd-dashboard-bar")
+    expect(bar.get_by_text("Plant", exact=True)).to_be_visible()
+    expect(bar.get_by_text("Output per unit, live.")).to_be_visible()
+    expect(bar.get_by_text(re.compile(r"^Refreshed \d\d:\d\d$"))).to_be_visible()
+    expect(bar.locator(".fd-health-chip")).to_be_visible()
+    assert stable_box(page.get_by_role("button", name="Search"), page)["width"] > 200
+    top_bar = stable_box(page.locator(".MuiAppBar-root").first, page)
+    assert stable_box(bar, page)["y"] >= top_bar["y"] + top_bar["height"] - 1
 
 
 def test_search_button_opens_the_command_palette(page):
@@ -140,9 +157,10 @@ def test_health_chip_opens_the_pipeline(page):
     expect(popover.get_by_role("button", name="Show issues")).to_be_visible()
 
 
-def test_controls_on_the_left(page):
+@pytest.mark.parametrize(("header_layout", "top"), [("compact", 80), ("full", 160)])
+def test_controls_on_the_left(page, header_layout, top):
     store, dash = _store()
-    _serve(page, store, dash, controls_position="left")
+    _serve(page, store, dash, controls_position="left", header_layout=header_layout)
 
     panel = page.locator(".fd-controls-panel")
     expect(panel.get_by_text("unit picker control")).to_be_visible()
@@ -150,7 +168,7 @@ def test_controls_on_the_left(page):
     box = stable_box(panel, page)
     tile = page.locator(".flowdash-tile").filter(visible=True).first
     assert box["x"] + box["width"] <= stable_box(tile, page)["x"]
-    assert _first_tile_top(page) <= 80
+    assert _first_tile_top(page) <= top
 
     page.get_by_role("button", name="Hide controls").click()
     expect(panel).to_be_hidden()
@@ -166,3 +184,20 @@ def test_other_navigation_keeps_the_bar_as_a_row(page, nav_variant):
     bar = page.locator(".fd-dashboard-bar")
     expect(bar.get_by_text("Plant", exact=True)).to_be_visible()
     _assert_reachable(page, VIEW_ACTIONS)
+
+
+def test_dashboard_settings_switch_the_header_layout(page):
+    store, dash = _store()
+    _serve(page, store, dash)
+
+    expect(page.locator(".fd-dashboard-bar")).to_be_hidden()
+    page.get_by_role("button", name="More actions").click()
+    page.get_by_role("menuitem", name="Settings").click()
+    dialog = page.get_by_role("dialog")
+    dialog.get_by_role("button", name="Full", exact=True).click()
+    dialog.get_by_role("button", name="Save settings").click()
+
+    bar = page.locator(".fd-dashboard-bar")
+    expect(bar.get_by_text("Plant", exact=True)).to_be_visible()
+    _assert_reachable(page, VIEW_ACTIONS)
+    assert stable_box(page.get_by_role("button", name="Search"), page)["width"] > 200

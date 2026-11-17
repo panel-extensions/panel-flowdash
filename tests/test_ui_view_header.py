@@ -417,6 +417,52 @@ class TestControlsBar:
         assert select.size == 1
 
 
+class TestHeaderLayout:
+    async def test_defaults_to_compact(self, editor):
+        assert editor.header_layout == "compact"
+        assert editor.settings.header_layout == "compact"
+        assert editor._dashboard_bar.layout == "compact"
+
+    async def test_full_layout_puts_the_meta_under_a_large_title(self):
+        editor = FlowDash(COMPONENTS, notifications=False, header_layout="full")
+        editor.add_component(SELECTOR)
+        editor.settings.description = "What the plant produced today."
+        editor.editable = False
+        bar = editor._dashboard_bar
+        bar.stamp_refresh()
+        assert bar.__panel__().objects == [bar._title_block, bar.actions]
+        assert bar.title.variant == "h5"
+        assert bar._meta.objects == [
+            bar.description,
+            bar.health_popover.__panel__(),
+            bar.refresh_label,
+        ]
+        assert bar.description.object == "What the plant produced today."
+        assert re.fullmatch(r"Refreshed \d\d:\d\d", bar.refresh_label.object)
+
+    async def test_both_layouts_share_the_actions(self, editor):
+        editor.editable = False
+        bar = editor._dashboard_bar
+        compact = list(bar.actions)
+        editor.settings.header_layout = "full"
+        assert bar.layout == "full"
+        assert list(bar.actions) == compact
+
+    async def test_full_layout_keeps_its_row_with_a_host_header(self, editor):
+        bar = editor._dashboard_bar
+        bar.placement = "header"
+        assert bar.in_header
+        editor.settings.header_layout = "full"
+        assert not bar.in_header
+        assert bar.__panel__().visible
+        assert bar.__panel__().objects == [bar._title_block, bar.actions]
+
+    async def test_saved_with_the_dashboard(self, editor):
+        editor.new_dashboard("Plant")
+        editor.settings.header_layout = "full"
+        assert editor.save().settings["header_layout"] == "full"
+
+
 class TestControlsPosition:
     async def test_defaults_to_the_top_row(self, editor):
         assert editor.controls_position == "top"

@@ -3974,6 +3974,7 @@ class TestDashboardSettings:
         assert editor.save().settings == {
             "controls_position": "top",
             "description": "",
+            "header_layout": "compact",
             "refresh_period": 3,
             "retired": True,
             "tile_cards": True,
@@ -4011,6 +4012,7 @@ class TestDashboardSettings:
         assert saved.settings == {
             "controls_position": "top",
             "description": "",
+            "header_layout": "compact",
             "refresh_period": 45,
             "tile_cards": True,
             "tile_titles": False,
@@ -4043,6 +4045,7 @@ class TestDashboardSettings:
         assert data["settings"] == {
             "controls_position": "top",
             "description": "",
+            "header_layout": "compact",
             "refresh_period": 15,
             "tile_cards": True,
             "tile_titles": False,
@@ -4078,6 +4081,7 @@ class TestSettingsForm:
         form = editor._settings_view._extra_form
         assert set(form._widgets) == {
             "controls_position",
+            "header_layout",
             "tile_cards",
             "tile_titles",
             "accent",

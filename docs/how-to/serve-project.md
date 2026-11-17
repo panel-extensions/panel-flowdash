@@ -198,6 +198,7 @@ missing or set to `None` keeps its default.
 | `controls_position` | `str` | Where `sidebar=True` components go: `"top"` (default) in a row above the tiles or `"left"` in a collapsible panel, see [Layout & sizing](layout-and-sizing.md#controls). Dashboards can override it in their settings. |
 | `editor_class` | `FlowDash` subclass | The editor class the app instantiates. |
 | `editor_options` | `dict` | Extra keyword arguments for the editor, see [Embed the Editor](embed-the-editor.md#configuring-the-editor-inside-flowdashapp). |
+| `header_layout` | `str` | `"compact"` (default) puts a dashboard's title, health and actions in the top bar, `"full"` in a row of their own under it, see [Navigation](#navigation). Dashboards can override it in their settings. |
 | `home_dashboard` | `str` | Dashboard id or title shown on the homepage. Overridden by `--home-dashboard`. |
 | `include_builtin_components` | `bool` | Offer the built-in widget components in the editor. Default `True`. |
 | `nav_variant` | `str` | `"rail"` (default), `"left"`, `"right"` or `"menubar"`, see [Navigation](#navigation). Overridden by `--nav-variant`. |
@@ -297,8 +298,8 @@ highlighted. The top bar shows where you are as a breadcrumb, for example
 dashboard the user can see, or *Home › Components* on other routes. On screens
 narrower than 600 px the rail moves behind a menu button in the top bar.
 
-On a dashboard the top bar is the dashboard's header too, so there is a single
-row above the tiles. Next to the title it shows an info button holding the
+With the default `header_layout="compact"` the top bar is the dashboard's
+header too, so there is a single row above the tiles. Next to the title it shows an info button holding the
 dashboard's description and a health chip ("9/9 up to date", or the number of
 failed and waiting tiles), which opens the pipeline and a Show issues action.
 On the right it has the View/Edit toggle, Refresh with the auto-refresh period
@@ -306,6 +307,14 @@ On the right it has the View/Edit toggle, Refresh with the auto-refresh period
 further actions. In edit mode the same row holds the save state, the
 Dataflow/Layout tabs, Settings, Discard, Save and Done. The search field
 shrinks to an icon button on a dashboard unless the window is very wide.
+
+`header_layout="full"` gives the dashboard a row of its own under the top bar
+instead, with the same actions on the right and, on the left, a large title over
+the description, the health chip and when the dashboard was last refreshed. The
+search field then keeps its full width. It takes about 80 px more above the
+tiles, so it suits dashboards whose description should always be in view. Set
+it for the whole app (also from a project's `__init__.py`), or per dashboard
+with the *Header* choice in the dashboard's settings.
 
 The search field in the top bar, or <kbd>Ctrl</kbd>+<kbd>K</kbd>
 (<kbd>⌘</kbd>+<kbd>K</kbd> on macOS) anywhere in the app, opens a command

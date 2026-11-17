@@ -552,6 +552,18 @@ class FlowDash(Viewer):
         in a collapsible panel left of the tiles, which suits many controls.""",
     )
 
+    header_layout = param.Selector(
+        default="compact",
+        objects=["compact", "full"],
+        doc="""
+        Default of the ``header_layout`` dashboard setting for dashboards that
+        do not store one: how the dashboard bar is laid out. "compact" keeps
+        it to one line, which a FlowDashApp with the default navigation folds
+        into its top bar; "full" gives it a row of its own with a large title
+        over the description, the health chip and when the dashboard was last
+        refreshed.""",
+    )
+
     include_builtin_components = param.Boolean(
         default=True, doc="Include Select, MultiChoice and Slider in the component palette."
     )
@@ -1754,7 +1766,9 @@ class FlowDash(Viewer):
         self._sync_tile(tile, spec)
         return tile
 
-    @param.depends("controls_position", "tile_cards", "tile_titles", watch=True, on_init=True)
+    @param.depends(
+        "controls_position", "header_layout", "tile_cards", "tile_titles", watch=True, on_init=True
+    )
     def _seed_tile_settings(self):
         """Apply the editor's layout defaults to the dashboard settings shown now."""
         loading = getattr(self, "_loading_settings", False)
@@ -1767,9 +1781,19 @@ class FlowDash(Viewer):
     def _layout_defaults(self) -> dict[str, t.Any]:
         return {
             "controls_position": self.controls_position,
+            "header_layout": self.header_layout,
             "tile_cards": self.tile_cards,
             "tile_titles": self.tile_titles,
         }
+
+    @param.depends("settings.header_layout", watch=True)
+    def _sync_header_layout(self):
+        bar = getattr(self, "_dashboard_bar", None)
+        if bar is not None:
+            # A host header and the bar's own row trade the same parts, which
+            # one message must move so neither holds them while the other does.
+            with pn.io.hold():
+                bar.layout = self.settings.header_layout
 
     @param.depends("settings.controls_position", watch=True)
     def _sync_controls_position(self):
@@ -2096,7 +2120,7 @@ class FlowDash(Viewer):
     # ------------------------------------------------------------------
 
     def _build_component_view(self):
-        self._dashboard_bar = bar = DashboardBar(editor=self)
+        self._dashboard_bar = bar = DashboardBar(editor=self, layout=self.settings.header_layout)
         self._view_controls = ControlsBar(editor=self, position=self.settings.controls_position)
         self._save_button = bar.save_button
         self._download_button = bar.download_button

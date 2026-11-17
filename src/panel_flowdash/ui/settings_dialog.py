@@ -326,6 +326,12 @@ class SettingsDialog(param.Parameterized):
             for name, label in TILE_SETTINGS.items()
             if name in extra
         }
+        if "header_layout" in extra:
+            widgets["header_layout"] = {
+                "type": pmui.RadioButtonGroup,
+                "name": "Header",
+                "options": {"Compact": "compact", "Full": "full"},
+            }
         if "controls_position" in extra:
             widgets["controls_position"] = {
                 "type": pmui.RadioButtonGroup,

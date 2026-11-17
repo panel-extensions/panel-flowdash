@@ -174,6 +174,9 @@ class AppShell:
             variant="temporary",
             size=280,
         )
+        app._editor._dashboard_bar.param.watch(
+            lambda _event: self._render_dashboard_slots(), "layout"
+        )
         self._header = [
             self.menu_button,
             self.breadcrumb,
@@ -450,7 +453,7 @@ class AppShell:
     def _render_dashboard_slots(self):
         """Seat the dashboard bar's parts in the top bar while a dashboard is shown."""
         bar = self._app._editor._dashboard_bar
-        showing = self._showing_dashboard()
+        showing = self._showing_dashboard() and bar.in_header
         lead, actions = ([bar.lead], [bar.actions]) if showing else ([], [])
         if list(self.dashboard_lead) != lead:
             self.dashboard_lead[:] = lead
