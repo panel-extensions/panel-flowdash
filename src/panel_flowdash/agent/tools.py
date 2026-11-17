@@ -50,32 +50,38 @@ class FlowDashDeps:
     Each request to the agent is pinned to the dashboard open when it was
     sent (see :meth:`start_request`). Once the user is on another dashboard,
     every tool refuses for the rest of the request, so the agent never
-    changes a dashboard the user did not ask about.
+    changes a dashboard the user did not ask about. Without
+    :meth:`start_request`, each agent run is pinned when it first uses a tool.
     """
 
     ops: DashboardOps
     _pinned: t.Any = field(default=_UNPINNED, repr=False)
+    _explicit: bool = field(default=False, repr=False)
+    _run_id: str | None = field(default=None, repr=False)
     _abandoned: bool = field(default=False, repr=False)
+    # The revision the save approval's summary was written for, set at each model step.
     _save_revision: str | None = field(default=None, repr=False)
 
     def start_request(self):
         """Pin the next request to the dashboard open now. Call it when the user sends one."""
-        self._pinned = _open_id(self.ops)
-        self._abandoned = False
-        self._save_revision = None
+        self._reset(_open_id(self.ops))
+        self._explicit = True
 
     def end_request(self):
         """Forget the request's pin once it is done."""
-        self._pinned = _UNPINNED
-        self._abandoned = False
-        self._save_revision = None
+        self._reset(_UNPINNED)
 
-    def check_pin(self) -> str | None:
+    def _reset(self, pinned: t.Any, run_id: str | None = None):
+        self._pinned = pinned
+        self._explicit = False
+        self._run_id = run_id
+        self._abandoned = False
+
+    def check_pin(self, run_id: str | None = None) -> str | None:
         """Return why the request may not act any more, or None while the user is on its dashboard."""
         open_id = _open_id(self.ops)
-        if self._pinned is _UNPINNED:
-            # Without start_request, the request is pinned when it first acts.
-            self._pinned = open_id
+        if not self._explicit and (self._pinned is _UNPINNED or run_id != self._run_id):
+            self._reset(open_id, run_id)
         if not self._abandoned and self._pinned != open_id:
             self._abandoned = True
         if self._abandoned:
@@ -226,7 +232,7 @@ def _guarded(func: t.Callable) -> t.Callable:
     @functools.wraps(func)
     async def wrapper(ctx: RunContext[FlowDashDeps], *args, **kwargs):
         deps = ctx.deps
-        refusal = deps.check_pin()
+        refusal = deps.check_pin(ctx.run_id)
         if refusal is not None:
             return refusal
         try:

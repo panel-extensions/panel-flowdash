@@ -628,3 +628,24 @@ async def test_the_save_approval_leaves_out_settings_at_their_defaults(store, mo
     await runner.run("Save")
     (request,) = runner.state.approvals.values()
     assert request.description.endswith("It stores: no changes.")
+
+
+async def test_without_start_request_each_run_is_pinned_on_its_own(store, monkeypatch):
+    first = store.create_dashboard("alice", "First")
+    second = store.create_dashboard("alice", "Second")
+    app = _app(store, monkeypatch)
+    app._load_dashboard_sync(first.dashboard_id, edit=True)
+    runner, _ = _live_runner(app, ("add_node", {"component": "T/number"}))
+    await runner.run("Add a number")
+    app._load_dashboard_sync(second.dashboard_id, edit=True)
+    again = AgentRunner(
+        Agent(
+            scripted(("add_node", {"component": "T/number"})),
+            deps_type=FlowDashDeps,
+            toolsets=[dashboard_toolset()],
+        ),
+        RunState(flush_interval=0),
+        deps=runner.deps,
+    )
+    assert "Added node" in await again.run("Add a number here too")
+    assert len(app._editor._tile_items) == 1
