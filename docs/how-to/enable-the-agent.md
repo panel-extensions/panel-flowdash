@@ -43,20 +43,6 @@ model fails, for example because the key is wrong or the account is out of credi
 the assistant answers with the provider's error in the chat and the server logs it
 with its traceback.
 
-### Token limits and credit
-
-The default agent asks for at most 4096 tokens per reply. Without a limit pydantic-ai
-asks for the model's maximum, often 64k tokens or more, and providers that bill
-prepaid credit, such as OpenRouter, refuse a request whose maximum the remaining
-credit could not pay for, even when the actual reply would be short ("You requested
-up to 65536 tokens, but can only afford ..."). Set `FLOWDASH_AGENT_MAX_TOKENS` to
-change the limit, or pass any pydantic-ai model setting with `agent_model_settings`:
-
-```python
-# my_project/__init__.py
-agent_model_settings = {"max_tokens": 8192, "temperature": 0}
-```
-
 ---
 
 ## Configure it in the project
@@ -71,7 +57,7 @@ agent_model = "anthropic:<model>"
 | Option | Meaning |
 | --- | --- |
 | `agent_model` | The model of the default agent. Defaults to `FLOWDASH_AGENT_MODEL`. |
-| `agent_model_settings` | pydantic-ai model settings for every request, merged over the agent's own, e.g. `{"max_tokens": 8192}`. The default agent limits `max_tokens` to 4096, or to `FLOWDASH_AGENT_MAX_TOKENS`. |
+| `agent_model_settings` | pydantic-ai model settings for every request, merged over the agent's own, e.g. `{"temperature": 0}`. |
 | `agent` | `None` (default): the default agent when a model is configured. `True`: the default agent, and an error saying how to configure a model when none is. A string: the default agent with that model. `False`: no agent, even if a model is configured. A `pydantic_ai.Agent`: your own agent. |
 | `agent_authorize` | Called with the signed-in user's `Identity`; only sessions for which it returns True get the agent. |
 | `agent_sensitive_components` | Component ids or glob patterns (`"Sources/*"`) of components whose config can reach outside the dashboard, see [Untrusted text](#untrusted-text). |
@@ -92,7 +78,7 @@ agent = create_agent(
 
 The agent's instructions always list the components the user may place, with their
 ports and config fields, so you do not need to describe those. `create_agent` also
-takes `model_settings`, merged over its default `max_tokens`.
+takes pydantic-ai `model_settings`.
 
 ---
 
