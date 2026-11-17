@@ -33,6 +33,7 @@ _EXCLUDED_ARGS = ("files", "--args")
 # would be shared by every session; ``configure_layout`` sets them per session.
 PROJECT_OPTIONS = (
     "agent",
+    "agent_approval_rules",
     "agent_authorize",
     "agent_model",
     "agent_model_settings",

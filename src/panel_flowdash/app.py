@@ -149,9 +149,21 @@ class FlowDashApp(Viewer):
         default=[],
         item_type=str,
         doc="""
-        Ids of components whose config can reach outside the dashboard, such
-        as a SQL source or one fetching a URL. The agent needs the user's
-        approval to place one, change its config or load YAML that places one.""",
+        Ids or glob patterns (``"Sources/*"``) of components whose config can
+        reach outside the dashboard, such as a SQL source or one fetching a
+        URL; former ids of a renamed component count too. The agent needs the
+        user's approval to place one, preview or load YAML that places one,
+        change its config or connect an edge into it.""",
+    )
+
+    agent_approval_rules = param.List(
+        default=[],
+        doc="""
+        More calls the agent needs the user's approval for, on top of saving,
+        deleting, sharing and the sensitive components: tool names, or
+        ``panel_agents.ApprovalRule`` objects for calls with particular
+        arguments, e.g. ``ApprovalRule("run_command", when=lambda args:
+        args["command"] == "action:refresh")``.""",
     )
 
     agent_model = param.String(

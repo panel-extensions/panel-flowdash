@@ -112,7 +112,9 @@ class AgentSession:
             RunState(),
             deps=deps,
             approval_policy=approval_policy(
-                sensitive_components=app.agent_sensitive_components, ops=self.ops
+                *app.agent_approval_rules,
+                sensitive_components=app.agent_sensitive_components,
+                ops=self.ops,
             ),
             run_kwargs={
                 "toolsets": [ActionToolset(self.actions)],
