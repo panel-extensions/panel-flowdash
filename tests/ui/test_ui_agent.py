@@ -11,7 +11,8 @@ pytest.importorskip("pydantic_ai")
 pytest.importorskip("panel_agents")
 expect = pytest.importorskip("playwright.sync_api").expect
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, RunContext
+from pydantic_ai.exceptions import ApprovalRequired
 
 from panel_flowdash.agent import FlowDashDeps, dashboard_toolset
 from panel_flowdash.app import FlowDashApp
@@ -111,6 +112,43 @@ def test_untrusted_text_reaches_the_drawer_as_text(page):
         assert found["math"] == 0, tab
         assert found["images"] == [], tab
         assert not [h for h in found["links"] if not h.startswith("https://evil.test/")], tab
+    page.wait_for_timeout(500)
+    assert page.evaluate("() => window.__pwned || []") == []
+    assert requests == []
+
+
+def test_the_full_screen_notice_shows_a_tools_description_as_text(page):
+    # Third-party tools (MCP servers, a project's own) write their own descriptions.
+    store, (dash,) = _store_with("Plant")
+
+    def fetch_report(ctx: RunContext[FlowDashDeps]) -> str:
+        if not ctx.tool_call_approved:
+            raise ApprovalRequired
+        return "ok"
+
+    # Short enough to reach the notice whole.
+    fetch_report.__doc__ = "<img src=x onerror=\"window.__pwned=['notice']\"> Fetch. More."
+    agent = Agent(
+        scripted(("fetch_report", {})), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()]
+    )
+    agent.tool(fetch_report)
+    requests = []
+    page.on("request", lambda r: requests.append(r.url) if "evil.test" in r.url else None)
+    page.route("**/*evil.test*/**", lambda route: route.abort())
+    apps = []
+    _serve_app(page, store, f"/dash/{dash}", apps, agent=agent)
+
+    page.get_by_text("note tile").first.wait_for()
+    page.get_by_role("button", name="Assistant", exact=True).click()
+    chat = page.get_by_placeholder(re.compile("^Ask the agent"))
+    chat.fill("Fetch the report")
+    chat.press("Enter")
+    session = apps[0]._agent_session
+    wait_until(lambda: bool(session.runner.state.pending_approvals), page, timeout=30000)
+    page.get_by_role("button", name="Full screen").first.click()
+    notice = page.get_by_text(re.compile("^The assistant is waiting for your approval"))
+    expect(notice).to_be_visible(timeout=10000)
+    expect(notice).to_contain_text("<img")
     page.wait_for_timeout(500)
     assert page.evaluate("() => window.__pwned || []") == []
     assert requests == []

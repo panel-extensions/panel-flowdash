@@ -72,7 +72,10 @@ ports and config fields, so you do not need to describe those.
 
 The robot button in the top bar opens the assistant: a drawer beside the page with
 the chat, the versions of the dashboard the agent published and the calls waiting for
-approval. It stays open while you move between dashboards. The agent's edits appear on the user's canvas as they happen, as unsaved changes:
+approval. It stays open while you move between dashboards. The command palette
+(Ctrl+K) also offers "Ask the assistant" for whatever you typed; a question asked
+while the agent is busy is sent once it is done. In full screen, a call waiting for
+approval shows a notice whose Review button leaves full screen and opens the drawer. The agent's edits appear on the user's canvas as they happen, as unsaved changes:
 a dashboard shown in view mode switches to edit mode, and Save, Discard and the
 unsaved-changes review work as for the user's own edits. The nodes and tiles the
 agent added (green) or changed (amber) during a request stay outlined until the next

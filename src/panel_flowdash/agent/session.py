@@ -16,6 +16,7 @@ from panel_flowdash.util import confirm
 
 from .actions import palette_actions
 from .assistant import create_agent
+from .chrome import SessionChrome
 from .highlight import ChangeHighlighter
 from .live import LiveDashboardOps
 from .ops import read_revision
@@ -82,6 +83,7 @@ class AgentSession:
             self.runner, title="Assistant", variant="persistent", on_apply=self.apply_version
         )
         self.highlighter = ChangeHighlighter(self)
+        self.chrome = SessionChrome(self)
 
     def publish_user_edits(self):
         """Publish the open dashboard as a version if it changed since the agent last saw it.

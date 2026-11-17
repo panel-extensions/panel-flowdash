@@ -1,6 +1,8 @@
 const IS_MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent)
 const MOD = IS_MAC ? "⌘" : "Ctrl"
 const GROUPS = ["Dashboards", "Components", "On this dashboard", "Actions"]
+// A query of this many words reads as a question, so asking the assistant comes first.
+const ASK_FIRST_WORDS = 3
 // Results per group: a short overview while the query is empty, more once it narrows them.
 const LIMIT_EMPTY = 5
 const LIMIT_QUERY = 20
@@ -264,6 +266,23 @@ export function filterItems(items, query) {
   return groups
 }
 
+// The palette's groups for *query*, with the assistant item first or last when *askLabel* is set.
+export function withAsk(groups, query, askLabel) {
+  const text = query.trim()
+  if (!askLabel || !text) {
+    return groups
+  }
+  const ask = {
+    group: "Assistant",
+    matches: [{
+      item: {id: `ask:${text}`, title: `${askLabel}: “${text}”`, icon: "auto_awesome"},
+      spans: {title: [], subtitle: []},
+    }],
+  }
+  const first = !groups.length || text.split(/\s+/).length >= ASK_FIRST_WORDS
+  return first ? [ask, ...groups] : [...groups, ask]
+}
+
 export function render({model, el: root}) {
   const registry = (window.__flowdashCommandPalettes ??= new Map())
   registry.get(model.id)?.()
@@ -311,7 +330,7 @@ export function render({model, el: root}) {
 
   function renderResults() {
     const {results, input} = state
-    const groups = filterItems(model.items, input.value)
+    const groups = withAsk(filterItems(model.items, input.value), input.value, model.ask_label)
     state.flat = []
     results.replaceChildren()
     for (const {group, matches} of groups) {
