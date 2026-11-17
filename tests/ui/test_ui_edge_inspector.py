@@ -1,10 +1,12 @@
 """UI tests for editing edge transforms in the inspector."""
 
 import pytest
-from panel.tests.util import serve_component, wait_until
+from panel.tests.util import wait_until
 
 from panel_flowdash.editor import FlowDash
 from tests.test_ui_edge_inspector import COMPONENTS
+
+from .util import serve_component
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect
@@ -22,7 +24,7 @@ def _editor(transform=None):
     return editor, (src, "turbines", dst, "rows")
 
 
-# Clicks the middle of the first edge's line, which is where a user clicks.
+# The middle of the first edge's line, which is where a user clicks.
 _EDGE_MIDDLE = """path => {
   const point = path.getPointAtLength(path.getTotalLength() / 2);
   const m = path.getScreenCTM();
@@ -31,9 +33,19 @@ _EDGE_MIDDLE = """path => {
 
 
 def _select_edge(page):
+    # serve_component waits for Panel's loading overlay, which would take a
+    # raw click. The nodes still grow and the view fits them after that, so
+    # click the middle only once it stops moving.
     path = page.locator(".react-flow__edge-path").first
     path.wait_for(state="attached")
-    page.mouse.click(*path.evaluate(_EDGE_MIDDLE))
+    points = []
+
+    def settled():
+        points.append(path.evaluate(_EDGE_MIDDLE))
+        return len(points) >= 3 and points[-1] == points[-2] == points[-3]
+
+    wait_until(settled, page, interval=100)
+    page.mouse.click(*points[-1])
 
 
 def test_selecting_an_edge_edits_its_steps_in_the_inspector(page):
