@@ -425,6 +425,45 @@ class TestHook:
         editor._component_instances[note].text = "Updated"
         assert "Updated" in card(editor, note).__panel__().object
 
+    async def test_blank_string_keeps_the_default(self):
+        class Component:
+            def __flowdash_preview__(self):
+                return "  \n"
+
+        assert hook_preview(Component()) is None
+
+    async def test_markdown_previews_its_text_without_markup(self):
+        editor = FlowDash({}, notifications=False)
+        node = editor.add_component(
+            "Text/Markdown",
+            config={"text": "# Capacity\n\nGrew **12%** <img src=x onerror=alert(1)>"},
+        )
+        preview = card(editor, node).preview
+        assert preview.kind == "text"
+        _assert_escaped(preview.html)
+        text = _visible_text(preview.html)
+        assert "Capacity" in text and "Grew 12%" in text and "**" not in text
+        editor._component_instances[node].text = "Updated *text*"
+        assert "Updated text" in _visible_text(card(editor, node).preview.html)
+
+    async def test_notes_preview_their_plain_text(self):
+        editor = FlowDash({}, notifications=False)
+        node = editor.add_component(
+            "Text/Notes", config={"text": "<p>First <strong>line</strong></p><p>Second</p>"}
+        )
+        preview = card(editor, node).preview
+        assert preview.kind == "text"
+        _assert_escaped(preview.html)
+        text = _visible_text(preview.html)
+        assert "First line" in text and "Second" in text and "strong" not in text
+        editor._component_instances[node].text = "<p>Edited</p>"
+        assert "Edited" in _visible_text(card(editor, node).preview.html)
+
+    async def test_empty_notes_keep_the_compact_card(self):
+        editor = FlowDash({}, notifications=False)
+        node = editor.add_component("Text/Notes")
+        assert card(editor, node).preview is None
+
     async def test_hook_watchers_are_released(self):
         editor = FlowDash(DEMO, notifications=False)
         note = editor.add_component("Demo/note")

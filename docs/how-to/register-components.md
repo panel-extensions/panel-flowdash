@@ -223,7 +223,7 @@ class Note(pn.viewable.Viewer):
 The hook takes no arguments and is called on the live component instance. It
 returns one of:
 
-- `None`, to keep the default preview of the component's ports.
+- `None` or a blank string, to keep the default preview of the component's ports.
 - A `str`, shown as plain text, up to three lines. It is never rendered as
   HTML or Markdown, so return the text a reader should see, e.g. Markdown with
   its markup stripped, not markup to render.

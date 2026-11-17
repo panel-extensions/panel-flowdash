@@ -466,7 +466,7 @@ def hook_preview(instance: t.Any, label: str = "") -> Preview | None:
     """Ask a component for its own preview through ``__flowdash_preview__``.
 
     The hook is called without arguments on the live component instance. It
-    returns None to keep the default preview, a ``str`` shown as plain text
+    returns None (or a blank string) to keep the default preview, a ``str`` shown as plain text
     (up to three lines, never as HTML or Markdown), or any other value, which
     is previewed like an output value: a DataFrame as a table, numbers as a
     sparkline and so on. If it raises, the error is logged and the default
@@ -480,7 +480,7 @@ def hook_preview(instance: t.Any, label: str = "") -> Preview | None:
     except Exception:
         logger.exception("The preview hook of %s failed", type(instance).__name__)
         return None
-    if value is None:
+    if value is None or (isinstance(value, str) and not value.strip()):
         return None
     if isinstance(value, str):
         return text_preview(value)
