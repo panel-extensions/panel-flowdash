@@ -40,8 +40,13 @@ _FIT_CONTENT = """
 # Material UI shows an outlined input's label inside the empty box and hides
 # its placeholder, and moves the label into the notch once there is a value,
 # so in a row of controls an empty one looks unlike its neighbours. These rules
-# keep every label in the notch, with the placeholder shown while empty.
+# keep every label in the notch, with the placeholder shown while empty. A
+# select's height also follows its font's line height, which differs from a
+# text input's with some fonts, so small outlined inputs get MUI's 40px.
 _NOTCHED_LABEL = """
+.MuiOutlinedInput-root.MuiInputBase-sizeSmall {
+  min-height: 40px;
+}
 .MuiInputLabel-outlined[data-shrink="false"] {
   transform: translate(14px, -9px) scale(0.75);
   max-width: calc(133% - 32px);
