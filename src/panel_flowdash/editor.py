@@ -88,7 +88,13 @@ from panel_flowdash.ui.inspect_sheet import (
 )
 from panel_flowdash.ui.inspector import Inspector
 from panel_flowdash.ui.layout_panel import GRID_EDIT_CSS, LayoutPanel
-from panel_flowdash.ui.node_card import CARD_WIDTH, card_height, node_card, placeholder_card
+from panel_flowdash.ui.node_card import (
+    CARD_WIDTH,
+    NodeCard,
+    handle_stylesheet,
+    node_card,
+    placeholder_card,
+)
 from panel_flowdash.ui.palette import ComponentPalette, palette_entry, palette_items
 from panel_flowdash.ui.settings_dialog import SettingsDialog
 from panel_flowdash.ui.split_view import TILE_KEY_PREFIX, SplitView
@@ -729,6 +735,15 @@ class FlowDash(Viewer):
         on the left. Only meaningful while `editable`.""",
     )
 
+    node_previews = param.Boolean(
+        default=True,
+        doc="""
+        Default of the ``node_previews`` dashboard setting for dashboards that
+        do not store one: whether each card on the wiring canvas previews its
+        current value below its ports, e.g. the first rows of a table or a
+        sparkline of a series, rather than summarizing it in one line.""",
+    )
+
     notifications = param.Boolean(
         default=True,
         doc="""
@@ -1310,10 +1325,16 @@ class FlowDash(Viewer):
         )
         return node_types, node_editors
 
+    def _flow_stylesheets(self) -> list[str]:
+        """Return the canvas styles, with rules pinning the handles of previewing cards."""
+        return [_FLOW_STYLESHEET, handle_stylesheet(self._component_specs.values())]
+
     def _rebuild_flow_canvas(self):
         """Update node_types on the live ReactFlow canvas after component load."""
         node_types, node_editors = self._node_types_from_specs()
-        self._flow.param.update(node_types=node_types, node_editors=node_editors)
+        self._flow.param.update(
+            node_types=node_types, node_editors=node_editors, stylesheets=self._flow_stylesheets()
+        )
 
     def _update_value_popup_config(self, event):
         self._flow.param.update(
@@ -1344,7 +1365,7 @@ class FlowDash(Viewer):
             show_minimap=False,
             sizing_mode="stretch_both",
             min_height=600,
-            stylesheets=[_FLOW_STYLESHEET],
+            stylesheets=self._flow_stylesheets(),
             popup_trigger=self.popup_trigger,
             popup_hover_delay=self.popup_hover_delay,
             drop_types=[_PALETTE_DRAG_TYPE, _FILES_DROP_TYPE],
@@ -1901,7 +1922,13 @@ class FlowDash(Viewer):
         return tile
 
     @param.depends(
-        "controls_position", "header_layout", "tile_cards", "tile_titles", watch=True, on_init=True
+        "controls_position",
+        "header_layout",
+        "node_previews",
+        "tile_cards",
+        "tile_titles",
+        watch=True,
+        on_init=True,
     )
     def _seed_tile_settings(self):
         """Apply the editor's layout defaults to the dashboard settings shown now."""
@@ -1916,6 +1943,7 @@ class FlowDash(Viewer):
         return {
             "controls_position": self.controls_position,
             "header_layout": self.header_layout,
+            "node_previews": self.node_previews,
             "tile_cards": self.tile_cards,
             "tile_titles": self.tile_titles,
         }
@@ -1937,6 +1965,17 @@ class FlowDash(Viewer):
         controls.position = self.settings.controls_position
         if self._grid_on_screen:
             self._apply_mode_state()
+
+    @param.depends("settings.node_previews", watch=True)
+    def _sync_node_previews(self):
+        flow = getattr(self, "_flow", None)
+        if flow is None:
+            return
+        shown = self.settings.node_previews
+        with pn.io.hold():
+            for node in flow.nodes:
+                if isinstance(card := node.get("view"), NodeCard):
+                    card.show_preview = shown
 
     @param.depends("settings.tile_cards", "settings.tile_titles", watch=True)
     def _sync_tile_style(self):
@@ -2637,9 +2676,8 @@ class FlowDash(Viewer):
             return
         viewport = self._flow.viewport or {}
         zoom = viewport.get("zoom") or 1
-        item = next((i for i in self._tile_items if i["instance_id"] == instance_id), None)
-        spec = self._tile_spec(item) if item is not None else None
-        height = card_height(len(spec.inputs), len(spec.outputs)) if spec else card_height(0, 0)
+        card = node.get("view")
+        height = card.height if isinstance(card, NodeCard) else 0
         x = (node["position"]["x"] + CARD_WIDTH / 2) * zoom + viewport.get("x", 0)
         y = (node["position"]["y"] + height / 2) * zoom + viewport.get("y", 0)
         if 0 <= x <= pane[0] and 0 <= y <= pane[1]:
@@ -3019,7 +3057,12 @@ class FlowDash(Viewer):
         )
         node_dict = node.to_dict()
         node_dict["view"] = node_card(
-            spec, node_state, failures, self._component_wiring.setdefault(instance_id, [])
+            spec,
+            node_state,
+            failures,
+            self._component_wiring.setdefault(instance_id, []),
+            instance=self._component_instances.get(instance_id),
+            show_preview=self.settings.node_previews,
         )
         self._add_canvas_node(node_dict)
 

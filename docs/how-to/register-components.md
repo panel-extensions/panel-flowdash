@@ -195,6 +195,48 @@ the fast tiles update at once and the slow one shows its spinner while it
 works. This applies per output: tiles fed by different outputs, or by one
 component setting several outputs at once, are sent output by output.
 
+### Previewing a component on the canvas
+
+Each card on the wiring canvas previews its component's current value below
+its ports, unless the dashboard's `node_previews` setting is off (see
+[Dashboard Settings](dashboard-settings.md#settings)). It previews the first
+output holding a value, or for a component without outputs the first input
+holding one: a DataFrame as its first rows and columns, numbers as a
+sparkline, a list as chips, a dict as a few `key: value` lines and anything
+else as one line of text. Charts are named rather than drawn, e.g.
+"HoloViews Curve of y over x" or "Bokeh figure".
+
+A `Viewer` component can supply its own preview by defining
+`__flowdash_preview__`:
+
+```python
+class Note(pn.viewable.Viewer):
+    text = param.String(default="")
+
+    def __flowdash_preview__(self):
+        return self.text
+
+    def __panel__(self):
+        return pn.pane.Markdown(self.param.text)
+```
+
+The hook takes no arguments and is called on the live component instance. It
+returns one of:
+
+- `None`, to keep the default preview of the component's ports.
+- A `str`, shown as plain text, up to three lines. It is never rendered as
+  HTML or Markdown, so return the text a reader should see, e.g. Markdown with
+  its markup stripped, not markup to render.
+- Any other value, previewed as if an output held it: a DataFrame as a table,
+  a list of numbers as a sparkline and so on.
+
+The preview is refreshed when the component's ports or any of its parameters
+change. Several changes in quick succession, such as a slider being dragged,
+lead to one call shortly after the first, and the hook is not called at all
+while previews are off. Keep it cheap and free of side effects. If it raises,
+the error is logged and the default preview is shown. Function components
+have no instance and so no hook.
+
 ---
 
 ## Decorator overrides on Viewer classes

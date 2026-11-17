@@ -31,6 +31,12 @@ controls above the tiles or in a panel to their left, defaulting to the editor's
 and actions on one line, in a `FlowDashApp`'s top bar, or in a row of their own
 with a large title over the description and the refresh time, defaulting to the
 editor's `header_layout` (see [Serve a Project](serve-project.md#navigation)).
+`node_previews` (on by default) previews each component's current value inside
+its card on the wiring canvas, such as the first rows of a table or a sparkline
+of a series; without it a card summarizes the value in one line. It defaults to
+the editor's `node_previews`, and the status bar under the canvas has a button
+that toggles it (see
+[Previewing a component on the canvas](register-components.md#previewing-a-component-on-the-canvas)).
 
 ```python
 editor = FlowDash(components, store="dashboards.db")
@@ -48,7 +54,8 @@ in a `FlowDashApp` the **Share** button opens the same dialog on its Sharing
 section. A list on the left switches between its sections:
 
 - **General**: the dashboard's name, its description, **Header**
-  (`header_layout`), **Controls** (`controls_position`), **Frame tiles** and **Show tile titles** (`tile_cards`
+  (`header_layout`), **Controls** (`controls_position`), **Preview values on the
+  canvas** (`node_previews`), **Frame tiles** and **Show tile titles** (`tile_cards`
   and `tile_titles`), any
   [settings of your own](#add-your-own-settings), and **Viewers can inspect
   outputs**, which is only offered when the editor has `inspect_outputs` on. Only

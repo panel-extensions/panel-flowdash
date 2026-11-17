@@ -56,6 +56,16 @@ class DashboardSettings(param.Parameterized):
         the editor's ``header_layout``.""",
     )
 
+    node_previews = param.Boolean(
+        default=True,
+        label="Preview values on the canvas",
+        doc="""
+        Whether each card on the wiring canvas previews its component's
+        current value below its ports: the first rows of a table, a sparkline
+        of numbers, a few items of a list. Without it a card summarizes the
+        value in one line. Defaults to the editor's ``node_previews``.""",
+    )
+
     tile_cards = param.Boolean(
         default=True,
         label="Show tiles as cards",
