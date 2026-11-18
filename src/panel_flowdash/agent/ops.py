@@ -19,10 +19,12 @@ import panel as pn
 
 from panel_flowdash.config_check import (
     CHECK_TIMEOUT,
+    CheckResult,
     check_node,
     check_node_sync,
     effective_config,
     node_inputs,
+    recheck_node,
     run_check,
     run_check_sync,
 )
@@ -65,6 +67,13 @@ def _refuse_config(what: str, problems: list[str]):
         raise OperationError(f"{what}: {problems[0]}")
     if problems:
         raise OperationError(f"{what}:\n" + "\n".join(f"- {p}" for p in problems))
+
+
+def _check_issues(path: str, result: CheckResult) -> list[Issue]:
+    """Return a config check's problems as errors at *path*, and its warnings as warnings."""
+    return [Issue(path, problem) for problem in result] + [
+        Issue(path, warning, "warning") for warning in result.warnings
+    ]
 
 
 def _incoming(edges: t.Any, name: str) -> list[str]:
@@ -175,6 +184,9 @@ class DashboardOps:
 
     def __init__(self, editor: FlowDash):
         self.editor = editor
+        # What the config check found on the latest add_node, set_config,
+        # connect or disconnect, warnings included.
+        self.last_check: CheckResult = CheckResult()
 
     # ------------------------------------------------------------------
     # Rights
@@ -610,7 +622,7 @@ class DashboardOps:
                 problems = run_check_sync(
                     spec, config, inputs, editor=editor, timeout=self.check_timeout
                 )
-                issues += [Issue(path, problem) for problem in problems]
+                issues += _check_issues(path, problems)
         return issues
 
     def _doc_checks(
@@ -648,12 +660,14 @@ class DashboardOps:
             checks.append((f"nodes.{name}.config", spec, config, inputs))
         return checks
 
-    def _canvas_issues(self, problems: dict[str, list[str]]) -> list[Issue]:
+    def _canvas_issues(self, problems: dict[str, CheckResult]) -> list[Issue]:
         names = self._names()
         return [
-            Issue(f"nodes.{names.get(instance_id, instance_id)}.config", problem)
+            issue
             for instance_id, found in problems.items()
-            for problem in found
+            for issue in _check_issues(
+                f"nodes.{names.get(instance_id, instance_id)}.config", found
+            )
         ]
 
     def _checked_nodes(self, editor: FlowDash) -> list[str]:
@@ -664,21 +678,26 @@ class DashboardOps:
             and getattr(editor._component_specs.get(item["component_id"]), "check_config", None)
         ]
 
-    def _canvas_problems(self, editor: FlowDash) -> dict[str, list[str]]:
-        """Check the config of every node of *editor* that has a check, against its live inputs."""
+    def _canvas_problems(self, editor: FlowDash) -> dict[str, CheckResult]:
+        """Check the config of every node of *editor* that has a check, against its live inputs.
+
+        Returns the results with problems or warnings, by instance id.
+        """
         found = {
             instance_id: check_node_sync(editor, instance_id, timeout=self.check_timeout)
             for instance_id in self._checked_nodes(editor)
         }
-        return {instance_id: problems for instance_id, problems in found.items() if problems}
+        return {iid: result for iid, result in found.items() if result or result.warnings}
 
-    async def _canvas_problems_async(self, editor: FlowDash) -> dict[str, list[str]]:
+    async def _canvas_problems_async(self, editor: FlowDash) -> dict[str, CheckResult]:
         instance_ids = self._checked_nodes(editor)
         results = await asyncio.gather(
             *(check_node(editor, iid, timeout=self.check_timeout) for iid in instance_ids)
         )
         return {
-            iid: problems for iid, problems in zip(instance_ids, results, strict=True) if problems
+            iid: result
+            for iid, result in zip(instance_ids, results, strict=True)
+            if result or result.warnings
         }
 
     def preview(self, text: str | None = None, *, rows: int = 5) -> dict[str, t.Any]:
@@ -971,7 +990,8 @@ class DashboardOps:
             If the component is unknown, placed once already when it can only
             be placed once, *config* is invalid or refused by the component's
             config check, or *name* is invalid or taken; for a taken name the
-            message suggests a free one.
+            message suggests a free one. Warnings of the config check do not
+            refuse it; they are left in :attr:`last_check`.
         PermissionError
             If the user may not use the component, or edit the dashboard.
         """
@@ -984,7 +1004,9 @@ class DashboardOps:
             timeout=self.check_timeout,
         )
         _refuse_config(f"'{spec.title}' was not placed", problems)
-        return self._place_node(spec, config, position, name)
+        name = self._place_node(spec, config, position, name)
+        self.last_check = problems
+        return name
 
     async def add_node_async(
         self,
@@ -1006,7 +1028,9 @@ class DashboardOps:
         self._check_still_open(dashboard_id)
         _refuse_config(f"'{spec.title}' was not placed", problems)
         self._require_edit()
-        return self._place_node(spec, config, position, name)
+        name = self._place_node(spec, config, position, name)
+        self.last_check = problems
+        return name
 
     def _check_still_open(self, dashboard_id: str | None):
         """Refuse to go on when another dashboard was opened while a check ran."""
@@ -1066,11 +1090,13 @@ class DashboardOps:
         OperationError
             If a field does not exist or takes no such value, or the
             component's config check refuses the result; nothing is changed.
+            Warnings of the config check do not refuse it; they are left in
+            :attr:`last_check`.
         """
         instance_id, patch = self._config_patch(name, config)
         problems = check_node_sync(self.editor, instance_id, patch, timeout=self.check_timeout)
         _refuse_config(f"The config of '{name}' was not changed", problems)
-        return self._apply_config(instance_id, patch)
+        return self._apply_config(instance_id, patch, problems)
 
     async def set_config_async(self, name: str, config: dict[str, t.Any]) -> dict[str, t.Any]:
         """Like :meth:`set_config`, running the component's config check off the event loop."""
@@ -1081,7 +1107,7 @@ class DashboardOps:
         _refuse_config(f"The config of '{name}' was not changed", problems)
         if self._config_patch(name, config)[0] != instance_id:
             raise OperationError(f"'{name}' was replaced while its config was being checked.")
-        return self._apply_config(instance_id, patch)
+        return self._apply_config(instance_id, patch, problems)
 
     def _config_patch(self, name: str, config: dict[str, t.Any]) -> tuple[str, dict[str, t.Any]]:
         self._require_edit()
@@ -1089,14 +1115,26 @@ class DashboardOps:
         spec = self.editor.component_specs[item["component_id"]]
         return instance_id, self._check_config(spec, config)
 
-    def _apply_config(self, instance_id: str, patch: dict[str, t.Any]) -> dict[str, t.Any]:
+    def _apply_config(
+        self, instance_id: str, patch: dict[str, t.Any], checked: CheckResult
+    ) -> dict[str, t.Any]:
         self.editor._apply_config_patch(instance_id, patch)
+        self.last_check = checked
         return copy.deepcopy(self._item(instance_id).get("config", {}))
 
     def connect(
         self, source: str, target: str, transform: list[dict[str, t.Any]] | None = None
-    ) -> None:
+    ) -> CheckResult:
         """Connect the output *source* to the input *target*, both ``"<node>.<port>"``.
+
+        Returns
+        -------
+        CheckResult
+            What the config check of the target node's component found once
+            the node has its new input, see ``register(check_config=)``; empty
+            without a check. Problems do not undo the connection: the node is
+            reported invalid by :meth:`preview` and :meth:`validate` until its
+            config is fixed. It is left in :attr:`last_check` too.
 
         Raises
         ------
@@ -1104,12 +1142,35 @@ class DashboardOps:
             If a port does not exist, the types do not match, the input is
             taken, the edge would close a cycle or the transform is invalid.
         """
-        self._require_edit()
-        result = self.editor.connect(
-            *self._port(source, "source"), *self._port(target, "target"), transform
+        target_id = self._connect(source, target, transform)
+        return self._rechecked(check_node_sync(self.editor, target_id, timeout=self.check_timeout))
+
+    async def connect_async(
+        self, source: str, target: str, transform: list[dict[str, t.Any]] | None = None
+    ) -> CheckResult:
+        """Like :meth:`connect`, checking the target node off the event loop.
+
+        Checks of one node that follow each other quickly, e.g. on several
+        connections into it, are coalesced: at most one runs while another
+        waits, and the latest state wins.
+        """
+        target_id = self._connect(source, target, transform)
+        return self._rechecked(
+            await recheck_node(self.editor, target_id, timeout=self.check_timeout)
         )
+
+    def _connect(self, source: str, target: str, transform) -> str:
+        self._require_edit()
+        source_ref = self._port(source, "source")
+        target_id, target_port = self._port(target, "target")
+        result = self.editor.connect(*source_ref, target_id, target_port, transform)
         if result is not True:
             raise OperationError(result)
+        return target_id
+
+    def _rechecked(self, result: CheckResult) -> CheckResult:
+        self.last_check = result
+        return result
 
     def _edge(self, source: str, target: str) -> tuple[str, str, str, str]:
         key = (*self._port(source, "source"), *self._port(target, "target"))
@@ -1120,10 +1181,27 @@ class DashboardOps:
             raise OperationError(f"There is no edge from {source} to {target}.")
         return key
 
-    def disconnect(self, source: str, target: str) -> None:
-        """Remove the edge from the output *source* to the input *target*."""
+    def disconnect(self, source: str, target: str) -> CheckResult:
+        """Remove the edge from the output *source* to the input *target*.
+
+        Returns what the config check of the target node found without the
+        input, like :meth:`connect`.
+        """
+        target_id = self._disconnect(source, target)
+        return self._rechecked(check_node_sync(self.editor, target_id, timeout=self.check_timeout))
+
+    async def disconnect_async(self, source: str, target: str) -> CheckResult:
+        """Like :meth:`disconnect`, checking the target node off the event loop."""
+        target_id = self._disconnect(source, target)
+        return self._rechecked(
+            await recheck_node(self.editor, target_id, timeout=self.check_timeout)
+        )
+
+    def _disconnect(self, source: str, target: str) -> str:
         self._require_edit()
-        self.editor.disconnect(*self._edge(source, target))
+        edge = self._edge(source, target)
+        self.editor.disconnect(*edge)
+        return edge[2]
 
     def set_transform(
         self, source: str, target: str, transform: list[dict[str, t.Any]] | None

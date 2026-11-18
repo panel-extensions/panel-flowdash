@@ -185,8 +185,11 @@ def register(
     node's whole config with the change applied and its input values that are
     set and not failed (``{}`` before the node is placed). It returns ``None``,
     a string or an iterable of strings, each non-empty string a problem, or
-    raises ``ValueError`` with the problem as its message. Any other result
-    or exception, or taking longer than 10 seconds, counts as a failed check.
+    raises ``ValueError`` with the problem as its message. A
+    :class:`~panel_flowdash.CheckWarning` in place of a string is a warning,
+    shown with the config but not refusing it. Any other result or exception,
+    or taking longer than 10 seconds, counts as a failed check. The check runs
+    again when an input of the node is connected or disconnected.
     A sync check runs in a worker thread and must not change the editor. A
     config with problems is refused in the inspector and by the agent tools,
     and reported by validation and previews.

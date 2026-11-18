@@ -20,7 +20,7 @@ import typing as t
 import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import Context, ContextVar, copy_context
 from dataclasses import dataclass, fields
 from datetime import UTC, datetime
 
@@ -201,6 +201,29 @@ def agent_edits(run: str | None = None, question: str | None = None) -> Iterator
         yield
     finally:
         _AGENT_EDITS.reset(token)
+
+
+def _clear_agent():
+    _AGENT_EDITS.set(None)
+    # panel-agents' run scope also marks edits as a run's; it has no public way
+    # to leave it, so the person's context drops it directly.
+    from panel_agents import context as agent_context
+
+    if (scope := getattr(agent_context, "_SCOPE", None)) is not None:
+        scope.set(None)
+
+
+def person_context() -> Context:
+    """Return a copy of the current context in which edits count as the person's.
+
+    For work the agent's edits set off that acts for the person, e.g. a held
+    back inspector draft checked again after the agent rewired its node: run
+    in it, the draft's edits land in the person's own history batch, not in
+    the agent's turn.
+    """
+    context = copy_context()
+    context.run(_clear_agent)
+    return context
 
 
 def _agent_source() -> _AgentEdits | None:
