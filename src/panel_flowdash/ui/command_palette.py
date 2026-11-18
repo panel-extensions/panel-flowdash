@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import typing as t
 
+import panel as pn
 import param
 from panel.custom import JSComponent
 
@@ -23,12 +24,14 @@ SHORTCUTS = [
     {"group": "Viewing", "label": "Full screen", "keys": ["F"]},
     {"group": "Viewing", "label": "Keyboard shortcuts", "keys": ["?"]},
     {"group": "Editing", "label": "Save", "keys": ["Mod", "S"]},
+    {"group": "Editing", "label": "Undo", "keys": ["Mod", "Z"]},
+    {"group": "Editing", "label": "Redo", "keys": ["Mod", "Shift", "Z"]},
     {"group": "Editing", "label": "Dataflow and Layout side by side", "keys": ["S"]},
     {"group": "Editing", "label": "Back to view mode", "keys": ["Esc"]},
 ]
 
 # Shortcuts the browser sends, each running the action of the same name.
-_SHORTCUT_ACTIONS = frozenset({"refresh", "edit", "view", "save", "split"})
+_SHORTCUT_ACTIONS = frozenset({"refresh", "edit", "view", "save", "split", "undo", "redo"})
 
 
 class CommandPalette(JSComponent):
@@ -42,8 +45,9 @@ class CommandPalette(JSComponent):
     Shortcuts are registered on the document and ignored while typing in a
     text field: Ctrl/Cmd+K opens the palette, ``?`` lists the shortcuts, and
     R (refresh), E (edit), Esc (back to view, outside dialogs), S (split view,
-    in edit mode) and Ctrl/Cmd+S (save, in edit mode) are sent to *on_command*
-    as ``shortcut:<name>``. F and the ``action:fullscreen`` item toggle the
+    in edit mode), Ctrl/Cmd+S (save, in edit mode) and Ctrl/Cmd+Z and
+    Ctrl/Cmd+Shift+Z or Ctrl+Y (undo and redo, in edit mode) are sent to
+    *on_command* as ``shortcut:<name>``. F and the ``action:fullscreen`` item toggle the
     dashboard's full screen in the browser, which only grants it during the
     key press or click.
     """
@@ -309,6 +313,7 @@ class CommandPaletteController:
                             "keys": ["Mod", "S"],
                         }
                     )
+                    actions.extend(self._history_items())
                 splitting = editor.mode == "split"
                 actions.append(
                     {
@@ -379,6 +384,64 @@ class CommandPaletteController:
             }
         )
         return [{**action, "group": "Actions"} for action in actions]
+
+    def _history_items(self) -> list[dict]:
+        """Undo and Redo, while there is something to undo or redo."""
+        editor = self._editor
+        items = []
+        if editor.can_undo:
+            items.append(
+                {
+                    "id": "action:undo",
+                    "title": "Undo",
+                    "subtitle": editor.edit_history.undo_label,
+                    "icon": "undo",
+                    "keys": ["Mod", "Z"],
+                    "keywords": "undo revert back history",
+                }
+            )
+        if editor.can_redo:
+            items.append(
+                {
+                    "id": "action:redo",
+                    "title": "Redo",
+                    "subtitle": editor.edit_history.redo_label,
+                    "icon": "redo",
+                    "keys": ["Mod", "Shift", "Z"],
+                    "keywords": "redo again forward history",
+                }
+            )
+        return items
+
+    def _step_history(self, action: str):
+        """Undo or redo, importing the components the version needs off the event loop first."""
+        doc = pn.state.curdoc
+        if doc is None or doc.session_context is None:
+            self._apply_step(action)
+            return
+
+        async def step():
+            editor = self._editor
+            from panel_flowdash.history import components_of
+
+            target = editor.edit_history.step_value(action)
+            if target is not None:
+                await editor.ensure_components_loaded_async(components_of(target))
+            self._apply_step(action)
+
+        pn.state.execute(step)
+
+    def _apply_step(self, action: str):
+        from panel_flowdash.history import HistoryBusy
+
+        editor = self._editor
+        try:
+            done = editor.undo() if action == "undo" else editor.redo()
+        except (PermissionError, HistoryBusy) as exc:
+            editor._notify("warning", str(exc), duration=5000)
+            return
+        if not done:
+            editor._notify("info", f"Nothing to {action}.", duration=2000)
 
     # ------------------------------------------------------------------
     # Running items
@@ -452,6 +515,8 @@ class CommandPaletteController:
             editor.toggle_split()
         elif action == "save" and editor.editable:
             app._save_current_dashboard()
+        elif action in ("undo", "redo") and editor.editable and not editor.read_only:
+            self._step_history(action)
         elif action == "fullscreen" and not editor.editable:
             editor.fullscreen = not editor.fullscreen
         elif action == "settings" and not editor.read_only:

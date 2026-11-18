@@ -21,6 +21,7 @@ from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 from pydantic_ai.tools import ToolDefinition
 
 from panel_flowdash.editor import export_model
+from panel_flowdash.history import ARTIFACT_KIND, artifact_id_for
 from panel_flowdash.transforms import parse_transform
 from panel_flowdash.turns import agent_edits
 
@@ -28,9 +29,6 @@ from .diff import dashboard_changes
 from .live import LiveDashboardOps
 from .ops import DashboardOps, OperationError, OutputUnavailable, read_revision
 from .yaml_format import DashboardYAMLError, dashboard_to_dict, dashboard_to_yaml, parse_yaml
-
-# The artifact kind the dashboard YAML is published under, with its own diff.
-ARTIFACT_KIND = "flowdash-dashboard"
 
 logger = logging.getLogger(__name__)
 
@@ -352,10 +350,16 @@ def dashboard_diff(old: t.Any, new: t.Any, **options) -> StructuredDiff:
 
 
 def _artifact(ops: DashboardOps, message: str):
-    """Return *message* to the model and the dashboard as it now is to the user."""
+    """Return *message* to the model and the dashboard as it now is to the user.
+
+    With the editor's edit history on, every edit already published its
+    version, stamped with the tool call, so only the message is returned.
+    """
     editor = ops.editor
+    if editor.edit_history.active:
+        return message
     current = editor.dashboard
-    artifact_id = f"dashboard:{current.dashboard_id}" if current else "dashboard:unsaved"
+    artifact_id = artifact_id_for(current.dashboard_id if current else None)
     title = current.title if current else "Dashboard"
     return artifact_return(
         message,
@@ -404,6 +408,8 @@ def _guarded(func: t.Callable) -> t.Callable:
             return f"Refused: {exc}"
         except OutputUnavailable as exc:
             return f"Not available: {exc}"
+        finally:
+            deps.ops.editor.edit_history.flush()
         if func is open_dashboard:
             deps.repin()
         after = _snapshot(deps.ops) if listen else None

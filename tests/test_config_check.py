@@ -425,7 +425,7 @@ class TestAgentTools:
         runner = _runner(ops, ("set_config", {"name": "q", "config": {"sql": "DROP t"}}))
         output = await runner.run("Change the query")
         assert "The config of 'q' was not changed: Only SELECT statements are allowed." in output
-        assert not runner.state.artifacts
+        assert not [v for a in runner.state.artifacts for v in a.versions if v.actor == "agent"]
         assert ops.node_config("q") == {}
 
     async def test_the_model_retries_with_a_fixed_config(self, editor):
@@ -772,8 +772,7 @@ class TestPlacement:
         app._load_dashboard_sync(model.dashboard_id)
         agent = Agent(
             scripted(
-                ("add_node", {"component": QUERY, "name": "q"}),
-                ("set_config", {"name": "q", "config": {"rows": 3}}),
+                ("add_node", {"component": QUERY, "name": "q", "config": {"sql": "SELECT PAUSE"}})
             ),
             deps_type=FlowDashDeps,
             toolsets=[dashboard_toolset()],
@@ -781,13 +780,23 @@ class TestPlacement:
         session = AgentSession(app, agent)
         await session.runner.run("Build")
         (artifact,) = session.runner.state.artifacts
+        ticks = 0
 
-        def blocking(*args, **kwargs):
-            raise AssertionError("replace_yaml blocks the event loop")
+        async def tick():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.01)
+                ticks += 1
 
-        monkeypatch.setattr(type(session.ops), "replace_yaml", blocking)
-        assert await session.apply_version(artifact, artifact.versions[0])
-        assert DashboardOps(app._editor).node_config("q") == {}
+        ticker = asyncio.ensure_future(tick())
+        try:
+            # The check sleeps 0.3 s in a worker thread, so the loop keeps ticking meanwhile.
+            assert await session.apply_version(artifact, artifact.versions[-1])
+            await asyncio.gather(*session._checks)
+        finally:
+            ticker.cancel()
+        assert ticks >= 10
+        assert DashboardOps(app._editor).node_config("q") == {"sql": "SELECT PAUSE"}
 
 
 class TestPool:
@@ -880,7 +889,7 @@ class TestDraftState:
 
 
 class TestRestore:
-    async def _session(self, monkeypatch, *calls):
+    async def _session(self, monkeypatch, *calls, history=True):
         pytest.importorskip("pydantic_ai")
         from pydantic_ai import Agent
 
@@ -892,7 +901,7 @@ class TestRestore:
 
         store = MemoryDashboardStore()
         model = store.create_dashboard("alice", "Live")
-        app = _app(store, monkeypatch, components=COMPONENTS)
+        app = _app(store, monkeypatch, components=COMPONENTS, editor_options={"history": history})
         app._load_dashboard_sync(model.dashboard_id)
         agent = Agent(scripted(*calls), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()])
         session = AgentSession(app, agent)
@@ -906,11 +915,14 @@ class TestRestore:
             ("add_node", {"component": QUERY, "name": "q", "config": {"sql": "SELECT 1"}}),
             ("set_config", {"name": "q", "config": {"sql": "SELECT 2"}}),
         )
-        bad = artifact.versions[0].value.replace("sql: SELECT 1", "sql: DROP t")
+        request = next(v for v in artifact.versions if v.actor == "agent")
+        bad = request.value.replace("sql: SELECT 2", "sql: DROP t")
         version = types.SimpleNamespace(value=bad, version=1)
         notes = []
         monkeypatch.setattr(app, "_notify", lambda *args, **kwargs: notes.append(args))
         assert await session.apply_version(artifact, version)
+        # The checks report after the drawer's button has stopped spinning.
+        await asyncio.gather(*session._checks)
         ((severity, message),) = notes
         assert severity == "warning"
         assert message == (
@@ -919,8 +931,9 @@ class TestRestore:
         )
 
     async def test_a_restore_over_a_changing_dashboard_says_so_to_the_user(self, monkeypatch):
+        # Without the edit history a restore replaces the YAML, which can race with edits.
         _app, session, artifact = await self._session(
-            monkeypatch, ("add_node", {"component": QUERY, "name": "q"})
+            monkeypatch, ("add_node", {"component": QUERY, "name": "q"}), history=False
         )
         ops = session.ops
         original = type(ops).replace_yaml_async

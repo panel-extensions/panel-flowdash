@@ -50,6 +50,9 @@ _STALE_RESERVATION_NS = 5_000_000_000
 # Windows cannot lock a directory, so writers there lock this file in the folder.
 _LOCK_FILE = ".flowdash.lock"
 
+# The folder, inside the store's, holding each dashboard's edit history as <id>.jsonl.
+_HISTORY_DIR = ".history"
+
 
 class _ReadOnlyError(DashboardStoreError, PermissionError):
     pass
@@ -241,7 +244,80 @@ class JSONFolderDashboardStore(BaseDashboardStore):
             if model is None or model.user_id != user_id:
                 return False
             (self.path / f"{dashboard_id}.json").unlink(missing_ok=True)
+            self._history_path(dashboard_id).unlink(missing_ok=True)
         return True
+
+    def _history_path(self, dashboard_id: str) -> Path:
+        return self.path / _HISTORY_DIR / f"{dashboard_id}.jsonl"
+
+    def load_history(self, dashboard_id: str) -> list[dict]:
+        if not _SAFE_ID.match(dashboard_id):
+            return []
+        try:
+            text = self._history_path(dashboard_id).read_text(encoding="utf-8")
+        except OSError:
+            return []
+        records = []
+        for line in text.splitlines():
+            try:
+                record = json.loads(line)
+            except ValueError:
+                # A line cut short by a crash while it was appended.
+                continue
+            if isinstance(record, dict):
+                records.append(record)
+        return records
+
+    def append_history(self, dashboard_id: str, record: dict) -> None:
+        if self.read_only or not _SAFE_ID.match(dashboard_id):
+            return
+        line = json.dumps(record, ensure_ascii=False) + "\n"
+        with self._locked():
+            if not (self.path / f"{dashboard_id}.json").exists():
+                return
+            path = self._history_path(dashboard_id)
+            path.parent.mkdir(exist_ok=True)
+            with open(path, "a", encoding="utf-8", newline="\n") as f:
+                f.write(line)
+
+    def replace_history(self, dashboard_id: str, records: list[dict]) -> None:
+        if self.read_only or not _SAFE_ID.match(dashboard_id):
+            return
+        with self._locked():
+            self._write_history(dashboard_id, records)
+
+    def rewrite_history(self, dashboard_id, rewrite):
+        if self.read_only or not _SAFE_ID.match(dashboard_id):
+            return rewrite(self.load_history(dashboard_id))
+        with self._locked():
+            records = self.load_history(dashboard_id)
+            kept = rewrite(records)
+            if kept is not records:
+                self._write_history(dashboard_id, kept)
+        return kept
+
+    def _write_history(self, dashboard_id: str, records: list[dict]) -> None:
+        """Atomically replace a dashboard's history file, holding the folder lock."""
+        if not (self.path / f"{dashboard_id}.json").exists():
+            return
+        target = self._history_path(dashboard_id)
+        target.parent.mkdir(exist_ok=True)
+        handle, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
+        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as f:
+            for record in records:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        try:
+            _replace(tmp, target)
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
+
+    def delete_history(self, dashboard_id: str) -> None:
+        if self.read_only or not _SAFE_ID.match(dashboard_id):
+            return
+        with self._locked():
+            self._history_path(dashboard_id).unlink(missing_ok=True)
 
     def rename_dashboard(self, user_id: str, dashboard_id: str, new_title: str) -> bool:
         self._check_writable()

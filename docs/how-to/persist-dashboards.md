@@ -353,3 +353,23 @@ other_editor.import_dashboard(data)  # also accepts the JSON string
 ```
 
 `import_dashboard` raises `ValueError` for anything that isn't a dashboard export and marks the canvas dirty.
+
+## Undo, redo and the edit history
+
+The canvas keeps an edit history: adding, removing and reconfiguring nodes, wiring and transforms, moving nodes, the tile layout, settings, clearing, importing a file and the assistant's edits all become versions of it, batched so the history reads naturally. Each request to the assistant is one version, made when the request ends, however many edits it took; if the person edits or saves while the assistant works, the assistant's edits so far become a version there, the person's edits their own, and its later edits another version of the same request. A person's edits are batched by burst: edits with no pause longer than `FlowDash.history_coalesce` seconds (3 by default) between them, such as a drag, typing into a config field or adding and wiring a node, become one version, and an edit of the assistant, a save, undo or redo ends the batch. `history_coalesce=0` records each of the person's edits on its own. The defaults live in `panel_flowdash.history` (`BURST_SECONDS`).
+
+In edit mode, **Undo** and **Redo** in the command palette, or Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z (Ctrl+Y on Windows), step through it. From Python:
+
+```python
+editor.undo()      # True if something was undone
+editor.redo()      # redoes everything the last undo undid
+editor.can_undo, editor.can_redo
+```
+
+Undo steps back one version at a time, so it undoes a request to the assistant as a whole, back to the dashboard as it was before the request. When the person edited while the request ran, undo steps back through the request's versions and the person's one at a time instead, so nothing the person did is lost; `editor.undo(whole_runs=False)` always steps back one version. Redo lasts until the next edit. Undoing does not delete anything: it applies an earlier version and records that it did, so a later redo, or the history in the assistant's drawer, can get back to any version. Restoring a version changes only what differs from the canvas, so nodes that stay keep running.
+
+Undo restores the dashboard's turns and node origins as they were at that version, so it never credits a node to someone who did not create it. It also never brings back what you may not use. A node whose component you are not authorized for, or that the app does not offer, keeps its config and connections as the canvas holds them, or as they were when you opened the dashboard if you removed it, so you can undo removing it. A version that holds such a node you never had on the canvas is out of reach: `can_undo` is False and `undo` raises `PermissionError` (the palette shows the message), and nothing changes. People who may only view a dashboard record no history and cannot undo.
+
+The store keeps the history of each dashboard, so undo reaches edits of earlier sessions. When a dashboard is opened, undo steps back along the edits that made it as saved, never into edits that were undone or that a session made but did not save, also after an upgrade that changes how the dashboard's YAML reads. Undo waits while the assistant is working on a request. The history holds the dashboard YAML as its author saw it; when another person loads it, nodes they may not use are shown as restricted stand-ins, as in the YAML they download. Retention drops the oldest versions past `FlowDash.history_limit` (500 by default) and those older than `FlowDash.history_max_days` (90 by default) when the history is first used after opening a dashboard, and a long session keeps the content of only about as many versions in memory; deleting a dashboard deletes its history. `history=False` turns it all off. In a `FlowDashApp`, set these through `editor_options`.
+
+`DashboardStore` keeps the history in a `dashboard_history` table, which it adds to existing databases on open; `JSONFolderDashboardStore` keeps one JSON Lines file per dashboard in a `.history` folder inside the dashboards folder, which you may want to leave out of version control; `MemoryDashboardStore` keeps it in memory. A custom store keeps it by implementing `load_history`, `append_history`, `replace_history` and `delete_history`, overriding `rewrite_history` to read and write in one transaction when several sessions share it, and dropping the history in `delete_dashboard`; without them undo still works within a session. `editor.edit_history.state` is the panel-agents `RunState` holding the versions, for showing them in an `ArtifactView` or sharing with your own `AgentRunner`.

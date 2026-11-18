@@ -55,6 +55,7 @@ from panel_flowdash.dataflow_engine import (
     failure_text,
 )
 from panel_flowdash.failure_overlay import FailureMessage, FailureOverlay, with_failure_overlay
+from panel_flowdash.history import BURST_SECONDS, EditHistory, label_for
 from panel_flowdash.placeholders import (
     PLACEHOLDER_NODE_TYPE,
     Placeholder,
@@ -384,6 +385,8 @@ _FAILED_NODE_STYLE = {
 # Stands in for the component of an exported item the exporting user may not
 # use. Importing it back restores the stored item, or drops it.
 RESTRICTED_COMPONENT_ID = "flowdash:restricted"
+
+_MISSING = object()
 
 
 def export_model(
@@ -780,6 +783,43 @@ class FlowDash(Viewer):
         switching to edit mode turns it off.""",
     )
 
+    history = param.Boolean(
+        default=True,
+        doc="""
+        Whether every edit becomes a version of the dashboard's edit history,
+        which `undo` and `redo` move through and the store keeps across
+        sessions (see `history_limit`). Read at each edit.""",
+    )
+
+    history_coalesce = param.Number(
+        default=BURST_SECONDS,
+        bounds=(0, None),
+        doc="""
+        Seconds without an edit that end a batch of the person's edits in
+        the edit history, so a burst of edits, such as a drag, typing into
+        a config field or a few quick changes, is one version. An edit of the
+        agent, a save, undo and redo end a batch too, and each request to the
+        agent is one version. Zero records each of the person's edits on its own.""",
+    )
+
+    history_limit = param.Integer(
+        default=500,
+        bounds=(1, None),
+        allow_None=True,
+        doc="""
+        The most versions a dashboard's stored history keeps; older ones are
+        dropped. None keeps them all.""",
+    )
+
+    history_max_days = param.Number(
+        default=90,
+        bounds=(0, None),
+        allow_None=True,
+        doc="""
+        How many days the store keeps a version of a dashboard's history.
+        None keeps versions however old they are.""",
+    )
+
     mode = param.Selector(
         default="wiring",
         objects=["wiring", "dashboard", "split"],
@@ -1009,6 +1049,11 @@ class FlowDash(Viewer):
         self._hydrating = False
         self._recording_edit = False
         self.param.watch(self._on_dirty, "dirty", onlychanged=False)
+        self._history = EditHistory(self)
+        self._restricted_seen: dict[str, DashboardItem] = {}
+        self._restricted_seen_edges: list[DashboardEdge] = []
+        # Set while the canvas is loaded as part of an edit or an undo, which opens no new history.
+        self._history_quiet = False
 
         self._settings_names = [name for name in self.settings.param if name != "name"]
         self._loading_settings = False
@@ -1050,6 +1095,8 @@ class FlowDash(Viewer):
         self._apply_fullscreen()
         if dashboard is not None:
             self._init_dashboard(dashboard)
+        else:
+            self._history.opened()
 
         # Without a session, Panel would register the callback for every future
         # session instead. An editor built inside a session is tied to it, so one
@@ -1071,6 +1118,7 @@ class FlowDash(Viewer):
         automatically when that session ends. In a notebook, under pyodide or
         for an editor created outside a session, call this yourself.
         """
+        self._history.flush()
         self._stop_refresh_timer()
         self._reset_canvas()
 
@@ -1476,7 +1524,9 @@ class FlowDash(Viewer):
                     if self._edge_failed(mapping):
                         flow.patch_edge_props(edge_id, self._edge_chip(mapping))
                 self._record_edit(
-                    self._connect_label("Connected", src_id, src_handle, tgt_id, tgt_handle)
+                    self._connect_label("Connected", src_id, src_handle, tgt_id, tgt_handle),
+                    op="connect",
+                    args=self._edge_args(src_id, src_handle, tgt_id, tgt_handle),
                 )
                 self._notify("success", f"Wired: {src_handle} → {tgt_handle}", duration=3000)
             else:
@@ -1495,7 +1545,11 @@ class FlowDash(Viewer):
             self._drop_edge_editor(edge_id)
             if mapping:
                 self._dataflow_graph.remove_edge(*mapping)
-                self._record_edit(self._connect_label("Disconnected", *mapping))
+                self._record_edit(
+                    self._connect_label("Disconnected", *mapping),
+                    op="disconnect",
+                    args=self._edge_args(*mapping),
+                )
 
         def _on_node_data_changed(event):
             if self._muted:
@@ -1513,7 +1567,8 @@ class FlowDash(Viewer):
             if node_id:
                 self._forget_node(node_id)
                 self._dispose_component(node_id)
-                self._record_edit(f"Removed {self._node_name(node_id)}")
+                name = self._node_name(node_id)
+                self._record_edit(f"Removed {name}", op="remove_node", args={"name": name})
                 self._sync_placed()
 
         flow.param.watch(self._on_selection_changed, "selection")
@@ -2182,7 +2237,12 @@ class FlowDash(Viewer):
             if item["instance_id"] == node_id:
                 item.setdefault("config", {}).update(applied)
                 break
-        self._record_edit(f"Changed the config of {self._node_name(node_id)}")
+        name = self._node_name(node_id)
+        self._record_edit(
+            f"Changed the config of {name}",
+            op="set_config",
+            args={"name": name, "keys": sorted(applied)},
+        )
 
     def _seed_config_state(self, instance_id, config):
         """Overlay saved config onto a node's config state and return node data seed."""
@@ -2453,7 +2513,8 @@ class FlowDash(Viewer):
         self._inspect_dialog = make_inspect_sheet()
         # Saving is only offered with unsaved changes, and rearranging is a change.
         self._flow.on(
-            "node_moved", lambda _payload: self._mark_rearranged("Moved nodes on the canvas")
+            "node_moved",
+            lambda _payload: self._mark_rearranged("Moved nodes on the canvas", "move_nodes"),
         )
         self._tile_grid.param.watch(self._on_tile_layout_edited, ["layout", "responsive_layouts"])
         self._settings_dialog = self._build_settings_dialog()
@@ -2542,9 +2603,9 @@ class FlowDash(Viewer):
         classes = [c for c in view.css_classes if c != PRESENTING_CLASS]
         view.css_classes = [*classes, PRESENTING_CLASS] if presenting else classes
 
-    def _mark_rearranged(self, label: str = "Changed the tile layout"):
+    def _mark_rearranged(self, label: str = "Changed the tile layout", op: str = "layout"):
         if self.editable:
-            self._record_edit(label)
+            self._record_edit(label, op=op)
 
     def _on_tile_layout_edited(self, event):
         # Only a layout the browser sent was edited by the user; the editor sets
@@ -3095,9 +3156,13 @@ class FlowDash(Viewer):
             else:
                 release()
 
-    def _on_setting_changed(self, *_events):
+    def _on_setting_changed(self, *events):
         if not self._loading_settings:
-            self._record_edit("Changed the settings")
+            self._record_edit(
+                "Changed the settings",
+                op="settings",
+                args={"keys": sorted({event.name for event in events})},
+            )
 
     @param.depends("dashboard", "settings.refresh_period", watch=True)
     def _schedule_refresh_timer(self, *_events):
@@ -3166,21 +3231,37 @@ class FlowDash(Viewer):
         """End the turns of the agent's requests, so the next request's edits start a new turn.
 
         The dashboard tools call it when a request ends, whether it finished,
-        failed or was cancelled.
+        failed or was cancelled. Each request's edits then become one version
+        of the edit history.
         """
         self._turn_log.end_agent_turns()
+        self._history.end_requests()
 
-    def _record_edit(self, *labels: str) -> DashboardTurn | None:
-        """Mark the canvas changed and note the change in the turn it belongs to, which is returned.
+    def _record_edit(
+        self,
+        *labels: str,
+        op: str = "edit",
+        args: dict[str, t.Any] | None = None,
+        created: t.Iterable[str] = (),
+    ) -> DashboardTurn | None:
+        """Mark the canvas changed, note the change in its turn and record it in the history.
 
-        While a dashboard is being loaded nothing is noted, and None is returned.
+        *op* and *args* name the edit in its history version (see
+        :mod:`panel_flowdash.history`), and the turn becomes the origin of
+        the nodes in *created*. Returns the turn. While a dashboard is being
+        loaded nothing is noted, and None is returned.
         """
         turn = None if self._hydrating else self._note_turn(*labels)
+        if turn is not None:
+            for instance_id in created:
+                self._origins[instance_id] = turn.id
         self._recording_edit = True
         try:
             self.dirty = True
         finally:
             self._recording_edit = False
+        if turn is not None:
+            self._history.record(op, args or {}, label_for(labels), turn)
         return turn
 
     def _note_turn(self, *labels: str) -> DashboardTurn:
@@ -3191,7 +3272,19 @@ class FlowDash(Viewer):
     def _on_dirty(self, event):
         # Code that marks the canvas changed without `_record_edit` still opens a turn.
         if event.new and not self._recording_edit and not self._hydrating:
-            self._note_turn()
+            self._history.record("edit", {}, None, self._note_turn())
+
+    def _port_ref(self, instance_id: str, port: str) -> str:
+        """Name a port as the YAML does; a restricted node's port is left out, as its YAML hides it."""
+        placeholder = self._placeholders().get(instance_id)
+        name = self._node_name(instance_id)
+        return name if placeholder is not None and placeholder.private else f"{name}.{port}"
+
+    def _edge_args(self, source_id, source_port, target_id, target_port) -> dict[str, str]:
+        return {
+            "source": self._port_ref(source_id, source_port),
+            "target": self._port_ref(target_id, target_port),
+        }
 
     def _node_name(self, instance_id: str) -> str:
         """Return the name a node has in the dashboard YAML, for a turn's summary."""
@@ -3269,9 +3362,13 @@ class FlowDash(Viewer):
             config or {},
             position,
         )
-        turn = self._record_edit(f"Added {self._node_name(instance_id)}")
-        if turn is not None:
-            self._origins[instance_id] = turn.id
+        name = self._node_name(instance_id)
+        self._record_edit(
+            f"Added {name}",
+            op="add_node",
+            args={"component": component_id, "name": name},
+            created=[instance_id],
+        )
         self._sync_placed()
         return instance_id
 
@@ -3443,7 +3540,8 @@ class FlowDash(Viewer):
     def remove_component(self, instance_id: str):
         """Remove a placed component along with its edges and its tile."""
         self._unplace(instance_id)
-        self._record_edit(f"Removed {self._node_name(instance_id)}")
+        name = self._node_name(instance_id)
+        self._record_edit(f"Removed {name}", op="remove_node", args={"name": name})
         self._sync_placed()
 
     def _unplace(self, instance_id: str):
@@ -3505,7 +3603,11 @@ class FlowDash(Viewer):
                 **(self._edge_chip(mapping) if transform or self._edge_failed(mapping) else {}),
             }
         )
-        self._record_edit(self._connect_label("Connected", *mapping))
+        self._record_edit(
+            self._connect_label("Connected", *mapping),
+            op="connect",
+            args=self._edge_args(*mapping),
+        )
         return True
 
     def set_edge_transform(
@@ -3533,7 +3635,11 @@ class FlowDash(Viewer):
         result = self._dataflow_graph.set_edge_transform(*mapping, transform)
         if result is not True:
             return result
-        self._record_edit(self._connect_label("Changed the transform from", *mapping))
+        self._record_edit(
+            self._connect_label("Changed the transform from", *mapping),
+            op="set_transform",
+            args=self._edge_args(*mapping),
+        )
         chip = self._edge_chip(mapping)
         for edge_id, existing in self._edge_id_map.items():
             if existing == mapping:
@@ -3614,7 +3720,11 @@ class FlowDash(Viewer):
                 self._drop_edge_editor(edge_id)
                 with self._muted_canvas():
                     self._flow.remove_edge(edge_id)
-        self._record_edit(self._connect_label("Disconnected", *mapping))
+        self._record_edit(
+            self._connect_label("Disconnected", *mapping),
+            op="disconnect",
+            args=self._edge_args(*mapping),
+        )
 
     @pn.io.hold()
     def clear(self):
@@ -3622,7 +3732,7 @@ class FlowDash(Viewer):
         had_items = bool(self._tile_items)
         self._reset_canvas()
         if had_items:
-            self._record_edit("Cleared the dashboard")
+            self._record_edit("Cleared the dashboard", op="clear")
         self._notify("info", "Cleared all component tiles.", duration=3000)
 
     def _reset_canvas(self):
@@ -3752,6 +3862,18 @@ class FlowDash(Viewer):
             self._hydrate(model, keep_open_turns)
         finally:
             self._hydrating = False
+        if not self._history_quiet:
+            self._note_restricted()
+            self._history.opened()
+
+    @contextmanager
+    def _quiet_history(self):
+        """Load models inside the block as part of an edit, not as opening a dashboard."""
+        quiet, self._history_quiet = self._history_quiet, True
+        try:
+            yield
+        finally:
+            self._history_quiet = quiet
 
     @pn.io.hold()
     def _hydrate(self, model: DashboardModel, keep_open_turns: bool):
@@ -3951,7 +4073,9 @@ class FlowDash(Viewer):
         if not self._unresolved_edges:
             return
         self._unresolved_edges = []
-        self._record_edit("Discarded the connections that could not be restored")
+        self._record_edit(
+            "Discarded the connections that could not be restored", op="discard_unresolved"
+        )
         self._sync_toolbar_state()
 
     @param.depends("editable", "read_only", watch=True)
@@ -4014,6 +4138,8 @@ class FlowDash(Viewer):
         self._turn_log.reset([])
         self.dashboard = model
         self.dirty = False
+        self._note_restricted()
+        self._history.opened()
 
     def save(self, title: str | None = None) -> DashboardModel:
         """Persist the current canvas and return the saved model.
@@ -4060,6 +4186,7 @@ class FlowDash(Viewer):
             self.store.save_dashboard(model)
         self.dashboard = model
         self.dirty = False
+        self._history.saved()
         self.param.trigger("saved")
         return model
 
@@ -4089,8 +4216,350 @@ class FlowDash(Viewer):
             model.revision = None
         self.dashboard = model
         self.dirty = False
+        self._history.opened()
         self.param.trigger("saved")
         return model
+
+    # ------------------------------------------------------------------
+    # Edit history
+    # ------------------------------------------------------------------
+
+    @property
+    def edit_history(self) -> EditHistory:
+        """The versions of the open dashboard, one per edit; see :mod:`panel_flowdash.history`.
+
+        Its ``state`` is the panel-agents ``RunState`` they are published in,
+        to show them in an ``ArtifactView`` or share with an ``AgentRunner``.
+        """
+        return self._history
+
+    @property
+    def can_undo(self) -> bool:
+        """Whether :meth:`undo` has an edit to undo."""
+        return self._history.can_undo
+
+    @property
+    def can_redo(self) -> bool:
+        """Whether :meth:`redo` has an undone edit to redo."""
+        return self._history.can_redo
+
+    def undo(self, *, whole_runs: bool = True) -> bool:
+        """Undo the last edit to the dashboard and return whether anything was undone.
+
+        A person's edits are undone one at a time, a gesture such as a drag
+        as one edit. The edits an agent made for one request are undone
+        together, back to the dashboard as it was before the request, unless
+        *whole_runs* is False. Undo reaches back into earlier sessions, as far
+        as the store keeps the dashboard's history (see :attr:`history_limit`).
+
+        Undoing restores the dashboard's turns and node origins as they were,
+        and never brings back a node whose component the user may not use or
+        that this editor does not offer.
+
+        Raises
+        ------
+        PermissionError
+            If undoing would bring back such a node; nothing changes.
+        """
+        return self._history.undo(whole_runs=whole_runs)
+
+    def redo(self) -> bool:
+        """Redo what the last :meth:`undo` undid, all of it, and return whether anything was redone.
+
+        Redo is available until the next edit.
+
+        Raises
+        ------
+        PermissionError
+            As for :meth:`undo`.
+        """
+        return self._history.redo()
+
+    def _restore_version(self, text: str):
+        """Make the canvas match a version of its history, as undo, redo and reverting do.
+
+        The version's turns and node origins come back with it. A node whose
+        component the user may not use, or that this editor does not offer,
+        comes back only as the canvas held it, or as it was when the
+        dashboard was opened, and never with what the version says of it.
+        """
+        model = self._restore_model(text)
+        self.ensure_components_loaded(self._model_component_ids(model))
+        with self._quiet_history():
+            self._hydrating = True
+            try:
+                patched = self._patch_canvas(model)
+            finally:
+                self._hydrating = False
+            if not patched:
+                self._hydrate_model(model, keep_open_turns=True)
+
+    @pn.io.hold()
+    def _patch_canvas(self, model: DashboardModel) -> bool:
+        """Change only what differs between the canvas and *model*, and return whether it could.
+
+        Nodes that stay keep their component and its outputs, so restoring a
+        version that changed one node does not rebuild the others. Anything
+        this does not handle, such as placeholders or connections that could
+        not be restored, returns False before changing the canvas, and the
+        caller loads the whole model instead.
+        """
+        current = self.to_model()
+        if _drop_repeated_ids(model) or self._unresolved_edges:
+            return False
+        placeholders = self._placeholders()
+        aliases = self._component_aliases()
+        before = {item.instance_id: item for item in current.items}
+        after = {item.instance_id: item for item in model.items}
+
+        def resolved(item):
+            return self._resolve_component_id(item.component_id, aliases)
+
+        removed = [iid for iid in before if iid not in after]
+        added = [iid for iid in after if iid not in before]
+        replaced = [
+            iid for iid in after if iid in before and resolved(after[iid]) != resolved(before[iid])
+        ]
+        kept = [iid for iid in after if iid in before and iid not in replaced]
+        for iid in [*removed, *replaced]:
+            if iid in placeholders:
+                return False
+        for iid in [*added, *replaced]:
+            if self._item_placeholder(after[iid], resolved(after[iid])) is not None:
+                return False
+        for iid in kept:
+            if iid in placeholders and (
+                before[iid].config != after[iid].config
+                or before[iid].component_id != after[iid].component_id
+            ):
+                return False
+
+        self._turn_log.reset(model.turns, keep_open=True)
+        known = {turn.id for turn in model.turns}
+        self._origins = {
+            item.instance_id: item.origin for item in model.items if item.origin in known
+        }
+        if model.settings != current.settings:
+            self._apply_settings(model.settings)
+        self.dashboard = model
+        edge_key = lambda e: (e.source, e.source_port, e.target, e.target_port)
+        old_edges = {edge_key(e): e for e in current.edges}
+        new_edges = {edge_key(e): e for e in model.edges}
+        with self._muted_canvas(), self._batched_canvas(), self._dataflow_graph.batch():
+            for key, edge in old_edges.items():
+                if key not in new_edges and edge.source in before and edge.target in before:
+                    if (
+                        edge.source not in removed + replaced
+                        and edge.target not in removed + replaced
+                    ):
+                        self.disconnect(*key)
+            for iid in [*removed, *replaced]:
+                self._unplace(iid)
+            for iid in [*replaced, *added]:
+                item = after[iid]
+                component_id = resolved(item)
+                spec = self._component_specs[component_id]
+                self._place(
+                    component_id,
+                    iid,
+                    {spec.resolve_name(k): v for k, v in item.config.items()},
+                    {"x": item.x, "y": item.y},
+                )
+            for iid in kept:
+                if iid not in placeholders:
+                    self._set_config(iid, after[iid].config)
+            fresh = set(replaced) | set(added)
+            for key, edge in new_edges.items():
+                old = old_edges.get(key)
+                endpoints_new = edge.source in fresh or edge.target in fresh
+                if old is None or endpoints_new:
+                    result = self.connect(*key, edge.transform)
+                elif old.transform != edge.transform:
+                    result = self.set_edge_transform(*key, edge.transform or [])
+                else:
+                    continue
+                if result is not True:
+                    logger.warning("Restoring a version could not wire %s: %s", key, result)
+                    self._unresolved_edges.append(UnresolvedEdge(edge, result))
+        self._match_order(model)
+        moved = {
+            iid: (after[iid].x, after[iid].y)
+            for iid in kept
+            if (after[iid].x, after[iid].y) != (before[iid].x, before[iid].y)
+        }
+        if moved:
+            with self._muted_canvas():
+                self._flow.nodes = [
+                    {**node, "position": {"x": moved[node["id"]][0], "y": moved[node["id"]][1]}}
+                    if node.get("id") in moved
+                    else node
+                    for node in self._flow.nodes
+                ]
+        layout = (
+            model.tile_layout,
+            model.breakpoints,
+            model.responsive_layouts,
+            model.reference_width,
+        )
+        if (
+            layout
+            != (
+                current.tile_layout,
+                current.breakpoints,
+                current.responsive_layouts,
+                current.reference_width,
+            )
+            or added
+            or removed
+            or replaced
+        ):
+            legacy_ids = self._legacy_layout_ids(model)
+            self._grid_populated = False
+            self._pending_tile_layout = _key_saved_layout(model.tile_layout, legacy_ids)
+            self._pending_grid_config = {
+                "breakpoints": list(model.breakpoints or []),
+                "responsive_layouts": {
+                    band: _key_saved_layout(entries, legacy_ids)
+                    for band, entries in (model.responsive_layouts or {}).items()
+                },
+                "reference_width": model.reference_width,
+            }
+            self._apply_mode_state()
+        self._sync_placed()
+        self._sync_toolbar_state()
+        return True
+
+    def _match_order(self, model: DashboardModel):
+        """Put the canvas's nodes and edges in *model*'s order, which its YAML, and so its revision, follows."""
+        rank = {item.instance_id: i for i, item in enumerate(model.items)}
+        order = sorted(
+            range(len(self._tile_items)),
+            key=lambda i: rank.get(self._tile_items[i]["instance_id"], len(rank) + i),
+        )
+        if order != list(range(len(order))):
+            objects = self._tile_objects
+            self._tile_items = [self._tile_items[i] for i in order]
+            if len(objects) == len(order):
+                self._tile_objects = [objects[i] for i in order]
+        edge_rank = {
+            (e.source, e.source_port, e.target, e.target_port): i
+            for i, e in enumerate(model.edges)
+        }
+        edges = self._dataflow_graph._edges
+        keys = sorted(edges, key=lambda key: edge_rank.get(key, len(edge_rank)))
+        if keys != list(edges):
+            reordered = {key: edges[key] for key in keys}
+            edges.clear()
+            edges.update(reordered)
+
+    def _set_config(self, instance_id: str, config: dict[str, t.Any]):
+        """Give a placed node exactly *config*, resetting fields it leaves out to their defaults."""
+        item = next(i for i in self._tile_items if i["instance_id"] == instance_id)
+        spec = self._component_specs.get(item["component_id"])
+        target = {spec.resolve_name(k): v for k, v in config.items()} if spec else dict(config)
+        current = item.get("config", {})
+        if target == current:
+            return
+        config_state = self._dataflow_graph.get_config_state(instance_id)
+        for key in [k for k in current if k not in target]:
+            if config_state is not None and key in config_state.param:
+                setattr(config_state, key, config_state.param[key].default)
+        patch = {k: v for k, v in target.items() if current.get(k, _MISSING) != v}
+        for key, value in patch.items():
+            if config_state is not None and hasattr(config_state.param, key):
+                try:
+                    setattr(config_state, key, value)
+                except Exception as exc:
+                    logger.warning("Config '%s' rejected on %s: %s", key, instance_id, exc)
+        item["config"] = copy.deepcopy(target)
+
+    def _restore_refusal(self, text: str) -> str | None:
+        """Return why restoring a version of the history is refused, or None if it is allowed."""
+        try:
+            self._restore_model(text, notify=False)
+        except PermissionError as exc:
+            return str(exc)
+        except (ValueError, KeyError, TypeError) as exc:
+            return f"That version cannot be read: {exc}"
+        return None
+
+    def _restore_model(self, text: str, notify: bool = True) -> DashboardModel:
+        from panel_flowdash.agent.yaml_format import (
+            dashboard_from_dict,
+            node_names,
+            read_dashboard_text,
+        )
+
+        if self.read_only:
+            raise PermissionError("You may only view this dashboard, so it cannot be changed.")
+        current = self.to_model()
+        data = dashboard_from_dict(read_dashboard_text(text), base=self.export_dashboard())
+        model = DashboardModel.from_dict(
+            {
+                **data,
+                "dashboard_id": current.dashboard_id,
+                "user_id": current.user_id,
+                "title": current.title,
+                "permission": None,
+            }
+        )
+        model.permission, model.revision = current.permission, current.revision
+        reference = self._restricted_reference(current)
+        known = {item.instance_id for item in reference.items}
+        refused = [
+            iid
+            for iid in self._restricted_ids(model, unknown=not self.import_unknown_components)
+            if iid not in known
+        ]
+        if refused:
+            names = node_names([item.to_dict() for item in model.items])
+            listed = ", ".join(repr(names.get(iid, iid)) for iid in refused)
+            raise PermissionError(
+                f"That would bring back {listed}, which you may not use here, so nothing was changed."
+            )
+        origins = {item.instance_id: item.origin for item in model.items}
+        notifications, self.notifications = self.notifications, self.notifications and notify
+        try:
+            self._guard_restricted(model, reference)
+        finally:
+            self.notifications = notifications
+        for item in model.items:
+            item.origin = origins.get(item.instance_id)
+        return model
+
+    def _restricted_reference(self, current: DashboardModel) -> DashboardModel:
+        """Return the canvas with the restricted nodes it held when the dashboard was opened.
+
+        The user cannot place such a node, so these are the only ones a
+        version may bring back, as they were then.
+        """
+        on_canvas = {item.instance_id for item in current.items}
+        extra = [
+            copy.deepcopy(item)
+            for iid, item in self._restricted_seen.items()
+            if iid not in on_canvas
+        ]
+        edges = list(current.edges) + [
+            copy.deepcopy(edge)
+            for edge in self._restricted_seen_edges
+            if edge not in current.edges
+        ]
+        return dataclasses.replace(current, items=[*current.items, *extra], edges=edges)
+
+    def _note_restricted(self):
+        """Remember the restricted nodes on the canvas as opened, for undo to bring back."""
+        private = {iid for iid, p in self._placeholders().items() if p.private}
+        model = self.to_model() if private else None
+        self._restricted_seen = {
+            item.instance_id: copy.deepcopy(item)
+            for item in (model.items if model else [])
+            if item.instance_id in private
+        }
+        self._restricted_seen_edges = [
+            copy.deepcopy(edge)
+            for edge in (model.edges if model else [])
+            if {edge.source, edge.target} & private
+        ]
 
     def export_dashboard(self, *, questions: bool = True) -> dict:
         """Return the canvas as a JSON-serializable dict, as the Download button writes it.
@@ -4138,7 +4607,8 @@ class FlowDash(Viewer):
         before = dashboard_to_dict(self)
         if not keep_turns:
             present = {item["instance_id"] for item in self._tile_items}
-            self.load_model(model)
+            with self._quiet_history():
+                self.load_model(model)
             self._record_import(model, before, present)
             return model
         model.turns = self._turn_log.snapshot()
@@ -4146,15 +4616,17 @@ class FlowDash(Viewer):
         for item in model.items:
             item.origin = self._origins.get(item.instance_id)
         self.ensure_components_loaded(self._model_component_ids(model))
-        self._hydrate_model(model, keep_open_turns=True)
+        with self._quiet_history():
+            self._hydrate_model(model, keep_open_turns=True)
         labels = change_labels(before, dashboard_to_dict(self))
         if not labels:
             self._mark_dirty()
             return model
-        turn = self._record_edit(*labels)
-        for item in model.items:
-            if item.instance_id not in present:
-                self._origins[item.instance_id] = turn.id
+        self._record_edit(
+            *labels,
+            op="replace",
+            created=[item.instance_id for item in model.items if item.instance_id not in present],
+        )
         return model
 
     def _mark_dirty(self):
@@ -4177,10 +4649,15 @@ class FlowDash(Viewer):
         if not change_labels(before, dashboard_to_dict(self)):
             self._mark_dirty()
             return
-        turn = self._record_edit("Loaded a dashboard file")
-        for item in model.items:
-            if item.instance_id not in present:
-                self._origins.setdefault(item.instance_id, turn.id)
+        self._record_edit(
+            "Loaded a dashboard file",
+            op="import",
+            created=[
+                item.instance_id
+                for item in model.items
+                if item.instance_id not in present and item.instance_id not in self._origins
+            ],
+        )
 
     def _imported_model(self, data: dict | str | bytes) -> DashboardModel:
         """Parse an export into a model that takes the loaded dashboard's identity."""
@@ -4376,7 +4853,8 @@ class FlowDash(Viewer):
         before = dashboard_to_dict(self)
         present = {item["instance_id"] for item in self._tile_items}
         try:
-            await self.load_model_async(model)
+            with self._quiet_history():
+                await self.load_model_async(model)
         except Exception as exc:
             logger.exception("Failed to load dropped dashboard")
             self._notify("error", f"Could not load the dashboard: {exc}", duration=5000)

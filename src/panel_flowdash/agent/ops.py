@@ -784,6 +784,7 @@ class DashboardOps:
             notifications=False,
             user=editor.user,
             context=copy_context(editor.context),
+            history=False,
         )
         # The session's components keep finding the editor on screen, not this one.
         if session_editor is not None:

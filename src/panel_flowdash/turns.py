@@ -237,6 +237,17 @@ def summarize(labels: t.Sequence[str]) -> str | None:
     return " ".join(label if label.endswith(".") else f"{label}." for label in shown)
 
 
+_MORE_LABELS = re.compile(r"And \d+ more changes?")
+
+
+def _summary_labels(summary: str | None) -> list[str]:
+    """Return the labels :func:`summarize` joined into *summary*, without its count of the rest."""
+    if not summary:
+        return []
+    labels = [label.strip() for label in summary.rstrip(".").split(". ")]
+    return [label for label in labels if label and not _MORE_LABELS.fullmatch(label)]
+
+
 class TurnLog:
     """The turns of the dashboard in an editor, and those still open to more edits.
 
@@ -260,8 +271,14 @@ class TurnLog:
             self._open = {k: by_id[turn.id] for k, turn in self._open.items() if turn.id in ids}
         else:
             self._open = {}
-        still_open = {turn.id for turn in self._open.values()}
-        self._labels = {k: v for k, v in self._labels.items() if k in still_open}
+        labels = {}
+        for turn in self._open.values():
+            noted = self._labels.get(turn.id, [])
+            # Undo can take an open turn back to an earlier summary, which it then goes on from.
+            labels[turn.id] = (
+                noted if summarize(noted) == turn.summary else _summary_labels(turn.summary)
+            )
+        self._labels = labels
 
     def snapshot(self) -> list[DashboardTurn]:
         """Return copies of the turns, for a model to keep."""

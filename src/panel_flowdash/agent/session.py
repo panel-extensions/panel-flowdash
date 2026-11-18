@@ -6,6 +6,8 @@ Needs the ``panel-flowdash[agent]`` extra.
 from __future__ import annotations
 
 import asyncio
+import logging
+import re
 import typing as t
 
 import panel as pn
@@ -13,6 +15,10 @@ from panel_agents import AgentDrawer, RunState
 from panel_agents.adapters.pydantic_ai import ActionToolset, AgentRunner
 
 from panel_flowdash.util import confirm
+
+logger = logging.getLogger(__name__)
+
+from panel_flowdash.history import components_of
 
 from .actions import palette_actions
 from .assistant import create_agent
@@ -59,9 +65,15 @@ class AgentSession:
     with the signed-in user's rights, can run what the command palette offers,
     and needs the user's approval to save, delete or share. Its chat, the
     versions it publishes and the pending approvals are in a drawer docked to
-    the right of the page, opened from a button in the header. Every edit
-    publishes a version of the dashboard YAML, and applying an earlier or
-    later version loads it into the editor as an import.
+    the right of the page, opened from a button in the header.
+
+    With the editor's edit history on (``FlowDash.history``), the runner
+    shares the history's ``RunState``, so the drawer's artifact view lists
+    every version of the dashboard, the person's edits and the agent's,
+    grouped by request, and its Undo, Redo and Revert buttons restore them
+    as the editor's undo does. With it off, each edit tool publishes a
+    version of the dashboard YAML, and applying an earlier or later version
+    loads it into the editor as an import.
     """
 
     def __init__(self, app: FlowDashApp, agent: Agent):
@@ -69,10 +81,11 @@ class AgentSession:
         self.ops = LiveDashboardOps(app)
         deps = FlowDashDeps(self.ops)
         self.actions = palette_actions(app, deps=deps)
+        editor = app._editor
         self.runner = _SessionRunner(
             self,
             agent,
-            RunState(),
+            editor.edit_history.state if editor.history else RunState(),
             deps=deps,
             approval_policy=approval_policy(
                 *app.agent_approval_rules,
@@ -88,6 +101,8 @@ class AgentSession:
                 ),
             },
         )
+        # Background checks of restored versions, kept so they are not collected while they run.
+        self._checks: set[asyncio.Task] = set()
         self.drawer = AgentDrawer(
             self.runner, title="Assistant", variant="persistent", on_apply=self.apply_version
         )
@@ -98,8 +113,14 @@ class AgentSession:
         """Publish the open dashboard as a version if it changed since the agent last saw it.
 
         Runs before every request to the agent, so the versions include the
-        user's own edits and the agent is told about them.
+        user's own edits and the agent is told about them. With the edit
+        history on, the edit in progress is published instead, since every
+        other edit already is.
         """
+        history = self.app._editor.edit_history
+        if history.active:
+            history.flush()
+            return
         current = self.app._current_dashboard
         if current is None:
             return
@@ -128,6 +149,9 @@ class AgentSession:
         When the canvas has changes the agent did not publish, typically the
         user's own edits, the user confirms that applying the version drops them.
         """
+        history = self.app._editor.edit_history
+        if history.active:
+            return await self._restore(history, artifact, version)
         current = self.app._current_dashboard
         if current is None or artifact.artifact_id != f"dashboard:{current.dashboard_id}":
             raise ValueError("That version belongs to a dashboard that is not open.")
@@ -145,17 +169,67 @@ class AgentSession:
                     "not restored. Try again."
                 ) from exc
             raise
-        failed = [i for i in issues if i.severity == "error"]
+        failed = [i for i in issues if i.severity == "error" and i.path.startswith("nodes.")]
         if failed:
-            nodes = sorted({i.path.split(".")[1] for i in failed if i.path.startswith("nodes.")})
+            problems: dict[str, list[str]] = {}
+            for issue in failed:
+                problems.setdefault(issue.path.split(".")[1], []).append(issue.message)
+            self._notify_failed_checks(version, problems)
+        return True
+
+    async def _restore(self, history, artifact: Artifact, version: ArtifactVersion) -> bool:
+        """Restore *version* through the edit history and report its config checks afterwards.
+
+        The version's components are imported off the event loop and the
+        restore changes only what differs, so the drawer's button stops
+        spinning as soon as the canvas matches. The config checks then run
+        in the background, bounded by ``RESTORE_CHECK_TIMEOUT``, and tell
+        the user which nodes fail. A refused restore is reported too.
+        """
+        editor = self.app._editor
+        try:
+            await editor.ensure_components_loaded_async(components_of(version.value))
+            history.restore(artifact, version)
+        except Exception as exc:
+            self.app._notify("error", f"v{version.version} was not restored: {exc}", duration=8000)
+            raise
+        task = asyncio.ensure_future(self._report_checks(version))
+        self._checks.add(task)
+        task.add_done_callback(self._checks.discard)
+        return True
+
+    async def _report_checks(self, version: ArtifactVersion):
+        try:
+            problems = await asyncio.wait_for(
+                self.ops._canvas_problems_async(self.app._editor), RESTORE_CHECK_TIMEOUT
+            )
+        except TimeoutError:
             self.app._notify(
                 "warning",
-                f"Restored v{version.version}, but {len(nodes)} "
-                f"{'node fails its' if len(nodes) == 1 else 'nodes fail their'} config "
-                "checks: " + "; ".join(f"{i.path.split('.')[1]}: {i.message}" for i in failed),
-                duration=10000,
+                f"Restored v{version.version}; its config checks did not finish in time.",
+                duration=8000,
             )
-        return True
+            return
+        except Exception:
+            logger.exception("The config checks of a restored version failed")
+            return
+        if problems:
+            names = self.ops._names()
+            self._notify_failed_checks(
+                version, {names.get(iid, iid): found for iid, found in problems.items()}
+            )
+
+    def _notify_failed_checks(self, version: ArtifactVersion, problems: dict[str, list[str]]):
+        n = len(problems)
+        self.app._notify(
+            "warning",
+            f"Restored v{version.version}, but {n} "
+            f"{'node fails its' if n == 1 else 'nodes fail their'} config checks: "
+            + "; ".join(
+                f"{name}: {message}" for name, found in problems.items() for message in found
+            ),
+            duration=10000,
+        )
 
     async def _confirm_overwrite(self, version: ArtifactVersion) -> bool:
         if pn.state.curdoc is None or pn.state.curdoc.session_context is None:
@@ -192,6 +266,14 @@ class _SessionRunner(AgentRunner):
         super().__init__(*args, **kwargs)
         self._session = session
 
+    def _note_artifact_change(self, event):
+        # A request's own version is published as its run ends; the model made those edits.
+        if getattr(event, "actor", None) == "agent" and event.run_id == self.run_id:
+            return
+        # Merged as they come, so the notes stay short however long the person edits.
+        super()._note_artifact_change(event)
+        self._notes[:] = _collapse_notes(self._notes)
+
     async def run(self, prompt=None, **kwargs):
         self._session.ops.editor.end_turn()
         self._session.publish_user_edits()
@@ -200,3 +282,42 @@ class _SessionRunner(AgentRunner):
             return await super().run(prompt, **kwargs)
         finally:
             self.deps.end_request()
+
+
+_PUBLISHED_NOTE = re.compile(
+    r"The app published versions? (\d+)(?: to (\d+))? of the artifact (.+?)"
+    r"( and now holds (?:it|the latest))?\."
+)
+
+
+def _collapse_notes(notes: list[str]) -> list[str]:
+    """Merge the runner's notes about consecutive versions of one artifact into one.
+
+    With the edit history every edit the person makes is a version, so the
+    model would otherwise read a line for each drag before the next request.
+    """
+    collapsed: list[str] = []
+    previous: tuple[str, str] | None = None
+    for note in notes:
+        match = _PUBLISHED_NOTE.fullmatch(note)
+        if match is None:
+            collapsed.append(note)
+            previous = None
+            continue
+        first, last, name, held = match[1], match[2] or match[1], match[3], match[4]
+        if previous is not None and previous[1] == name:
+            first = previous[0]
+            collapsed.pop()
+        if first == last:
+            collapsed.append(note)
+        else:
+            held = " and now holds the latest" if held else ""
+            collapsed.append(
+                f"The app published versions {first} to {last} of the artifact {name}{held}."
+            )
+        previous = (first, name)
+    return collapsed
+
+
+#: Seconds the drawer waits for the config checks of a restored version before it gives up on them.
+RESTORE_CHECK_TIMEOUT = 15
