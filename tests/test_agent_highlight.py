@@ -68,6 +68,70 @@ async def test_an_agent_edit_outlines_the_new_node_until_the_next_run(monkeypatc
     assert "style" not in node
 
 
+async def test_leaving_edit_mode_clears_the_outlines(monkeypatch):
+    store = MemoryDashboardStore()
+    model = store.create_dashboard("alice", "Plant")
+    agent = Agent(
+        scripted(("add_node", {"component": "T/number"})),
+        deps_type=FlowDashDeps,
+        toolsets=[dashboard_toolset()],
+    )
+    app = _app(store, monkeypatch, agent=agent)
+    app._load_dashboard_sync(model.dashboard_id)
+    session = app._agent_session
+
+    await session.runner.run("Add a number")
+
+    assert app._editor.editable
+    ((instance_id, _),) = session.highlighter.marked.items()
+    app._editor._rebuild_tile_grid()
+    tile = app._editor._inspect_tiles[instance_id]
+    assert TILE_CLASSES["add"] in tile.css_classes
+
+    app._editor.editable = False
+
+    assert session.highlighter.marked == {}
+    assert TILE_CLASSES["add"] not in tile.css_classes
+    node = next(n for n in app._editor._flow.nodes if n["id"] == instance_id)
+    assert "style" not in node
+    app._editor._rebuild_tile_grid()
+    tiles = app._editor._inspect_tiles.values()
+    assert not any(set(TILE_CLASSES.values()) & set(t.css_classes) for t in tiles)
+
+
+async def test_discarding_the_changes_clears_the_outlines(monkeypatch):
+    store = MemoryDashboardStore()
+    model = store.create_dashboard("alice", "Plant")
+
+    def node_name(results):
+        return {"name": app._agent_session.ops._names()[instance_id], "width": 50}
+
+    agent = Agent(
+        scripted(("place_tile", node_name)),
+        deps_type=FlowDashDeps,
+        toolsets=[dashboard_toolset()],
+    )
+    app = _app(store, monkeypatch, agent=agent)
+    app._load_dashboard_sync(model.dashboard_id, edit=True)
+    editor = app._editor
+    instance_id = editor.add_component("T/number")
+    assert editor._on_save_clicked()
+    session = app._agent_session
+
+    await session.runner.run("Make the number tile wider")
+
+    assert session.highlighter.marked == {instance_id: "change"}
+    editor._dashboard_bar.discard()
+
+    assert editor.editable
+    assert session.highlighter.marked == {}
+    node = next(n for n in editor._flow.nodes if n["id"] == instance_id)
+    assert "style" not in node
+    editor._rebuild_tile_grid()
+    tile = editor._inspect_tiles[instance_id]
+    assert not set(TILE_CLASSES.values()) & set(tile.css_classes)
+
+
 async def test_the_users_own_edits_during_a_run_are_not_outlined(monkeypatch):
     store = MemoryDashboardStore()
     model = store.create_dashboard("alice", "Plant")
