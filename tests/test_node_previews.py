@@ -21,10 +21,7 @@ from panel_flowdash.ui import node_preview
 from panel_flowdash.ui.node_card import (
     NodeCard,
     card_height,
-    handle_rules,
-    handle_stylesheet,
     port_tops,
-    preview_class,
 )
 from panel_flowdash.ui.node_preview import (
     HEIGHTS,
@@ -567,12 +564,6 @@ class TestCards:
         assert "2 rows, 4 columns" in pane.object
         assert pane.height == base - 22 + HEIGHTS["table"]
 
-    async def test_previewing_card_carries_its_handle_class(self):
-        editor, ids = demo_editor()
-        pane = card(editor, ids["filter"]).__panel__()
-        assert pane.css_classes == [preview_class(["rows", "minimum"], ["kept"])]
-        assert card(editor, ids["waiting"]).__panel__().css_classes == []
-
     async def test_previews_are_off_by_default(self):
         editor = FlowDash(DEMO, notifications=False)
         src = editor.add_component("Demo/turbines")
@@ -588,7 +579,6 @@ class TestCards:
         editor.settings.node_previews = False
         assert not filtered.show_preview and filtered.preview is None
         assert filtered.__panel__().height == card_height(2, 1)
-        assert filtered.__panel__().css_classes == []
         assert 'class="fd-summary"' in filtered.__panel__().object
         assert editor._status_bar.preview_toggle.value is False
         assert editor.dirty
@@ -650,7 +640,7 @@ class TestCards:
         src = editor.add_component("Demo/turbines")
         pane = card(editor, src).__panel__()
         events = []
-        pane.param.watch(events.append, ["object", "height", "css_classes"])
+        pane.param.watch(events.append, ["object", "height"])
         editor.graph.get_state(src).param.trigger("rows")
         assert events == []
 
@@ -670,35 +660,24 @@ class TestCards:
         assert DashboardSettings.param.node_previews.default is False
 
 
-class TestHandleRules:
-    async def test_handles_are_pinned_beside_their_labels(self):
-        rules = handle_rules(["rows", "minimum"], ["kept"])
+class TestHandleTops:
+    async def test_handles_are_placed_at_their_port_rows(self):
+        editor = FlowDash(DEMO, notifications=False)
+        spec = editor._flow.node_types["Demo__filter"]
         tops_in, tops_out = port_tops(2, 1)
-        css_class = preview_class(["rows", "minimum"], ["kept"])
-        assert (
-            f'.react-flow__node:has(.{css_class}) .react-flow__handle-left[data-handleid="rows"]'
-            f" {{ top: {tops_in[0]:.2f}px !important; }}" in rules
-        )
-        assert f'[data-handleid="kept"] {{ top: {tops_out[0]:.2f}px' in rules
+        assert [(h["id"], h["top"]) for h in spec["inputs"]] == [
+            ("rows", round(tops_in[0], 2)),
+            ("minimum", round(tops_in[1], 2)),
+        ]
+        assert [(h["id"], h["top"]) for h in spec["outputs"]] == [("kept", round(tops_out[0], 2))]
         assert tops_in == [card_height(2, 1) / 3, card_height(2, 1) * 2 / 3]
 
-    async def test_port_names_are_escaped_in_selectors(self):
-        rules = handle_rules(['a"] * { color: red } [x="', "b\\c</style>"], [])
-        assert '"a\\22 ] * { color: red } [x=\\22 "' in rules
-        assert '"b\\5c c\\3c /style\\3e "' in rules
-        assert rules.count("{ top:") == 2
-
-    async def test_class_depends_on_the_port_layout(self):
-        assert preview_class(["a"], ["b"]) != preview_class(["a", "b"], [])
-        assert re.fullmatch(r"fd-pv-[0-9a-f]{12}", preview_class(["a"], []))
-        assert handle_rules([], []) == ""
-
-    async def test_canvas_stylesheet_covers_every_component(self):
-        editor = FlowDash(DEMO, notifications=False)
-        css = editor._flow.stylesheets[-1]
-        assert css == handle_stylesheet(editor._component_specs.values())
-        assert preview_class(["rows", "minimum"], ["kept"]) in css
-        assert preview_class(["start", "end"], ["selected"]) in css
+    async def test_card_rows_match_the_handle_tops(self):
+        editor, ids = demo_editor()
+        spec = editor._flow.node_types["Demo__filter"]
+        markup = card(editor, ids["filter"]).__panel__().object
+        for handle in [*spec["inputs"], *spec["outputs"]]:
+            assert f'data-port="{handle["id"]}" style="top: {handle["top"]:.2f}px' in markup
 
 
 class _FakeDoc:

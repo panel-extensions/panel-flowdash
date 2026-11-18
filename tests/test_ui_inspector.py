@@ -107,7 +107,7 @@ def _texts(viewables) -> list[str]:
 
 
 class TestNodeCard:
-    async def test_handles_and_labels_share_positions(self):
+    async def test_rows_are_spread_evenly(self):
         assert port_offsets(1) == [50.0]
         assert port_offsets(3) == [25.0, 50.0, 75.0]
 

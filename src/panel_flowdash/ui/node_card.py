@@ -7,22 +7,17 @@ dot and either summarizes the current value in one line, e.g. the rows of a
 DataFrame output or a widget's selection, or previews it (see
 ``ui/node_preview.py``): the first rows of a table, a sparkline, a few chips.
 
-ReactFlow places a node's input handles evenly down its left edge, at
-``(i + 1) / (n + 1)`` of the node's height, and its outputs the same way down
-the right edge. Each port label is placed at exactly that point of a card
-without a preview, and the card is tall enough that the header and summary
-never meet a label, so every label sits beside its handle whatever the number
-of ports. A preview makes the card taller below the ports, so while one is
-shown the canvas stylesheet pins each handle to its label in pixels instead
-(see :func:`handle_stylesheet`).
+Port rows are spread evenly down a card without a preview, at
+``(i + 1) / (n + 1)`` of its height, and the card is tall enough that the
+header and summary never meet a label whatever the number of ports. A preview
+makes the card taller below the ports without moving them, so each handle is
+placed at its row in pixels (see :func:`port_tops`), with or without one.
 """
 
 from __future__ import annotations
 
-import hashlib
 import html
 import logging
-import re
 import threading
 import typing as t
 from functools import partial
@@ -50,7 +45,7 @@ if t.TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["CARD_WIDTH", "NodeCard", "card_height", "port_offsets", "summarize_value"]
+__all__ = ["CARD_WIDTH", "NodeCard", "card_height", "port_offsets", "port_tops", "summarize_value"]
 
 CARD_WIDTH = 240
 _HEADER_HEIGHT = 34
@@ -169,7 +164,7 @@ def card_height(n_inputs: int, n_outputs: int) -> int:
 
 
 def port_offsets(count: int) -> list[float]:
-    """Return where ReactFlow puts *count* handles, as percentages of the node height."""
+    """Return where *count* port rows sit on a card without a preview, as percentages of its height."""
     return [(i + 1) * 100 / (count + 1) for i in range(count)]
 
 
@@ -180,39 +175,6 @@ def port_tops(n_inputs: int, n_outputs: int) -> tuple[list[float], list[float]]:
         [height * p / 100 for p in port_offsets(n_inputs)],
         [height * p / 100 for p in port_offsets(n_outputs)],
     )
-
-
-def preview_class(inputs: t.Sequence[str], outputs: t.Sequence[str]) -> str:
-    """Return the class a previewing card carries for the handle rules of its ports."""
-    key = "\x00".join([*inputs, "\x01", *outputs]).encode()
-    return "fd-pv-" + hashlib.sha1(key, usedforsecurity=False).hexdigest()[:12]
-
-
-def _css_string(text: str) -> str:
-    return '"' + re.sub(r'["\\<>\x00-\x1f\x7f]', lambda m: f"\\{ord(m[0]):x} ", text) + '"'
-
-
-def handle_rules(inputs: t.Sequence[str], outputs: t.Sequence[str]) -> str:
-    """Return the CSS pinning each handle of a previewing card beside its label."""
-    if not inputs and not outputs:
-        return ""
-    node = f".react-flow__node:has(.{preview_class(inputs, outputs)})"
-    tops_in, tops_out = port_tops(len(inputs), len(outputs))
-    rules = [
-        f".react-flow__handle-{side}[data-handleid={_css_string(name)}]"
-        f" {{ top: {top:.2f}px !important; }}"
-        for side, names, tops in (("left", inputs, tops_in), ("right", outputs, tops_out))
-        for name, top in zip(names, tops, strict=True)
-    ]
-    return "\n".join(f"{node} {rule}" for rule in rules)
-
-
-def handle_stylesheet(specs: t.Iterable[ComponentSpec]) -> str:
-    """Return the handle rules of every component in *specs*, each port layout once."""
-    layouts = {
-        (tuple(p.name for p in spec.inputs), tuple(p.name for p in spec.outputs)) for spec in specs
-    }
-    return "\n".join(filter(None, (handle_rules(*layout) for layout in sorted(layouts))))
 
 
 def component_role(spec: ComponentSpec) -> str:
@@ -380,12 +342,7 @@ class NodeCard(Viewer):
             f"{self._ports_html(self.outputs, tops_out, 'out', not self.inputs)}"
             f"{bottom}</div>"
         )
-        classes = (
-            [preview_class([p["name"] for p in self.inputs], [p["name"] for p in self.outputs])]
-            if preview is not None
-            else []
-        )
-        changes = {"object": markup, "height": self.height, "css_classes": classes}
+        changes = {"object": markup, "height": self.height}
         changes = {k: v for k, v in changes.items() if getattr(self._pane, k) != v}
         if changes:
             self._pane.param.update(**changes)

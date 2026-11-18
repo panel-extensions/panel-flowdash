@@ -3,6 +3,7 @@
 import time
 from functools import partial
 
+import panel_material_ui as pmui
 import pytest
 from panel.tests.util import wait_until
 
@@ -72,10 +73,13 @@ def _assert_lined_up(page, editor):
     wait_until(settled, page, timeout=8000)
 
 
-def test_previews_render_and_handles_stay_beside_their_labels(page):
+@pytest.mark.parametrize("scheme", ["light", "dark"])
+def test_previews_render_and_handles_stay_beside_their_labels(page, scheme):
+    page.emulate_media(color_scheme=scheme)
     editor, ids = demo_editor()
     editor.dirty = False
-    serve_component(page, editor)
+    serve_component(page, pmui.Page(main=[editor], dark_theme=scheme == "dark"))
+    wait_until(lambda: editor._flow.color_mode == scheme, page)
 
     filtered = _node(page, ids["filter"])
     expect(filtered).to_contain_text("5 rows, 4 columns")

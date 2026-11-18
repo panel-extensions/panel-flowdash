@@ -91,9 +91,9 @@ from panel_flowdash.ui.layout_panel import GRID_EDIT_CSS, LayoutPanel
 from panel_flowdash.ui.node_card import (
     CARD_WIDTH,
     NodeCard,
-    handle_stylesheet,
     node_card,
     placeholder_card,
+    port_tops,
 )
 from panel_flowdash.ui.palette import ComponentPalette, palette_entry, palette_items
 from panel_flowdash.ui.settings_dialog import SettingsDialog
@@ -1296,6 +1296,7 @@ class FlowDash(Viewer):
         node_editors = {}
         for comp_id, spec in self._component_specs.items():
             type_key = comp_id.replace("/", "__")
+            tops_in, tops_out = port_tops(len(spec.inputs), len(spec.outputs))
             node_types[type_key] = pr.NodeType(
                 type=type_key,
                 label=spec.title,
@@ -1305,6 +1306,7 @@ class FlowDash(Viewer):
                         "id": port.name,
                         "label": port.label or port.name,
                         "type": port.type,
+                        "top": round(top, 2),
                         **(
                             {"maxConnections": 1}
                             if port.multiple is False
@@ -1312,11 +1314,16 @@ class FlowDash(Viewer):
                             else {}
                         ),
                     }
-                    for port in spec.inputs
+                    for port, top in zip(spec.inputs, tops_in, strict=True)
                 ],
                 outputs=[
-                    {"id": port.name, "label": port.label or port.name, "type": port.type}
-                    for port in spec.outputs
+                    {
+                        "id": port.name,
+                        "label": port.label or port.name,
+                        "type": port.type,
+                        "top": round(top, 2),
+                    }
+                    for port, top in zip(spec.outputs, tops_out, strict=True)
                 ],
             )
         node_types[PLACEHOLDER_NODE_TYPE] = pr.NodeType(
@@ -1324,16 +1331,10 @@ class FlowDash(Viewer):
         )
         return node_types, node_editors
 
-    def _flow_stylesheets(self) -> list[str]:
-        """Return the canvas styles, with rules pinning the handles of previewing cards."""
-        return [_FLOW_STYLESHEET, handle_stylesheet(self._component_specs.values())]
-
     def _rebuild_flow_canvas(self):
         """Update node_types on the live ReactFlow canvas after component load."""
         node_types, node_editors = self._node_types_from_specs()
-        self._flow.param.update(
-            node_types=node_types, node_editors=node_editors, stylesheets=self._flow_stylesheets()
-        )
+        self._flow.param.update(node_types=node_types, node_editors=node_editors)
 
     def _update_value_popup_config(self, event):
         self._flow.param.update(
@@ -1364,7 +1365,7 @@ class FlowDash(Viewer):
             show_minimap=False,
             sizing_mode="stretch_both",
             min_height=600,
-            stylesheets=self._flow_stylesheets(),
+            stylesheets=[_FLOW_STYLESHEET],
             popup_trigger=self.popup_trigger,
             popup_hover_delay=self.popup_hover_delay,
             drop_types=[_PALETTE_DRAG_TYPE, _FILES_DROP_TYPE],
