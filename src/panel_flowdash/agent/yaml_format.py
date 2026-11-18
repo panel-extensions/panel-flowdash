@@ -18,15 +18,21 @@ from collections import defaultdict
 
 import yaml
 
-from panel_flowdash.dashboard_store import DashboardModel
+from panel_flowdash.dashboard_store import MODEL_VERSION, DashboardModel
+from panel_flowdash.turns import DashboardTurn, TurnError, strip_questions
 
-FORMAT_VERSION = 1
+# The version of the format this release writes.
+FORMAT_VERSION = 2
 
-# The dashboard model version the export dicts produced here carry.
-_MODEL_VERSION = 3
+# The versions of the format this release reads.
+READ_VERSIONS = (1, 2)
 
-TOP_LEVEL_KEYS = ("flowdash", "title", "settings", "nodes", "edges", "layout")
-NODE_KEYS = ("component", "config", "position")
+TOP_LEVEL_KEYS = ("flowdash", "title", "settings", "turns", "nodes", "edges", "layout")
+NODE_KEYS = ("component", "origin", "config", "position")
+TURN_KEYS = ("id", "actor", "at", "run", "question", "summary", "status")
+# Version 1 had neither turns nor node origins.
+_V1_TOP_LEVEL_KEYS = tuple(k for k in TOP_LEVEL_KEYS if k != "turns")
+_V1_NODE_KEYS = tuple(k for k in NODE_KEYS if k != "origin")
 EDGE_KEYS = ("from", "to", "transform")
 LAYOUT_KEYS = ("tiles", "reference_width", "breakpoints", "responsive")
 TILE_KEYS = ("node", "width", "height", "visible")
@@ -193,7 +199,9 @@ def _position(item: dict) -> list:
     return [item.get("x", 0), item.get("y", 0)]
 
 
-def dashboard_to_dict(source: t.Any, restricted_edges: t.Iterable[dict] = ()) -> dict:
+def dashboard_to_dict(
+    source: t.Any, restricted_edges: t.Iterable[dict] = (), *, questions: bool = True
+) -> dict:
     """Return the YAML document for a dashboard export, as plain data.
 
     Parameters
@@ -209,6 +217,8 @@ def dashboard_to_dict(source: t.Any, restricted_edges: t.Iterable[dict] = ()) ->
         export leaves out. They are written with only the restricted node's
         name on that end, so the file shows which inputs are taken without
         revealing the hidden ports.
+    questions
+        False leaves out the questions the turns record.
     """
     data = _export_dict(source)
     if hasattr(source, "export_dashboard") and not restricted_edges:
@@ -220,10 +230,21 @@ def dashboard_to_dict(source: t.Any, restricted_edges: t.Iterable[dict] = ()) ->
         doc["title"] = data["title"]
     if data.get("settings"):
         doc["settings"] = copy.deepcopy(data["settings"])
+    turns = [
+        {key: turn[key] for key in TURN_KEYS if turn.get(key) is not None}
+        for turn in data.get("turns") or []
+    ]
+    if not questions:
+        turns = strip_questions(turns)
+    if turns:
+        doc["turns"] = turns
+    turn_ids = {turn["id"] for turn in turns}
     nodes = {}
     assert len(set(names.values())) == len(items), "two items share an instance id"
     for item in items:
         node: dict[str, t.Any] = {"component": item["component_id"]}
+        if item.get("origin") in turn_ids:
+            node["origin"] = item["origin"]
         if item.get("config"):
             node["config"] = copy.deepcopy(item["config"])
         node["position"] = _position(item)
@@ -309,7 +330,9 @@ _Dumper.add_representer(list, _represent_list)
 _Dumper.add_representer(str, _represent_str)
 
 
-def dashboard_to_yaml(source: t.Any, restricted_edges: t.Iterable[dict] = ()) -> str:
+def dashboard_to_yaml(
+    source: t.Any, restricted_edges: t.Iterable[dict] = (), *, questions: bool = True
+) -> str:
     """Write a dashboard export as YAML text.
 
     Parameters
@@ -322,9 +345,11 @@ def dashboard_to_yaml(source: t.Any, restricted_edges: t.Iterable[dict] = ()) ->
         stand-ins with their connections marked.
     restricted_edges
         The stored edges touching restricted items, see :func:`dashboard_to_dict`.
+    questions
+        False leaves out the questions the turns record.
     """
     return yaml.dump(
-        dashboard_to_dict(source, restricted_edges),
+        dashboard_to_dict(source, restricted_edges, questions=questions),
         Dumper=_Dumper,
         sort_keys=False,
         allow_unicode=True,
@@ -488,7 +513,8 @@ def parse_yaml(text: str | bytes) -> dict:
     doc = load_yaml(text)
     if not isinstance(doc, dict) or "flowdash" not in doc:
         raise DashboardYAMLError(
-            "document", "Not a FlowDash dashboard: the file must start with 'flowdash: 1'."
+            "document",
+            f"Not a FlowDash dashboard: the file must start with 'flowdash: {FORMAT_VERSION}'.",
         )
     return doc
 
@@ -728,19 +754,22 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
     """
     doc = _mapping(doc, "document")
     version = doc.get("flowdash")
-    if type(version) is not int or version != FORMAT_VERSION:
+    if type(version) is not int or version not in READ_VERSIONS:
         newer = type(version) is int and version > FORMAT_VERSION
         _fail(
             "flowdash",
-            f"unsupported format version {version!r}; this release reads {FORMAT_VERSION}."
+            f"unsupported format version {version!r}; this release reads "
+            f"{' and '.join(map(str, READ_VERSIONS))}."
             + (" The file was written by a newer FlowDash." if newer else ""),
         )
-    _unknown_keys(doc, TOP_LEVEL_KEYS, "document")
+    _unknown_keys(doc, TOP_LEVEL_KEYS if version >= 2 else _V1_TOP_LEVEL_KEYS, "document")
     title = doc.get("title")
     if title is not None and not isinstance(title, str):
         _fail("title", f"must be a string, got {title!r}.")
     settings = _mapping(doc.get("settings"), "settings")
     _json_value(settings, "settings")
+    turns = _turns(doc.get("turns"))
+    turn_ids = {turn["id"] for turn in turns}
 
     base_items = []
     if base is not None:
@@ -819,7 +848,7 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
     for name, node in nodes.items():
         path = f"nodes.{name}"
         node = _mapping(node, path)
-        _unknown_keys(node, NODE_KEYS, path)
+        _unknown_keys(node, NODE_KEYS if version >= 2 else _V1_NODE_KEYS, path)
         component = node.get("component")
         if not isinstance(component, str) or not component:
             _fail(f"{path}.component", "is required and names a component, e.g. 'Views/kpi'.")
@@ -832,15 +861,19 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
             _fail(f"{path}.position", f"must be [x, y], got {position!r}.")
         x = _number(position[0], f"{path}.position")
         y = _number(position[1], f"{path}.position")
-        items.append(
-            {
-                "instance_id": ids[name],
-                "component_id": component,
-                "x": x,
-                "y": y,
-                "config": copy.deepcopy(config),
-            }
-        )
+        item = {
+            "instance_id": ids[name],
+            "component_id": component,
+            "x": x,
+            "y": y,
+            "config": copy.deepcopy(config),
+        }
+        origin = node.get("origin")
+        if origin is not None:
+            if origin not in turn_ids:
+                _fail(f"{path}.origin", f"names no turn: {origin!r}.")
+            item["origin"] = origin
+        items.append(item)
 
     layout = _mapping(doc.get("layout"), "layout")
     _unknown_keys(layout, LAYOUT_KEYS, "layout")
@@ -858,7 +891,7 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
         for band, entries in _mapping(layout.get("responsive"), "layout.responsive").items()
     }
     return {
-        "version": _MODEL_VERSION,
+        "version": MODEL_VERSION,
         "title": "Untitled" if title is None else title,
         "items": items,
         "edges": edges,
@@ -867,7 +900,27 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
         "responsive_layouts": responsive,
         "reference_width": reference_width,
         "settings": copy.deepcopy(settings),
+        "turns": turns,
     }
+
+
+def _turns(value: t.Any) -> list[dict]:
+    """Check the turns of a document and return them as export dicts."""
+    turns = []
+    seen: set[str] = set()
+    for i, turn in enumerate(_sequence(value, "turns")):
+        path = f"turns[{i}]"
+        turn = _mapping(turn, path)
+        _unknown_keys(turn, TURN_KEYS, path)
+        try:
+            parsed = DashboardTurn.from_dict(turn)
+        except TurnError as exc:
+            _fail(f"{path}.{exc.key}" if exc.key != "turn" else path, exc.reason)
+        if parsed.id in seen:
+            _fail(f"{path}.id", f"{parsed.id!r} is the id of an earlier turn.")
+        seen.add(parsed.id)
+        turns.append(parsed.to_dict())
+    return turns
 
 
 def dashboard_from_yaml(text: str | bytes, *, base: DashboardModel | dict | None = None) -> dict:
@@ -893,4 +946,10 @@ def dashboard_from_yaml(text: str | bytes, *, base: DashboardModel | dict | None
     return dashboard_from_dict(parse_yaml(text), base=base)
 
 
-__all__ = ["FORMAT_VERSION", "DashboardYAMLError", "dashboard_from_yaml", "dashboard_to_yaml"]
+__all__ = [
+    "FORMAT_VERSION",
+    "READ_VERSIONS",
+    "DashboardYAMLError",
+    "dashboard_from_yaml",
+    "dashboard_to_yaml",
+]

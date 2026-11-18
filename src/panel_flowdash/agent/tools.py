@@ -14,13 +14,14 @@ import typing as t
 from dataclasses import dataclass, field, replace
 
 import yaml
-from panel_agents import ApprovalPolicy, ApprovalRule, register_renderer
+from panel_agents import ApprovalPolicy, ApprovalRule, current_run_id, register_renderer
 from panel_agents.adapters.pydantic_ai import artifact_return
 from panel_agents.artifacts import Change, StructuredDiff, register_diff
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 from pydantic_ai.tools import ToolDefinition
 
 from panel_flowdash.editor import export_model
+from panel_flowdash.turns import agent_edits
 
 from .diff import dashboard_changes
 from .live import LiveDashboardOps
@@ -55,6 +56,9 @@ class FlowDashDeps:
     every tool refuses for the rest of the request, so the agent never
     changes a dashboard the user did not ask about. Without
     :meth:`start_request`, each agent run is pinned when it first uses a tool.
+
+    The edits the tools make belong to the agent's turn of the run, which
+    records the request's question, see :mod:`panel_flowdash.turns`.
     """
 
     ops: DashboardOps
@@ -68,11 +72,21 @@ class FlowDashDeps:
     _abandoned: bool = field(default=False, repr=False)
     # The revision the save approval's summary was written for, set at each model step.
     _save_revision: str | None = field(default=None, repr=False)
+    _question: str | None = field(default=None, repr=False)
 
-    def start_request(self):
-        """Pin the next request to the dashboard open now. Call it when the user sends one."""
+    def start_request(self, question: str | None = None):
+        """Pin the next request to the dashboard open now. Call it when the user sends one.
+
+        *question* is what the user asked, which the turn of the agent's edits records.
+        """
         self._reset(_open_id(self.ops))
         self._explicit = True
+        self._question = question if isinstance(question, str) else None
+
+    @property
+    def question(self) -> str | None:
+        """What the user asked in the current request, if :meth:`start_request` was told."""
+        return self._question
 
     def end_request(self):
         """Forget the request's pin once it is done."""
@@ -83,6 +97,7 @@ class FlowDashDeps:
         self._explicit = False
         self._run_id = run_id
         self._abandoned = False
+        self._question = None
 
     def repin(self):
         """Move the pin to the dashboard open now, after the agent itself opened it."""
@@ -256,6 +271,8 @@ def _guarded(func: t.Callable) -> t.Callable:
     Every tool first checks the request's pin, see :class:`FlowDashDeps`. Only
     ``open_dashboard``, called while the user is still on the pinned
     dashboard, moves the pin to the dashboard it opens.
+
+    The edits a tool makes count as the agent's, in the turn of its run.
     """
 
     @functools.wraps(func)
@@ -267,9 +284,10 @@ def _guarded(func: t.Callable) -> t.Callable:
         listen = func in EDIT_TOOLS and bool(deps.edit_listeners)
         before = _snapshot(deps.ops) if listen else None
         try:
-            result = func(ctx, *args, **kwargs)
-            if inspect.isawaitable(result):
-                result = await result
+            with agent_edits(current_run_id() or ctx.run_id, deps.question):
+                result = func(ctx, *args, **kwargs)
+                if inspect.isawaitable(result):
+                    result = await result
         except OperationError as exc:
             raise ModelRetry(str(exc)) from exc
         except PermissionError as exc:

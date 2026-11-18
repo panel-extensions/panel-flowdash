@@ -43,6 +43,7 @@ from panel_flowdash.registry import PanelAppMetadata, RegistryEntry, panel_app, 
 from panel_flowdash.session_state import build_session_state_class, check_requirements
 from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transforms import Transform
+from panel_flowdash.turns import DashboardTurn, agent_edits
 
 try:
     __version__ = importlib.metadata.version(__name__)
@@ -62,6 +63,7 @@ __all__: list[str] = [
     "DashboardSettings",
     "DashboardStore",
     "DashboardStoreError",
+    "DashboardTurn",
     "DataflowGraph",
     "FlowDash",
     "Identity",
@@ -74,6 +76,7 @@ __all__: list[str] = [
     "RegistryEntry",
     "Transform",
     "__version__",
+    "agent_edits",
     "build_component_spec",
     "build_component_specs",
     "build_node_state_class",

@@ -85,6 +85,28 @@ def _revision(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
 
 
+def without_provenance(doc: t.Any) -> t.Any:
+    """Return a copy of a YAML document without its turns and node origins.
+
+    Only the editor records who made which change, so they are dropped from
+    YAML an agent or another caller of :class:`DashboardOps` writes.
+    """
+    if not isinstance(doc, dict):
+        return doc
+    doc = {key: value for key, value in doc.items() if key != "turns"}
+    nodes = doc.get("nodes")
+    if isinstance(nodes, dict):
+        doc["nodes"] = {
+            name: (
+                {key: value for key, value in node.items() if key != "origin"}
+                if isinstance(node, dict)
+                else node
+            )
+            for name, node in nodes.items()
+        }
+    return doc
+
+
 def read_revision(text: str) -> str | None:
     """Return the revision a YAML text from :meth:`DashboardOps.get_dashboard` was read at.
 
@@ -478,6 +500,27 @@ class DashboardOps:
         except DashboardYAMLError as exc:
             raise OperationError(str(exc)) from exc
 
+    def _provenance_issues(self, doc: dict) -> list[Issue]:
+        """Warn that turns and node origins *doc* changes are ignored, see :func:`without_provenance`."""
+        if not isinstance(doc, dict):
+            return []
+        current = dashboard_to_dict(self.editor)
+        nodes = doc.get("nodes") if isinstance(doc.get("nodes"), dict) else {}
+        current_nodes = current.get("nodes") or {}
+        changed = "turns" in doc and doc["turns"] != current.get("turns", [])
+        for name, node in nodes.items():
+            if isinstance(node, dict) and "origin" in node:
+                changed |= node["origin"] != current_nodes.get(name, {}).get("origin")
+        if not changed:
+            return []
+        return [
+            Issue(
+                "turns",
+                "changes to turns and node origins are ignored, since FlowDash records them.",
+                "warning",
+            )
+        ]
+
     def validate(self, text: str | dict | None = None, *, standalone: bool = False) -> list[Issue]:
         """Check YAML against the components the user may place and the canvas it is meant for.
 
@@ -492,7 +535,7 @@ class DashboardOps:
             (None, None) if standalone else editor_restricted(editor)
         )
         try:
-            doc = dashboard_to_dict(editor) if text is None else self._parse(text)
+            doc = dashboard_to_dict(editor) if text is None else self._document(text)
         except OperationError as exc:
             path, _, message = str(exc).partition(": ")
             return [Issue(path, message)]
@@ -573,8 +616,11 @@ class DashboardOps:
         finally:
             scratch.dispose()
 
+    def _document(self, text: str | dict) -> dict:
+        return without_provenance(self._parse(text))
+
     def _preview_data(self, text: str) -> dict:
-        doc = self._parse(text)
+        doc = self._document(text)
         canvas = self.editor.export_dashboard()
         # YAML that names none of the canvas's nodes is a new draft, previewed on its own.
         standalone = not set(doc.get("nodes") or {}) & set(node_names(canvas["items"]).values())
@@ -636,8 +682,14 @@ class DashboardOps:
                 "The dashboard has errors:\n" + "\n".join(f"- {issue}" for issue in errors)
             )
 
-    def _check_replace(self, text: str, revision: str | None) -> tuple[dict, str, str | None]:
-        """Check a replace may go ahead and return the document, the revision and the dashboard id."""
+    def _check_replace(
+        self, text: str, revision: str | None
+    ) -> tuple[dict, str, str | None, list[Issue]]:
+        """Check a replace may go ahead.
+
+        Returns the document without turns and origins, the revision, the
+        dashboard id and the warning that changed turns or origins are ignored.
+        """
         self._require_edit()
         revision = revision or read_revision(text)
         if revision is None:
@@ -646,9 +698,10 @@ class DashboardOps:
                 "get_dashboard's output and keep its first line, '# revision: ...'."
             )
         self._check_current(revision, self._dashboard_id())
-        doc = self._parse(text)
+        raw = self._parse(text)
+        doc = without_provenance(raw)
         self._refuse_invalid(doc)
-        return doc, revision, self._dashboard_id()
+        return doc, revision, self._dashboard_id(), self._provenance_issues(raw)
 
     def _dashboard_id(self) -> str | None:
         current = self.editor.dashboard
@@ -665,7 +718,11 @@ class DashboardOps:
         """Replace the editor's dashboard with YAML, as importing a dashboard file does.
 
         Node names that are already on the canvas keep their components'
-        identity. Restricted nodes and their connections must stay as
+        identity. The dashboard's turns and the origins of its nodes are
+        kept as the editor recorded them, and those the YAML gives are
+        ignored: nodes already on the canvas keep their origin and new nodes
+        get the turn of whoever replaces the dashboard, the agent or the
+        person. Restricted nodes and their connections must stay as
         :meth:`get_dashboard` wrote them; a restricted node can only be taken
         off with :meth:`remove_node`. In a running server use
         :meth:`replace_yaml_async`.
@@ -683,7 +740,8 @@ class DashboardOps:
         Returns
         -------
         list of Issue
-            The warnings about the loaded dashboard, e.g. inputs still unconnected.
+            The warnings about the loaded dashboard, e.g. inputs still unconnected
+            or turns the YAML changed to no effect.
 
         Raises
         ------
@@ -691,10 +749,10 @@ class DashboardOps:
             If the YAML has errors, has no revision, or the canvas changed
             since that revision; nothing is changed.
         """
-        doc, _, _ = self._check_replace(text, revision)
+        doc, _, _, ignored = self._check_replace(text, revision)
         title = self._title_issue(doc)
-        self.editor.import_dashboard(doc)
-        return title + self._warnings()
+        self.editor.import_dashboard(doc, keep_turns=True)
+        return title + ignored + self._warnings()
 
     async def replace_yaml_async(
         self, text: str, *, revision: str | None = None, timeout: float = DEFAULT_TIMEOUT
@@ -704,7 +762,7 @@ class DashboardOps:
         *timeout* bounds the imports. The revision and the open dashboard are
         checked again once they are done, so edits made meanwhile are never lost.
         """
-        doc, revision, dashboard_id = self._check_replace(text, revision)
+        doc, revision, dashboard_id, ignored = self._check_replace(text, revision)
         editor = self.editor
         components = {
             node.get("component")
@@ -715,8 +773,8 @@ class DashboardOps:
         self._require_edit()
         self._check_current(revision, dashboard_id)
         title = self._title_issue(doc)
-        editor.import_dashboard(doc)
-        return title + self._warnings()
+        editor.import_dashboard(doc, keep_turns=True)
+        return title + ignored + self._warnings()
 
     def _title_issue(self, doc: dict) -> list[Issue]:
         current = self.editor.dashboard

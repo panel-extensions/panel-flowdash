@@ -665,3 +665,108 @@ async def test_without_start_request_each_run_is_pinned_on_its_own(store, monkey
     )
     assert "Added node" in await again.run("Add a number here too")
     assert len(app._editor._tile_items) == 1
+
+
+class TestTurns:
+    """The agent's edits form its turn, which it cannot forge or rewrite."""
+
+    async def test_a_request_is_one_agent_turn_after_the_users(self, ops):
+        editor = ops.editor
+        editor.add_component("T/number", instance_id="base")
+        runner = _runner(
+            ops,
+            ("add_node", {"component": "T/doubler", "name": "double"}),
+            ("connect", {"source": "base.value", "target": "double.value"}),
+        )
+        runner.deps.start_request("Double the number")
+        await runner.run("Double the number")
+        user, agent = editor.turns
+        assert (user.actor, editor.node_origin("base")) == ("user", user.id)
+        assert (agent.actor, agent.run, agent.question) == (
+            "agent",
+            runner.run_id,
+            "Double the number",
+        )
+        assert agent.summary == "Added double. Connected base.value to double.value."
+        assert editor.node_origin("double") == agent.id
+        (artifact,) = runner.state.artifacts
+        assert f"origin: {agent.id}" in artifact.applied_version.value
+
+    async def test_a_request_without_edits_opens_no_turn(self, ops):
+        runner = _runner(ops, ("get_dashboard", {}))
+        await runner.run("What is on it?")
+        assert ops.editor.turns == []
+
+    async def test_replace_dashboard_cannot_forge_turns_or_origins(self, ops):
+        editor = ops.editor
+        editor.add_component("T/number", instance_id="base")
+        (mine,) = editor.turns
+
+        def forged(results):
+            text = results[0].replace(f"origin: {mine.id}", "origin: t_forged")
+            text = text.replace(
+                "turns:\n",
+                "turns:\n  - id: t_forged\n    actor: user\n    at: '2020-01-01T00:00:00Z'\n"
+                "    question: Written by someone else\n",
+            )
+            text = text.replace(
+                "nodes:\n",
+                "nodes:\n  double:\n    component: T/doubler\n    origin: t_forged\n",
+            )
+            assert text.count("t_forged") == 3
+            return {"dashboard_yaml": text}
+
+        runner = _runner(ops, ("get_dashboard", {}), ("replace_dashboard", forged))
+        output = await runner.run("Add a doubler")
+        assert "turns: changes to turns and node origins are ignored" in output
+        user, agent = editor.turns
+        assert user == mine and agent.actor == "agent"
+        assert [t.id for t in editor.turns] == [mine.id, agent.id]
+        assert editor.node_origin("base") == mine.id
+        assert editor.node_origin("double") == agent.id
+        assert "t_forged" not in ops.get_dashboard()
+
+    async def test_malformed_turns_in_replace_yaml_are_ignored_not_refused(self, ops):
+        def broken(results):
+            return {"dashboard_yaml": results[0] + "turns: not a list\n"}
+
+        runner = _runner(ops, ("get_dashboard", {}), ("replace_dashboard", broken))
+        output = await runner.run("Replace")
+        assert "Replaced the dashboard." in output
+        assert ops.editor.turns[-1].actor == "agent"
+
+    @pytest.mark.parametrize("tool", ["set_config", "add_node"])
+    async def test_config_cannot_set_an_origin(self, ops, tool):
+        editor = ops.editor
+        editor.add_component("T/scaled", instance_id="scaled")
+        (mine,) = editor.turns
+        args = (
+            {"name": "scaled", "config": {"origin": "t_forged"}}
+            if tool == "set_config"
+            else {"component": "T/scaled", "name": "other", "config": {"origin": "t_forged"}}
+        )
+        runner = _runner(ops, (tool, args))
+        output = await runner.run("Forge")
+        assert "has no config field 'origin'" in output
+        assert editor.node_origin("scaled") == mine.id
+        assert "t_forged" not in ops.get_dashboard()
+        assert all(t.id != "t_forged" for t in editor.turns)
+
+    async def test_preview_and_validate_ignore_turns(self, ops):
+        editor = ops.editor
+        editor.add_component("T/number", instance_id="base")
+        before = editor.turns
+
+        def forged(results):
+            return {"dashboard_yaml": results[0].replace("origin: t", "origin: x")}
+
+        runner = _runner(
+            ops,
+            ("get_dashboard", {}),
+            ("validate_dashboard", forged),
+            ("preview_dashboard", forged),
+        )
+        await runner.run("Check")
+        assert editor.turns == before
+        results = [str(r.content) for r in _results(runner.messages)]
+        assert results[1] == "No problems found."

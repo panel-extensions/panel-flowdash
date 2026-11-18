@@ -17,6 +17,7 @@ from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transforms import parse_transform
 
 from .yaml_format import (
+    FORMAT_VERSION,
     DashboardYAMLError,
     dashboard_from_dict,
     is_dashboard_yaml,
@@ -480,7 +481,7 @@ def validate_dashboard(
         doc = parse_yaml(data) if isinstance(data, (str, bytes)) else data
         if not is_dashboard_yaml(doc):
             raise DashboardYAMLError(
-                "document", "must be a mapping that starts with 'flowdash: 1'."
+                "document", f"must be a mapping that starts with 'flowdash: {FORMAT_VERSION}'."
             )
         dashboard_from_dict(doc)
     except DashboardYAMLError as exc:

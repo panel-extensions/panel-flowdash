@@ -108,13 +108,13 @@ class TestParser:
 
 class TestVersions:
     @pytest.mark.parametrize("version", ["1.0", "true", "'1'"])
-    def test_the_version_is_the_integer_1(self, version):
+    def test_the_version_is_an_integer(self, version):
         with pytest.raises(DashboardYAMLError, match="unsupported format version"):
             dashboard_from_yaml(f"flowdash: {version}\n")
 
     def test_a_newer_version_says_so(self):
         with pytest.raises(DashboardYAMLError, match="written by a newer FlowDash"):
-            dashboard_from_yaml("flowdash: 2\n")
+            dashboard_from_yaml("flowdash: 3\n")
 
     def test_extension_keys_are_ignored_everywhere(self):
         data = dashboard_from_yaml(

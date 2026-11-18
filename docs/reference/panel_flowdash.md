@@ -44,6 +44,13 @@
       show_root_heading: true
       members: true
 
+### Turns
+
+::: panel_flowdash.turns
+    options:
+      show_root_heading: true
+      members: true
+
 ### Dashboard YAML
 
 ::: panel_flowdash.agent

@@ -165,7 +165,8 @@ class AgentSession:
 class _SessionRunner(AgentRunner):
     """Publishes the user's own edits before each request, so versions stay truthful.
 
-    Each request is pinned to the dashboard open when the user sent it.
+    Each request is pinned to the dashboard open when the user sent it, and
+    ends the turn of the user's own edits, so those made after it form a new one.
     """
 
     def __init__(self, session: AgentSession, *args, **kwargs):
@@ -173,8 +174,9 @@ class _SessionRunner(AgentRunner):
         self._session = session
 
     async def run(self, prompt=None, **kwargs):
+        self._session.ops.editor.end_turn()
         self._session.publish_user_edits()
-        self.deps.start_request()
+        self.deps.start_request(prompt if isinstance(prompt, str) else None)
         try:
             return await super().run(prompt, **kwargs)
         finally:

@@ -31,6 +31,7 @@ from panel_flowdash.dashboard_store import (
     check_revision,
     decode_settings,
 )
+from panel_flowdash.turns import decode_turns
 
 log = logging.getLogger(__name__)
 
@@ -352,8 +353,9 @@ class JSONFolderDashboardStore(BaseDashboardStore):
         data = path.read_bytes()
         try:
             fields = json.loads(data.decode("utf-8"))
-            # Settings are optional, so bad ones are dropped below instead of the file.
+            # Settings and turns are optional, so bad ones are dropped below instead of the file.
             settings = fields.pop("settings", None) if isinstance(fields, dict) else None
+            turns = fields.pop("turns", None) if isinstance(fields, dict) else None
             model = DashboardModel.from_dict(fields)
         except MALFORMED_ERRORS as exc:
             self._warn_once(path, mtime, "Skipping dashboard file %s: malformed (%r)", exc)
@@ -364,6 +366,10 @@ class JSONFolderDashboardStore(BaseDashboardStore):
             self._warn_once(
                 path, mtime, "Ignoring malformed settings in dashboard file %s (%r)", exc
             )
+        try:
+            model.turns = decode_turns(turns)
+        except MALFORMED_ERRORS as exc:
+            self._warn_once(path, mtime, "Ignoring malformed turns in dashboard file %s (%r)", exc)
         if model.revision is None:
             model.revision = 0
         model.updated_at = datetime.fromtimestamp(mtime / 1e9, UTC)

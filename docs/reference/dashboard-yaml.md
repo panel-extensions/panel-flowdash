@@ -6,32 +6,48 @@ content as the JSON export, keyed by readable node names instead of generated id
 and loading it goes through the same path as importing a downloaded file, so the
 same permission checks apply.
 
-This page specifies version 1 of the format. Every file starts with `flowdash: 1`,
-the integer 1. Every change to the format, including a new optional key, comes with a
+This page specifies version 2 of the format. Every file starts with `flowdash: 2`,
+the integer 2. Every change to the format, including a new optional key, comes with a
 new version number. A release reads the versions it knows and rejects a file with a
 later version, or with keys it does not know, saying that a newer FlowDash may have
-written it.
+written it. This release writes version 2 and reads versions 1 and 2, see
+[Version 1](#version-1).
 
 ```yaml
-flowdash: 1
+flowdash: 2
 title: State Deep Dive
 settings:
   refresh_period: 0
   capacity_unit: MW
+turns:
+  - id: t3fa2c1d0
+    actor: user
+    at: '2026-11-17T20:10:12Z'
+    summary: Added turbines. Added state. Added filter.
+  - id: t81c0b2e4
+    actor: agent
+    at: '2026-11-17T20:14:03Z'
+    run: run-5d1e7a
+    question: How many modern turbines are there?
+    summary: Added kpi_modern. Connected filter.filtered to kpi_modern.turbines.
 nodes:
   turbines:
     component: Sources/turbines
+    origin: t3fa2c1d0
     position: [0, 280]
   state:
     component: Controls/state_picker
+    origin: t3fa2c1d0
     position: [0, 0]
     config:
       initial_state: TX
   filter:
     component: Transforms/filter_turbines
+    origin: t3fa2c1d0
     position: [520, 120]
   kpi_modern:
     component: Views/kpi
+    origin: t81c0b2e4
     position: [1040, 0]
     config:
       metric: turbines
@@ -61,9 +77,10 @@ layout:
 
 | Key | Required | Meaning |
 | --- | --- | --- |
-| `flowdash` | yes | The format version, `1`. |
+| `flowdash` | yes | The format version, `2`. |
 | `title` | no | The dashboard's title. Loading a file into an existing dashboard keeps that dashboard's title. |
 | `settings` | no | Dashboard-wide settings, keyed by the parameter names of the app's `DashboardSettings` class, e.g. `description`, `refresh_period`, `tile_cards`. |
+| `turns` | no | Who changed the dashboard and why, a list, oldest first. |
 | `nodes` | no | The placed components, a mapping from node name to node. |
 | `edges` | no | The connections between ports, a list. |
 | `layout` | no | How the tiles are arranged on the dashboard. |
@@ -99,7 +116,42 @@ Quote a value to make it a string whatever it looks like. The writer quotes ever
 string another YAML reader could take for a different type.
 
 A file in this format may also be written as JSON with the same keys; it is read
-under the same rules. Flow-style YAML (`{flowdash: 1, ...}`) is read too.
+under the same rules. Flow-style YAML (`{flowdash: 2, ...}`) is read too.
+
+## Turns
+
+A turn is one request to the assistant, or one batch of a person's edits made between
+requests. The editor writes them as edits happen: the first edit of a request opens
+the agent's turn for it, and edits the person makes between requests form a turn of
+their own. An edit belongs to the agent when an agent's tool makes it, so an edit the
+person makes while the agent works becomes a turn between two edits of the agent's.
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `id` | yes | Unique within the file: 1 to 64 letters, digits, `_` and `-`, starting with a letter or digit. The editor makes `t` followed by 8 hex digits and never reuses an id. |
+| `actor` | yes, unless pending | `agent` or `user`. |
+| `at` | yes, unless pending | When the turn's first edit was made, as an ISO 8601 date and time, e.g. `'2026-11-17T20:14:03Z'` (quoted, so other YAML readers keep it a string). |
+| `run` | no | The id of the assistant's run that made the turn. |
+| `question` | no; yes when pending | What the person asked the assistant. |
+| `summary` | no | What the turn changed, a few words per change. It names nodes and connections but never config values. |
+| `status` | no | `pending` for a planned turn that has not run; left out for every other turn. |
+
+Each node records the turn that created it as its `origin`. Which later turns changed
+it is not stored in the file. A dashboard keeps its last 200 turns, and older turns
+are only dropped when no node names them as its origin.
+
+Turns record the question by default, since it says why a node exists. Exports can
+leave the questions out: `dashboard_to_yaml(..., questions=False)`,
+`FlowDash.export_dashboard(questions=False)` and `export_model(..., questions=False)`.
+
+Only the editor writes turns and origins. YAML handed to `DashboardOps.replace_yaml`,
+`validate` and `preview`, which is what the assistant writes, has its `turns` and
+node `origin` keys dropped before it is read: the dashboard keeps its turns, nodes
+already on it keep their origin, and new nodes get the turn of whoever made the
+change. `replace_yaml` warns when the YAML tried to change them. Importing a file
+(`FlowDash.import_dashboard`, dropping a file on the canvas or importing it as a new
+dashboard) takes the file's turns and origins as they are, and the import itself is
+a turn of the person who made it, which becomes the origin of nodes the file gives none.
 
 ## Nodes
 
@@ -124,6 +176,7 @@ and the other gets a short hash of its id appended.
 | Key | Required | Meaning |
 | --- | --- | --- |
 | `component` | yes | The id of a registered component, e.g. `Views/kpi`. A former id the component declares in `aliases` also works. |
+| `origin` | no | The `id` of the turn that created the node. It must name a turn of the file. |
 | `config` | no | Design-time configuration, keyed by the component's config fields. Omitted fields take the component's defaults. |
 | `position` | no | `[x, y]` position on the Dataflow canvas. Nodes without one are laid out in columns following the dataflow. |
 
@@ -168,7 +221,13 @@ tile while keeping its component in the dataflow). Other keys are rejected, exce
 their component's default size, after the listed tiles. Control components have no
 tile.
 
-## Not in version 1
+## Version 1
+
+Version 1 files start with `flowdash: 1` and may not hold `turns` or a node `origin`.
+They load as a dashboard without turns whose nodes have no origin, and exporting it
+again writes version 2.
+
+## Not in version 2
 
 A file describes what a dashboard is built from, not the state it is in:
 
