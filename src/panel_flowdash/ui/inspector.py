@@ -20,6 +20,7 @@ import panel_material_ui as pmui
 import param
 from panel.viewable import Viewer
 
+from panel_flowdash.config_check import CheckResult
 from panel_flowdash.transforms import parse_transform, summarize_transform
 from panel_flowdash.ui.config_draft import ConfigDraft
 from panel_flowdash.ui.node_card import (
@@ -121,7 +122,8 @@ class Inspector(Viewer):
         self._refresh_inputs: t.Callable[[], None] = lambda: None
         # The latest config check started per node, see ConfigDraft.
         self._check_runs: dict[str, int] = {}
-        self._check_results: dict[str, tuple[dict, list[str]]] = {}
+        self._check_results: dict[str, tuple[dict, tuple, CheckResult]] = {}
+        self._draft: ConfigDraft | None = None
 
         self.collapse_button = pmui.IconButton(
             icon="keyboard_double_arrow_right",
@@ -189,8 +191,11 @@ class Inspector(Viewer):
             return
         if self._shown is None or self._shown != self._selected() or not self._exists():
             self.refresh(force=True)
-        elif self._inputs_column is not None:
-            self._refresh_inputs()
+        else:
+            if self._inputs_column is not None:
+                self._refresh_inputs()
+            if self._draft is not None:
+                self._draft.rewired()
 
     def _exists(self) -> bool:
         kind, item_id = self._shown or ("", "")
@@ -225,6 +230,7 @@ class Inspector(Viewer):
         for release in self._releases:
             release()
         self._releases = []
+        self._draft = None
         self._status_chip = None
         self._data_column = None
         self._inputs_column = None
@@ -405,6 +411,7 @@ class Inspector(Viewer):
         draft = None
         if spec.check_config is not None:
             draft = ConfigDraft(editor, instance_id, self._check_runs, self._check_results)
+            self._draft = draft
             # A node placed from the palette or gallery has not been checked yet.
             draft.show_current()
         if spec.config_editor is not None:

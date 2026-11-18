@@ -140,6 +140,32 @@ exception are logged and count as a failed check, as does a check that takes
 longer than 10 seconds. A `TimeoutError` the check raises itself is a failed
 check like any other exception, not the 10 second limit.
 
+A check that could not verify the config, for example because a probe query
+timed out on a slow database, returns a `CheckWarning` in place of a problem,
+alone or in its list:
+
+```python
+from panel_flowdash import CheckWarning
+
+
+def check(config, inputs):
+    try:
+        probe(config["query"], timeout=3)
+    except ProbeTimeout:
+        return CheckWarning("Could not verify the query: the probe timed out.")
+    except QueryError as exc:
+        return str(exc)
+```
+
+A warning does not refuse the config: it is applied, and the warning shown
+with it, as a warning alert in the inspector, in the assistant's tool result
+("Updated the config of 'q', but: ...") and as a `warning` issue at
+`nodes.<name>.config` from `validate` and `replace_yaml`. `DashboardOps`
+leaves what the latest `add_node`, `set_config`, `connect` or `disconnect`
+found in `last_check`, a list of the problems with the warnings in its
+`warnings`. `CheckWarning` is a `str`, so a list mixing problems and warnings
+is still a list of strings.
+
 The check may be a plain function or an `async` function. A plain one runs in
 a worker thread, so it may block, for example on a database, but it must not
 change the editor: `current_dashboard()` returns the editor while the check
@@ -150,9 +176,12 @@ Plain checks run on a pool of 8 threads of their own. Set
 change that. When every thread is busy a check waits for a free one, for at
 most its timeout, and its 10 seconds only start once it runs; a check that
 finds no free thread in time counts as failed. The synchronous methods
-(`DashboardOps.add_node`, `set_config`, `validate`, `preview` and
-`replace_yaml`) wait for each check in turn, so called on the event loop they
-block it for up to the timeout per check; use the `_async` variants there.
+(`DashboardOps.add_node`, `set_config`, `connect`, `disconnect`, `validate`,
+`preview` and `replace_yaml`) wait for each check in turn, so called on the
+event loop they block it for up to the timeout per check. Code running on the
+event loop, such as your own agent tools, should call the `_async` variants
+(`add_node_async`, `set_config_async`, `connect_async`, `disconnect_async`,
+`preview_async`, `replace_yaml_async`) instead.
 
 Where a check runs:
 
@@ -169,6 +198,24 @@ Where a check runs:
   again if the node's config changed meanwhile, and change nothing if
   another dashboard was opened meanwhile. The assistant's `run_command`
   refuses to place a component whose check refuses its defaults.
+- `DashboardOps.connect` and `disconnect`, their `_async` variants and the
+  assistant's tools check the target node again with its new inputs and
+  return what the check found. The connection is made all the same; the
+  assistant's tool result lists the problems ("Connected data.source to
+  q.source. q's config fails its check: ..."), and `preview` and `validate`
+  report the node as above until its config is fixed.
+- In the canvas, connecting or disconnecting an input of the node the
+  inspector shows checks it again and updates its alert. A node that is not
+  selected is checked when it is next selected. A held back draft that now
+  passes is applied, as the person's edit even when the assistant made the
+  connection.
+- Checks after a rewire, and the inspector's draft checks, are coalesced per
+  node: while one runs, later requests share a single check queued after it,
+  which reads the node's latest config and inputs once it starts, and is
+  skipped when those are what the running check read. A node then has at
+  most one check running and one queued, counting checks of a draft with
+  pending edits apart. A sync check that times out still holds its thread
+  until it returns, so slow checks can hold more threads than that.
 - `DashboardOps.replace_yaml` loads the dashboard and returns the problems as
   errors at `nodes.<name>.config`, `preview` reports such a node as
   `invalid` while still running it, and `validate` lists the problems as
@@ -177,9 +224,10 @@ Where a check runs:
   `replace_yaml_async`; the restore goes ahead, and a notification lists the
   nodes whose checks fail.
 
-A check runs when the config changes, not when the inputs do: rewiring a node
-or a new upstream value does not run it again. Only `preview` and `validate`
-check against the inputs as they are at that moment.
+A check does not run when a new value arrives over an existing connection,
+when an upstream node is removed or when an edge's transform changes (the
+inspector does check the selected node again on the latter). Only `preview`
+and `validate` check against the inputs as they are at that moment.
 
 ---
 

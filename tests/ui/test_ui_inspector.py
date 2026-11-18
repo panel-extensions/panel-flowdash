@@ -1,10 +1,11 @@
 """UI tests for the compact node cards, the inspector and the status bar of the wiring canvas."""
 
 import pytest
-from panel.tests.util import serve_component, wait_until
+from panel.tests.util import wait_until
 
 from panel_flowdash.editor import FlowDash
 from tests.test_ui_inspector import ROWS, TABLE, TABLE_COMPONENTS
+from tests.ui.util import center, serve_component, stable_box
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect
@@ -185,3 +186,35 @@ def test_a_config_its_check_refuses_is_held_back_with_an_alert(page):
     wait_until(lambda: editor._component_instances[query].sql == "SELECT 2", timeout=8000)
     expect(alert).to_have_count(0)
     assert editor._tile_items[0]["config"] == {"sql": "SELECT 2"}
+
+
+def test_connecting_an_input_shows_the_alert_its_check_raises(page):
+    from tests.test_config_check import COMPONENTS, LIMIT, QUERY
+
+    editor = FlowDash(COMPONENTS, notifications=False, include_builtin_components=False)
+    query = editor.add_component(QUERY, position=(320, 0))
+    limit = editor.add_component(LIMIT, position=(0, 0))
+    serve_component(page, editor)
+
+    _node(page, query).click()
+    wait_until(lambda: editor._inspector._shown == ("node", query), timeout=8000)
+    expect(page.get_by_role("textbox", name="Sql")).to_have_value("SELECT 1")
+    alert = page.locator(".fd-config-check-alert")
+    expect(alert).to_have_count(0)
+
+    output = _node(page, limit).locator(".react-flow__handle-right[data-handleid='limit']")
+    input_handle = _node(page, query).locator(".react-flow__handle-left[data-handleid='limit']")
+    x, y = center(stable_box(output, page))
+    page.mouse.move(x, y)
+    page.mouse.down()
+    page.mouse.move(x + 25, y)
+    page.mouse.move(*center(input_handle.bounding_box()))
+    page.mouse.up()
+    wait_until(lambda: len(editor.graph.edges) == 1, timeout=8000)
+
+    expect(alert).to_contain_text("rows must be at most 5")
+    assert editor._inspector._shown == ("node", query)
+    assert editor.graph.get_config_state(query).rows == 10
+
+    editor.disconnect(limit, "limit", query, "limit")
+    expect(alert).to_have_count(0)

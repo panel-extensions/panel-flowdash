@@ -5,7 +5,9 @@ called as ``check(config, inputs)``, sync or async, where ``config`` is the
 node's whole effective config with the proposed change applied and ``inputs``
 holds the node's live input values that are set and not failed. It returns
 ``None``, a string or an iterable of strings, each non-empty string a problem;
-it may also raise ``ValueError`` with the problem as its message. Any other
+it may also raise ``ValueError`` with the problem as its message. A
+:class:`CheckWarning` in place of a string, alone or in the list, is a warning
+instead: the change is applied, and the warning shown with it. Any other
 result or exception is logged and counts as a failed check.
 
 A sync check runs in a worker thread of this module's own pool, so a check
@@ -22,6 +24,7 @@ import inspect
 import logging
 import threading
 import typing as t
+import weakref
 from collections.abc import Callable, Iterable, Mapping
 
 from panel_flowdash.util import is_failure
@@ -114,6 +117,37 @@ def _executor() -> concurrent.futures.ThreadPoolExecutor:
     return _POOL
 
 
+class CheckWarning(str):
+    """A message a config check returns that does not refuse the config.
+
+    Return it in place of a problem string, alone or in the list of problems,
+    for something the check could not verify, e.g. a query whose probe timed
+    out. The config is applied all the same, and the warning shown with it.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        """Show it as a warning, not a plain string."""
+        return f"CheckWarning({str.__repr__(self)})"
+
+
+class CheckResult(list):
+    """The problems a config check found, a list of strings, empty when it passes.
+
+    Its :attr:`warnings` are the :class:`CheckWarning` messages the check
+    returned, which do not refuse the config.
+    """
+
+    def __init__(self, problems: Iterable[str] = (), warnings: Iterable[str] = ()):
+        super().__init__(str(p) for p in problems)
+        self.warnings: list[str] = [str(w) for w in warnings]
+
+    def __repr__(self) -> str:
+        """Show the warnings too, which list equality ignores."""
+        return f"CheckResult({list(self)!r}, warnings={self.warnings!r})"
+
+
 class _TimedOut(Exception):
     """The check did not finish within the time allowed."""
 
@@ -126,21 +160,29 @@ class _BadResult(TypeError):
     """The check returned something other than None, a string or strings."""
 
 
-def _problems(result: t.Any) -> list[str]:
+def _problems(result: t.Any) -> CheckResult:
     if result is None:
-        return []
+        return CheckResult()
     if isinstance(result, str):
-        return [result] if result else []
-    if not isinstance(result, Iterable) or isinstance(result, (Mapping, bytes)):
+        items = [result]
+    elif not isinstance(result, Iterable) or isinstance(result, (Mapping, bytes)):
         raise _BadResult(type(result).__name__)
-    items = list(result)
+    else:
+        items = list(result)
     if not all(isinstance(item, str) for item in items):
         kinds = sorted({type(item).__name__ for item in items if not isinstance(item, str)})
         raise _BadResult(f"{type(result).__name__} holding {', '.join(kinds)}")
-    return [item for item in items if item]
+    return CheckResult(
+        [item for item in items if item and not isinstance(item, CheckWarning)],
+        [item for item in items if item and isinstance(item, CheckWarning)],
+    )
 
 
-def _failed(spec: ComponentSpec, exc: BaseException) -> list[str]:
+def _failed(spec: ComponentSpec, exc: BaseException) -> CheckResult:
+    return CheckResult(_failure(spec, exc))
+
+
+def _failure(spec: ComponentSpec, exc: BaseException) -> list[str]:
     if isinstance(exc, _NoWorker):
         return [
             f"The config check of '{spec.title}' could not start within the time allowed, "
@@ -185,7 +227,7 @@ async def run_check(
     *,
     editor: FlowDash | None = None,
     timeout: float = CHECK_TIMEOUT,
-) -> list[str]:
+) -> CheckResult:
     """Run the check of *spec* and return its problems, an empty list when it passes.
 
     An async check runs on the event loop, a sync one in a worker thread.
@@ -195,7 +237,7 @@ async def run_check(
     """
     check = spec.check_config
     if check is None:
-        return []
+        return CheckResult()
     instantiating = _instantiating()
     token = instantiating.set(editor)
     try:
@@ -235,7 +277,7 @@ def run_check_sync(
     *,
     editor: FlowDash | None = None,
     timeout: float = CHECK_TIMEOUT,
-) -> list[str]:
+) -> CheckResult:
     """Like :func:`run_check`, for callers that cannot await.
 
     The check runs in a worker thread, an async one on its own event loop
@@ -245,7 +287,7 @@ def run_check_sync(
     """
     check = spec.check_config
     if check is None:
-        return []
+        return CheckResult()
     instantiating = _instantiating()
     token = instantiating.set(editor)
     try:
@@ -309,7 +351,7 @@ async def check_node(
     *,
     timeout: float = CHECK_TIMEOUT,
     attempts: int = 3,
-) -> list[str]:
+) -> CheckResult:
     """Check a placed node's config with *patch* applied, against its live inputs.
 
     The node's config may change while the check runs, e.g. by another edit
@@ -320,13 +362,15 @@ async def check_node(
     for _ in range(attempts):
         spec, config, inputs = _check_args(editor, instance_id, patch)
         if spec is None:
-            return []
+            return CheckResult()
         base = node_config(editor, instance_id, spec)
         problems = await run_check(spec, config, inputs, editor=editor, timeout=timeout)
         current, _, _ = _check_args(editor, instance_id)
         if current is None or same_config(base, node_config(editor, instance_id, current)):
             return problems
-    return [f"The config of '{spec.title}' kept changing while it was checked; try again."]
+    return CheckResult(
+        [f"The config of '{spec.title}' kept changing while it was checked; try again."]
+    )
 
 
 def check_node_sync(
@@ -335,20 +379,132 @@ def check_node_sync(
     patch: t.Mapping[str, t.Any] | None = None,
     *,
     timeout: float = CHECK_TIMEOUT,
-) -> list[str]:
+) -> CheckResult:
     """Like :func:`check_node`, for callers that cannot await."""
     spec, config, inputs = _check_args(editor, instance_id, patch)
     if spec is None:
-        return []
+        return CheckResult()
     return run_check_sync(spec, config, inputs, editor=editor, timeout=timeout)
+
+
+def node_wiring(editor: FlowDash, instance_id: str) -> tuple[tuple[t.Any, ...], ...]:
+    """Return the edges into a node, with their transforms, in a comparable form."""
+    return tuple(
+        sorted(
+            (e["target_port"], e["source"], e["source_port"], repr(e.get("transform")))
+            for e in editor._dataflow_graph.edges
+            if e["target"] == instance_id
+        )
+    )
+
+
+class _Slot:
+    """The check of one node running now, and the one queued to run after it."""
+
+    __slots__ = ("loop", "patch", "queued", "running", "task")
+
+    def __init__(self, loop: asyncio.AbstractEventLoop):
+        self.loop = loop
+        self.running: asyncio.Future | None = None
+        self.queued: asyncio.Future | None = None
+        self.patch: dict[str, t.Any] = {}
+        self.task: asyncio.Task | None = None
+
+
+_SLOTS: weakref.WeakKeyDictionary[t.Any, dict[t.Hashable, _Slot]] = weakref.WeakKeyDictionary()
+
+
+def _snapshot(editor: FlowDash, instance_id: str, patch: dict[str, t.Any]) -> tuple | None:
+    spec, config, _ = _check_args(editor, instance_id, patch)
+    if spec is None:
+        return None
+    return config, node_wiring(editor, instance_id)
+
+
+def _unchanged(before: tuple | None, after: tuple | None) -> bool:
+    if before is None or after is None:
+        return False
+    return same_config(before[0], after[0]) and before[1] == after[1]
+
+
+async def _drive(
+    editor, instance_id: str, slots: dict, key: t.Hashable, slot: _Slot, patch: dict, timeout
+):
+    future = slot.running
+    result: CheckResult | None = None
+    read: tuple | None = None
+    try:
+        while True:
+            state = _snapshot(editor, instance_id, patch)
+            if result is None or not _unchanged(read, state):
+                read = state
+                try:
+                    result = await check_node(editor, instance_id, patch, timeout=timeout)
+                except Exception as exc:
+                    logger.error("The config check of %s failed", instance_id, exc_info=exc)
+                    result = CheckResult([f"The config check failed ({type(exc).__name__})."])
+            if not future.done():
+                future.set_result(result)
+            if slot.queued is None:
+                return
+            future, patch = slot.queued, slot.patch
+            slot.queued, slot.running = None, future
+    finally:
+        for pending in (slot.running, slot.queued):
+            if pending is not None and not pending.done():
+                pending.cancel()
+        slot.running = slot.queued = None
+        if slots.get(key) is slot:
+            del slots[key]
+
+
+async def recheck_node(
+    editor: FlowDash,
+    instance_id: str,
+    patch: t.Mapping[str, t.Any] | None = None,
+    *,
+    timeout: float = CHECK_TIMEOUT,
+) -> CheckResult:
+    """Like :func:`check_node`, running at most one check of the node at a time.
+
+    Meant for checks that follow a change, e.g. of the node's wiring, where
+    only the latest state matters. While a check of the node runs, further
+    requests wait for a single check queued after it, which uses the *patch*
+    of the latest request and reads the node's config and inputs once it
+    starts; all of them get its result. When the config and wiring it reads
+    are those the running check read, the running check's result is reused
+    instead. Checks with and without a *patch* are queued apart, each kind
+    with at most one check running and one queued per node. A sync check
+    that timed out holds its pool thread until it returns all the same.
+    """
+    loop = asyncio.get_running_loop()
+    slots = _SLOTS.setdefault(editor, {})
+    key = (instance_id, bool(patch))
+    slot = slots.get(key)
+    if slot is None or slot.loop is not loop:
+        slot = slots[key] = _Slot(loop)
+    patch = dict(patch or {})
+    if slot.running is None:
+        slot.running = future = loop.create_future()
+        slot.task = loop.create_task(_drive(editor, instance_id, slots, key, slot, patch, timeout))
+    else:
+        slot.patch = patch
+        if slot.queued is None:
+            slot.queued = loop.create_future()
+        future = slot.queued
+    return await asyncio.shield(future)
 
 
 __all__ = [
     "CHECK_TIMEOUT",
+    "CheckResult",
+    "CheckWarning",
     "check_node",
     "check_node_sync",
     "effective_config",
     "node_inputs",
+    "node_wiring",
+    "recheck_node",
     "run_check",
     "run_check_sync",
 ]

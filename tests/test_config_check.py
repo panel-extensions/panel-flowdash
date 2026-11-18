@@ -14,12 +14,14 @@ import pytest
 import yaml
 from panel.viewable import Viewer
 
-from panel_flowdash import FlowDash, config_check, current_dashboard, register
+from panel_flowdash import CheckWarning, FlowDash, config_check, current_dashboard, register
 from panel_flowdash.agent import DashboardOps, OperationError
 from panel_flowdash.config_check import (
+    CheckResult,
     check_node,
     effective_config,
     node_inputs,
+    recheck_node,
     run_check,
     run_check_sync,
 )
@@ -39,6 +41,10 @@ def _problems_of(config, inputs):
         raise RuntimeError("bug in the check")
     if "MANY" in sql:
         return ["first problem", "second problem"]
+    if "WARN_AND_FAIL" in sql:
+        return [CheckWarning("The probe timed out."), "", "rows must be positive"]
+    if "WARN" in sql:
+        return CheckWarning("Could not verify the query: the probe timed out.")
     limit = inputs.get("limit")
     if limit is not None and config["rows"] > limit:
         return f"rows must be at most {limit}"
@@ -137,7 +143,31 @@ class DropQuery(Query):
     sql = param.String(default="DROP t")
 
 
+def check_sum(config, inputs):
+    CALLS.append((dict(config), dict(inputs), None))
+    time.sleep(0.3)
+    if (total := sum(inputs.values())) > config["cap"]:
+        return f"the sum {total} is over {config['cap']}"
+    return None
+
+
+class Sum(Viewer):
+    a = param.Integer(default=None, allow_None=True, metadata={"flowdash": {"required": False}})
+    b = param.Integer(default=None, allow_None=True, metadata={"flowdash": {"required": False}})
+    c = param.Integer(default=None, allow_None=True, metadata={"flowdash": {"required": False}})
+    d = param.Integer(default=None, allow_None=True, metadata={"flowdash": {"required": False}})
+    e = param.Integer(default=None, allow_None=True, metadata={"flowdash": {"required": False}})
+    f = param.Integer(default=None, allow_None=True, metadata={"flowdash": {"required": False}})
+    cap = param.Integer(default=5)
+
+    def __panel__(self):
+        return "sum"
+
+
+register(page=False, component=True, title="Sum", config=["cap"], check_config=check_sum)(Sum)
+
 LIMIT, QUERY, ASYNC, PLAIN, DROP = "T/limit", "T/query", "T/async_query", "T/plain", "T/drop"
+SUM = "T/sum"
 COMPONENTS = {LIMIT: Limit, QUERY: Query, ASYNC: AsyncQuery, PLAIN: Plain, DROP: DropQuery}
 
 
@@ -945,3 +975,395 @@ class TestRestore:
         monkeypatch.setattr(type(ops), "replace_yaml_async", changed_meanwhile)
         with pytest.raises(ValueError, match="changed while this version was being restored"):
             await session.apply_version(artifact, artifact.versions[0])
+
+
+UNVERIFIED = "Could not verify the query: the probe timed out."
+
+
+def _alerts(editor, css_class="fd-config-check-alert"):
+    return [
+        a
+        for a in pn.Column(*editor._inspector._body).select()
+        if css_class in getattr(a, "css_classes", [])
+    ]
+
+
+def _wired(ops, component=QUERY, rows=10):
+    ops.add_node(component, {"rows": rows}, name="q")
+    ops.add_node(LIMIT, name="lim")
+    CALLS.clear()
+
+
+class TestRecheckOnConnect:
+    @pytest.mark.parametrize("component", [QUERY, ASYNC])
+    async def test_connect_checks_the_target_with_its_new_input(self, ops, component):
+        _wired(ops, component)
+        result = ops.connect("lim.limit", "q.limit")
+        assert result == ["rows must be at most 5"]
+        assert ops.last_check is result
+        assert [c[1] for c in CALLS] == [{"limit": 5}]
+        assert len(ops.editor.graph.edges) == 1
+        assert ops.preview()["nodes"]["q"]["status"] == "invalid"
+        assert [(i.path, i.severity) for i in ops.validate()] == [("nodes.q.config", "error")]
+
+    @pytest.mark.parametrize("component", [QUERY, ASYNC])
+    async def test_connect_async_checks_the_target_off_the_loop(self, ops, component):
+        _wired(ops, component)
+        assert await ops.connect_async("lim.limit", "q.limit") == ["rows must be at most 5"]
+        assert [c[1] for c in CALLS] == [{"limit": 5}]
+        assert (await ops.preview_async())["nodes"]["q"]["status"] == "invalid"
+
+    @pytest.mark.parametrize("component", [QUERY, ASYNC])
+    async def test_disconnect_checks_the_target_without_the_input(self, ops, component):
+        _wired(ops, component)
+        ops.connect("lim.limit", "q.limit")
+        assert ops.disconnect("lim.limit", "q.limit") == []
+        assert CALLS[-1][1] == {}
+        ops.connect("lim.limit", "q.limit")
+        assert await ops.disconnect_async("lim.limit", "q.limit") == []
+        assert ops.last_check == []
+        assert CALLS[-1][1] == {}
+        assert ops.validate() == []
+
+    async def test_a_passing_connection(self, ops):
+        _wired(ops, rows=3)
+        result = await ops.connect_async("lim.limit", "q.limit")
+        assert result == [] and result.warnings == []
+        assert [c[1] for c in CALLS] == [{"limit": 5}]
+
+    async def test_a_refused_connection_is_not_checked(self, ops):
+        _wired(ops)
+        with pytest.raises(OperationError):
+            ops.connect("lim.limit", "q.nope")
+        with pytest.raises(OperationError):
+            await ops.connect_async("lim.limit", "q.nope")
+        assert CALLS == []
+
+
+class TestRecheckTools:
+    @pytest.fixture(autouse=True)
+    def _agent(self):
+        pytest.importorskip("pydantic_ai")
+
+    async def test_connect_tells_the_model_the_target_fails_its_check(self, editor):
+        from .test_agent_tools import _runner
+
+        ops = DashboardOps(editor)
+        runner = _runner(
+            ops,
+            ("add_node", {"component": ASYNC, "name": "q", "config": {"rows": 10}}),
+            ("add_node", {"component": LIMIT, "name": "lim"}),
+            ("connect", {"source": "lim.limit", "target": "q.limit"}),
+        )
+        output = await runner.run("Wire the limit")
+        assert output == (
+            "Done: Connected lim.limit to q.limit. q's config fails its check: "
+            "rows must be at most 5"
+        )
+        assert len(editor.graph.edges) == 1
+        assert ops.preview()["nodes"]["q"]["status"] == "invalid"
+
+    async def test_disconnect_reports_the_check_without_the_input(self, editor):
+        from .test_agent_tools import _runner
+
+        ops = DashboardOps(editor)
+        _wired(ops)
+        ops.connect("lim.limit", "q.limit")
+        runner = _runner(ops, ("disconnect", {"source": "lim.limit", "target": "q.limit"}))
+        assert await runner.run("Unwire") == "Done: Disconnected lim.limit from q.limit."
+        assert CALLS[-1][1] == {}
+
+    async def test_the_model_can_fix_the_config_after_connecting(self, editor):
+        from .test_agent_tools import _runner
+
+        ops = DashboardOps(editor)
+        _wired(ops)
+        runner = _runner(
+            ops,
+            ("connect", {"source": "lim.limit", "target": "q.limit"}),
+            ("set_config", {"name": "q", "config": {"rows": 5}}),
+        )
+        assert await runner.run("Wire it") == "Done: Updated the config of 'q'."
+        assert ops.validate() == []
+
+
+class TestWarnings:
+    @pytest.mark.parametrize("component", [QUERY, ASYNC])
+    async def test_a_warning_is_not_a_problem(self, editor, component):
+        spec = _spec(editor, component)
+        config = effective_config(spec, {"sql": "WARN"})
+        for result in (await run_check(spec, config, {}), run_check_sync(spec, config, {})):
+            assert isinstance(result, CheckResult)
+            assert result == [] and result.warnings == [UNVERIFIED]
+        mixed = await run_check(spec, effective_config(spec, {"sql": "WARN_AND_FAIL"}), {})
+        assert mixed == ["rows must be positive"]
+        assert mixed.warnings == ["The probe timed out."]
+
+    async def test_check_warning_is_a_string(self):
+        warning = CheckWarning("slow")
+        assert warning == "slow" and isinstance(warning, str)
+        assert repr(warning) == "CheckWarning('slow')"
+
+    @pytest.mark.parametrize("component", [QUERY, ASYNC])
+    async def test_ops_apply_a_config_with_warnings(self, ops, component):
+        assert ops.add_node(component, {"sql": "WARN"}, name="q") == "q"
+        assert ops.last_check.warnings == [UNVERIFIED]
+        ops.set_config("q", {"rows": 3})
+        assert ops.last_check.warnings == [UNVERIFIED]
+        await ops.add_node_async(component, {"sql": "SELECT 1"}, name="r")
+        assert ops.last_check == [] and ops.last_check.warnings == []
+        await ops.set_config_async("r", {"sql": "WARN 2"})
+        assert ops.node_config("r") == {"sql": "WARN 2"}
+        assert ops.last_check.warnings == [UNVERIFIED]
+        with pytest.raises(OperationError, match="rows must be positive"):
+            ops.set_config("r", {"sql": "WARN_AND_FAIL"})
+
+    async def test_validate_and_replace_yaml_report_warnings(self, ops):
+        ops.add_node(QUERY, {"sql": "WARN"}, name="q")
+        issues = ops.validate()
+        assert [(i.path, i.message, i.severity) for i in issues] == [
+            ("nodes.q.config", UNVERIFIED, "warning")
+        ]
+        text = ops.get_dashboard()
+        issues = ops.replace_yaml(text)
+        assert ("nodes.q.config", UNVERIFIED, "warning") in [
+            (i.path, i.message, i.severity) for i in issues
+        ]
+        issues = await ops.replace_yaml_async(ops.get_dashboard())
+        assert next(i for i in issues if i.path == "nodes.q.config").severity == "warning"
+        assert ops.preview()["nodes"]["q"]["status"] == "ok"
+
+    async def test_connect_reports_warnings(self, ops):
+        ops.add_node(QUERY, {"sql": "WARN"}, name="q")
+        ops.add_node(LIMIT, name="lim")
+        result = await ops.connect_async("lim.limit", "q.limit")
+        assert result == [] and result.warnings == [UNVERIFIED]
+
+    async def test_the_agent_tools_report_warnings(self, editor):
+        pytest.importorskip("pydantic_ai")
+        from .test_agent_tools import _runner
+
+        ops = DashboardOps(editor)
+        for call, expected in [
+            (
+                ("add_node", {"component": QUERY, "name": "q", "config": {"sql": "WARN"}}),
+                f"Done: Added node 'q', but: {UNVERIFIED}",
+            ),
+            (
+                ("set_config", {"name": "q", "config": {"rows": 3}}),
+                f"Done: Updated the config of 'q', but: {UNVERIFIED}",
+            ),
+            (("add_node", {"component": LIMIT, "name": "lim"}), "Done: Added node 'lim'."),
+            (
+                ("connect", {"source": "lim.limit", "target": "q.limit"}),
+                f"Done: Connected lim.limit to q.limit, but: {UNVERIFIED}",
+            ),
+            (
+                ("set_config", {"name": "q", "config": {"rows": 10}}),
+                f"Done: Updated the config of 'q', but: {UNVERIFIED}",
+            ),
+        ]:
+            assert await _runner(ops, call).run("Go") == expected
+        assert ops.node_config("q") == {"sql": "WARN", "rows": 10}
+
+    async def test_a_connection_with_problems_and_warnings(self, editor):
+        pytest.importorskip("pydantic_ai")
+        from .test_agent_tools import _runner
+
+        ops = DashboardOps(editor)
+        _wired(ops)
+        editor._apply_config_patch(ops._instance("q"), {"sql": "WARN_AND_FAIL"})
+        output = await _runner(ops, ("connect", {"source": "lim.limit", "target": "q.limit"})).run(
+            "Go"
+        )
+        assert output == (
+            "Done: Connected lim.limit to q.limit. q's config fails its check: "
+            "rows must be positive. It also warns: The probe timed out."
+        )
+
+    async def test_replace_dashboard_and_validate_tools_list_warnings(self, editor):
+        pytest.importorskip("pydantic_ai")
+        from .test_agent_tools import _runner
+
+        ops = DashboardOps(editor)
+        ops.add_node(QUERY, {"sql": "WARN"}, name="q")
+        text = ops.get_dashboard()
+        output = await _runner(ops, ("replace_dashboard", {"dashboard_yaml": text})).run("Go")
+        assert f"Warnings:\n- nodes.q.config: {UNVERIFIED}" in output
+        assert "config checks of these nodes failed" not in output
+        output = await _runner(ops, ("validate_dashboard", {})).run("Go")
+        assert output == f"Done: warning: nodes.q.config: {UNVERIFIED}"
+
+    async def test_the_inspector_applies_a_draft_with_warnings_and_shows_them(self, editor):
+        query = editor.add_component(QUERY)
+        form = TestInspectorDraft()._form(editor, query)
+        await _settle()
+        form._widgets["sql"].value = "WARN"
+        await _settle()
+        assert editor.graph.get_config_state(query).sql == "WARN"
+        assert _alerts(editor) == []
+        (warning,) = _alerts(editor, "fd-config-check-warning")
+        assert "the probe timed out." in warning.object
+        form._widgets["sql"].value = "WARN_AND_FAIL"
+        await _settle()
+        assert editor.graph.get_config_state(query).sql == "WARN"
+        assert len(_alerts(editor)) == 1 and len(_alerts(editor, "fd-config-check-warning")) == 1
+        form._widgets["sql"].value = "SELECT 2"
+        await _settle()
+        assert _alerts(editor) == [] and _alerts(editor, "fd-config-check-warning") == []
+
+
+class TestCoalescing:
+    async def test_a_burst_of_rechecks_of_an_unchanged_node_runs_one_check(self, editor):
+        node = editor.add_component(QUERY, {"sql": "SELECT PAUSE"})
+        results = await asyncio.gather(*(recheck_node(editor, node) for _ in range(20)))
+        assert results == [[]] * 20
+        assert len(CALLS) == 1
+
+    async def test_a_cancelled_check_does_not_block_later_ones(self, editor):
+        node = editor.add_component(QUERY, {"sql": "SELECT PAUSE"})
+        first = asyncio.ensure_future(recheck_node(editor, node))
+        queued = asyncio.ensure_future(recheck_node(editor, node))
+        await asyncio.sleep(0.05)
+        (slot,) = config_check._SLOTS[editor].values()
+        slot.task.cancel()
+        for waiter in (first, queued):
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+        assert config_check._SLOTS[editor] == {}
+        assert await asyncio.wait_for(recheck_node(editor, node), 2) == []
+
+    async def test_the_queued_check_sees_the_latest_state(self, editor):
+        node = editor.add_component(QUERY, {"sql": "SELECT PAUSE"})
+        limit = editor.add_component(LIMIT)
+        first = asyncio.ensure_future(recheck_node(editor, node))
+        await asyncio.sleep(0.05)
+        second = asyncio.ensure_future(recheck_node(editor, node))
+        editor.connect(limit, "limit", node, "limit")
+        third = asyncio.ensure_future(recheck_node(editor, node))
+        assert await first == []
+        assert await second == await third == ["rows must be at most 5"]
+        assert [c[1] for c in CALLS] == [{}, {"limit": 5}]
+
+    async def test_the_latest_patch_wins_among_queued_requests(self, editor):
+        node = editor.add_component(QUERY)
+        first = asyncio.ensure_future(recheck_node(editor, node, {"sql": "SELECT PAUSE"}))
+        await asyncio.sleep(0.05)
+        stale = asyncio.ensure_future(recheck_node(editor, node, {"sql": "DROP t"}))
+        latest = asyncio.ensure_future(recheck_node(editor, node, {"sql": "SELECT 2"}))
+        assert await first == []
+        assert await stale == await latest == []
+        assert [c[0]["sql"] for c in CALLS] == ["SELECT PAUSE", "SELECT 2"]
+
+    async def test_many_connects_do_not_starve_a_small_pool(self, monkeypatch):
+        monkeypatch.setattr(config_check, "_POOL", concurrent.futures.ThreadPoolExecutor(1))
+        editor = FlowDash({**COMPONENTS, SUM: Sum}, include_builtin_components=False)
+        editor.new_dashboard("Sum")
+        try:
+            ops = DashboardOps(editor)
+            ops.check_timeout = 0.5
+            ops.add_node(SUM, name="total")
+            for port in "abcdef":
+                ops.add_node(LIMIT, {"n": 1}, name=f"lim_{port}")
+            CALLS.clear()
+            results = await asyncio.gather(
+                *(ops.connect_async(f"lim_{port}.limit", f"total.{port}") for port in "abcdef")
+            )
+        finally:
+            editor.dispose()
+        assert results == [["the sum 6 is over 5"]] * 6
+        assert len(CALLS) == 1
+        assert CALLS[-1][1] == dict.fromkeys("abcdef", 1)
+
+    async def test_a_burst_of_inspector_edits_runs_at_most_two_checks(self, editor):
+        query = editor.add_component(QUERY)
+        form = TestInspectorDraft()._form(editor, query)
+        await _settle()
+        CALLS.clear()
+        for i in range(10):
+            form._widgets["sql"].value = f"SELECT PAUSE {i}"
+            await asyncio.sleep(0.01)
+        await _settle(1.2)
+        assert len(CALLS) == 2
+        assert editor.graph.get_config_state(query).sql == "SELECT PAUSE 9"
+
+
+class TestInspectorRewire:
+    async def test_a_connection_shows_the_alert_of_the_selected_node(self, editor):
+        ops = DashboardOps(editor)
+        _wired(ops)
+        q, lim = ops._instance("q"), ops._instance("lim")
+        select_on_canvas(editor._flow, node_id=q)
+        await _settle()
+        assert _alerts(editor) == []
+        editor.connect(lim, "limit", q, "limit")
+        await _settle()
+        (alert,) = _alerts(editor)
+        assert "rows must be at most 5" in alert.object
+        await ops.disconnect_async("lim.limit", "q.limit")
+        await _settle()
+        assert _alerts(editor) == []
+
+    async def test_selecting_a_node_rewired_meanwhile_checks_it_again(self, editor):
+        ops = DashboardOps(editor)
+        _wired(ops)
+        q, lim = ops._instance("q"), ops._instance("lim")
+        select_on_canvas(editor._flow, node_id=q)
+        await _settle()
+        select_on_canvas(editor._flow, node_id=lim)
+        editor.connect(lim, "limit", q, "limit")
+        select_on_canvas(editor._flow, node_id=q)
+        await _settle()
+        (alert,) = _alerts(editor)
+        assert "rows must be at most 5" in alert.object
+
+    async def test_a_held_back_draft_is_applied_once_a_connection_makes_it_pass(self, editor):
+        ops = DashboardOps(editor)
+        ops.add_node(QUERY, name="q")
+        ops.add_node(LIMIT, {"n": 20}, name="lim")
+        q, lim = ops._instance("q"), ops._instance("lim")
+        ops.connect("lim.limit", "q.limit")
+        form = TestInspectorDraft()._form(editor, q)
+        await _settle()
+        form._widgets["rows"].value = 30
+        await _settle()
+        assert editor.graph.get_config_state(q).rows == 10
+        assert len(_alerts(editor)) == 1
+        ops.disconnect("lim.limit", "q.limit")
+        await _settle()
+        assert editor.graph.get_config_state(q).rows == 30
+        assert _alerts(editor) == []
+        editor.connect(lim, "limit", q, "limit")
+        await _settle()
+        assert len(_alerts(editor)) == 1
+
+
+class TestDraftOutsideTheAgent:
+    async def test_an_agent_rewire_does_not_apply_the_persons_draft_as_the_agents(self, editor):
+        pytest.importorskip("pydantic_ai")
+        from .test_agent_tools import _runner
+
+        ops = DashboardOps(editor)
+        ops.add_node(QUERY, name="q")
+        ops.add_node(LIMIT, {"n": 20}, name="lim")
+        ops.connect("lim.limit", "q.limit")
+        q = ops._instance("q")
+        form = TestInspectorDraft()._form(editor, q)
+        await _settle()
+        form._widgets["rows"].value = 30
+        await _settle()
+        assert editor.graph.get_config_state(q).rows == 10
+        editor.edit_history.flush()
+
+        runner = _runner(ops, ("disconnect", {"source": "lim.limit", "target": "q.limit"}))
+        assert await runner.run("Unwire") == "Done: Disconnected lim.limit from q.limit."
+        await _settle()
+        editor.edit_history.flush()
+
+        assert editor.graph.get_config_state(q).rows == 30
+        versions = [v for a in runner.state.artifacts for v in a.versions]
+        agent, person = versions[-2:]
+        assert (agent.actor, agent.metadata["label"]) == ("agent", "Disconnected lim from q.")
+        assert [o["op"] for o in agent.metadata["ops"]] == ["disconnect"]
+        assert (person.actor, person.metadata["label"]) == ("user", "Changed the config of q")
+        assert person.metadata["turn"] != agent.metadata["turn"]

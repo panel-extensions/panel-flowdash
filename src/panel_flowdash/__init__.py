@@ -21,6 +21,7 @@ from panel_flowdash.component_spec import (
     build_component_spec,
     build_component_specs,
 )
+from panel_flowdash.config_check import CheckWarning
 from panel_flowdash.dashboard_store import (
     BaseDashboardStore,
     DashboardConflictError,
@@ -54,6 +55,7 @@ except importlib.metadata.PackageNotFoundError as e:  # pragma: no cover
 __all__: list[str] = [
     "AuthConfig",
     "BaseDashboardStore",
+    "CheckWarning",
     "ComponentSpec",
     "ConfigField",
     "DashboardConflictError",
