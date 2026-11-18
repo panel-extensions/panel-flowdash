@@ -22,6 +22,20 @@ _HAS_FOCUS = """
 }
 """
 
+# Whether the focus is in the open "Dashboard health" dialog or, once it closed, on the chip.
+_FOCUS_IN_DIALOG_OR_ON_CHIP = f"""
+() => {{
+  const hasFocus = {_HAS_FOCUS.strip()}
+  const roots = [document]
+  for (let i = 0; i < roots.length; i++) {{
+    for (const el of roots[i].querySelectorAll("*")) if (el.shadowRoot) roots.push(el.shadowRoot)
+  }}
+  const find = (selector) => roots.map((root) => root.querySelector(selector)).find(Boolean)
+  const dialog = find('[role="dialog"][aria-label="Dashboard health"]')
+  return dialog ? hasFocus(dialog) : hasFocus(find(".fd-health-chip"))
+}}
+"""
+
 
 def _chip(page):
     return page.locator(".fd-health-chip").get_by_role("button")
@@ -38,6 +52,10 @@ def _open_with_enter(page):
     dialog = _dialog(page)
     expect(dialog).to_be_visible()
     expect(chip).to_have_attribute("aria-expanded", "true")
+    # The dialog's contents render after it opens; until then Tab has nothing
+    # inside it to move to and leaves it.
+    expect(dialog.get_by_role("button", name="Show issues")).to_be_visible()
+    wait_until(lambda: dialog.evaluate(_HAS_FOCUS), page)
     return chip, dialog
 
 
@@ -70,12 +88,8 @@ def test_tab_never_reaches_the_page_behind_the_dialog(page):
     # dialog closes and the focus is back on the chip.
     for _ in range(3):
         page.keyboard.press("Tab")
-        wait_until(
-            lambda: (
-                dialog.evaluate(_HAS_FOCUS) if dialog.is_visible() else chip.evaluate(_HAS_FOCUS)
-            ),
-            page,
-        )
+        # Read in one go, as the dialog may close between two separate reads.
+        wait_until(lambda: page.evaluate(_FOCUS_IN_DIALOG_OR_ON_CHIP), page)
         if not dialog.is_visible():
             expect(chip).to_have_attribute("aria-expanded", "false")
             break
