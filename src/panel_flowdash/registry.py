@@ -40,6 +40,13 @@ def _port_aliases(value: Any) -> dict[str, str]:
     return dict(value)
 
 
+def _framed(value: Any) -> bool | None:
+    """Validate a ``framed`` hint: True, False or None."""
+    if value is not None and not isinstance(value, bool):
+        raise TypeError(f"framed must be True, False or None, got {value!r}.")
+    return value
+
+
 def _scanned(normalize: Callable[[Any], Any], value: Any, path: Path, name: str) -> Any:
     """Normalize a scanned argument, ignoring a malformed one until the module is imported."""
     try:
@@ -64,6 +71,7 @@ class PanelAppMetadata:
     default_size: dict[str, Any] | None = None
     min_size: dict[str, Any] | None = None
     max_size: dict[str, Any] | None = None
+    framed: bool | None = None
     singleton: bool = False
     provides: list[str] = field(default_factory=list)
     requires: list[Any] = field(default_factory=list)
@@ -142,6 +150,7 @@ def register(
     default_size: dict[str, Any] | None = None,
     min_size: dict[str, Any] | None = None,
     max_size: dict[str, Any] | None = None,
+    framed: bool | None = None,
     singleton: bool = False,
     provides: list[str] | None = None,
     requires: list[Any] | None = None,
@@ -197,6 +206,13 @@ def register(
     port or config names to current ones (e.g. ``{"ticker": "symbol"}``), so a
     saved dashboard that references the old names still loads after a rename.
 
+    The ``framed`` argument says whether the component's dashboard tile is
+    drawn as a framed card: ``False`` for components that are layout chrome
+    themselves, e.g. a divider or a section heading, ``True`` for ones that
+    need a frame, and ``None`` (the default) to follow the dashboard's "Frame
+    tiles" setting. A tile's own frame option, set in the Layout tab, takes
+    precedence over it.
+
     The ``extensions`` argument names the Panel extensions (e.g.
     ``["tabulator"]``) the app's output needs. Components are imported lazily,
     after the page has loaded its JavaScript, so an editor loads every declared
@@ -222,6 +238,7 @@ def register(
         default_size=default_size,
         min_size=min_size,
         max_size=max_size,
+        framed=_framed(framed),
         singleton=singleton,
         provides=list(provides or []),
         requires=list(requires or []),
@@ -426,6 +443,7 @@ _LITERAL_KEYS = {
     "default_size",
     "min_size",
     "max_size",
+    "framed",
     "allow_users",
     "allow_groups",
     "deny_users",
@@ -610,6 +628,7 @@ def build_registry(project_dir: Path, *, package: str | None = None) -> dict[str
                 default_size=kwargs.get("default_size"),
                 min_size=kwargs.get("min_size"),
                 max_size=kwargs.get("max_size"),
+                framed=_scanned(_framed, kwargs.get("framed"), module_path, "framed"),
                 singleton=bool(kwargs.get("singleton", False)),
                 provides=list(kwargs.get("provides") or []),
                 requires=list(kwargs.get("requires") or []),

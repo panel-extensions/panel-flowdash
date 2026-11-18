@@ -41,6 +41,8 @@ The panel on the right arranges the dashboard:
   and sets its **Width** in columns of a 12-column
   grid and its **Height** in pixels, or *Automatic* to size it to its content.
   The heights offered stay within the component's `min_size` and `max_size`.
+  **Frame** draws the tile as a card in view mode or not, or leaves it to
+  the default, which names what it resolves to (see [Tile frames](#tile-frames)).
   **Hide tile** takes the tile off the dashboard without removing the
   component from the dataflow.
 - **Not on the dashboard** lists the placed components that have no tile and
@@ -167,6 +169,29 @@ key is ignored with a warning.
 
 Within these bounds the author can resize tiles freely, and the arrangement
 they settle on is what gets persisted.
+
+## Tile frames
+
+In view mode a tile is drawn as a framed card or as the component's own view.
+Three settings decide which, the first one set wins:
+
+1. The tile's **Frame** option, in the Layout tab's **Selected tile** section
+   or the inspector's *Tile* tab: *Framed*, *Unframed* or *Default*. It is
+   saved with the tile (`framed` in the [dashboard YAML](../reference/dashboard-yaml.md#layout)).
+2. The component's `framed` hint in `@register`. Components that are layout
+   chrome themselves set `framed=False`, like the built-in Divider and Heading,
+   so a rule or a section title between charts is not boxed in a card.
+3. The dashboard's `tile_cards` setting (**Frame tiles** in its settings),
+   on by default.
+
+```python
+@register(component=True, framed=False)
+class Banner(pn.viewable.Viewer):
+    ...
+```
+
+While you arrange tiles the grid draws its own outline around every tile, so
+the frame shows in view mode.
 
 ---
 

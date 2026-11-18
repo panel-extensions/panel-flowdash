@@ -25,8 +25,11 @@ from panel_flowdash.ui.tile_bands import (
     base_band,
 )
 from panel_flowdash.ui.tile_layout import (
+    FRAME_DEFAULT,
     GRID_COLUMNS,
     HIDDEN,
+    frame_choices,
+    frame_value,
     grid_tiles,
     off_grid,
     tile_entry,
@@ -171,6 +174,14 @@ class LayoutPanel(Viewer):
             sizing_mode="stretch_width",
             margin=(8, 0, 8, 4),
         )
+        self.frame_select = pmui.Select(
+            label="Frame",
+            options={"Default": FRAME_DEFAULT},
+            value=FRAME_DEFAULT,
+            description="Whether the tile is drawn as a card in view mode",
+            sizing_mode="stretch_width",
+            margin=(0, 0, 8, 0),
+        )
         self.hide_button = pmui.Button(
             label="Hide tile",
             icon="visibility_off",
@@ -185,6 +196,7 @@ class LayoutPanel(Viewer):
             pn.Row(self.width_select, self.height_select, margin=0, sizing_mode="stretch_width"),
             self.size_hint,
             self.band_hint,
+            self.frame_select,
             self.hide_button,
             margin=0,
             sizing_mode="stretch_width",
@@ -194,6 +206,7 @@ class LayoutPanel(Viewer):
         self.tile_select.param.watch(self._on_tile_selected, "value")
         self.width_select.param.watch(self._on_width, "value")
         self.height_select.param.watch(self._on_height, "value")
+        self.frame_select.param.watch(self._on_frame, "value")
         self.hide_button.on_click(self._on_hide)
 
         self.collapse_button = pmui.IconButton(
@@ -243,6 +256,7 @@ class LayoutPanel(Viewer):
         # Tiles hidden or resized in the browser arrive as a new layout.
         self.editor._tile_grid.param.watch(self._on_layout, ["layout", "objects"])
         self.editor._tile_grid.param.watch(lambda _event: self.sync_bands(), "responsive_layouts")
+        self.editor.settings.param.watch(self._on_layout, "tile_cards")
         self.sync_bands()
 
     def _on_layout(self, _event):
@@ -367,6 +381,11 @@ class LayoutPanel(Viewer):
             options={"Automatic": _AUTO, **{f"{h} px": h for h in sorted(choices)}},
             value=height,
         )
+        self.frame_select.param.update(
+            options=frame_choices(self.editor, self.selected), value=frame_value(entry)
+        )
+        # The browser shows the label of the value, which changing only the options does not resend.
+        self.frame_select.param.trigger("value")
         self.size_hint.object = self._size_hint(spec)
         self.size_hint.visible = bool(self.size_hint.object)
 
@@ -454,6 +473,10 @@ class LayoutPanel(Viewer):
     def _on_height(self, event):
         if not self._syncing and event.new is not None:
             self._update(height=None if event.new == _AUTO else event.new)
+
+    def _on_frame(self, event):
+        if not self._syncing and event.new is not None:
+            self._update(framed=None if event.new == FRAME_DEFAULT else event.new)
 
     def _on_hide(self, _event):
         self._update(visible=False)

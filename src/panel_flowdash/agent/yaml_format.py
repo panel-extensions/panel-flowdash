@@ -23,10 +23,10 @@ from panel_flowdash.turns import DashboardTurn, TurnError, strip_questions
 from panel_flowdash.ui.node_card import CARD_WIDTH
 
 # The version of the format this release writes.
-FORMAT_VERSION = 2
+FORMAT_VERSION = 3
 
 # The versions of the format this release reads.
-READ_VERSIONS = (1, 2)
+READ_VERSIONS = (1, 2, 3)
 
 TOP_LEVEL_KEYS = ("flowdash", "title", "settings", "turns", "nodes", "edges", "layout")
 NODE_KEYS = ("component", "origin", "config", "position")
@@ -36,7 +36,11 @@ _V1_TOP_LEVEL_KEYS = tuple(k for k in TOP_LEVEL_KEYS if k != "turns")
 _V1_NODE_KEYS = tuple(k for k in NODE_KEYS if k != "origin")
 EDGE_KEYS = ("from", "to", "transform")
 LAYOUT_KEYS = ("tiles", "reference_width", "breakpoints", "responsive")
-TILE_KEYS = ("node", "width", "height", "visible")
+TILE_KEYS = ("node", "width", "height", "visible", "framed")
+# A tile's frame applies at every screen size, so a responsive layout cannot set
+# it, and version 2 had no frame.
+RESPONSIVE_TILE_KEYS = tuple(k for k in TILE_KEYS if k != "framed")
+_V2_TILE_KEYS = RESPONSIVE_TILE_KEYS
 # Keys starting with this are accepted, and ignored, in every mapping of the format
 # except config and settings, for tools that annotate dashboard files.
 EXTENSION_PREFIX = "x-"
@@ -175,24 +179,24 @@ def editor_restricted(editor) -> tuple[set[str], list[dict]]:
     return restricted, edges
 
 
-def _tile(entry: dict, names: dict[str, str]) -> dict | None:
+def _tile(entry: dict, names: dict[str, str], keys: tuple[str, ...]) -> dict | None:
     instance_id = entry.get("instance_id")
     if instance_id not in names:
         return None
     tile = {"node": names[instance_id]}
     for key, value in entry.items():
-        if key in TILE_KEYS:
+        if key in keys:
             tile[key] = copy.deepcopy(value)
     return tile
 
 
-def _tiles(layout: list, names: dict[str, str]) -> list[dict]:
+def _tiles(layout: list, names: dict[str, str], keys: tuple[str, ...] = TILE_KEYS) -> list[dict]:
     entries = [e for e in layout or [] if isinstance(e, dict)]
     order = sorted(
         range(len(entries)),
         key=lambda i: (entries[i].get("index") is None, entries[i].get("index") or 0, i),
     )
-    return [tile for i in order if (tile := _tile(entries[i], names)) is not None]
+    return [tile for i in order if (tile := _tile(entries[i], names, keys)) is not None]
 
 
 def _position(item: dict) -> list:
@@ -286,7 +290,7 @@ def dashboard_to_dict(
     if data.get("breakpoints"):
         layout["breakpoints"] = list(data["breakpoints"])
     responsive = {
-        str(band): _tiles(entries, names)
+        str(band): _tiles(entries, names, RESPONSIVE_TILE_KEYS)
         for band, entries in (data.get("responsive_layouts") or {}).items()
     }
     if responsive:
@@ -707,7 +711,9 @@ def _component(nodes: dict, name: str) -> t.Any:
     return node.get("component") if isinstance(node, dict) else None
 
 
-def _layout_entries(tiles: list, path: str, ids: dict[str, str]) -> list[dict]:
+def _layout_entries(
+    tiles: list, path: str, ids: dict[str, str], keys: tuple[str, ...] = TILE_KEYS
+) -> list[dict]:
     entries = []
     for i, tile in enumerate(_sequence(tiles, path)):
         tile_path = f"{path}[{i}]"
@@ -715,13 +721,14 @@ def _layout_entries(tiles: list, path: str, ids: dict[str, str]) -> list[dict]:
         name = tile.get("node")
         if not isinstance(name, str) or name not in ids:
             _fail(f"{tile_path}.node", f"names no node: {name!r}.")
-        _unknown_keys(tile, TILE_KEYS, tile_path)
-        entry = {k: copy.deepcopy(v) for k, v in tile.items() if k in TILE_KEYS and k != "node"}
+        _unknown_keys(tile, keys, tile_path)
+        entry = {k: copy.deepcopy(v) for k, v in tile.items() if k in keys and k != "node"}
         for key in ("width", "height"):
             if key in entry and entry[key] is not None:
                 _number(entry[key], f"{tile_path}.{key}")
-        if "visible" in entry and not isinstance(entry["visible"], bool):
-            _fail(f"{tile_path}.visible", f"must be true or false, got {entry['visible']!r}.")
+        for key in ("visible", "framed"):
+            if key in entry and not isinstance(entry[key], bool):
+                _fail(f"{tile_path}.{key}", f"must be true or false, got {entry[key]!r}.")
         entries.append({"instance_id": ids[name], "index": i, **entry})
     return entries
 
@@ -750,7 +757,7 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
         _fail(
             "flowdash",
             f"unsupported format version {version!r}; this release reads "
-            f"{' and '.join(map(str, READ_VERSIONS))}."
+            f"{', '.join(map(str, READ_VERSIONS[:-1]))} and {READ_VERSIONS[-1]}."
             + (" The file was written by a newer FlowDash." if newer else ""),
         )
     _unknown_keys(doc, TOP_LEVEL_KEYS if version >= 2 else _V1_TOP_LEVEL_KEYS, "document")
@@ -878,7 +885,7 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
     for i, value in enumerate(breakpoints):
         _number(value, f"layout.breakpoints[{i}]")
     responsive = {
-        str(band): _layout_entries(entries, f"layout.responsive.{band}", ids)
+        str(band): _layout_entries(entries, f"layout.responsive.{band}", ids, RESPONSIVE_TILE_KEYS)
         for band, entries in _mapping(layout.get("responsive"), "layout.responsive").items()
     }
     return {
@@ -886,7 +893,9 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
         "title": "Untitled" if title is None else title,
         "items": items,
         "edges": edges,
-        "tile_layout": _layout_entries(layout.get("tiles"), "layout.tiles", ids),
+        "tile_layout": _layout_entries(
+            layout.get("tiles"), "layout.tiles", ids, TILE_KEYS if version >= 3 else _V2_TILE_KEYS
+        ),
         "breakpoints": list(breakpoints),
         "responsive_layouts": responsive,
         "reference_width": reference_width,

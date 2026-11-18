@@ -300,8 +300,8 @@ class TestValidate:
         assert _validate("flowdash: 1\nnodes:\n  a: {component: T/number, colour: red}\n") == [
             "nodes.a: unknown key 'colour'; expected component, config, position."
         ]
-        assert _validate("flowdash: 3\n") == [
-            "flowdash: unsupported format version 3; this release reads 1 and 2. "
+        assert _validate("flowdash: 4\n") == [
+            "flowdash: unsupported format version 4; this release reads 1, 2 and 3. "
             "The file was written by a newer FlowDash."
         ]
         assert _validate("nodes: {}\n")[0].startswith("document:")

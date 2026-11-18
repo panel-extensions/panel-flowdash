@@ -344,6 +344,7 @@ _HEADING_VARIANTS = {"Title": "h3", "Heading": "h4", "Subheading": "h5", "Sectio
     config=["text", "subtitle", "size", "alignment"],
     requires=[{"key": "value", "label": "Value", "required": False, "blocking": False}],
     default_size={"height": 96},
+    framed=False,
 )
 class Heading(Viewer):
     """A heading for a section of the dashboard."""
@@ -412,6 +413,7 @@ class Heading(Viewer):
     ),
     config=["label"],
     default_size={"height": 56},
+    framed=False,
 )
 class Divider(Viewer):
     """A horizontal rule with an optional label."""

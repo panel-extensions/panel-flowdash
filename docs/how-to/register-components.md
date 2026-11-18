@@ -42,6 +42,7 @@ def app(config):
 | `default_size` | `dict` | `None` | Size of a new tile in pixels, e.g. `{"width": 600, "height": 400}`. See [Layout & sizing](layout-and-sizing.md#tile-sizing-hints). |
 | `min_size` | `dict` | `None` | Smallest size a tile can be resized to, in pixels. |
 | `max_size` | `dict` | `None` | Largest size a tile can be resized to, in pixels. |
+| `framed` | `bool \| None` | `None` | Whether the tile is drawn as a card in view mode. `None` follows the dashboard's `tile_cards` setting. See [Layout & sizing](layout-and-sizing.md#tile-frames). |
 | `singleton` | `bool` | `False` | Only allow one instance on a dashboard. |
 | `config_schema` | `type \| dict` | `None` | Design-time configuration definition: a `param.Parameterized` subclass, a Pydantic model, or a JSON-Schema-like dict. See [Configure nodes](configure-nodes.md). |
 | `config` | `list[str]` | `[]` | For Viewer components, names the params that are design-time configuration rather than input ports. See [Configure nodes](configure-nodes.md). |

@@ -120,7 +120,7 @@ from panel_flowdash.ui.text import (
     text_alert,
     text_typography,
 )
-from panel_flowdash.ui.tile import TILE_KEY_PREFIX, Tile
+from panel_flowdash.ui.tile import TILE_KEY_PREFIX, Tile, resolve_framed
 from panel_flowdash.ui.tile_bands import band_labels, base_band, reference_width
 from panel_flowdash.util import (
     close_dialog,
@@ -193,6 +193,10 @@ _UNFRAMED_BAND = "fd-unframed-band"
 # stores and persists them keyed by the tile's instance id instead, so removing
 # a tile, or skipping one that no longer loads, cannot hand its slot to the next.
 
+# Keys of a persisted layout entry the editor applies itself rather than TileGrid,
+# whose layout the browser rewrites with only the keys it knows.
+_TILE_OPTIONS = ("framed",)
+
 
 def _key_layout(layout: list, instance_ids: list[str]) -> list[dict]:
     """Tag the entries of a TileGrid layout with the instance id of their tile."""
@@ -231,7 +235,9 @@ def _align_layout(keyed: list[dict], instance_ids: list[str]) -> list[dict]:
     rank = {i: r for r, i in enumerate(ordered)}
     aligned = []
     for i, spec in enumerate(specs):
-        entry = {k: v for k, v in (spec or {}).items() if k != "instance_id"}
+        entry = {
+            k: v for k, v in (spec or {}).items() if k != "instance_id" and k not in _TILE_OPTIONS
+        }
         if i in rank:
             entry["index"] = rank[i]
         aligned.append(entry)
@@ -1033,6 +1039,8 @@ class FlowDash(Viewer):
         # Instance ids of the tiles currently in the grid, in grid order; None
         # marks the slot of a tile removed while the grid was not rebuilt.
         self._grid_ids: list[str | None] = []
+        # Each tile's own frame option, by instance id, kept beside the grid's layout.
+        self._tile_frames: dict[str, bool] = {}
         # The framed tiles of the grid, by instance id, kept so a grid rebuild
         # does not re-render them.
         self._inspect_tiles: dict[str, Tile] = {}
@@ -2083,9 +2091,18 @@ class FlowDash(Viewer):
         if tile is None or tile.view is not view:
             tile = self._inspect_tiles[instance_id] = self._make_tile(item, spec, view, bounds)
         tile.set_chrome(not self._tile_grid.editable)
-        tile.set_style(framed=self.settings.tile_cards, titled=self.settings.tile_titles)
+        tile.set_style(framed=self._tile_framed(item), titled=self.settings.tile_titles)
         self._sync_tile(tile, spec)
         return tile
+
+    def _tile_framed(self, item: dict) -> bool:
+        """Whether a tile is framed: its own option, its component's hint, then the dashboard's."""
+        spec = self._tile_spec(item)
+        return resolve_framed(
+            self._tile_frames.get(item["instance_id"]),
+            spec.framed if spec is not None else None,
+            self.settings.tile_cards,
+        )
 
     @param.depends(
         "controls_position",
@@ -2150,8 +2167,10 @@ class FlowDash(Viewer):
     @param.depends("settings.tile_cards", "settings.tile_titles", watch=True)
     def _sync_tile_style(self):
         # Also fires while the editor is being constructed, before there are tiles.
-        for tile in getattr(self, "_inspect_tiles", {}).values():
-            tile.set_style(framed=self.settings.tile_cards, titled=self.settings.tile_titles)
+        tiles = getattr(self, "_inspect_tiles", {})
+        for item in getattr(self, "_tile_items", []):
+            if (tile := tiles.get(item["instance_id"])) is not None:
+                tile.set_style(framed=self._tile_framed(item), titled=self.settings.tile_titles)
 
     def _can_inspect(self) -> bool:
         """Whether this session may inspect outputs: editors always, viewers if the dashboard allows."""
@@ -3083,6 +3102,11 @@ class FlowDash(Viewer):
         # Capture the layout keyed by instance id before the objects change, so it
         # can be realigned with the tiles that remain.
         layout = self._pending_tile_layout or self.layout
+        self._tile_frames = {
+            spec["instance_id"]: spec["framed"]
+            for spec in layout
+            if isinstance(spec.get("framed"), bool)
+        }
         config = self._pending_grid_config
         if config is None and self._grid_populated:
             config = self._grid_config()
@@ -3126,7 +3150,17 @@ class FlowDash(Viewer):
         One entry per tile, keyed by the tile's ``instance_id``.
         """
         if self._grid_populated:
-            return self._placed_layout(_key_layout(self._tile_grid.layout, self._grid_ids))
+            keyed = _key_layout(self._tile_grid.layout, self._grid_ids)
+            ids = {spec["instance_id"] for spec in keyed}
+            keyed += [
+                {"instance_id": iid}
+                for iid in self._grid_ids
+                if iid in self._tile_frames and iid not in ids
+            ]
+            for spec in keyed:
+                if spec["instance_id"] in self._tile_frames:
+                    spec["framed"] = self._tile_frames[spec["instance_id"]]
+            return self._placed_layout(keyed)
         return self._placed_layout(self._pending_tile_layout)
 
     # ------------------------------------------------------------------

@@ -614,6 +614,7 @@ def place_tile(
     height: float | None = None,
     visible: bool | None = None,
     index: int | None = None,
+    frame: t.Literal["default", "framed", "unframed"] | None = None,
 ) -> t.Any:
     """Change how a node's tile is laid out on the dashboard.
 
@@ -623,9 +624,11 @@ def place_tile(
         height: Height in pixels.
         visible: False hides the tile; the component keeps running.
         index: Position among the tiles, 0 for the first.
+        frame: "framed" or "unframed" draws the tile as a card or not; "default"
+            follows the component, then the dashboard's tile_cards setting.
     """
     ops = ctx.deps.ops
-    ops.place_tile(name, width=width, height=height, visible=visible, index=index)
+    ops.place_tile(name, width=width, height=height, visible=visible, index=index, frame=frame)
     return _artifact(ops, f"Laid out the tile of '{name}'.")
 
 

@@ -6,15 +6,15 @@ content as the JSON export, keyed by readable node names instead of generated id
 and loading it goes through the same path as importing a downloaded file, so the
 same permission checks apply.
 
-This page specifies version 2 of the format. Every file starts with `flowdash: 2`,
-the integer 2. Every change to the format, including a new optional key, comes with a
+This page specifies version 3 of the format. Every file starts with `flowdash: 3`,
+the integer 3. Every change to the format, including a new optional key, comes with a
 new version number. A release reads the versions it knows and rejects a file with a
 later version, or with keys it does not know, saying that a newer FlowDash may have
-written it. This release writes version 2 and reads versions 1 and 2, see
-[Version 1](#version-1).
+written it. This release writes version 3 and reads versions 1, 2 and 3, see
+[Earlier versions](#earlier-versions).
 
 ```yaml
-flowdash: 2
+flowdash: 3
 title: State Deep Dive
 settings:
   refresh_period: 0
@@ -69,6 +69,7 @@ layout:
     - node: kpi_modern
       width: 33.33
       height: 130
+      framed: false
   reference_width: 1200
   breakpoints: [768, 1200]
 ```
@@ -77,7 +78,7 @@ layout:
 
 | Key | Required | Meaning |
 | --- | --- | --- |
-| `flowdash` | yes | The format version, `2`. |
+| `flowdash` | yes | The format version, `3`. |
 | `title` | no | The dashboard's title. Loading a file into an existing dashboard keeps that dashboard's title. |
 | `settings` | no | Dashboard-wide settings, keyed by the parameter names of the app's `DashboardSettings` class, e.g. `description`, `refresh_period`, `tile_cards`. |
 | `turns` | no | Who changed the dashboard and why, a list, oldest first. |
@@ -116,7 +117,7 @@ Quote a value to make it a string whatever it looks like. The writer quotes ever
 string another YAML reader could take for a different type.
 
 A file in this format may also be written as JSON with the same keys; it is read
-under the same rules. Flow-style YAML (`{flowdash: 2, ...}`) is read too.
+under the same rules. Flow-style YAML (`{flowdash: 3, ...}`) is read too.
 
 ## Turns
 
@@ -222,19 +223,26 @@ other edge, in the editor too.
 | `responsive` | no | Layouts for narrower screens, keyed by breakpoint, each a list like `tiles`. |
 
 Each tile has a `node` naming its node, plus any of `width` (percent of the row,
-greater than 0 and at most 100), `height` (pixels) and `visible` (`false` hides the
-tile while keeping its component in the dataflow). Other keys are rejected, except
+greater than 0 and at most 100), `height` (pixels), `visible` (`false` hides the
+tile while keeping its component in the dataflow) and `framed` (`true` or `false`
+draws the tile as a card in view mode or not; without it the tile follows its
+component's `framed` hint, then the dashboard's `tile_cards` setting). A tile in a
+`responsive` layout may not set `framed`, since a tile's frame is the same at every
+screen size. Other keys are rejected, except
 `x-` keys, which are ignored. Nodes without a tile entry get
 their component's default size, after the listed tiles. Control components have no
 tile.
 
-## Version 1
+## Earlier versions
 
-Version 1 files start with `flowdash: 1` and may not hold `turns` or a node `origin`.
-They load as a dashboard without turns whose nodes have no origin, and exporting it
-again writes version 2.
+Version 2 files start with `flowdash: 2` and may not hold a tile's `framed`. They load
+unchanged, and exporting them again writes version 3.
 
-## Not in version 2
+Version 1 files start with `flowdash: 1` and may not hold `turns`, a node `origin` or
+a tile's `framed`. They load as a dashboard without turns whose nodes have no origin,
+and exporting it again writes version 3.
+
+## Not in version 3
 
 A file describes what a dashboard is built from, not the state it is in:
 

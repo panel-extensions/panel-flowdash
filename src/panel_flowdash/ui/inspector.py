@@ -36,7 +36,13 @@ from panel_flowdash.ui.status_bar import (
     select_on_canvas,
 )
 from panel_flowdash.ui.text import text_alert, text_typography
-from panel_flowdash.ui.tile_layout import tile_entry, update_tile
+from panel_flowdash.ui.tile_layout import (
+    FRAME_DEFAULT,
+    frame_choices,
+    frame_value,
+    tile_entry,
+    update_tile,
+)
 
 if t.TYPE_CHECKING:
     from panel.viewable import Viewable
@@ -597,7 +603,21 @@ class Inspector(Viewer):
             sizing_mode="stretch_width",
             margin=(8, 0),
         )
+        frame = pmui.Select(
+            label="Frame",
+            options=frame_choices(editor, instance_id),
+            value=frame_value(layout),
+            description="Whether the tile is drawn as a card in view mode",
+            sizing_mode="stretch_width",
+            margin=(8, 0),
+        )
         show.param.watch(lambda e: update_tile(editor, instance_id, visible=e.new), "value")
+        frame.param.watch(
+            lambda e: update_tile(
+                editor, instance_id, framed=None if e.new == FRAME_DEFAULT else e.new
+            ),
+            "value",
+        )
         width_select.param.watch(
             lambda e: update_tile(editor, instance_id, width=None if e.new == _AUTO else e.new),
             "value",
@@ -606,7 +626,7 @@ class Inspector(Viewer):
             lambda e: update_tile(editor, instance_id, height=None if e.new == _AUTO else e.new),
             "value",
         )
-        objects: list[Viewable] = [show, width_select, height]
+        objects: list[Viewable] = [show, width_select, height, frame]
         hints = self._size_hints(spec)
         if hints:
             objects.append(_caption(hints))

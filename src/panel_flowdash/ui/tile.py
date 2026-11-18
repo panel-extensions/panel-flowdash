@@ -73,6 +73,15 @@ _MORE_SX = {
 }
 
 
+def resolve_framed(tile: bool | None, component: bool | None, dashboard: bool) -> bool:
+    """Return whether a tile is framed: its own option, else its component's hint, else the dashboard's."""
+    if tile is not None:
+        return tile
+    if component is not None:
+        return component
+    return dashboard
+
+
 def status_chip_sx(color: str) -> dict:
     """Style a small tinted chip with a leading dot, readable in light and dark mode."""
     main = f"var(--mui-palette-{color}-main)"

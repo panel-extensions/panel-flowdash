@@ -24,7 +24,10 @@ Inspect, Expand and, when there is something to put in it, a More menu float
 over the tile's top-right corner on hover or keyboard focus. Set the defaults
 for dashboards that have not saved these settings with
 `FlowDash(tile_cards=..., tile_titles=...)`, or through `editor_options` in a
-`FlowDashApp`. `controls_position` (`"top"` or `"left"`) places the dashboard's
+`FlowDashApp`. `tile_cards` is only the default frame: a component registered
+with `framed=False` (the built-in Divider and Heading) or `framed=True` keeps
+its own, and each tile's **Frame** option in the Layout tab overrides both (see
+[Layout & sizing](layout-and-sizing.md#tile-frames)). `controls_position` (`"top"` or `"left"`) places the dashboard's
 controls above the tiles or in a panel to their left, defaulting to the editor's
 `controls_position` (see [Layout & sizing](layout-and-sizing.md#controls)).
 `header_layout` (`"compact"` or `"full"`) lays out the dashboard's title, health
