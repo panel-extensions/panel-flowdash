@@ -50,7 +50,8 @@ dependencies = [
     # Page.rail and Page.header_color arrived in 0.17.0b3.
     "panel-material-ui >=0.17.0b3",
     # ReactFlow.fit_view, add_nodes/add_edges, graph validation and handle `top` arrived in
-    # 0.6.0b1. A pre-release floor, so pip selects it without --pre until 0.6.0 is out.
+    # 0.6.0b1; 0.6.0b2 shows node views that arrive after their node. A pre-release floor,
+    # so pip selects it without --pre until 0.6.0 is out.
     "panel-reactflow >=0.6.0b2",
     # collapse_threshold, which the Split tab's collapse buttons rely on, arrived in 0.4.0.
     "panel-splitjs >=0.4.0",
