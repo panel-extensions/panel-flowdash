@@ -43,6 +43,31 @@ _HIDE_WHEN_WIDE = (
     f"@media (min-width: {_WIDE_BREAKPOINT}px) {{ :host {{ display: none !important; }} }}"
 )
 
+# Below these widths the top bar's labelled actions show only their icons, so
+# the actions, search, assistant and theme toggle fit one row: the view
+# actions below COMPACT_BREAKPOINT and the wider edit actions below
+# EDIT_COMPACT_BREAKPOINT. The labels stay in the DOM, so the buttons keep their
+# accessible names.
+COMPACT_BREAKPOINT = 1024
+EDIT_COMPACT_BREAKPOINT = _WIDE_BREAKPOINT
+
+
+def icon_only_below(width: int) -> str:
+    """Return a stylesheet showing only the icons of a button or toggle group below *width*."""
+    return f"""
+@media (max-width: {width - 0.05}px) {{
+  .MuiButton-root, .MuiToggleButton-root {{ font-size: 0 !important; min-width: 0 !important; }}
+  .MuiButton-startIcon {{ margin: 0 !important; }}
+  .MuiButton-root .material-icons, .MuiToggleButton-root .material-icons {{
+    font-size: 20px !important;
+  }}
+}}
+"""
+
+
+ICON_ONLY_WHEN_COMPACT = icon_only_below(COMPACT_BREAKPOINT)
+_ICON_ONLY_WHEN_NARROW = icon_only_below(EDIT_COMPACT_BREAKPOINT)
+
 _TOGGLE_SX = {"& .MuiToggleButton-root": {"textTransform": "none", "px": 1.5}}
 
 _DIRTY_DOT_SX = {
@@ -59,6 +84,15 @@ _DIRTY_DOT_SX = {
     },
 }
 
+
+# Below this width the save state gives its room in the top bar to the edit
+# actions: only the dot of unsaved changes shows, its text stays for screen readers.
+_SAVE_STATE_DOT_ONLY = """
+@media (max-width: 799.95px) {
+  .MuiTypography-root { font-size: 0 !important; }
+  .MuiTypography-root::before { margin-right: 0 !important; }
+}
+"""
 
 _PERIODS = [
     ("Off", 0),
@@ -155,7 +189,10 @@ class DashboardBar(Viewer):
             },
         )
         self.save_state = pmui.Typography(
-            variant="caption", sx={"color": "text.secondary", "whiteSpace": "nowrap"}, margin=0
+            variant="caption",
+            sx={"color": "text.secondary", "whiteSpace": "nowrap"},
+            margin=0,
+            stylesheets=[_SAVE_STATE_DOT_ONLY],
         )
         self.info_button = pmui.IconButton(
             icon="info_outline",
@@ -232,6 +269,7 @@ class DashboardBar(Viewer):
             margin=(0, 0, 0, 4),
             description="Refresh now",
             sx={"borderTopRightRadius": 0, "borderBottomRightRadius": 0},
+            stylesheets=[ICON_ONLY_WHEN_COMPACT],
         )
         self.refresh_button.on_click(lambda _event: editor.param.trigger("refresh"))
         self.refresh_period = pmui.MenuButton(
@@ -265,6 +303,7 @@ class DashboardBar(Viewer):
             size="small",
             margin=(0, 12, 0, 4),
             sx=_TOGGLE_SX,
+            stylesheets=[ICON_ONLY_WHEN_COMPACT],
         )
         self.mode_toggle.param.watch(self._on_mode_toggled, "value")
 
@@ -278,6 +317,7 @@ class DashboardBar(Viewer):
             size="small",
             margin=(0, 12, 0, 4),
             sx=_TOGGLE_SX,
+            stylesheets=[_ICON_ONLY_WHEN_NARROW],
         )
         self.mode_tabs.link(editor, value="mode", bidirectional=True)
         self.settings_button = pmui.Button(
@@ -300,14 +340,32 @@ class DashboardBar(Viewer):
         )
         self.settings_icon_button.on_click(lambda _event: self._click_settings())
         self.discard_button = pmui.Button(
-            label="Discard", variant="outlined", size="small", margin=(0, 4)
+            label="Discard",
+            icon="undo",
+            variant="outlined",
+            size="small",
+            margin=(0, 4),
+            description="Discard",
+            stylesheets=[_ICON_ONLY_WHEN_NARROW],
         )
         self.discard_button.on_click(lambda _event: self._confirm_discard())
         self.save_button = pmui.Button(
-            label="Save", icon="save", variant="contained", size="small", margin=(0, 4)
+            label="Save",
+            icon="save",
+            variant="contained",
+            size="small",
+            margin=(0, 4),
+            description="Save",
+            stylesheets=[_ICON_ONLY_WHEN_NARROW],
         )
         self.done_button = pmui.Button(
-            label="Done", icon="visibility", variant="outlined", size="small", margin=(0, 4)
+            label="Done",
+            icon="visibility",
+            variant="outlined",
+            size="small",
+            margin=(0, 4),
+            description="Done",
+            stylesheets=[_ICON_ONLY_WHEN_NARROW],
         )
         self.done_button.on_click(lambda _event: self.request_mode("view"))
 

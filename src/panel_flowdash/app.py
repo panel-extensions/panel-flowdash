@@ -37,6 +37,11 @@ from panel_flowdash.registry import RegistryEntry, build_registry
 from panel_flowdash.session_state import build_session_state_class, check_requirements
 from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.ui.command_palette import CommandPaletteController
+from panel_flowdash.ui.dashboard_bar import (
+    COMPACT_BREAKPOINT,
+    EDIT_COMPACT_BREAKPOINT,
+    ICON_ONLY_WHEN_COMPACT,
+)
 from panel_flowdash.ui.gallery import ComponentGallery
 from panel_flowdash.ui.launcher import (
     Launcher,
@@ -102,6 +107,20 @@ def _without_query(search: str | None, *names: str) -> str:
     ]
     return f"?{urlencode(kept)}" if kept else ""
 
+
+# The assistant's header toggle drops its label where the other top bar actions
+# do: below COMPACT_BREAKPOINT, and below EDIT_COMPACT_BREAKPOINT beside the edit actions.
+_EDIT_HEADER_CLASS = "fd-edit-header"
+_TOGGLE_ICON_ONLY = """
+  .pa-toggle > span:not(.pa-badge) { display: none; }
+  .pa-toggle { padding: 6px; }
+"""
+_TOGGLE_ICON_ONLY_WHEN_COMPACT = f"""
+@media (max-width: {COMPACT_BREAKPOINT - 0.05}px) {{ {_TOGGLE_ICON_ONLY} }}
+@media (max-width: {EDIT_COMPACT_BREAKPOINT - 0.05}px) {{
+  :host(.{_EDIT_HEADER_CLASS}) {{ {_TOGGLE_ICON_ONLY} }}
+}}
+"""
 
 _COMPONENT_PALETTE_CARD_CSS = """
 :host {
@@ -402,7 +421,9 @@ class FlowDashApp(Viewer):
             variant="text",
             size="small",
             margin=(5, 2),
+            description="Share",
             visible=False,
+            stylesheets=[ICON_ONLY_WHEN_COMPACT],
         )
         self._share_button.on_click(lambda _event: self._share_current_dashboard())
         # The editor owns the canvas, tile grid and persistence; this class adds
@@ -438,7 +459,9 @@ class FlowDashApp(Viewer):
         self._command_palette = CommandPaletteController.install(self)
         self._agent_session = self._build_agent_session()
         if self._agent_session is not None and self._shell is not None:
-            self._shell.search_slot.append(self._agent_session.drawer.toggle)
+            toggle = self._agent_session.drawer.toggle
+            toggle.stylesheets = [*toggle.stylesheets, _TOGGLE_ICON_ONLY_WHEN_COMPACT]
+            self._shell.search_slot.append(toggle)
         self._build_dialog()
         self._build_unsaved_dialog()
         self._build_share_dialog()
@@ -496,6 +519,14 @@ class FlowDashApp(Viewer):
         self._dashboard_header = mode
         if getattr(self, "_page", None) is not None and self._page.sx != (sx := self._header_sx()):
             self._page.sx = sx
+        session = getattr(self, "_agent_session", None)
+        if session is not None:
+            toggle = session.drawer.toggle
+            classes = [c for c in toggle.css_classes if c != _EDIT_HEADER_CLASS]
+            if mode == "edit":
+                classes.append(_EDIT_HEADER_CLASS)
+            if classes != toggle.css_classes:
+                toggle.css_classes = classes
 
     def _begin_navigation(self) -> int:
         """Start a navigation, superseding the one in flight, and return its generation."""
