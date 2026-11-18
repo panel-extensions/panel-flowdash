@@ -5204,10 +5204,7 @@ class FlowDash(Viewer):
         if payload.get("drop_type") == _FILES_DROP_TYPE:
             self._on_files_dropped(payload.get("data") or [])
             return
-        # panel-reactflow handles frontend messages inside `hold()`. On Panel
-        # 1.10 a held patch that adds node views blanks the views already on
-        # the canvas, so apply the drop on the next tick like a button click.
-        pn.state.execute(partial(self._add_dropped, payload), schedule=True)
+        self._add_dropped(payload)
 
     def _download_callback(self):
         data = self.export_dashboard()
