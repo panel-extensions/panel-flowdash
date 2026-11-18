@@ -10,6 +10,7 @@ import functools
 import inspect
 import json
 import logging
+import math
 import typing as t
 from dataclasses import dataclass, field, replace
 
@@ -21,12 +22,13 @@ from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 from pydantic_ai.tools import ToolDefinition
 
 from panel_flowdash.editor import export_model
+from panel_flowdash.transforms import parse_transform
 from panel_flowdash.turns import agent_edits
 
 from .diff import dashboard_changes
 from .live import LiveDashboardOps
 from .ops import DashboardOps, OperationError, OutputUnavailable, read_revision
-from .yaml_format import DashboardYAMLError, dashboard_to_yaml, parse_yaml
+from .yaml_format import DashboardYAMLError, dashboard_to_dict, dashboard_to_yaml, parse_yaml
 
 # The artifact kind the dashboard YAML is published under, with its own diff.
 ARTIFACT_KIND = "flowdash-dashboard"
@@ -123,16 +125,113 @@ class FlowDashDeps:
         return None
 
 
-def _components_in(text: t.Any) -> set[str]:
-    # The same reader the operations use, so the policy sees what they would place.
+def _canonical(value: t.Any) -> t.Any:
+    """Return *value* as plain JSON data that compares equal however it was written.
+
+    Mapping keys are sorted when dumped, tuples become lists and a float with
+    an integral value becomes an int, so ``1`` and ``1.0`` compare equal while
+    ``true`` and ``1`` do not.
+    """
+    if isinstance(value, dict):
+        return {
+            k if isinstance(k, str) else f"{type(k).__name__}:{k!r}": _canonical(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_canonical(v) for v in value]
+    if isinstance(value, bool) or value is None or isinstance(value, (str, int)):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            return repr(value)
+        return int(value) if value.is_integer() else value
+    return repr(value)
+
+
+def _dumps(value: t.Any) -> str:
+    return json.dumps(_canonical(value), sort_keys=True, separators=(",", ":"))
+
+
+def _transform_steps(steps: t.Any) -> t.Any:
+    """Return transform *steps* with every argument filled in, as the canvas stores them."""
     try:
-        doc = parse_yaml(text) if isinstance(text, str) else None
-    except DashboardYAMLError:
-        return set()
+        return [step.to_dict() for step in parse_transform(steps or [])]
+    except (TypeError, ValueError):
+        return steps
+
+
+def _sensitive_nodes(
+    doc: t.Any, ops: DashboardOps, sensitive: t.Callable[[str], bool]
+) -> dict[str, tuple[str, str, str]]:
+    """Map each node of *doc* whose component is sensitive to what decides what it does.
+
+    That is its resolved component, its config with the fields at their
+    defaults left out, and its incoming edges with their transforms. Former
+    component, field and port names are resolved, so two documents that load
+    into the same sensitive nodes give the same map. Parts the operations
+    would refuse to load are skipped.
+    """
+    editor = ops.editor
     nodes = doc.get("nodes") if isinstance(doc, dict) else None
     if not isinstance(nodes, dict):
-        return set()
-    return {str(n.get("component")) for n in nodes.values() if isinstance(n, dict)}
+        return {}
+    specs = {}
+    for name, node in nodes.items():
+        if isinstance(node, dict):
+            component = str(node.get("component"))
+            resolved = editor._resolve_component_id(component)
+            specs[name] = (component, resolved, editor._component_specs.get(resolved))
+
+    def port(name: str, given: str) -> str:
+        spec = specs.get(name, (None, None, None))[2]
+        return spec.resolve_name(given) if spec is not None else given
+
+    incoming: dict[str, list[tuple[str, str, str]]] = {}
+    edges = doc.get("edges")
+    for edge in edges if isinstance(edges, list) else []:
+        if not isinstance(edge, dict):
+            continue
+        source, _, source_port = str(edge.get("from")).partition(".")
+        target, _, target_port = str(edge.get("to")).partition(".")
+        incoming.setdefault(target, []).append(
+            (
+                f"{source}.{port(source, source_port)}" if source_port else source,
+                port(target, target_port),
+                _dumps(_transform_steps(edge.get("transform"))),
+            )
+        )
+
+    found = {}
+    for name, (component, resolved, spec) in specs.items():
+        if not sensitive(component):
+            continue
+        config = nodes[name].get("config") or {}
+        if isinstance(config, dict) and spec is not None:
+            resolved_config = {spec.resolve_name(str(k)): v for k, v in config.items()}
+            # A field given under both its former and its current name stays as written.
+            if len(resolved_config) == len(config):
+                defaults = {f.name: _dumps(f.default) for f in spec.config}
+                config = {k: v for k, v in resolved_config.items() if defaults.get(k) != _dumps(v)}
+        found[str(name)] = (resolved, _dumps(config), _dumps(sorted(incoming.get(name, []))))
+    return found
+
+
+def _changes_sensitive(text: t.Any, ops: DashboardOps, sensitive: t.Callable[[str], bool]) -> bool:
+    """Whether loading YAML *text* would add, remove or change a sensitive node or its inputs."""
+    if not isinstance(text, str):
+        return False
+    # The same reader the operations use, so the policy sees what they would load.
+    try:
+        doc = parse_yaml(text)
+    except DashboardYAMLError:
+        return False
+    new = _sensitive_nodes(doc, ops, sensitive)
+    try:
+        current = _sensitive_nodes(dashboard_to_dict(ops.editor), ops, sensitive)
+    except Exception:
+        logger.exception("Could not read the canvas to compare its sensitive nodes.")
+        return True
+    return new != current
 
 
 def _stores(args: dict[str, t.Any]) -> bool:
@@ -158,11 +257,13 @@ def approval_policy(
         Ids, or glob patterns such as ``"Sources/*"``, of components whose
         config can reach outside the dashboard, e.g. a SQL source or a
         component fetching a URL. Former ids that resolve to them count too.
-        Placing one (with a tool or the command palette), previewing or
-        loading YAML that places one, changing the config of one and
-        connecting or transforming an edge into one need
+        Placing one (with a tool or the command palette), changing the
+        config of one and connecting or transforming an edge into one need
         the user's approval, since the agent's input may come from text other
-        people wrote.
+        people wrote. Previewing or loading YAML needs it when the YAML adds,
+        removes or renames one, or changes its component, config or incoming
+        edges compared with the canvas; YAML that leaves them as they are
+        does not.
     ops
         The operations the tools run against, used to resolve former
         component ids and the component of a node. Required with
@@ -189,13 +290,13 @@ def approval_policy(
             command = str(args.get("command", ""))
             return command.startswith("component:") and sensitive(command[len("component:") :])
 
-        def places_sensitive(args: dict[str, t.Any]) -> bool:
-            return any(sensitive(c) for c in _components_in(args.get("dashboard_yaml")))
+        def changes_sensitive(args: dict[str, t.Any]) -> bool:
+            return _changes_sensitive(args.get("dashboard_yaml"), ops, sensitive)
 
         extra += [
             ApprovalRule("add_node", when=lambda args: sensitive(str(args.get("component")))),
-            ApprovalRule("replace_dashboard", when=places_sensitive),
-            ApprovalRule("preview_dashboard", when=places_sensitive),
+            ApprovalRule("replace_dashboard", when=changes_sensitive),
+            ApprovalRule("preview_dashboard", when=changes_sensitive),
             ApprovalRule("set_config", when=lambda args: node_is_sensitive(args.get("name"))),
             ApprovalRule("connect", when=target_is_sensitive),
             ApprovalRule("set_transform", when=target_is_sensitive),

@@ -193,10 +193,12 @@ sometimes:
 - Components run as soon as they are placed, with the user's rights. If a component's
   config can reach outside the dashboard (a SQL source, a URL fetch, an expression),
   list it in `agent_sensitive_components`. Then each of these needs the user's
-  approval: placing it with a tool or from the command palette, previewing or loading
-  YAML that places it, changing its config, and connecting or transforming an edge
-  into one of its inputs. Former ids of a renamed component (its `aliases`) count as
-  the component.
+  approval: placing it with a tool or from the command palette, changing its config,
+  connecting or transforming an edge into one of its inputs, and previewing or
+  loading YAML that adds, removes or renames one or changes its component, config or
+  incoming edges. YAML that leaves every such node as it is on the canvas runs without
+  asking, however its values are written. Former ids of a renamed component (its
+  `aliases`) count as the component.
 
 ---
 

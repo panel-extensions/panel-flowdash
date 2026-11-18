@@ -6,6 +6,7 @@ import re
 
 import param
 import pytest
+import yaml
 
 pytest.importorskip("pydantic_ai")
 
@@ -61,7 +62,32 @@ def fetch(config, instance_config):
     return "fetch"
 
 
-WITH_FETCH = {**COMPONENTS, "T/fetch": fetch}
+@register(page=False, component=True, title="Text", provides=[{"key": "text", "type": "str"}])
+def text(config):
+    config.text = "http://y"
+    return "text"
+
+
+class QueryConfig(param.Parameterized):
+    sql = param.String(default="")
+    limit = param.Integer(default=10)
+
+
+@register(
+    page=False,
+    component=True,
+    title="Query",
+    config_schema=QueryConfig,
+    aliases=["Old/query"],
+    port_aliases={"query": "sql", "source": "table"},
+    provides=[{"key": "rows", "type": "str"}],
+    requires=[{"key": "table", "type": "str", "required": False}],
+)
+def query(config, instance_config):
+    return "query"
+
+
+WITH_FETCH = {**COMPONENTS, "T/fetch": fetch, "T/text": text, "T/query": query}
 
 
 def _results(messages):
@@ -526,6 +552,144 @@ class TestSensitiveComponents:
             "set_transform", {"source": f"{source}.value", "target": f"{target}.url"}
         )
         assert not policy.requires_approval("set_config", {"name": source, "config": {}})
+
+    @pytest.fixture
+    async def wired(self, live):
+        """A text node feeding a query node through a transform, and a number node."""
+        _, ops = self._run(live)
+        ops.add_node("T/text", name="t")
+        ops.add_node("T/query", {"sql": "SELECT 1", "limit": 5}, name="f")
+        ops.add_node("T/query", name="g")
+        ops.add_node("T/number", name="n")
+        ops.connect("t.text", "f.table", [{"op": "format", "prefix": "a"}])
+        ops.connect("f.rows", "g.table")
+        policy = approval_policy(sensitive_components=["T/query"], ops=ops)
+        return ops, policy, yaml.safe_load(ops.get_dashboard())
+
+    @staticmethod
+    def _asks(policy, doc, tool="replace_dashboard"):
+        text = doc if isinstance(doc, str) else yaml.safe_dump(doc, sort_keys=False)
+        return policy.requires_approval(tool, {"dashboard_yaml": text})
+
+    def _edited(self, doc, edit):
+        doc = yaml.safe_load(yaml.safe_dump(doc))
+        edit(doc)
+        return doc
+
+    @pytest.mark.parametrize(
+        "edit",
+        [
+            pytest.param(lambda d: None, id="unchanged"),
+            pytest.param(lambda d: d["nodes"]["n"].update(position=[5, 5]), id="move"),
+            pytest.param(lambda d: d["nodes"].update(m={"component": "T/number"}), id="add-other"),
+            pytest.param(lambda d: d["nodes"].pop("n"), id="remove-other"),
+            pytest.param(lambda d: d["nodes"]["t"].update(position=[1, 1]), id="move-source"),
+            pytest.param(lambda d: d["settings"].update(description="x"), id="settings"),
+            pytest.param(lambda d: d["nodes"]["f"].update(component="Old/query"), id="former-id"),
+            pytest.param(
+                lambda d: d["nodes"]["g"].update(config={"sql": "", "limit": 10.0}),
+                id="default-written-out",
+            ),
+            pytest.param(
+                lambda d: d["edges"].append({"from": "f.rows", "to": "n.value"}),
+                id="outgoing-edge",
+            ),
+            pytest.param(lambda d: d["edges"].reverse(), id="edge-order"),
+        ],
+    )
+    @pytest.mark.parametrize("tool", ["preview_dashboard", "replace_dashboard"])
+    async def test_yaml_leaving_sensitive_nodes_alone_does_not_ask(self, wired, edit, tool):
+        _, policy, doc = wired
+        assert not self._asks(policy, self._edited(doc, edit), tool)
+
+    @pytest.mark.parametrize(
+        "edit",
+        [
+            pytest.param(
+                lambda d: d["nodes"].update(h={"component": "T/query"}), id="add-sensitive"
+            ),
+            pytest.param(lambda d: d["nodes"].pop("g"), id="remove-sensitive"),
+            pytest.param(lambda d: d["nodes"].update(h=d["nodes"].pop("g")), id="rename"),
+            pytest.param(lambda d: d["nodes"]["g"].update(component="T/text"), id="to-other"),
+            pytest.param(lambda d: d["nodes"]["n"].update(component="T/query"), id="to-sensitive"),
+            pytest.param(
+                lambda d: d["nodes"]["f"].update(config={"sql": "SELECT 2"}), id="config"
+            ),
+            pytest.param(lambda d: d["nodes"]["f"].pop("config"), id="config-to-default"),
+            pytest.param(lambda d: d["edges"].pop(0), id="disconnect"),
+            pytest.param(lambda d: d["edges"][0].update({"from": "f.rows"}), id="rewire"),
+            pytest.param(
+                lambda d: d["edges"].append({"from": "t.text", "to": "g.table"}), id="connect"
+            ),
+            pytest.param(
+                lambda d: d["edges"][0]["transform"][0].update(prefix="b"), id="change-transform"
+            ),
+            pytest.param(lambda d: d["edges"][0].pop("transform"), id="drop-transform"),
+            pytest.param(
+                lambda d: d["edges"][1].update(transform=[{"op": "format", "suffix": "!"}]),
+                id="add-transform",
+            ),
+            pytest.param(lambda d: d.pop("nodes"), id="empty"),
+        ],
+    )
+    @pytest.mark.parametrize("tool", ["preview_dashboard", "replace_dashboard"])
+    async def test_yaml_changing_a_sensitive_node_or_its_inputs_asks(self, wired, edit, tool):
+        _, policy, doc = wired
+        assert self._asks(policy, self._edited(doc, edit), tool)
+
+    async def test_how_values_are_written_does_not_count(self, wired):
+        _, policy, _ = wired
+
+        def written(limit="5", step="{op: format, prefix: a}", sql="SELECT 1"):
+            return (
+                "flowdash: 1\nnodes:\n  t: {component: T/text}\n"
+                f"  f: {{component: T/query, config: {{sql: {sql}, limit: {limit}}}}}\n"
+                "  g: {component: T/query}\n  n: {component: T/number}\nedges:\n"
+                f"  - {{from: t.text, to: f.table, transform: [{step}]}}\n"
+                "  - {from: f.rows, to: g.table}\n"
+            )
+
+        assert not self._asks(policy, written())
+        assert not self._asks(policy, written(limit="5.0"))
+        assert not self._asks(policy, written(limit="0x5"))
+        assert not self._asks(policy, written(step="{prefix: a, op: format}"))
+        assert not self._asks(policy, written(step="{op: format, prefix: a, suffix: ''}"))
+        assert not self._asks(policy, written(sql="'SELECT 1'"))
+        renamed = written().replace("sql: SELECT 1", "query: SELECT 1")
+        assert not self._asks(policy, renamed.replace("to: f.table", "to: f.source"))
+        assert self._asks(policy, written().replace("{sql:", "{query: SELECT 2, sql:"))
+        assert self._asks(policy, written(limit="5.5"))
+        assert self._asks(policy, written(limit="'5'"))
+        assert self._asks(policy, written(step="{op: format, prefix: b}"))
+
+    async def test_unreadable_or_missing_yaml_does_not_ask(self, wired):
+        _, policy, _ = wired
+        assert not self._asks(policy, "nodes: [unclosed", "preview_dashboard")
+        assert not policy.requires_approval("preview_dashboard", {})
+
+    async def test_editing_around_a_sensitive_node_runs_without_asking(self, live):
+        _, ops = self._run(live)
+        ops.add_node("T/fetch", {"url": "http://x"}, name="f")
+        FETCHED.clear()
+        doc = yaml.safe_load(ops.get_dashboard())
+        doc["nodes"]["n"] = {"component": "T/number"}
+        text = ops.get_dashboard().splitlines()[0] + "\n" + yaml.safe_dump(doc, sort_keys=False)
+        runner, _ = self._run(live, ("replace_dashboard", {"dashboard_yaml": text}))
+        output = await runner.run("Add a number")
+        assert "Replaced the dashboard" in output
+        assert not runner.state.approvals
+        assert {i["component_id"] for i in live._editor._tile_items} == {"T/fetch", "T/number"}
+
+    async def test_removing_a_sensitive_node_with_yaml_asks(self, live):
+        _, ops = self._run(live)
+        ops.add_node("T/fetch", {"url": "http://x"}, name="f")
+        doc = yaml.safe_load(ops.get_dashboard())
+        doc["nodes"] = {"n": {"component": "T/number"}}
+        text = ops.get_dashboard().splitlines()[0] + "\n" + yaml.safe_dump(doc, sort_keys=False)
+        runner, _ = self._run(live, ("replace_dashboard", {"dashboard_yaml": text}))
+        await runner.run("Swap it")
+        assert [r.tool_name for r in runner.state.approvals.values()] == ["replace_dashboard"]
+        assert [i["component_id"] for i in live._editor._tile_items] == ["T/fetch"]
 
     def test_sensitive_components_need_the_operations(self):
         with pytest.raises(ValueError, match="needs ops"):
