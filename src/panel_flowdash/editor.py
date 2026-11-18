@@ -36,6 +36,7 @@ import param
 from panel.viewable import Children, Viewer
 from panel_tiles import TileGrid
 
+from panel_flowdash import auto_layout
 from panel_flowdash.auth import Permission
 from panel_flowdash.component_library import normalize_components
 from panel_flowdash.component_spec import _flowdash_metadata, build_component_specs
@@ -68,7 +69,14 @@ from panel_flowdash.registry import RegistryEntry
 from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transform_editor import TransformEditor
 from panel_flowdash.transforms import parse_transform, summarize_transform
-from panel_flowdash.turns import DashboardTurn, TurnLog, change_labels, strip_questions
+from panel_flowdash.turns import (
+    DashboardTurn,
+    TurnLog,
+    agent_edits,
+    change_labels,
+    strip_questions,
+)
+from panel_flowdash.ui import tile_layout
 from panel_flowdash.ui.controls_bar import ControlsBar
 from panel_flowdash.ui.dashboard_bar import DashboardBar
 from panel_flowdash.ui.fullscreen import (
@@ -94,11 +102,13 @@ from panel_flowdash.ui.layout_panel import GRID_EDIT_CSS, LayoutPanel
 from panel_flowdash.ui.node_card import (
     CARD_WIDTH,
     NodeCard,
+    card_height,
     node_card,
     placeholder_card,
     port_tops,
 )
 from panel_flowdash.ui.palette import ComponentPalette, palette_entry, palette_items
+from panel_flowdash.ui.roles import component_role
 from panel_flowdash.ui.settings_dialog import SettingsDialog
 from panel_flowdash.ui.split_view import SplitView
 from panel_flowdash.ui.states import StartCard
@@ -111,7 +121,7 @@ from panel_flowdash.ui.text import (
     text_typography,
 )
 from panel_flowdash.ui.tile import TILE_KEY_PREFIX, Tile
-from panel_flowdash.ui.tile_bands import base_band, reference_width
+from panel_flowdash.ui.tile_bands import band_labels, base_band, reference_width
 from panel_flowdash.util import (
     close_dialog,
     gate_view,
@@ -126,7 +136,7 @@ from panel_flowdash.util import (
     panel_viewer,
     stepped,
 )
-from panel_flowdash.widgets import BUILTIN_COMPONENTS
+from panel_flowdash.widgets import BUILTIN_COMPONENTS, TEXT_COMPONENTS
 
 try:
     from panel_reactflow.base import _validate_data as _validate_node_data
@@ -1046,6 +1056,18 @@ class FlowDash(Viewer):
         # The turns of the dashboard and the turn each item was created in.
         self._turn_log = TurnLog()
         self._origins: dict[str, str] = {}
+        # Nodes whose canvas position and tiles whose layout the editor chose
+        # rather than a person, so the editor may move them again, see
+        # `_settle_nodes` and `_place_new_tiles`.
+        self._floating_nodes: set[str] = set()
+        self._auto_tiles: set[str] = set()
+        # Set when the editor moved nodes, so the canvas fits them once the agent's request ends.
+        self._fit_pending = False
+        # While an agent request runs, the tiles it adds wait here to be laid out once it ends.
+        self._deferred_tiles: set[str] | None = None
+        self._deferred_rearrange = False
+        # Set when deferred tiles were laid out, for the agent session to publish the result.
+        self._layout_released = False
         self._hydrating = False
         self._recording_edit = False
         self.param.watch(self._on_dirty, "dirty", onlychanged=False)
@@ -1686,6 +1708,8 @@ class FlowDash(Viewer):
         """
         self._dataflow_graph.remove_node(node_id)
         self._forget_layout(node_id)
+        self._floating_nodes.discard(node_id)
+        self._auto_tiles.discard(node_id)
         self._inspect_tiles.pop(node_id, None)
         if self._inspected_id == node_id:
             self._close_inspection_dialog()
@@ -2512,10 +2536,7 @@ class FlowDash(Viewer):
         self._import_dialog = self._build_import_dialog()
         self._inspect_dialog = make_inspect_sheet()
         # Saving is only offered with unsaved changes, and rearranging is a change.
-        self._flow.on(
-            "node_moved",
-            lambda _payload: self._mark_rearranged("Moved nodes on the canvas", "move_nodes"),
-        )
+        self._flow.on("node_moved", self._on_node_moved)
         self._tile_grid.param.watch(self._on_tile_layout_edited, ["layout", "responsive_layouts"])
         self._settings_dialog = self._build_settings_dialog()
         self._settings_button.on_click(lambda _event: self._settings_view.show("general"))
@@ -2607,11 +2628,20 @@ class FlowDash(Viewer):
         if self.editable:
             self._record_edit(label, op=op)
 
+    def _on_node_moved(self, payload):
+        node_id = payload.get("node_id") if isinstance(payload, dict) else None
+        if node_id is None:
+            self._floating_nodes.clear()
+        else:
+            self._floating_nodes.discard(node_id)
+        self._mark_rearranged("Moved nodes on the canvas", "move_nodes")
+
     def _on_tile_layout_edited(self, event):
         # Only a layout the browser sent was edited by the user; the editor sets
         # it itself whenever the grid is rebuilt or sized.
         from_browser = self._tile_grid._in_process__events.get(pn.state.curdoc, {})
         if event.name in from_browser:
+            self._auto_tiles.clear()
             self._mark_rearranged()
 
     def _build_clear_dialog(self):
@@ -2916,6 +2946,8 @@ class FlowDash(Viewer):
             self._stash_tile_layout()
             self._workspace_area[:] = [self._flow, *dialogs]
             self._rebuild_sidebar()
+        if showing_canvas:
+            self._fit_placed_nodes()
         self._sync_tile_selection()
 
     @param.depends("mode", watch=True)
@@ -3234,8 +3266,53 @@ class FlowDash(Viewer):
         failed or was cancelled. Each request's edits then become one version
         of the edit history.
         """
+        self._release_tile_layout()
         self._turn_log.end_agent_turns()
         self._history.end_requests()
+        self._fit_placed_nodes()
+
+    def _defer_tile_layout(self):
+        """Lay out the tiles added from now on once the agent's request ends, all at once.
+
+        Laying the grid out again for each tile the agent adds would rebuild
+        every tile on screen once per tile.
+        """
+        if self._deferred_tiles is None:
+            self._deferred_tiles = set()
+
+    def _release_tile_layout(self, run_id: str | None = None):
+        """Lay out the tiles added while the layout was deferred.
+
+        The layout is an edit of the agent's request *run_id*, by default the
+        one request with edits not yet in the history, so it joins that
+        request's version.
+        """
+        pending, self._deferred_tiles = self._deferred_tiles, None
+        rearrange, self._deferred_rearrange = self._deferred_rearrange, False
+        if pending is None:
+            return
+        shown = {item["instance_id"] for item in tile_layout.grid_tiles(self)}
+        pending &= shown
+        if not (pending or rearrange):
+            return
+        if self._all_tiles_automatic(pending):
+            self._arrange_tiles()
+        else:
+            self._place_new_tiles(pending)
+        run_id = run_id or self._history.request_run()
+        if run_id is None:
+            self._mark_dirty()
+        else:
+            # No label: the edits that added the tiles describe the turn already.
+            with agent_edits(run_id):
+                self._record_edit(op="arrange_layout")
+        self._layout_released = True
+
+    def _fit_placed_nodes(self):
+        """Fit the canvas to its nodes after the editor placed some, while the canvas is shown."""
+        if self._fit_pending and (not self._grid_on_screen or self.mode == "split"):
+            self._fit_pending = False
+            self._flow.fit_view()
 
     def _record_edit(
         self,
@@ -3307,6 +3384,8 @@ class FlowDash(Viewer):
         config: dict | None = None,
         position: dict | tuple | None = None,
         instance_id: str | None = None,
+        *,
+        arrange: bool = False,
     ) -> str:
         """Place a component on the canvas and return its instance id.
 
@@ -3318,13 +3397,19 @@ class FlowDash(Viewer):
             Design-time configuration overrides for this instance.
         position
             Canvas position as ``{"x": ..., "y": ...}`` or ``(x, y)``. Defaults
-            to the next free slot in a three-column grid.
+            to a free spot near the top-left of the visible canvas.
         instance_id
             Id for the new instance, which is also its node's name in the
             dashboard YAML, as a node a YAML file names gets it. It must be a
             valid node name without ``__``, at most ``MAX_NAME_LENGTH`` (64)
             characters, that no node on the canvas has.
             Defaults to a generated ``<component>_<6 hex>`` id.
+        arrange
+            Without a *position*, place the node by its dataflow, beside the
+            nodes it is connected to, and move it again as it is connected
+            until someone moves it by hand, and lay its tile out with the
+            tiles of its kind (see :mod:`panel_flowdash.auto_layout`). The
+            agent's ``add_node`` does this.
 
         Returns
         -------
@@ -3356,12 +3441,17 @@ class FlowDash(Viewer):
             raise PermissionError(f"You are not authorized to use '{title}'.")
         if instance_id is not None:
             self._check_instance_id(instance_id)
+        automatic = arrange and position is None
         instance_id = self._place(
             component_id,
             instance_id or self._new_instance_id(component_id),
             config or {},
             position,
         )
+        if automatic:
+            self._floating_nodes.add(instance_id)
+            self._settle_nodes()
+            self._place_new_tiles([instance_id])
         name = self._node_name(instance_id)
         self._record_edit(
             f"Added {name}",
@@ -3529,6 +3619,192 @@ class FlowDash(Viewer):
             y += _PLACEMENT_CASCADE
         return {"x": x, "y": y}
 
+    # ------------------------------------------------------------------
+    # Automatic layout
+    # ------------------------------------------------------------------
+
+    def _node_role(self, component_id: str) -> str:
+        entry = self._component_entries.get(component_id)
+        spec = self._component_specs.get(component_id)
+        if entry is None or spec is None:
+            return "other"
+        return component_role(entry, spec.inputs, spec.outputs)
+
+    def _node_boxes(self) -> list[auto_layout.NodeBox]:
+        """Return the nodes on the canvas with their cards' sizes and roles, in placement order."""
+        components = {item["instance_id"]: item for item in self._tile_items}
+        boxes = []
+        for node in self._flow.nodes:
+            view = node.get("view")
+            item = components.get(node["id"])
+            role = "other"
+            if item is not None and "placeholder" not in item:
+                role = self._node_role(item["component_id"])
+            height = view.height if isinstance(view, NodeCard) else card_height(1, 1)
+            boxes.append(auto_layout.NodeBox(node["id"], CARD_WIDTH, height, role))
+        return boxes
+
+    def _node_edges(self) -> list[tuple[str, str]]:
+        edges = [(e["source"], e["target"]) for e in self._dataflow_graph.edges]
+        return edges + [(u.edge.source, u.edge.target) for u in self._unresolved_edges]
+
+    def _move_nodes(self, positions: dict[str, tuple[float, float]]):
+        current = {node["id"]: node.get("position") or {} for node in self._flow.nodes}
+        with self._muted_canvas():
+            for node_id, (x, y) in positions.items():
+                position = {"x": round(x, 1), "y": round(y, 1)}
+                if node_id in current and current[node_id] != position:
+                    self._flow.patch_node_props(node_id, {"position": position})
+                    self._fit_pending = True
+
+    def _settle_nodes(self):
+        """Lay the nodes the editor placed out again, around the nodes placed by hand or a file."""
+        if not self._floating_nodes or self._hydrating or self._canvas_batch is not None:
+            return
+        boxes = self._node_boxes()
+        fixed = {
+            node["id"]: (node["position"]["x"], node["position"]["y"])
+            for node in self._flow.nodes
+            if node["id"] not in self._floating_nodes
+        }
+        self._move_nodes(auto_layout.place_nodes(boxes, self._node_edges(), fixed))
+
+    def arrange_canvas(self):
+        """Lay out every node on the canvas by its dataflow, as one edit.
+
+        Sources go on the left and views on the right, in columns by their
+        depth in the dataflow, ordered to reduce crossing edges. Positions
+        set by hand are replaced too; that is what the request is for.
+        """
+        nodes = self._flow.nodes
+        if not nodes:
+            return
+        initial = {node["id"]: node["position"]["y"] for node in nodes}
+        self._move_nodes(
+            auto_layout.arrange_graph(self._node_boxes(), self._node_edges(), initial=initial)
+        )
+        self._floating_nodes.clear()
+        self._record_edit("Arranged the dataflow", op="arrange_canvas")
+        self._fit_placed_nodes()
+
+    def _tile_box(self, item: dict) -> auto_layout.TileBox:
+        spec = self._tile_spec(item)
+        entry = self._component_entries.get(item["component_id"])
+        if "placeholder" in item or spec is None or entry is None:
+            return auto_layout.TileBox(item["instance_id"], "chart")
+        kind = auto_layout.tile_kind(
+            self._node_role(item["component_id"]),
+            entry.metadata.tags,
+            spec.default_size,
+            text=item["component_id"] in TEXT_COMPONENTS,
+        )
+        return auto_layout.TileBox(
+            item["instance_id"],
+            kind,
+            dict(spec.default_size or {}),
+            dict(spec.min_size or {}),
+            dict(spec.max_size or {}),
+        )
+
+    def _tile_bands(self) -> tuple[int, dict[str, float]]:
+        """Return the width the layout is arranged at and the width each band is laid out for."""
+        config = self._grid_config()
+        breakpoints = list(config["breakpoints"] or self.breakpoints)
+        width = reference_width(config["reference_width"], breakpoints)
+        return width, auto_layout.band_widths(breakpoints, band_labels(breakpoints))
+
+    def _set_tile_layout(self, layout: list[dict], responsive: dict[str, list[dict]]):
+        config = self._grid_config()
+        config["responsive_layouts"] = responsive
+        self._pending_tile_layout = layout
+        self._pending_grid_config = config
+        # A grid not built yet takes the layout when it is, so the tiles not
+        # arranged keep having no entry of their own until then.
+        if self._grid_populated:
+            self._rebuild_tile_grid()
+
+    def _all_tiles_automatic(self, new: t.Collection[str] = ()) -> bool:
+        """Whether the editor laid out every tile, counting the *new* ones as its own."""
+        deferred = self._deferred_tiles or ()
+        return all(
+            iid in self._auto_tiles or iid in new or iid in deferred
+            for iid in (item["instance_id"] for item in tile_layout.grid_tiles(self))
+        )
+
+    def _tile_order(self) -> list[dict]:
+        """Return the shown tiles in display order: by layout index, else in placement order."""
+        tiles = tile_layout.grid_tiles(self)
+        rank = {e["instance_id"]: e.get("index") for e in self.layout if "instance_id" in e}
+
+        def key(i):
+            index = rank.get(tiles[i]["instance_id"])
+            return (index is None, index or 0, i)
+
+        return [tiles[i] for i in sorted(range(len(tiles)), key=key)]
+
+    def _arrange_tiles(self):
+        """Lay out every visible tile by its kind."""
+        boxes = [self._tile_box(item) for item in self._tile_order()]
+        width, _ = self._tile_bands()
+        previous = {e["instance_id"]: e for e in self.layout}
+        layout = auto_layout.arrange_tiles(boxes, width, previous)
+        shown = {box.id for box in boxes}
+        hidden = [dict(e) for e in self.layout if e.get("instance_id") not in shown]
+        for index, entry in enumerate(hidden, start=len(layout)):
+            entry["index"] = index
+        # Narrower bands follow the arranged layout, rather than keep layouts made for the old one.
+        self._set_tile_layout(layout + hidden, {})
+        self._auto_tiles = shown
+
+    def _place_new_tiles(self, instance_ids: t.Iterable[str]):
+        """Give the tiles of *instance_ids*, which nobody laid out yet, a place among the others.
+
+        While no tile was laid out by a person every tile is arranged again;
+        otherwise the new tiles join the tiles of their kind and the rest
+        stay as they are.
+        """
+        if self._deferred_tiles is not None:
+            self._deferred_tiles.update(instance_ids)
+            return
+        tiles = {item["instance_id"]: item for item in tile_layout.grid_tiles(self)}
+        new = [iid for iid in instance_ids if iid in tiles]
+        if not new:
+            return
+        if self._all_tiles_automatic(new):
+            self._arrange_tiles()
+            return
+        boxes = [self._tile_box(tiles[iid]) for iid in new]
+        kinds = {iid: self._tile_box(item).kind for iid, item in tiles.items()}
+        order = [item["instance_id"] for item in self._tile_order()]
+        width, bands = self._tile_bands()
+
+        def insert(entries, width):
+            previous = {e["instance_id"]: e for e in entries if e.get("instance_id") in new}
+            entries = [e for e in entries if e.get("instance_id") not in new]
+            return auto_layout.insert_tiles(entries, order, kinds, boxes, width, previous)
+
+        layout = insert(self.layout, width)
+        responsive = {
+            band: insert(entries, bands.get(band, width))
+            for band, entries in self._grid_config()["responsive_layouts"].items()
+        }
+        self._set_tile_layout(layout, responsive)
+        self._auto_tiles.update(new)
+
+    def arrange_layout(self):
+        """Lay out every visible tile by its kind, as one edit.
+
+        Controls go first, then KPIs, both at their default width, charts in
+        two columns, tables at full width and the tiles of data sources and
+        transforms last; text tiles stay in front of the tile they preceded.
+        Hidden tiles stay hidden. Layouts made for narrower breakpoint bands
+        are dropped, so those bands follow the arranged layout again.
+        """
+        if not tile_layout.grid_tiles(self):
+            return
+        self._arrange_tiles()
+        self._record_edit("Arranged the tile layout", op="arrange_layout")
+
     def _placed_singletons(self) -> set[str]:
         return {
             item["component_id"]
@@ -3539,7 +3815,13 @@ class FlowDash(Viewer):
 
     def remove_component(self, instance_id: str):
         """Remove a placed component along with its edges and its tile."""
+        rearrange = instance_id in self._auto_tiles and self._all_tiles_automatic()
         self._unplace(instance_id)
+        self._settle_nodes()
+        if rearrange and self._deferred_tiles is not None:
+            self._deferred_rearrange = True
+        elif rearrange:
+            self._arrange_tiles()
         name = self._node_name(instance_id)
         self._record_edit(f"Removed {name}", op="remove_node", args={"name": name})
         self._sync_placed()
@@ -3603,6 +3885,7 @@ class FlowDash(Viewer):
                 **(self._edge_chip(mapping) if transform or self._edge_failed(mapping) else {}),
             }
         )
+        self._settle_nodes()
         self._record_edit(
             self._connect_label("Connected", *mapping),
             op="connect",
@@ -3720,6 +4003,7 @@ class FlowDash(Viewer):
                 self._drop_edge_editor(edge_id)
                 with self._muted_canvas():
                     self._flow.remove_edge(edge_id)
+        self._settle_nodes()
         self._record_edit(
             self._connect_label("Disconnected", *mapping),
             op="disconnect",
@@ -3739,6 +4023,8 @@ class FlowDash(Viewer):
         """Tear down all node/edge state, clear the ReactFlow canvas and dispose the components."""
         for node_id in list(self._dataflow_graph.node_ids):
             self._dataflow_graph.remove_node(node_id)
+        self._floating_nodes = set()
+        self._auto_tiles = set()
         self._tile_items = []
         self._tile_objects = []
         self._inspect_tiles.clear()
@@ -4603,12 +4889,16 @@ class FlowDash(Viewer):
         """
         from panel_flowdash.agent.yaml_format import dashboard_to_dict
 
-        model = self._imported_model(data)
+        unplaced: set[str] = set()
+        model = self._imported_model(data, unplaced)
         before = dashboard_to_dict(self)
+        automatic = self._keep_automatic_layout(model, unplaced)
         if not keep_turns:
             present = {item["instance_id"] for item in self._tile_items}
             with self._quiet_history():
                 self.load_model(model)
+                self._apply_automatic_layout(*automatic)
+            self._fit_placed_nodes()
             self._record_import(model, before, present)
             return model
         model.turns = self._turn_log.snapshot()
@@ -4618,6 +4908,7 @@ class FlowDash(Viewer):
         self.ensure_components_loaded(self._model_component_ids(model))
         with self._quiet_history():
             self._hydrate_model(model, keep_open_turns=True)
+            self._apply_automatic_layout(*automatic)
         labels = change_labels(before, dashboard_to_dict(self))
         if not labels:
             self._mark_dirty()
@@ -4628,6 +4919,65 @@ class FlowDash(Viewer):
             created=[item.instance_id for item in model.items if item.instance_id not in present],
         )
         return model
+
+    def _keep_automatic_layout(
+        self, model: DashboardModel, unplaced: set[str]
+    ) -> tuple[set[str], set[str], dict[str, dict], set[str]]:
+        """Work out which nodes and tiles of an imported *model* the editor lays out.
+
+        A node the file gives no position keeps the one it has on the canvas,
+        unless the editor chose that one. The nodes the editor placed and
+        tiles it laid out stay its own while the file leaves them as they are.
+        Returns the nodes to lay out, the tiles the editor laid out with
+        their entries before, and the tiles to lay out.
+        """
+        positions = {node["id"]: node["position"] for node in self._flow.nodes}
+        floating = set(unplaced)
+        for item in model.items:
+            position = positions.get(item.instance_id)
+            if position is None:
+                continue
+            if item.instance_id in self._floating_nodes:
+                if item.instance_id in unplaced or (item.x, item.y) == (
+                    position["x"],
+                    position["y"],
+                ):
+                    floating.add(item.instance_id)
+            elif item.instance_id in unplaced:
+                item.x, item.y = position["x"], position["y"]
+                floating.discard(item.instance_id)
+        entries = {
+            e["instance_id"]: e for e in self.layout if e["instance_id"] in self._auto_tiles
+        }
+        laid_out = {e.get("instance_id") for e in model.tile_layout}
+        # A tile the file gives no layout keeps the one it has, unless the editor chose it.
+        kept = {item["instance_id"] for item in self._tile_items} - self._auto_tiles
+        kept -= self._deferred_tiles or set()
+        unarranged = {item.instance_id for item in model.items} - laid_out - kept
+        return floating, set(self._auto_tiles), entries, unarranged
+
+    def _apply_automatic_layout(
+        self,
+        floating: set[str],
+        auto_tiles: set[str],
+        entries: dict[str, dict],
+        new_tiles: set[str],
+    ):
+        """Lay out the nodes and tiles of a loaded import, see `_keep_automatic_layout`."""
+        placed = {item["instance_id"] for item in self._tile_items}
+        self._floating_nodes = floating & placed
+
+        def size(entry):
+            return {k: entry.get(k) for k in ("width", "height", "visible")}
+
+        layout = {e["instance_id"]: e for e in self.layout}
+        self._auto_tiles = {
+            iid
+            for iid in (auto_tiles & placed) - new_tiles
+            if size(layout.get(iid, {})) == size(entries.get(iid, {}))
+        }
+        self._settle_nodes()
+        self._place_new_tiles(new_tiles & placed)
 
     def _mark_dirty(self):
         """Mark the canvas changed without noting an edit in a turn."""
@@ -4659,12 +5009,19 @@ class FlowDash(Viewer):
             ],
         )
 
-    def _imported_model(self, data: dict | str | bytes) -> DashboardModel:
-        """Parse an export into a model that takes the loaded dashboard's identity."""
+    def _imported_model(
+        self, data: dict | str | bytes, unplaced: set[str] | None = None
+    ) -> DashboardModel:
+        """Parse an export into a model that takes the loaded dashboard's identity.
+
+        The ids of the nodes a dashboard in the YAML format gives no position
+        are added to *unplaced*.
+        """
         from panel_flowdash.agent.yaml_format import (
             dashboard_from_dict,
             is_dashboard_yaml,
             read_dashboard_text,
+            unplaced_nodes,
         )
 
         current = self.dashboard
@@ -4672,7 +5029,9 @@ class FlowDash(Viewer):
             data = read_dashboard_text(data)
         if is_dashboard_yaml(data):
             # Names map back to the ids of the canvas they were exported from.
-            data = dashboard_from_dict(data, base=self.export_dashboard())
+            doc, data = data, dashboard_from_dict(data, base=self.export_dashboard())
+            if unplaced is not None:
+                unplaced |= unplaced_nodes(doc, data)
         if not isinstance(data, dict) or not isinstance(data.get("items"), list):
             raise ValueError("Not a FlowDash dashboard export.")
         try:

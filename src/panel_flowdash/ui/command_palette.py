@@ -327,6 +327,25 @@ class CommandPaletteController:
                         "keys": ["S"],
                     }
                 )
+                if not editor.read_only and editor._tile_items:
+                    actions.append(
+                        {
+                            "id": "action:arrange_canvas",
+                            "title": "Arrange dataflow",
+                            "subtitle": "Lay out the nodes from sources to views",
+                            "icon": "account_tree",
+                            "keywords": "arrange layout tidy auto canvas graph nodes",
+                        }
+                    )
+                    actions.append(
+                        {
+                            "id": "action:arrange_layout",
+                            "title": "Arrange layout",
+                            "subtitle": "Lay out the tiles by kind for every screen size",
+                            "icon": "dashboard",
+                            "keywords": "arrange layout tidy auto tiles grid",
+                        }
+                    )
                 actions.append(
                     {
                         "id": "action:view",
@@ -513,6 +532,10 @@ class CommandPaletteController:
             editor._dashboard_bar.request_mode("view")
         elif action == "split" and editor.editable:
             editor.toggle_split()
+        elif action == "arrange_canvas" and editor.editable and not editor.read_only:
+            editor.arrange_canvas()
+        elif action == "arrange_layout" and editor.editable and not editor.read_only:
+            editor.arrange_layout()
         elif action == "save" and editor.editable:
             app._save_current_dashboard()
         elif action in ("undo", "redo") and editor.editable and not editor.read_only:

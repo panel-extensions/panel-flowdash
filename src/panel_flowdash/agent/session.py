@@ -121,6 +121,22 @@ class AgentSession:
         if history.active:
             history.flush()
             return
+        self._publish_changes()
+
+    def publish_agent_layout(self, run_id: str | None):
+        """Publish the tiles laid out when the agent's request *run_id* ended as its version.
+
+        The editor lays out the tiles a request adds once it ends (see
+        ``FlowDashDeps.start_request``), after its last tool published the
+        dashboard. With the edit history on, that layout is part of the
+        request's own version instead.
+        """
+        editor = self.ops.editor
+        released, editor._layout_released = editor._layout_released, False
+        if released and not editor.edit_history.active:
+            self._publish_changes(run_id=run_id, actor="agent")
+
+    def _publish_changes(self, **who):
         current = self.app._current_dashboard
         if current is None:
             return
@@ -135,7 +151,7 @@ class AgentSession:
         except PermissionError:
             return
         state.publish_artifact(
-            artifact_id, text, kind=ARTIFACT_KIND, title=current.title, applied=True
+            artifact_id, text, kind=ARTIFACT_KIND, title=current.title, applied=True, **who
         )
 
     def dock(self, content):
@@ -282,6 +298,7 @@ class _SessionRunner(AgentRunner):
             return await super().run(prompt, **kwargs)
         finally:
             self.deps.end_request()
+            self._session.publish_agent_layout(self.run_id)
 
 
 _PUBLISHED_NOTE = re.compile(

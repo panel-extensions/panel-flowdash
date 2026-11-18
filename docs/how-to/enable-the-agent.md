@@ -226,6 +226,10 @@ ops.connect("filter.filtered", "total_capacity.turbines")
 print(ops.preview()["nodes"]["total_capacity"]["status"])
 ```
 
+Without a `position`, `add_node` lets the editor place the node by its dataflow and its
+tile with the tiles of its kind, see
+[Automatic arrangement](layout-and-sizing.md#automatic-arrangement), and
+`ops.arrange_canvas()` and `ops.arrange_layout()` rearrange everything on request.
 Without `name`, `add_node` gives the node a generated name such as `kpi_3fa2c1` and
 returns it. A chosen name follows the rules for
 [node names](../reference/dashboard-yaml.md#nodes) and is at most 64 characters long,

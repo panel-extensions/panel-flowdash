@@ -134,6 +134,30 @@ class TestItems:
         assert (component["hint"], component["subtitle"]) == ("Add", "Add to this dashboard")
         assert _item(controller, "action:save")["keys"] == ["Mod", "S"]
 
+    async def test_arrange_actions_with_components_to_arrange(self, app):
+        _open(app, edit=True, components=[SELECTOR, CHART])
+        controller = app._command_palette
+        actions = _ids(controller, "Actions")
+        assert actions[actions.index("action:split") + 1 :][:2] == [
+            "action:arrange_canvas",
+            "action:arrange_layout",
+        ]
+        editor = app._editor
+        editor._flow.patch_node_props(
+            editor._tile_items[1]["instance_id"], {"position": {"x": 0, "y": 0}}
+        )
+        editor._flow.patch_node_props(
+            editor._tile_items[0]["instance_id"], {"position": {"x": 0, "y": 0}}
+        )
+        controller.run("action:arrange_canvas")
+        assert len({(n["position"]["x"], n["position"]["y"]) for n in editor._flow.nodes}) == 2
+        assert editor.turns[-1].summary.endswith("Arranged the dataflow.")
+        controller.run("action:arrange_layout")
+        assert editor.turns[-1].summary.endswith("Arranged the tile layout.")
+        assert {e["instance_id"] for e in editor.layout} == {
+            item["instance_id"] for item in editor._tile_items
+        }
+
     async def test_save_says_whether_there_are_changes(self, app):
         _open(app, edit=True)
         controller = app._command_palette

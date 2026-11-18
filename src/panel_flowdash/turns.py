@@ -367,7 +367,10 @@ def change_labels(old: t.Any, new: t.Any) -> list[str]:
     from panel_flowdash.agent.diff import dashboard_changes
 
     labels: list[str] = []
-    for change in dashboard_changes(old, new):
+    changes = dashboard_changes(old, new)
+    # The tile of a node added or removed comes and goes with it.
+    placed = {c.path[1] for c in changes if c.path[0] == "nodes" and len(c.path) == 2}
+    for change in changes:
         path = change.path
         if path[0] == "nodes" and len(path) == 2:
             label = f"{'Added' if change.op == 'add' else 'Removed'} {path[1]}"
@@ -385,6 +388,8 @@ def change_labels(old: t.Any, new: t.Any) -> list[str]:
             source, _, target = change.label.partition(": transform")[0].partition(" → ")
             label = f"Changed the transform from {_node(source)} to {_node(target)}"
 
+        elif path[0] == "layout" and path[1:2] == ("tiles",) and path[2:] and path[2] in placed:
+            continue
         elif path[0] == "layout":
             label = "Changed the tile layout"
         elif path[0] == "settings":

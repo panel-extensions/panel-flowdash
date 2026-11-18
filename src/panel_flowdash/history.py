@@ -681,6 +681,11 @@ class EditHistory:
             if request.artifact_id == self.artifact_id and request.ops:
                 self._publish_request(request)
 
+    def request_run(self) -> str | None:
+        """Return the run of the open dashboard's one agent request still open, or None."""
+        runs = {r.run_id for r in self._requests.values() if r.artifact_id == self.artifact_id}
+        return next(iter(runs)) if len(runs) == 1 else None
+
     @property
     def requests_pending(self) -> bool:
         """Whether an agent request has edits not yet published as its version."""
@@ -691,8 +696,10 @@ class EditHistory:
 
         The editor calls it when the agent's turns end, and the history when
         a run in its state finishes or fails, so a request is one version
-        whether it finished, failed or was cancelled.
+        whether it finished, failed or was cancelled. The tiles the request
+        added are laid out first, as part of its version.
         """
+        self.editor._release_tile_layout(run_id)
         for key, request in list(self._requests.items()):
             if run_id is None or request.run_id == run_id:
                 del self._requests[key]

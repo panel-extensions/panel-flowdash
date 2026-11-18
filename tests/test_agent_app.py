@@ -140,6 +140,39 @@ async def test_the_drawer_restores_versions_with_the_editors_checks(store, monke
     assert len(artifact.versions) == count
 
 
+async def test_the_tiles_a_request_adds_are_laid_out_once_in_the_agents_last_version(
+    store, monkeypatch
+):
+    from panel_flowdash.agent.ops import read_revision
+
+    model = store.create_dashboard("alice", "Live")
+    app = _app(store, monkeypatch)
+    app._load_dashboard_sync(model.dashboard_id)
+    agent = Agent(
+        scripted(
+            ("add_node", {"component": "T/number", "name": "a"}),
+            ("add_node", {"component": "T/number", "name": "b"}),
+        ),
+        deps_type=FlowDashDeps,
+        toolsets=[dashboard_toolset()],
+    )
+    session = AgentSession(app, agent)
+    arrange, calls = type(app._editor)._arrange_tiles, []
+
+    def counted(self):
+        calls.append(1)
+        arrange(self)
+
+    monkeypatch.setattr(type(app._editor), "_arrange_tiles", counted)
+    await session.runner.run("Build")
+    assert calls == [1]
+    (artifact,) = session.runner.state.artifacts
+    assert len(artifact.versions) == 3
+    latest = artifact.applied_version
+    assert latest.actor == "agent" and latest.run_id == session.runner.run_id
+    assert read_revision(latest.value) == session.ops.revision()
+
+
 @pytest.mark.parametrize("confirmed", [True, False])
 async def test_applying_a_version_over_the_users_edits_asks_first(store, monkeypatch, confirmed):
     model = store.create_dashboard("alice", "Live")

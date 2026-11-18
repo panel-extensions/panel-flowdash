@@ -185,7 +185,7 @@ and the other gets a short hash of its id appended.
 | `component` | yes | The id of a registered component, e.g. `Views/kpi`. A former id the component declares in `aliases` also works. |
 | `origin` | no | The `id` of the turn that created the node. It must name a turn of the file. |
 | `config` | no | Design-time configuration, keyed by the component's config fields. Omitted fields take the component's defaults. |
-| `position` | no | `[x, y]` position on the Dataflow canvas. Nodes without one are laid out in columns following the dataflow. |
+| `position` | no | `[x, y]` position on the Dataflow canvas. Nodes without one are laid out in columns following the dataflow, beside the nodes that have one; a node already on the canvas keeps its position. |
 
 A component the person exporting the file may not use is written as
 `component: flowdash:restricted` without its config. Loading the file back into the
@@ -216,7 +216,7 @@ other edge, in the editor too.
 
 | Key | Required | Meaning |
 | --- | --- | --- |
-| `tiles` | no | The tiles in the order they are shown, a list. |
+| `tiles` | no | The tiles in the order they are shown, a list. New nodes without an entry get one by the kind of their tile, see [Automatic arrangement](../how-to/layout-and-sizing.md#automatic-arrangement). |
 | `reference_width` | no | The grid width, in pixels, the widths were laid out at. |
 | `breakpoints` | no | Screen widths, in pixels, at which the grid switches to a narrower layout. |
 | `responsive` | no | Layouts for narrower screens, keyed by breakpoint, each a list like `tiles`. |
