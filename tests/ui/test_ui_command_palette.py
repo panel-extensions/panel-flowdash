@@ -1,5 +1,6 @@
 """UI tests for the Ctrl/Cmd+K command palette and the keyboard shortcuts."""
 
+import time
 from urllib.parse import urlparse
 
 import panel_material_ui as pmui
@@ -96,6 +97,28 @@ def test_ctrl_k_opens_and_enter_switches_dashboards(page):
     expect(_dialog(page)).to_have_count(0)
     wait_until(lambda: _path(page) == f"/dash/{depot}", page, timeout=10000)
     wait_until(lambda: apps[0]._current_dashboard.dashboard_id == depot, page, timeout=10000)
+
+
+def test_enter_before_the_items_load_runs_the_match_once_they_do(page):
+    store, (plant, depot) = _store_with("Plant", "Depot")
+    apps = []
+    _serve_app(page, store, f"/dash/{plant}", apps)
+    page.get_by_text("note tile").wait_for()
+    palette = apps[0]._command_palette.palette
+    items = palette.on_open
+
+    def slow_items():
+        # The items take a while to reach the browser, as on a slow server.
+        time.sleep(0.5)
+        return items()
+
+    palette.on_open = slow_items
+
+    search = _open_with_keyboard(page)
+    search.press_sequentially("dpt")
+    search.press("Enter")
+    expect(_dialog(page)).to_have_count(0)
+    wait_until(lambda: _path(page) == f"/dash/{depot}", page, timeout=10000)
 
 
 def test_field_opens_arrows_move_and_escape_closes(page):
