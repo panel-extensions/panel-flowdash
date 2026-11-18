@@ -95,15 +95,15 @@ class PanelAppMetadata:
             deny_groups=self.deny_groups,
         )
 
+    @staticmethod
+    def is_registered(app: Any) -> bool:
+        """Whether ``@register`` attached metadata to *app*."""
+        return _attached_metadata(app) is not None
+
     @classmethod
     def from_app(cls, app: Any) -> PanelAppMetadata:
         """Extract metadata from an app object."""
-        metadata = getattr(app, "__panel_app_metadata__", None)
-        if metadata is None:
-            ref, metadata = _APP_METADATA_BY_ID.get(id(app), (None, None))
-            target = ref() if isinstance(ref, weakref.ref) else ref
-            if target is not app:
-                metadata = None
+        metadata = _attached_metadata(app)
         if metadata is None:
             return cls()
         if isinstance(metadata, cls):
@@ -116,6 +116,16 @@ class PanelAppMetadata:
 # Keyed by id() for apps that refuse the attribute; the reference lets a lookup
 # reject an id that a collected app has passed on to a new object.
 _APP_METADATA_BY_ID: dict[int, tuple[Any, PanelAppMetadata]] = {}
+
+
+def _attached_metadata(app: Any) -> Any:
+    metadata = getattr(app, "__panel_app_metadata__", None)
+    if metadata is None:
+        ref, metadata = _APP_METADATA_BY_ID.get(id(app), (None, None))
+        target = ref() if isinstance(ref, weakref.ref) else ref
+        if target is not app:
+            metadata = None
+    return metadata
 
 
 def register(

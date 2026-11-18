@@ -55,6 +55,7 @@ flowdash serve <directory> [options]
 | `--allow-websocket-origin` | all | Restrict allowed websocket origins. |
 | `--no-notifications` | off | Disable Panel notifications. |
 | `--static-dirs` | none | Serve extra static file directories, e.g. `--static-dirs assets=/path/to/assets`. Paths are resolved relative to the project directory. |
+| `--component-library` | none | Offer the components of an installed library, e.g. `--component-library my_library`, or `module:attribute` for a mapping of component id to component. Repeatable, and added to `component_libraries` from `__init__.py`. See [Components from an installed library](register-components.md#components-from-an-installed-library). |
 | `--plugins` | none | Register extra Tornado routes from an importable module exposing a `ROUTES` list, e.g. `--plugins my_plugin` for `<project>/my_plugin.py`. With `--package`, pass the dotted name, e.g. `--plugins catalogue.my_plugin`. Repeatable. |
 
 `--title`, `--home-dashboard` and `--nav-variant` can also be set in the
@@ -194,6 +195,7 @@ missing or set to `None` keeps its default.
 |------|------|-------------|
 | `store` | `BaseDashboardStore` | Where dashboards are kept, see [Custom dashboard store](#custom-dashboard-store). Conflicts with `--db-path`. |
 | `breakpoints` | `list` | Responsive breakpoints of the tile grid. Default `[768, 1200]`. |
+| `component_libraries` | `list` | Installed libraries whose components the editor offers, see [Components from an installed library](register-components.md#components-from-an-installed-library). `--component-library` adds to it. |
 | `configure_layout` | callable | Per-page sidebar and contextbar hook, see [Page-aware sidebar and contextbar](#page-aware-sidebar-and-contextbar). |
 | `controls_position` | `str` | Where `sidebar=True` components go: `"top"` (default) in a row above the tiles or `"left"` in a collapsible panel, see [Layout & sizing](layout-and-sizing.md#controls). Dashboards can override it in their settings. |
 | `editor_class` | `FlowDash` subclass | The editor class the app instantiates. |

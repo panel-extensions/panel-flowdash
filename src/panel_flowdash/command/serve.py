@@ -20,6 +20,7 @@ from panel.io.server import DocHandler, WSHandler
 
 from panel_flowdash.app import ACCESS_DENIED_ROUTE, FlowDashApp
 from panel_flowdash.auth import AuthConfig, make_authorize_callback
+from panel_flowdash.component_library import ComponentLibraryError
 from panel_flowdash.dashboard_store import BaseDashboardStore, DashboardStore
 from panel_flowdash.registry import PackageResolutionError, build_registry
 
@@ -39,6 +40,7 @@ PROJECT_OPTIONS = (
     "agent_model_settings",
     "agent_sensitive_components",
     "breakpoints",
+    "component_libraries",
     "configure_layout",
     "controls_position",
     "editor_class",
@@ -206,6 +208,20 @@ class Serve(_PanelServe):
             ),
         ),
         (
+            "--component-library",
+            Argument(
+                action="append",
+                metavar="MODULE",
+                default=None,
+                help=(
+                    "Offer the components of an installed library, e.g. my_library, "
+                    "or module:attribute for a mapping of component id to component. "
+                    "Repeat it for several libraries; they are added to "
+                    "`component_libraries` in __init__.py."
+                ),
+            ),
+        ),
+        (
             "--title",
             Argument(
                 action="store",
@@ -271,6 +287,10 @@ class Serve(_PanelServe):
             value = getattr(args, name)
             if value is not None:
                 options[name] = value
+        if args.component_library:
+            libraries = list(options.get("component_libraries", ()))
+            libraries += [name for name in args.component_library if name not in libraries]
+            options["component_libraries"] = libraries
         title = options.get("title", FlowDashApp.param.title.default)
 
         auth_config = AuthConfig.from_module(init_mod)
@@ -306,14 +326,18 @@ class Serve(_PanelServe):
                 except Exception as exc:
                     log.warning("Failed to import '%s': %s", entry.app_id, exc)
 
-        routes = FlowDashApp.build_routes(
-            project_dir=project_dir,
-            package=package,
-            store=store,
-            registry=registry,
-            auth_config=auth_config,
-            **options,
-        )
+        try:
+            routes = FlowDashApp.build_routes(
+                project_dir=project_dir,
+                package=package,
+                store=store,
+                registry=registry,
+                auth_config=auth_config,
+                **options,
+            )
+        except ComponentLibraryError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)  # noqa: T201
+            raise SystemExit(1) from None
 
         log.info(f"Serving FlowDash from '{project_dir}' on port {args.port}")
         log.info(f"Dashboard store: {store_description}")
