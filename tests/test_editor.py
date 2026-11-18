@@ -3040,6 +3040,28 @@ def _edge_style(editor, edge_id):
     return edge.get("style")
 
 
+async def test_failing_async_generator_without_propagation_ends_its_run():
+    editor = FlowDash(FAILING_COMPONENTS, notifications=False)
+    src = editor.add_component("Demo/gen_inverse")
+    state = editor.graph.get_state(src)
+    state.value = 4
+    await asyncio.sleep(0.05)
+    escaped = []
+    loop = asyncio.get_running_loop()
+    loop.set_exception_handler(lambda _loop, context: escaped.append(context.get("exception")))
+    try:
+        state.value = 0
+        await asyncio.sleep(0.05)
+        gc.collect()
+        await asyncio.sleep(0)
+    finally:
+        loop.set_exception_handler(None)
+
+    assert state.inverse == 0
+    assert isinstance(editor._output_failures[src]["inverse"], ZeroDivisionError)
+    assert escaped == []
+
+
 @pytest.mark.failures
 class TestFailurePropagation:
     @pytest.fixture
