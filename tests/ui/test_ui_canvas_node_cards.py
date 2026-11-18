@@ -1,4 +1,4 @@
-"""UI tests: every node card on the canvas keeps its content through bursts of edits and palette drops."""
+"""UI tests: every node card on the canvas renders its content after a burst of edits or palette drops."""
 
 import pytest
 from panel.tests.util import wait_until
@@ -42,7 +42,7 @@ def test_every_node_card_has_its_content_after_quick_edits(page, run):
 
 
 @pytest.mark.parametrize("run", range(10))
-def test_dropping_from_the_palette_keeps_the_other_node_cards(page, run):
+def test_dropped_node_card_renders(page, run):
     editor = _editor()
     ops = DashboardOps(editor)
     serve_component(page, editor)
