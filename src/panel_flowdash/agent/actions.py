@@ -11,6 +11,7 @@ import typing as t
 
 from panel_agents import ActionRegistry, current_run_id
 
+from panel_flowdash.config_check import effective_config, run_check
 from panel_flowdash.turns import agent_edits
 from panel_flowdash.ui.command_palette import CommandPaletteController
 
@@ -22,6 +23,22 @@ if t.TYPE_CHECKING:
 
 def _controller(app: FlowDashApp) -> CommandPaletteController:
     return getattr(app, "_command_palette", None) or CommandPaletteController(app)
+
+
+async def _check_defaults(app: FlowDashApp, component_id: str):
+    """Refuse to place a component whose config check refuses its default config."""
+    editor = app._editor
+    await editor.ensure_components_loaded_async([component_id])
+    spec = editor.component_specs.get(component_id)
+    if spec is None or spec.check_config is None:
+        return
+    problems = await run_check(spec, effective_config(spec), {}, editor=editor)
+    if problems:
+        raise ValueError(
+            f"'{spec.title}' was not placed, its config check refuses its default config: "
+            + "; ".join(problems)
+            + " Place it with add_node and a config instead."
+        )
 
 
 def palette_actions(
@@ -78,7 +95,7 @@ def palette_actions(
                 )
         return listed
 
-    def run_command(command: str) -> str:
+    async def run_command(command: str) -> str:
         """Run a command of the command palette for the user, by the id list_commands gives.
 
         Args:
@@ -92,6 +109,16 @@ def palette_actions(
             raise ValueError(
                 f"The palette does not offer {command!r} right now; call list_commands."
             )
+        if command.startswith("component:") and controller._editing():
+            await _check_defaults(app, command[len("component:") :])
+            refusal = deps.check_pin(current_run_id()) if deps is not None else None
+            if refusal is not None:
+                return refusal
+            offered = {item["id"]: item for item in controller.items()}
+            if command not in offered:
+                raise ValueError(
+                    f"The palette does not offer {command!r} any more; call list_commands."
+                )
         run_id = current_run_id() or (deps._run_id if deps is not None else None)
         with agent_edits(run_id, deps.question if deps is not None else None):
             controller.run(command)

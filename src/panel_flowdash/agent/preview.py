@@ -139,6 +139,7 @@ def preview_editor(
     *,
     samples: bool = True,
     rows: int = 5,
+    invalid: t.Mapping[str, t.Sequence[str]] | None = None,
 ) -> dict[str, t.Any]:
     """Report the health and output samples of every node placed in *editor*.
 
@@ -155,16 +156,20 @@ def preview_editor(
         How many rows or items each sample shows, at most 20. A DataFrame
         shows at most 50 columns, and samples are left out once the report
         grows past about 20,000 characters.
+    invalid
+        Problems the config checks of the components found, by instance id.
+        Such a node keeps running and is reported ``invalid``.
 
     Returns
     -------
     dict
         ``status`` (the worst node status) and ``nodes``, keyed by node name,
-        each with a ``status`` of ``ok``, ``waiting``, ``failed``,
-        ``restricted``, ``missing`` or ``error``, a ``message`` explaining any
-        other status than ``ok`` and, with *samples*, ``outputs`` by port. A
-        node is ``failed`` when an input failed upstream or one of its own
-        outputs failed.
+        each with a ``status`` of ``ok``, ``waiting``, ``invalid``,
+        ``failed``, ``restricted``, ``missing`` or ``error``, a ``message``
+        explaining any other status than ``ok`` and, with *samples*,
+        ``outputs`` by port. A node is ``failed`` when an input failed
+        upstream or one of its own outputs failed, and ``invalid`` when its
+        component's config check refuses its config.
     """
     graph = editor.graph
     nodes: dict[str, dict[str, t.Any]] = {}
@@ -185,6 +190,9 @@ def preview_editor(
         if status == "ok" and (failed := output_failures(editor, instance_id)):
             status = "failed"
             message = "; ".join(f"output '{port}' failed: {text}" for port, text in failed.items())
+        problems = (invalid or {}).get(instance_id)
+        if problems:
+            status, message = "invalid", "; ".join([*problems, *([message] if message else [])])
         if status != "ok":
             entry["status"] = status
             entry["message"] = _scalar(message)
@@ -194,7 +202,7 @@ def preview_editor(
                 for port in spec.outputs
             }
         nodes[name] = entry
-    order = ["ok", "waiting", "missing", "restricted", "failed", "error"]
+    order = ["ok", "waiting", "missing", "restricted", "invalid", "failed", "error"]
     status = max((n["status"] for n in nodes.values()), key=order.index, default="ok")
     size = len(json.dumps(nodes, default=str))
     for entry in reversed(list(nodes.values())):

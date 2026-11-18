@@ -159,3 +159,29 @@ def test_minimap_stays_off_the_fitted_nodes_until_switched_on(page):
     expect(page.locator(".react-flow__minimap")).to_have_count(0)
     editor._status_bar.minimap_toggle.value = True
     expect(page.locator(".react-flow__minimap")).to_have_count(1)
+
+
+def test_a_config_its_check_refuses_is_held_back_with_an_alert(page):
+    from tests.test_config_check import COMPONENTS, QUERY
+
+    editor = FlowDash(COMPONENTS, notifications=False, include_builtin_components=False)
+    query = editor.add_component(QUERY, position=(0, 0))
+    serve_component(page, editor)
+
+    _node(page, query).click()
+    wait_until(lambda: editor._inspector._shown == ("node", query), timeout=8000)
+    sql = page.get_by_role("textbox", name="Sql")
+    expect(sql).to_have_value("SELECT 1")
+    sql.fill("DROP t")
+    sql.press("Enter")
+    alert = page.locator(".fd-config-check-alert")
+    expect(alert).to_contain_text("Only SELECT statements are allowed.")
+    expect(sql).to_have_value("DROP t")
+    assert editor._component_instances[query].sql == "SELECT 1"
+    assert "config" not in editor._tile_items[0] or not editor._tile_items[0]["config"]
+
+    sql.fill("SELECT 2")
+    sql.press("Enter")
+    wait_until(lambda: editor._component_instances[query].sql == "SELECT 2", timeout=8000)
+    expect(alert).to_have_count(0)
+    assert editor._tile_items[0]["config"] == {"sql": "SELECT 2"}
