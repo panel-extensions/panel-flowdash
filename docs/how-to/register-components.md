@@ -60,8 +60,8 @@ role their ports suggest:
 |-------|------------|
 | Data sources | Outputs but no inputs |
 | Transforms | Inputs and outputs |
-| Views | No outputs, including the built-in Markdown, Notes, Heading and Divider |
-| Widgets | The built-in Select, MultiChoice and Slider |
+| Views | No outputs, including the built-in Markdown, Notes, Heading, Divider, KPI and Image |
+| Widgets | The built-in controls listed below |
 
 A `source`, `transform`, `view` or `widget` tag overrides this, for example
 for a data source whose inputs only tune the query:
@@ -84,6 +84,34 @@ matches the title, description, tags and port names and types.
 Project components are imported lazily. Until a module has been imported the
 palette uses the `provides` and `requires` declared on `@register`, and a
 Viewer without them is listed under *Components* until its ports are known.
+
+### Built-in widgets and views
+
+Every editor offers these components under the `Widgets/` id prefix, beside
+the text views under `Text/`, unless `include_builtin_components=False`. Inputs are optional: a control uses its
+configured options or bounds until something is wired to them.
+
+| Component | Inputs | Output | Notes |
+|-----------|--------|--------|-------|
+| Select | `options` (List) | `selected` | Dropdown, optionally searchable |
+| MultiChoice | `options` (List) | `selected` (List) | Any number of values |
+| Radio Group | `options` (List) | `selected` | Radio buttons or a row of toggle buttons |
+| Slider | `start`, `end` (Number) | `selected` (Number) | Integer or float, from the bounds and step |
+| Range Slider | `start`, `end` (Number) | `selected` (Range) | Starts on the whole range and follows the bounds while it is whole |
+| Number Input | `start`, `end` (Number) | `selected` (Number) | None while the field is empty |
+| Date Range | `start`, `end` (Date) | `selected` (DateRange) | A tuple of two dates; see below |
+| Toggle | | `checked` (Boolean) | A switch or a checkbox |
+| Text Input | | `text` (String) | Sent on Enter or blur, or on every keystroke with `update_on: typing` |
+| KPI | `value`, `reference` (Number) | | A headline number, its change from the reference and threshold colors |
+| Image | `url` (String) | | An http(s), relative or base64 image data URL; other schemes are not shown |
+
+Dashboards store config as JSON, so the Date Range keeps its dates as ISO
+strings (`YYYY-MM-DD`). Its `default_period` is either relative to the day the
+dashboard is opened (`last_7_days`, `last_30_days`, `last_90_days`,
+`last_365_days`, `month_to_date`, `year_to_date`), `all` for the span between
+its bounds, or `custom` for `custom_start` and `custom_end`. The KPI's `format`
+is a Python format spec such as `,.0f` or `.1%`, and `thresholds` is a list of
+ascending `[limit, color]` pairs.
 
 ---
 

@@ -1,5 +1,8 @@
 """UI tests for the size, look and alignment of the controls in the row above the tiles."""
 
+import dataclasses
+import itertools
+
 import panel as pn
 import panel_material_ui as pmui
 import param
@@ -10,6 +13,7 @@ from panel_flowdash import DashboardItem, MemoryDashboardStore, register
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.auth import resolve_identity
 from panel_flowdash.component_library import normalize_components
+from panel_flowdash.widgets import DateRange, Select, Toggle
 
 from .util import serve_component, stable_box
 
@@ -140,6 +144,51 @@ def test_controls_wrap_instead_of_overlapping(page):
     for i, a in enumerate(boxes):
         for b in boxes[i + 1 :]:
             assert not _overlap(a, b)
-    assert len({round(box["y"]) for box in boxes}) == 2
+    tops = sorted(box["y"] for box in boxes)
+    assert sum(b - a > 2 for a, b in itertools.pairwise(tops)) == 1
     row_box = stable_box(row, page)
     assert all(box["x"] + box["width"] <= row_box["x"] + row_box["width"] for box in boxes)
+
+
+def _in_sidebar(cls):
+    sidebar = type(f"Sidebar{cls.__name__}", (cls,), {})
+    sidebar.__panel_app_metadata__ = dataclasses.replace(cls.__panel_app_metadata__, sidebar=True)
+    return sidebar
+
+
+BUILTINS = {f"Sidebar/{cls.__name__}": _in_sidebar(cls) for cls in (Select, Toggle, DateRange)}
+
+
+def test_builtin_widgets_are_spaced_centred_and_uncut(page):
+    page.set_viewport_size({"width": 1440, "height": 900})
+    store = MemoryDashboardStore()
+    model = store.create_dashboard(resolve_identity().user, "Plant")
+    model.items = [
+        DashboardItem(instance_id=f"{name.lower()}{i}", component_id=f"Sidebar/{name}")
+        for i, name in enumerate(("Select", "Toggle", "DateRange", "Select"))
+    ]
+    store.save_dashboard(model)
+
+    def factory():
+        return FlowDashApp(
+            registry=normalize_components(BUILTINS), store=store, notifications=False
+        )
+
+    serve_component(
+        page, {"/": factory, "/dash/[^/]+": factory}, suffix=f"/dash/{model.dashboard_id}"
+    )
+    row = page.locator(".fd-controls-bar")
+    outlines = row.locator(".MuiInputBase-root")
+    expect(outlines).to_have_count(3)
+    select, dates, last = (stable_box(outlines.nth(i), page) for i in range(3))
+    switch = stable_box(row.locator(".MuiSwitch-root"), page)
+
+    # Each control keeps clear of the next, the switch included.
+    assert switch["x"] - (select["x"] + select["width"]) >= 16
+    assert dates["x"] - (switch["x"] + switch["width"]) >= 16
+    assert last["x"] - (dates["x"] + dates["width"]) >= 16
+    assert abs((switch["y"] + switch["height"] / 2) - (select["y"] + select["height"] / 2)) <= 2
+    assert abs(select["y"] - dates["y"]) <= 1
+
+    field = row.locator(".MuiInputBase-input").nth(1)
+    assert field.evaluate("(el) => el.scrollWidth <= el.clientWidth")

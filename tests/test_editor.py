@@ -36,10 +36,16 @@ from panel_flowdash.dashboard_store import (
 )
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.placeholders import PLACEHOLDER_NODE_TYPE
-from panel_flowdash.text_components import TEXT_COMPONENTS
 from panel_flowdash.ui.text import escape_markdown
 from panel_flowdash.ui.waiting import WaitingPlaceholder
-from panel_flowdash.widgets import BUILTIN_COMPONENTS
+from panel_flowdash.widgets import BUILTIN_COMPONENTS, _WidgetComponent
+
+BUILTIN_VIEWS = [
+    cid for cid, cls in BUILTIN_COMPONENTS.items() if "view" in cls.__panel_app_metadata__.tags
+]
+INPUT_WIDGETS = [
+    cid for cid, cls in BUILTIN_COMPONENTS.items() if issubclass(cls, _WidgetComponent)
+]
 
 
 @register(page=False, component=True, title="Ticker", provides=[{"key": "ticker", "type": "str"}])
@@ -300,24 +306,23 @@ class TestBuiltinWidgets:
         editor.disconnect(src_start, "bound", dst, "start")
         assert widget.start == 10
 
-    @pytest.mark.parametrize(
-        "component_id", ["Widgets/Select", "Widgets/MultiChoice", "Widgets/Slider"]
-    )
+    @pytest.mark.parametrize("component_id", INPUT_WIDGETS)
     def test_widgets_have_a_minimum_width_for_the_canvas(self, component_id):
         editor = FlowDash({}, notifications=False)
         instance_id = editor.add_component(component_id)
-        widget = editor._tile_objects[-1]
-        assert (widget.min_width, widget.sizing_mode) == (240, "stretch_width")
+        widget = editor._component_instances[instance_id]._widget
+        # The minimum leaves room for the widget's side margins within the width.
+        margins = widget.margin[1] * 2
+        default = 300 if component_id == "Widgets/DateRange" else 240
+        assert (widget.min_width, widget.sizing_mode) == (default - margins, "stretch_width")
 
         editor.graph.get_config_state(instance_id).min_widget_width = 320
-        assert widget.min_width == 320
+        assert widget.min_width == 320 - margins
 
     # panel-reactflow's form passes both `name` and `label` to its widgets, which
     # Panel 1.9 warns about; warnings-as-errors would force the JSON fallback.
     @pytest.mark.filterwarnings("ignore:Both 'name' and 'label':PendingDeprecationWarning")
-    @pytest.mark.parametrize(
-        "component_id", ["Widgets/Select", "Widgets/MultiChoice", "Widgets/Slider"]
-    )
+    @pytest.mark.parametrize("component_id", list(BUILTIN_COMPONENTS))
     def test_widget_config_renders_a_schema_form(self, component_id):
         editor = FlowDash({}, notifications=False)
         instance_id = editor.add_component(component_id)
@@ -3594,7 +3599,7 @@ class TestPalette:
         assert all(g["draggable"] is False for g in groups.values())
         assert [i["component_id"] for i in groups["Data sources"]["items"]] == [SELECTOR]
         assert [i["component_id"] for i in groups["Transforms"]["items"]] == [SHOUTER]
-        assert [i["component_id"] for i in groups["Views"]["items"]] == [CHART, *TEXT_COMPONENTS]
+        assert [i["component_id"] for i in groups["Views"]["items"]] == [CHART, *BUILTIN_VIEWS]
         assert all(i["draggable"] for g in groups.values() for i in g["items"])
         assert editor._palette.drag_type in editor._flow.drop_types
 

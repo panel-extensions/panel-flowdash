@@ -66,6 +66,7 @@ Serving and API:
 - The `default_size`, `min_size` and `max_size` hints of `@register` set a new tile's size and bound resizing and stored layouts
 - Mutable `requires` fallbacks and input defaults are copied per session and per node instead of shared
 - Built-in text components: Markdown (rendered without raw HTML or math, with `{{ value }}` placeholders filled from an optional input), Notes (rich text typed into the tile while editing, read-only for viewers), Heading and Divider
+- Built-in Radio Group, Range Slider, Number Input, Date Range, Toggle and Text Input widgets, and KPI and Image views, beside Select, MultiChoice and Slider; every built-in has a description and a default tile size
 - A Viewer config param declared with `metadata={"flowdash": {"two_way": True}}` is synced back to the node's config when the component changes it, so it is saved with the dashboard
 
 ### Dataflow

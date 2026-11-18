@@ -62,6 +62,26 @@ _NOTCHED_LABEL = """
 POSITIONS = ("top", "left")
 
 
+def _row_width(view) -> int:
+    """Return the width of *view* in the row: a select's, or a widget's minimum and margins if wider.
+
+    A layout gets a select's width whatever its minimum, since _FIT_CONTENT lets
+    it shrink, but a widget's minimum also sizes its input, which would spill
+    out of a narrower wrapper onto the next control.
+    """
+    minimum = view.min_width if isinstance(view, pn.widgets.WidgetBase) else None
+    if not minimum:
+        return _CONTROL_WIDTH
+    margin = getattr(view, "margin", 0) or 0
+    if isinstance(margin, int):
+        sides = 2 * margin
+    elif len(margin) == 2:
+        sides = 2 * margin[1]
+    else:
+        sides = margin[1] + margin[3]
+    return max(_CONTROL_WIDTH, minimum + sides)
+
+
 def compact_inputs(view):
     """Switch the Material UI widgets in *view* to their small size, where they have one.
 
@@ -114,7 +134,8 @@ class ControlsBar(Viewer):
         super().__init__(**params)
         self._wrappers: dict[int, pn.Column] = {}
         self._controls = pn.FlexBox(
-            align_items="flex-start",
+            # Inputs, switches and sliders differ in height, so they share a centre line.
+            align_items="center",
             flex_wrap="wrap",
             margin=0,
             sizing_mode="stretch_width",
@@ -220,9 +241,10 @@ class ControlsBar(Viewer):
         self._wrappers = {id(w[0]): w for w in wrappers}
         left = self._left
         for wrapper in wrappers:
-            # In the panel a control takes its full width; in the row about a select's.
+            # In the panel a control takes its full width; in the row about a
+            # select's, or more where the control needs it.
             wrapper.param.update(
-                width=None if left else _CONTROL_WIDTH,
+                width=None if left else _row_width(wrapper[0]),
                 sizing_mode="stretch_width" if left else "fixed",
             )
         top = [] if left else wrappers
