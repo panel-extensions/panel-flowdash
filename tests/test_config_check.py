@@ -1178,7 +1178,7 @@ class TestWarnings:
         )
         assert output == (
             "Done: Connected lim.limit to q.limit. q's config fails its check: "
-            "rows must be positive It also warns: The probe timed out."
+            "rows must be positive. It also warns: The probe timed out."
         )
 
     async def test_replace_dashboard_and_validate_tools_list_warnings(self, editor):
@@ -1214,11 +1214,24 @@ class TestWarnings:
 
 
 class TestCoalescing:
-    async def test_a_burst_of_rechecks_of_a_node_runs_at_most_two_checks(self, editor):
+    async def test_a_burst_of_rechecks_of_an_unchanged_node_runs_one_check(self, editor):
         node = editor.add_component(QUERY, {"sql": "SELECT PAUSE"})
         results = await asyncio.gather(*(recheck_node(editor, node) for _ in range(20)))
         assert results == [[]] * 20
-        assert len(CALLS) == 2
+        assert len(CALLS) == 1
+
+    async def test_a_cancelled_check_does_not_block_later_ones(self, editor):
+        node = editor.add_component(QUERY, {"sql": "SELECT PAUSE"})
+        first = asyncio.ensure_future(recheck_node(editor, node))
+        queued = asyncio.ensure_future(recheck_node(editor, node))
+        await asyncio.sleep(0.05)
+        (slot,) = config_check._SLOTS[editor].values()
+        slot.task.cancel()
+        for waiter in (first, queued):
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
+        assert config_check._SLOTS[editor] == {}
+        assert await asyncio.wait_for(recheck_node(editor, node), 2) == []
 
     async def test_the_queued_check_sees_the_latest_state(self, editor):
         node = editor.add_component(QUERY, {"sql": "SELECT PAUSE"})
@@ -1259,7 +1272,7 @@ class TestCoalescing:
         finally:
             editor.dispose()
         assert results == [["the sum 6 is over 5"]] * 6
-        assert len(CALLS) == 2
+        assert len(CALLS) == 1
         assert CALLS[-1][1] == dict.fromkeys("abcdef", 1)
 
     async def test_a_burst_of_inspector_edits_runs_at_most_two_checks(self, editor):
@@ -1323,3 +1336,34 @@ class TestInspectorRewire:
         editor.connect(lim, "limit", q, "limit")
         await _settle()
         assert len(_alerts(editor)) == 1
+
+
+class TestDraftOutsideTheAgent:
+    async def test_an_agent_rewire_does_not_apply_the_persons_draft_as_the_agents(self, editor):
+        pytest.importorskip("pydantic_ai")
+        from .test_agent_tools import _runner
+
+        ops = DashboardOps(editor)
+        ops.add_node(QUERY, name="q")
+        ops.add_node(LIMIT, {"n": 20}, name="lim")
+        ops.connect("lim.limit", "q.limit")
+        q = ops._instance("q")
+        form = TestInspectorDraft()._form(editor, q)
+        await _settle()
+        form._widgets["rows"].value = 30
+        await _settle()
+        assert editor.graph.get_config_state(q).rows == 10
+        editor.edit_history.flush()
+
+        runner = _runner(ops, ("disconnect", {"source": "lim.limit", "target": "q.limit"}))
+        assert await runner.run("Unwire") == "Done: Disconnected lim.limit from q.limit."
+        await _settle()
+        editor.edit_history.flush()
+
+        assert editor.graph.get_config_state(q).rows == 30
+        versions = [v for a in runner.state.artifacts for v in a.versions]
+        agent, person = versions[-2:]
+        assert (agent.actor, agent.metadata["label"]) == ("agent", "Disconnected lim from q.")
+        assert [o["op"] for o in agent.metadata["ops"]] == ["disconnect"]
+        assert (person.actor, person.metadata["label"]) == ("user", "Changed the config of q")
+        assert person.metadata["turn"] != agent.metadata["turn"]

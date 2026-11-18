@@ -401,36 +401,61 @@ def node_wiring(editor: FlowDash, instance_id: str) -> tuple[tuple[t.Any, ...], 
 class _Slot:
     """The check of one node running now, and the one queued to run after it."""
 
-    __slots__ = ("factory", "loop", "queued", "running", "task")
+    __slots__ = ("loop", "patch", "queued", "running", "task")
 
     def __init__(self, loop: asyncio.AbstractEventLoop):
         self.loop = loop
         self.running: asyncio.Future | None = None
         self.queued: asyncio.Future | None = None
-        self.factory: Callable[[], t.Awaitable[CheckResult]] | None = None
+        self.patch: dict[str, t.Any] = {}
         self.task: asyncio.Task | None = None
 
 
 _SLOTS: weakref.WeakKeyDictionary[t.Any, dict[t.Hashable, _Slot]] = weakref.WeakKeyDictionary()
 
 
-async def _drive(slots: dict[t.Hashable, _Slot], key: t.Hashable, slot: _Slot, factory, future):
-    while True:
-        try:
-            result = await factory()
-        except Exception as exc:
-            result = CheckResult([f"The config check failed ({type(exc).__name__})."])
-            logger.error("A config check failed", exc_info=exc)
-        if not future.done():
-            future.set_result(result)
-        if slot.queued is None:
-            slot.running = None
-            if slots.get(key) is slot:
-                del slots[key]
-            return
-        future, factory = slot.queued, slot.factory
-        slot.queued = slot.factory = None
-        slot.running = future
+def _snapshot(editor: FlowDash, instance_id: str, patch: dict[str, t.Any]) -> tuple | None:
+    spec, config, _ = _check_args(editor, instance_id, patch)
+    if spec is None:
+        return None
+    return config, node_wiring(editor, instance_id)
+
+
+def _unchanged(before: tuple | None, after: tuple | None) -> bool:
+    if before is None or after is None:
+        return False
+    return same_config(before[0], after[0]) and before[1] == after[1]
+
+
+async def _drive(
+    editor, instance_id: str, slots: dict, key: t.Hashable, slot: _Slot, patch: dict, timeout
+):
+    future = slot.running
+    result: CheckResult | None = None
+    read: tuple | None = None
+    try:
+        while True:
+            state = _snapshot(editor, instance_id, patch)
+            if result is None or not _unchanged(read, state):
+                read = state
+                try:
+                    result = await check_node(editor, instance_id, patch, timeout=timeout)
+                except Exception as exc:
+                    logger.error("The config check of %s failed", instance_id, exc_info=exc)
+                    result = CheckResult([f"The config check failed ({type(exc).__name__})."])
+            if not future.done():
+                future.set_result(result)
+            if slot.queued is None:
+                return
+            future, patch = slot.queued, slot.patch
+            slot.queued, slot.running = None, future
+    finally:
+        for pending in (slot.running, slot.queued):
+            if pending is not None and not pending.done():
+                pending.cancel()
+        slot.running = slot.queued = None
+        if slots.get(key) is slot:
+            del slots[key]
 
 
 async def recheck_node(
@@ -444,30 +469,28 @@ async def recheck_node(
 
     Meant for checks that follow a change, e.g. of the node's wiring, where
     only the latest state matters. While a check of the node runs, further
-    requests wait for a single check queued after it, which reads the node's
-    config and inputs once it starts and uses the *patch* of the latest
-    request; all of them get its result. So a burst of changes to a node
-    holds at most two of the pool's threads, whatever its length. Checks with
-    and without a *patch* are queued apart.
+    requests wait for a single check queued after it, which uses the *patch*
+    of the latest request and reads the node's config and inputs once it
+    starts; all of them get its result. When the config and wiring it reads
+    are those the running check read, the running check's result is reused
+    instead. Checks with and without a *patch* are queued apart, each kind
+    with at most one check running and one queued per node. A sync check
+    that timed out holds its pool thread until it returns all the same.
     """
     loop = asyncio.get_running_loop()
     slots = _SLOTS.setdefault(editor, {})
     key = (instance_id, bool(patch))
-    patch = dict(patch or {})
-
-    def factory():
-        return check_node(editor, instance_id, patch, timeout=timeout)
-
     slot = slots.get(key)
     if slot is None or slot.loop is not loop:
         slot = slots[key] = _Slot(loop)
+    patch = dict(patch or {})
     if slot.running is None:
         slot.running = future = loop.create_future()
-        slot.task = loop.create_task(_drive(slots, key, slot, factory, future))
+        slot.task = loop.create_task(_drive(editor, instance_id, slots, key, slot, patch, timeout))
     else:
+        slot.patch = patch
         if slot.queued is None:
             slot.queued = loop.create_future()
-        slot.factory = factory
         future = slot.queued
     return await asyncio.shield(future)
 

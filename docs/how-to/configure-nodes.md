@@ -176,9 +176,12 @@ Plain checks run on a pool of 8 threads of their own. Set
 change that. When every thread is busy a check waits for a free one, for at
 most its timeout, and its 10 seconds only start once it runs; a check that
 finds no free thread in time counts as failed. The synchronous methods
-(`DashboardOps.add_node`, `set_config`, `connect`, `disconnect`,
-`validate`, `preview` and `replace_yaml`) wait for each check in turn, so called on the event loop they
-block it for up to the timeout per check; use the `_async` variants there.
+(`DashboardOps.add_node`, `set_config`, `connect`, `disconnect`, `validate`,
+`preview` and `replace_yaml`) wait for each check in turn, so called on the
+event loop they block it for up to the timeout per check. Code running on the
+event loop, such as your own agent tools, should call the `_async` variants
+(`add_node_async`, `set_config_async`, `connect_async`, `disconnect_async`,
+`preview_async`, `replace_yaml_async`) instead.
 
 Where a check runs:
 
@@ -195,18 +198,24 @@ Where a check runs:
   again if the node's config changed meanwhile, and change nothing if
   another dashboard was opened meanwhile. The assistant's `run_command`
   refuses to place a component whose check refuses its defaults.
-- Connecting or disconnecting an input of a node checks it again with its
-  new inputs, whether in the canvas, through `DashboardOps.connect` and
-  `disconnect` (and their `_async` variants, which return the result) or by
-  the assistant. The connection is made all the same; the assistant's tool
-  result lists the problems ("Connected data.source to q.source. q's config
-  fails its check: ..."), the inspector shows them for the selected node, and
-  `preview` and `validate` report the node as above until its config is
-  fixed. Checks of one node that follow each other quickly are coalesced: at
-  most one runs, with one more queued that reads the node's latest config and
-  inputs once it starts, so many connections at once take at most two of the
-  pool's threads per node. The inspector's draft checks are coalesced the
-  same way.
+- `DashboardOps.connect` and `disconnect`, their `_async` variants and the
+  assistant's tools check the target node again with its new inputs and
+  return what the check found. The connection is made all the same; the
+  assistant's tool result lists the problems ("Connected data.source to
+  q.source. q's config fails its check: ..."), and `preview` and `validate`
+  report the node as above until its config is fixed.
+- In the canvas, connecting or disconnecting an input of the node the
+  inspector shows checks it again and updates its alert. A node that is not
+  selected is checked when it is next selected. A held back draft that now
+  passes is applied, as the person's edit even when the assistant made the
+  connection.
+- Checks after a rewire, and the inspector's draft checks, are coalesced per
+  node: while one runs, later requests share a single check queued after it,
+  which reads the node's latest config and inputs once it starts, and is
+  skipped when those are what the running check read. A node then has at
+  most one check running and one queued, counting checks of a draft with
+  pending edits apart. A sync check that times out still holds its thread
+  until it returns, so slow checks can hold more threads than that.
 - `DashboardOps.replace_yaml` loads the dashboard and returns the problems as
   errors at `nodes.<name>.config`, `preview` reports such a node as
   `invalid` while still running it, and `validate` lists the problems as
@@ -215,9 +224,10 @@ Where a check runs:
   `replace_yaml_async`; the restore goes ahead, and a notification lists the
   nodes whose checks fail.
 
-A check runs when the config or the node's wiring changes, not when a new
-value arrives over an existing connection. Only `preview` and `validate` check
-against the inputs as they are at that moment.
+A check does not run when a new value arrives over an existing connection,
+when an upstream node is removed or when an edge's transform changes (the
+inspector does check the selected node again on the latter). Only `preview`
+and `validate` check against the inputs as they are at that moment.
 
 ---
 

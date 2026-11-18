@@ -24,6 +24,7 @@ from panel_flowdash.config_check import (
     recheck_node,
     same_config,
 )
+from panel_flowdash.turns import person_context
 from panel_flowdash.ui.text import text_alert
 
 if t.TYPE_CHECKING:
@@ -165,14 +166,18 @@ class ConfigDraft:
         self._pending.update(patch)
         run = self._runs.get(self.instance_id, 0) + 1
         self._runs[self.instance_id] = run
-        param.parameterized.async_executor(partial(self.check, run, dict(self._pending)))
+        # A rewire by the agent proposes too; the draft is the person's, so it
+        # must not be applied inside the agent's tool call and turn.
+        person_context().run(
+            param.parameterized.async_executor, partial(self.check, run, dict(self._pending))
+        )
 
     async def check(self, run: int, pending: dict[str, t.Any]) -> CheckResult:
         """Check *pending* and apply it if it passes and no newer change was made meanwhile.
 
         Checks of the node are coalesced, see
         :func:`~panel_flowdash.config_check.recheck_node`, so a burst of edits
-        or rewiring holds at most two of the check pool's threads.
+        or rewiring runs one check at a time.
         """
         editor = self._editor()
         if editor is None:

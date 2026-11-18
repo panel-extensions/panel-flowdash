@@ -606,7 +606,7 @@ def _checked(message: str, name: str, result: CheckResult) -> str:
     if result:
         message += f" {name}'s config fails its check: " + "; ".join(result)
         if result.warnings:
-            message += " It also warns: " + "; ".join(result.warnings)
+            message = message.removesuffix(".") + ". It also warns: " + "; ".join(result.warnings)
     elif result.warnings:
         message = message.removesuffix(".") + ", but: " + "; ".join(result.warnings)
     return message
