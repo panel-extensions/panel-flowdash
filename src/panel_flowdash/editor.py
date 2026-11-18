@@ -2162,10 +2162,10 @@ class FlowDash(Viewer):
         editor = editor_ref()
         if editor is None:
             return
-        if editor.editable and not editor.read_only:
+        if editor.editable and not editor.read_only and not editor.preview:
             editor._apply_config_patch(node_id, {event.name: event.new})
             return
-        # Viewers cannot change the dashboard, so the component goes back to the saved value.
+        # Viewers and a preview cannot change the dashboard, so the component goes back to the saved value.
         config_state = editor._dataflow_graph.get_config_state(node_id)
         if config_state is not None:
             setattr(event.obj, event.name, getattr(config_state, event.name))

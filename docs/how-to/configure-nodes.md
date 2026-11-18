@@ -122,7 +122,7 @@ A config param is synced the other way too when it declares
 edits itself, like the built-in Notes component does with text typed into its
 tile: setting the param on the instance updates the node's config and marks the
 dashboard as unsaved, so the edit is saved with it. While the dashboard is in view
-mode or `read_only`, the param is set back to the config's value instead.
+mode, `read_only` or previewed, the param is set back to the config's value instead.
 
 **Function components.** Declare an `instance_config` parameter to receive the
 node's config-state object (a `param.Parameterized` instance). The existing

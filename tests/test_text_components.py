@@ -27,6 +27,7 @@ from panel_flowdash.text_components import (
     fill_template,
     format_value,
     html_to_text,
+    notes_lines,
     render_markdown,
     sanitize_notes,
 )
@@ -252,6 +253,88 @@ class TestNotes:
         editor.read_only = True
         assert notes._editor.disabled
 
+    def test_the_editors_form_of_the_stored_notes_is_not_an_edit(self, editor):
+        stored = "<p>Line one</p>\n<p>Hello   world</p><p></p>"
+        node = editor.add_component("Text/Notes", config={"text": stored})
+        notes = editor._component_instances[node]
+        editor.dirty = False
+
+        notes._editor.value = "<p>Line one</p><p>Hello world</p>"
+        assert editor.graph.get_config_state(node).text == stored
+        assert not editor.dirty
+
+        notes._editor.value = "<p>Line one</p><p>Hello world!</p>"
+        assert editor.graph.get_config_state(node).text == "<p>Line one</p><p>Hello world!</p>"
+        assert editor.dirty
+
+    def test_not_editable_in_preview(self, editor):
+        node = editor.add_component("Text/Notes", config={"placeholder": "Jot"})
+        notes = editor._component_instances[node]
+        editor.dirty = False
+
+        editor.preview = True
+        assert (notes._editor.disabled, notes._editor.placeholder) == (True, "")
+        notes._editor.value = "<p>Not saved</p>"
+        assert editor.graph.get_config_state(node).text == ""
+        notes.text = "<p>Set on the instance</p>"
+        assert editor.graph.get_config_state(node).text == ""
+        assert notes.text == ""
+        assert not editor.dirty
+
+        editor.preview = False
+        assert not notes._editor.disabled
+
+    @pytest.mark.parametrize(
+        ("markup", "shown"),
+        [
+            ("<p>Line one</p>\n<p>Line two</p>", "<p>Line one</p><p>Line two</p>"),
+            ("<p>Hello   world</p>", "<p>Hello world</p>"),
+            ("<p>a</p><p></p>", "<p>a</p>"),
+            ("<h1>T</h1>x", "<h1>T</h1><p>x</p>"),
+            ("a\nb", "<p>a b</p>"),
+            ("<p>a<br>b</p>", "<p>a</p><p>b</p>"),
+            ("<p>x</p><p><br></p><p>y</p>", "<p>x</p><p></p><p>y</p>"),
+            ('<ol><li data-list="bullet">a</li></ol>', "<ul><li>a</li></ul>"),
+            ("<blockquote><p>q</p></blockquote>", "<blockquote>q</blockquote>"),
+            ("<p>  lead and trail  </p>", "<p>lead and trail</p>"),
+            ("<strong>x</strong>", "<p><strong>x</strong></p>"),
+            ("<li>orphan</li>", "<p>orphan</p>"),
+            ("<p><strong><em>a</em></strong></p>", "<p><em><strong>a</strong></em></p>"),
+            ("<p>x</p><p></p><p></p><p></p>", "<p>x</p><p></p><p></p>"),
+            (
+                '<ul><li>a</li><li class="ql-indent-1">b</li></ul>',
+                "<ul><li>a<ul><li>b</li></ul></li></ul>",
+            ),
+            (
+                '<ol><li data-list="bullet">a</li><li data-list="bullet" class="ql-indent-1">b</li></ol>',
+                "<ul><li>a<ul><li>b</li></ul></li></ul>",
+            ),
+            ("<p>\tab</p>", "<p>ab</p>"),
+        ],
+    )
+    def test_lines_match_the_editors_form(self, markup, shown):
+        assert notes_lines(markup) == notes_lines(shown)
+
+    @pytest.mark.parametrize(
+        ("before", "after"),
+        [
+            ("<p>a</p>", "<p>b</p>"),
+            ("<p>a b</p>", "<p>ab</p>"),
+            ("<p>a</p>", "<p><strong>a</strong></p>"),
+            ("<p>a</p>", "<h1>a</h1>"),
+            ("<p>x</p><p>y</p>", "<p>x</p><p></p><p>y</p>"),
+            ("<ul><li>a</li></ul>", "<ol><li>a</li></ol>"),
+            ("<ul><li>a</li></ul>", "<ul><li>a<ul><li>b</li></ul></li></ul>"),
+            ('<p><a href="https://a.test">l</a></p>', '<p><a href="https://b.test">l</a></p>'),
+            ('<p class="ql-align-center">c</p>', "<p>c</p>"),
+            ("<p>a&nbsp;b</p>", "<p>a b</p>"),
+            ("<p>a b</p>", "<p>a\tb</p>"),
+            ("<p>x</p>", "<p>x</p><ul><li></li></ul>"),
+        ],
+    )
+    def test_lines_differ_when_the_notes_do(self, before, after):
+        assert notes_lines(before) != notes_lines(after)
+
     def test_without_an_editor_it_is_editable(self):
         notes = Notes(text="<p>x</p>")
         notes._editor.value = "<p>y</p>"
@@ -310,6 +393,7 @@ class TestNotes:
             ),
             ("<script>alert(1)</script><p>&lt;b&gt;</p>", "<p>&lt;b&gt;</p>"),
             ("<p>unclosed <em>em", "<p>unclosed <em>em</em></p>"),
+            ("<p><svg><p>hid</p></svg>vis</p>", "<p>vis</p>"),
         ],
     )
     def test_sanitize(self, markup, clean):
