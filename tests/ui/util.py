@@ -1,10 +1,16 @@
 """Helpers shared by the UI tests."""
 
-from panel.tests.util import (
-    _STYLESHEETS_SETTLED,
-    serve_component as _serve_component,
-    wait_until,
-)
+from panel.tests.util import serve_component as _serve_component, wait_until
+
+# Whether every stylesheet linked into a shadow root has loaded. Panel's own
+# test utilities only gained this helper after the oldest Panel tested here.
+_STYLESHEETS_SETTLED = """() => {
+    const settled = (root) => [...root.querySelectorAll('*')].every((el) => el.shadowRoot == null || (
+        [...el.shadowRoot.querySelectorAll('link[rel="stylesheet"]')].every((link) => link.sheet != null)
+        && settled(el.shadowRoot)
+    ))
+    return settled(document)
+}"""
 
 # Whether every Bokeh document on the page has rendered and gone idle.
 _DOCUMENTS_IDLE = (
