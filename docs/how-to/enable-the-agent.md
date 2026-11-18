@@ -87,8 +87,10 @@ instructions is sent with each request. `create_agent` takes three options for t
 - `tools`: the names of the dashboard tools to offer, e.g. `["set_config",
   "remove_node"]`. It selects tools; approvals and the user's rights apply as before.
 - `default_instructions=False`: leave out the instructions about the YAML format and
-  how to work on a dashboard. The agent still gets the rules about saving, refusals
-  and untrusted text after your own `instructions`.
+  how to work on a dashboard, which name every dashboard tool. The agent still gets
+  the rules about saving, refusals and untrusted text after your own `instructions`,
+  and, when it is offered `replace_dashboard`, the rule to keep the `# revision:`
+  line of the YAML `get_dashboard` returns, which `replace_dashboard` needs.
 - `catalogue`: `"full"` (the default), `"compact"` for component ids and titles only,
   or `"none"`. Without `list_components` and with `"none"` the agent cannot discover
   components.

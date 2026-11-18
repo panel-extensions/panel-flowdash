@@ -12,7 +12,7 @@ from pydantic_ai.models.function import FunctionModel
 
 from panel_flowdash import MemoryDashboardStore
 from panel_flowdash.agent import DashboardOps, FlowDashDeps
-from panel_flowdash.agent.assistant import INSTRUCTIONS, SAFETY, create_agent
+from panel_flowdash.agent.assistant import _REVISION, INSTRUCTIONS, SAFETY, create_agent
 from panel_flowdash.agent.live import LiveDashboardOps
 from panel_flowdash.agent.tools import TOOLS, approval_policy, dashboard_toolset
 from panel_flowdash.editor import FlowDash
@@ -68,9 +68,23 @@ async def test_own_instructions_keep_the_safety_rules():
     seen = await _request(
         default_instructions=False, instructions="Answer questions about data.", catalogue="none"
     )
-    assert seen["instructions"] == "Answer questions about data.\n\n" + SAFETY.strip()
+    assert (
+        seen["instructions"] == "Answer questions about data.\n\n" + (SAFETY + _REVISION).strip()
+    )
     assert "never put\n  links or images" in seen["instructions"]
     assert all(rule in INSTRUCTIONS for rule in SAFETY.splitlines())
+
+
+async def test_own_instructions_keep_the_revision_rule_only_with_replace_dashboard():
+    rule = 'Keep the "# revision:" line'
+    narrow = await _request(
+        default_instructions=False, tools=["get_dashboard", "set_config"], catalogue="none"
+    )
+    assert rule not in narrow["instructions"]
+    for tools in (None, ["get_dashboard", "replace_dashboard"]):
+        seen = await _request(default_instructions=False, tools=tools, catalogue="none")
+        assert rule in seen["instructions"]
+        assert "list_commands" not in seen["instructions"]
 
 
 async def test_compact_catalogue_points_to_list_components_only_when_offered():
