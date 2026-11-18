@@ -108,6 +108,15 @@ class AgentSession:
         )
         self.highlighter = ChangeHighlighter(self)
         self.chrome = SessionChrome(self)
+        if editor.history:
+            self.drawer.param.watch(self._on_drawer_open, "open")
+
+    def _on_drawer_open(self, event=None):
+        """Load the dashboard's stored history while the drawer is open, so it lists its versions."""
+        history = self.app._editor.edit_history
+        history.shown = self.drawer.open
+        if history.shown:
+            history.load()
 
     def publish_user_edits(self):
         """Publish the open dashboard as a version if it changed since the agent last saw it.

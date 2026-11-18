@@ -8,9 +8,11 @@ config field, resizing tiles) becomes one version, not one per event.
 
 The versions of the dashboard in the editor are written to its store with a
 panel-agents ``HistoryRecorder`` as they are made, and loaded again when the
-dashboard is next opened, so undo reaches edits of earlier sessions. The
-store keeps a limited number of versions per dashboard and drops a
-dashboard's history with the dashboard.
+dashboard is next opened, so undo reaches edits of earlier sessions; while
+the assistant's drawer is open it is loaded as soon as a dashboard opens, so
+the drawer lists them. The stored history starts with a format record
+(:data:`HEADER_KEY`). The store keeps a limited number and size of versions
+per dashboard and drops a dashboard's history with the dashboard.
 
 An agent session shares the editor's ``RunState``
 (:attr:`EditHistory.state`), so its drawer lists the same versions,
@@ -67,6 +69,19 @@ BURST_SECONDS = 3.0
 
 #: How many operations a version lists in its metadata; the count is always kept.
 MAX_BATCH_OPS = 50
+
+#: The key of the record that starts a dashboard's stored history, holding its format version.
+HEADER_KEY = "flowdash_history"
+
+#: The format version of the stored history this FlowDash writes and reads.
+#: Histories without a header record were written before it and are version 1.
+FORMAT_VERSION = 1
+
+#: About how many bytes of YAML a dashboard's stored history keeps by default.
+HISTORY_MAX_BYTES = 16 * 2**20
+
+#: Bytes a version's record is counted with besides its YAML, for its metadata.
+_RECORD_OVERHEAD = 512
 
 #: The type of the record a save adds to the stored history, naming the
 #: version it saved and the dashboard's revision in the store.
@@ -156,18 +171,39 @@ class _Request:
     counted: list[dict[str, t.Any]] = field(default_factory=list)
 
 
+def format_version(records: t.Iterable[dict[str, t.Any]]) -> int:
+    """Return the format version of stored history *records*; 1 without a header."""
+    for record in records:
+        if HEADER_KEY in record:
+            try:
+                return int(record[HEADER_KEY])
+            except (TypeError, ValueError):
+                return FORMAT_VERSION + 1
+    return 1
+
+
+def _size(record: dict[str, t.Any]) -> int:
+    value = record.get("value")
+    return (len(value) if isinstance(value, str) else 0) + _RECORD_OVERHEAD
+
+
 def compact(
     records: list[dict[str, t.Any]],
     limit: int | None,
     max_age: float | None,
     now: float | None = None,
+    max_bytes: int | None = None,
 ) -> list[dict[str, t.Any]]:
     """Return stored history *records* without the versions retention drops.
 
     The newest *limit* versions no older than *max_age* seconds are kept,
+    as many of them as fit in about *max_bytes* (always the newest one),
     with the applied records that name them and the runs they were made in.
-    Returns *records* itself when nothing is dropped.
+    Returns *records* itself when nothing is dropped, and for a history of
+    a newer format, which this FlowDash does not change.
     """
+    if format_version(records) > FORMAT_VERSION:
+        return records
     now = time.time() if now is None else now
     published = [r for r in records if r.get("type") == "ARTIFACT_PUBLISHED"]
     first = max(0, len(published) - limit) if limit else 0
@@ -179,6 +215,12 @@ def compact(
         or not isinstance(r.get("timestamp"), (int, float))
         or r["timestamp"] >= cutoff
     ]
+    if max_bytes is not None and kept:
+        total, start = 0, len(kept)
+        while start > 0 and (start == len(kept) or total + _size(kept[start - 1]) <= max_bytes):
+            start -= 1
+            total += _size(kept[start])
+        kept = kept[start:]
     if len(kept) == len(published):
         return records
     kept_ids = {id(r) for r in kept}
@@ -195,7 +237,9 @@ def compact(
     out = []
     for r in records:
         kind = r.get("type")
-        if kind == "ARTIFACT_PUBLISHED":
+        if kind is None:
+            keep = HEADER_KEY in r
+        elif kind == "ARTIFACT_PUBLISHED":
             keep = id(r) in kept_ids
         elif kind == "ARTIFACT_APPLIED":
             keep = r.get("version_id") in versions
@@ -333,9 +377,14 @@ class EditHistory:
         self._applying = False
         self._loaded: set[str] = set()
         self._recorders: dict[str, HistoryRecorder] = {}
-        self._stored: dict[str, int] = {}
+        # Per dashboard, how many versions its stored history holds and about how many bytes.
+        self._stored: dict[str, tuple[int, int]] = {}
+        self._unheaded: dict[str, bool] = {}
         self._timer = False
         self._requests: dict[tuple[str, str | None], _Request] = {}
+        #: Whether the versions are on screen, e.g. in the assistant's drawer,
+        #: so a dashboard opened meanwhile loads its stored history at once.
+        self.shown = False
         # Ahead of any recorder, so a request's version is stored before its run ends.
         self.state.subscribe(self._on_event)
 
@@ -472,6 +521,23 @@ class EditHistory:
         if self.active:
             self._baseline = self.snapshot()
             self._head = self._saved = self._baseline[1]
+        if self.shown:
+            self.load()
+
+    def load(self):
+        """Load the open dashboard's stored history now, to show it before any edit.
+
+        When the dashboard reads differently from the latest stored version
+        on its line, e.g. because it was changed outside the editor, the
+        canvas is published as a version, so the version shown as applied
+        is the canvas and every earlier one can be restored.
+        """
+        if not self.active:
+            return
+        self.flush()
+        self._ensure_loaded()
+        if self.artifact is not None and not self.busy:
+            self._ensure_base()
 
     def saved(self):
         """Note that the canvas as it is now was saved, under the editor's dashboard id.
@@ -522,7 +588,7 @@ class EditHistory:
             or self.artifact_id not in self._recorders
         ):
             return
-        store.append_history(
+        self._append(
             current.dashboard_id,
             {
                 "type": SAVED_RECORD,
@@ -984,17 +1050,34 @@ class EditHistory:
             return
         try:
             kept = self._retain(dashboard_id)
+            if (version := format_version(kept)) > FORMAT_VERSION:
+                logger.warning(
+                    "The edit history of dashboard %r has format version %s; this FlowDash "
+                    "reads up to version %s, so it neither shows nor extends it.",
+                    dashboard_id,
+                    version,
+                    FORMAT_VERSION,
+                )
+                return
             if artifact_id not in self.state.artifacts:
                 head = self._baseline[1] if self._baseline is not None else self._head
                 load_history(
-                    decode(kept, artifact_id, head, self._redact, self._opened_revision),
+                    decode(
+                        kept,
+                        artifact_id,
+                        head,
+                        partial(self._redact, restricts=self._restricts_any()),
+                        self._opened_revision,
+                    ),
                     self.state,
                 )
                 self._adopt_saved_version(kept, artifact_id)
         except Exception:
             logger.exception("Could not load the edit history of dashboard %r", dashboard_id)
             kept = []
-        self._stored[dashboard_id] = sum(r.get("type") == "ARTIFACT_PUBLISHED" for r in kept)
+        self._count_stored(dashboard_id, kept)
+        # A history stored before the header existed stays without one: it reads as version 1.
+        self._unheaded[dashboard_id] = not kept
         self._recorders[artifact_id] = HistoryRecorder(
             self.state, partial(self._write, dashboard_id, artifact_id), artifact_ids=[artifact_id]
         )
@@ -1024,8 +1107,17 @@ class EditHistory:
         editor = self.editor
         max_age = editor.history_max_days * 86400 if editor.history_max_days else None
         return editor.store.rewrite_history(
-            dashboard_id, lambda records: compact(records, editor.history_limit, max_age)
+            dashboard_id,
+            lambda records: compact(
+                records, editor.history_limit, max_age, max_bytes=editor.history_max_bytes
+            ),
         )
+
+    def _append(self, dashboard_id: str, record: dict[str, t.Any]):
+        store = self.editor.store
+        if self._unheaded.pop(dashboard_id, False):
+            store.append_history(dashboard_id, {HEADER_KEY: FORMAT_VERSION})
+        store.append_history(dashboard_id, record)
 
     def _write(self, dashboard_id: str, artifact_id: str, record: dict[str, t.Any]):
         """Store *record* in the dashboard's history; the sink of the dashboard's recorder."""
@@ -1038,17 +1130,22 @@ class EditHistory:
             if artifact is None or not isinstance(number, int) or number > len(artifact.versions):
                 return
             record["version_id"] = artifact.versions[number - 1].metadata.get("version_id")
-        store = self.editor.store
-        store.append_history(dashboard_id, record)
+        self._append(dashboard_id, record)
         if kind != "ARTIFACT_PUBLISHED":
             return
-        count = self._stored[dashboard_id] = self._stored.get(dashboard_id, 0) + 1
-        limit = self.editor.history_limit
-        if limit and count > limit + max(limit // 10, 10):
-            kept = self._retain(dashboard_id)
-            self._stored[dashboard_id] = sum(r.get("type") == "ARTIFACT_PUBLISHED" for r in kept)
+        count, size = self._stored.get(dashboard_id, (0, 0))
+        count, size = self._stored[dashboard_id] = (count + 1, size + _size(record))
+        limit, max_bytes = self.editor.history_limit, self.editor.history_max_bytes
+        if (limit and count > limit + max(limit // 10, 10)) or (
+            max_bytes is not None and size > max_bytes + max_bytes // 10
+        ):
+            self._count_stored(dashboard_id, self._retain(dashboard_id))
 
-    def _redact(self, record: dict[str, t.Any]) -> dict[str, t.Any]:
+    def _count_stored(self, dashboard_id: str, records: list[dict[str, t.Any]]):
+        published = [r for r in records if r.get("type") == "ARTIFACT_PUBLISHED"]
+        self._stored[dashboard_id] = (len(published), sum(map(_size, published)))
+
+    def _redact(self, record: dict[str, t.Any], restricts: bool | None = None) -> dict[str, t.Any]:
         """Return a stored version as the editor's user may see it.
 
         A version stored by someone who may use a component this user may not
@@ -1056,8 +1153,15 @@ class EditHistory:
         ``DashboardOps.get_dashboard`` writes for this user.
         """
         value = record.get("value")
-        if not isinstance(value, str) or not self._hides_any(value):
+        if not isinstance(value, str):
             return record
+        if not self._hides_any(value):
+            if not (self._restricts_any() if restricts is None else restricts):
+                return record
+            # A node the edits added and removed again is not in the version, but may be one
+            # this user may not use, so its ports and config keys are left out of the edits.
+            metadata = _redact_metadata(record.get("metadata") or {}, _node_names(value))
+            return {**record, "metadata": metadata}
         from panel_flowdash.agent.yaml_format import (
             dashboard_from_dict,
             dashboard_to_yaml,
@@ -1086,16 +1190,16 @@ class EditHistory:
         revision = revision_of(text)
         # A node a batch removed again is not in the version, so it is hidden like a restricted one.
         known = {item.instance_id for item in model.items} - restricted
-        metadata = dict(record.get("metadata") or {})
-        metadata["args"] = _redact_args(metadata.get("args") or {}, known)
-        if isinstance(metadata.get("ops"), list):
-            metadata["ops"] = [
-                {**op, "args": _redact_args(op.get("args") or {}, known)}
-                for op in metadata["ops"]
-                if isinstance(op, dict)
-            ]
+        metadata = _redact_metadata(record.get("metadata") or {}, known)
         metadata["revision"] = revision
         return {**record, "value": f"# revision: {revision}\n{text}", "metadata": metadata}
+
+    def _restricts_any(self) -> bool:
+        """Whether the editor's user may not use some component, so stored edits may name what they may not see."""
+        editor = self.editor
+        return any(
+            not editor._component_authorized(component) for component in editor._component_entries
+        )
 
     def _hides_any(self, text: str) -> bool:
         editor = self.editor
@@ -1167,6 +1271,29 @@ def _describe(version: ArtifactVersion | None) -> str:
     if version.actor == "agent":
         return f"The assistant's request: {label}" if label else "The assistant's request"
     return label
+
+
+_NODES_SECTION = re.compile(r"^nodes:\n((?:[ \t].*\n?|\n)*)", re.MULTILINE)
+_NODE_KEY = re.compile(r"^  ([A-Za-z_][\w-]*):", re.MULTILINE)
+
+
+def _node_names(text: str) -> set[str]:
+    """Return the names of the nodes in a version's YAML, without parsing it."""
+    match = _NODES_SECTION.search(text)
+    return set(_NODE_KEY.findall(match.group(1))) if match else set()
+
+
+def _redact_metadata(metadata: dict[str, t.Any], known: set[str]) -> dict[str, t.Any]:
+    """Leave the ports and config keys of nodes not in *known* out of a version's edits."""
+    metadata = dict(metadata)
+    metadata["args"] = _redact_args(metadata.get("args") or {}, known)
+    if isinstance(metadata.get("ops"), list):
+        metadata["ops"] = [
+            {**op, "args": _redact_args(op.get("args") or {}, known)}
+            for op in metadata["ops"]
+            if isinstance(op, dict)
+        ]
+    return metadata
 
 
 def _redact_args(args: dict[str, t.Any], known: set[str]) -> dict[str, t.Any]:
