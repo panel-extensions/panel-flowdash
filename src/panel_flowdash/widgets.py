@@ -41,6 +41,15 @@ class _ISODate(param.String):
         return self._serializers[mode].param_schema("String", self, safe=safe, subset=subset)
 
 
+def _horizontal_margin(widget) -> int:
+    margin = widget.margin
+    if isinstance(margin, int):
+        return 2 * margin
+    if len(margin) == 2:
+        return 2 * margin[1]
+    return margin[1] + margin[3]
+
+
 class _WidgetComponent(Viewer):
     """Shared config for the built-in widgets, applied live to the wrapped widget."""
 
@@ -104,10 +113,12 @@ class _WidgetComponent(Viewer):
         self._view.objects = [self._widget]
 
     def _sync_widget(self, *events):
+        # The minimum covers the side margins too, so the widget fits a wrapper
+        # that is min_widget_width wide, e.g. in the controls row.
         self._widget.param.update(
             label=self.label,
             description=self.description,
-            min_width=self.min_widget_width,
+            min_width=max(0, self.min_widget_width - _horizontal_margin(self._widget)),
             **{name: getattr(self, name) for name in self._widget_config},
         )
 
@@ -348,12 +359,6 @@ class _BoundedSlider(_NumberWidget):
     )
 
     _widget_config = ("show_value", "color")
-
-    def _sync_widget(self, *events):
-        super()._sync_widget(*events)
-        # The minimum covers the side margins too, so the slider fits a wrapper
-        # that is min_widget_width wide, e.g. in the controls row.
-        self._widget.min_width = max(0, self.min_widget_width - 2 * _SLIDER_MARGIN[1])
 
     def _bounds(self) -> tuple[float, float]:
         start = self.default_start if self.start is None else self.start
@@ -796,7 +801,7 @@ class DateRange(_WidgetComponent):
         Range selected when the dashboard opens. Relative periods end today, 'all'
         spans the bounds (no selection without bounds), and 'custom' uses
         custom_start and custom_end. A period outside the bounds selects
-        all of them, or just the nearest bound when only one is set.""",
+        all of them, or, when only one is set, moves to it and keeps its length.""",
     )
     custom_start = _ISODate(doc="First date of the 'custom' period, as YYYY-MM-DD.")
     custom_end = _ISODate(doc="Last date of the 'custom' period, as YYYY-MM-DD.")
@@ -808,6 +813,8 @@ class DateRange(_WidgetComponent):
         label="Latest date",
         doc="Latest selectable date as YYYY-MM-DD while no end is wired; empty for none.",
     )
+    # Narrower than this the picker cuts off the end date; wider would not fit the controls panel.
+    min_widget_width = param.Integer(default=300)
     variant = param.Selector(default="outlined", objects=["outlined", "filled", "standard"])
     size = param.Selector(default="medium", objects=["small", "medium", "large"])
     start = param.Date(default=None, allow_None=True)

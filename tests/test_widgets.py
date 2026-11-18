@@ -9,8 +9,8 @@ import pytest
 
 from panel_flowdash import register
 from panel_flowdash.dashboard_store import DashboardModel
-from panel_flowdash.editor import FlowDash
-from panel_flowdash.widgets import BUILTIN_COMPONENTS, safe_image_url
+from panel_flowdash.editor import _INSTANTIATING, FlowDash
+from panel_flowdash.widgets import BUILTIN_COMPONENTS, Image, safe_image_url
 
 TODAY = dt.date.today()
 
@@ -420,13 +420,28 @@ class TestImage:
         assert "No image" in image._pane.object
         editor.read_only = True
         assert "No image" not in image._pane.object
+        editor.read_only = False
+        assert "No image" in image._pane.object
+        editor.preview = True
+        assert "No image" not in image._pane.object
 
     def test_removed_image_releases_its_editor_watcher(self, editor):
-        node, _ = _place(editor, "Widgets/Image")
+        node, image = _place(editor, "Widgets/Image")
         watchers = len(editor.param.watchers.get("editable", {}).get("value", []))
         editor.remove_component(node)
-        gc.collect()
         assert len(editor.param.watchers.get("editable", {}).get("value", [])) < watchers
+        editor.editable = False
+        assert "No image" in image._pane.object
+
+    def test_collected_image_releases_its_editor_watcher(self, editor):
+        watchers = len(editor.param.watchers.get("editable", {}).get("value", []))
+        token = _INSTANTIATING.set(editor)
+        try:
+            Image()
+        finally:
+            _INSTANTIATING.reset(token)
+        gc.collect()
+        assert len(editor.param.watchers.get("editable", {}).get("value", [])) == watchers
 
 
 CONFIGS = {

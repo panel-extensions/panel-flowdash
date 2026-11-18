@@ -311,9 +311,10 @@ class TestBuiltinWidgets:
         editor = FlowDash({}, notifications=False)
         instance_id = editor.add_component(component_id)
         widget = editor._component_instances[instance_id]._widget
-        # A slider's minimum leaves room for its side margins within the width.
-        margins = widget.margin[1] * 2 if "Slider" in component_id else 0
-        assert (widget.min_width, widget.sizing_mode) == (240 - margins, "stretch_width")
+        # The minimum leaves room for the widget's side margins within the width.
+        margins = widget.margin[1] * 2
+        default = 300 if component_id == "Widgets/DateRange" else 240
+        assert (widget.min_width, widget.sizing_mode) == (default - margins, "stretch_width")
 
         editor.graph.get_config_state(instance_id).min_widget_width = 320
         assert widget.min_width == 320 - margins
