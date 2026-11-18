@@ -534,6 +534,7 @@ def test_a_rename_is_a_new_node_and_a_component_swap_keeps_the_origin(editor):
 
 
 def test_requests_without_run_ids_get_separate_turns(editor):
+    pytest.importorskip("pydantic_ai")
     from panel_flowdash.agent.tools import FlowDashDeps
 
     deps = FlowDashDeps(DashboardOps(editor))
