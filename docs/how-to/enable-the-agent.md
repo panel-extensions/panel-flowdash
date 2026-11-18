@@ -223,6 +223,13 @@ returns it. A chosen name follows the rules for
 [node names](../reference/dashboard-yaml.md#nodes) and is at most 64 characters long,
 and a name another node has is refused with a free variant suggested.
 
+Tools of your own can read the dashboard through the same rights: `ops.nodes()` lists
+each node's name and component, `ops.node_config(name)` returns a copy of a node's
+config, and `ops.node_output("total_capacity.value")` the live value of an output,
+which must not be changed in place. A node that waits for an input or whose input
+failed raises `OutputUnavailable` with its `status`, as `preview` reports it; a
+dashboard tool that raises it reports it to the model instead of ending the run.
+
 `dashboard_toolset()` wraps them as a pydantic-ai toolset that runs against
 `FlowDashDeps(ops)`; `dashboard_toolset(["get_dashboard", "set_config"])` offers only
 those tools:

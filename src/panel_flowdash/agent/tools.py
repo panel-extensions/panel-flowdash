@@ -24,7 +24,7 @@ from panel_flowdash.editor import export_model
 
 from .diff import dashboard_changes
 from .live import LiveDashboardOps
-from .ops import DashboardOps, OperationError, read_revision
+from .ops import DashboardOps, OperationError, OutputUnavailable, read_revision
 from .yaml_format import DashboardYAMLError, dashboard_to_yaml, parse_yaml
 
 # The artifact kind the dashboard YAML is published under, with its own diff.
@@ -250,6 +250,9 @@ def _open_id(ops: DashboardOps) -> str | None:
 def _guarded(func: t.Callable) -> t.Callable:
     """Turn refusals into messages: a fixable request is retried, a forbidden one is reported.
 
+    An output that is not available yet (:class:`OutputUnavailable`) is
+    reported too, since asking again does not help until the dashboard changes.
+
     Every tool first checks the request's pin, see :class:`FlowDashDeps`. Only
     ``open_dashboard``, called while the user is still on the pinned
     dashboard, moves the pin to the dashboard it opens.
@@ -271,6 +274,8 @@ def _guarded(func: t.Callable) -> t.Callable:
             raise ModelRetry(str(exc)) from exc
         except PermissionError as exc:
             return f"Refused: {exc}"
+        except OutputUnavailable as exc:
+            return f"Not available: {exc}"
         if func is open_dashboard:
             deps.repin()
         after = _snapshot(deps.ops) if listen else None

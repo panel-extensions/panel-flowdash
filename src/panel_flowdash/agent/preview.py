@@ -88,6 +88,28 @@ def sample_value(value: t.Any, rows: int = 5) -> dict[str, t.Any]:
     return {"type": type(value).__name__, "value": _scalar(value)}
 
 
+def node_health(editor: FlowDash, instance_id: str) -> tuple[str, str | None]:
+    """Return ``("ok", None)``, or ``("failed" | "waiting", message)`` for a placed node.
+
+    A node is failed when an input failed upstream and waiting while a
+    blocking input is still missing, as :func:`preview_editor` reports it.
+    """
+    graph = editor.graph
+    item = next(i for i in editor._tile_items if i["instance_id"] == instance_id)
+    spec = editor._component_specs.get(item["component_id"])
+    state = graph.get_state(instance_id)
+    failures = graph.get_failures(instance_id)
+    held = failures.failed if failures is not None else {}
+    if held:
+        return "failed", "; ".join(
+            f"input '{port}' failed upstream: {failure.text}" for port, failure in held.items()
+        )
+    waiting = missing_inputs(state, spec.inputs) if state is not None and spec else []
+    if waiting:
+        return "waiting", f"Waiting for {', '.join(waiting)}."
+    return "ok", None
+
+
 def preview_editor(
     editor: FlowDash,
     names: t.Mapping[str, str],
@@ -134,20 +156,10 @@ def preview_editor(
         spec = editor._component_specs.get(item["component_id"])
         state = graph.get_state(instance_id)
         entry: dict[str, t.Any] = {"component": item["component_id"], "status": "ok"}
-        failures = graph.get_failures(instance_id)
-        held = failures.failed if failures is not None else {}
-        waiting = missing_inputs(state, spec.inputs) if state is not None and spec else []
-        if held:
-            entry["status"] = "failed"
-            entry["message"] = _scalar(
-                "; ".join(
-                    f"input '{port}' failed upstream: {failure.text}"
-                    for port, failure in held.items()
-                )
-            )
-        elif waiting:
-            entry["status"] = "waiting"
-            entry["message"] = _scalar(f"Waiting for {', '.join(waiting)}.")
+        status, message = node_health(editor, instance_id)
+        if status != "ok":
+            entry["status"] = status
+            entry["message"] = _scalar(message)
         if samples and spec is not None and state is not None:
             entry["outputs"] = {
                 port.name: sample_value(getattr(state, port.name, None), rows)

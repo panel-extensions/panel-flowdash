@@ -7,7 +7,13 @@ for the specification. The agent itself (`create_agent`, `FlowDashDeps`,
 extra and is imported on first use.
 """
 
-from panel_flowdash.agent.ops import DashboardOps, NotFound, OperationError, read_revision
+from panel_flowdash.agent.ops import (
+    DashboardOps,
+    NotFound,
+    OperationError,
+    OutputUnavailable,
+    read_revision,
+)
 from panel_flowdash.agent.schema import SCHEMA_ID, component_schema, dashboard_schema
 from panel_flowdash.agent.validation import Issue, validate_dashboard
 from panel_flowdash.agent.yaml_format import (
@@ -51,6 +57,7 @@ __all__ = [
     "Issue",
     "NotFound",
     "OperationError",
+    "OutputUnavailable",
     "approval_policy",
     "component_schema",
     "create_agent",
