@@ -488,7 +488,15 @@ def test_decode_follows_the_line_to_the_opened_revision():
     ]
     assert [r["metadata"]["version_id"] for r in decode(records, "a", "a3")] == ["v1", "v2", "v4"]
     assert [r["metadata"]["version_id"] for r in decode(records, "a", "b1")] == ["v1", "v3"]
-    assert decode(records, "a", "ff") == []
+    ids = lambda out: [r["metadata"]["version_id"] for r in out]
+    # Nothing matches: the latest version anchors the line.
+    assert ids(decode(records, "a", "ff")) == ["v1", "v2", "v4"]
+    # A save of the store revision the dashboard was opened at wins over the YAML.
+    saved = [*records, {"type": "FLOWDASH_SAVED", "version_id": "v3", "revision": 7}]
+    assert ids(decode(saved, "a", "a3", saved=7)) == ["v1", "v3"]
+    # A save naming another revision only anchors when the YAML matches nothing.
+    assert ids(decode(saved, "a", "a3", saved=8)) == ["v1", "v2", "v4"]
+    assert ids(decode(saved, "a", "ff", saved=8)) == ["v1", "v3"]
 
 
 def test_deleting_a_dashboard_deletes_its_history(any_store):
@@ -620,7 +628,6 @@ def test_a_long_session_is_trimmed_as_it_goes():
     for i in range(40):
         editor.add_component("T/number", instance_id=f"n{i}")
     assert len(_published(store, model.dashboard_id)) <= 20 + 10
-    assert len(editor.edit_history.versions) <= 20 + 10
 
 
 def test_compact_keeps_the_runs_and_applied_records_of_kept_versions():
@@ -853,14 +860,76 @@ def test_previews_and_checks_record_no_history(editor):
     assert scratch.history is False
 
 
-def test_the_versions_in_memory_are_bounded(editor):
-    editor.history_coalesce = 0
-    editor.history_limit = 20
-    for i in range(60):
-        editor.add_component("T/number", instance_id=f"n{i}")
-    versions = editor.edit_history.versions
-    assert len(versions) <= 30
-    assert editor.undo() and "n59" not in _names(editor)
+async def test_an_artifact_view_stays_in_step_with_a_long_session():
+    from panel_agents.components.artifacts import ArtifactView
+
+    store = MemoryDashboardStore()
+    editor = _editor(store, history_coalesce=0, history_limit=10)
+    editor.new_dashboard("Long")
+    editor.add_component("T/scaled", instance_id="n")
+    history = editor.edit_history
+    artifact = history.artifact
+    view = ArtifactView(artifact=artifact, state=history.state, on_apply=history.restore)
+    for factor in range(2, 10):
+        editor._apply_config_patch("n", {"factor": factor})
+    assert history.artifact is artifact
+    target = len(artifact.versions) - 3
+    assert await view.apply_version(target, action="undo")
+    assert artifact.applied == target
+    assert editor._tile_items[0]["config"]["factor"] == 6
+    applied = [
+        r
+        for r in store.load_history(editor.dashboard.dashboard_id)
+        if r["type"] == "ARTIFACT_APPLIED"
+    ]
+    assert (
+        applied
+        and applied[-1]["version_id"] == artifact.versions[target - 1].metadata["version_id"]
+    )
+
+
+def test_the_history_survives_a_change_in_how_the_yaml_reads():
+    import param
+
+    store = MemoryDashboardStore()
+    first = _editor(store, history_coalesce=0)
+    model = first.new_dashboard("Mine")
+    _two_nodes(first)
+    first.save()
+
+    class Settings(type(first.settings)):
+        accent = param.String(default="blue")
+
+    second = _editor(store, history_coalesce=0, settings_class=Settings)
+    second.load(model.dashboard_id)
+    assert [v.metadata["op"] for v in second.edit_history.versions] == [
+        "open",
+        "add_node",
+        "add_node",
+    ]
+    assert second.can_undo
+    assert second.undo() and _names(second) == ["base", "double"]
+    assert second.undo() and _names(second) == ["base"]
+
+
+def test_without_a_matching_save_the_latest_saved_version_anchors_the_history():
+    store = MemoryDashboardStore()
+    first = _editor(store, history_coalesce=0)
+    model = first.new_dashboard("Mine")
+    _two_nodes(first)
+    first.save()
+    first.add_component("T/scaled", instance_id="unsaved")
+    stored = store._load_any(model.dashboard_id)
+    stored.title = "Renamed elsewhere"
+    stored.revision = None
+    store._dashboards[model.dashboard_id] = stored
+    second = _editor(store, history_coalesce=0)
+    second.load(model.dashboard_id)
+    assert [v.metadata["op"] for v in second.edit_history.versions] == [
+        "open",
+        "add_node",
+        "add_node",
+    ]
 
 
 @pytest.mark.parametrize("kind", ["sqlite", "json"])

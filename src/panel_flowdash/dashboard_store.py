@@ -844,6 +844,11 @@ class DashboardStore(BaseDashboardStore):
             conn.execute("DELETE FROM dashboard_history WHERE dashboard_id = ?", (dashboard_id,))
 
     def rewrite_history(self, dashboard_id, rewrite):
+        # Most loads drop nothing, so they read without taking the write lock.
+        records = self.load_history(dashboard_id)
+        kept = rewrite(records)
+        if kept is records:
+            return kept
         with self._get_conn() as conn:
             if not conn.in_transaction:
                 # Taken before reading, so no other connection appends in between.
