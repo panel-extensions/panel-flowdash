@@ -50,7 +50,7 @@ def test_reverting_from_the_drawer_restores_the_canvas(page):
     revert = page.get_by_role("button", name="Revert to v1")
     revert.click()
     wait_until(lambda: len(editor._tile_items) == 1, page, timeout=20000)
-    expect(page.get_by_text(re.compile(r"^v1 · .* · applied$"))).to_be_visible(timeout=10000)
+    expect(page.get_by_text(re.compile(r"^v1\b.*\bapplied\b"))).to_be_visible(timeout=10000)
     # The button stops spinning: v1 is applied, so it is gone, and nothing else is loading.
     expect(revert).to_have_count(0)
     expect(page.locator(".MuiButton-loading")).to_have_count(0)
@@ -186,7 +186,7 @@ def test_reverting_a_large_dashboard_ends_quickly(page, wind_app, monkeypatch):
     page.get_by_role("button", name="Revert to v1").click(timeout=EXAMPLE_LOAD_TIMEOUT)
     wait_until(lambda: editor.edit_history.artifact.applied == 1, page, timeout=10000)
     restored = time.monotonic() - start
-    expect(page.get_by_text(re.compile(r"^v1 · .* · applied$"))).to_be_visible(
+    expect(page.get_by_text(re.compile(r"^v1\b.*\bapplied\b"))).to_be_visible(
         timeout=EXAMPLE_LOAD_TIMEOUT
     )
     expect(page.locator(".MuiButton-loading")).to_have_count(0, timeout=EXAMPLE_LOAD_TIMEOUT)
