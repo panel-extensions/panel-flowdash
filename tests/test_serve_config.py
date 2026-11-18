@@ -76,7 +76,8 @@ def _serve(project_dir, monkeypatch, *cli_args):
 
     def record_build_routes(**kwargs):
         calls["routes"] = kwargs
-        return build_routes(**kwargs)
+        calls["built"] = build_routes(**kwargs)
+        return calls["built"]
 
     def record_build_applications(routes, title, location):
         calls["title"] = title
@@ -213,3 +214,53 @@ def test_invalid_option_exits_with_an_error(project, monkeypatch, capsys, source
     assert exc_info.value.code == 1
     err = capsys.readouterr().err
     assert f"invalid `{name}` in {project / '__init__.py'}" in err
+
+
+@pytest.fixture
+def library(tmp_path_factory, monkeypatch):
+    """An installed library offering one component, importable as ``cfg_library``."""
+    root = tmp_path_factory.mktemp("site")
+    (root / "cfg_library.py").write_text(
+        "from panel_flowdash import register\n\n"
+        "@register(page=False, component=True)\n"
+        "def table(config):\n"
+        "    return 'table'\n\n"
+        "__flowdash_components__ = {'Library/table': table}\n"
+    )
+    monkeypatch.syspath_prepend(str(root))
+    yield "cfg_library"
+    sys.modules.pop("cfg_library", None)
+
+
+async def test_component_library_flag_offers_its_components(project, library, monkeypatch):
+    calls = _serve(project, monkeypatch, "--component-library", library)
+
+    assert calls["routes"]["component_libraries"] == [library]
+    app = calls["built"]["/"]()
+    assert {"CfgSection/cfg_chart", "Library/table"} <= set(app._component_entries)
+
+
+def test_component_library_flag_extends_project_libraries(project, library, monkeypatch):
+    _write_init(project, "component_libraries = ['cfg_library:__flowdash_components__']\n")
+
+    calls = _serve(
+        project,
+        monkeypatch,
+        "--component-library",
+        "cfg_library:__flowdash_components__",
+        "--component-library",
+        library,
+    )
+
+    assert calls["routes"]["component_libraries"] == [
+        "cfg_library:__flowdash_components__",
+        library,
+    ]
+
+
+def test_unusable_component_library_exits_with_an_error(project, monkeypatch, capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        _serve(project, monkeypatch, "--component-library", "cfg_missing_library")
+
+    assert exc_info.value.code == 1
+    assert "Cannot import component library 'cfg_missing_library'" in capsys.readouterr().err

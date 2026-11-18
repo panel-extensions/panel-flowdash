@@ -16,6 +16,13 @@
       show_root_heading: true
       members: true
 
+### Component Libraries
+
+::: panel_flowdash.component_library
+    options:
+      show_root_heading: true
+      members: true
+
 ### Component Spec
 
 ::: panel_flowdash.component_spec

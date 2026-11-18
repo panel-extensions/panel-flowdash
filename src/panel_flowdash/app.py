@@ -26,6 +26,7 @@ from panel_flowdash.auth import (
     is_authorized,
     resolve_identity,
 )
+from panel_flowdash.component_library import merge_libraries
 from panel_flowdash.dashboard_store import (
     BaseDashboardStore,
     DashboardModel,
@@ -70,6 +71,7 @@ from panel_flowdash.ui.text import (
     markdown_pane,
 )
 from panel_flowdash.util import notify, page_dialog, panel_call, panel_viewer
+from panel_flowdash.widgets import BUILTIN_COMPONENTS
 
 logger = logging.getLogger("panel_flowdash")
 
@@ -200,6 +202,21 @@ class FlowDashApp(Viewer):
     )
 
     breakpoints = param.List(default=[768, 1200], doc="Responsive breakpoints for the tile grid.")
+
+    component_libraries = param.List(
+        default=[],
+        item_type=str,
+        doc="""
+        Installed libraries whose components the editor offers next to the
+        project's own: module names, e.g. ``"my_library"``, or
+        ``"module:attribute"`` naming a mapping of component id to
+        component, a list of components or a single one. A module offers
+        its ``__flowdash_components__``, or else every object it exports
+        that ``@register`` marks as a component. Their permissions and
+        `authorize_component` apply as for the project's components. An id
+        that the project, the built-in components or another library
+        already uses raises a ``ComponentLibraryError``.""",
+    )
 
     configure_layout = param.Callable(
         default=None,
@@ -361,6 +378,9 @@ class FlowDashApp(Viewer):
 
         if registry is None:
             registry = build_registry(pathlib.Path(self.project_dir), package=self.package)
+        registry = self._with_libraries(
+            registry, self.component_libraries, self.include_builtin_components
+        )
         page_entries = {k: v for k, v in registry.items() if v.metadata.page}
         # Session state is built from AST metadata — no imports needed.
         session_state_class = build_session_state_class(registry)
@@ -577,6 +597,14 @@ class FlowDashApp(Viewer):
         if "config" in params:
             kwargs["config"] = self._session_state
         return kwargs
+
+    @staticmethod
+    def _with_libraries(
+        registry: dict[str, RegistryEntry], libraries: t.Sequence[str], builtins: bool = True
+    ) -> dict[str, RegistryEntry]:
+        """Add the components of *libraries* to *registry*, refusing ids already taken."""
+        reserved = BUILTIN_COMPONENTS if builtins else ()
+        return merge_libraries(registry, libraries, reserved=reserved)
 
     def _entry_from_key(self, key):
         app_id = "/".join(key)
@@ -2167,6 +2195,12 @@ class FlowDashApp(Viewer):
         """Generate route mapping for pn.serve."""
         if registry is None:
             registry = build_registry(pathlib.Path(project_dir), package=params.get("package"))
+        # Merged once here, so every session shares the libraries' entries.
+        registry = cls._with_libraries(
+            registry,
+            params.get("component_libraries", ()),
+            params.get("include_builtin_components", True),
+        )
 
         def factory():
             return cls(registry=registry, **params)
