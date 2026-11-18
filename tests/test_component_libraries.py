@@ -62,6 +62,8 @@ LIBRARIES = {
     ),
     "fdlib_broken": "raise RuntimeError('boom')\n",
     "fdlib_reexport": ("from panel_flowdash.widgets import KPI\nfrom ._nodes import SourceNode\n"),
+    "fdlib_facade": "from fdlib_dict._nodes import SourceNode, secret\n",
+    "fdlib_facade_one": "from fdlib_dict._nodes import SourceNode\n",
     "fdlib_dupes": (
         "from .sub1.views import chart as chart1\n"
         "from .sub2.views import chart as chart2\n"
@@ -170,6 +172,20 @@ class TestLibraryComponents:
         entries = library_components("fdlib_reexport")
         assert [e.name for e in entries.values()] == ["SourceNode"]
 
+    def test_facade_without_all_names_the_imported_components(self, libraries):
+        with pytest.raises(ComponentLibraryError, match="SourceNode, secret are imported from"):
+            library_components("fdlib_facade")
+
+    def test_facade_with_one_imported_component(self, libraries):
+        with pytest.raises(ComponentLibraryError, match="SourceNode is imported from"):
+            library_components("fdlib_facade_one")
+
+    def test_facade_with_all_offers_the_imported_components(self, libraries, monkeypatch):
+        import fdlib_facade
+
+        monkeypatch.setattr(fdlib_facade, "__all__", ["SourceNode"], raising=False)
+        assert [e.name for e in library_components("fdlib_facade").values()] == ["SourceNode"]
+
     def test_two_components_with_one_derived_id_raise(self, libraries):
         with pytest.raises(
             ComponentLibraryError, match="both have the component id 'views/chart'"
@@ -265,8 +281,17 @@ class TestMerge:
             merge_libraries(registry, ["fdlib_dict:COMPONENTS"])
 
     def test_reserved_id_collides(self, libraries):
-        with pytest.raises(ComponentLibraryError, match="'Lib/source', which the built-in"):
+        with pytest.raises(
+            ComponentLibraryError,
+            match="'Lib/source', which the built-in components already offer\\.",
+        ):
             merge_libraries({}, ["fdlib_dict:COMPONENTS"], reserved=["Lib/source"])
+
+    def test_alias_of_a_reserved_id_raises(self, libraries):
+        with pytest.raises(
+            ComponentLibraryError, match="an id the built-in components already offer\\."
+        ):
+            merge_libraries({}, ["fdlib_aliased:RENAMED"], reserved=["Lib/chart"])
 
 
 class TestApp:
