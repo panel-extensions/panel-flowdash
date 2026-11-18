@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import decimal
 import html
+import itertools
 import math
 import numbers
 import re
+import reprlib
 import secrets
 import typing as t
 import weakref
@@ -26,6 +29,15 @@ from panel_flowdash.util import is_failure
 _PLACEHOLDER = re.compile(r"\{\{\s*value(?:\.([\w-]+))?\s*(?::([^{}]*?))?\s*\}\}")
 # A format spec asking for thousands of characters would make the server build them.
 _HUGE_SPEC = re.compile(r"\d{4,}")
+_MAX_FILL = 1000
+_MAX_ITEMS = 50
+_MAX_DEPTH = 3
+_MAX_DIGITS = 600
+_HUGE_INT = 10**_MAX_DIGITS
+_REPR = reprlib.Repr()
+_REPR.maxlevel = _MAX_DEPTH
+_REPR.maxdict = _REPR.maxlist = _REPR.maxtuple = _REPR.maxset = _MAX_ITEMS
+_REPR.maxstring = _REPR.maxother = _MAX_FILL
 # Raw HTML is shown as text; math is never typeset since the HTML pane leaves it alone.
 _MARKDOWN = MarkdownIt("gfm-like", {"html": False})
 
@@ -47,14 +59,38 @@ def _lookup(value: t.Any, key: str | None) -> t.Any:
     return None
 
 
-def format_value(value: t.Any, spec: str = "") -> str:
-    """Return *value* as the text a placeholder shows, formatted by *spec* if it applies."""
+def _huge(value: t.Any) -> bool:
+    """Whether *value* is a number too large or small to write out in full."""
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, numbers.Integral):
+        return abs(value) >= _HUGE_INT
+    if isinstance(value, decimal.Decimal):
+        return value.is_finite() and value != 0 and abs(value.adjusted()) > _MAX_DIGITS
+    return False
+
+
+def _scientific(value: t.Any) -> str:
+    if isinstance(value, decimal.Decimal):
+        return format(value, ".6e")
+    exponent = math.floor(math.log10(abs(value)))
+    mantissa = 10 ** (math.log10(abs(value)) - exponent)
+    return f"{'-' if value < 0 else ''}{mantissa:.6f}e+{exponent}"
+
+
+def _clip(text: str) -> str:
+    return text if len(text) <= _MAX_FILL else text[: _MAX_FILL - 1] + "\u2026"
+
+
+def _format(value: t.Any, spec: str, depth: int) -> str:
     if value is None or is_failure(value):
         return ""
+    if _huge(value):
+        return _scientific(value)
     if spec and not _HUGE_SPEC.search(spec):
         try:
             return format(value, spec)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             pass
     if isinstance(value, bool):
         return str(value)
@@ -63,10 +99,28 @@ def format_value(value: t.Any, spec: str = "") -> str:
     if isinstance(value, numbers.Real) and math.isfinite(value):
         return format(value, ",.10g")
     if isinstance(value, (list, tuple, set, frozenset)):
-        return ", ".join(format_value(item) for item in value)
+        if depth >= _MAX_DEPTH:
+            return summarize_value(value)
+        text = ", ".join(
+            _clip(_format(item, "", depth + 1)) for item in itertools.islice(value, _MAX_ITEMS)
+        )
+        if len(value) > _MAX_ITEMS:
+            text += f" and {len(value) - _MAX_ITEMS:,} more"
+        return text
     if getattr(value, "shape", None) is not None:
         return summarize_value(value)
+    if isinstance(value, dict):
+        return _REPR.repr(value)
     return str(value)
+
+
+def format_value(value: t.Any, spec: str = "") -> str:
+    """Return *value* as the text a placeholder shows, formatted by *spec* if it applies.
+
+    The text is at most a thousand characters: a list shows its first items, and
+    a number too long to write out is shown in scientific notation.
+    """
+    return _clip(_format(value, spec, 0))
 
 
 def fill_template(template: str, value: t.Any, escape: t.Callable[[str], str] = str) -> str:
@@ -103,6 +157,7 @@ def render_markdown(template: str, value: t.Any) -> str:
     def walk(tokens):
         for token in tokens:
             token.content = fill(token.content)
+            token.info = marker.sub("", token.info)
             for name, attr in list((token.attrs or {}).items()):
                 if isinstance(attr, str):
                     token.attrs[name] = (
