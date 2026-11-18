@@ -10,7 +10,6 @@ import functools
 import inspect
 import json
 import logging
-import math
 import typing as t
 from dataclasses import dataclass, field, replace
 
@@ -126,30 +125,26 @@ class FlowDashDeps:
 
 
 def _canonical(value: t.Any) -> t.Any:
-    """Return *value* as plain JSON data that compares equal however it was written.
+    """Return *value* as plain JSON data that compares equal only to what loads the same.
 
-    Mapping keys are sorted when dumped, tuples become lists and a float with
-    an integral value becomes an int, so ``1`` and ``1.0`` compare equal while
-    ``true`` and ``1`` do not.
+    Tuples become lists; mapping keys keep their order, which a component can
+    see, and ints, floats and booleans stay apart, so ``1``, ``1.0`` and
+    ``true`` all differ.
     """
     if isinstance(value, dict):
-        return {
-            k if isinstance(k, str) else f"{type(k).__name__}:{k!r}": _canonical(v)
+        return [
+            [k if isinstance(k, str) else f"{type(k).__name__}:{k!r}", _canonical(v)]
             for k, v in value.items()
-        }
+        ]
     if isinstance(value, (list, tuple)):
         return [_canonical(v) for v in value]
-    if isinstance(value, bool) or value is None or isinstance(value, (str, int)):
+    if value is None or isinstance(value, (bool, str, int, float)):
         return value
-    if isinstance(value, float):
-        if not math.isfinite(value):
-            return repr(value)
-        return int(value) if value.is_integer() else value
-    return repr(value)
+    return {"repr": repr(value)}
 
 
 def _dumps(value: t.Any) -> str:
-    return json.dumps(_canonical(value), sort_keys=True, separators=(",", ":"))
+    return json.dumps(_canonical(value), separators=(",", ":"))
 
 
 def _transform_steps(steps: t.Any) -> t.Any:
@@ -166,7 +161,8 @@ def _sensitive_nodes(
     """Map each node of *doc* whose component is sensitive to what decides what it does.
 
     That is its resolved component, its config with the fields at their
-    defaults left out, and its incoming edges with their transforms. Former
+    defaults left out, and its incoming edges by input port, each with the
+    resolved component of its source and its transform, in edge order. Former
     component, field and port names are resolved, so two documents that load
     into the same sensitive nodes give the same map. Parts the operations
     would refuse to load are skipped.
@@ -186,17 +182,19 @@ def _sensitive_nodes(
         spec = specs.get(name, (None, None, None))[2]
         return spec.resolve_name(given) if spec is not None else given
 
-    incoming: dict[str, list[tuple[str, str, str]]] = {}
+    # By target node and port, in edge order: a port taking several values gets them in that order.
+    incoming: dict[str, dict[str, list[tuple[str, str, str]]]] = {}
     edges = doc.get("edges")
     for edge in edges if isinstance(edges, list) else []:
         if not isinstance(edge, dict):
             continue
         source, _, source_port = str(edge.get("from")).partition(".")
         target, _, target_port = str(edge.get("to")).partition(".")
-        incoming.setdefault(target, []).append(
+        ports = incoming.setdefault(target, {})
+        ports.setdefault(port(target, target_port), []).append(
             (
                 f"{source}.{port(source, source_port)}" if source_port else source,
-                port(target, target_port),
+                specs.get(source, (None, None, None))[1] or "",
                 _dumps(_transform_steps(edge.get("transform"))),
             )
         )
@@ -206,13 +204,19 @@ def _sensitive_nodes(
         if not sensitive(component):
             continue
         config = nodes[name].get("config") or {}
-        if isinstance(config, dict) and spec is not None:
-            resolved_config = {spec.resolve_name(str(k)): v for k, v in config.items()}
-            # A field given under both its former and its current name stays as written.
-            if len(resolved_config) == len(config):
-                defaults = {f.name: _dumps(f.default) for f in spec.config}
-                config = {k: v for k, v in resolved_config.items() if defaults.get(k) != _dumps(v)}
-        found[str(name)] = (resolved, _dumps(config), _dumps(sorted(incoming.get(name, []))))
+        if isinstance(config, dict):
+            if spec is not None:
+                resolved_config = {spec.resolve_name(str(k)): v for k, v in config.items()}
+                # A field given under both its former and its current name stays as written.
+                if len(resolved_config) == len(config):
+                    defaults = {f.name: _dumps(f.default) for f in spec.config}
+                    config = {
+                        k: v for k, v in resolved_config.items() if defaults.get(k) != _dumps(v)
+                    }
+            # The order of the fields does not matter, unlike the order of keys within a value.
+            config = sorted((str(k), _dumps(v)) for k, v in config.items())
+        inputs = sorted(incoming.get(name, {}).items())
+        found[str(name)] = (resolved, _dumps(config), _dumps(inputs))
     return found
 
 

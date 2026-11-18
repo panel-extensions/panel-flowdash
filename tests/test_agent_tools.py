@@ -87,7 +87,56 @@ def query(config, instance_config):
     return "query"
 
 
-WITH_FETCH = {**COMPONENTS, "T/fetch": fetch, "T/text": text, "T/query": query}
+class SourceConfig(param.Parameterized):
+    value = param.String(default="FROM_A")
+
+
+@register(
+    page=False,
+    component=True,
+    title="Source A",
+    config_schema=SourceConfig,
+    provides=[{"key": "text", "type": "str"}],
+)
+def source_a(config, instance_config):
+    config.text = instance_config.value
+    return "a"
+
+
+@register(page=False, component=True, title="Source B", provides=[{"key": "text", "type": "str"}])
+def source_b(config):
+    config.text = "FROM_B"
+    return "b"
+
+
+class SinkConfig(param.Parameterized):
+    n = param.Number(default=0)
+    options = param.Dict(default={})
+
+
+@register(
+    page=False,
+    component=True,
+    title="Sink",
+    config_schema=SinkConfig,
+    requires=[
+        {"key": "table", "type": "str", "required": False},
+        {"key": "tables", "type": "str", "multiple": True, "required": False},
+    ],
+)
+def sink(config, instance_config):
+    return "sink"
+
+
+WITH_FETCH = {
+    **COMPONENTS,
+    "T/fetch": fetch,
+    "T/text": text,
+    "T/query": query,
+    "P/srca": source_a,
+    "P/srcb": source_b,
+    "P/sink": sink,
+}
 
 
 def _results(messages):
@@ -587,7 +636,7 @@ class TestSensitiveComponents:
             pytest.param(lambda d: d["settings"].update(description="x"), id="settings"),
             pytest.param(lambda d: d["nodes"]["f"].update(component="Old/query"), id="former-id"),
             pytest.param(
-                lambda d: d["nodes"]["g"].update(config={"sql": "", "limit": 10.0}),
+                lambda d: d["nodes"]["g"].update(config={"sql": "", "limit": 10}),
                 id="default-written-out",
             ),
             pytest.param(
@@ -650,7 +699,6 @@ class TestSensitiveComponents:
             )
 
         assert not self._asks(policy, written())
-        assert not self._asks(policy, written(limit="5.0"))
         assert not self._asks(policy, written(limit="0x5"))
         assert not self._asks(policy, written(step="{prefix: a, op: format}"))
         assert not self._asks(policy, written(step="{op: format, prefix: a, suffix: ''}"))
@@ -658,6 +706,7 @@ class TestSensitiveComponents:
         renamed = written().replace("sql: SELECT 1", "query: SELECT 1")
         assert not self._asks(policy, renamed.replace("to: f.table", "to: f.source"))
         assert self._asks(policy, written().replace("{sql:", "{query: SELECT 2, sql:"))
+        assert self._asks(policy, written(limit="5.0"))
         assert self._asks(policy, written(limit="5.5"))
         assert self._asks(policy, written(limit="'5'"))
         assert self._asks(policy, written(step="{op: format, prefix: b}"))
@@ -690,6 +739,94 @@ class TestSensitiveComponents:
         await runner.run("Swap it")
         assert [r.tool_name for r in runner.state.approvals.values()] == ["replace_dashboard"]
         assert [i["component_id"] for i in live._editor._tile_items] == ["T/fetch"]
+
+    @pytest.fixture
+    async def sunk(self, live):
+        """Two sources and a sensitive sink fed by the first, on its single and its list input."""
+        _, ops = self._run(live)
+        ops.add_node("P/srca", name="a")
+        ops.add_node("P/srcb", name="b")
+        ops.add_node("P/sink", {"n": 1, "options": {"x": 1, "y": 2}}, name="s")
+        ops.connect("a.text", "s.table")
+        ops.connect("a.text", "s.tables")
+        ops.connect("b.text", "s.tables")
+        policy = approval_policy(sensitive_components=["P/sink"], ops=ops)
+        return ops, policy
+
+    def _apply(self, ops, policy, edit):
+        """Edit the canvas YAML, then return whether that asks and the sink's inputs and config."""
+        doc = yaml.safe_load(ops.get_dashboard())
+        edit(doc)
+        text = ops.get_dashboard().splitlines()[0] + "\n" + yaml.safe_dump(doc, sort_keys=False)
+        asks = self._asks(policy, text)
+        ops.replace_yaml(text)
+        state = ops.editor.graph.get_state(ops._instance("s"))
+        return asks, state.table, list(state.tables), ops.node_config("s")
+
+    async def test_the_sink_starts_from_the_first_source(self, sunk):
+        ops, policy = sunk
+        assert self._apply(ops, policy, lambda d: None) == (
+            False,
+            "FROM_A",
+            ["FROM_A", "FROM_B"],
+            {"n": 1, "options": {"x": 1, "y": 2}},
+        )
+
+    @pytest.mark.parametrize(
+        "edit",
+        [
+            pytest.param(lambda d: d["nodes"]["a"].update(component="P/srcb"), id="retype"),
+            pytest.param(
+                lambda d: d["nodes"].update(a=d["nodes"]["b"], b=d["nodes"]["a"]), id="swap"
+            ),
+        ],
+    )
+    async def test_changing_the_component_feeding_a_sensitive_node_asks(self, sunk, edit):
+        ops, policy = sunk
+        asks, table, _, _ = self._apply(ops, policy, edit)
+        assert table == "FROM_B" and asks
+
+    async def test_reordering_the_edges_of_a_list_input_asks(self, sunk):
+        ops, policy = sunk
+
+        def swap(doc):
+            doc["edges"][1:3] = doc["edges"][2:0:-1]
+
+        asks, _, tables, _ = self._apply(ops, policy, swap)
+        assert tables == ["FROM_B", "FROM_A"] and asks
+
+    async def test_reordering_edges_into_different_inputs_does_not_ask(self, sunk):
+        ops, policy = sunk
+
+        def move(doc):
+            doc["edges"].append(doc["edges"].pop(0))
+
+        assert self._apply(ops, policy, move)[:3] == (False, "FROM_A", ["FROM_A", "FROM_B"])
+
+    async def test_writing_an_int_as_a_float_asks(self, sunk):
+        ops, policy = sunk
+        asks, _, _, config = self._apply(
+            ops, policy, lambda d: d["nodes"]["s"]["config"].update(n=1.0)
+        )
+        assert type(config["n"]) is float and asks
+
+    async def test_reordering_the_keys_of_a_config_value_asks(self, sunk):
+        ops, policy = sunk
+
+        def reorder(doc):
+            doc["nodes"]["s"]["config"]["options"] = {"y": 2, "x": 1}
+
+        asks, _, _, config = self._apply(ops, policy, reorder)
+        assert list(config["options"]) == ["y", "x"] and asks
+
+    async def test_reordering_config_fields_does_not_ask(self, sunk):
+        ops, policy = sunk
+
+        def reorder(doc):
+            config = doc["nodes"]["s"]["config"]
+            doc["nodes"]["s"]["config"] = dict(reversed(config.items()))
+
+        assert not self._apply(ops, policy, reorder)[0]
 
     def test_sensitive_components_need_the_operations(self):
         with pytest.raises(ValueError, match="needs ops"):
