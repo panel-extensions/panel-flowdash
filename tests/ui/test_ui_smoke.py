@@ -13,6 +13,8 @@ from panel_flowdash.component_library import normalize_components
 from panel_flowdash.dashboard_store import DashboardEdge
 from tests.test_editor import CHART, COMPONENTS, SHOUTER
 
+from .util import DASHBOARD_LOAD_TIMEOUT
+
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect
 
@@ -48,8 +50,8 @@ def test_launcher_view_edit_and_back(page):
     expect(card).to_have_count(1)
     card.get_by_text("Plant", exact=True).click()
     wait_until(lambda: urlparse(page.url).path == f"/dash/{dashboard_id}", page)
+    expect(page.get_by_text("chart", exact=True)).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
     expect(page.locator(".flowdash-dashboard-card")).to_have_count(0)
-    expect(page.get_by_text("chart", exact=True)).to_be_visible()
 
     page.get_by_role("button", name="Edit").click()
     page.get_by_role("button", name="Done").wait_for()

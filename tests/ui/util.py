@@ -2,6 +2,10 @@
 
 from panel.tests.util import serve_component as _serve_component, wait_until
 
+# Opening a dashboard builds the models of the whole editor in one go, which on
+# a busy CI runner takes longer than the 5 s that ``expect`` waits by default.
+DASHBOARD_LOAD_TIMEOUT = 20000
+
 
 def serve_component(page, app, suffix="", wait=True, **kwargs):
     """Serve *app* and, with *wait*, return once the page takes input.
