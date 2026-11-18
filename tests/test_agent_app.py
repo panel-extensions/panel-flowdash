@@ -156,9 +156,9 @@ def _two_numbers():
 def _count_arrangements(monkeypatch, editor):
     arrange, calls = type(editor)._arrange_tiles, []
 
-    def counted(self):
+    def counted(self, *args):
         calls.append(1)
-        arrange(self)
+        arrange(self, *args)
 
     monkeypatch.setattr(type(editor), "_arrange_tiles", counted)
     return calls

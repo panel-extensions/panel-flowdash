@@ -240,12 +240,24 @@ class TestTiles:
             "source",
             "combined",
         ]
-        widths = {t["instance_id"]: t["width"] for t in tiles}
+        widths = {t["instance_id"]: t.get("width") for t in tiles}
         assert widths["trend"] == widths["split"] == 50
         assert widths["rows"] == 100
         # The control and the KPI share a row at their own widths; no chart fits the rest.
         assert (widths["factor"], widths["kpi"]) == (33.33, 25)
-        assert widths["source"] == widths["combined"] == 33.33
+        # The source and the transform are plumbing: their tiles start hidden.
+        hidden = {t["instance_id"] for t in tiles if t.get("visible") is False}
+        assert hidden == {"source", "combined"}
+
+    def test_arranging_keeps_plumbing_hidden_and_puts_shown_plumbing_last(self, ops):
+        _build(ops)
+        ops.arrange_layout()
+        hidden = {t["instance_id"] for t in _tiles(ops.editor) if t.get("visible") is False}
+        assert hidden == {"source", "combined"}
+        ops.place_tile("source", visible=True)
+        ops.arrange_layout()
+        shown = [t["instance_id"] for t in _tiles(ops.editor) if t.get("visible", True)]
+        assert shown[-1] == "source"
 
     def test_tiles_wait_for_the_end_of_the_agents_request(self, ops):
         from panel_flowdash.agent.tools import FlowDashDeps
@@ -303,10 +315,10 @@ class TestTiles:
     def test_removing_a_tile_closes_the_gap(self, ops):
         _build(ops, GRAPH[:3])
         ops.add_node("V/headline", name="kpi_2")
-        widths = {e["instance_id"]: e["width"] for e in ops.editor.layout}
+        widths = {e["instance_id"]: e.get("width") for e in ops.editor.layout}
         assert (widths["kpi"], widths["kpi_2"], widths["trend"]) == (25, 25, 50)
         ops.remove_node("kpi_2")
-        widths = {e["instance_id"]: e["width"] for e in ops.editor.layout}
+        widths = {e["instance_id"]: e.get("width") for e in ops.editor.layout}
         assert (widths["kpi"], widths["trend"]) == (25, 75)
 
     def test_the_turn_names_only_the_added_node(self, ops):

@@ -19,6 +19,21 @@ from .util import serve_component, stable_box
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
 
+# The boxes of the canvas's nodes by id, across shadow roots.
+_NODE_BOXES = """() => {
+    const boxes = {}
+    const walk = (root) => root.querySelectorAll("*").forEach((el) => {
+        if (el.classList.contains("react-flow__node")) {
+            const r = el.getBoundingClientRect()
+            boxes[el.dataset.id] = {x: r.x, y: r.y, width: r.width, height: r.height}
+        }
+        if (el.shadowRoot) walk(el.shadowRoot)
+    })
+    walk(document)
+    return boxes
+}"""
+
+
 def _overlapping(boxes):
     return [
         (a, b)
@@ -45,11 +60,16 @@ def test_an_agent_built_graph_and_its_tiles_do_not_overlap(page):
 
     nodes = page.locator(".react-flow__node")
     expect(nodes).to_have_count(len(editor._tile_items))
-    ids = [item["instance_id"] for item in editor._tile_items]
-    boxes = {
-        node_id: stable_box(page.locator(f'.react-flow__node[data-id="{node_id}"]'), page)
-        for node_id in ids
-    }
+    # The nodes move as they are laid out and the view fits them, so all of
+    # them are read at once until two reads agree.
+    reads = []
+
+    def settled():
+        reads.append(page.evaluate(_NODE_BOXES))
+        return len(reads) >= 3 and reads[-1] == reads[-2] == reads[-3]
+
+    wait_until(settled, page, timeout=10000, interval=200)
+    boxes = reads[-1]
     assert _overlapping(boxes) == []
     for edge in editor.graph.edges:
         source, target = boxes[edge["source"]], boxes[edge["target"]]
@@ -60,16 +80,20 @@ def test_an_agent_built_graph_and_its_tiles_do_not_overlap(page):
     wait_until(lambda: len(editor._grid_ids) == count, page, timeout=8000)
     tiles = page.locator(".muuri-grid-item")
     expect(tiles).to_have_count(count)
+    hidden = {e["instance_id"] for e in editor.layout if e.get("visible") is False}
+    # The source and the transform are plumbing, whose tiles start hidden.
+    assert hidden == {"source", "combined"}
     tile_boxes = {
-        tile_id: stable_box(tiles.nth(i), page) for i, tile_id in enumerate(editor._grid_ids)
+        tile_id: stable_box(tiles.nth(i), page)
+        for i, tile_id in enumerate(editor._grid_ids)
+        if tile_id not in hidden
     }
     assert _overlapping(tile_boxes) == []
 
     def top(name):
         return round(tile_boxes[name]["y"])
 
-    # The control and the KPI share a row, then the charts side by side and the table. The
-    # source and transform tiles go last, unless the grid moves one up into a gap.
+    # The control and the KPI share a row, then the charts side by side and the table.
     assert top("factor") == top("kpi") < top("trend") == top("split") < top("rows")
     assert tile_boxes["factor"]["x"] < tile_boxes["kpi"]["x"]
     assert tile_boxes["trend"]["x"] < tile_boxes["split"]["x"]

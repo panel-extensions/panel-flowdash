@@ -262,22 +262,33 @@ class TestArrangeTiles:
         entries = {e["instance_id"]: e for e in arrange_tiles(TILES, 1200)}
         # 280 px of 1200 is 3 of 12 columns, 360 px is 4.
         assert [entries[k]["width"] for k in ("kpi_a", "kpi_b", "kpi_c")] == [25] * 3
-        # The control shares a row with the KPIs, at their height.
-        assert entries["picker"]["width"] == 33.33
-        assert entries["picker"]["height"] == entries["kpi_a"]["height"] == 130
-        # The next chart fills the room the KPI on the second row leaves, both at their own height.
-        assert (entries["timeline"]["width"], entries["timeline"]["height"]) == (75, 320)
-        assert entries["kpi_c"]["height"] == 110
+        assert entries["kpi_c"]["height"] == 130
+        # The control and the KPIs don't fit one row, so the KPIs start their own; the
+        # leading heading finishes the control's row.
+        assert (entries["title"]["width"], entries["picker"]["width"]) == (66.67, 33.33)
+        assert entries["picker"]["height"] == 90
         assert entries["source"]["width"] == 33.33
 
     def test_charts_go_two_to_a_row(self):
         entries = {e["instance_id"]: e for e in arrange_tiles(TILES, 1200)}
-        assert entries["makers"]["width"] == entries["map"]["width"] == 50
-        assert entries["makers"]["height"] == entries["map"]["height"] == 460
-        assert entries["table"]["width"] == 100
+        assert entries["timeline"]["width"] == entries["makers"]["width"] == 50
+        assert entries["timeline"]["height"] == entries["makers"]["height"] == 320
+        assert entries["map"]["width"] == entries["table"]["width"] == 100
         tiles = [TileBox(f"c{i}", "chart", {"width": 560, "height": 320}) for i in range(3)]
-        # The odd chart out takes the whole row.
+        # The odd chart out takes the row, up to twice its default width.
         assert [e["width"] for e in arrange_tiles(tiles, 1200)] == [50, 50, 100]
+        tiles[2] = TileBox("c2", "chart", {"width": 420, "height": 320})
+        assert arrange_tiles(tiles, 1200)[2]["width"] == round(100 * 8 / 12, 2)
+
+    def test_controls_and_kpis_that_do_not_fit_a_row_keep_to_their_own(self):
+        tiles = [
+            TileBox("select", "control", {"width": 360, "height": 90}),
+            TileBox("toggle", "control", {"width": 360, "height": 72}),
+            *(TileBox(f"kpi_{i}", "kpi", {"width": 280, "height": 130}) for i in range(2)),
+            TileBox("table", "table", {"height": 360}),
+        ]
+        entries = arrange_tiles(tiles, 1200)
+        assert [e["instance_id"] for e in _rows(entries)[1]][:2] == ["kpi_0", "kpi_1"]
 
     @pytest.mark.parametrize(
         ("count", "title", "kpi"), [(1, 75, 25), (2, 50, 25), (3, 100, 25), (4, 100, 25)]
@@ -326,14 +337,14 @@ class TestArrangeTiles:
         entries = {e["instance_id"]: e for e in arrange_tiles(tiles, 1200)}
         assert entries["kpi_0"]["width"] == entries["kpi_1"]["width"] == round(100 * 4 / 12, 2)
 
-    def test_source_tiles_may_move_into_a_gap(self):
+    def test_source_tiles_go_last_when_shown(self):
         tiles = [
+            TileBox("source", "data", {"width": 360, "height": 150}),
             TileBox("toggle", "control", {"width": 360, "height": 72}),
             TileBox("chart", "chart", {"width": 560, "height": 320}),
-            TileBox("source", "data", {"width": 360, "height": 150}),
         ]
-        entries = {e["instance_id"]: e for e in arrange_tiles(tiles, 1200)}
-        assert (entries["toggle"]["width"], entries["chart"]["width"]) == (33.33, 66.67)
+        order = [e["instance_id"] for e in arrange_tiles(tiles, 1200)]
+        assert order == ["toggle", "chart", "source"]
 
     def test_a_lone_control_keeps_its_width(self):
         tiles = [

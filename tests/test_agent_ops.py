@@ -126,14 +126,19 @@ class TestEditing:
         ops.connect(f"{source}.value", f"{target}.value")
         ops.connect(f"{target}.doubled", f"{scaled}.value", [{"op": "round", "digits": 0}])
         ops.set_config(scaled, {"factor": 3})
-        ops.place_tile(scaled, width=50, height=200, index=0)
+        ops.place_tile(scaled, width=50, height=200, visible=True, index=0)
         ops.set_settings({"description": "Doubles a number"})
         doc = yaml.safe_load(ops.get_dashboard())
         assert list(doc["nodes"]) == [source, target, scaled]
         assert source.startswith("number_") and scaled.startswith("scaled_")
         assert doc["nodes"][scaled]["config"] == {"factor": 3}
         assert doc["edges"][1]["transform"] == [{"op": "round", "digits": 0}]
-        assert doc["layout"]["tiles"][0] == {"node": scaled, "width": 50, "height": 200}
+        assert doc["layout"]["tiles"][0] == {
+            "node": scaled,
+            "width": 50,
+            "height": 200,
+            "visible": True,
+        }
         assert doc["settings"]["description"] == "Doubles a number"
         assert ops.editor.dirty
 
@@ -317,14 +322,12 @@ class TestNamedNodes:
         ops.remove_node("sc")
         ops.add_node("T/doubler", name="sc")
         tiles = yaml.safe_load(ops.get_dashboard()).get("layout", {}).get("tiles", [])
+        # The doubler is a transform, whose tile starts hidden whatever the removed one had.
         (tile,) = [t for t in tiles if t["node"] == "sc"]
-        assert tile.get("visible", True) and (tile.get("width"), tile.get("height")) != (40, 123)
+        assert (tile.get("width"), tile.get("height")) != (40, 123)
         ops.editor.mode = "dashboard"
         (entry,) = [e for e in ops.editor.layout if e["instance_id"] == "sc"]
-        assert entry.get("visible", True) and (entry.get("width"), entry.get("height")) != (
-            40,
-            123,
-        )
+        assert (entry.get("width"), entry.get("height")) != (40, 123)
 
     def test_names_survive_export_import_and_the_store(self):
         store = MemoryDashboardStore()
