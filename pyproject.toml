@@ -48,12 +48,13 @@ dependencies = [
     "panel-agents >=0.1.0b4",
     # Page.rail and Page.header_color arrived in 0.17.0b3.
     "panel-material-ui >=0.17.0b3",
-    # ReactFlow.fit_view, add_nodes/add_edges, graph validation and handle `top` arrived in 0.6.0.
-    "panel-reactflow >=0.6.0",
+    # ReactFlow.fit_view, add_nodes/add_edges, graph validation and handle `top` arrived in
+    # 0.6.0b1. A pre-release floor, so pip selects it without --pre until 0.6.0 is out.
+    "panel-reactflow >=0.6.0b1",
     # collapse_threshold, which the Split tab's collapse buttons rely on, arrived in 0.4.0.
     "panel-splitjs >=0.4.0",
-    # TileGrid.selected, preview_band and show_breakpoint_toolbar arrive in 0.6.0.
-    "panel-tiles >=0.6.0",
+    # TileGrid.selected, preview_band and show_breakpoint_toolbar arrived in 0.6.0b0.
+    "panel-tiles >=0.6.0b0",
     # Parameter.metadata, read for output port declarations, arrived in 2.3.
     "param >=2.3.0",
     "pyyaml",
