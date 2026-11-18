@@ -144,11 +144,15 @@ request.
   unless the call names them in `unblock`; both show in the approval. Empty names
   and `group:` without a group are refused.
 
-Every edit publishes the dashboard's YAML as a new version. The user can compare
+The drawer's artifact view shows the dashboard's
+[edit history](persist-dashboards.md#undo-redo-and-the-edit-history): a version for
+every edit, the user's and the agent's, grouped by request. The user can compare
 versions, see what changed in the dashboard's terms ("Connected filter.filtered →
-map.turbines", "kpi: metric: turbines → capacity") and apply an earlier or later
-version, which loads it like an imported file. If the dashboard has changes made
-after the agent's last edit, the user confirms that applying the version drops them.
+map.turbines", "kpi: metric: turbines → capacity"), undo a whole request, and go back
+to or forward to any version, with the same rights checks as the editor's own undo.
+The agent cannot undo or redo through the command palette; those commands are the
+user's. With `editor_options={"history": False}` each tool call publishes a version
+instead, and applying one that predates the user's own edits asks first.
 
 Each request to the agent stays on the dashboard that was open when the user sent it:
 if the user opens another dashboard while the agent works, every further tool call
@@ -234,7 +238,8 @@ failed raises `OutputUnavailable` with its `status`, as `preview` reports it; a
 dashboard tool that raises it reports it to the model instead of ending the run.
 
 `dashboard_toolset()` wraps them as a pydantic-ai toolset that runs against
-`FlowDashDeps(ops)`; `dashboard_toolset(["get_dashboard", "set_config"])` offers only
+`FlowDashDeps(ops)`. The editor's edit history publishes every edit as a version, so
+give your `AgentRunner` the editor's `edit_history.state` to see them in its chat; `dashboard_toolset(["get_dashboard", "set_config"])` offers only
 those tools:
 
 ```python

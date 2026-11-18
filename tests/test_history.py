@@ -1,0 +1,695 @@
+"""The edit history: a version per edit, coalescing, undo and redo, storage, retention and rights."""
+
+import json
+import sqlite3
+import time
+from contextlib import closing
+
+import pytest
+import yaml
+from panel_agents import RunState
+from panel_agents.context import _scope
+from panel_agents.events import RunStarted
+
+from panel_flowdash import MemoryDashboardStore
+from panel_flowdash.agent import DashboardOps
+from panel_flowdash.agent.ops import read_revision
+from panel_flowdash.dashboard_store import (
+    DashboardEdge,
+    DashboardItem,
+    DashboardStore,
+)
+from panel_flowdash.history import (
+    ARTIFACT_KIND,
+    MAX_EVENTS,
+    artifact_id_for,
+    compact,
+    decode,
+)
+from panel_flowdash.json_store import JSONFolderDashboardStore
+from panel_flowdash.turns import agent_edits
+
+from .test_agent_ops import _editor
+
+
+class Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+@pytest.fixture
+def editor():
+    editor = _editor(MemoryDashboardStore())
+    editor.new_dashboard("Mine")
+    yield editor
+    editor.dispose()
+
+
+def _ops(editor):
+    return [v.metadata["op"] for v in editor.edit_history.versions]
+
+
+def _last(editor):
+    return editor.edit_history.versions[-1]
+
+
+def _names(editor):
+    return sorted(item["instance_id"] for item in editor._tile_items)
+
+
+def _two_nodes(editor):
+    base = editor.add_component("T/number", instance_id="base")
+    double = editor.add_component("T/doubler", instance_id="double")
+    return base, double
+
+
+# --------------------------------------------------------------------------
+# One version per edit
+# --------------------------------------------------------------------------
+
+
+def test_the_first_edit_publishes_the_dashboard_as_opened_first(editor):
+    editor.add_component("T/number", instance_id="base")
+    opened, added = editor.edit_history.versions
+    assert opened.metadata["op"] == "open" and opened.metadata["base"] is None
+    assert "nodes" not in yaml.safe_load(opened.value)
+    assert added.metadata["base"] == opened.metadata["revision"]
+    assert editor.edit_history.artifact_id == artifact_id_for(editor.dashboard.dashboard_id)
+    assert editor.edit_history.artifact.kind == ARTIFACT_KIND
+
+
+def _move_base(editor):
+    editor._flow.nodes = [
+        {**node, "position": {"x": 40, "y": 80}} if node["id"] == "base" else node
+        for node in editor._flow.nodes
+    ]
+    editor._mark_rearranged("Moved nodes on the canvas", "move_nodes")
+
+
+@pytest.mark.parametrize(
+    "edit, op, args",
+    [
+        (
+            lambda e: e.add_component("T/scaled", instance_id="extra"),
+            "add_node",
+            {"component": "T/scaled", "name": "extra"},
+        ),
+        (lambda e: e.remove_component("base"), "remove_node", {"name": "base"}),
+        (
+            lambda e: e.connect("base", "value", "double", "value"),
+            "connect",
+            {"source": "base.value", "target": "double.value"},
+        ),
+        (lambda e: e.clear(), "clear", {}),
+        (
+            lambda e: e._apply_config_patch("double", {"factor": 3}),
+            "set_config",
+            {"name": "double", "keys": ["factor"]},
+        ),
+        (_move_base, "move_nodes", {}),
+        (
+            lambda e: setattr(e.settings, "refresh_period", 7),
+            "settings",
+            {"keys": ["refresh_period"]},
+        ),
+    ],
+)
+def test_each_edit_is_one_version_with_its_operation(editor, edit, op, args):
+    editor.add_component("T/number", instance_id="base")
+    editor.add_component("T/scaled", instance_id="double")
+    before = len(editor.edit_history.versions)
+    previous = _last(editor)
+    edit(editor)
+    versions = editor.edit_history.versions
+    assert len(versions) == before + 1
+    version = versions[-1]
+    meta = version.metadata
+    assert (meta["op"], meta["args"]) == (op, args)
+    assert version.actor == "user" and version.user == "alice"
+    assert version.run_id is None and version.tool_call_id is None
+    assert meta["turn"] == editor.turns[-1].id
+    assert meta["base"] == previous.metadata["revision"]
+    assert meta["revision"] == read_revision(version.value) == DashboardOps(editor).revision()
+    assert meta["label"] and len(meta["version_id"]) == 32
+    assert version.version == editor.edit_history.artifact.applied
+
+
+def test_edge_edits_and_transforms_are_versions(editor):
+    editor.add_component("T/number", instance_id="base")
+    editor.add_component("T/doubler", instance_id="double")
+    editor.connect("base", "value", "double", "value")
+    editor.set_edge_transform("base", "value", "double", "value", [{"op": "round", "digits": 0}])
+    editor.disconnect("base", "value", "double", "value")
+    assert _ops(editor)[-3:] == ["connect", "set_transform", "disconnect"]
+    assert all(
+        v.metadata["args"] == {"source": "base.value", "target": "double.value"}
+        for v in editor.edit_history.versions[-3:]
+    )
+
+
+def test_imports_and_replaces_are_versions(editor):
+    ops = DashboardOps(editor)
+    editor.add_component("T/number", instance_id="base")
+    editor.import_dashboard({"items": [{"instance_id": "n", "component_id": "T/number"}]})
+    text = ops.get_dashboard().replace("  n:\n", "  m:\n")
+    ops.replace_yaml(text)
+    assert _ops(editor)[-2:] == ["import", "replace"]
+    assert editor.edit_history.versions[-1].metadata["label"] == "Added m. Removed n."
+
+
+def test_tile_layout_from_ops_is_a_version(editor):
+    ops = DashboardOps(editor)
+    editor.add_component("T/number", instance_id="base")
+    ops.place_tile("base", width=50)
+    assert editor.edit_history.versions[-1].metadata["args"] == {"name": "base", "keys": ["width"]}
+
+
+def test_an_edit_that_changes_nothing_is_no_version(editor):
+    editor.add_component("T/number", instance_id="base")
+    count = len(editor.edit_history.versions)
+    editor._record_edit(op="layout")
+    assert len(editor.edit_history.versions) == count
+
+
+def test_marking_the_canvas_dirty_by_hand_is_recorded_too(editor):
+    editor.add_component("T/number", instance_id="base")
+    editor.dashboard.settings["extra"] = 1
+    editor.settings.refresh_period = 9
+    assert _ops(editor)[-1] == "settings"
+
+
+def test_a_read_only_editor_records_nothing():
+    store = MemoryDashboardStore()
+    editor = _editor(store)
+    editor.new_dashboard("Mine")
+    editor.read_only = True
+    editor.add_component("T/number", instance_id="base")
+    assert editor.edit_history.versions == [] and not editor.can_undo
+    assert editor.undo() is False
+
+
+def test_history_can_be_turned_off():
+    editor = _editor(MemoryDashboardStore(), history=False)
+    editor.new_dashboard("Mine")
+    editor.add_component("T/number", instance_id="base")
+    assert editor.edit_history.versions == [] and not editor.can_undo
+
+
+def test_the_history_state_bounds_its_events(editor):
+    assert editor.edit_history.state.max_events == MAX_EVENTS
+
+
+# --------------------------------------------------------------------------
+# Coalescing gestures
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def clocked():
+    editor = _editor(MemoryDashboardStore())
+    clock = Clock()
+    editor._history._clock = clock
+    editor.new_dashboard("Mine")
+    editor.add_component("T/scaled", instance_id="a")
+    editor.add_component("T/scaled", instance_id="b")
+    yield editor, clock
+    editor.dispose()
+
+
+def test_a_burst_of_config_edits_is_one_version(clocked):
+    editor, clock = clocked
+    for factor in (2, 3, 4):
+        editor._apply_config_patch("a", {"factor": factor})
+        clock.now += 1
+    assert _ops(editor) == ["open", "add_node", "add_node", "set_config"]
+    version = _last(editor)
+    assert version.metadata["args"] == {"name": "a", "keys": ["factor"]}
+    assert yaml.safe_load(version.value)["nodes"]["a"]["config"] == {"factor": 4}
+    assert version.metadata["base"] == editor.edit_history.versions[-2].metadata["revision"]
+
+
+def test_a_pause_ends_the_gesture(clocked):
+    editor, clock = clocked
+    editor._apply_config_patch("a", {"factor": 2})
+    clock.now += 5
+    editor._apply_config_patch("a", {"factor": 3})
+    assert _ops(editor)[-2:] == ["set_config", "set_config"]
+
+
+def test_another_node_or_operation_ends_the_gesture(clocked):
+    editor, _ = clocked
+    editor._apply_config_patch("a", {"factor": 2})
+    editor._apply_config_patch("b", {"factor": 2})
+    editor.settings.refresh_period = 5
+    editor.settings.refresh_period = 6
+    assert _ops(editor)[-3:] == ["set_config", "set_config", "settings"]
+
+
+def test_structural_edits_are_never_merged(clocked):
+    editor, _ = clocked
+    editor.add_component("T/number", instance_id="c")
+    editor.add_component("T/number", instance_id="d")
+    assert _ops(editor)[-2:] == ["add_node", "add_node"]
+
+
+def test_a_gesture_is_published_before_undo(clocked):
+    editor, _ = clocked
+    editor._apply_config_patch("a", {"factor": 2})
+    assert editor.can_undo and editor.undo()
+    assert editor._tile_items[0]["config"].get("factor", 1) == 1
+
+
+def test_coalescing_can_be_turned_off(clocked):
+    editor, _ = clocked
+    editor.history_coalesce = 0
+    editor._apply_config_patch("a", {"factor": 2})
+    editor._apply_config_patch("a", {"factor": 3})
+    assert _ops(editor)[-2:] == ["set_config", "set_config"]
+
+
+# --------------------------------------------------------------------------
+# Undo and redo
+# --------------------------------------------------------------------------
+
+
+def test_undo_and_redo_step_through_a_persons_edits(editor):
+    base, double = _two_nodes(editor)
+    editor.connect(base, "value", double, "value")
+    assert editor.undo() and editor.graph.edges == []
+    assert editor.undo() and _names(editor) == ["base"]
+    assert editor.can_redo
+    assert editor.redo() and _names(editor) == ["base", "double"]
+    assert editor.redo() and len(editor.graph.edges) == 1
+    assert not editor.can_redo and editor.redo() is False
+
+
+def test_a_new_edit_ends_redo(editor):
+    _two_nodes(editor)
+    editor.undo()
+    editor.add_component("T/scaled", instance_id="other")
+    assert not editor.can_redo
+    assert _names(editor) == ["base", "other"]
+
+
+def test_undo_reaches_the_dashboard_as_opened_and_stops(editor):
+    _two_nodes(editor)
+    assert editor.undo() and editor.undo()
+    assert editor._tile_items == [] and not editor.can_undo
+    assert editor.undo() is False
+
+
+def test_undo_is_recorded_without_a_new_version(editor):
+    _two_nodes(editor)
+    count = len(editor.edit_history.versions)
+    editor.undo()
+    assert len(editor.edit_history.versions) == count
+    assert editor.edit_history.artifact.applied == count - 1
+
+
+def test_undo_restores_turns_and_origins_and_opens_no_turn(editor):
+    base = editor.add_component("T/number", instance_id="base")
+    turn = editor.node_origin(base)
+    editor.end_turn()
+    editor.add_component("T/doubler", instance_id="double")
+    assert len(editor.turns) == 2
+    editor.undo()
+    assert [t.id for t in editor.turns] == [turn]
+    editor.redo()
+    assert len(editor.turns) == 2 and editor.node_origin("double") == editor.turns[1].id
+    editor.undo()
+    editor.undo()
+    assert editor.turns == [] and editor.node_origin("base") is None
+    editor.redo()
+    assert editor.node_origin("base") == turn
+
+
+def test_the_next_edit_after_undo_does_not_repeat_the_undone_label(editor):
+    _two_nodes(editor)
+    editor.undo()
+    editor.add_component("T/scaled", instance_id="other")
+    assert editor.turns[-1].summary == "Added base. Added other."
+
+
+def test_undoing_back_to_the_saved_canvas_is_not_dirty(editor):
+    editor.add_component("T/number", instance_id="base")
+    editor.save()
+    editor.add_component("T/doubler", instance_id="double")
+    assert editor.dirty
+    editor.undo()
+    assert not editor.dirty
+    editor.undo()
+    assert editor.dirty
+
+
+def test_an_agents_request_is_undone_as_a_whole(editor):
+    editor.add_component("T/number", instance_id="mine")
+    state = editor.edit_history.state
+    state.apply(RunStarted(run_id="run-1", agent_name="assistant", input="Add two"))
+
+    with _scope(run_id="run-1", tool_call_id="call-1", actor="agent"), agent_edits("run-1"):
+        editor.add_component("T/number", instance_id="a1")
+    with _scope(run_id="run-1", tool_call_id="call-2", actor="agent"), agent_edits("run-1"):
+        editor.add_component("T/doubler", instance_id="a2")
+    agent_versions = editor.edit_history.versions[-2:]
+    assert [(v.actor, v.run_id, v.tool_call_id, v.user) for v in agent_versions] == [
+        ("agent", "run-1", "call-1", None),
+        ("agent", "run-1", "call-2", None),
+    ]
+    assert agent_versions[0].metadata["turn"] == editor.turns[-1].id
+    assert editor.turns[-1].actor == "agent"
+    assert editor.undo() and _names(editor) == ["mine"]
+    assert editor.redo() and _names(editor) == ["a1", "a2", "mine"]
+    assert editor.undo(whole_runs=False) and _names(editor) == ["a1", "mine"]
+
+
+# --------------------------------------------------------------------------
+# Storage
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture(params=["memory", "sqlite", "json"])
+def any_store(request, tmp_path):
+    if request.param == "memory":
+        yield MemoryDashboardStore()
+    elif request.param == "sqlite":
+        store = DashboardStore(tmp_path / "d.db")
+        yield store
+        store.close()
+    else:
+        yield JSONFolderDashboardStore(tmp_path / "dashboards")
+
+
+def test_the_history_is_kept_across_sessions(any_store):
+    first = _editor(any_store)
+    model = first.new_dashboard("Mine")
+    _two_nodes(first)
+    first.save()
+    first.add_component("T/scaled", instance_id="unsaved")
+    first.dispose()
+
+    second = _editor(any_store)
+    second.load(model.dashboard_id)
+    assert _names(second) == ["base", "double"]
+    assert [v.metadata["op"] for v in second.edit_history.versions] == [
+        "open",
+        "add_node",
+        "add_node",
+        "add_node",
+    ]
+    # The saved canvas differs from the last version, so it becomes one, and undo
+    # first recovers the unsaved edit.
+    assert second.undo() and _names(second) == ["base", "double", "unsaved"]
+    assert second.undo() and _names(second) == ["base", "double"]
+    assert second.undo() and _names(second) == ["base"]
+    second.dispose()
+
+    third = _editor(any_store)
+    third.load(model.dashboard_id)
+    # The second session undid back to one node and left the saved canvas unsaved.
+    assert third.edit_history.versions[-1].metadata["op"] == "open"
+    assert third.undo() and _names(third) == ["base"]
+    assert third.redo() and _names(third) == ["base", "double"]
+    third.dispose()
+
+
+def test_reopening_the_saved_last_version_adds_no_version(any_store):
+    first = _editor(any_store)
+    model = first.new_dashboard("Mine")
+    _two_nodes(first)
+    first.save()
+    second = _editor(any_store)
+    second.load(model.dashboard_id)
+    assert len(second.edit_history.versions) == 3
+    assert second.undo() and _names(second) == ["base"]
+
+
+def test_applied_records_name_their_version_by_id(any_store):
+    editor = _editor(any_store)
+    model = editor.new_dashboard("Mine")
+    _two_nodes(editor)
+    editor.undo()
+    records = any_store.load_history(model.dashboard_id)
+    applied = [r for r in records if r["type"] == "ARTIFACT_APPLIED"]
+    ids = [r["metadata"]["version_id"] for r in records if r["type"] == "ARTIFACT_PUBLISHED"]
+    assert [r["version_id"] for r in applied] == [ids[1]] and applied[0]["action"] == "undo"
+
+
+def test_histories_of_interleaved_sessions_number_their_versions_consistently():
+    store = MemoryDashboardStore()
+    one = _editor(store, history_coalesce=0)
+    model = one.new_dashboard("Mine")
+    two = _editor(store, history_coalesce=0)
+    two.load(model.dashboard_id)
+    one.add_component("T/number", instance_id="a")
+    two.add_component("T/number", instance_id="b")
+    one.undo()
+    loaded = decode(store.load_history(model.dashboard_id), artifact_id_for(model.dashboard_id))
+    state = RunState(flush_interval=0)
+    from panel_agents import load_history
+
+    load_history(loaded, state)
+    artifact = state.artifacts[artifact_id_for(model.dashboard_id)]
+    applied = state.events[-1]
+    assert yaml.safe_load(artifact.versions[applied.version - 1].value).get("nodes") is None
+    assert artifact.versions[applied.version - 1].metadata["op"] == "open"
+
+
+def test_deleting_a_dashboard_deletes_its_history(any_store):
+    editor = _editor(any_store)
+    model = editor.new_dashboard("Mine")
+    editor.add_component("T/number", instance_id="base")
+    assert any_store.load_history(model.dashboard_id)
+    assert any_store.delete_dashboard("alice", model.dashboard_id)
+    assert any_store.load_history(model.dashboard_id) == []
+    # An editor still showing it writes nothing more.
+    editor.add_component("T/number", instance_id="late")
+    assert any_store.load_history(model.dashboard_id) == []
+
+
+def test_a_store_without_history_still_undoes_within_the_session():
+    from panel_flowdash.dashboard_store import BaseDashboardStore
+
+    class Minimal(MemoryDashboardStore):
+        load_history = BaseDashboardStore.load_history
+        append_history = BaseDashboardStore.append_history
+        replace_history = BaseDashboardStore.replace_history
+
+    editor = _editor(Minimal())
+    editor.new_dashboard("Mine")
+    _two_nodes(editor)
+    assert editor.undo() and _names(editor) == ["base"]
+
+
+_V4_SCHEMA = """
+    CREATE TABLE dashboards (
+        dashboard_id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1,
+        items_json TEXT NOT NULL DEFAULT '[]',
+        edges_json TEXT NOT NULL DEFAULT '[]',
+        tile_layout_json TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        breakpoints_json TEXT NOT NULL DEFAULT '[]',
+        responsive_layouts_json TEXT NOT NULL DEFAULT '{}',
+        permission_json TEXT NOT NULL DEFAULT '{}',
+        reference_width_json TEXT NOT NULL DEFAULT 'null',
+        settings_json TEXT NOT NULL DEFAULT '{}',
+        turns_json TEXT NOT NULL DEFAULT '[]',
+        revision INTEGER NOT NULL DEFAULT 0
+    )
+"""
+
+
+def test_a_model_v4_database_gains_a_history(tmp_path):
+    path = tmp_path / "v4.db"
+    items = [{"instance_id": "base", "component_id": "T/number", "x": 0, "y": 0, "config": {}}]
+    turns = [{"id": "t1", "actor": "user", "at": "2026-11-17T20:15:00Z"}]
+    with closing(sqlite3.connect(path)) as conn, conn:
+        conn.execute(_V4_SCHEMA)
+        conn.execute(
+            "INSERT INTO dashboards (dashboard_id, user_id, title, version, items_json, "
+            "turns_json, revision) VALUES ('old', 'alice', 'Old', 4, ?, ?, 2)",
+            (json.dumps(items), json.dumps(turns)),
+        )
+    store = DashboardStore(path)
+    with closing(sqlite3.connect(path)) as conn:
+        tables = {
+            row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+    assert "dashboard_history" in tables
+    assert store.load_history("old") == []
+    editor = _editor(store)
+    editor.load("old")
+    assert editor.can_undo is False
+    editor.add_component("T/doubler", instance_id="double")
+    editor.save()
+    store.close()
+
+    again = _editor(DashboardStore(path))
+    again.load("old")
+    assert [v.metadata["op"] for v in again.edit_history.versions] == ["open", "add_node"]
+    assert again.undo() and _names(again) == ["base"]
+    assert [t.id for t in again.turns] == ["t1"]
+
+
+# --------------------------------------------------------------------------
+# Retention
+# --------------------------------------------------------------------------
+
+
+def _published(store, dashboard_id):
+    return [r for r in store.load_history(dashboard_id) if r["type"] == "ARTIFACT_PUBLISHED"]
+
+
+def test_opening_a_dashboard_keeps_only_the_newest_versions(any_store):
+    editor = _editor(any_store, history_coalesce=0)
+    model = editor.new_dashboard("Mine")
+    for i in range(8):
+        editor.add_component("T/number", instance_id=f"n{i}")
+    editor.save()
+    reopened = _editor(any_store, history_limit=5)
+    reopened.load(model.dashboard_id)
+    stored = _published(any_store, model.dashboard_id)
+    assert [r["metadata"]["args"].get("name") for r in stored] == [f"n{i}" for i in range(3, 8)]
+    assert len(reopened.edit_history.versions) == 5
+    assert reopened.undo() and "n7" not in _names(reopened)
+
+
+def test_old_versions_are_dropped_after_max_days(any_store):
+    editor = _editor(any_store, history_coalesce=0)
+    model = editor.new_dashboard("Mine")
+    editor.add_component("T/number", instance_id="old")
+    editor.add_component("T/number", instance_id="new")
+    editor.save()
+    records = any_store.load_history(model.dashboard_id)
+    for record in records[:2]:
+        record["timestamp"] = time.time() - 100 * 86400
+    any_store.replace_history(model.dashboard_id, records)
+    reopened = _editor(any_store, history_max_days=30)
+    reopened.load(model.dashboard_id)
+    assert [r["metadata"]["op"] for r in _published(any_store, model.dashboard_id)] == ["add_node"]
+
+
+def test_a_long_session_is_trimmed_as_it_goes():
+    store = MemoryDashboardStore()
+    editor = _editor(store, history_coalesce=0, history_limit=20)
+    model = editor.new_dashboard("Mine")
+    for i in range(40):
+        editor.add_component("T/number", instance_id=f"n{i}")
+    assert len(_published(store, model.dashboard_id)) <= 20 + 10
+    # The session itself keeps every version for undo.
+    assert len(editor.edit_history.versions) == 41
+
+
+def test_compact_keeps_the_runs_and_applied_records_of_kept_versions():
+    def published(vid, run=None, at=0.0):
+        return {
+            "type": "ARTIFACT_PUBLISHED",
+            "artifact_id": "a",
+            "run_id": run,
+            "timestamp": at,
+            "metadata": {"version_id": vid},
+        }
+
+    records = [
+        {"type": "RUN_STARTED", "run_id": "r1"},
+        published("v1", "r1"),
+        {"type": "RUN_FINISHED", "run_id": "r1"},
+        {"type": "RUN_STARTED", "run_id": "r2"},
+        {"type": "RUN_STARTED", "run_id": "r3", "parent_run_id": "r2"},
+        published("v2", "r3"),
+        {"type": "RUN_FINISHED", "run_id": "r3"},
+        {"type": "RUN_FINISHED", "run_id": "r2"},
+        {"type": "ARTIFACT_APPLIED", "artifact_id": "a", "version_id": "v1"},
+        {"type": "ARTIFACT_APPLIED", "artifact_id": "a", "version_id": "v2"},
+    ]
+    assert compact(records, 5, None) is records
+    kept = compact(records, 1, None)
+    assert [(r["type"], r.get("run_id"), r.get("version_id")) for r in kept] == [
+        ("RUN_STARTED", "r2", None),
+        ("RUN_STARTED", "r3", None),
+        ("ARTIFACT_PUBLISHED", "r3", None),
+        ("RUN_FINISHED", "r3", None),
+        ("RUN_FINISHED", "r2", None),
+        ("ARTIFACT_APPLIED", None, "v2"),
+    ]
+    assert compact(records, None, 10, now=100.0) == []
+
+
+# --------------------------------------------------------------------------
+# Rights
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def finance_store():
+    store = MemoryDashboardStore()
+    model = store.create_dashboard("alice", "Finance")
+    model.items = [DashboardItem("double", "T/doubler")]
+    store.save_dashboard(model)
+    return store, model.dashboard_id
+
+
+def test_versions_hide_what_the_loading_user_may_not_see(finance_store):
+    store, dashboard_id = finance_store
+    banker = _editor(store, finance=True)
+    banker.load(dashboard_id)
+    banker.add_component("T/secret", {"query": "SELECT salary"}, instance_id="secret")
+    banker.connect("secret", "value", "double", "value")
+    banker.save()
+    assert "SELECT salary" in banker.edit_history.versions[-1].value
+
+    alice = _editor(store)
+    alice.load(dashboard_id)
+    for version in alice.edit_history.versions:
+        assert "SELECT salary" not in version.value
+        assert "secret.value" not in json.dumps(version.metadata)
+        assert read_revision(version.value) == version.metadata["revision"]
+    connect = alice.edit_history.versions[-1]
+    assert connect.metadata["args"] == {"source": "secret", "target": "double.value"}
+
+
+def test_undo_never_brings_back_a_node_the_user_may_not_use(finance_store):
+    store, dashboard_id = finance_store
+    banker = _editor(store, finance=True, history_coalesce=0)
+    banker.load(dashboard_id)
+    banker.add_component("T/secret", {"query": "SELECT salary"}, instance_id="secret")
+    banker.remove_component("secret")
+    banker.save()
+
+    alice = _editor(store)
+    alice.load(dashboard_id)
+    before = DashboardOps(alice).revision()
+    with pytest.raises(PermissionError, match="'secret'"):
+        alice.undo()
+    assert _names(alice) == ["double"] and DashboardOps(alice).revision() == before
+    assert alice.edit_history.artifact.applied == len(alice.edit_history.versions)
+
+
+def test_undo_keeps_a_restricted_node_as_it_is(finance_store):
+    store, dashboard_id = finance_store
+    banker = _editor(store, finance=True)
+    banker.load(dashboard_id)
+    banker.add_component("T/secret", {"query": "SELECT salary"}, instance_id="secret")
+    banker.connect("secret", "value", "double", "value")
+    banker.save()
+
+    alice = _editor(store)
+    alice.load(dashboard_id)
+    alice.add_component("T/number", instance_id="mine")
+    assert alice.undo()
+    model = alice.to_model()
+    secret = next(item for item in model.items if item.instance_id == "secret")
+    assert secret.config == {"query": "SELECT salary"}
+    assert DashboardEdge("secret", "value", "double", "value") in model.edges
+
+
+def test_the_agent_cannot_undo_through_the_palette():
+    from panel_flowdash.agent.actions import _PERSON_ONLY
+
+    assert _PERSON_ONLY == {"action:undo", "action:redo"}

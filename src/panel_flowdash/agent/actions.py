@@ -21,6 +21,10 @@ if t.TYPE_CHECKING:
     from .tools import FlowDashDeps
 
 
+# The person's own commands: the agent may not undo or redo their edits.
+_PERSON_ONLY = frozenset({"action:undo", "action:redo"})
+
+
 def _controller(app: FlowDashApp) -> CommandPaletteController:
     return getattr(app, "_command_palette", None) or CommandPaletteController(app)
 
@@ -82,6 +86,8 @@ def palette_actions(
         words = query.lower().split()
         listed = []
         for item in controller.items():
+            if item["id"] in _PERSON_ONLY:
+                continue
             text = " ".join(
                 str(item.get(key) or "") for key in ("title", "group", "subtitle", "keywords")
             ).lower()
@@ -104,7 +110,9 @@ def palette_actions(
         refusal = deps.check_pin(current_run_id()) if deps is not None else None
         if refusal is not None:
             return refusal
-        offered = {item["id"]: item for item in controller.items()}
+        offered = {
+            item["id"]: item for item in controller.items() if item["id"] not in _PERSON_ONLY
+        }
         if command not in offered:
             raise ValueError(
                 f"The palette does not offer {command!r} right now; call list_commands."

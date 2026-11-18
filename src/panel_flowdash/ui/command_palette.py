@@ -23,12 +23,14 @@ SHORTCUTS = [
     {"group": "Viewing", "label": "Full screen", "keys": ["F"]},
     {"group": "Viewing", "label": "Keyboard shortcuts", "keys": ["?"]},
     {"group": "Editing", "label": "Save", "keys": ["Mod", "S"]},
+    {"group": "Editing", "label": "Undo", "keys": ["Mod", "Z"]},
+    {"group": "Editing", "label": "Redo", "keys": ["Mod", "Shift", "Z"]},
     {"group": "Editing", "label": "Dataflow and Layout side by side", "keys": ["S"]},
     {"group": "Editing", "label": "Back to view mode", "keys": ["Esc"]},
 ]
 
 # Shortcuts the browser sends, each running the action of the same name.
-_SHORTCUT_ACTIONS = frozenset({"refresh", "edit", "view", "save", "split"})
+_SHORTCUT_ACTIONS = frozenset({"refresh", "edit", "view", "save", "split", "undo", "redo"})
 
 
 class CommandPalette(JSComponent):
@@ -42,8 +44,9 @@ class CommandPalette(JSComponent):
     Shortcuts are registered on the document and ignored while typing in a
     text field: Ctrl/Cmd+K opens the palette, ``?`` lists the shortcuts, and
     R (refresh), E (edit), Esc (back to view, outside dialogs), S (split view,
-    in edit mode) and Ctrl/Cmd+S (save, in edit mode) are sent to *on_command*
-    as ``shortcut:<name>``. F and the ``action:fullscreen`` item toggle the
+    in edit mode), Ctrl/Cmd+S (save, in edit mode) and Ctrl/Cmd+Z and
+    Ctrl/Cmd+Shift+Z or Ctrl+Y (undo and redo, in edit mode) are sent to
+    *on_command* as ``shortcut:<name>``. F and the ``action:fullscreen`` item toggle the
     dashboard's full screen in the browser, which only grants it during the
     key press or click.
     """
@@ -309,6 +312,7 @@ class CommandPaletteController:
                             "keys": ["Mod", "S"],
                         }
                     )
+                    actions.extend(self._history_items())
                 splitting = editor.mode == "split"
                 actions.append(
                     {
@@ -379,6 +383,44 @@ class CommandPaletteController:
             }
         )
         return [{**action, "group": "Actions"} for action in actions]
+
+    def _history_items(self) -> list[dict]:
+        """Undo and Redo, while there is something to undo or redo."""
+        editor = self._editor
+        items = []
+        if editor.can_undo:
+            items.append(
+                {
+                    "id": "action:undo",
+                    "title": "Undo",
+                    "subtitle": _step_label(editor.edit_history.artifact, "undo"),
+                    "icon": "undo",
+                    "keys": ["Mod", "Z"],
+                    "keywords": "undo revert back history",
+                }
+            )
+        if editor.can_redo:
+            items.append(
+                {
+                    "id": "action:redo",
+                    "title": "Redo",
+                    "subtitle": _step_label(editor.edit_history.artifact, "redo"),
+                    "icon": "redo",
+                    "keys": ["Mod", "Shift", "Z"],
+                    "keywords": "redo again forward history",
+                }
+            )
+        return items
+
+    def _step_history(self, action: str):
+        editor = self._editor
+        try:
+            done = editor.undo() if action == "undo" else editor.redo()
+        except PermissionError as exc:
+            editor._notify("warning", str(exc), duration=5000)
+            return
+        if not done:
+            editor._notify("info", f"Nothing to {action}.", duration=2000)
 
     # ------------------------------------------------------------------
     # Running items
@@ -452,7 +494,25 @@ class CommandPaletteController:
             editor.toggle_split()
         elif action == "save" and editor.editable:
             app._save_current_dashboard()
+        elif action in ("undo", "redo") and editor.editable and not editor.read_only:
+            self._step_history(action)
         elif action == "fullscreen" and not editor.editable:
             editor.fullscreen = not editor.fullscreen
         elif action == "settings" and not editor.read_only:
             editor._settings_button.clicks += 1
+
+
+def _step_label(artifact, action: str) -> str:
+    """Describe what undoing or redoing would change back, e.g. ``"Added kpi"``."""
+    if artifact is None:
+        return ""
+    if action == "undo":
+        version = artifact.applied_version
+    else:
+        number = artifact.redo_run_version
+        version = artifact.versions[number - 1] if number else None
+    if version is None:
+        return ""
+    if version.actor == "agent":
+        return "The assistant's last request" if action == "undo" else "The assistant's request"
+    return version.metadata.get("label") or ""

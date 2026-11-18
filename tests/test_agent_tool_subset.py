@@ -4,7 +4,6 @@ import pytest
 
 pytest.importorskip("pydantic_ai")
 
-from panel_agents import RunState
 from panel_agents.adapters.pydantic_ai import AgentRunner
 from pydantic_ai.messages import ModelResponse, TextPart
 from pydantic_ai.models.function import FunctionModel
@@ -43,7 +42,7 @@ def _runner(target, tools, *calls, policy=None):
     )
     return AgentRunner(
         agent,
-        RunState(flush_interval=0),
+        target.editor.edit_history.state,
         deps=FlowDashDeps(target),
         approval_policy=policy or approval_policy(),
     )

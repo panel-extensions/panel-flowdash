@@ -58,6 +58,15 @@
       show_root_heading: true
       members: true
 
+### Edit history
+
+::: panel_flowdash.history
+    options:
+      show_root_heading: true
+      members:
+        - EditHistory
+        - ARTIFACT_KIND
+
 ### Dashboard YAML
 
 ::: panel_flowdash.agent

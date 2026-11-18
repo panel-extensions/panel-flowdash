@@ -230,9 +230,10 @@ def scripted(*calls):
 
 def _runner(ops, *calls):
     agent = Agent(scripted(*calls), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()])
+    # The editor's edit history publishes a version per edit into its state.
     return AgentRunner(
         agent,
-        RunState(flush_interval=0),
+        ops.editor.edit_history.state,
         deps=FlowDashDeps(ops),
         approval_policy=approval_policy(),
     )
@@ -276,8 +277,10 @@ async def test_each_edit_publishes_an_applied_version_with_a_semantic_diff(ops):
     assert output == f"Done: Connected {source}.value to {target}.value."
     (artifact,) = runner.state.artifacts
     assert artifact.kind == ARTIFACT_KIND and artifact.title == "Mine"
-    assert len(artifact.versions) == 3 and artifact.applied_version.version == 3
-    changes = diff(artifact.versions[1].value, artifact.versions[2].value, kind=ARTIFACT_KIND)
+    # The dashboard as opened, then one version per edit.
+    assert len(artifact.versions) == 4 and artifact.applied_version.version == 4
+    assert [v.tool_call_id for v in artifact.versions] == [None, "call-1", "call-2", "call-3"]
+    changes = diff(artifact.versions[2].value, artifact.versions[3].value, kind=ARTIFACT_KIND)
     assert [c.label for c in changes.changes] == [f"Connected {source}.value → {target}.value"]
     assert ops.editor.dirty and ops.editor.graph.edges
 
@@ -335,7 +338,7 @@ async def test_reverting_a_version_restores_the_dashboard(ops):
     )
     await runner.run("Build")
     (artifact,) = runner.state.artifacts
-    ops.replace_yaml(artifact.versions[0].value, revision=ops.revision())
+    ops.replace_yaml(artifact.versions[1].value, revision=ops.revision())
     assert [i["component_id"] for i in ops.editor._tile_items] == ["T/number"]
 
 

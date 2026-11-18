@@ -345,6 +345,35 @@ class BaseDashboardStore(ABC):
     def set_permission(self, dashboard_id: str, permission: Permission) -> bool:
         """Persist a new permission set on a dashboard. Returns success."""
 
+    # ------------------------------------------------------------------
+    # Edit history
+    # ------------------------------------------------------------------
+    #
+    # The editor keeps every version of a dashboard as a list of JSON records
+    # (see :mod:`panel_flowdash.history`). The defaults keep none, so a store
+    # without them still offers undo within a session. A store that keeps the
+    # history drops it in ``delete_dashboard``.
+
+    def load_history(self, dashboard_id: str) -> list[dict[str, Any]]:
+        """Return the edit history records of a dashboard, oldest first."""
+        return []
+
+    def append_history(self, dashboard_id: str, record: dict[str, Any]) -> None:
+        """Add a record to the end of a dashboard's edit history.
+
+        Does nothing when the dashboard is not stored, e.g. because it was
+        deleted while an editor still had it open.
+        """
+        return None
+
+    def replace_history(self, dashboard_id: str, records: list[dict[str, Any]]) -> None:
+        """Replace a dashboard's edit history, e.g. with what retention keeps of it."""
+        return None
+
+    def delete_history(self, dashboard_id: str) -> None:
+        """Drop a dashboard's edit history."""
+        return None
+
     def load_dashboard(self, user_id: str, dashboard_id: str) -> DashboardModel | None:
         """Load a dashboard, but only if *user_id* owns it."""
         model = self._load_any(dashboard_id)
@@ -541,6 +570,7 @@ class MemoryDashboardStore(BaseDashboardStore):
     def __init__(self, dashboards: dict[str, DashboardModel] | None = None):
         self._dashboards: dict[str, DashboardModel] = {}
         self._order: list[str] = []
+        self._history: dict[str, list[dict[str, Any]]] = {}
         self._lock = threading.Lock()
         for dashboard in (dashboards or {}).values():
             self.save_dashboard(copy.deepcopy(dashboard))
@@ -572,7 +602,26 @@ class MemoryDashboardStore(BaseDashboardStore):
                 return False
             del self._dashboards[dashboard_id]
             self._order.remove(dashboard_id)
+            self._history.pop(dashboard_id, None)
         return True
+
+    def load_history(self, dashboard_id: str) -> list[dict[str, Any]]:
+        with self._lock:
+            return copy.deepcopy(self._history.get(dashboard_id, []))
+
+    def append_history(self, dashboard_id: str, record: dict[str, Any]) -> None:
+        with self._lock:
+            if dashboard_id in self._dashboards:
+                self._history.setdefault(dashboard_id, []).append(copy.deepcopy(record))
+
+    def replace_history(self, dashboard_id: str, records: list[dict[str, Any]]) -> None:
+        with self._lock:
+            if dashboard_id in self._dashboards:
+                self._history[dashboard_id] = copy.deepcopy(records)
+
+    def delete_history(self, dashboard_id: str) -> None:
+        with self._lock:
+            self._history.pop(dashboard_id, None)
 
     def rename_dashboard(self, user_id: str, dashboard_id: str, new_title: str) -> bool:
         model = self._dashboards.get(dashboard_id)
@@ -718,6 +767,54 @@ class DashboardStore(BaseDashboardStore):
                 )
             except sqlite3.OperationalError:
                 pass
+            # Added with the edit history; databases written before it gain the table here.
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS dashboard_history (
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    dashboard_id TEXT NOT NULL,
+                    record_json TEXT NOT NULL
+                )
+            """)
+            conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_dashboard_history
+                ON dashboard_history (dashboard_id, seq)
+            """)
+
+    def load_history(self, dashboard_id: str) -> list[dict[str, Any]]:
+        with self._get_conn() as conn:
+            rows = conn.execute(
+                "SELECT record_json FROM dashboard_history WHERE dashboard_id = ? ORDER BY seq",
+                (dashboard_id,),
+            ).fetchall()
+        records = []
+        for row in rows:
+            try:
+                record = json.loads(row["record_json"])
+            except ValueError:
+                continue
+            if isinstance(record, dict):
+                records.append(record)
+        return records
+
+    def append_history(self, dashboard_id: str, record: dict[str, Any]) -> None:
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO dashboard_history (dashboard_id, record_json) SELECT ?, ? "
+                "WHERE EXISTS (SELECT 1 FROM dashboards WHERE dashboard_id = ?)",
+                (dashboard_id, json.dumps(record), dashboard_id),
+            )
+
+    def replace_history(self, dashboard_id: str, records: list[dict[str, Any]]) -> None:
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM dashboard_history WHERE dashboard_id = ?", (dashboard_id,))
+            conn.executemany(
+                "INSERT INTO dashboard_history (dashboard_id, record_json) VALUES (?, ?)",
+                [(dashboard_id, json.dumps(record)) for record in records],
+            )
+
+    def delete_history(self, dashboard_id: str) -> None:
+        with self._get_conn() as conn:
+            conn.execute("DELETE FROM dashboard_history WHERE dashboard_id = ?", (dashboard_id,))
 
     def list_dashboards(self, user_id: str) -> list[DashboardModel]:
         with self._get_conn() as conn:
@@ -836,6 +933,10 @@ class DashboardStore(BaseDashboardStore):
                 "DELETE FROM dashboards WHERE dashboard_id = ? AND user_id = ?",
                 (dashboard_id, user_id),
             )
+            if cursor.rowcount > 0:
+                conn.execute(
+                    "DELETE FROM dashboard_history WHERE dashboard_id = ?", (dashboard_id,)
+                )
         return cursor.rowcount > 0
 
     def rename_dashboard(self, user_id: str, dashboard_id: str, new_title: str) -> bool:

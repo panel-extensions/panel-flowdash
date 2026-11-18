@@ -39,7 +39,11 @@ def update_tile(editor, instance_id: str, **patch):
         del entry[key]
     editor._pending_tile_layout = layout
     editor._rebuild_tile_grid()
-    editor._record_edit("Changed the tile layout")
+    editor._record_edit(
+        "Changed the tile layout",
+        op="layout",
+        args={"name": editor._node_name(instance_id), "keys": sorted(patch)},
+    )
 
 
 def move_tile(editor, instance_id: str, index: int):
@@ -57,7 +61,9 @@ def move_tile(editor, instance_id: str, index: int):
         by_id.setdefault(iid, {"instance_id": iid})["index"] = position
     editor._pending_tile_layout = [*by_id.values(), *(e for e in layout if "instance_id" not in e)]
     editor._rebuild_tile_grid()
-    editor._record_edit("Changed the tile layout")
+    editor._record_edit(
+        "Changed the tile layout", op="layout", args={"name": editor._node_name(instance_id)}
+    )
 
 
 def to_columns(width: float | None) -> int:

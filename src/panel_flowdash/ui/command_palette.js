@@ -515,6 +515,15 @@ export function render({model, el: root}) {
       }
       return
     }
+    // Only outside text fields, which keep their own undo.
+    const redo = (key === "z" && event.shiftKey) || (key === "y" && event.ctrlKey && !event.shiftKey)
+    if (mod && !event.altKey && (key === "z" || redo)) {
+      if (editing()) {
+        event.preventDefault()
+        model.send_msg({type: "shortcut", name: redo ? "redo" : "undo"})
+      }
+      return
+    }
     if (mod || event.altKey) {
       return
     }

@@ -203,3 +203,32 @@ def test_question_mark_lists_the_shortcuts(page):
     expect(shortcuts).to_contain_text("Save")
     page.keyboard.press("Escape")
     expect(shortcuts).to_have_count(0)
+
+
+def test_undo_and_redo_from_the_palette_and_the_keyboard(page):
+    store, (plant,) = _store_with("Plant")
+    apps = []
+    _serve_app(page, store, f"/dash/{plant}?edit=true", apps)
+    page.get_by_role("button", name="Done").wait_for()
+    editor = apps[0]._editor
+
+    search = _open_with_keyboard(page)
+    search.press_sequentially("name field")
+    search.press("Enter")
+    wait_until(lambda: len(editor._tile_items) == 2, page, timeout=10000)
+
+    search = _open_with_keyboard(page)
+    search.press_sequentially("undo")
+    option = page.get_by_role("option").first
+    expect(option).to_contain_text("Added")
+    search.press("Enter")
+    wait_until(lambda: len(editor._tile_items) == 1 and not editor.dirty, page, timeout=10000)
+
+    expect(_dialog(page)).to_have_count(0)
+    page.evaluate("document.activeElement && document.activeElement.blur()")
+    page.keyboard.press("Control+Shift+z")
+    wait_until(lambda: len(editor._tile_items) == 2, page, timeout=10000)
+    page.keyboard.press("Control+z")
+    wait_until(lambda: len(editor._tile_items) == 1, page, timeout=10000)
+    page.keyboard.press("Control+y")
+    wait_until(lambda: len(editor._tile_items) == 2 and editor.dirty, page, timeout=10000)

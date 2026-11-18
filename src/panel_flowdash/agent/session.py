@@ -6,6 +6,7 @@ Needs the ``panel-flowdash[agent]`` extra.
 from __future__ import annotations
 
 import asyncio
+import re
 import typing as t
 
 import panel as pn
@@ -59,9 +60,15 @@ class AgentSession:
     with the signed-in user's rights, can run what the command palette offers,
     and needs the user's approval to save, delete or share. Its chat, the
     versions it publishes and the pending approvals are in a drawer docked to
-    the right of the page, opened from a button in the header. Every edit
-    publishes a version of the dashboard YAML, and applying an earlier or
-    later version loads it into the editor as an import.
+    the right of the page, opened from a button in the header.
+
+    With the editor's edit history on (``FlowDash.history``), the runner
+    shares the history's ``RunState``, so the drawer's artifact view lists
+    every version of the dashboard, the person's edits and the agent's,
+    grouped by request, and its Undo, Redo and Revert buttons restore them
+    as the editor's undo does. With it off, each edit tool publishes a
+    version of the dashboard YAML, and applying an earlier or later version
+    loads it into the editor as an import.
     """
 
     def __init__(self, app: FlowDashApp, agent: Agent):
@@ -69,10 +76,11 @@ class AgentSession:
         self.ops = LiveDashboardOps(app)
         deps = FlowDashDeps(self.ops)
         self.actions = palette_actions(app, deps=deps)
+        editor = app._editor
         self.runner = _SessionRunner(
             self,
             agent,
-            RunState(),
+            editor.edit_history.state if editor.history else RunState(),
             deps=deps,
             approval_policy=approval_policy(
                 *app.agent_approval_rules,
@@ -98,8 +106,14 @@ class AgentSession:
         """Publish the open dashboard as a version if it changed since the agent last saw it.
 
         Runs before every request to the agent, so the versions include the
-        user's own edits and the agent is told about them.
+        user's own edits and the agent is told about them. With the edit
+        history on, the edit in progress is published instead, since every
+        other edit already is.
         """
+        history = self.app._editor.edit_history
+        if history.active:
+            history.flush()
+            return
         current = self.app._current_dashboard
         if current is None:
             return
@@ -128,6 +142,9 @@ class AgentSession:
         When the canvas has changes the agent did not publish, typically the
         user's own edits, the user confirms that applying the version drops them.
         """
+        history = self.app._editor.edit_history
+        if history.active:
+            return history.restore(artifact, version)
         current = self.app._current_dashboard
         if current is None or artifact.artifact_id != f"dashboard:{current.dashboard_id}":
             raise ValueError("That version belongs to a dashboard that is not open.")
@@ -195,8 +212,41 @@ class _SessionRunner(AgentRunner):
     async def run(self, prompt=None, **kwargs):
         self._session.ops.editor.end_turn()
         self._session.publish_user_edits()
+        self._notes[:] = _collapse_notes(self._notes)
         self.deps.start_request(prompt if isinstance(prompt, str) else None)
         try:
             return await super().run(prompt, **kwargs)
         finally:
             self.deps.end_request()
+
+
+_PUBLISHED_NOTE = re.compile(
+    r"The app published version (\d+) of the artifact (.+?)( and now holds it)?\."
+)
+
+
+def _collapse_notes(notes: list[str]) -> list[str]:
+    """Merge the runner's notes about consecutive versions of one artifact into one.
+
+    With the edit history every edit the person makes is a version, so the
+    model would otherwise read a line for each drag before the next request.
+    """
+    collapsed: list[str] = []
+    previous: tuple[str, str] | None = None
+    for note in notes:
+        match = _PUBLISHED_NOTE.fullmatch(note)
+        if match is None:
+            collapsed.append(note)
+            previous = None
+            continue
+        name = match[2]
+        if previous is not None and previous[0] == name:
+            first = previous[1]
+            held = " and now holds the latest" if match[3] else ""
+            collapsed[-1] = (
+                f"The app published versions {first} to {match[1]} of the artifact {name}{held}."
+            )
+        else:
+            collapsed.append(note)
+            previous = (name, match[1])
+    return collapsed

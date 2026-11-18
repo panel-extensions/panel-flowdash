@@ -74,6 +74,7 @@ async def test_the_agent_edits_the_open_dashboard_and_versions_can_be_applied(st
         toolsets=[dashboard_toolset()],
     )
     session = AgentSession(app, agent)
+    assert session.runner.state is app._editor.edit_history.state
     await session.runner.run("Build")
     assert session.runner.error is None, [
         c.error for c in session.runner.state.tool_calls.values()
@@ -81,14 +82,65 @@ async def test_the_agent_edits_the_open_dashboard_and_versions_can_be_applied(st
     assert [i["component_id"] for i in app._editor._tile_items] == ["T/number", "T/doubler"]
     assert app._editor.editable and app._has_unsaved_changes()
     (artifact,) = session.runner.state.artifacts
-    assert await session.apply_version(artifact, artifact.versions[0])
+    opened, *added = artifact.versions
+    assert opened.metadata["op"] == "open"
+    assert [(v.actor, v.metadata["op"], v.tool_call_id) for v in added] == [
+        ("agent", "add_node", "call-1"),
+        ("agent", "add_node", "call-2"),
+    ]
+    assert {v.run_id for v in added} == {session.runner.run_id}
+    assert await session.apply_version(artifact, added[0])
     assert [i["component_id"] for i in app._editor._tile_items] == ["T/number"]
+
+
+async def test_undo_takes_back_the_agents_whole_request(store, monkeypatch):
+    model = store.create_dashboard("alice", "Live")
+    app = _app(store, monkeypatch)
+    app._load_dashboard_sync(model.dashboard_id)
+    agent = Agent(
+        scripted(
+            ("add_node", {"component": "T/number"}),
+            ("add_node", {"component": "T/doubler"}),
+        ),
+        deps_type=FlowDashDeps,
+        toolsets=[dashboard_toolset()],
+    )
+    session = AgentSession(app, agent)
+    await session.runner.run("Build")
+    editor = app._editor
+    assert editor.undo() and editor._tile_items == []
+    assert editor.redo() and len(editor._tile_items) == 2
+    # The agent's turn is back with its nodes, not a new turn of the person's.
+    assert [t.actor for t in editor.turns] == ["agent"]
+    assert {editor.node_origin(i["instance_id"]) for i in editor._tile_items} == {
+        editor.turns[0].id
+    }
+
+
+async def test_the_drawer_restores_versions_with_the_editors_checks(store, monkeypatch):
+    model = store.create_dashboard("alice", "Live")
+    app = _app(store, monkeypatch)
+    app._load_dashboard_sync(model.dashboard_id)
+    agent = Agent(
+        scripted(("add_node", {"component": "T/number"})),
+        deps_type=FlowDashDeps,
+        toolsets=[dashboard_toolset()],
+    )
+    session = AgentSession(app, agent)
+    await session.runner.run("Build")
+    app._editor.add_component("T/doubler")
+    (artifact,) = session.runner.state.artifacts
+    count = len(artifact.versions)
+    # Every edit is a version already, so nothing is dropped and nobody is asked.
+    assert await session.apply_version(artifact, artifact.versions[1])
+    assert [i["component_id"] for i in app._editor._tile_items] == ["T/number"]
+    assert len(artifact.versions) == count
 
 
 @pytest.mark.parametrize("confirmed", [True, False])
 async def test_applying_a_version_over_the_users_edits_asks_first(store, monkeypatch, confirmed):
     model = store.create_dashboard("alice", "Live")
-    app = _app(store, monkeypatch)
+    app = _app(store, monkeypatch, editor_options={"history": False})
     app._load_dashboard_sync(model.dashboard_id)
     agent = Agent(
         scripted(("add_node", {"component": "T/number"})),
@@ -173,7 +225,7 @@ async def test_without_an_agent_pages_are_unchanged(store, monkeypatch):
 
 async def test_the_users_own_edits_become_a_version_before_the_next_request(store, monkeypatch):
     model = store.create_dashboard("alice", "Live")
-    app = _app(store, monkeypatch)
+    app = _app(store, monkeypatch, editor_options={"history": False})
     app._load_dashboard_sync(model.dashboard_id)
     agent = Agent(
         scripted(("get_dashboard", {})), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()]
@@ -225,3 +277,39 @@ async def test_a_request_keeps_to_the_dashboard_it_was_sent_on(store, monkeypatc
     assert "switched to another dashboard" in output
     assert app._editor._tile_items == []
     assert session.runner.deps.check_pin() is None
+
+
+async def test_the_model_hears_of_a_run_of_the_users_edits_once(store, monkeypatch):
+    model = store.create_dashboard("alice", "Live")
+    app = _app(store, monkeypatch, editor_options={"history_coalesce": 0})
+    app._load_dashboard_sync(model.dashboard_id)
+    prompts = []
+
+    def remember(messages, info):
+        from pydantic_ai.messages import ModelResponse, TextPart, UserPromptPart
+
+        prompts.append(
+            [
+                p.content
+                for m in messages
+                for p in getattr(m, "parts", [])
+                if isinstance(p, UserPromptPart)
+            ]
+        )
+        return ModelResponse(parts=[TextPart("ok")])
+
+    from pydantic_ai.models.function import FunctionModel
+
+    async def stream(messages, info):
+        yield remember(messages, info).parts[0].content
+
+    llm = FunctionModel(remember, stream_function=stream)
+    session = AgentSession(app, Agent(llm, deps_type=FlowDashDeps))
+    for name in ("a", "b", "c"):
+        app._editor.add_component("T/number", instance_id=name)
+    await session.runner.run("Hi")
+    notes = [line for line in prompts[-1][-1].splitlines() if line.startswith("[")]
+    assert notes == [
+        "[The app published versions 1 to 4 of the artifact 'Live' "
+        f"('dashboard:{model.dashboard_id}') and now holds the latest.]"
+    ]
