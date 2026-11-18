@@ -129,7 +129,7 @@ class TestNodeCard:
         ]
         assert 'data-port="rows"' in html and "DataFrame" in html
         assert 'class="fd-required"' in html
-        assert "top: 50.0000%" in html
+        assert f"top: {card_height(1, 0) / 2:.2f}px" in html
         assert card.__panel__().width == CARD_WIDTH
         assert card.__panel__().height == card_height(1, 0)
 
@@ -186,10 +186,11 @@ class TestNodeCard:
         ("value", "text"),
         [
             (None, "No value yet"),
-            (pd.DataFrame({"a": [1, 2]}), "2 rows, 1 columns"),
+            (pd.DataFrame({"a": [1, 2]}), "2 rows, 1 column"),
             (["A", "B"], "A, B"),
             (list(range(10)), "10 items"),
-            ({"a": 1}, "1 entries"),
+            ({"a": 1}, "1 entry"),
+            ({"a": 1, "b": 2}, "2 entries"),
             ("x" * 80, "x" * 59 + "…"),
         ],
     )

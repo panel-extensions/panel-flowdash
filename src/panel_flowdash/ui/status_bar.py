@@ -210,6 +210,21 @@ class StatusBar(Viewer):
             styles={"flex": "none"},
         )
         self.minimap_toggle.link(flow, value="show_minimap", bidirectional=True)
+        settings = self.editor.settings
+        self.preview_toggle = pmui.ToggleIcon(
+            icon="preview",
+            active_icon="preview",
+            value=settings.node_previews,
+            description="Preview values on the canvas",
+            size="small",
+            margin=(0, 0, 0, 4),
+            styles={"flex": "none"},
+        )
+        # Like the minimap, a view of this session only, which starts from the dashboard's setting.
+        self.preview_toggle.param.watch(
+            lambda event: self.editor._show_node_previews(event.new), "value"
+        )
+        settings.param.watch(self._follow_preview_setting, "node_previews")
         self._bar = pn.FlexBox(
             self.grid_label,
             self.issues_button,
@@ -217,6 +232,7 @@ class StatusBar(Viewer):
             pn.layout.HSpacer(),
             self.keys,
             self.zoom,
+            self.preview_toggle,
             self.minimap_toggle,
             align_items="center",
             flex_wrap="nowrap",
@@ -243,6 +259,9 @@ class StatusBar(Viewer):
         if self.editor.mode == "dashboard":
             self.sync()
 
+    def _follow_preview_setting(self, event):
+        self.preview_toggle.value = event.new
+
     def _follow_theme(self, event):
         self.editor._flow.color_mode = "dark" if event.new else "light"
 
@@ -259,7 +278,13 @@ class StatusBar(Viewer):
         editor = self.editor
         layout = editor.mode == "dashboard"
         self.grid_label.visible = layout
-        for item in (self.issues_button, self.keys, self.zoom, self.minimap_toggle):
+        for item in (
+            self.issues_button,
+            self.keys,
+            self.zoom,
+            self.preview_toggle,
+            self.minimap_toggle,
+        ):
             item.visible = not layout
         if layout:
             self.counts.object = layout_summary(editor)

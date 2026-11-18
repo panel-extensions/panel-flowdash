@@ -30,7 +30,11 @@ SECTION_ICONS = {"general": "info", "refresh": "autorenew", "sharing": "group"}
 DEDICATED_SETTINGS = ("description", "refresh_period", "viewers_can_inspect")
 
 # Shorter labels for the generic form, which shows them as switches.
-TILE_SETTINGS = {"tile_cards": "Frame tiles", "tile_titles": "Show tile titles"}
+TILE_SETTINGS = {
+    "node_previews": "Preview values on the canvas",
+    "tile_cards": "Frame tiles",
+    "tile_titles": "Show tile titles",
+}
 
 REFRESH_PRESETS = {"Off": 0, "1 min": 60, "5 min": 300, "15 min": 900, "1 hour": 3600}
 

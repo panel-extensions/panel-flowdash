@@ -1,21 +1,28 @@
-"""Compact canvas nodes: a card naming a component, its typed ports and a one-line summary.
+"""Compact canvas nodes: a card naming a component, its typed ports and its current value.
 
 The live component is shown only in the tile grid, so the same view is never
 rendered twice and a table or map is never squeezed into a node. A card lists
 the component's ports with their types, marks required inputs, shows a status
-dot and summarizes the current value, e.g. the rows of a DataFrame output or a
-widget's selection.
+dot and either summarizes the current value in one line, e.g. the rows of a
+DataFrame output or a widget's selection, or previews it (see
+``ui/node_preview.py``): the first rows of a table, a sparkline, a few chips.
 
 ReactFlow places a node's input handles evenly down its left edge, at
 ``(i + 1) / (n + 1)`` of the node's height, and its outputs the same way down
-the right edge. Each port label is placed at exactly that fraction of the card,
-and the card is tall enough that the header and summary never meet a label, so
-every label sits beside its handle whatever the number of ports.
+the right edge. Each port label is placed at exactly that point of a card
+without a preview, and the card is tall enough that the header and summary
+never meet a label, so every label sits beside its handle whatever the number
+of ports. A preview makes the card taller below the ports, so while one is
+shown the canvas stylesheet pins each handle to its label in pixels instead
+(see :func:`handle_stylesheet`).
 """
 
 from __future__ import annotations
 
+import hashlib
 import html
+import logging
+import re
 import typing as t
 from functools import partial
 
@@ -23,12 +30,26 @@ import param
 from panel.pane import HTML
 from panel.viewable import Viewer
 
+from panel_flowdash.ui.node_preview import (
+    PREVIEW_CSS,
+    PREVIEW_HOOK,
+    Coalescer,
+    Preview,
+    build_preview,
+    hook_preview,
+    summarize_value,
+)
+from panel_flowdash.ui.roles import ROLE_ICONS
 from panel_flowdash.util import is_failure, missing_inputs
 
 if t.TYPE_CHECKING:
     from panel_flowdash.component_spec import ComponentSpec, InputPort, OutputPort
     from panel_flowdash.dataflow_engine import InputFailures
     from panel_flowdash.placeholders import Placeholder
+
+logger = logging.getLogger(__name__)
+
+__all__ = ["CARD_WIDTH", "NodeCard", "card_height", "port_offsets", "summarize_value"]
 
 CARD_WIDTH = 240
 _HEADER_HEIGHT = 34
@@ -45,9 +66,8 @@ STATUS_TEXT = {
     "unavailable": "Unavailable",
 }
 
-_ICON_BY_ROLE = {"source": "database", "transform": "transform", "view": "insert_chart"}
-
-_CARD_CSS = """
+_CARD_CSS = (
+    """
 :host {
   --fd-text: var(--mui-palette-text-primary, var(--panel-on-background-color, #1f1f1f));
   --fd-muted: var(--mui-palette-text-secondary, rgba(127, 127, 127, 0.95));
@@ -75,6 +95,10 @@ _CARD_CSS = """
   border-bottom: 1px solid var(--fd-divider);
 }
 .fd-icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  overflow: hidden;
   font-family: "Material Icons";
   font-size: 18px;
   line-height: 1;
@@ -133,6 +157,8 @@ _CARD_CSS = """
 }
 .fd-failed .fd-summary { color: var(--mui-palette-error-main, #d32f2f); }
 """
+    + PREVIEW_CSS
+)
 
 
 def card_height(n_inputs: int, n_outputs: int) -> int:
@@ -146,6 +172,48 @@ def port_offsets(count: int) -> list[float]:
     return [(i + 1) * 100 / (count + 1) for i in range(count)]
 
 
+def port_tops(n_inputs: int, n_outputs: int) -> tuple[list[float], list[float]]:
+    """Return the centres of a card's input and output rows, in px from its top."""
+    height = card_height(n_inputs, n_outputs)
+    return (
+        [height * p / 100 for p in port_offsets(n_inputs)],
+        [height * p / 100 for p in port_offsets(n_outputs)],
+    )
+
+
+def preview_class(inputs: t.Sequence[str], outputs: t.Sequence[str]) -> str:
+    """Return the class a previewing card carries for the handle rules of its ports."""
+    key = "\x00".join([*inputs, "\x01", *outputs]).encode()
+    return "fd-pv-" + hashlib.sha1(key, usedforsecurity=False).hexdigest()[:12]
+
+
+def _css_string(text: str) -> str:
+    return '"' + re.sub(r'["\\<>\x00-\x1f\x7f]', lambda m: f"\\{ord(m[0]):x} ", text) + '"'
+
+
+def handle_rules(inputs: t.Sequence[str], outputs: t.Sequence[str]) -> str:
+    """Return the CSS pinning each handle of a previewing card beside its label."""
+    if not inputs and not outputs:
+        return ""
+    node = f".react-flow__node:has(.{preview_class(inputs, outputs)})"
+    tops_in, tops_out = port_tops(len(inputs), len(outputs))
+    rules = [
+        f".react-flow__handle-{side}[data-handleid={_css_string(name)}]"
+        f" {{ top: {top:.2f}px !important; }}"
+        for side, names, tops in (("left", inputs, tops_in), ("right", outputs, tops_out))
+        for name, top in zip(names, tops, strict=True)
+    ]
+    return "\n".join(f"{node} {rule}" for rule in rules)
+
+
+def handle_stylesheet(specs: t.Iterable[ComponentSpec]) -> str:
+    """Return the handle rules of every component in *specs*, each port layout once."""
+    layouts = {
+        (tuple(p.name for p in spec.inputs), tuple(p.name for p in spec.outputs)) for spec in specs
+    }
+    return "\n".join(filter(None, (handle_rules(*layout) for layout in sorted(layouts))))
+
+
 def component_role(spec: ComponentSpec) -> str:
     """Classify a component as a data ``source``, a ``transform`` or a ``view``."""
     if not spec.inputs:
@@ -155,7 +223,7 @@ def component_role(spec: ComponentSpec) -> str:
 
 def component_icon(spec: ComponentSpec) -> str:
     """Return the component's own icon, or one for its role."""
-    return spec.icon or _ICON_BY_ROLE[component_role(spec)]
+    return spec.icon or ROLE_ICONS[component_role(spec)]
 
 
 def port_label(port: InputPort | OutputPort) -> str:
@@ -166,31 +234,14 @@ def port_label(port: InputPort | OutputPort) -> str:
     return parameter.label if parameter is not None and parameter.label else port.name
 
 
-def summarize_value(value: t.Any, limit: int = 60) -> str:
-    """Describe a port value in a few words, e.g. ``"72,357 rows, 29 columns"``."""
-    if value is None:
-        return "No value yet"
-    if is_failure(value):
-        return "Failed"
-    shape = getattr(value, "shape", None)
-    if isinstance(shape, tuple) and len(shape) == 2 and hasattr(value, "columns"):
-        return f"{shape[0]:,} rows, {shape[1]:,} columns"
-    if isinstance(shape, tuple) and len(shape) == 1 and hasattr(value, "dtype"):
-        return f"{shape[0]:,} values"
-    if isinstance(value, (list, tuple, set, frozenset)):
-        items = list(value)
-        text = ", ".join(map(str, items))
-        if len(items) > 3 or len(text) > limit:
-            return f"{len(items):,} items"
-        return text or "Empty"
-    if isinstance(value, dict):
-        return f"{len(value):,} entries"
-    text = str(value)
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
 class NodeCard(Viewer):
-    """The compact view of a placed component on the wiring canvas."""
+    """The compact view of a placed component on the wiring canvas.
+
+    The card's parameters follow the component straight away, while its HTML
+    is rebuilt at most once per burst of changes in a served session (see
+    :class:`~panel_flowdash.ui.node_preview.Coalescer`) and only sent when it
+    differs from what the page shows.
+    """
 
     icon = param.String(default="widgets", doc="Material icon name.")
 
@@ -200,6 +251,17 @@ class NodeCard(Viewer):
 
     outputs = param.List(
         default=[], doc="Output ports as dicts with ``name``, ``label``, ``type``."
+    )
+
+    preview_source = param.Callable(
+        default=None,
+        doc="""
+        Returns the card's current preview, or None to show the summary. Only
+        called while ``show_preview`` is on, once per update.""",
+    )
+
+    show_preview = param.Boolean(
+        default=False, doc="Whether to preview the current value below the ports."
     )
 
     status = param.Selector(default="ok", objects=list(STATUS_TEXT))
@@ -212,25 +274,57 @@ class NodeCard(Viewer):
 
     def __init__(self, **params):
         super().__init__(**params)
+        self._preview: Preview | None = None
         self._pane = HTML(
             width=CARD_WIDTH,
-            height=self.height,
+            height=self.base_height,
             margin=0,
             sizing_mode="fixed",
             stylesheets=[_CARD_CSS],
         )
-        self.param.watch(self._render, list(self.param))
+        self._coalescer = Coalescer(self._render, self._document)
+        self.param.watch(self.refresh, [p for p in self.param if p != "show_preview"])
+        # Turning previews on or off is one change for the whole canvas, sent at once.
+        self.param.watch(lambda _event: self._render(), "show_preview")
         self._render()
 
     @property
-    def height(self) -> int:
-        """The card's height, set by its number of ports."""
+    def base_height(self) -> int:
+        """The card's height without a preview, set by its number of ports."""
         return card_height(len(self.inputs), len(self.outputs))
 
-    def _ports_html(self, ports: list[dict], side: str, full_width: bool) -> str:
-        width = "calc(100% - 24px)" if full_width else "calc(50% - 16px)"
+    @property
+    def height(self) -> int:
+        """The card's current height, including the preview shown."""
+        if self._preview is None:
+            return self.base_height
+        return self.base_height - _SUMMARY_HEIGHT + 8 + self._preview.height
+
+    @property
+    def preview(self) -> Preview | None:
+        """The preview the card shows, if any."""
+        return self._preview
+
+    def refresh(self, *_events):
+        """Rebuild the card, e.g. once the value it previews changed."""
+        self._coalescer()
+
+    def release(self):
+        """Stop updating the card, e.g. once its component has been removed."""
+        self._coalescer.cancel()
+
+    def _document(self):
+        """Return the served document showing the card, if any."""
+        for model, _ in self._pane._models.values():
+            doc = model.document
+            if doc is not None and doc.session_context is not None:
+                return doc
+        return None
+
+    def _ports_html(self, ports: list[dict], tops: list[float], side: str, full: bool) -> str:
+        width = "calc(100% - 24px)" if full else "calc(50% - 16px)"
         rows = []
-        for port, top in zip(ports, port_offsets(len(ports)), strict=True):
+        for port, top in zip(ports, tops, strict=True):
             name = html.escape(port["label"])
             kind = html.escape(port.get("type") or "")
             required = (
@@ -240,32 +334,53 @@ class NodeCard(Viewer):
             )
             rows.append(
                 f'<div class="fd-port fd-{side}" data-port="{html.escape(port["name"])}" '
-                f'style="top: {top:.4f}%; max-width: {width}">'
+                f'style="top: {top:.2f}px; max-width: {width}">'
                 f'<span class="fd-name">{name}</span>{required}'
                 f'<span class="fd-type">{kind}</span></div>'
             )
         return "".join(rows)
 
-    def _render(self, *_events):
+    def _build_preview(self) -> Preview | None:
+        if not self.show_preview or self.preview_source is None or self.status == "failed":
+            return None
+        try:
+            return self.preview_source()
+        except Exception:
+            logger.debug("Previewing %s failed", self.title, exc_info=True)
+            return None
+
+    def _render(self):
+        self._preview = preview = self._build_preview()
         detail = self.status_detail or STATUS_TEXT[self.status]
-        self._pane.param.update(
-            height=self.height,
-            object=(
-                f'<div class="fd-card fd-{self.status}">'
-                '<div class="fd-head">'
-                f'<span class="fd-icon" aria-hidden="true">{html.escape(self.icon)}</span>'
-                f'<span class="fd-title" title="{html.escape(self.title)}">'
-                f"{html.escape(self.title)}</span>"
-                f'<span class="fd-dot" role="img" aria-label="{html.escape(detail)}" '
-                f'title="{html.escape(detail)}"></span>'
-                "</div>"
-                f"{self._ports_html(self.inputs, 'in', not self.outputs)}"
-                f"{self._ports_html(self.outputs, 'out', not self.inputs)}"
-                f'<div class="fd-summary" title="{html.escape(self.summary)}">'
-                f"{html.escape(self.summary)}</div>"
-                "</div>"
-            ),
+        tops_in, tops_out = port_tops(len(self.inputs), len(self.outputs))
+        bottom = (
+            preview.html
+            if preview is not None
+            else f'<div class="fd-summary" title="{html.escape(self.summary)}">'
+            f"{html.escape(self.summary)}</div>"
         )
+        markup = (
+            f'<div class="fd-card fd-{self.status}">'
+            '<div class="fd-head">'
+            f'<span class="fd-icon" aria-hidden="true">{html.escape(self.icon)}</span>'
+            f'<span class="fd-title" title="{html.escape(self.title)}">'
+            f"{html.escape(self.title)}</span>"
+            f'<span class="fd-dot" role="img" aria-label="{html.escape(detail)}" '
+            f'title="{html.escape(detail)}"></span>'
+            "</div>"
+            f"{self._ports_html(self.inputs, tops_in, 'in', not self.outputs)}"
+            f"{self._ports_html(self.outputs, tops_out, 'out', not self.inputs)}"
+            f"{bottom}</div>"
+        )
+        classes = (
+            [preview_class([p["name"] for p in self.inputs], [p["name"] for p in self.outputs])]
+            if preview is not None
+            else []
+        )
+        changes = {"object": markup, "height": self.height, "css_classes": classes}
+        changes = {k: v for k, v in changes.items() if getattr(self._pane, k) != v}
+        if changes:
+            self._pane.param.update(**changes)
 
     def __panel__(self):
         """Return the card's single HTML view."""
@@ -324,11 +439,33 @@ def _port_dicts(ports, inputs: bool) -> list[dict]:
     ]
 
 
+def node_preview(
+    spec: ComponentSpec, state: param.Parameterized, instance: t.Any = None
+) -> Preview | None:
+    """Preview a placed component: its own preview, its first output, or a view's input.
+
+    The first output holding a value is previewed, or for a view the first
+    input holding one, as the summary describes. A component defining
+    ``__flowdash_preview__`` supplies its own (see
+    :func:`~panel_flowdash.ui.node_preview.hook_preview`).
+    """
+    if instance is not None and (preview := hook_preview(instance)) is not None:
+        return preview
+    ports = spec.outputs or spec.inputs
+    for port in ports:
+        value = getattr(state, port.name, None)
+        if value is not None:
+            return build_preview(value, port_label(port), showing=not spec.outputs)
+    return None
+
+
 def node_card(
     spec: ComponentSpec,
     state: param.Parameterized,
     failures: InputFailures | None,
     wiring: list[t.Callable[[], None]],
+    instance: t.Any = None,
+    show_preview: bool = False,
 ) -> NodeCard:
     """Build the card of a placed component, following its state until *wiring* is released.
 
@@ -343,17 +480,26 @@ def node_card(
     wiring
         Releases run when the component leaves the editor; the card's
         watchers are appended to it.
+    instance
+        The live component, whose ``__flowdash_preview__`` hook, if it has
+        one, supplies the preview. Any change to its parameters refreshes it.
+    show_preview
+        Whether the card starts out previewing the current value.
     """
     card = NodeCard(
         title=spec.title,
         icon=component_icon(spec),
         inputs=_port_dicts(spec.inputs, True),
         outputs=_port_dicts(spec.outputs, False),
+        preview_source=partial(node_preview, spec, state, instance),
+        show_preview=show_preview,
     )
 
     def update(*_events):
         status, detail = node_status(spec, state, failures)
         card.param.update(status=status, status_detail=detail, summary=node_summary(spec, state))
+        # The value may have changed without its summary, e.g. a table's cells.
+        card.refresh()
 
     names = [p.name for p in (*spec.outputs, *spec.inputs) if p.name in state.param]
     if names:
@@ -362,6 +508,14 @@ def node_card(
     if failures is not None:
         watcher = failures.param.watch(update, "failed")
         wiring.append(partial(failures.param.unwatch, watcher))
+    if instance is not None and callable(getattr(instance, PREVIEW_HOOK, None)):
+        # The ports are followed through the node state already.
+        ports = {p.name for p in (*spec.inputs, *spec.outputs)}
+        own = [name for name in instance.param if name != "name" and name not in ports]
+        if own:
+            watcher = instance.param.watch(card.refresh, own)
+            wiring.append(partial(instance.param.unwatch, watcher))
+    wiring.append(card.release)
     update()
     return card
 
