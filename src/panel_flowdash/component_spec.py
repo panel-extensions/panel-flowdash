@@ -81,6 +81,7 @@ class ComponentSpec:
     config: list[ConfigField] = field(default_factory=list)
     config_state_class: type[param.Parameterized] | None = None
     config_editor: Callable | None = None
+    check_config: Callable | None = None
     # Former port and config names mapped to current ones.
     port_aliases: dict[str, str] = field(default_factory=dict)
 
@@ -442,6 +443,7 @@ def build_component_spec(entry: RegistryEntry) -> ComponentSpec:
         config=config,
         config_state_class=config_state_class,
         config_editor=metadata.config_editor,
+        check_config=metadata.check_config,
         port_aliases=port_aliases,
     )
     entry.spec = spec

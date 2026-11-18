@@ -19,7 +19,7 @@ from .assistant import create_agent
 from .chrome import SessionChrome
 from .highlight import ChangeHighlighter
 from .live import LiveDashboardOps
-from .ops import read_revision
+from .ops import OperationError, read_revision
 from .tools import ARTIFACT_KIND, FlowDashDeps, approval_policy
 
 if t.TYPE_CHECKING:
@@ -135,7 +135,26 @@ class AgentSession:
         based_on = read_revision(latest.value) if latest is not None else None
         if based_on != self.ops.revision() and not await self._confirm_overwrite(version):
             return False
-        self.ops.replace_yaml(version.value, revision=self.ops.revision())
+        revision = self.ops.revision()
+        try:
+            issues = await self.ops.replace_yaml_async(version.value, revision=revision)
+        except OperationError as exc:
+            if self.ops.revision() != revision or self.app._current_dashboard is not current:
+                raise ValueError(
+                    "The dashboard changed while this version was being restored, so it was "
+                    "not restored. Try again."
+                ) from exc
+            raise
+        failed = [i for i in issues if i.severity == "error"]
+        if failed:
+            nodes = sorted({i.path.split(".")[1] for i in failed if i.path.startswith("nodes.")})
+            self.app._notify(
+                "warning",
+                f"Restored v{version.version}, but {len(nodes)} "
+                f"{'node fails its' if len(nodes) == 1 else 'nodes fail their'} config "
+                "checks: " + "; ".join(f"{i.path.split('.')[1]}: {i.message}" for i in failed),
+                duration=10000,
+            )
         return True
 
     async def _confirm_overwrite(self, version: ArtifactVersion) -> bool:

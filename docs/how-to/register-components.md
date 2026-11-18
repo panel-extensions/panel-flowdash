@@ -46,6 +46,7 @@ def app(config):
 | `config_schema` | `type \| dict` | `None` | Design-time configuration definition: a `param.Parameterized` subclass, a Pydantic model, or a JSON-Schema-like dict. See [Configure nodes](configure-nodes.md). |
 | `config` | `list[str]` | `[]` | For Viewer components, names the params that are design-time configuration rather than input ports. See [Configure nodes](configure-nodes.md). |
 | `config_editor` | `callable` | `None` | Custom editor callable for the node's configuration form. See [Configure nodes](configure-nodes.md). |
+| `check_config` | `callable` | `None` | Checks a node's config, with its live inputs, before it is applied. See [Configure nodes](configure-nodes.md#4-check-a-config-with-check_config). |
 | `aliases` | `list[str]` | `[]` | Ids the component was registered under before. See [Renaming components and ports](#renaming-components-and-ports). |
 | `port_aliases` | `dict[str, str]` | `{}` | Former port or config names mapped to the current ones. See [Renaming components and ports](#renaming-components-and-ports). |
 

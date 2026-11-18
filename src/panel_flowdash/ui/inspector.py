@@ -21,6 +21,7 @@ import param
 from panel.viewable import Viewer
 
 from panel_flowdash.transforms import parse_transform, summarize_transform
+from panel_flowdash.ui.config_draft import ConfigDraft
 from panel_flowdash.ui.node_card import (
     STATUS_TEXT,
     component_icon,
@@ -112,6 +113,9 @@ class Inspector(Viewer):
         self._data_column: pn.Column | None = None
         self._inputs_column: pn.Column | None = None
         self._refresh_inputs: t.Callable[[], None] = lambda: None
+        # The latest config check started per node, see ConfigDraft.
+        self._check_runs: dict[str, int] = {}
+        self._check_results: dict[str, tuple[dict, list[str]]] = {}
 
         self.collapse_button = pmui.IconButton(
             icon="keyboard_double_arrow_right",
@@ -382,12 +386,21 @@ class Inspector(Viewer):
         )
 
     def _config_form(self, instance_id: str, spec: ComponentSpec) -> Viewable:
-        """Build the config form: the component's own `config_editor`, or one from its params."""
+        """Build the config form: the component's own `config_editor`, or one from its params.
+
+        With a `check_config` declared, the form edits a draft that is applied
+        once the check passes, see `ConfigDraft`.
+        """
         editor = self.editor
         config_state = editor._dataflow_graph.get_config_state(instance_id)
         names = [n for n in (config_state.param if config_state else []) if n != "name"]
         if not names:
             return _caption("This component has no settings.")
+        draft = None
+        if spec.check_config is not None:
+            draft = ConfigDraft(editor, instance_id, self._check_runs, self._check_results)
+            # A node placed from the palette or gallery has not been checked yet.
+            draft.show_current()
         if spec.config_editor is not None:
             type_key = spec.component_id.replace("/", "__")
             node_type = editor._flow.node_types.get(type_key) or {}
@@ -396,23 +409,37 @@ class Inspector(Viewer):
                 node_type.get("schema"),
                 id=instance_id,
                 type=type_key,
-                on_patch=partial(editor._apply_config_patch, instance_id),
+                on_patch=partial(editor._apply_config_patch, instance_id)
+                if draft is None
+                else draft.propose,
             )
-            return custom.__panel__() if hasattr(custom, "__panel__") else pn.panel(custom)
+            form = custom.__panel__() if hasattr(custom, "__panel__") else pn.panel(custom)
+            if draft is None:
+                return form
+            return pn.Column(form, draft.alert, margin=0, sizing_mode="stretch_width")
 
-        def record(*events):
-            editor._apply_config_patch(instance_id, {e.name: e.new for e in events})
+        if draft is not None:
+            self._releases += draft.bind(config_state, names)
+            edited = draft.state
+        else:
 
-        watcher = config_state.param.watch(record, names)
-        self._releases.append(partial(config_state.param.unwatch, watcher))
-        return pn.Param(
-            config_state,
+            def record(*events):
+                editor._apply_config_patch(instance_id, {e.name: e.new for e in events})
+
+            watcher = config_state.param.watch(record, names)
+            self._releases.append(partial(config_state.param.unwatch, watcher))
+            edited = config_state
+        form = pn.Param(
+            edited,
             parameters=names,
             show_name=False,
             expand_button=False,
             sizing_mode="stretch_width",
             margin=0,
         )
+        if draft is None:
+            return form
+        return pn.Column(form, draft.alert, margin=0, sizing_mode="stretch_width")
 
     def _fill_inputs(self, instance_id: str, spec: ComponentSpec):
         if self._inputs_column is not None and spec.inputs:

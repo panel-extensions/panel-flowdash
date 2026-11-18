@@ -105,6 +105,82 @@ class app(pn.viewable.Viewer):
     ...
 ```
 
+### 4. Check a config with `check_config`
+
+Field types and bounds catch some mistakes, but not a SQL query that does not
+parse or a column that is not in the incoming table. Pass `check_config` to
+check the config as a whole before it is applied:
+
+```python
+def check(config, inputs):
+    table = inputs.get("table")
+    if table is not None and config["column"] not in table.columns:
+        return f"There is no column {config['column']!r}; pick one of {list(table.columns)}."
+    try:
+        parse_sql(config["query"])
+    except SyntaxError as exc:
+        raise ValueError(f"The query does not parse: {exc}") from exc
+
+
+@register(component=True, config=["query", "column"], check_config=check)
+class Query(pn.viewable.Viewer):
+    ...
+```
+
+The check is called as `check(config, inputs)`. `config` is the node's whole
+config with the change applied, defaults included. `inputs` holds the node's
+input values that are set and not failed, so it is `{}` for a node that is
+being placed and lacks inputs it is not yet wired to.
+
+The check returns `None`, a string, or an iterable of strings such as a list.
+Each non-empty string is a problem, so `""` and `[]` pass like `None`. It may
+also raise `ValueError` with the problem as its message. Any other result
+(a dict, a number, a list holding something other than strings) and any other
+exception are logged and count as a failed check, as does a check that takes
+longer than 10 seconds. A `TimeoutError` the check raises itself is a failed
+check like any other exception, not the 10 second limit.
+
+The check may be a plain function or an `async` function. A plain one runs in
+a worker thread, so it may block, for example on a database, but it must not
+change the editor: `current_dashboard()` returns the editor while the check
+runs, for reading its settings or context only.
+
+Plain checks run on a pool of 8 threads of their own. Set
+`panel_flowdash.config_check.CHECK_WORKERS` before the first check runs to
+change that. When every thread is busy a check waits for a free one, for at
+most its timeout, and its 10 seconds only start once it runs; a check that
+finds no free thread in time counts as failed. The synchronous methods
+(`DashboardOps.add_node`, `set_config`, `validate`, `preview` and
+`replace_yaml`) wait for each check in turn, so called on the event loop they
+block it for up to the timeout per check; use the `_async` variants there.
+
+Where a check runs:
+
+- In the inspector the form edits a draft. Each change runs the check, the
+  latest change winning, and the draft is applied once it passes; otherwise
+  the problems show below the form. A `config_editor`'s `on_patch` goes the
+  same way. Selecting a node also checks its current config, so a node
+  placed from the palette or the gallery with defaults its check refuses
+  shows the problems; it is placed all the same.
+- `DashboardOps.add_node` and `set_config`, and the assistant's tools, refuse
+  a config with problems with an `OperationError` whose message lists them,
+  which the assistant gets back to fix. `add_node_async` and
+  `set_config_async` run the check without blocking the event loop, check
+  again if the node's config changed meanwhile, and change nothing if
+  another dashboard was opened meanwhile. The assistant's `run_command`
+  refuses to place a component whose check refuses its defaults.
+- `DashboardOps.replace_yaml` loads the dashboard and returns the problems as
+  errors at `nodes.<name>.config`, `preview` reports such a node as
+  `invalid` while still running it, and `validate` lists the problems as
+  errors (`validate(checks=False)` skips the checks). Applying an earlier
+  version of the dashboard from the assistant's history goes through
+  `replace_yaml_async`; the restore goes ahead, and a notification lists the
+  nodes whose checks fail.
+
+A check runs when the config changes, not when the inputs do: rewiring a node
+or a new upstream value does not run it again. Only `preview` and `validate`
+check against the inputs as they are at that moment.
+
 ---
 
 ## How configuration reaches your component

@@ -11,11 +11,21 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import json
 import re
 import typing as t
 
 import panel as pn
 
+from panel_flowdash.config_check import (
+    CHECK_TIMEOUT,
+    check_node,
+    check_node_sync,
+    effective_config,
+    node_inputs,
+    run_check,
+    run_check_sync,
+)
 from panel_flowdash.dashboard_store import DashboardModel
 from panel_flowdash.editor import (
     _SESSION_EDITORS,
@@ -47,6 +57,25 @@ class OperationError(ValueError):
 
     The message says what to change, so an agent can retry with a fix.
     """
+
+
+def _refuse_config(what: str, problems: list[str]):
+    """Raise an :class:`OperationError` listing the problems a config check found."""
+    if len(problems) == 1:
+        raise OperationError(f"{what}: {problems[0]}")
+    if problems:
+        raise OperationError(f"{what}:\n" + "\n".join(f"- {p}" for p in problems))
+
+
+def _incoming(edges: t.Any, name: str) -> list[str]:
+    """Return the edges into node *name* of a dashboard document, in a comparable form."""
+    if not isinstance(edges, list):
+        return []
+    return sorted(
+        json.dumps(edge, sort_keys=True, default=str)
+        for edge in edges
+        if isinstance(edge, dict) and str(edge.get("to", "")).split(".", 1)[0] == name
+    )
 
 
 class OutputUnavailable(Exception):
@@ -137,6 +166,9 @@ class DashboardOps:
         built for the purpose, e.g. ``FlowDash(components, store=store,
         authorize_component=..., authorize_dashboard=...)``.
     """
+
+    # Seconds a component's config check may take, see ``register(check_config=)``.
+    check_timeout: float = CHECK_TIMEOUT
 
     def __init__(self, editor: FlowDash):
         self.editor = editor
@@ -521,13 +553,20 @@ class DashboardOps:
             )
         ]
 
-    def validate(self, text: str | dict | None = None, *, standalone: bool = False) -> list[Issue]:
+    def validate(
+        self, text: str | dict | None = None, *, standalone: bool = False, checks: bool = True
+    ) -> list[Issue]:
         """Check YAML against the components the user may place and the canvas it is meant for.
 
         Defaults to the editor's dashboard. The canvas's restricted nodes and
         their connections must stay as they are, see
         :func:`~panel_flowdash.agent.validate_dashboard`, unless *standalone*
         is set, for YAML of a new dashboard rather than one for this canvas.
+
+        With *checks*, the config of each node whose component declares a
+        ``check_config`` is checked too, against the live inputs of the node
+        of the same name on the canvas, and its problems are errors at
+        ``nodes.<name>.config``.
         """
         editor = self.editor
         entries = editor._component_entries
@@ -557,12 +596,87 @@ class DashboardOps:
             for item in editor._tile_items
             if "placeholder" in item and not item["placeholder"].private
         }
-        return [
+        issues = [
             Issue(i.path, f"{i.message} It is kept on the dashboard as is.", "warning")
             if i.path in unavailable and i.message.startswith("Unknown component")
             else i
             for i in issues
         ]
+        if checks:
+            for path, spec, config, inputs in self._doc_checks(doc, issues, standalone):
+                problems = run_check_sync(
+                    spec, config, inputs, editor=editor, timeout=self.check_timeout
+                )
+                issues += [Issue(path, problem) for problem in problems]
+        return issues
+
+    def _doc_checks(
+        self, doc: dict, issues: list[Issue], standalone: bool
+    ) -> list[tuple[str, t.Any, dict, dict]]:
+        """Return what to check for each node of *doc* whose component has a config check.
+
+        A node that already has an error is left out. A node gets the live
+        inputs of the canvas node of the same name only when it is of the same
+        component and its incoming edges are the same; otherwise it gets none.
+        """
+        editor = self.editor
+        specs = self._authorized_specs()
+        canvas_edges = [] if standalone else (dashboard_to_dict(editor).get("edges") or [])
+        failing = {".".join(i.path.split(".")[:2]) for i in issues if i.severity == "error"}
+        ids = {} if standalone else {n: iid for iid, n in self._names().items()}
+        live = {i["instance_id"]: i for i in editor._tile_items}
+        checks = []
+        for name, node in (doc.get("nodes") or {}).items():
+            if not isinstance(node, dict) or f"nodes.{name}" in failing:
+                continue
+            spec = specs.get(editor._resolve_component_id(str(node.get("component"))))
+            if spec is None or spec.check_config is None:
+                continue
+            inputs = {}
+            item = live.get(ids.get(name, ""))
+            if (
+                item is not None
+                and "placeholder" not in item
+                and editor._resolve_component_id(item["component_id"]) == spec.component_id
+                and _incoming(doc.get("edges"), name) == _incoming(canvas_edges, name)
+            ):
+                inputs = node_inputs(editor, item["instance_id"], spec)
+            config = effective_config(spec, node.get("config"))
+            checks.append((f"nodes.{name}.config", spec, config, inputs))
+        return checks
+
+    def _canvas_issues(self, problems: dict[str, list[str]]) -> list[Issue]:
+        names = self._names()
+        return [
+            Issue(f"nodes.{names.get(instance_id, instance_id)}.config", problem)
+            for instance_id, found in problems.items()
+            for problem in found
+        ]
+
+    def _checked_nodes(self, editor: FlowDash) -> list[str]:
+        return [
+            item["instance_id"]
+            for item in editor._tile_items
+            if "placeholder" not in item
+            and getattr(editor._component_specs.get(item["component_id"]), "check_config", None)
+        ]
+
+    def _canvas_problems(self, editor: FlowDash) -> dict[str, list[str]]:
+        """Check the config of every node of *editor* that has a check, against its live inputs."""
+        found = {
+            instance_id: check_node_sync(editor, instance_id, timeout=self.check_timeout)
+            for instance_id in self._checked_nodes(editor)
+        }
+        return {instance_id: problems for instance_id, problems in found.items() if problems}
+
+    async def _canvas_problems_async(self, editor: FlowDash) -> dict[str, list[str]]:
+        instance_ids = self._checked_nodes(editor)
+        results = await asyncio.gather(
+            *(check_node(editor, iid, timeout=self.check_timeout) for iid in instance_ids)
+        )
+        return {
+            iid: problems for iid, problems in zip(instance_ids, results, strict=True) if problems
+        }
 
     def preview(self, text: str | None = None, *, rows: int = 5) -> dict[str, t.Any]:
         """Run a dashboard without showing it and report the health of each node.
@@ -588,12 +702,12 @@ class DashboardOps:
             its definition from.
         """
         if text is None:
-            return self._preview(self.editor, rows)
+            return self._preview(self.editor, rows, self._canvas_problems(self.editor))
         data = self._preview_data(text)
         scratch = self._scratch_editor()
         try:
             scratch.import_dashboard(data)
-            return self._preview(scratch, rows)
+            return self._preview(scratch, rows, self._canvas_problems(scratch))
         finally:
             scratch.dispose()
 
@@ -606,13 +720,15 @@ class DashboardOps:
         component synchronously still runs on the event loop.
         """
         if text is None:
-            return self._preview(self.editor, rows)
+            invalid = await self._canvas_problems_async(self.editor)
+            return self._preview(self.editor, rows, invalid)
         data = self._preview_data(text)
         scratch = self._scratch_editor()
         try:
             model = scratch._imported_model(data)
             await self._within(scratch.load_model_async(model), timeout)
-            return self._preview(scratch, rows)
+            invalid = await self._canvas_problems_async(scratch)
+            return self._preview(scratch, rows, invalid)
         finally:
             scratch.dispose()
 
@@ -637,15 +753,19 @@ class DashboardOps:
                 f"Loading the dashboard's components took longer than {timeout:g} seconds."
             ) from exc
 
-    def _preview(self, editor: FlowDash, rows: int) -> dict[str, t.Any]:
+    def _preview(
+        self, editor: FlowDash, rows: int, invalid: dict[str, list[str]] | None = None
+    ) -> dict[str, t.Any]:
         names = node_names(editor.export_dashboard()["items"])
         if not self._source_visible():
-            report = preview_editor(editor, names, samples=False)
+            report = preview_editor(editor, names, samples=False, invalid=invalid)
             return {
                 "status": report["status"],
                 "message": "This dashboard hides its definition from viewers.",
             }
-        return preview_editor(editor, names, samples=self._can_sample(), rows=rows)
+        return preview_editor(
+            editor, names, samples=self._can_sample(), rows=rows, invalid=invalid
+        )
 
     def _scratch_editor(self) -> FlowDash:
         """Build an editor with the same components and rights, which nobody sees and nothing saves."""
@@ -677,7 +797,8 @@ class DashboardOps:
     # ------------------------------------------------------------------
 
     def _refuse_invalid(self, doc: dict, *, standalone: bool = False):
-        errors = [i for i in self.validate(doc, standalone=standalone) if i.severity == "error"]
+        issues = self.validate(doc, standalone=standalone, checks=False)
+        errors = [i for i in issues if i.severity == "error"]
         if errors:
             raise OperationError(
                 "The dashboard has errors:\n" + "\n".join(f"- {issue}" for issue in errors)
@@ -742,8 +863,10 @@ class DashboardOps:
         -------
         list of Issue
             The warnings about the loaded dashboard, e.g. inputs still
-            unconnected or turns the YAML changed to no effect, and one for
-            each node that failed once loaded.
+            unconnected or turns the YAML changed to no effect, one for each
+            node that failed once loaded, and as errors the problems the config
+            checks of its components found, see ``register(check_config=)``. A
+            node whose check fails is loaded all the same.
 
         Raises
         ------
@@ -754,7 +877,8 @@ class DashboardOps:
         doc, _, _, ignored = self._check_replace(text, revision)
         title = self._title_issue(doc)
         self.editor.import_dashboard(doc, keep_turns=True)
-        return title + ignored + self._warnings() + self._failures()
+        checked = self._canvas_issues(self._canvas_problems(self.editor))
+        return title + ignored + checked + self._warnings() + self._failures()
 
     async def replace_yaml_async(
         self, text: str, *, revision: str | None = None, timeout: float = DEFAULT_TIMEOUT
@@ -776,7 +900,8 @@ class DashboardOps:
         self._check_current(revision, dashboard_id)
         title = self._title_issue(doc)
         editor.import_dashboard(doc, keep_turns=True)
-        return title + ignored + self._warnings() + self._failures()
+        checked = self._canvas_issues(await self._canvas_problems_async(editor))
+        return title + ignored + checked + self._warnings() + self._failures()
 
     def _title_issue(self, doc: dict) -> list[Issue]:
         current = self.editor.dashboard
@@ -793,7 +918,7 @@ class DashboardOps:
         ]
 
     def _warnings(self) -> list[Issue]:
-        return [i for i in self.validate() if i.severity != "error"]
+        return [i for i in self.validate(checks=False) if i.severity != "error"]
 
     def _failures(self) -> list[Issue]:
         """Warn about each node whose own output failed; the nodes it feeds are not repeated."""
@@ -839,21 +964,67 @@ class DashboardOps:
         ------
         OperationError
             If the component is unknown, placed once already when it can only
-            be placed once, *config* is invalid, or *name* is invalid or
-            taken; for a taken name the message suggests a free one.
+            be placed once, *config* is invalid or refused by the component's
+            config check, or *name* is invalid or taken; for a taken name the
+            message suggests a free one.
         PermissionError
             If the user may not use the component, or edit the dashboard.
         """
+        spec, resolved = self._new_node(component, config)
+        problems = run_check_sync(
+            spec,
+            effective_config(spec, resolved),
+            {},
+            editor=self.editor,
+            timeout=self.check_timeout,
+        )
+        _refuse_config(f"'{spec.title}' was not placed", problems)
+        return self._place_node(spec, config, position, name)
+
+    async def add_node_async(
+        self,
+        component: str,
+        config: dict[str, t.Any] | None = None,
+        position: tuple[float, float] | None = None,
+        name: str | None = None,
+    ) -> str:
+        """Like :meth:`add_node`, running the component's config check off the event loop."""
+        spec, resolved = self._new_node(component, config)
+        dashboard_id = self._dashboard_id()
+        problems = await run_check(
+            spec,
+            effective_config(spec, resolved),
+            {},
+            editor=self.editor,
+            timeout=self.check_timeout,
+        )
+        self._check_still_open(dashboard_id)
+        _refuse_config(f"'{spec.title}' was not placed", problems)
         self._require_edit()
-        editor = self.editor
+        return self._place_node(spec, config, position, name)
+
+    def _check_still_open(self, dashboard_id: str | None):
+        """Refuse to go on when another dashboard was opened while a check ran."""
+        if self._dashboard_id() != dashboard_id:
+            raise PermissionError(
+                "the user opened another dashboard while the config was being checked, so "
+                "nothing was changed. Stop and ask the user what to do with the dashboard "
+                "they are looking at now."
+            )
+
+    def _new_node(self, component: str, config: dict[str, t.Any] | None) -> tuple[t.Any, dict]:
+        self._require_edit()
         specs = self._authorized_specs()
-        component_id = editor._resolve_component_id(component)
+        component_id = self.editor._resolve_component_id(component)
         if component_id not in specs:
             raise OperationError(f"Unknown component '{component}'." + _suggest(component, specs))
-        self._check_config(specs[component_id], config or {})
+        spec = specs[component_id]
+        return spec, self._check_config(spec, config or {})
+
+    def _place_node(self, spec, config, position, name) -> str:
         try:
-            instance_id = editor.add_component(
-                component_id, dict(config or {}), position, instance_id=name
+            instance_id = self.editor.add_component(
+                spec.component_id, dict(config or {}), position, instance_id=name
             )
         except (KeyError, ValueError) as exc:
             raise OperationError(str(exc).strip("'\"")) from exc
@@ -883,11 +1054,38 @@ class DashboardOps:
         return resolved
 
     def set_config(self, name: str, config: dict[str, t.Any]) -> dict[str, t.Any]:
-        """Change some config fields of a node and return its whole config."""
+        """Change some config fields of a node and return its whole config.
+
+        Raises
+        ------
+        OperationError
+            If a field does not exist or takes no such value, or the
+            component's config check refuses the result; nothing is changed.
+        """
+        instance_id, patch = self._config_patch(name, config)
+        problems = check_node_sync(self.editor, instance_id, patch, timeout=self.check_timeout)
+        _refuse_config(f"The config of '{name}' was not changed", problems)
+        return self._apply_config(instance_id, patch)
+
+    async def set_config_async(self, name: str, config: dict[str, t.Any]) -> dict[str, t.Any]:
+        """Like :meth:`set_config`, running the component's config check off the event loop."""
+        instance_id, patch = self._config_patch(name, config)
+        dashboard_id = self._dashboard_id()
+        problems = await check_node(self.editor, instance_id, patch, timeout=self.check_timeout)
+        self._check_still_open(dashboard_id)
+        _refuse_config(f"The config of '{name}' was not changed", problems)
+        if self._config_patch(name, config)[0] != instance_id:
+            raise OperationError(f"'{name}' was replaced while its config was being checked.")
+        return self._apply_config(instance_id, patch)
+
+    def _config_patch(self, name: str, config: dict[str, t.Any]) -> tuple[str, dict[str, t.Any]]:
         self._require_edit()
         instance_id, item = self._changeable(name)
         spec = self.editor.component_specs[item["component_id"]]
-        self.editor._apply_config_patch(instance_id, self._check_config(spec, config))
+        return instance_id, self._check_config(spec, config)
+
+    def _apply_config(self, instance_id: str, patch: dict[str, t.Any]) -> dict[str, t.Any]:
+        self.editor._apply_config_patch(instance_id, patch)
         return copy.deepcopy(self._item(instance_id).get("config", {}))
 
     def connect(

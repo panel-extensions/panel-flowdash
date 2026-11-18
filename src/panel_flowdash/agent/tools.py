@@ -506,7 +506,7 @@ async def preview_dashboard(
 # --------------------------------------------------------------------------
 
 
-def add_node(
+async def add_node(
     ctx: RunContext[FlowDashDeps],
     component: str,
     config: dict[str, t.Any] | None = None,
@@ -522,7 +522,7 @@ def add_node(
             at most 64 characters, and not taken by another node. Without it the node gets a generated name.
     """
     ops = ctx.deps.ops
-    name = ops.add_node(component, config, name=name)
+    name = await ops.add_node_async(component, config, name=name)
     return _artifact(ops, f"Added node '{name}'.")
 
 
@@ -537,7 +537,7 @@ def remove_node(ctx: RunContext[FlowDashDeps], name: str) -> t.Any:
     return _artifact(ops, f"Removed '{name}'.")
 
 
-def set_config(ctx: RunContext[FlowDashDeps], name: str, config: dict[str, t.Any]) -> t.Any:
+async def set_config(ctx: RunContext[FlowDashDeps], name: str, config: dict[str, t.Any]) -> t.Any:
     """Change some config fields of a node.
 
     Args:
@@ -545,7 +545,7 @@ def set_config(ctx: RunContext[FlowDashDeps], name: str, config: dict[str, t.Any
         config: The fields to change and their new values.
     """
     ops = ctx.deps.ops
-    ops.set_config(name, config)
+    await ops.set_config_async(name, config)
     return _artifact(ops, f"Updated the config of '{name}'.")
 
 
@@ -643,10 +643,15 @@ async def replace_dashboard(ctx: RunContext[FlowDashDeps], dashboard_yaml: str) 
             "Start from the YAML get_dashboard returns and keep its '# revision:' line, "
             "so changes the user made meanwhile are not lost."
         )
-    warnings = await ops.replace_yaml_async(dashboard_yaml)
+    issues = await ops.replace_yaml_async(dashboard_yaml)
     message = "Replaced the dashboard."
+    warnings = [i for i in issues if i.severity != "error"]
     if warnings:
         message += " Warnings:\n" + "\n".join(f"- {w}" for w in warnings)
+    if errors := [i for i in issues if i.severity == "error"]:
+        message += "\nThe config checks of these nodes failed; fix their config:\n" + "\n".join(
+            f"- {e}" for e in errors
+        )
     return _artifact(ops, message)
 
 
