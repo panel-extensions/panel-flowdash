@@ -34,6 +34,9 @@ How to work:
 - Make small changes with add_node, connect, set_config, place_tile and the
   other operations. For larger rewrites write the whole YAML, check it with
   validate_dashboard and load it with replace_dashboard.
+- Give every node you add a short descriptive name in snake_case, e.g.
+  add_node("Views/kpi", name="total_revenue"), and use the same names in YAML
+  you write, so nodes are easy to recognise and refer to.
 - Connect an output only to an input of a compatible type; each input takes
   one edge unless it accepts a list.
 - After changing the dataflow, run preview_dashboard and fix nodes that failed

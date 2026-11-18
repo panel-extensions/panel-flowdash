@@ -215,6 +215,22 @@ async def test_mistakes_are_sent_back_for_the_model_to_fix(ops):
     assert ops.editor._tile_items == []
 
 
+async def test_the_model_names_the_nodes_it_adds(ops):
+    runner = _runner(
+        ops,
+        ("add_node", {"component": "T/number", "name": "base"}),
+        ("add_node", {"component": "T/doubler", "name": "paid_by_region"}),
+        ("connect", {"source": "base.value", "target": "paid_by_region.value"}),
+        ("add_node", {"component": "T/number", "name": "base"}),
+    )
+    output = await runner.run("Double a number")
+    assert "A node named 'base' is already on the dashboard" in output
+    assert "'base_2'" in output
+    assert [i["instance_id"] for i in ops.editor._tile_items] == ["base", "paid_by_region"]
+    (artifact,) = runner.state.artifacts
+    assert "paid_by_region:" in artifact.applied_version.value
+
+
 @pytest.mark.parametrize("approved", [True, False])
 async def test_saving_waits_for_the_users_approval(ops, store, approved):
     runner = _runner(ops, ("add_node", {"component": "T/number"}), ("save_dashboard", {}))

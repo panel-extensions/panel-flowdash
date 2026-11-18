@@ -161,6 +161,9 @@ class _ReadOnlyEditorError(DashboardStoreError, RuntimeError):
     pass
 
 
+# The longest node name add_component takes. Names read from a file are not limited.
+MAX_NAME_LENGTH = 64
+
 _EMPTY_GRID_CONFIG = {"breakpoints": [], "responsive_layouts": {}, "reference_width": None}
 
 # Set on the tile grid while it previews a band without TileGrid's frame around it.
@@ -903,8 +906,9 @@ class FlowDash(Viewer):
         self._unresolved_notice: str | None = None
         # Layout entries keyed by instance id, waiting for the grid to be rendered.
         self._pending_tile_layout: list[dict] = []
-        # Instance ids of the tiles currently in the grid, in grid order.
-        self._grid_ids: list[str] = []
+        # Instance ids of the tiles currently in the grid, in grid order; None
+        # marks the slot of a tile removed while the grid was not rebuilt.
+        self._grid_ids: list[str | None] = []
         # The framed tiles of the grid, by instance id, kept so a grid rebuild
         # does not re-render them.
         self._inspect_tiles: dict[str, Tile] = {}
@@ -1528,8 +1532,13 @@ class FlowDash(Viewer):
                 _add_all(flow.add_edges, flow.add_edge, edges)
 
     def _forget_node(self, node_id: str):
-        """Drop a node from the graph, the tile bookkeeping and the edge map."""
+        """Drop a node from the graph, the tile bookkeeping and the edge map.
+
+        Its layout entries go too, so a node placed later under the same id
+        starts with a fresh tile rather than the removed one's.
+        """
         self._dataflow_graph.remove_node(node_id)
+        self._forget_layout(node_id)
         self._inspect_tiles.pop(node_id, None)
         if self._inspected_id == node_id:
             self._close_inspection_dialog()
@@ -1548,6 +1557,18 @@ class FlowDash(Viewer):
             u for u in self._unresolved_edges if node_id not in (u.edge.source, u.edge.target)
         ]
         self._sync_toolbar_state()
+
+    def _forget_layout(self, node_id: str):
+        self._grid_ids = [None if i == node_id else i for i in self._grid_ids]
+        self._pending_tile_layout = [
+            spec for spec in self._pending_tile_layout if spec.get("instance_id") != node_id
+        ]
+        config = self._pending_grid_config
+        if config is not None:
+            config["responsive_layouts"] = {
+                band: [spec for spec in layout if spec.get("instance_id") != node_id]
+                for band, layout in config["responsive_layouts"].items()
+            }
 
     # ------------------------------------------------------------------
     # Failures
@@ -2963,6 +2984,7 @@ class FlowDash(Viewer):
         component_id: str,
         config: dict | None = None,
         position: dict | tuple | None = None,
+        instance_id: str | None = None,
     ) -> str:
         """Place a component on the canvas and return its instance id.
 
@@ -2975,6 +2997,12 @@ class FlowDash(Viewer):
         position
             Canvas position as ``{"x": ..., "y": ...}`` or ``(x, y)``. Defaults
             to the next free slot in a three-column grid.
+        instance_id
+            Id for the new instance, which is also its node's name in the
+            dashboard YAML, as a node a YAML file names gets it. It must be a
+            valid node name without ``__``, at most ``MAX_NAME_LENGTH`` (64)
+            characters, that no node on the canvas has.
+            Defaults to a generated ``<component>_<6 hex>`` id.
 
         Returns
         -------
@@ -2985,6 +3013,8 @@ class FlowDash(Viewer):
         ------
         KeyError
             If *component_id* is not a registered component.
+        ValueError
+            If *instance_id* is not a valid node name or is taken.
         PermissionError
             If `authorize_component` refuses it.
         """
@@ -3002,12 +3032,53 @@ class FlowDash(Viewer):
         if not self._component_authorized(component_id):
             title = self._component_entries[component_id].title
             raise PermissionError(f"You are not authorized to use '{title}'.")
+        if instance_id is not None:
+            self._check_instance_id(instance_id)
         instance_id = self._place(
-            component_id, self._new_instance_id(component_id), config or {}, position
+            component_id,
+            instance_id or self._new_instance_id(component_id),
+            config or {},
+            position,
         )
         self.dirty = True
         self._sync_placed()
         return instance_id
+
+    def _taken_names(self) -> tuple[list[dict], set[str]]:
+        """Return the canvas's items as node-name input, and every name and id they hold."""
+        from panel_flowdash.agent.yaml_format import node_names
+
+        items = [{"instance_id": item["instance_id"]} for item in self._tile_items]
+        return items, set(node_names(items).values()) | {item["instance_id"] for item in items}
+
+    def _check_instance_id(self, instance_id: str):
+        """Refuse an instance id that is not a node name a YAML file could give, or is taken."""
+        from panel_flowdash.agent.yaml_format import NAME_PATTERN
+
+        if not isinstance(instance_id, str) or not NAME_PATTERN.match(instance_id):
+            raise ValueError(
+                f"The node name {instance_id!r} is not valid: names start with a letter or "
+                "underscore and contain only letters, digits, '_' and '-'."
+            )
+        if len(instance_id) > MAX_NAME_LENGTH:
+            raise ValueError(
+                f"The node name {instance_id[:20]!r}... is not valid: names are at most "
+                f"{MAX_NAME_LENGTH} characters, this one has {len(instance_id)}."
+            )
+        if "__" in instance_id:
+            raise ValueError(
+                f"The node name {instance_id!r} is not valid: names may not contain '__', "
+                "which marks ids the editor generates."
+            )
+        _, taken = self._taken_names()
+        if instance_id in taken:
+            stem, n = instance_id[: MAX_NAME_LENGTH - 4].rstrip("_"), 2
+            while f"{stem}_{n}" in taken:
+                n += 1
+            raise ValueError(
+                f"A node named '{instance_id}' is already on the dashboard; "
+                f"choose another name, e.g. '{stem}_{n}'."
+            )
 
     def _new_instance_id(self, component_id: str) -> str:
         """Return a new instance id whose node name no node on the canvas has.
@@ -3018,8 +3089,7 @@ class FlowDash(Viewer):
         """
         from panel_flowdash.agent.yaml_format import node_names
 
-        items = [{"instance_id": item["instance_id"]} for item in self._tile_items]
-        taken = set(node_names(items).values()) | {item["instance_id"] for item in items}
+        items, taken = self._taken_names()
         type_key = component_id.replace("/", "__")
         while True:
             instance_id = f"{type_key}_{uuid.uuid4().hex[:6]}"

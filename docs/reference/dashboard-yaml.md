@@ -112,7 +112,10 @@ dashboard, does not change when its component is renamed and is never given to
 another node. Nodes placed in the editor have generated ids such as
 `Views__kpi_3fa2c1` and are named after their last part, `kpi_3fa2c1` (prefixed with
 `n_` when it starts with a digit); a node created from a file keeps the name the file
-gave it. New names may not contain `__`, which marks generated ids, and names the
+gave it, and so does a node placed under a chosen name with
+`DashboardOps.add_node(..., name="paid_by_region")` or
+`FlowDash.add_component(..., instance_id="paid_by_region")`, which makes the name its
+id. New names may not contain `__`, which marks generated ids, and names the
 format writes never do, so a file always loads into another dashboard. The editor
 picks new ids whose names no node has; if two ids that came from elsewhere, such as
 an imported JSON file, still want the same name, the one that sorts first keeps it
