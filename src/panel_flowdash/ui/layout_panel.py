@@ -1,9 +1,9 @@
 """The panel beside the tile grid in the Layout tab of the editor.
 
-It changes the size of one tile at a time, which is more precise than
-dragging its corner, and lists the placed components that have no tile on
-the dashboard with the reason, so a tile hidden with its close handle can be
-put back.
+It picks the screen size the tiles are arranged for, changes the size of one
+tile at a time, which is more precise than dragging its corner, and lists the
+placed components that have no tile on the dashboard with the reason, so a
+tile hidden with its close handle can be put back.
 """
 
 from __future__ import annotations
@@ -16,6 +16,14 @@ import param
 from panel.viewable import Viewer
 
 from panel_flowdash.ui.text import text_typography
+from panel_flowdash.ui.tile_bands import (
+    BASE,
+    CUSTOM,
+    band_names,
+    band_sources,
+    band_summary,
+    base_band,
+)
 from panel_flowdash.ui.tile_layout import (
     GRID_COLUMNS,
     HIDDEN,
@@ -85,6 +93,12 @@ GRID_EDIT_CSS = """
   right: 2px;
   background-color: var(--mui-palette-primary-main, #0072b5);
 }
+.muuri-grid:not(.muuri-no-handles) .muuri-grid-item.muuri-selected {
+  outline: 2px solid var(--mui-palette-primary-main, #0072b5);
+  outline-offset: 5px;
+}
+.muuri-no-handles .muuri-grid-item.muuri-selected { outline: none; }
+:host(.fd-unframed-band) .muuri-grid.muuri-constrained { box-shadow: none; }
 """
 
 
@@ -97,7 +111,13 @@ def _heading(text: str, margin=(16, 0, 8, 0)) -> pmui.Typography:
 
 
 class LayoutPanel(Viewer):
-    """A collapsible panel with the selected tile's size and the components off the grid."""
+    """A collapsible panel with the screen size, the selected tile and the components off the grid."""
+
+    band = param.String(
+        default=None,
+        allow_None=True,
+        doc="Label of the breakpoint band the tiles are arranged for, or None for the base band.",
+    )
 
     collapsed = param.Boolean(default=False, doc="Whether the panel is folded to a narrow strip.")
 
@@ -112,6 +132,29 @@ class LayoutPanel(Viewer):
     def __init__(self, **params):
         super().__init__(**params)
         self._syncing = False
+        self.band_select = pmui.RadioButtonGroup(
+            options={}, size="small", sizing_mode="stretch_width", margin=(0, 0, 8, 0)
+        )
+        self.band_summary = _caption("", margin=0)
+        self.reset_band_button = pmui.Button(
+            label="Reset to automatic",
+            icon="restart_alt",
+            variant="text",
+            size="small",
+            margin=(4, 0, 0, 0),
+            sx={"textTransform": "none"},
+        )
+        self._bands = pn.Column(
+            _heading("Arrange for", margin=(0, 0, 8, 0)),
+            self.band_select,
+            self.band_summary,
+            self.reset_band_button,
+            pmui.Divider(margin=(16, 0, 16, 0)),
+            margin=0,
+            sizing_mode="stretch_width",
+        )
+        self.band_select.param.watch(self._on_band_selected, "value")
+        self.reset_band_button.on_click(self._on_reset_band)
         self.tile_select = pmui.Select(
             label="Tile", options={}, sizing_mode="stretch_width", margin=(0, 0, 8, 0)
         )
@@ -137,9 +180,11 @@ class LayoutPanel(Viewer):
             sx={"textTransform": "none"},
         )
         self.size_hint = _caption("", margin=(0, 0, 4, 0))
+        self.band_hint = _caption("", margin=(0, 0, 4, 0))
         self._tile_options = pn.Column(
             pn.Row(self.width_select, self.height_select, margin=0, sizing_mode="stretch_width"),
             self.size_hint,
+            self.band_hint,
             self.hide_button,
             margin=0,
             sizing_mode="stretch_width",
@@ -167,6 +212,7 @@ class LayoutPanel(Viewer):
         self.collapse_button.on_click(lambda _event: setattr(self, "collapsed", True))
         self.expand_button.on_click(lambda _event: setattr(self, "collapsed", False))
         self._body = pn.Column(
+            self._bands,
             _heading("Selected tile", margin=(0, 0, 12, 0)),
             self.tile_select,
             self._tile_options,
@@ -196,6 +242,8 @@ class LayoutPanel(Viewer):
         self._sync_collapsed()
         # Tiles hidden or resized in the browser arrive as a new layout.
         self.editor._tile_grid.param.watch(self._on_layout, ["layout", "objects"])
+        self.editor._tile_grid.param.watch(lambda _event: self.sync_bands(), "responsive_layouts")
+        self.sync_bands()
 
     def _on_layout(self, _event):
         if self.visible and not self._syncing:
@@ -208,9 +256,61 @@ class LayoutPanel(Viewer):
             self.refresh()
 
     def _follow_canvas_selection(self):
-        nodes = (self.editor._flow.selection or {}).get("nodes") or []
-        if len(nodes) == 1:
-            self.selected = nodes[0]
+        selected = self.editor._selected_tile_id()
+        if selected is not None:
+            self.selected = selected
+
+    def select(self, instance_id: str):
+        """Show the options of the tile of *instance_id*, e.g. one clicked on the grid."""
+        if instance_id == self.selected:
+            return
+        self.selected = instance_id
+        if self.visible:
+            self.refresh()
+
+    # ------------------------------------------------------------------
+    # Screen sizes
+    # ------------------------------------------------------------------
+
+    @pn.io.hold()
+    def sync_bands(self):
+        """Show the bands of the grid's breakpoints, the one arranged for and how each is arranged."""
+        grid = self.editor._tile_grid
+        names = band_names(grid.breakpoints)
+        sources = band_sources(grid.breakpoints, grid.reference_width, grid.responsive_layouts)
+        band = (
+            self.band if self.band in names else base_band(grid.breakpoints, grid.reference_width)
+        )
+        self._syncing = True
+        try:
+            self.band_select.param.update(
+                options={name: label for label, name in names.items()}, value=band
+            )
+        finally:
+            self._syncing = False
+        self._bands.visible = len(names) > 1
+        self.band_summary.object = band_summary(names, sources)
+        self.reset_band_button.visible = sources.get(band) == CUSTOM
+        base = next((names[label] for label, source in sources.items() if source == BASE), None)
+        self.band_hint.object = (
+            f"Width and height set here apply to the {base} layout."
+            if band is not None and sources.get(band) != BASE
+            else ""
+        )
+        self.band_hint.visible = bool(self.band_hint.object)
+
+    def _on_band_selected(self, event):
+        if self._syncing or event.new is None:
+            return
+        self.band = event.new
+        self.editor._sync_preview_band()
+
+    def _on_reset_band(self, _event):
+        grid = self.editor._tile_grid
+        band = self.band_select.value
+        if band in grid.responsive_layouts:
+            grid.reset_responsive_layout(band)
+            self.editor.dirty = True
 
     @pn.io.hold()
     def refresh(self):
@@ -345,6 +445,7 @@ class LayoutPanel(Viewer):
                 self._sync_tile_options()
             finally:
                 self._syncing = False
+            self.editor._set_selected_tile(event.new)
 
     def _on_width(self, event):
         if not self._syncing and event.new is not None:

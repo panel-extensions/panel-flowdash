@@ -590,14 +590,33 @@ class DashboardOps:
         component: str,
         config: dict[str, t.Any] | None = None,
         position: tuple[float, float] | None = None,
+        name: str | None = None,
     ) -> str:
         """Place a component and return the name of its node.
+
+        Parameters
+        ----------
+        component
+            A component id, e.g. ``"Views/kpi"``.
+        config
+            Values for some of its config fields.
+        position
+            Canvas position ``(x, y)``; defaults to the next free slot.
+        name
+            The node's name, e.g. ``"paid_by_region"``. It becomes the node's
+            instance id, as for a node a YAML file names, so the YAML, the
+            export and the store keep it. It starts with a letter or
+            underscore, holds only letters, digits, ``_`` and ``-`` but no
+            ``__``, is at most 64 characters long, and no node on the
+            dashboard may have it. Defaults to a
+            generated name like ``kpi_3fa2c1``.
 
         Raises
         ------
         OperationError
             If the component is unknown, placed once already when it can only
-            be placed once, or *config* is invalid.
+            be placed once, *config* is invalid, or *name* is invalid or
+            taken; for a taken name the message suggests a free one.
         PermissionError
             If the user may not use the component, or edit the dashboard.
         """
@@ -609,7 +628,9 @@ class DashboardOps:
             raise OperationError(f"Unknown component '{component}'." + _suggest(component, specs))
         self._check_config(specs[component_id], config or {})
         try:
-            instance_id = editor.add_component(component_id, dict(config or {}), position)
+            instance_id = editor.add_component(
+                component_id, dict(config or {}), position, instance_id=name
+            )
         except (KeyError, ValueError) as exc:
             raise OperationError(str(exc).strip("'\"")) from exc
         return self._names()[instance_id]

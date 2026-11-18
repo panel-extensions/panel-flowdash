@@ -1,4 +1,4 @@
-"""Tests for arranging tiles in the Split tab, at the width of the dashboard's layout."""
+"""Tests for arranging tiles in the Split tab, which arranges the band of the main layout."""
 
 import pytest
 
@@ -11,10 +11,8 @@ def editor():
     return FlowDash({MAP: MapView, CHART: ChartView}, notifications=False)
 
 
-def _grid_width(editor):
-    grid = editor._tile_grid
-    assert grid.min_width == grid.max_width
-    return grid.min_width
+def _band(editor):
+    return editor._tile_grid.preview_band
 
 
 async def test_split_grid_is_arranged_like_the_layout_tab(editor):
@@ -25,44 +23,46 @@ async def test_split_grid_is_arranged_like_the_layout_tab(editor):
     assert not editor._inspect_tiles[map_id].header.visible
 
 
-async def test_split_grid_keeps_the_reference_width(editor):
+async def test_split_grid_previews_the_base_band_at_the_pane_width(editor):
     editor.add_component(MAP)
     editor.mode = "split"
     # Without a recorded width TileGrid assumes the layout was arranged at the largest breakpoint.
-    assert _grid_width(editor) == 1200
-    editor._tile_grid.reference_width = 1440
-    assert _grid_width(editor) == 1440
+    assert _band(editor) == "md"
+    grid = editor._tile_grid
+    assert (grid.min_width, grid.max_width) == (None, None)
+    assert not grid.show_breakpoint_toolbar
+    editor._tile_grid.reference_width = 1000
+    assert _band(editor) == "sm"
 
 
 async def test_custom_breakpoints_set_the_assumed_width():
     editor = FlowDash({MAP: MapView}, notifications=False, breakpoints=[600, 900])
     editor.add_component(MAP)
+    editor._tile_grid.reference_width = 700
     editor.mode = "split"
-    assert _grid_width(editor) == 900
+    assert _band(editor) == "sm"
 
 
-@pytest.mark.parametrize("mode", ["dashboard", "wiring"])
-async def test_other_tabs_let_the_grid_fill_the_workspace(editor, mode):
+async def test_wiring_tab_lets_the_grid_follow_its_width(editor):
     editor.add_component(MAP)
     editor.mode = "split"
-    editor.mode = mode
-    assert _grid_width(editor) is None
+    editor.mode = "wiring"
+    assert _band(editor) is None
 
 
 async def test_width_arranged_in_the_layout_tab_applies_in_the_split(editor):
     editor.add_component(MAP)
     editor.mode = "dashboard"
     editor._tile_grid.reference_width = 1000
-    assert _grid_width(editor) is None
     editor.mode = "split"
-    assert _grid_width(editor) == 1000
+    assert _band(editor) == "sm"
 
 
-async def test_view_mode_grid_fills_the_page(editor):
+async def test_view_mode_grid_follows_the_page_width(editor):
     editor.add_component(MAP)
     editor.mode = "split"
     editor.editable = False
-    assert _grid_width(editor) is None
+    assert _band(editor) is None
     assert not editor._tile_grid.editable
 
 
@@ -70,7 +70,7 @@ async def test_loaded_dashboard_width_applies_in_the_split(editor):
     editor.add_component(MAP)
     editor.mode = "split"
     model = editor.to_model()
-    model.reference_width = 1320
+    model.reference_width = 1000
     editor.load_model(model)
     assert editor.mode == "split"
-    assert _grid_width(editor) == 1320
+    assert _band(editor) == "sm"

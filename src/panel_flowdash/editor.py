@@ -91,7 +91,7 @@ from panel_flowdash.ui.layout_panel import GRID_EDIT_CSS, LayoutPanel
 from panel_flowdash.ui.node_card import CARD_WIDTH, card_height, node_card, placeholder_card
 from panel_flowdash.ui.palette import ComponentPalette, palette_entry, palette_items
 from panel_flowdash.ui.settings_dialog import SettingsDialog
-from panel_flowdash.ui.split_view import TILE_KEY_PREFIX, SplitView
+from panel_flowdash.ui.split_view import SplitView
 from panel_flowdash.ui.states import StartCard
 from panel_flowdash.ui.status_bar import StatusBar, select_on_canvas
 from panel_flowdash.ui.text import (
@@ -101,7 +101,8 @@ from panel_flowdash.ui.text import (
     text_alert,
     text_typography,
 )
-from panel_flowdash.ui.tile import Tile
+from panel_flowdash.ui.tile import TILE_KEY_PREFIX, Tile
+from panel_flowdash.ui.tile_bands import base_band, reference_width
 from panel_flowdash.util import (
     close_dialog,
     gate_view,
@@ -160,7 +161,13 @@ class _ReadOnlyEditorError(DashboardStoreError, RuntimeError):
     pass
 
 
+# The longest node name add_component takes. Names read from a file are not limited.
+MAX_NAME_LENGTH = 64
+
 _EMPTY_GRID_CONFIG = {"breakpoints": [], "responsive_layouts": {}, "reference_width": None}
+
+# Set on the tile grid while it previews a band without TileGrid's frame around it.
+_UNFRAMED_BAND = "fd-unframed-band"
 
 
 # TileGrid aligns its layout entries with its objects by position. The editor
@@ -212,17 +219,6 @@ def _align_layout(keyed: list[dict], instance_ids: list[str]) -> list[dict]:
     while aligned and not aligned[-1]:
         aligned.pop()
     return aligned
-
-
-# The width TileGrid assumes a layout was authored at when it records none.
-_DEFAULT_REFERENCE_WIDTH = 1200
-
-
-def _reference_width(reference_width: int | None, breakpoints: list[int]) -> int:
-    """Return the grid width a layout's percentage widths are relative to, as TileGrid does."""
-    if reference_width:
-        return reference_width
-    return max(breakpoints) if breakpoints else _DEFAULT_REFERENCE_WIDTH
 
 
 def _bounded(value: float, low: float | None, high: float | None) -> float:
@@ -910,12 +906,13 @@ class FlowDash(Viewer):
         self._unresolved_notice: str | None = None
         # Layout entries keyed by instance id, waiting for the grid to be rendered.
         self._pending_tile_layout: list[dict] = []
-        # Instance ids of the tiles currently in the grid, in grid order.
-        self._grid_ids: list[str] = []
+        # Instance ids of the tiles currently in the grid, in grid order; None
+        # marks the slot of a tile removed while the grid was not rebuilt.
+        self._grid_ids: list[str | None] = []
         # The framed tiles of the grid, by instance id, kept so a grid rebuild
         # does not re-render them.
         self._inspect_tiles: dict[str, Tile] = {}
-        # Tiles carry a key the page reports when one is clicked in the Split tab.
+        # Each tile carries a unique key as a CSS class, so it can be found on the page.
         self._tile_keys = itertools.count()
         # The tab Split returns to when it is toggled off.
         self._mode_before_split = "wiring"
@@ -924,6 +921,8 @@ class FlowDash(Viewer):
         self._inspector_folded = False
         self._folding = False
         self._pending_reveal: str | None = None
+        self._tile_selection_follows = True
+        self._rebuilding_grid = False
         self._inspected_id: str | None = None
         # Responsive grid settings waiting to be applied; empty values must also be
         # applied so a loaded dashboard doesn't inherit the previous one's overrides.
@@ -1533,8 +1532,13 @@ class FlowDash(Viewer):
                 _add_all(flow.add_edges, flow.add_edge, edges)
 
     def _forget_node(self, node_id: str):
-        """Drop a node from the graph, the tile bookkeeping and the edge map."""
+        """Drop a node from the graph, the tile bookkeeping and the edge map.
+
+        Its layout entries go too, so a node placed later under the same id
+        starts with a fresh tile rather than the removed one's.
+        """
         self._dataflow_graph.remove_node(node_id)
+        self._forget_layout(node_id)
         self._inspect_tiles.pop(node_id, None)
         if self._inspected_id == node_id:
             self._close_inspection_dialog()
@@ -1553,6 +1557,18 @@ class FlowDash(Viewer):
             u for u in self._unresolved_edges if node_id not in (u.edge.source, u.edge.target)
         ]
         self._sync_toolbar_state()
+
+    def _forget_layout(self, node_id: str):
+        self._grid_ids = [None if i == node_id else i for i in self._grid_ids]
+        self._pending_tile_layout = [
+            spec for spec in self._pending_tile_layout if spec.get("instance_id") != node_id
+        ]
+        config = self._pending_grid_config
+        if config is not None:
+            config["responsive_layouts"] = {
+                band: [spec for spec in layout if spec.get("instance_id") != node_id]
+                for band, layout in config["responsive_layouts"].items()
+            }
 
     # ------------------------------------------------------------------
     # Failures
@@ -2288,7 +2304,7 @@ class FlowDash(Viewer):
         self._inspect_dialog = make_inspect_sheet()
         # Saving is only offered with unsaved changes, and rearranging is a change.
         self._flow.on("node_moved", lambda _payload: self._mark_rearranged())
-        self._tile_grid.param.watch(self._on_tile_layout_edited, "layout")
+        self._tile_grid.param.watch(self._on_tile_layout_edited, ["layout", "responsive_layouts"])
         self._settings_dialog = self._build_settings_dialog()
         self._settings_button.on_click(lambda _event: self._settings_view.show("general"))
         self._palette_section = self._palette_panel
@@ -2321,7 +2337,6 @@ class FlowDash(Viewer):
         self._split_view = SplitView(
             on_collapse=self._on_split_collapsed,
             on_load=self._on_split_preferences_loaded,
-            on_tile=self._on_tile_clicked,
             on_resize=self._fit_canvas,
         )
         self._flow.param.watch(self._sync_tile_selection, "selection")
@@ -2464,39 +2479,139 @@ class FlowDash(Viewer):
                 editable=False,
                 local_save=False,
                 min_height=320,
+                show_breakpoint_toolbar=False,
                 sizing_mode="stretch_both",
                 stylesheets=[GRID_EDIT_CSS],
             )
             self._tile__grid.param.watch(self._on_tile_layout, "layout")
-            self._tile__grid.param.watch(self._fit_split_grid, ["reference_width", "breakpoints"])
+            self._tile__grid.param.watch(
+                self._sync_preview_band, ["reference_width", "breakpoints", "preview_band"]
+            )
+            self._tile__grid.param.watch(self._on_tile_selected, "selected")
         return self._tile__grid
 
-    def _fit_split_grid(self, *_events):
-        """Lay the grid out at the main layout's reference width while it is in the Split tab.
+    def _preview_band(self) -> str | None:
+        """Return the band the grid is laid out and edited for, or None to follow its width.
 
         Beside the canvas the pane is narrower than the dashboard's breakpoints,
-        so a grid as wide as the pane would show, and let the user edit, a
-        narrow-screen layout. At the reference width the grid shows the main
-        layout as the Layout tab does and edits write to it; the pane scrolls
-        sideways when it is narrower. TileGrid measures its tiles in layout
-        pixels, so the grid cannot be scaled down to fit instead.
+        so a grid following its width would show, and let the user edit, a
+        narrow-screen layout. The Split tab therefore always arranges the base
+        band, i.e. ``layout`` itself, and the Layout tab the band picked in
+        its layout panel.
         """
+        if not self.editable or self.preview or self.mode == "wiring":
+            return None
         grid = self._tile_grid
+        base = base_band(grid.breakpoints, grid.reference_width)
+        if self.mode == "dashboard":
+            band = self._layout_panel.band
+            if band is not None and band in grid.param.preview_band.objects:
+                return band
+        return base
+
+    def _sync_preview_band(self, *_events):
+        layout_panel = getattr(self, "_layout_panel", None)
+        if layout_panel is None:
+            return
+        grid = self._tile_grid
+        band = self._preview_band()
+        # The frame TileGrid draws around a previewed band marks a screen width;
+        # the widest band and the Split tab's base band are not one.
+        labels = [label for label in grid.param.preview_band.objects if label is not None]
+        framed = band is not None and self.mode == "dashboard" and band != labels[-1]
+        classes = [c for c in grid.css_classes if c != _UNFRAMED_BAND]
+        if band is not None and not framed:
+            classes.append(_UNFRAMED_BAND)
+        grid.param.update(preview_band=band, css_classes=classes)
+        layout_panel.sync_bands()
+
+    # ------------------------------------------------------------------
+    # The selected tile and the selected node
+    # ------------------------------------------------------------------
+
+    @property
+    def _tiles_selectable(self) -> bool:
+        return self.editable and not self.preview
+
+    def _selected_tile_id(self) -> str | None:
+        index = self._tile_grid.selected
+        if index is None or index >= len(self._grid_ids):
+            return None
+        return self._grid_ids[index]
+
+    def _sync_tile_selection(self, *_events):
+        """Select the tile of the component selected on the canvas, or no tile.
+
+        Of several selected components the tile already selected stays so,
+        else the first one with a tile is selected.
+        """
+        selection = self._flow.selection or {}
+        nodes = selection.get("nodes") or []
         if self.editable and self.mode == "split":
-            width = _reference_width(grid.reference_width, grid.breakpoints)
-        else:
-            width = None
-        if (grid.min_width, grid.max_width) != (width, width):
-            grid.param.update(min_width=width, max_width=width)
+            if self._inspector_folded and (nodes or selection.get("edges")):
+                self._fold_inspector(False)
+        target = None
+        if self._tiles_selectable:
+            current = self._selected_tile_id()
+            target = (
+                current
+                if current in nodes
+                else next((n for n in nodes if n in self._grid_ids), None)
+            )
+        self._set_selected_tile(target, follow=False)
+
+    def _set_selected_tile(self, instance_id: str | None, follow: bool = True):
+        """Select the tile of *instance_id*; with *follow* its component is selected too."""
+        index = self._grid_ids.index(instance_id) if instance_id in self._grid_ids else None
+        grid = self._tile_grid
+        if grid.selected == index:
+            return
+        following, self._tile_selection_follows = self._tile_selection_follows, follow
+        try:
+            grid.selected = index
+        finally:
+            self._tile_selection_follows = following
+
+    def _on_tile_selected(self, _event):
+        """Select the component of a tile clicked, focused, dragged or resized on the grid.
+
+        A tile that is closed, or whose component is removed, is no longer
+        selected on the grid, but its component stays selected on the canvas.
+        """
+        if self._rebuilding_grid or not self._tiles_selectable:
+            return
+        instance_id = self._selected_tile_id()
+        if instance_id is None:
+            return
+        layout_panel = getattr(self, "_layout_panel", None)
+        if layout_panel is not None:
+            layout_panel.select(instance_id)
+        if self._tile_selection_follows:
+            self._select_node(instance_id)
+
+    def _select_node(self, instance_id: str):
+        """Select the node of *instance_id* on the canvas, bringing it into view in the Split tab."""
+        if not any(node["id"] == instance_id for node in self._flow.nodes):
+            return
+        selection = self._flow.selection or {}
+        if selection.get("nodes") == [instance_id] and not selection.get("edges"):
+            return
+        if self.mode == "split":
+            if self._inspector_folded:
+                # The inspector opens for the selection and narrows the pane, so the
+                # node is revealed once the pane reports its new size.
+                self._pending_reveal = instance_id
+                self._fold_inspector(False)
+            else:
+                self._reveal_node(instance_id)
+        select_on_canvas(self._flow, node_id=instance_id)
 
     def _sized_layout(self, layout: list[dict]) -> list[dict]:
         """Apply the size hints of the tiles on the grid to its positional *layout*."""
         items = {item["instance_id"]: item for item in self._tile_items}
         specs = [self._tile_spec(items[i]) if i in items else None for i in self._grid_ids]
         grid = self._tile_grid
-        return _size_layout(
-            layout, specs, _reference_width(grid.reference_width, grid.breakpoints)
-        )
+        return _size_layout(layout, specs, reference_width(grid.reference_width, grid.breakpoints))
 
     def _on_tile_layout(self, event):
         # Resizing in the browser bounds only a tile's width, so heights are kept in bounds here.
@@ -2566,7 +2681,7 @@ class FlowDash(Viewer):
             self._split_shown = split
             self._fold_inspector(split)
         self._tile_grid.param.update(editable=interactive, card=interactive)
-        self._fit_split_grid()
+        self._sync_preview_band()
         # Column children rather than Row children, so the dialogs take no flex space.
         dialogs = [self._clear_dialog, self._import_dialog, self._settings_dialog]
         if self.inspect_outputs:
@@ -2676,40 +2791,6 @@ class FlowDash(Viewer):
         if not self._folding:
             self._inspector_folded = False
 
-    def _sync_tile_selection(self, *_events):
-        """Outline the tiles of the components selected on the canvas, in the Split tab."""
-        selected: set[str] = set()
-        if self.editable and self.mode == "split":
-            selection = self._flow.selection or {}
-            selected = set(selection.get("nodes") or [])
-            if self._inspector_folded and (selected or selection.get("edges")):
-                self._fold_inspector(False)
-        for instance_id, tile in self._inspect_tiles.items():
-            tile.set_selected(instance_id in selected)
-
-    def _on_tile_clicked(self, key: str):
-        """Select the component of a tile clicked in the Split tab on the canvas."""
-        if not (self.editable and self.mode == "split"):
-            return
-        css_class = f"{TILE_KEY_PREFIX}{key}"
-        instance_id = next(
-            (iid for iid, tile in self._inspect_tiles.items() if css_class in tile.css_classes),
-            None,
-        )
-        selection = self._flow.selection or {}
-        if instance_id is None or (
-            selection.get("nodes") == [instance_id] and not selection.get("edges")
-        ):
-            return
-        if self._inspector_folded:
-            # The inspector opens for the selection and narrows the pane, so the
-            # node is revealed once the pane reports its new size.
-            self._pending_reveal = instance_id
-            self._fold_inspector(False)
-        else:
-            self._reveal_node(instance_id)
-        select_on_canvas(self._flow, node_id=instance_id)
-
     def _on_pane_resized(self, _event):
         instance_id, self._pending_reveal = self._pending_reveal, None
         if instance_id is not None and self.mode == "split":
@@ -2768,7 +2849,13 @@ class FlowDash(Viewer):
                 view = markdown_pane(f"*{escape_markdown(entry.title)}*")
             grid_views.append(self._grid_view(item, view))
             grid_ids.append(item["instance_id"])
-        self._tile_grid[:] = grid_views
+        # TileGrid keeps the selection on its tile while the objects change, but
+        # the instance ids only follow afterwards.
+        self._rebuilding_grid = True
+        try:
+            self._tile_grid[:] = grid_views
+        finally:
+            self._rebuilding_grid = False
         self._grid_ids = grid_ids
         self._grid_populated = True
         self._rebuild_sidebar()
@@ -2778,6 +2865,7 @@ class FlowDash(Viewer):
             self._pending_grid_config = None
         self._tile_grid.layout = self._sized_layout(_align_layout(layout, grid_ids))
         self._pending_tile_layout = []
+        self._sync_tile_selection()
 
     def _placed_layout(self, keyed: list[dict]) -> list[dict]:
         """Drop the layout entries of tiles that are no longer placed."""
@@ -2896,6 +2984,7 @@ class FlowDash(Viewer):
         component_id: str,
         config: dict | None = None,
         position: dict | tuple | None = None,
+        instance_id: str | None = None,
     ) -> str:
         """Place a component on the canvas and return its instance id.
 
@@ -2908,6 +2997,12 @@ class FlowDash(Viewer):
         position
             Canvas position as ``{"x": ..., "y": ...}`` or ``(x, y)``. Defaults
             to the next free slot in a three-column grid.
+        instance_id
+            Id for the new instance, which is also its node's name in the
+            dashboard YAML, as a node a YAML file names gets it. It must be a
+            valid node name without ``__``, at most ``MAX_NAME_LENGTH`` (64)
+            characters, that no node on the canvas has.
+            Defaults to a generated ``<component>_<6 hex>`` id.
 
         Returns
         -------
@@ -2918,6 +3013,8 @@ class FlowDash(Viewer):
         ------
         KeyError
             If *component_id* is not a registered component.
+        ValueError
+            If *instance_id* is not a valid node name or is taken.
         PermissionError
             If `authorize_component` refuses it.
         """
@@ -2935,12 +3032,53 @@ class FlowDash(Viewer):
         if not self._component_authorized(component_id):
             title = self._component_entries[component_id].title
             raise PermissionError(f"You are not authorized to use '{title}'.")
+        if instance_id is not None:
+            self._check_instance_id(instance_id)
         instance_id = self._place(
-            component_id, self._new_instance_id(component_id), config or {}, position
+            component_id,
+            instance_id or self._new_instance_id(component_id),
+            config or {},
+            position,
         )
         self.dirty = True
         self._sync_placed()
         return instance_id
+
+    def _taken_names(self) -> tuple[list[dict], set[str]]:
+        """Return the canvas's items as node-name input, and every name and id they hold."""
+        from panel_flowdash.agent.yaml_format import node_names
+
+        items = [{"instance_id": item["instance_id"]} for item in self._tile_items]
+        return items, set(node_names(items).values()) | {item["instance_id"] for item in items}
+
+    def _check_instance_id(self, instance_id: str):
+        """Refuse an instance id that is not a node name a YAML file could give, or is taken."""
+        from panel_flowdash.agent.yaml_format import NAME_PATTERN
+
+        if not isinstance(instance_id, str) or not NAME_PATTERN.match(instance_id):
+            raise ValueError(
+                f"The node name {instance_id!r} is not valid: names start with a letter or "
+                "underscore and contain only letters, digits, '_' and '-'."
+            )
+        if len(instance_id) > MAX_NAME_LENGTH:
+            raise ValueError(
+                f"The node name {instance_id[:20]!r}... is not valid: names are at most "
+                f"{MAX_NAME_LENGTH} characters, this one has {len(instance_id)}."
+            )
+        if "__" in instance_id:
+            raise ValueError(
+                f"The node name {instance_id!r} is not valid: names may not contain '__', "
+                "which marks ids the editor generates."
+            )
+        _, taken = self._taken_names()
+        if instance_id in taken:
+            stem, n = instance_id[: MAX_NAME_LENGTH - 4].rstrip("_"), 2
+            while f"{stem}_{n}" in taken:
+                n += 1
+            raise ValueError(
+                f"A node named '{instance_id}' is already on the dashboard; "
+                f"choose another name, e.g. '{stem}_{n}'."
+            )
 
     def _new_instance_id(self, component_id: str) -> str:
         """Return a new instance id whose node name no node on the canvas has.
@@ -2951,8 +3089,7 @@ class FlowDash(Viewer):
         """
         from panel_flowdash.agent.yaml_format import node_names
 
-        items = [{"instance_id": item["instance_id"]} for item in self._tile_items]
-        taken = set(node_names(items).values()) | {item["instance_id"] for item in items}
+        items, taken = self._taken_names()
         type_key = component_id.replace("/", "__")
         while True:
             instance_id = f"{type_key}_{uuid.uuid4().hex[:6]}"
@@ -3449,6 +3586,7 @@ class FlowDash(Viewer):
         }
         self.dirty = False
         self._stamp_refresh()
+        self._layout_panel.band = None
         self._apply_mode_state()
         self._sync_toolbar_state()
         self._notify_unresolved()
@@ -3616,6 +3754,7 @@ class FlowDash(Viewer):
         self._reset_canvas()
         self._pending_tile_layout = []
         self._pending_grid_config = dict(_EMPTY_GRID_CONFIG)
+        self._layout_panel.band = None
         self._apply_settings(model.settings)
         self.dashboard = model
         self.dirty = False

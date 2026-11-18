@@ -9,7 +9,6 @@ from panel_flowdash.editor import FlowDash
 from panel_flowdash.ui.command_palette import SHORTCUTS
 from panel_flowdash.ui.split_view import (
     DEFAULT_SIZES,
-    TILE_KEY_PREFIX,
     SplitPreferences,
     is_collapsed,
     valid_sizes,
@@ -27,18 +26,13 @@ def editor():
     return FlowDash({MAP: MapView, CHART: ChartView, FILTER: StateFilter}, notifications=False)
 
 
-def _tile_key(editor, instance_id):
-    tile = editor._inspect_tiles[instance_id]
-    css_class = next(c for c in tile.css_classes if c.startswith(TILE_KEY_PREFIX))
-    return css_class[len(TILE_KEY_PREFIX) :]
+def _selected_tile(editor):
+    return editor._selected_tile_id()
 
 
-def _selected_tiles(editor):
-    return {
-        iid
-        for iid, tile in editor._inspect_tiles.items()
-        if "flowdash-tile-selected" in tile.css_classes
-    }
+def _click_tile(editor, instance_id):
+    """Select a tile as a click on the grid does."""
+    editor._tile_grid.selected = editor._grid_ids.index(instance_id)
 
 
 class TestPreferences:
@@ -126,42 +120,24 @@ class TestSplitTab:
         editor.mode = "split"
         assert editor._tile_grid.layout[0]["width"] == 50.0
 
-    async def test_canvas_selection_outlines_its_tile(self, editor):
+    async def test_canvas_selection_selects_its_tile(self, editor):
         editor.mode = "split"
         map_id, chart_id = editor.add_component(MAP), editor.add_component(CHART)
         select_on_canvas(editor._flow, node_id=chart_id)
-        assert _selected_tiles(editor) == {chart_id}
+        assert _selected_tile(editor) == chart_id
         select_on_canvas(editor._flow, node_id=map_id)
-        assert _selected_tiles(editor) == {map_id}
+        assert _selected_tile(editor) == map_id
         select_on_canvas(editor._flow)
-        assert _selected_tiles(editor) == set()
-
-    async def test_outline_only_in_the_split(self, editor):
-        editor.mode = "split"
-        map_id = editor.add_component(MAP)
-        select_on_canvas(editor._flow, node_id=map_id)
-        editor.mode = "dashboard"
-        assert _selected_tiles(editor) == set()
-        editor.mode = "split"
-        assert _selected_tiles(editor) == {map_id}
+        assert _selected_tile(editor) is None
 
     async def test_clicked_tile_selects_its_component(self, editor):
         editor.mode = "split"
         editor.add_component(MAP)
         chart_id = editor.add_component(CHART)
-        editor._split_view.events._handle_msg({"type": "tile", "key": _tile_key(editor, chart_id)})
+        _click_tile(editor, chart_id)
         assert editor._flow.selection == {"nodes": [chart_id], "edges": []}
         assert editor._inspector._shown == ("node", chart_id)
-        assert _selected_tiles(editor) == {chart_id}
-
-    async def test_tile_clicks_are_ignored_outside_the_split(self, editor):
-        editor.mode = "split"
-        map_id = editor.add_component(MAP)
-        key = _tile_key(editor, map_id)
-        editor.mode = "dashboard"
-        editor._split_view.events._handle_msg({"type": "tile", "key": key})
-        editor._split_view.events._handle_msg({"type": "tile", "key": "unknown"})
-        assert not (editor._flow.selection or {}).get("nodes")
+        assert _selected_tile(editor) == chart_id
 
     async def test_canvas_fits_its_view_when_shown_and_resized(self, editor, monkeypatch):
         fits = []
@@ -181,9 +157,7 @@ class TestRevealingTheNodeOfAClickedTile:
         return fits
 
     def _click(self, editor, instance_id):
-        editor._split_view.events._handle_msg(
-            {"type": "tile", "key": _tile_key(editor, instance_id)}
-        )
+        _click_tile(editor, instance_id)
 
     async def test_off_screen_node_is_panned_to_at_the_same_zoom(self, editor, fits):
         editor.mode = "split"

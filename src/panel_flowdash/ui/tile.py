@@ -14,6 +14,9 @@ if t.TYPE_CHECKING:
 
     from panel.viewable import Viewable
 
+# Each tile carries a unique CSS class with this prefix, so a tile can be found on the page.
+TILE_KEY_PREFIX = "flowdash-tile-key-"
+
 # The frame is drawn only in view mode; while arranging, TileGrid draws its own
 # card around the tile, so the tile must not add a second border. Unless titles
 # are shown, the actions take no row: they float over the top-right corner, so
@@ -42,11 +45,6 @@ _TILE_CSS = """
   transition: opacity 120ms;
   width: auto !important;
   z-index: 20;
-}
-:host(.flowdash-tile-selected) {
-  border-radius: 12px;
-  outline: 2px solid var(--mui-palette-primary-main, #0072b5);
-  outline-offset: -2px;
 }
 :host(.flowdash-tile-floating:hover) .flowdash-tile-header,
 :host(.flowdash-tile-floating:focus-within) .flowdash-tile-header {
@@ -273,14 +271,6 @@ class Tile(pn.Column):
         if shown and not titled:
             classes.append("flowdash-tile-floating")
         self.css_classes = classes
-
-    def set_selected(self, selected: bool):
-        """Outline the tile as the selection, e.g. of the canvas beside the grid."""
-        classes = [c for c in self.css_classes if c != "flowdash-tile-selected"]
-        if selected:
-            classes.append("flowdash-tile-selected")
-        if classes != self.css_classes:
-            self.css_classes = classes
 
     def set_actions(self, *, inspect: bool, show_in_editor: bool):
         """Offer Inspect and Show in editor only where they apply to the current viewer."""

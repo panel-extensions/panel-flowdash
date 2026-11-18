@@ -51,6 +51,22 @@ TOOL_LABELS: dict[str, str | t.Callable[[dict], str]] = {
     "run_command": lambda a: f"Run {a['command']}",
 }
 
+# panel-agents styles the drawer's header toggle in uppercase, unlike panel-material-ui's
+# buttons; this gives it the type and spacing of the small text buttons beside it until
+# panel-agents does so itself.
+_TOGGLE_CSS = """
+.pa-toggle {
+  gap: 8px;
+  padding: 6px 8px 6px 6px;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.75;
+  letter-spacing: 0.02857em;
+  text-transform: none;
+}
+.pa-toggle svg { width: 18px; height: 18px; }
+"""
+
 _NOTICE_STYLES = {
     "position": "fixed",
     "left": "50%",
@@ -98,6 +114,7 @@ class SessionChrome:
         self._queued: list[str] = []
         drawer = session.drawer
         drawer.overlay_below = OVERLAY_BELOW
+        drawer.toggle.stylesheets = [*drawer.toggle.stylesheets, _TOGGLE_CSS]
         drawer.chat.tool_labels = TOOL_LABELS
         drawer.param.watch(self._on_open, "open")
         state = session.runner.state

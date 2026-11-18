@@ -377,15 +377,19 @@ def add_node(
     ctx: RunContext[FlowDashDeps],
     component: str,
     config: dict[str, t.Any] | None = None,
+    name: str | None = None,
 ) -> t.Any:
     """Place a component on the open dashboard and return the name of its node.
 
     Args:
         component: A component id from list_components, e.g. "Views/kpi".
         config: Values for some of its config fields.
+        name: A short descriptive name for the node, e.g. "paid_by_region":
+            letters, digits, "_" and "-", starting with a letter or "_", no "__",
+            at most 64 characters, and not taken by another node. Without it the node gets a generated name.
     """
     ops = ctx.deps.ops
-    name = ops.add_node(component, config)
+    name = ops.add_node(component, config, name=name)
     return _artifact(ops, f"Added node '{name}'.")
 
 

@@ -53,6 +53,26 @@ def test_a_short_query_that_matches_keeps_the_question_last(page):
     expect(options.first).not_to_contain_text("Ask the assistant")
 
 
+def test_the_drawer_toggle_looks_like_the_buttons_beside_it(page):
+    store, (dash,) = _store_with("Plant")
+    _serve_app(page, store, f"/dash/{dash}", agent=_agent())
+    page.get_by_text("note tile").first.wait_for()
+
+    keys = ["textTransform", "fontSize", "fontWeight", "lineHeight", "letterSpacing"]
+
+    def look(name):
+        button = page.get_by_role("button", name=name, exact=True)
+        style = button.evaluate(
+            "(el, keys) => Object.fromEntries(keys.map(k => [k, getComputedStyle(el)[k]]))", keys
+        )
+        box = button.bounding_box()
+        return style, box["height"], round(box["y"] + box["height"] / 2)
+
+    assistant, share = look("Assistant"), look("Share")
+    assert assistant[0]["textTransform"] == "none"
+    assert assistant == share
+
+
 def test_opening_the_drawer_folds_the_inspector_and_closing_restores_it(page):
     store, (dash,) = _store_with("Plant")
     apps = []

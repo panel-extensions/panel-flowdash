@@ -41,7 +41,9 @@ panel-material-ui = ">=0.17.0b3"
 # 0.6.0b0 until panel-reactflow 0.6.0 is released; then move this to ">=0.6.0"
 # to match pyproject.toml.
 panel_reactflow = ">=0.6.0b0"
-panel_tiles = ">=0.4.0"
+# 0.6.0b0 until panel-tiles 0.6.0 is released; then move this to ">=0.6.0"
+# to match pyproject.toml.
+panel_tiles = ">=0.6.0b0"
 
 [feature.test.dependencies]
 pytest = ">=6"
@@ -93,9 +95,9 @@ channels = [{ channel = "pyviz/label/dev", priority = -1 }]
 [feature.param-dev.dependencies]
 param = { version = ">=2.5.0b5", channel = "pyviz/label/dev" }
 
-# "if-necessary" refuses panel_reactflow >=0.6.0b0 while a stable 0.5 exists, so this
-# environment cannot be solved from scratch. Go back to "if-necessary" once
-# panel-reactflow 0.6.0 is released.
+# "if-necessary" refuses panel_reactflow and panel_tiles >=0.6.0b0 while a stable 0.5
+# exists, so this environment cannot be solved from scratch. Go back to "if-necessary"
+# once panel-reactflow and panel-tiles 0.6.0 are released.
 [feature.param-dev.pypi-options]
 prerelease-mode = "if-necessary-or-explicit"
 
