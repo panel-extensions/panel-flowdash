@@ -41,6 +41,9 @@ classifiers = [
 
 dependencies = [
     "packaging",
+    # Imported directly, as panel stops depending on it in 1.11; the
+    # copy_on_write option read by transforms arrived in 1.5.
+    "pandas >=1.5",
     "panel >=1.9.3",
     # Page.rail and Page.header_color arrived in 0.17.0b3.
     "panel-material-ui >=0.17.0b3",
