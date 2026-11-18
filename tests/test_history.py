@@ -262,6 +262,21 @@ def test_a_gesture_is_published_before_undo(clocked):
     assert editor._tile_items[0]["config"].get("factor", 1) == 1
 
 
+def test_a_paused_gesture_is_published_by_the_timer(clocked):
+    from bokeh.document import Document
+
+    editor, clock = clocked
+    editor._apply_config_patch("a", {"factor": 2})
+    history = editor.edit_history
+    count = len(history.state.artifacts[history.artifact_id].versions)
+    history._on_timer(Document())
+    assert len(history.state.artifacts[history.artifact_id].versions) == count
+    clock.now += editor.history_coalesce
+    history._on_timer(Document())
+    assert len(history.state.artifacts[history.artifact_id].versions) == count + 1
+    assert history._pending is None
+
+
 def test_coalescing_can_be_turned_off(clocked):
     editor, _ = clocked
     editor.history_coalesce = 0
