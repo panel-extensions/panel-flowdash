@@ -127,7 +127,7 @@ class _Pending:
             ops.append({"op": op, "args": dict(args)})
         if label and label not in self.labels:
             self.labels.append(label)
-            metadata["label"] = summarize(self.labels)
+            metadata.update(describe_edits(ops, self.labels, edits=metadata["edits"]))
 
 
 @dataclass
@@ -733,7 +733,7 @@ class EditHistory:
                 "args": {},
                 "edits": len(ops),
                 "ops": ops[:MAX_BATCH_OPS],
-                "label": summarize(labels),
+                **describe_edits(ops, labels),
                 "turn": request.turn_id,
                 "start": request.start,
                 "tool_call_ids": tool_call_ids,
@@ -1171,6 +1171,61 @@ def _redact_args(args: dict[str, t.Any], known: set[str]) -> dict[str, t.Any]:
     if args.get("name") not in known:
         args.pop("keys", None)
     return args
+
+
+#: How many of an edit's labels its history label lists before it counts them instead.
+LISTED_LABELS = 3
+
+#: The verb and noun an edit operation is counted under, e.g. "Added 8 components".
+_OP_COUNTS = {
+    "add_node": ("Added", "component"),
+    "connect": ("Added", "connection"),
+    "remove_node": ("Removed", "component"),
+    "disconnect": ("Removed", "connection"),
+    "set_config": ("Configured", "component"),
+    "set_transform": ("Changed", "transform"),
+}
+
+
+def _plural(n: int, noun: str) -> str:
+    return f"{n} {noun}{'s' * (n != 1)}"
+
+
+def describe_edits(
+    ops: t.Sequence[dict[str, t.Any]], labels: t.Sequence[str], *, edits: int | None = None
+) -> dict[str, str | None]:
+    """Return the ``label`` of a version made of several edits, and the ``detail`` listing them.
+
+    A few edits are listed in the label, e.g. ``"Added a. Connected a to b."``;
+    more are counted, e.g. ``"Added 8 components and 7 connections"``, with
+    every label in the detail.
+    """
+    if len(labels) <= LISTED_LABELS:
+        return {"label": summarize(labels), "detail": None}
+    counts: dict[str, dict[str, set]] = {}
+    other = 0
+    for op in ops:
+        verb, noun = _OP_COUNTS.get(op.get("op"), (None, None))
+        if verb is None:
+            other += 1
+            continue
+        args = op.get("args") or {}
+        key = args.get("name") or (args.get("source"), args.get("target"))
+        counts.setdefault(verb, {}).setdefault(noun, set()).add(str(key))
+    # Edits beyond the ones kept in the version's metadata are counted as other changes.
+    other += max((edits or len(ops)) - len(ops), 0)
+    parts = [
+        f"{verb if i == 0 else verb.lower()} "
+        + " and ".join(_plural(len(keys), noun) for noun, keys in nouns.items())
+        for i, (verb, nouns) in enumerate(counts.items())
+    ]
+    if other:
+        parts.append(
+            f"{'made' if parts else 'Made'} {_plural(other, 'other change' if parts else 'change')}"
+        )
+    label = ", ".join(parts[:-1]) + (" and " if len(parts) > 1 else "") + parts[-1]
+    detail = " ".join(text if text.endswith(".") else f"{text}." for text in labels)
+    return {"label": label, "detail": detail}
 
 
 def label_for(labels: t.Sequence[str]) -> str | None:

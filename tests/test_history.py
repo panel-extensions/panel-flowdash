@@ -27,6 +27,7 @@ from panel_flowdash.history import (
     artifact_id_for,
     compact,
     decode,
+    describe_edits,
 )
 from panel_flowdash.json_store import JSONFolderDashboardStore
 from panel_flowdash.turns import agent_edits
@@ -421,6 +422,47 @@ def test_an_agents_request_is_one_version_undone_as_a_whole(editor):
     assert request.metadata["label"] == "Added a1. Added a2. Connected a1 to a2."
     assert editor.undo() and _names(editor) == ["mine"]
     assert editor.redo() and _names(editor) == ["a1", "a2", "mine"]
+
+
+def test_a_request_of_many_edits_is_counted_with_the_edits_in_its_detail(editor):
+    state = editor.edit_history.state
+    state.apply(RunStarted(run_id="run-1", agent_name="assistant", input="Build it"))
+    with _scope(run_id="run-1", tool_call_id="call-1", actor="agent"), agent_edits("run-1"):
+        for name in ("a1", "a2", "a3"):
+            editor.add_component("T/number", instance_id=name)
+        editor.add_component("T/doubler", instance_id="d")
+        editor.connect("a1", "value", "d", "value")
+    state.apply(RunFinished(run_id="run-1"))
+    request = editor.edit_history.versions[-1]
+    assert request.metadata["label"] == "Added 4 components and 1 connection"
+    assert (
+        request.metadata["detail"] == "Added a1. Added a2. Added a3. Added d. Connected a1 to d."
+    )
+
+
+def test_describe_edits_lists_a_few_and_counts_more():
+    def ops(*pairs):
+        return [{"op": op, "args": args} for op, args in pairs]
+
+    assert describe_edits(ops(("add_node", {"name": "a"})), ["Added a"]) == {
+        "label": "Added a.",
+        "detail": None,
+    }
+    labels = ["Added a", "Added b", "Removed c", "Changed the config of a", "Changed the settings"]
+    edits = ops(
+        ("add_node", {"name": "a"}),
+        ("add_node", {"name": "b"}),
+        ("remove_node", {"name": "c"}),
+        ("set_config", {"name": "a"}),
+        ("set_config", {"name": "a"}),
+        ("settings", {}),
+    )
+    assert describe_edits(edits, labels)["label"] == (
+        "Added 2 components, removed 1 component, configured 1 component and made 1 other change"
+    )
+    assert describe_edits(ops(("settings", {})) * 4, list("abcd"))["label"] == "Made 4 changes"
+    # Edits beyond the ones a version keeps are counted as other changes.
+    assert describe_edits(edits, labels, edits=8)["label"].endswith("and made 3 other changes")
 
 
 def test_a_persons_edit_during_a_request_splits_it_and_loses_nothing():
