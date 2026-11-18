@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from collections.abc import Callable
 
 from panel_flowdash.auth import Identity, Permission, can_administer, can_edit, is_authorized
 from panel_flowdash.turns import DashboardTurn, decode_turns
@@ -374,6 +375,24 @@ class BaseDashboardStore(ABC):
         """Drop a dashboard's edit history."""
         return None
 
+    def rewrite_history(
+        self,
+        dashboard_id: str,
+        rewrite: Callable[[list[dict[str, Any]]], list[dict[str, Any]]],
+    ) -> list[dict[str, Any]]:
+        """Replace a dashboard's history with what *rewrite* returns for it, and return that.
+
+        *rewrite* returns its argument itself when nothing changes, which
+        writes nothing. Stores used by several sessions at once override this
+        to read and write in one transaction, so no record appended meanwhile
+        is lost.
+        """
+        records = self.load_history(dashboard_id)
+        kept = rewrite(records)
+        if kept is not records:
+            self.replace_history(dashboard_id, kept)
+        return kept
+
     def load_dashboard(self, user_id: str, dashboard_id: str) -> DashboardModel | None:
         """Load a dashboard, but only if *user_id* owns it."""
         model = self._load_any(dashboard_id)
@@ -623,6 +642,14 @@ class MemoryDashboardStore(BaseDashboardStore):
         with self._lock:
             self._history.pop(dashboard_id, None)
 
+    def rewrite_history(self, dashboard_id, rewrite):
+        with self._lock:
+            records = copy.deepcopy(self._history.get(dashboard_id, []))
+            kept = rewrite(records)
+            if kept is not records and dashboard_id in self._dashboards:
+                self._history[dashboard_id] = copy.deepcopy(kept)
+        return kept
+
     def rename_dashboard(self, user_id: str, dashboard_id: str, new_title: str) -> bool:
         model = self._dashboards.get(dashboard_id)
         if model is None or model.user_id != user_id:
@@ -815,6 +842,32 @@ class DashboardStore(BaseDashboardStore):
     def delete_history(self, dashboard_id: str) -> None:
         with self._get_conn() as conn:
             conn.execute("DELETE FROM dashboard_history WHERE dashboard_id = ?", (dashboard_id,))
+
+    def rewrite_history(self, dashboard_id, rewrite):
+        with self._get_conn() as conn:
+            if not conn.in_transaction:
+                # Taken before reading, so no other connection appends in between.
+                conn.execute("BEGIN IMMEDIATE")
+            rows = conn.execute(
+                "SELECT record_json FROM dashboard_history WHERE dashboard_id = ? ORDER BY seq",
+                (dashboard_id,),
+            ).fetchall()
+            records = []
+            for row in rows:
+                try:
+                    record = json.loads(row["record_json"])
+                except ValueError:
+                    continue
+                if isinstance(record, dict):
+                    records.append(record)
+            kept = rewrite(records)
+            if kept is not records:
+                conn.execute("DELETE FROM dashboard_history WHERE dashboard_id = ?", (dashboard_id,))
+                conn.executemany(
+                    "INSERT INTO dashboard_history (dashboard_id, record_json) VALUES (?, ?)",
+                    [(dashboard_id, json.dumps(record)) for record in kept],
+                )
+        return kept
 
     def list_dashboards(self, user_id: str) -> list[DashboardModel]:
         with self._get_conn() as conn:

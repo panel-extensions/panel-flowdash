@@ -414,9 +414,11 @@ class CommandPaletteController:
 
     def _step_history(self, action: str):
         editor = self._editor
+        from panel_flowdash.history import HistoryBusy
+
         try:
             done = editor.undo() if action == "undo" else editor.redo()
-        except PermissionError as exc:
+        except (PermissionError, HistoryBusy) as exc:
             editor._notify("warning", str(exc), duration=5000)
             return
         if not done:

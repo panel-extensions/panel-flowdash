@@ -63,13 +63,6 @@ COALESCED_OPS = frozenset({"move_nodes", "layout", "set_config", "settings", "se
 
 _REVISION_LINE = re.compile(r"# revision: (?P<token>[0-9a-f]+)\n")
 _COMPONENT_LINE = re.compile(r"^\s+component: (.+)$", re.MULTILINE)
-_EVENT_TYPES = (
-    "ARTIFACT_PUBLISHED",
-    "ARTIFACT_APPLIED",
-    "RUN_STARTED",
-    "RUN_FINISHED",
-    "RUN_ERROR",
-)
 
 
 def revision_of(text: str) -> str:
@@ -172,38 +165,86 @@ def compact(
     return out
 
 
+def _lineage(published: t.Sequence[tuple[str | None, str | None, str | None]], head: str | None) -> list[int]:
+    """Return the positions of the versions that lead to revision *head*, oldest first.
+
+    *published* holds each version's ``(value revision, revision, base)`` in
+    the order they were made. The line starts at the latest version holding
+    *head* and follows each version's ``base`` back to the latest earlier
+    version with that revision, so edits that were undone, and edits other
+    sessions made but never saved, are not on it.
+    """
+    start = next(
+        (i for i in range(len(published) - 1, -1, -1) if published[i][0] == head), None
+    )
+    if head is None or start is None:
+        return []
+    line = [start]
+    base = published[start][2]
+    while base is not None:
+        earlier = next((k for k in range(line[-1] - 1, -1, -1) if published[k][1] == base), None)
+        if earlier is None:
+            break
+        line.append(earlier)
+        base = published[earlier][2]
+    return line[::-1]
+
+
 def decode(
     records: t.Iterable[dict[str, t.Any]],
     artifact_id: str,
+    head: str | None,
     redact: t.Callable[[dict[str, t.Any]], dict[str, t.Any]] | None = None,
 ) -> list[dict[str, t.Any]]:
     """Turn stored history records into the event records ``load_history`` takes.
 
-    Versions are numbered in the order they were stored, and each applied
-    record finds the version it applied by its ``version_id``, so histories
-    written by several sessions number their versions consistently. Records of
-    other artifacts and applied records naming no stored version are left out.
-    *redact* rewrites each version's record for the person loading it.
+    Only the versions that lead to the dashboard as it was opened, whose
+    revision is *head*, are kept (see :func:`_lineage`), with the runs they
+    were made in. Undo then steps back along the edits that made the saved
+    dashboard, never into edits another session undid or did not save.
+    Applied records are left out for the same reason. *redact* rewrites
+    each version's record for the person loading it.
     """
-    numbers: dict[t.Any, int] = {}
+    records = list(records)
+    raw = [
+        r
+        for r in records
+        if r.get("type") == "ARTIFACT_PUBLISHED" and r.get("artifact_id") == artifact_id
+    ]
+    shown = [redact(r) if redact is not None else r for r in raw]
+    line = _lineage(
+        [
+            (
+                _value_revision(r.get("value")),
+                (o.get("metadata") or {}).get("revision"),
+                (o.get("metadata") or {}).get("base"),
+            )
+            for r, o in zip(shown, raw, strict=True)
+        ],
+        head,
+    )
+    kept = {id(raw[k]): shown[k] for k in line}
+    parents = {
+        r.get("run_id"): r.get("parent_run_id") for r in records if r.get("type") == "RUN_STARTED"
+    }
+    runs: set[str] = set()
+    for r in kept.values():
+        run_id = r.get("run_id")
+        while run_id is not None and run_id not in runs:
+            runs.add(run_id)
+            run_id = parents.get(run_id)
     out = []
     for record in records:
         kind = record.get("type")
-        if kind not in _EVENT_TYPES:
-            continue
-        if kind == "ARTIFACT_PUBLISHED":
-            if record.get("artifact_id") != artifact_id:
-                continue
-            key = (record.get("metadata") or {}).get("version_id") or object()
-            numbers[key] = len(numbers) + 1
-            record = redact(record) if redact is not None else record
-        elif kind == "ARTIFACT_APPLIED":
-            number = numbers.get(record.get("version_id"))
-            if record.get("artifact_id") != artifact_id or number is None:
-                continue
-            record = {**record, "version": number}
-        out.append(record)
+        if kind == "ARTIFACT_PUBLISHED" and id(record) in kept:
+            out.append(kept[id(record)])
+        elif kind in ("RUN_STARTED", "RUN_FINISHED", "RUN_ERROR") and record.get("run_id") in runs:
+            out.append(record)
     return out
+
+
+class HistoryBusy(RuntimeError):
+    """Undo, redo or restoring a version was refused because an agent's request is running."""
 
 
 class EditHistory:
@@ -261,30 +302,49 @@ class EditHistory:
         return list(artifact.versions) if artifact is not None else []
 
     @property
+    def busy(self) -> bool:
+        """Whether a request to an agent is running, during which undo and redo wait."""
+        return self.state.running
+
+    @property
     def can_undo(self) -> bool:
-        """Whether :meth:`undo` has something to undo."""
-        if not self.active:
+        """Whether :meth:`undo` would undo something now."""
+        if not self.active or self.busy:
             return False
-        if self._pending is not None:
-            return True
-        self._ensure_loaded()
-        artifact = self.artifact
-        if artifact is None:
-            return False
-        if self._baseline_differs(artifact):
-            return True
-        return artifact.undo_version is not None
+        value = self._undo_value()
+        return value is not None and self.editor._restore_refusal(value) is None
 
     @property
     def can_redo(self) -> bool:
-        """Whether :meth:`redo` has something to redo."""
-        if not self.active or self._pending is not None:
+        """Whether :meth:`redo` would redo something now."""
+        if not self.active or self.busy or self._pending is not None:
             return False
         self._ensure_loaded()
         artifact = self.artifact
         if artifact is None or self._baseline_differs(artifact):
             return False
-        return artifact.redo_run_version is not None
+        number = artifact.redo_run_version
+        if number is None:
+            return False
+        return self.editor._restore_refusal(artifact.versions[number - 1].value) is None
+
+    def _undo_value(self, whole_runs: bool = True) -> str | None:
+        """Return the version :meth:`undo` would apply, without publishing anything."""
+        self._ensure_loaded()
+        artifact = self.artifact
+        if artifact is None:
+            return None
+        applied = artifact.applied_version
+        if self._pending is not None or self._baseline_differs(artifact):
+            return applied.value if applied is not None else None
+        number = None
+        if whole_runs and applied is not None and applied.actor == "agent" and applied.run_id:
+            try:
+                number = artifact.undo_run_target(applied.run_id, self.state.runs)
+            except ValueError:
+                number = None
+        number = number or artifact.undo_version
+        return artifact.versions[number - 1].value if number else None
 
     def _baseline_differs(self, artifact: Artifact) -> bool:
         if self._baseline is None:
@@ -313,9 +373,10 @@ class EditHistory:
     def opened(self):
         """Start recording the dashboard now in the editor, as it is now.
 
-        Loads the dashboard's stored history, dropping what retention no
-        longer keeps. The dashboard as opened becomes a version just before
-        the first edit or undo, unless the latest stored version already holds it.
+        The stored history is loaded at the first edit, undo or look at the
+        versions, so opening a dashboard to view it costs one YAML dump. The
+        dashboard as opened becomes a version just before the first edit or
+        undo, unless the stored history ends with it.
         """
         self.flush()
         current = self.editor.dashboard
@@ -325,12 +386,72 @@ class EditHistory:
         if self.active:
             self._baseline = self.snapshot()
             self._head = self._saved = self._baseline[1]
-            self._ensure_loaded()
 
     def saved(self):
-        """Note that the canvas as it is now was saved."""
+        """Note that the canvas as it is now was saved, under the editor's dashboard id.
+
+        When the canvas had no dashboard before, its versions so far move to
+        the saved dashboard's history, so they are stored and undo keeps them.
+        """
         self.flush()
+        current = self.editor.dashboard
+        dashboard_id = current.dashboard_id if current is not None else None
+        if dashboard_id != self._dashboard_id:
+            self._move_to(dashboard_id)
+        if self.active and self.artifact is not None:
+            # Saving can rename the dashboard, which its YAML holds.
+            value, revision = self.snapshot()
+            if revision != self._head:
+                self._publish(
+                    value,
+                    {
+                        "op": "save",
+                        "args": {},
+                        "label": "Saved the dashboard",
+                        "turn": None,
+                        "base": self._head,
+                        "revision": revision,
+                        "version_id": uuid.uuid4().hex,
+                    },
+                    title=current.title if current is not None else None,
+                    actor="user",
+                    user=self._user(),
+                    run_id=None,
+                    tool_call_id=None,
+                )
+                self._head = revision
         self._saved = self._head
+
+    def _move_to(self, dashboard_id: str | None):
+        old = self.artifact
+        self._dashboard_id = dashboard_id
+        self._baseline = None
+        if old is None or not self.active:
+            return
+        self._ensure_loaded()
+        if self.artifact is not None or old.applied_version is None:
+            return
+        old_id = old.artifact_id
+        line = _lineage(
+            [
+                (_value_revision(v.value), v.metadata.get("revision"), v.metadata.get("base"))
+                for v in old.versions
+            ],
+            _value_revision(old.applied_version.value),
+        )
+        current = self.editor.dashboard
+        for k in line:
+            version = old.versions[k]
+            self._publish(
+                version.value,
+                dict(version.metadata),
+                title=current.title if current is not None else None,
+                actor=version.actor,
+                user=version.user,
+                run_id=version.run_id,
+                tool_call_id=version.tool_call_id,
+            )
+        logger.debug("Moved %d versions from %s to %s", len(line), old_id, self.artifact_id)
 
     def record(
         self, op: str, args: dict[str, t.Any], label: str | None, turn: DashboardTurn | None
@@ -418,6 +539,47 @@ class EditHistory:
             run_id=pending.run_id,
             tool_call_id=pending.tool_call_id,
         )
+        self._trim()
+
+    def _trim(self):
+        """Keep at most about ``history_limit`` versions of the open dashboard in memory.
+
+        Past the limit and a margin, the artifact is rebuilt from the latest
+        versions on the line to the applied one, as reopening would load them.
+        """
+        limit = self.editor.history_limit
+        artifact = self.artifact
+        if not limit or artifact is None or self.busy or artifact.applied_version is None:
+            return
+        if len(artifact.versions) <= limit + max(limit // 10, 10):
+            return
+        line = _lineage(
+            [
+                (_value_revision(v.value), v.metadata.get("revision"), v.metadata.get("base"))
+                for v in artifact.versions
+            ],
+            _value_revision(artifact.applied_version.value),
+        )[-limit:]
+        scratch = RunState(flush_interval=0)
+        for k in line:
+            version = artifact.versions[k]
+            scratch.apply(
+                ArtifactPublished(
+                    artifact_id=artifact.artifact_id,
+                    value=version.value,
+                    kind=artifact.kind,
+                    title=artifact.title,
+                    metadata=dict(version.metadata),
+                    applied=True,
+                    run_id=version.run_id,
+                    tool_call_id=version.tool_call_id,
+                    actor=version.actor,
+                    user=version.user,
+                    timestamp=version.created_at,
+                )
+            )
+        store = self.state.artifacts
+        store.artifacts = {**store.artifacts, artifact.artifact_id: scratch.artifacts[artifact.artifact_id]}
 
     def _publish(self, value: str, metadata: dict[str, t.Any], *, title: str | None, **fields):
         # The event is built here rather than with `publish_artifact`, which
@@ -495,6 +657,7 @@ class EditHistory:
         """Undo the last change, or the agent's whole last request. See :meth:`FlowDash.undo`."""
         if not self.active:
             return False
+        self._refuse_while_busy()
         self.flush()
         self._ensure_base()
         artifact = self.artifact
@@ -520,6 +683,7 @@ class EditHistory:
         """Redo what the last undo undid, in one step. See :meth:`FlowDash.redo`."""
         if not self.active:
             return False
+        self._refuse_while_busy()
         self.flush()
         self._ensure_base()
         if self.artifact is None:
@@ -537,9 +701,17 @@ class EditHistory:
         """
         if not self.active:
             raise PermissionError("You may only view this dashboard, so it cannot be changed.")
+        self._refuse_while_busy()
         self.flush()
         self._ensure_base()
         return self._on_apply(artifact, version)
+
+    def _refuse_while_busy(self):
+        if self.busy:
+            raise HistoryBusy(
+                "The assistant is still working on a request. Wait for it to finish, or "
+                "stop it, before undoing or going back to another version."
+            )
 
     def _on_apply(self, artifact: Artifact, version: ArtifactVersion) -> bool:
         if artifact.artifact_id != self.artifact_id:
@@ -570,10 +742,10 @@ class EditHistory:
         if store is None or dashboard_id is None:
             return
         try:
-            records = store.load_history(dashboard_id)
-            kept = self._retain(dashboard_id, records)
+            kept = self._retain(dashboard_id)
             if artifact_id not in self.state.artifacts:
-                load_history(decode(kept, artifact_id, self._redact), self.state)
+                head = self._baseline[1] if self._baseline is not None else self._head
+                load_history(decode(kept, artifact_id, head, self._redact), self.state)
         except Exception:
             logger.exception("Could not load the edit history of dashboard %r", dashboard_id)
             kept = []
@@ -582,13 +754,13 @@ class EditHistory:
             self.state, partial(self._write, dashboard_id, artifact_id), artifact_ids=[artifact_id]
         )
 
-    def _retain(self, dashboard_id: str, records: list[dict]) -> list[dict]:
+    def _retain(self, dashboard_id: str) -> list[dict]:
+        """Drop what retention no longer keeps from the stored history, and return the rest."""
         editor = self.editor
         max_age = editor.history_max_days * 86400 if editor.history_max_days else None
-        kept = compact(records, editor.history_limit, max_age)
-        if kept is not records:
-            editor.store.replace_history(dashboard_id, kept)
-        return kept
+        return editor.store.rewrite_history(
+            dashboard_id, lambda records: compact(records, editor.history_limit, max_age)
+        )
 
     def _write(self, dashboard_id: str, artifact_id: str, record: dict[str, t.Any]):
         """Store *record* in the dashboard's history; the sink of the dashboard's recorder."""
@@ -608,7 +780,7 @@ class EditHistory:
         count = self._stored[dashboard_id] = self._stored.get(dashboard_id, 0) + 1
         limit = self.editor.history_limit
         if limit and count > limit + max(limit // 10, 10):
-            kept = self._retain(dashboard_id, store.load_history(dashboard_id))
+            kept = self._retain(dashboard_id)
             self._stored[dashboard_id] = sum(r.get("type") == "ARTIFACT_PUBLISHED" for r in kept)
 
     def _redact(self, record: dict[str, t.Any]) -> dict[str, t.Any]:
@@ -653,6 +825,8 @@ class EditHistory:
             ref = args.get(key)
             if isinstance(ref, str) and ref.partition(".")[0] in restricted:
                 args[key] = ref.partition(".")[0]
+        if args.get("name") in restricted:
+            args.pop("keys", None)
         metadata.update(args=args, revision=revision)
         return {**record, "value": f"# revision: {revision}\n{text}", "metadata": metadata}
 

@@ -9,12 +9,13 @@ import pytest
 import yaml
 from panel_agents import RunState
 from panel_agents.context import _scope
-from panel_agents.events import RunStarted
+from panel_agents.events import RunFinished, RunStarted
 
 from panel_flowdash import MemoryDashboardStore
 from panel_flowdash.agent import DashboardOps
 from panel_flowdash.agent.ops import read_revision
 from panel_flowdash.dashboard_store import (
+    DashboardConflictError,
     DashboardEdge,
     DashboardItem,
     DashboardStore,
@@ -368,6 +369,7 @@ def test_an_agents_request_is_undone_as_a_whole(editor):
         editor.add_component("T/number", instance_id="a1")
     with _scope(run_id="run-1", tool_call_id="call-2", actor="agent"), agent_edits("run-1"):
         editor.add_component("T/doubler", instance_id="a2")
+    state.apply(RunFinished(run_id="run-1"))
     agent_versions = editor.edit_history.versions[-2:]
     assert [(v.actor, v.run_id, v.tool_call_id, v.user) for v in agent_versions] == [
         ("agent", "run-1", "call-1", None),
@@ -408,26 +410,14 @@ def test_the_history_is_kept_across_sessions(any_store):
     second = _editor(any_store)
     second.load(model.dashboard_id)
     assert _names(second) == ["base", "double"]
-    assert [v.metadata["op"] for v in second.edit_history.versions] == [
-        "open",
-        "add_node",
-        "add_node",
-        "add_node",
-    ]
-    # The saved canvas differs from the last version, so it becomes one, and undo
-    # first recovers the unsaved edit.
-    assert second.undo() and _names(second) == ["base", "double", "unsaved"]
-    assert second.undo() and _names(second) == ["base", "double"]
+    # Only the edits that made the saved dashboard are loaded, not the unsaved one.
+    assert [v.metadata["op"] for v in second.edit_history.versions] == ["open", "add_node", "add_node"]
     assert second.undo() and _names(second) == ["base"]
+    assert second.undo() and second._tile_items == []
+    assert not second.can_undo
+    assert second.redo() and _names(second) == ["base"]
+    assert second.redo() and _names(second) == ["base", "double"]
     second.dispose()
-
-    third = _editor(any_store)
-    third.load(model.dashboard_id)
-    # The second session undid back to one node and left the saved canvas unsaved.
-    assert third.edit_history.versions[-1].metadata["op"] == "open"
-    assert third.undo() and _names(third) == ["base"]
-    assert third.redo() and _names(third) == ["base", "double"]
-    third.dispose()
 
 
 def test_reopening_the_saved_last_version_adds_no_version(any_store):
@@ -452,24 +442,46 @@ def test_applied_records_name_their_version_by_id(any_store):
     assert [r["version_id"] for r in applied] == [ids[1]] and applied[0]["action"] == "undo"
 
 
-def test_histories_of_interleaved_sessions_number_their_versions_consistently():
-    store = MemoryDashboardStore()
-    one = _editor(store, history_coalesce=0)
-    model = one.new_dashboard("Mine")
-    two = _editor(store, history_coalesce=0)
-    two.load(model.dashboard_id)
-    one.add_component("T/number", instance_id="a")
-    two.add_component("T/number", instance_id="b")
-    one.undo()
-    loaded = decode(store.load_history(model.dashboard_id), artifact_id_for(model.dashboard_id))
-    state = RunState(flush_interval=0)
-    from panel_agents import load_history
+def test_undo_never_steps_into_another_sessions_unsaved_edits(any_store):
+    a = _editor(any_store, history_coalesce=0)
+    model = a.new_dashboard("Shared")
+    a.add_component("T/number", instance_id="n")
+    a.save()
+    b = _editor(any_store, history_coalesce=0)
+    b.load(model.dashboard_id)
+    a.add_component("T/doubler", instance_id="a1")
+    b.add_component("T/scaled", instance_id="b1")
+    a.add_component("T/doubler", instance_id="a2")
+    b.undo()
+    a.save()
+    with pytest.raises(DashboardConflictError):
+        b.add_component("T/scaled", instance_id="b2")
+        b.save()
+    c = _editor(any_store, history_coalesce=0)
+    c.load(model.dashboard_id)
+    assert _names(c) == ["a1", "a2", "n"]
+    assert c.undo() and _names(c) == ["a1", "n"]
+    assert c.undo() and _names(c) == ["n"]
+    assert c.undo() and c._tile_items == []
+    assert not c.can_undo
 
-    load_history(loaded, state)
-    artifact = state.artifacts[artifact_id_for(model.dashboard_id)]
-    applied = state.events[-1]
-    assert yaml.safe_load(artifact.versions[applied.version - 1].value).get("nodes") is None
-    assert artifact.versions[applied.version - 1].metadata["op"] == "open"
+
+def test_decode_follows_the_line_to_the_opened_revision():
+    def published(revision, base, vid):
+        value = f"# revision: {revision}\nflowdash: 2\n"
+        return {"type": "ARTIFACT_PUBLISHED", "artifact_id": "a", "value": value,
+                "metadata": {"revision": revision, "base": base, "version_id": vid}}
+
+    records = [
+        published("a1", None, "v1"),
+        published("a2", "a1", "v2"),
+        published("b1", "a1", "v3"),
+        {"type": "ARTIFACT_APPLIED", "artifact_id": "a", "version_id": "v1"},
+        published("a3", "a2", "v4"),
+    ]
+    assert [r["metadata"]["version_id"] for r in decode(records, "a", "a3")] == ["v1", "v2", "v4"]
+    assert [r["metadata"]["version_id"] for r in decode(records, "a", "b1")] == ["v1", "v3"]
+    assert decode(records, "a", "ff") == []
 
 
 def test_deleting_a_dashboard_deletes_its_history(any_store):
@@ -569,6 +581,9 @@ def test_opening_a_dashboard_keeps_only_the_newest_versions(any_store):
     editor.save()
     reopened = _editor(any_store, history_limit=5)
     reopened.load(model.dashboard_id)
+    # Loaded at the first look, not when the dashboard opens.
+    assert len(_published(any_store, model.dashboard_id)) == 9
+    assert len(reopened.edit_history.versions) == 5
     stored = _published(any_store, model.dashboard_id)
     assert [r["metadata"]["args"].get("name") for r in stored] == [f"n{i}" for i in range(3, 8)]
     assert len(reopened.edit_history.versions) == 5
@@ -587,6 +602,7 @@ def test_old_versions_are_dropped_after_max_days(any_store):
     any_store.replace_history(model.dashboard_id, records)
     reopened = _editor(any_store, history_max_days=30)
     reopened.load(model.dashboard_id)
+    assert len(reopened.edit_history.versions) == 1
     assert [r["metadata"]["op"] for r in _published(any_store, model.dashboard_id)] == ["add_node"]
 
 
@@ -597,8 +613,7 @@ def test_a_long_session_is_trimmed_as_it_goes():
     for i in range(40):
         editor.add_component("T/number", instance_id=f"n{i}")
     assert len(_published(store, model.dashboard_id)) <= 20 + 10
-    # The session itself keeps every version for undo.
-    assert len(editor.edit_history.versions) == 41
+    assert len(editor.edit_history.versions) <= 20 + 10
 
 
 def test_compact_keeps_the_runs_and_applied_records_of_kept_versions():
@@ -708,3 +723,161 @@ def test_the_agent_cannot_undo_through_the_palette():
     from panel_flowdash.agent.actions import _PERSON_ONLY
 
     assert _PERSON_ONLY == {"action:undo", "action:redo"}
+
+
+# --------------------------------------------------------------------------
+# Review findings
+# --------------------------------------------------------------------------
+
+
+def test_saving_a_canvas_without_a_dashboard_keeps_its_versions():
+    store = MemoryDashboardStore()
+    editor = _editor(store, history_coalesce=0)
+    assert editor.dashboard is None
+    editor.add_component("T/number", instance_id="a")
+    model = editor.save("Fresh")
+    assert editor.edit_history.artifact_id == artifact_id_for(model.dashboard_id)
+    editor.add_component("T/number", instance_id="b")
+    ops = [r["metadata"]["op"] for r in _published(store, model.dashboard_id)]
+    assert ops == ["open", "add_node", "save", "add_node"]
+    assert editor.undo() and editor.undo() and editor.undo() and editor._tile_items == []
+    again = _editor(store)
+    again.load(model.dashboard_id)
+    assert again.undo() and _names(again) == ["a"]
+    assert again.undo() and again._tile_items == []
+
+
+def _agent_edit(editor, run_id, call_id, **kwargs):
+    with _scope(run_id=run_id, tool_call_id=call_id, actor="agent"), agent_edits(run_id):
+        editor.add_component("T/number", **kwargs)
+
+
+def test_undo_waits_while_an_agent_request_runs(editor):
+    from panel_flowdash.history import HistoryBusy
+
+    editor.add_component("T/number", instance_id="mine")
+    state = editor.edit_history.state
+    state.apply(RunStarted(run_id="run-1", agent_name="assistant", input="q"))
+    _agent_edit(editor, "run-1", "c1", instance_id="a1")
+    assert not editor.can_undo and not editor.can_redo
+    with pytest.raises(HistoryBusy):
+        editor.undo()
+    artifact = editor.edit_history.artifact
+    with pytest.raises(HistoryBusy):
+        editor.edit_history.restore(artifact, artifact.versions[0])
+    _agent_edit(editor, "run-1", "c2", instance_id="a2")
+    state.apply(RunFinished(run_id="run-1"))
+    assert editor.can_undo and editor.undo() and _names(editor) == ["mine"]
+
+
+def test_a_person_can_undo_removing_a_node_they_may_not_use(finance_store):
+    store, dashboard_id = finance_store
+    banker = _editor(store, finance=True)
+    banker.load(dashboard_id)
+    banker.add_component("T/secret", {"query": "SELECT salary"}, instance_id="secret")
+    banker.connect("secret", "value", "double", "value")
+    banker.save()
+
+    alice = _editor(store)
+    alice.load(dashboard_id)
+    alice.remove_component("secret")
+    assert alice.can_undo and alice.undo()
+    model = alice.to_model()
+    secret = next(item for item in model.items if item.instance_id == "secret")
+    assert (secret.component_id, secret.config) == ("T/secret", {"query": "SELECT salary"})
+    assert DashboardEdge("secret", "value", "double", "value") in model.edges
+    assert alice.redo() and "secret" not in _names(alice)
+
+
+def test_can_undo_says_no_when_undo_would_be_refused(finance_store):
+    store, dashboard_id = finance_store
+    banker = _editor(store, finance=True, history_coalesce=0)
+    banker.load(dashboard_id)
+    banker.add_component("T/secret", {"query": "SELECT salary"}, instance_id="secret")
+    banker.remove_component("secret")
+    banker.save()
+    alice = _editor(store)
+    alice.load(dashboard_id)
+    assert not alice.can_undo
+
+
+def test_undo_keeps_the_origin_a_version_gives_a_restricted_node(finance_store):
+    from panel_agents.events import RunFinished as Finished
+
+    store, dashboard_id = finance_store
+    banker = _editor(store, finance=True, history_coalesce=0)
+    banker.load(dashboard_id)
+    banker.add_component("T/secret", {"query": "SELECT 1"}, instance_id="secret")
+    first = banker.node_origin("secret")
+    banker.end_turn()
+    state = banker.edit_history.state
+    state.apply(RunStarted(run_id="run-1", agent_name="assistant", input="redo it"))
+    with _scope(run_id="run-1", tool_call_id="c1", actor="agent"), agent_edits("run-1"):
+        banker.remove_component("secret")
+    with _scope(run_id="run-1", tool_call_id="c2", actor="agent"), agent_edits("run-1"):
+        banker.add_component("T/secret", {"query": "SELECT 2"}, instance_id="secret")
+    state.apply(Finished(run_id="run-1"))
+    banker.end_agent_turns()
+    banker.save()
+
+    alice = _editor(store)
+    alice.load(dashboard_id)
+    assert alice.undo()
+    assert alice.node_origin("secret") == first
+    assert {t.id for t in alice.turns} >= {first}
+
+
+def test_config_keys_of_a_node_the_user_may_not_use_are_hidden(finance_store):
+    store, dashboard_id = finance_store
+    banker = _editor(store, finance=True, history_coalesce=0)
+    banker.load(dashboard_id)
+    banker.add_component("T/secret", {"query": "SELECT 1"}, instance_id="secret")
+    banker._apply_config_patch("secret", {"query": "SELECT 2"})
+    banker.save()
+    alice = _editor(store)
+    alice.load(dashboard_id)
+    config = [v for v in alice.edit_history.versions if v.metadata["op"] == "set_config"]
+    assert config and config[0].metadata["args"] == {"name": "secret"}
+
+
+def test_previews_and_checks_record_no_history(editor):
+    editor.add_component("T/number", instance_id="base")
+    scratch = DashboardOps(editor)._scratch_editor()
+    assert scratch.history is False
+
+
+def test_the_versions_in_memory_are_bounded(editor):
+    editor.history_coalesce = 0
+    editor.history_limit = 20
+    for i in range(60):
+        editor.add_component("T/number", instance_id=f"n{i}")
+    versions = editor.edit_history.versions
+    assert len(versions) <= 30
+    assert editor.undo() and "n59" not in _names(editor)
+
+
+@pytest.mark.parametrize("kind", ["sqlite", "json"])
+def test_retention_loses_no_record_appended_meanwhile(kind, tmp_path):
+    import threading
+
+    store = (
+        DashboardStore(tmp_path / "d.db") if kind == "sqlite"
+        else JSONFolderDashboardStore(tmp_path / "d")
+    )
+    model = store.create_dashboard("alice", "Mine")
+    store.append_history(model.dashboard_id, {"type": "ARTIFACT_PUBLISHED", "n": 1})
+    writer = None
+
+    def rewrite(records):
+        nonlocal writer
+        writer = threading.Thread(
+            target=store.append_history,
+            args=(model.dashboard_id, {"type": "ARTIFACT_PUBLISHED", "n": 2}),
+        )
+        writer.start()
+        writer.join(0.2)
+        return []
+
+    store.rewrite_history(model.dashboard_id, rewrite)
+    writer.join()
+    assert store.load_history(model.dashboard_id) == [{"type": "ARTIFACT_PUBLISHED", "n": 2}]

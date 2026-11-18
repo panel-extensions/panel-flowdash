@@ -284,22 +284,34 @@ class JSONFolderDashboardStore(BaseDashboardStore):
         if self.read_only or not _SAFE_ID.match(dashboard_id):
             return
         with self._locked():
-            if not (self.path / f"{dashboard_id}.json").exists():
-                return
-            target = self._history_path(dashboard_id)
-            target.parent.mkdir(exist_ok=True)
-            handle, tmp = tempfile.mkstemp(
-                dir=target.parent, prefix=f".{target.name}.", suffix=".tmp"
-            )
-            with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as f:
-                for record in records:
-                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
-            try:
-                _replace(tmp, target)
-            except OSError:
-                with contextlib.suppress(OSError):
-                    os.unlink(tmp)
-                raise
+            self._write_history(dashboard_id, records)
+
+    def rewrite_history(self, dashboard_id, rewrite):
+        if self.read_only or not _SAFE_ID.match(dashboard_id):
+            return rewrite(self.load_history(dashboard_id))
+        with self._locked():
+            records = self.load_history(dashboard_id)
+            kept = rewrite(records)
+            if kept is not records:
+                self._write_history(dashboard_id, kept)
+        return kept
+
+    def _write_history(self, dashboard_id: str, records: list[dict]) -> None:
+        """Atomically replace a dashboard's history file, holding the folder lock."""
+        if not (self.path / f"{dashboard_id}.json").exists():
+            return
+        target = self._history_path(dashboard_id)
+        target.parent.mkdir(exist_ok=True)
+        handle, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.name}.", suffix=".tmp")
+        with os.fdopen(handle, "w", encoding="utf-8", newline="\n") as f:
+            for record in records:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        try:
+            _replace(tmp, target)
+        except OSError:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+            raise
 
     def delete_history(self, dashboard_id: str) -> None:
         if self.read_only or not _SAFE_ID.match(dashboard_id):

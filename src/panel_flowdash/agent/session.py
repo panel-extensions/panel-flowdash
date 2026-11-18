@@ -209,10 +209,14 @@ class _SessionRunner(AgentRunner):
         super().__init__(*args, **kwargs)
         self._session = session
 
+    def _note_artifact_change(self, event):
+        # Merged as they come, so the notes stay short however long the person edits.
+        super()._note_artifact_change(event)
+        self._notes[:] = _collapse_notes(self._notes)
+
     async def run(self, prompt=None, **kwargs):
         self._session.ops.editor.end_turn()
         self._session.publish_user_edits()
-        self._notes[:] = _collapse_notes(self._notes)
         self.deps.start_request(prompt if isinstance(prompt, str) else None)
         try:
             return await super().run(prompt, **kwargs)
@@ -221,7 +225,8 @@ class _SessionRunner(AgentRunner):
 
 
 _PUBLISHED_NOTE = re.compile(
-    r"The app published version (\d+) of the artifact (.+?)( and now holds it)?\."
+    r"The app published versions? (\d+)(?: to (\d+))? of the artifact (.+?)"
+    r"( and now holds (?:it|the latest))?\."
 )
 
 
@@ -239,14 +244,16 @@ def _collapse_notes(notes: list[str]) -> list[str]:
             collapsed.append(note)
             previous = None
             continue
-        name = match[2]
-        if previous is not None and previous[0] == name:
-            first = previous[1]
-            held = " and now holds the latest" if match[3] else ""
-            collapsed[-1] = (
-                f"The app published versions {first} to {match[1]} of the artifact {name}{held}."
-            )
-        else:
+        first, last, name, held = match[1], match[2] or match[1], match[3], match[4]
+        if previous is not None and previous[1] == name:
+            first = previous[0]
+            collapsed.pop()
+        if first == last:
             collapsed.append(note)
-            previous = (name, match[1])
+        else:
+            held = " and now holds the latest" if held else ""
+            collapsed.append(
+                f"The app published versions {first} to {last} of the artifact {name}{held}."
+            )
+        previous = (first, name)
     return collapsed

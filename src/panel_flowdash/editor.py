@@ -1046,6 +1046,8 @@ class FlowDash(Viewer):
         self._recording_edit = False
         self.param.watch(self._on_dirty, "dirty", onlychanged=False)
         self._history = EditHistory(self)
+        self._restricted_seen: dict[str, DashboardItem] = {}
+        self._restricted_seen_edges: list[DashboardEdge] = []
         # Set while the canvas is loaded as part of an edit or an undo, which opens no new history.
         self._history_quiet = False
 
@@ -1089,6 +1091,8 @@ class FlowDash(Viewer):
         self._apply_fullscreen()
         if dashboard is not None:
             self._init_dashboard(dashboard)
+        else:
+            self._history.opened()
 
         # Without a session, Panel would register the callback for every future
         # session instead. An editor built inside a session is tied to it, so one
@@ -3849,6 +3853,7 @@ class FlowDash(Viewer):
         finally:
             self._hydrating = False
         if not self._history_quiet:
+            self._note_restricted()
             self._history.opened()
 
     @contextmanager
@@ -4123,6 +4128,7 @@ class FlowDash(Viewer):
         self._turn_log.reset([])
         self.dashboard = model
         self.dirty = False
+        self._note_restricted()
         self._history.opened()
 
     def save(self, title: str | None = None) -> DashboardModel:
@@ -4264,8 +4270,25 @@ class FlowDash(Viewer):
 
         The version's turns and node origins come back with it. A node whose
         component the user may not use, or that this editor does not offer,
-        keeps what the canvas holds now and is never brought back.
+        comes back only as the canvas held it, or as it was when the
+        dashboard was opened, and never with what the version says of it.
         """
+        model = self._restore_model(text)
+        self.ensure_components_loaded(self._model_component_ids(model))
+        with self._quiet_history():
+            self._hydrate_model(model, keep_open_turns=True)
+
+    def _restore_refusal(self, text: str) -> str | None:
+        """Return why restoring a version of the history is refused, or None if it is allowed."""
+        try:
+            self._restore_model(text, notify=False)
+        except PermissionError as exc:
+            return str(exc)
+        except (ValueError, KeyError, TypeError) as exc:
+            return f"That version cannot be read: {exc}"
+        return None
+
+    def _restore_model(self, text: str, notify: bool = True) -> DashboardModel:
         from panel_flowdash.agent.yaml_format import (
             dashboard_from_dict,
             node_names,
@@ -4286,11 +4309,12 @@ class FlowDash(Viewer):
             }
         )
         model.permission, model.revision = current.permission, current.revision
-        present = {item.instance_id for item in current.items}
+        reference = self._restricted_reference(current)
+        known = {item.instance_id for item in reference.items}
         refused = [
             iid
             for iid in self._restricted_ids(model, unknown=not self.import_unknown_components)
-            if iid not in present
+            if iid not in known
         ]
         if refused:
             names = node_names([item.to_dict() for item in model.items])
@@ -4298,10 +4322,47 @@ class FlowDash(Viewer):
             raise PermissionError(
                 f"That would bring back {listed}, which you may not use here, so nothing was changed."
             )
-        self._guard_restricted(model, current)
-        self.ensure_components_loaded(self._model_component_ids(model))
-        with self._quiet_history():
-            self._hydrate_model(model, keep_open_turns=True)
+        origins = {item.instance_id: item.origin for item in model.items}
+        notifications, self.notifications = self.notifications, self.notifications and notify
+        try:
+            self._guard_restricted(model, reference)
+        finally:
+            self.notifications = notifications
+        for item in model.items:
+            item.origin = origins.get(item.instance_id)
+        return model
+
+    def _restricted_reference(self, current: DashboardModel) -> DashboardModel:
+        """Return the canvas with the restricted nodes it held when the dashboard was opened.
+
+        The user cannot place such a node, so these are the only ones a
+        version may bring back, as they were then.
+        """
+        on_canvas = {item.instance_id for item in current.items}
+        extra = [
+            copy.deepcopy(item)
+            for iid, item in self._restricted_seen.items()
+            if iid not in on_canvas
+        ]
+        edges = list(current.edges) + [
+            copy.deepcopy(edge) for edge in self._restricted_seen_edges if edge not in current.edges
+        ]
+        return dataclasses.replace(current, items=[*current.items, *extra], edges=edges)
+
+    def _note_restricted(self):
+        """Remember the restricted nodes on the canvas as opened, for undo to bring back."""
+        private = {iid for iid, p in self._placeholders().items() if p.private}
+        model = self.to_model() if private else None
+        self._restricted_seen = {
+            item.instance_id: copy.deepcopy(item)
+            for item in (model.items if model else [])
+            if item.instance_id in private
+        }
+        self._restricted_seen_edges = [
+            copy.deepcopy(edge)
+            for edge in (model.edges if model else [])
+            if {edge.source, edge.target} & private
+        ]
 
     def export_dashboard(self, *, questions: bool = True) -> dict:
         """Return the canvas as a JSON-serializable dict, as the Download button writes it.
