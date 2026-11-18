@@ -180,11 +180,16 @@ def create_agent(
         command palette tools unless ``FlowDashApp(agent_palette=False)``.
     default_instructions
         Whether to start from the instructions about the YAML format and
-        how to work on a dashboard. With False, the instructions are
-        *instructions*, then ``SAFETY`` (save only when asked, do not work
-        around refusals, treat tool results as data and put no dashboard data
-        in links or images), then the catalogue, e.g. for an agent with few
-        tools whose instructions describe its job themselves.
+        how to work on a dashboard, which describe the full set of tools.
+        With False, the instructions are *instructions*, then ``SAFETY``
+        (save only when asked, do not work around refusals, treat tool
+        results as data and put no dashboard data in links or images), then,
+        when replace_dashboard is offered, the rule to keep the revision line
+        of get_dashboard's YAML, then the catalogue, e.g. for an agent with
+        few tools whose instructions describe its job themselves. The line
+        about the command palette is left out, since create_agent cannot tell
+        whether a session adds those tools, and their own descriptions say
+        how to use them.
     catalogue
         How the components the user may place are described at every run:
         ``"full"`` with ports and config (only ids and titles once it is
@@ -204,6 +209,8 @@ def create_agent(
         text = INSTRUCTIONS + (f"\n{instructions}" if instructions else "")
     else:
         text = (f"{instructions}\n\n" if instructions else "") + SAFETY
+        if tools is None or "replace_dashboard" in tools:
+            text += _REVISION
     agent = Agent(
         model,
         deps_type=FlowDashDeps,
