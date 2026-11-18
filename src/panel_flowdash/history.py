@@ -165,7 +165,9 @@ def compact(
     return out
 
 
-def _lineage(published: t.Sequence[tuple[str | None, str | None, str | None]], head: str | None) -> list[int]:
+def _lineage(
+    published: t.Sequence[tuple[str | None, str | None, str | None]], head: str | None
+) -> list[int]:
     """Return the positions of the versions that lead to revision *head*, oldest first.
 
     *published* holds each version's ``(value revision, revision, base)`` in
@@ -174,9 +176,7 @@ def _lineage(published: t.Sequence[tuple[str | None, str | None, str | None]], h
     version with that revision, so edits that were undone, and edits other
     sessions made but never saved, are not on it.
     """
-    start = next(
-        (i for i in range(len(published) - 1, -1, -1) if published[i][0] == head), None
-    )
+    start = next((i for i in range(len(published) - 1, -1, -1) if published[i][0] == head), None)
     if head is None or start is None:
         return []
     line = [start]
@@ -579,7 +579,10 @@ class EditHistory:
                 )
             )
         store = self.state.artifacts
-        store.artifacts = {**store.artifacts, artifact.artifact_id: scratch.artifacts[artifact.artifact_id]}
+        store.artifacts = {
+            **store.artifacts,
+            artifact.artifact_id: scratch.artifacts[artifact.artifact_id],
+        }
 
     def _publish(self, value: str, metadata: dict[str, t.Any], *, title: str | None, **fields):
         # The event is built here rather than with `publish_artifact`, which

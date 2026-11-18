@@ -4345,7 +4345,9 @@ class FlowDash(Viewer):
             if iid not in on_canvas
         ]
         edges = list(current.edges) + [
-            copy.deepcopy(edge) for edge in self._restricted_seen_edges if edge not in current.edges
+            copy.deepcopy(edge)
+            for edge in self._restricted_seen_edges
+            if edge not in current.edges
         ]
         return dataclasses.replace(current, items=[*current.items, *extra], edges=edges)
 

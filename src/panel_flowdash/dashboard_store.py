@@ -12,12 +12,12 @@ import threading
 import uuid
 import weakref
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-from collections.abc import Callable
 
 from panel_flowdash.auth import Identity, Permission, can_administer, can_edit, is_authorized
 from panel_flowdash.turns import DashboardTurn, decode_turns
@@ -862,7 +862,9 @@ class DashboardStore(BaseDashboardStore):
                     records.append(record)
             kept = rewrite(records)
             if kept is not records:
-                conn.execute("DELETE FROM dashboard_history WHERE dashboard_id = ?", (dashboard_id,))
+                conn.execute(
+                    "DELETE FROM dashboard_history WHERE dashboard_id = ?", (dashboard_id,)
+                )
                 conn.executemany(
                     "INSERT INTO dashboard_history (dashboard_id, record_json) VALUES (?, ?)",
                     [(dashboard_id, json.dumps(record)) for record in kept],

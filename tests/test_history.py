@@ -7,7 +7,6 @@ from contextlib import closing
 
 import pytest
 import yaml
-from panel_agents import RunState
 from panel_agents.context import _scope
 from panel_agents.events import RunFinished, RunStarted
 
@@ -411,7 +410,11 @@ def test_the_history_is_kept_across_sessions(any_store):
     second.load(model.dashboard_id)
     assert _names(second) == ["base", "double"]
     # Only the edits that made the saved dashboard are loaded, not the unsaved one.
-    assert [v.metadata["op"] for v in second.edit_history.versions] == ["open", "add_node", "add_node"]
+    assert [v.metadata["op"] for v in second.edit_history.versions] == [
+        "open",
+        "add_node",
+        "add_node",
+    ]
     assert second.undo() and _names(second) == ["base"]
     assert second.undo() and second._tile_items == []
     assert not second.can_undo
@@ -469,8 +472,12 @@ def test_undo_never_steps_into_another_sessions_unsaved_edits(any_store):
 def test_decode_follows_the_line_to_the_opened_revision():
     def published(revision, base, vid):
         value = f"# revision: {revision}\nflowdash: 2\n"
-        return {"type": "ARTIFACT_PUBLISHED", "artifact_id": "a", "value": value,
-                "metadata": {"revision": revision, "base": base, "version_id": vid}}
+        return {
+            "type": "ARTIFACT_PUBLISHED",
+            "artifact_id": "a",
+            "value": value,
+            "metadata": {"revision": revision, "base": base, "version_id": vid},
+        }
 
     records = [
         published("a1", None, "v1"),
@@ -861,7 +868,8 @@ def test_retention_loses_no_record_appended_meanwhile(kind, tmp_path):
     import threading
 
     store = (
-        DashboardStore(tmp_path / "d.db") if kind == "sqlite"
+        DashboardStore(tmp_path / "d.db")
+        if kind == "sqlite"
         else JSONFolderDashboardStore(tmp_path / "d")
     )
     model = store.create_dashboard("alice", "Mine")
