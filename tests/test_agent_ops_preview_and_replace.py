@@ -321,3 +321,46 @@ def test_replacing_a_healthy_dashboard_adds_no_failure_warnings():
     ops = _plain_editor()
     text = "flowdash: 1\nnodes:\n  ok: {component: T/reciprocal}\n"
     assert ops.replace_yaml(text, revision=ops.revision()) == []
+
+
+class Pending(Viewer):
+    """A Viewer whose output has no value until its input is set, by raising ``param.Skip``."""
+
+    value = param.Number(default=None, allow_None=True)
+
+    @param.output(param.Number)
+    @param.depends("value")
+    def doubled(self):
+        if self.value is None:
+            raise param.Skip
+        return self.value * 2
+
+    def __panel__(self):
+        return "pending"
+
+
+class AsyncPending(Pending):
+    @param.output(param.Number)
+    @param.depends("value")
+    async def doubled(self):
+        if self.value is None:
+            raise param.Skip
+        return self.value * 2
+
+
+@pytest.mark.parametrize("component", [Pending, AsyncPending])
+async def test_an_output_skipping_its_value_is_not_a_failure(component):
+    editor = FlowDash(
+        {"T/pending": component}, include_builtin_components=False, notifications=False
+    )
+    editor.new_dashboard("Pending")
+    ops = DashboardOps(editor)
+    text = "flowdash: 1\nnodes:\n  p: {component: T/pending}\n"
+    assert ops.preview(text)["nodes"]["p"]["status"] == "ok"
+    assert await ops.replace_yaml_async(text, revision=ops.revision()) == []
+    instance = editor._component_instances[ops._instance("p")]
+    instance.value = 2
+    instance.value = None
+    await asyncio.sleep(0.05)
+    assert ops.preview()["nodes"]["p"]["status"] == "ok"
+    editor.dispose()

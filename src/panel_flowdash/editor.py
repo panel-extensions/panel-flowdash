@@ -2393,6 +2393,8 @@ class FlowDash(Viewer):
                             value = await values.__anext__()
                     except StopAsyncIteration:
                         return
+                    except param.Skip:
+                        raise
                     except Exception as exc:
                         yield _failed(exc)
                         return
@@ -2405,6 +2407,8 @@ class FlowDash(Viewer):
                 try:
                     with current():
                         value = await fn()
+                except param.Skip:
+                    raise
                 except Exception as exc:
                     return _failed(exc)
                 failures.pop(name, None)
@@ -2418,6 +2422,8 @@ class FlowDash(Viewer):
                 try:
                     with current():
                         value = fn()
+                except param.Skip:
+                    raise
                 except Exception as exc:
                     if quiet:
                         failures[name] = exc
