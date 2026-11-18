@@ -356,7 +356,7 @@ other_editor.import_dashboard(data)  # also accepts the JSON string
 
 ## Undo, redo and the edit history
 
-Every change to the canvas becomes a version of the dashboard's edit history: adding, removing and reconfiguring nodes, wiring and transforms, moving nodes, the tile layout, settings, clearing, importing a file and the assistant's edits. A burst of the same edit, such as a drag, a resize or typing into one config field, becomes one version: a repeat within `FlowDash.history_coalesce` seconds (1.5 by default) joins the version before it, and `history_coalesce=0` records every edit on its own.
+The canvas keeps an edit history: adding, removing and reconfiguring nodes, wiring and transforms, moving nodes, the tile layout, settings, clearing, importing a file and the assistant's edits all become versions of it, batched so the history reads naturally. Each request to the assistant is one version, made when the request ends, however many edits it took. A person's edits are batched by burst: edits with no pause longer than `FlowDash.history_coalesce` seconds (3 by default) between them, such as a drag, typing into a config field or adding and wiring a node, become one version, and an edit of the assistant, a save, undo or redo ends the batch. `history_coalesce=0` records each of the person's edits on its own. The defaults live in `panel_flowdash.history` (`BURST_SECONDS`).
 
 In edit mode, **Undo** and **Redo** in the command palette, or Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z (Ctrl+Y on Windows), step through it. From Python:
 
@@ -366,7 +366,7 @@ editor.redo()      # redoes everything the last undo undid
 editor.can_undo, editor.can_redo
 ```
 
-A person's edits are undone one at a time. The edits the assistant made for one request are undone together, back to the dashboard as it was before the request; `editor.undo(whole_runs=False)` undoes them one at a time. Redo lasts until the next edit. Undoing does not delete anything: it applies an earlier version and records that it did, so a later redo, or the history in the assistant's drawer, can get back to any version.
+Undo steps back one version at a time, which undoes a request to the assistant as a whole, back to the dashboard as it was before the request, also when the person edited while the assistant worked; `editor.undo(whole_runs=False)` steps back to the version just before the request's instead. Redo lasts until the next edit. Undoing does not delete anything: it applies an earlier version and records that it did, so a later redo, or the history in the assistant's drawer, can get back to any version. Restoring a version changes only what differs from the canvas, so nodes that stay keep running.
 
 Undo restores the dashboard's turns and node origins as they were at that version, so it never credits a node to someone who did not create it. It also never brings back what you may not use. A node whose component you are not authorized for, or that the app does not offer, keeps its config and connections as the canvas holds them, or as they were when you opened the dashboard if you removed it, so you can undo removing it. A version that holds such a node you never had on the canvas is out of reach: `can_undo` is False and `undo` raises `PermissionError` (the palette shows the message), and nothing changes. People who may only view a dashboard record no history and cannot undo.
 

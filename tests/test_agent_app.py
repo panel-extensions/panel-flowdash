@@ -82,15 +82,17 @@ async def test_the_agent_edits_the_open_dashboard_and_versions_can_be_applied(st
     assert [i["component_id"] for i in app._editor._tile_items] == ["T/number", "T/doubler"]
     assert app._editor.editable and app._has_unsaved_changes()
     (artifact,) = session.runner.state.artifacts
-    opened, *added = artifact.versions
+    opened, request = artifact.versions
     assert opened.metadata["op"] == "open"
-    assert [(v.actor, v.metadata["op"], v.tool_call_id) for v in added] == [
-        ("agent", "add_node", "call-1"),
-        ("agent", "add_node", "call-2"),
-    ]
-    assert {v.run_id for v in added} == {session.runner.run_id}
-    assert await session.apply_version(artifact, added[0])
-    assert [i["component_id"] for i in app._editor._tile_items] == ["T/number"]
+    assert (request.actor, request.metadata["op"], request.metadata["edits"]) == (
+        "agent",
+        "request",
+        2,
+    )
+    assert request.run_id == session.runner.run_id
+    assert request.metadata["tool_call_ids"] == ["call-1", "call-2"]
+    assert await session.apply_version(artifact, opened)
+    assert app._editor._tile_items == []
 
 
 async def test_undo_takes_back_the_agents_whole_request(store, monkeypatch):
@@ -130,9 +132,10 @@ async def test_the_drawer_restores_versions_with_the_editors_checks(store, monke
     await session.runner.run("Build")
     app._editor.add_component("T/doubler")
     (artifact,) = session.runner.state.artifacts
-    count = len(artifact.versions)
-    # Every edit is a version already, so nothing is dropped and nobody is asked.
+    # The person's burst is published first, so nothing is dropped and nobody is asked.
     assert await session.apply_version(artifact, artifact.versions[1])
+    count = len(artifact.versions)
+    assert count == 3
     assert [i["component_id"] for i in app._editor._tile_items] == ["T/number"]
     assert len(artifact.versions) == count
 

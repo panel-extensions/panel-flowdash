@@ -262,7 +262,7 @@ def ops(store):
     editor.dispose()
 
 
-async def test_each_edit_publishes_an_applied_version_with_a_semantic_diff(ops):
+async def test_a_request_publishes_one_applied_version_with_a_semantic_diff(ops):
     runner = _runner(
         ops,
         ("add_node", {"component": "T/number"}),
@@ -277,11 +277,13 @@ async def test_each_edit_publishes_an_applied_version_with_a_semantic_diff(ops):
     assert output == f"Done: Connected {source}.value to {target}.value."
     (artifact,) = runner.state.artifacts
     assert artifact.kind == ARTIFACT_KIND and artifact.title == "Mine"
-    # The dashboard as opened, then one version per edit.
-    assert len(artifact.versions) == 4 and artifact.applied_version.version == 4
-    assert [v.tool_call_id for v in artifact.versions] == [None, "call-1", "call-2", "call-3"]
-    changes = diff(artifact.versions[2].value, artifact.versions[3].value, kind=ARTIFACT_KIND)
-    assert [c.label for c in changes.changes] == [f"Connected {source}.value → {target}.value"]
+    # The dashboard as opened, then one version for the whole request.
+    assert len(artifact.versions) == 2 and artifact.applied_version.version == 2
+    request = artifact.versions[1]
+    assert (request.actor, request.run_id) == ("agent", runner.run_id)
+    assert request.metadata["tool_call_ids"] == ["call-1", "call-2", "call-3"]
+    changes = diff(artifact.versions[0].value, request.value, kind=ARTIFACT_KIND)
+    assert f"Connected {source}.value → {target}.value" in [c.label for c in changes.changes]
     assert ops.editor.dirty and ops.editor.graph.edges
 
 
@@ -337,9 +339,11 @@ async def test_reverting_a_version_restores_the_dashboard(ops):
         ("add_node", {"component": "T/scaled", "config": {"factor": 2}}),
     )
     await runner.run("Build")
+    ops.editor.add_component("T/doubler")
+    ops.editor.edit_history.flush()
     (artifact,) = runner.state.artifacts
     ops.replace_yaml(artifact.versions[1].value, revision=ops.revision())
-    assert [i["component_id"] for i in ops.editor._tile_items] == ["T/number"]
+    assert [i["component_id"] for i in ops.editor._tile_items] == ["T/number", "T/scaled"]
 
 
 def _app(store, monkeypatch, user="alice", components=COMPONENTS, **params):

@@ -55,7 +55,7 @@ from panel_flowdash.dataflow_engine import (
     failure_text,
 )
 from panel_flowdash.failure_overlay import FailureMessage, FailureOverlay, with_failure_overlay
-from panel_flowdash.history import EditHistory, label_for
+from panel_flowdash.history import BURST_SECONDS, EditHistory, label_for
 from panel_flowdash.placeholders import (
     PLACEHOLDER_NODE_TYPE,
     Placeholder,
@@ -385,6 +385,8 @@ _FAILED_NODE_STYLE = {
 # Stands in for the component of an exported item the exporting user may not
 # use. Importing it back restores the stored item, or drops it.
 RESTRICTED_COMPONENT_ID = "flowdash:restricted"
+
+_MISSING = object()
 
 
 def export_model(
@@ -790,12 +792,14 @@ class FlowDash(Viewer):
     )
 
     history_coalesce = param.Number(
-        default=1.5,
+        default=BURST_SECONDS,
         bounds=(0, None),
         doc="""
-        Seconds within which a repeat of the same edit joins the version of
-        the one before, so a drag, a resize or typing into a config field
-        becomes one version. Zero records every edit on its own.""",
+        Seconds without an edit that end a batch of the person's edits in
+        the edit history, so a burst of edits, such as a drag, typing into
+        a config field or a few quick changes, is one version. An edit of the
+        agent, a save, undo and redo end a batch too, and each request to the
+        agent is one version. Zero records each of the person's edits on its own.""",
     )
 
     history_limit = param.Integer(
@@ -3223,9 +3227,11 @@ class FlowDash(Viewer):
         """End the turns of the agent's requests, so the next request's edits start a new turn.
 
         The dashboard tools call it when a request ends, whether it finished,
-        failed or was cancelled.
+        failed or was cancelled. Each request's edits then become one version
+        of the edit history.
         """
         self._turn_log.end_agent_turns()
+        self._history.end_requests()
 
     def _record_edit(
         self,
@@ -4276,7 +4282,168 @@ class FlowDash(Viewer):
         model = self._restore_model(text)
         self.ensure_components_loaded(self._model_component_ids(model))
         with self._quiet_history():
-            self._hydrate_model(model, keep_open_turns=True)
+            self._hydrating = True
+            try:
+                patched = self._patch_canvas(model)
+            finally:
+                self._hydrating = False
+            if not patched:
+                self._hydrate_model(model, keep_open_turns=True)
+
+    @pn.io.hold()
+    def _patch_canvas(self, model: DashboardModel) -> bool:
+        """Change only what differs between the canvas and *model*, and return whether it could.
+
+        Nodes that stay keep their component and its outputs, so restoring a
+        version that changed one node does not rebuild the others. Anything
+        this does not handle, such as placeholders or connections that could
+        not be restored, returns False before changing the canvas, and the
+        caller loads the whole model instead.
+        """
+        current = self.to_model()
+        if _drop_repeated_ids(model) or self._unresolved_edges:
+            return False
+        placeholders = self._placeholders()
+        aliases = self._component_aliases()
+        before = {item.instance_id: item for item in current.items}
+        after = {item.instance_id: item for item in model.items}
+
+        def resolved(item):
+            return self._resolve_component_id(item.component_id, aliases)
+
+        removed = [iid for iid in before if iid not in after]
+        added = [iid for iid in after if iid not in before]
+        replaced = [
+            iid for iid in after if iid in before and resolved(after[iid]) != resolved(before[iid])
+        ]
+        kept = [iid for iid in after if iid in before and iid not in replaced]
+        for iid in [*removed, *replaced]:
+            if iid in placeholders:
+                return False
+        for iid in [*added, *replaced]:
+            if self._item_placeholder(after[iid], resolved(after[iid])) is not None:
+                return False
+        for iid in kept:
+            if iid in placeholders and (
+                before[iid].config != after[iid].config
+                or before[iid].component_id != after[iid].component_id
+            ):
+                return False
+
+        self._turn_log.reset(model.turns, keep_open=True)
+        known = {turn.id for turn in model.turns}
+        self._origins = {
+            item.instance_id: item.origin for item in model.items if item.origin in known
+        }
+        if model.settings != current.settings:
+            self._apply_settings(model.settings)
+        self.dashboard = model
+        edge_key = lambda e: (e.source, e.source_port, e.target, e.target_port)
+        old_edges = {edge_key(e): e for e in current.edges}
+        new_edges = {edge_key(e): e for e in model.edges}
+        with self._muted_canvas(), self._batched_canvas(), self._dataflow_graph.batch():
+            for key, edge in old_edges.items():
+                if key not in new_edges and edge.source in before and edge.target in before:
+                    if (
+                        edge.source not in removed + replaced
+                        and edge.target not in removed + replaced
+                    ):
+                        self.disconnect(*key)
+            for iid in [*removed, *replaced]:
+                self._unplace(iid)
+            for iid in [*replaced, *added]:
+                item = after[iid]
+                component_id = resolved(item)
+                spec = self._component_specs[component_id]
+                self._place(
+                    component_id,
+                    iid,
+                    {spec.resolve_name(k): v for k, v in item.config.items()},
+                    {"x": item.x, "y": item.y},
+                )
+            for iid in kept:
+                if iid not in placeholders:
+                    self._set_config(iid, after[iid].config)
+            fresh = set(replaced) | set(added)
+            for key, edge in new_edges.items():
+                old = old_edges.get(key)
+                endpoints_new = edge.source in fresh or edge.target in fresh
+                if old is None or endpoints_new:
+                    result = self.connect(*key, edge.transform)
+                elif old.transform != edge.transform:
+                    result = self.set_edge_transform(*key, edge.transform or [])
+                else:
+                    continue
+                if result is not True:
+                    logger.warning("Restoring a version could not wire %s: %s", key, result)
+                    self._unresolved_edges.append(UnresolvedEdge(edge, result))
+        moved = {
+            iid: (after[iid].x, after[iid].y)
+            for iid in kept
+            if (after[iid].x, after[iid].y) != (before[iid].x, before[iid].y)
+        }
+        if moved:
+            with self._muted_canvas():
+                self._flow.nodes = [
+                    {**node, "position": {"x": moved[node["id"]][0], "y": moved[node["id"]][1]}}
+                    if node.get("id") in moved
+                    else node
+                    for node in self._flow.nodes
+                ]
+        layout = (
+            model.tile_layout,
+            model.breakpoints,
+            model.responsive_layouts,
+            model.reference_width,
+        )
+        if (
+            layout
+            != (
+                current.tile_layout,
+                current.breakpoints,
+                current.responsive_layouts,
+                current.reference_width,
+            )
+            or added
+            or removed
+            or replaced
+        ):
+            legacy_ids = self._legacy_layout_ids(model)
+            self._grid_populated = False
+            self._pending_tile_layout = _key_saved_layout(model.tile_layout, legacy_ids)
+            self._pending_grid_config = {
+                "breakpoints": list(model.breakpoints or []),
+                "responsive_layouts": {
+                    band: _key_saved_layout(entries, legacy_ids)
+                    for band, entries in (model.responsive_layouts or {}).items()
+                },
+                "reference_width": model.reference_width,
+            }
+            self._apply_mode_state()
+        self._sync_placed()
+        self._sync_toolbar_state()
+        return True
+
+    def _set_config(self, instance_id: str, config: dict[str, t.Any]):
+        """Give a placed node exactly *config*, resetting fields it leaves out to their defaults."""
+        item = next(i for i in self._tile_items if i["instance_id"] == instance_id)
+        spec = self._component_specs.get(item["component_id"])
+        target = {spec.resolve_name(k): v for k, v in config.items()} if spec else dict(config)
+        current = item.get("config", {})
+        if target == current:
+            return
+        config_state = self._dataflow_graph.get_config_state(instance_id)
+        for key in [k for k in current if k not in target]:
+            if config_state is not None and key in config_state.param:
+                setattr(config_state, key, config_state.param[key].default)
+        patch = {k: v for k, v in target.items() if current.get(k, _MISSING) != v}
+        for key, value in patch.items():
+            if config_state is not None and hasattr(config_state.param, key):
+                try:
+                    setattr(config_state, key, value)
+                except Exception as exc:
+                    logger.warning("Config '%s' rejected on %s: %s", key, instance_id, exc)
+        item["config"] = copy.deepcopy(target)
 
     def _restore_refusal(self, text: str) -> str | None:
         """Return why restoring a version of the history is refused, or None if it is allowed."""

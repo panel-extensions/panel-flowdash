@@ -6,14 +6,18 @@ Needs the ``panel-flowdash[agent]`` extra.
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import typing as t
 
 import panel as pn
+import yaml
 from panel_agents import AgentDrawer, RunState
 from panel_agents.adapters.pydantic_ai import ActionToolset, AgentRunner
 
 from panel_flowdash.util import confirm
+
+logger = logging.getLogger(__name__)
 
 from .actions import palette_actions
 from .assistant import create_agent
@@ -96,6 +100,8 @@ class AgentSession:
                 ),
             },
         )
+        # Background checks of restored versions, kept so they are not collected while they run.
+        self._checks: set[asyncio.Task] = set()
         self.drawer = AgentDrawer(
             self.runner, title="Assistant", variant="persistent", on_apply=self.apply_version
         )
@@ -144,15 +150,7 @@ class AgentSession:
         """
         history = self.app._editor.edit_history
         if history.active:
-            history.restore(artifact, version)
-            # The version is restored as recorded; its checks run off the event loop to tell the user.
-            problems = await self.ops._canvas_problems_async(self.ops.editor)
-            if problems:
-                names = self.ops._names()
-                self._notify_failed_checks(
-                    version, {names.get(iid, iid): found for iid, found in problems.items()}
-                )
-            return True
+            return await self._restore(history, artifact, version)
         current = self.app._current_dashboard
         if current is None or artifact.artifact_id != f"dashboard:{current.dashboard_id}":
             raise ValueError("That version belongs to a dashboard that is not open.")
@@ -177,6 +175,48 @@ class AgentSession:
                 problems.setdefault(issue.path.split(".")[1], []).append(issue.message)
             self._notify_failed_checks(version, problems)
         return True
+
+    async def _restore(self, history, artifact: Artifact, version: ArtifactVersion) -> bool:
+        """Restore *version* through the edit history and report its config checks afterwards.
+
+        The version's components are imported off the event loop and the
+        restore changes only what differs, so the drawer's button stops
+        spinning as soon as the canvas matches. The config checks then run
+        in the background, bounded by ``RESTORE_CHECK_TIMEOUT``, and tell
+        the user which nodes fail. A refused restore is reported too.
+        """
+        editor = self.app._editor
+        try:
+            await editor.ensure_components_loaded_async(_components(version.value))
+            history.restore(artifact, version)
+        except Exception as exc:
+            self.app._notify("error", f"v{version.version} was not restored: {exc}", duration=8000)
+            raise
+        task = asyncio.ensure_future(self._report_checks(version))
+        self._checks.add(task)
+        task.add_done_callback(self._checks.discard)
+        return True
+
+    async def _report_checks(self, version: ArtifactVersion):
+        try:
+            problems = await asyncio.wait_for(
+                self.ops._canvas_problems_async(self.app._editor), RESTORE_CHECK_TIMEOUT
+            )
+        except TimeoutError:
+            self.app._notify(
+                "warning",
+                f"Restored v{version.version}; its config checks did not finish in time.",
+                duration=8000,
+            )
+            return
+        except Exception:
+            logger.exception("The config checks of a restored version failed")
+            return
+        if problems:
+            names = self.ops._names()
+            self._notify_failed_checks(
+                version, {names.get(iid, iid): found for iid, found in problems.items()}
+            )
 
     def _notify_failed_checks(self, version: ArtifactVersion, problems: dict[str, list[str]]):
         n = len(problems)
@@ -226,6 +266,9 @@ class _SessionRunner(AgentRunner):
         self._session = session
 
     def _note_artifact_change(self, event):
+        # A request's own version is published as its run ends; the model made those edits.
+        if getattr(event, "actor", None) == "agent" and event.run_id == self.run_id:
+            return
         # Merged as they come, so the notes stay short however long the person edits.
         super()._note_artifact_change(event)
         self._notes[:] = _collapse_notes(self._notes)
@@ -273,3 +316,23 @@ def _collapse_notes(notes: list[str]) -> list[str]:
             )
         previous = (first, name)
     return collapsed
+
+
+#: Seconds the drawer waits for the config checks of a restored version before it gives up on them.
+RESTORE_CHECK_TIMEOUT = 15
+
+
+def _components(text: t.Any) -> set[str]:
+    """Return the component ids a version's YAML places, to import before restoring it."""
+    try:
+        doc = yaml.safe_load(text) if isinstance(text, str) else None
+    except yaml.YAMLError:
+        return set()
+    nodes = doc.get("nodes") if isinstance(doc, dict) else None
+    if not isinstance(nodes, dict):
+        return set()
+    return {
+        node["component"]
+        for node in nodes.values()
+        if isinstance(node, dict) and isinstance(node.get("component"), str)
+    }

@@ -393,7 +393,7 @@ class CommandPaletteController:
                 {
                     "id": "action:undo",
                     "title": "Undo",
-                    "subtitle": _step_label(editor.edit_history.artifact, "undo"),
+                    "subtitle": editor.edit_history.undo_label,
                     "icon": "undo",
                     "keys": ["Mod", "Z"],
                     "keywords": "undo revert back history",
@@ -404,7 +404,7 @@ class CommandPaletteController:
                 {
                     "id": "action:redo",
                     "title": "Redo",
-                    "subtitle": _step_label(editor.edit_history.artifact, "redo"),
+                    "subtitle": editor.edit_history.redo_label,
                     "icon": "redo",
                     "keys": ["Mod", "Shift", "Z"],
                     "keywords": "redo again forward history",
@@ -502,19 +502,3 @@ class CommandPaletteController:
             editor.fullscreen = not editor.fullscreen
         elif action == "settings" and not editor.read_only:
             editor._settings_button.clicks += 1
-
-
-def _step_label(artifact, action: str) -> str:
-    """Describe what undoing or redoing would change back, e.g. ``"Added kpi"``."""
-    if artifact is None:
-        return ""
-    if action == "undo":
-        version = artifact.applied_version
-    else:
-        number = artifact.redo_run_version
-        version = artifact.versions[number - 1] if number else None
-    if version is None:
-        return ""
-    if version.actor == "agent":
-        return "The assistant's last request" if action == "undo" else "The assistant's request"
-    return version.metadata.get("label") or ""

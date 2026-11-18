@@ -21,6 +21,7 @@ from panel_flowdash.dashboard_store import (
 )
 from panel_flowdash.history import (
     ARTIFACT_KIND,
+    BURST_SECONDS,
     MAX_EVENTS,
     artifact_id_for,
     compact,
@@ -29,7 +30,13 @@ from panel_flowdash.history import (
 from panel_flowdash.json_store import JSONFolderDashboardStore
 from panel_flowdash.turns import agent_edits
 
-from .test_agent_ops import _editor
+from .test_agent_ops import _editor as _agent_ops_editor
+
+
+def _editor(store=None, **params):
+    """An editor that records each of the person's edits on its own, unless told otherwise."""
+    params.setdefault("history_coalesce", 0)
+    return _agent_ops_editor(store, **params)
 
 
 class Clock:
@@ -209,60 +216,97 @@ def test_the_history_state_bounds_its_events(editor):
 
 @pytest.fixture
 def clocked():
-    editor = _editor(MemoryDashboardStore())
+    editor = _editor(MemoryDashboardStore(), history_coalesce=BURST_SECONDS)
     clock = Clock()
     editor._history._clock = clock
     editor.new_dashboard("Mine")
     editor.add_component("T/scaled", instance_id="a")
     editor.add_component("T/scaled", instance_id="b")
+    clock.now += 10
+    editor.edit_history.flush()
     yield editor, clock
     editor.dispose()
 
 
-def test_a_burst_of_config_edits_is_one_version(clocked):
+def test_a_burst_of_edits_is_one_version(clocked):
     editor, clock = clocked
     for factor in (2, 3, 4):
         editor._apply_config_patch("a", {"factor": factor})
         clock.now += 1
-    assert _ops(editor) == ["open", "add_node", "add_node", "set_config"]
+    editor.add_component("T/number", instance_id="c")
+    clock.now += 1
+    editor.connect("c", "value", "b", "value")
+    editor.edit_history.flush()
+    assert _ops(editor) == ["open", "add_node", "set_config"]
     version = _last(editor)
-    assert version.metadata["args"] == {"name": "a", "keys": ["factor"]}
+    assert version.metadata["edits"] == 5
+    assert [op["op"] for op in version.metadata["ops"]] == [
+        "set_config",
+        "set_config",
+        "set_config",
+        "add_node",
+        "connect",
+    ]
+    assert version.metadata["label"] == "Changed the config of a. Added c. Connected c to b."
     assert yaml.safe_load(version.value)["nodes"]["a"]["config"] == {"factor": 4}
-    assert version.metadata["base"] == editor.edit_history.versions[-2].metadata["revision"]
 
 
-def test_a_pause_ends_the_gesture(clocked):
+def test_the_first_burst_holds_the_first_edits(editor):
+    editor.history_coalesce = BURST_SECONDS
+    clock = Clock()
+    editor._history._clock = clock
+    editor.add_component("T/number", instance_id="a")
+    editor.add_component("T/number", instance_id="b")
+    editor.edit_history.flush()
+    assert _ops(editor) == ["open", "add_node"] and _last(editor).metadata["edits"] == 2
+
+
+def test_a_pause_ends_the_burst(clocked):
     editor, clock = clocked
     editor._apply_config_patch("a", {"factor": 2})
-    clock.now += 5
+    clock.now += BURST_SECONDS + 1
     editor._apply_config_patch("a", {"factor": 3})
+    editor.edit_history.flush()
     assert _ops(editor)[-2:] == ["set_config", "set_config"]
 
 
-def test_another_node_or_operation_ends_the_gesture(clocked):
+def test_a_save_or_undo_ends_the_burst(clocked):
     editor, _ = clocked
     editor._apply_config_patch("a", {"factor": 2})
-    editor._apply_config_patch("b", {"factor": 2})
-    editor.settings.refresh_period = 5
-    editor.settings.refresh_period = 6
-    assert _ops(editor)[-3:] == ["set_config", "set_config", "settings"]
+    editor.save()
+    editor._apply_config_patch("a", {"factor": 3})
+    editor.edit_history.flush()
+    assert _ops(editor)[-2:] == ["set_config", "set_config"]
+    assert editor.undo() and editor._tile_items[0]["config"]["factor"] == 2
+    editor._apply_config_patch("a", {"factor": 5})
+    editor._apply_config_patch("b", {"factor": 5})
+    editor.edit_history.flush()
+    assert _last(editor).metadata["edits"] == 2
 
 
-def test_structural_edits_are_never_merged(clocked):
+def test_an_agent_edit_ends_the_burst(clocked):
     editor, _ = clocked
-    editor.add_component("T/number", instance_id="c")
-    editor.add_component("T/number", instance_id="d")
-    assert _ops(editor)[-2:] == ["add_node", "add_node"]
+    editor._apply_config_patch("a", {"factor": 2})
+    with agent_edits("run-x"):
+        editor._apply_config_patch("b", {"factor": 3})
+    editor.end_agent_turns()
+    editor._apply_config_patch("a", {"factor": 4})
+    editor.edit_history.flush()
+    assert [(v.actor, v.metadata["op"]) for v in editor.edit_history.versions[-3:]] == [
+        ("user", "set_config"),
+        ("agent", "request"),
+        ("user", "set_config"),
+    ]
 
 
-def test_a_gesture_is_published_before_undo(clocked):
+def test_a_burst_is_published_before_undo(clocked):
     editor, _ = clocked
     editor._apply_config_patch("a", {"factor": 2})
     assert editor.can_undo and editor.undo()
     assert editor._tile_items[0]["config"].get("factor", 1) == 1
 
 
-def test_a_paused_gesture_is_published_by_the_timer(clocked):
+def test_a_paused_burst_is_published_by_the_timer(clocked):
     from bokeh.document import Document
 
     editor, clock = clocked
@@ -277,17 +321,12 @@ def test_a_paused_gesture_is_published_by_the_timer(clocked):
     assert history._pending is None
 
 
-def test_coalescing_can_be_turned_off(clocked):
+def test_batching_can_be_turned_off(clocked):
     editor, _ = clocked
     editor.history_coalesce = 0
     editor._apply_config_patch("a", {"factor": 2})
     editor._apply_config_patch("a", {"factor": 3})
     assert _ops(editor)[-2:] == ["set_config", "set_config"]
-
-
-# --------------------------------------------------------------------------
-# Undo and redo
-# --------------------------------------------------------------------------
 
 
 def test_undo_and_redo_step_through_a_persons_edits(editor):
@@ -359,26 +398,55 @@ def test_undoing_back_to_the_saved_canvas_is_not_dirty(editor):
     assert editor.dirty
 
 
-def test_an_agents_request_is_undone_as_a_whole(editor):
+def test_an_agents_request_is_one_version_undone_as_a_whole(editor):
     editor.add_component("T/number", instance_id="mine")
     state = editor.edit_history.state
     state.apply(RunStarted(run_id="run-1", agent_name="assistant", input="Add two"))
-
     with _scope(run_id="run-1", tool_call_id="call-1", actor="agent"), agent_edits("run-1"):
         editor.add_component("T/number", instance_id="a1")
+    # A person's edit while the request runs is a version of its own.
+    editor.add_component("T/scaled", instance_id="theirs")
     with _scope(run_id="run-1", tool_call_id="call-2", actor="agent"), agent_edits("run-1"):
         editor.add_component("T/doubler", instance_id="a2")
+        editor.connect("a1", "value", "a2", "value")
+    assert editor.edit_history.versions[-1].metadata["op"] == "add_node"
     state.apply(RunFinished(run_id="run-1"))
-    agent_versions = editor.edit_history.versions[-2:]
-    assert [(v.actor, v.run_id, v.tool_call_id, v.user) for v in agent_versions] == [
-        ("agent", "run-1", "call-1", None),
-        ("agent", "run-1", "call-2", None),
-    ]
-    assert agent_versions[0].metadata["turn"] == editor.turns[-1].id
-    assert editor.turns[-1].actor == "agent"
+    request = editor.edit_history.versions[-1]
+    assert (request.actor, request.run_id, request.user) == ("agent", "run-1", None)
+    assert request.metadata["op"] == "request" and request.metadata["edits"] == 3
+    assert request.metadata["tool_call_ids"] == ["call-1", "call-2"]
+    assert [op["op"] for op in request.metadata["ops"]] == ["add_node", "add_node", "connect"]
+    agent_turn = next(t for t in editor.turns if t.actor == "agent")
+    assert request.metadata["turn"] == agent_turn.id
+    assert request.metadata["label"] == agent_turn.summary
+    assert sum(v.actor == "agent" for v in editor.edit_history.versions) == 1
+    # Undo goes back to before the request in one step, past the person's edit made meanwhile.
     assert editor.undo() and _names(editor) == ["mine"]
-    assert editor.redo() and _names(editor) == ["a1", "a2", "mine"]
-    assert editor.undo(whole_runs=False) and _names(editor) == ["a1", "mine"]
+    assert editor.redo() and _names(editor) == ["a1", "a2", "mine", "theirs"]
+    assert editor.undo(whole_runs=False) and _names(editor) == ["a1", "mine", "theirs"]
+
+
+def test_a_failed_request_is_one_version_too(editor):
+    from panel_agents.events import RunError
+
+    state = editor.edit_history.state
+    state.apply(RunStarted(run_id="run-1", agent_name="assistant", input="Add"))
+    with _scope(run_id="run-1", tool_call_id="call-1", actor="agent"), agent_edits("run-1"):
+        editor.add_component("T/number", instance_id="a1")
+    state.apply(RunError(run_id="run-1", message="cancelled", code="cancelled"))
+    assert [(v.actor, v.metadata["op"]) for v in editor.edit_history.versions] == [
+        ("user", "open"),
+        ("agent", "request"),
+    ]
+
+
+def test_a_request_outside_a_run_ends_with_its_turn(editor):
+    with agent_edits("run-x"):
+        editor.add_component("T/number", instance_id="a1")
+        editor.add_component("T/number", instance_id="a2")
+    assert editor.edit_history.requests_pending
+    editor.end_agent_turns()
+    assert [v.metadata["op"] for v in editor.edit_history.versions] == ["open", "request"]
 
 
 # --------------------------------------------------------------------------
@@ -916,8 +984,8 @@ def test_the_history_survives_a_change_in_how_the_yaml_reads():
         "add_node",
         "add_node",
     ]
+    # The saved version stands for the canvas, so the first undo changes something.
     assert second.can_undo
-    assert second.undo() and _names(second) == ["base", "double"]
     assert second.undo() and _names(second) == ["base"]
 
 
@@ -967,3 +1035,30 @@ def test_retention_loses_no_record_appended_meanwhile(kind, tmp_path):
     store.rewrite_history(model.dashboard_id, rewrite)
     writer.join()
     assert store.load_history(model.dashboard_id) == [{"type": "ARTIFACT_PUBLISHED", "n": 2}]
+
+
+def test_restoring_changes_only_what_differs(editor):
+    base, double = _two_nodes(editor)
+    editor.add_component("T/scaled", {"factor": 3}, instance_id="scaled")
+    editor.connect(base, "value", double, "value")
+    views = {iid: editor._component_instances.get(iid) for iid in (base, double, "scaled")}
+    editor._apply_config_patch("scaled", {"factor": 5})
+    editor.remove_component(double)
+    config = lambda iid: next(i for i in editor._tile_items if i["instance_id"] == iid)["config"]
+    assert editor.undo() and editor.undo()
+    assert config("scaled") == {"factor": 3}
+    assert editor._component_instances.get(base) is views[base]
+    assert editor._component_instances.get("scaled") is views["scaled"]
+    assert len(editor.graph.edges) == 1
+    assert editor.undo() and editor.graph.edges == []
+    assert editor.undo() and _names(editor) == ["base", "double"]
+    assert editor.redo() and config("scaled") == {"factor": 3}
+
+
+def test_a_restore_it_cannot_patch_loads_the_whole_version(editor, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        type(editor), "_patch_canvas", lambda self, model: calls.append(model) or False
+    )
+    _two_nodes(editor)
+    assert editor.undo() and _names(editor) == ["base"] and calls

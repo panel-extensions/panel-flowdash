@@ -145,11 +145,12 @@ request.
   and `group:` without a group are refused.
 
 The drawer's artifact view shows the dashboard's
-[edit history](persist-dashboards.md#undo-redo-and-the-edit-history): a version for
-every edit, the user's and the agent's, grouped by request. The user can compare
+[edit history](persist-dashboards.md#undo-redo-and-the-edit-history): one version for
+each request to the agent and one for each burst of the user's own edits. The user can compare
 versions, see what changed in the dashboard's terms ("Connected filter.filtered →
 map.turbines", "kpi: metric: turbines → capacity"), undo a whole request, and go back
-to or forward to any version, with the same rights checks as the editor's own undo.
+to or forward to any version, with the same rights checks as the editor's own undo. A
+restored version's config checks run afterwards, and a warning names the nodes that fail.
 The agent cannot undo or redo through the command palette; those commands are the
 user's. With `editor_options={"history": False}` each tool call publishes a version
 instead, and applying one that predates the user's own edits asks first.

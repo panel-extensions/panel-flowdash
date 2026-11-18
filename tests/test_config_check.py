@@ -772,8 +772,7 @@ class TestPlacement:
         app._load_dashboard_sync(model.dashboard_id)
         agent = Agent(
             scripted(
-                ("add_node", {"component": QUERY, "name": "q"}),
-                ("set_config", {"name": "q", "config": {"rows": 3}}),
+                ("add_node", {"component": QUERY, "name": "q", "config": {"sql": "SELECT PAUSE"}})
             ),
             deps_type=FlowDashDeps,
             toolsets=[dashboard_toolset()],
@@ -781,14 +780,23 @@ class TestPlacement:
         session = AgentSession(app, agent)
         await session.runner.run("Build")
         (artifact,) = session.runner.state.artifacts
+        ticks = 0
 
-        def blocking(*args, **kwargs):
-            raise AssertionError("replace_yaml blocks the event loop")
+        async def tick():
+            nonlocal ticks
+            while True:
+                await asyncio.sleep(0.01)
+                ticks += 1
 
-        monkeypatch.setattr(type(session.ops), "replace_yaml", blocking)
-        first = next(v for v in artifact.versions if v.actor == "agent")
-        assert await session.apply_version(artifact, first)
-        assert DashboardOps(app._editor).node_config("q") == {}
+        ticker = asyncio.ensure_future(tick())
+        try:
+            # The check sleeps 0.3 s in a worker thread, so the loop keeps ticking meanwhile.
+            assert await session.apply_version(artifact, artifact.versions[-1])
+            await asyncio.gather(*session._checks)
+        finally:
+            ticker.cancel()
+        assert ticks >= 10
+        assert DashboardOps(app._editor).node_config("q") == {"sql": "SELECT PAUSE"}
 
 
 class TestPool:
@@ -907,12 +915,14 @@ class TestRestore:
             ("add_node", {"component": QUERY, "name": "q", "config": {"sql": "SELECT 1"}}),
             ("set_config", {"name": "q", "config": {"sql": "SELECT 2"}}),
         )
-        first = next(v for v in artifact.versions if v.actor == "agent")
-        bad = first.value.replace("sql: SELECT 1", "sql: DROP t")
+        request = next(v for v in artifact.versions if v.actor == "agent")
+        bad = request.value.replace("sql: SELECT 2", "sql: DROP t")
         version = types.SimpleNamespace(value=bad, version=1)
         notes = []
         monkeypatch.setattr(app, "_notify", lambda *args, **kwargs: notes.append(args))
         assert await session.apply_version(artifact, version)
+        # The checks report after the drawer's button has stopped spinning.
+        await asyncio.gather(*session._checks)
         ((severity, message),) = notes
         assert severity == "warning"
         assert message == (
