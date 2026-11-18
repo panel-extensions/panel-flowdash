@@ -2494,6 +2494,13 @@ class FlowDash(Viewer):
         self._inspector.param.watch(self._on_inspector_toggled, "collapsed")
         self._split_view.events.param.watch(self._on_pane_resized, "pane_size")
 
+        # One slot: a row counts the width of hidden children, and only one of
+        # the two panels is shown at a time. The slot is hidden with both,
+        # since an empty Column still takes the width of its scroll button.
+        self._panel_slot = pn.Column(
+            self._inspector, self._layout_panel, margin=0, sizing_mode="stretch_height"
+        )
+
         self._sync_toolbar_extra()
         self._sync_toolbar_state()
         self._stamp_refresh()
@@ -2502,11 +2509,7 @@ class FlowDash(Viewer):
             pn.Row(
                 self._side_panel,
                 self._workspace_area,
-                # One slot: a row counts the width of hidden children, and only
-                # one of the two panels is shown at a time.
-                pn.Column(
-                    self._inspector, self._layout_panel, margin=0, sizing_mode="stretch_height"
-                ),
+                self._panel_slot,
                 sizing_mode="stretch_both",
             ),
             self._status_bar,
@@ -2825,6 +2828,7 @@ class FlowDash(Viewer):
         self._side_panel.visible = showing_canvas
         self._inspector.visible = showing_canvas
         self._layout_panel.visible = interactive and showing_grid and not split
+        self._panel_slot.visible = self._inspector.visible or self._layout_panel.visible
         self._status_bar.visible = self.editable
         self._split_view.events.active = split
         self._view_controls.beside_canvas = split
