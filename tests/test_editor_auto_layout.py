@@ -335,3 +335,22 @@ class TestTools:
 
         assert "Positions and tile layout are automatic" in INSTRUCTIONS
         assert "arrange_canvas" in INSTRUCTIONS
+
+
+class TestHistory:
+    @pytest.mark.parametrize("op", ["arrange_canvas", "arrange_layout"])
+    def test_an_arrangement_is_one_version_that_undo_takes_back(self, ops, op):
+        _build(ops)
+        editor = ops.editor
+        editor._flow.patch_node_props("source", {"position": {"x": 0, "y": 0}})
+        editor._on_node_moved({"node_id": "source"})
+        ops.place_tile("kpi", width=30, index=4)
+        history = editor.edit_history
+        history.flush()
+        before = (len(history.versions), _positions(editor), _tiles(editor))
+        getattr(ops, op)()
+        history.flush()
+        assert len(history.versions) == before[0] + 1
+        assert history.versions[-1].metadata["op"] == op
+        assert editor.undo()
+        assert (_positions(editor), _tiles(editor)) == before[1:]

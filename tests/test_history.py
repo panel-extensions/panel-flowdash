@@ -162,7 +162,8 @@ def test_imports_and_replaces_are_versions(editor):
     ops = DashboardOps(editor)
     editor.add_component("T/number", instance_id="base")
     editor.import_dashboard({"items": [{"instance_id": "n", "component_id": "T/number"}]})
-    text = ops.get_dashboard().replace("  n:\n", "  m:\n")
+    # The import laid out n's tile, so the layout names the node too.
+    text = ops.get_dashboard().replace("  n:\n", "  m:\n").replace("node: n\n", "node: m\n")
     ops.replace_yaml(text)
     assert _ops(editor)[-2:] == ["import", "replace"]
     assert editor.edit_history.versions[-1].metadata["label"] == "Added m. Removed n."
