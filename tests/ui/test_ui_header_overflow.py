@@ -141,6 +141,9 @@ _VISIBLE_TEXT = """
 @pytest.mark.parametrize("edit", [False, True], ids=["view", "edit"])
 def test_top_bar_buttons_are_large_enough_and_named_by_their_text(page, edit):
     _serve(page, 1024, edit)
+    # The dashboard's actions join the top bar after the page shows.
+    for name in (EDIT_ACTIONS if edit else VIEW_ACTIONS) + TOP_BAR:
+        expect(_button(page, name)).to_be_visible()
 
     buttons = page.locator(".MuiAppBar-root").first.get_by_role("button").filter(visible=True)
     assert buttons.count() > 8

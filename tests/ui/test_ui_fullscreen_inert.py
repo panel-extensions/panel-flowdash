@@ -11,7 +11,7 @@ from panel_flowdash.auth import resolve_identity
 from panel_flowdash.component_library import normalize_components
 from panel_flowdash.util import confirm
 
-from .util import serve_component
+from .util import INERT_COUNT, serve_component
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect
@@ -46,16 +46,6 @@ _FOCUSED = """() => {
     if (el instanceof Element && el.classList.contains("fd-presenting")) return label
   }
   return "behind"
-}"""
-
-_INERT = """() => {
-  const found = []
-  const walk = (root) => root.querySelectorAll("*").forEach((el) => {
-    if (el.inert) found.push(el)
-    if (el.shadowRoot) walk(el.shadowRoot)
-  })
-  walk(document)
-  return found.length
 }"""
 
 
@@ -97,7 +87,7 @@ def _accessible(page) -> list[tuple[str, str]]:
 
 def _presenting(page, app):
     wait_until(lambda: app._editor.fullscreen, page, timeout=10000)
-    wait_until(lambda: page.evaluate(_INERT) > 0, page)
+    wait_until(lambda: page.evaluate(INERT_COUNT) > 0, page)
     # The tile's buttons and the overlay render after the tile's text.
     expect(page.get_by_role("button", name="Tile button")).to_be_visible()
     expect(page.get_by_role("button", name="Exit full screen")).to_be_attached()
@@ -132,7 +122,7 @@ def test_screen_readers_only_see_the_dashboard(page):
 
     page.get_by_role("button", name="Exit full screen").click()
     wait_until(lambda: not app._editor.fullscreen, page, timeout=10000)
-    wait_until(lambda: page.evaluate(_INERT) == 0, page)
+    wait_until(lambda: page.evaluate(INERT_COUNT) == 0, page)
     roles = {role for role, _ in _accessible(page)}
     assert {"banner", "navigation"} <= roles
 
@@ -153,7 +143,7 @@ def test_leaving_keeps_what_was_inert_before(page):
     app._editor.fullscreen = True
     _presenting(page, app)
     app._editor.fullscreen = False
-    wait_until(lambda: page.evaluate(_INERT) == 1, page)
+    wait_until(lambda: page.evaluate(INERT_COUNT) == 1, page)
     assert page.evaluate(f"() => ({marked})().inert")
 
 
