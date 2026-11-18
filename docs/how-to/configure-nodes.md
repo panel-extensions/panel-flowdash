@@ -140,6 +140,32 @@ exception are logged and count as a failed check, as does a check that takes
 longer than 10 seconds. A `TimeoutError` the check raises itself is a failed
 check like any other exception, not the 10 second limit.
 
+A check that could not verify the config, for example because a probe query
+timed out on a slow database, returns a `CheckWarning` in place of a problem,
+alone or in its list:
+
+```python
+from panel_flowdash import CheckWarning
+
+
+def check(config, inputs):
+    try:
+        probe(config["query"], timeout=3)
+    except ProbeTimeout:
+        return CheckWarning("Could not verify the query: the probe timed out.")
+    except QueryError as exc:
+        return str(exc)
+```
+
+A warning does not refuse the config: it is applied, and the warning shown
+with it, as a warning alert in the inspector, in the assistant's tool result
+("Updated the config of 'q', but: ...") and as a `warning` issue at
+`nodes.<name>.config` from `validate` and `replace_yaml`. `DashboardOps`
+leaves what the latest `add_node`, `set_config`, `connect` or `disconnect`
+found in `last_check`, a list of the problems with the warnings in its
+`warnings`. `CheckWarning` is a `str`, so a list mixing problems and warnings
+is still a list of strings.
+
 The check may be a plain function or an `async` function. A plain one runs in
 a worker thread, so it may block, for example on a database, but it must not
 change the editor: `current_dashboard()` returns the editor while the check
@@ -150,8 +176,8 @@ Plain checks run on a pool of 8 threads of their own. Set
 change that. When every thread is busy a check waits for a free one, for at
 most its timeout, and its 10 seconds only start once it runs; a check that
 finds no free thread in time counts as failed. The synchronous methods
-(`DashboardOps.add_node`, `set_config`, `validate`, `preview` and
-`replace_yaml`) wait for each check in turn, so called on the event loop they
+(`DashboardOps.add_node`, `set_config`, `connect`, `disconnect`,
+`validate`, `preview` and `replace_yaml`) wait for each check in turn, so called on the event loop they
 block it for up to the timeout per check; use the `_async` variants there.
 
 Where a check runs:
@@ -169,6 +195,18 @@ Where a check runs:
   again if the node's config changed meanwhile, and change nothing if
   another dashboard was opened meanwhile. The assistant's `run_command`
   refuses to place a component whose check refuses its defaults.
+- Connecting or disconnecting an input of a node checks it again with its
+  new inputs, whether in the canvas, through `DashboardOps.connect` and
+  `disconnect` (and their `_async` variants, which return the result) or by
+  the assistant. The connection is made all the same; the assistant's tool
+  result lists the problems ("Connected data.source to q.source. q's config
+  fails its check: ..."), the inspector shows them for the selected node, and
+  `preview` and `validate` report the node as above until its config is
+  fixed. Checks of one node that follow each other quickly are coalesced: at
+  most one runs, with one more queued that reads the node's latest config and
+  inputs once it starts, so many connections at once take at most two of the
+  pool's threads per node. The inspector's draft checks are coalesced the
+  same way.
 - `DashboardOps.replace_yaml` loads the dashboard and returns the problems as
   errors at `nodes.<name>.config`, `preview` reports such a node as
   `invalid` while still running it, and `validate` lists the problems as
@@ -177,9 +215,9 @@ Where a check runs:
   `replace_yaml_async`; the restore goes ahead, and a notification lists the
   nodes whose checks fail.
 
-A check runs when the config changes, not when the inputs do: rewiring a node
-or a new upstream value does not run it again. Only `preview` and `validate`
-check against the inputs as they are at that moment.
+A check runs when the config or the node's wiring changes, not when a new
+value arrives over an existing connection. Only `preview` and `validate` check
+against the inputs as they are at that moment.
 
 ---
 

@@ -20,6 +20,7 @@ from panel_agents.artifacts import Change, StructuredDiff, register_diff
 from pydantic_ai import FunctionToolset, ModelRetry, RunContext
 from pydantic_ai.tools import ToolDefinition
 
+from panel_flowdash.config_check import CheckResult
 from panel_flowdash.editor import export_model
 from panel_flowdash.history import ARTIFACT_KIND, artifact_id_for
 from panel_flowdash.transforms import parse_transform
@@ -533,7 +534,7 @@ async def add_node(
     """
     ops = ctx.deps.ops
     name = await ops.add_node_async(component, config, name=name)
-    return _artifact(ops, f"Added node '{name}'.")
+    return _artifact(ops, _checked(f"Added node '{name}'.", name, ops.last_check))
 
 
 def remove_node(ctx: RunContext[FlowDashDeps], name: str) -> t.Any:
@@ -556,10 +557,10 @@ async def set_config(ctx: RunContext[FlowDashDeps], name: str, config: dict[str,
     """
     ops = ctx.deps.ops
     await ops.set_config_async(name, config)
-    return _artifact(ops, f"Updated the config of '{name}'.")
+    return _artifact(ops, _checked(f"Updated the config of '{name}'.", name, ops.last_check))
 
 
-def connect(
+async def connect(
     ctx: RunContext[FlowDashDeps],
     source: str,
     target: str,
@@ -573,11 +574,11 @@ def connect(
         transform: Steps applied along the edge, e.g. [{"op": "head", "n": 10}].
     """
     ops = ctx.deps.ops
-    ops.connect(source, target, transform)
-    return _artifact(ops, f"Connected {source} to {target}.")
+    checked = await ops.connect_async(source, target, transform)
+    return _artifact(ops, _checked(f"Connected {source} to {target}.", _node(target), checked))
 
 
-def disconnect(ctx: RunContext[FlowDashDeps], source: str, target: str) -> t.Any:
+async def disconnect(ctx: RunContext[FlowDashDeps], source: str, target: str) -> t.Any:
     """Remove the edge between an output and an input.
 
     Args:
@@ -585,8 +586,30 @@ def disconnect(ctx: RunContext[FlowDashDeps], source: str, target: str) -> t.Any
         target: The input, as "<node>.<port>".
     """
     ops = ctx.deps.ops
-    ops.disconnect(source, target)
-    return _artifact(ops, f"Disconnected {source} from {target}.")
+    checked = await ops.disconnect_async(source, target)
+    return _artifact(
+        ops, _checked(f"Disconnected {source} from {target}.", _node(target), checked)
+    )
+
+
+def _node(port: str) -> str:
+    return port.rsplit(".", 1)[0]
+
+
+def _checked(message: str, name: str, result: CheckResult) -> str:
+    """Add what a node's config check found to a tool's *message*.
+
+    A change the check refuses is not applied, so this is for changes that
+    are, e.g. a connection: its problems and its warnings are listed for the
+    model to act on.
+    """
+    if result:
+        message += f" {name}'s config fails its check: " + "; ".join(result)
+        if result.warnings:
+            message += " It also warns: " + "; ".join(result.warnings)
+    elif result.warnings:
+        message = message.removesuffix(".") + ", but: " + "; ".join(result.warnings)
+    return message
 
 
 def set_transform(
