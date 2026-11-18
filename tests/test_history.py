@@ -860,6 +860,8 @@ def test_previews_and_checks_record_no_history(editor):
     assert scratch.history is False
 
 
+# panel-agents' artifact view passes old and new button options, which older Panel warns about.
+@pytest.mark.filterwarnings("ignore:Both '.*' and '.*' were provided:PendingDeprecationWarning")
 async def test_an_artifact_view_stays_in_step_with_a_long_session():
     from panel_agents.components.artifacts import ArtifactView
 
