@@ -508,9 +508,11 @@ class DashboardOps:
         nodes = doc.get("nodes") if isinstance(doc.get("nodes"), dict) else {}
         current_nodes = current.get("nodes") or {}
         changed = "turns" in doc and doc["turns"] != current.get("turns", [])
+        # Only nodes already on the canvas: a renamed or copied node keeping its
+        # origin line is a new node, whose origin is ignored as expected.
         for name, node in nodes.items():
-            if isinstance(node, dict) and "origin" in node:
-                changed |= node["origin"] != current_nodes.get(name, {}).get("origin")
+            if isinstance(node, dict) and "origin" in node and name in current_nodes:
+                changed |= node["origin"] != current_nodes[name].get("origin")
         if not changed:
             return []
         return [

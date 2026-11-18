@@ -339,7 +339,7 @@ def test_a_persons_edits_form_one_turn(editor):
     (turn,) = editor.turns
     assert turn.actor == "user" and turn.run is None and turn.question is None
     assert turn.id.startswith("t") and len(turn.id) == 9
-    assert turn.summary == "Added base. Added double. Connected base.value to double.value."
+    assert turn.summary == "Added base. Added double. Connected base to double."
     assert editor.node_origin("base") == editor.node_origin("double") == turn.id
 
 
@@ -366,7 +366,7 @@ def test_an_agent_request_opens_its_turn_at_its_first_edit(editor):
     user, agent, between = editor.turns
     assert user.actor == "user"
     assert (agent.actor, agent.run, agent.question) == ("agent", "run-1", "Double it")
-    assert agent.summary == "Added double. Connected base.value to double.value."
+    assert agent.summary == "Added double. Connected base to double."
     assert (between.actor, between.summary) == ("user", "Added mine.")
     assert editor.node_origin("double") == agent.id
     assert editor.node_origin("mine") == between.id
@@ -385,9 +385,9 @@ def test_every_kind_of_edit_is_noted(editor):
     editor.dirty = True
     turn = editor.turns[-1]
     assert turn.summary == (
-        "Changed the config of scaled. Connected base.value to scaled.value. Changed the "
-        "transform from base.value to scaled.value. Disconnected base.value from "
-        "scaled.value. Changed the settings. Removed base."
+        "Changed the config of scaled. Connected base to scaled. Changed the transform "
+        "from base to scaled. Disconnected base from scaled. Changed the settings. "
+        "Removed base."
     )
     assert len(editor.turns) == 2
 
@@ -477,3 +477,73 @@ def test_importing_a_file_that_changes_nothing_opens_no_turn(editor):
     exported = editor.export_dashboard()
     editor.import_dashboard(dashboard_to_yaml(exported))
     assert editor.export_dashboard() == exported and editor.dirty
+
+
+def test_turn_ids_may_not_end_in_a_newline():
+    with pytest.raises(TurnError):
+        DashboardTurn.from_dict({"id": "t1\n", "actor": "user", "at": "2026-11-17T20:10:12Z"})
+
+
+def test_summaries_never_name_the_ports_of_an_edge():
+    """A restricted node's ports are hidden from people who may not use it, and so from summaries."""
+    store = MemoryDashboardStore()
+    bob = _editor(store, finance=True)
+    model = bob.new_dashboard("Finance")
+    bob.add_component("T/secret", instance_id="secret")
+    bob.add_component("T/doubler", instance_id="double")
+    bob.connect("secret", "value", "double", "value")
+    ops = DashboardOps(bob)
+    text = ops.get_dashboard().replace("nodes:\n", "nodes:\n  other:\n    component: T/doubler\n")
+    text = text.replace("edges:\n", "edges:\n  - from: secret.value\n    to: other.value\n")
+    with agent_edits(run="run-1"):
+        ops.replace_yaml(text)
+    bob.save()
+    alice = _editor(store)
+    alice.load(model.dashboard_id)
+    for exported in (DashboardOps(alice).get_dashboard(), dashboard_to_yaml(alice)):
+        assert "secret.value" not in exported
+        assert "Connected secret to double." in exported
+        assert "Connected secret to other." in exported
+    bob.dispose()
+    alice.dispose()
+
+
+def test_a_replace_that_changes_nothing_opens_no_turn(editor):
+    ops = DashboardOps(editor)
+    editor.add_component("T/number", instance_id="base")
+    before = editor.turns
+    with agent_edits(run="run-1"):
+        assert ops.replace_yaml(ops.get_dashboard()) == []
+    assert editor.turns == before
+
+
+def test_a_rename_is_a_new_node_and_a_component_swap_keeps_the_origin(editor):
+    ops = DashboardOps(editor)
+    editor.add_component("T/number", instance_id="base")
+    editor.add_component("T/number", instance_id="swap")
+    (mine,) = editor.turns
+    text = ops.get_dashboard().replace("  base:\n", "  renamed:\n")
+    text = text.replace("  swap:\n    component: T/number\n", "  swap:\n    component: T/scaled\n")
+    with agent_edits(run="run-1"):
+        warnings = ops.replace_yaml(text)
+    assert not any(w.path == "turns" for w in warnings), "a copied origin line is not forgery"
+    _, agent = editor.turns
+    assert editor.node_origin("renamed") == agent.id
+    assert editor.node_origin("swap") == mine.id
+    assert agent.summary == ("Added renamed. Removed base. Changed the component of swap.")
+
+
+def test_requests_without_run_ids_get_separate_turns(editor):
+    from panel_flowdash.agent.tools import FlowDashDeps
+
+    deps = FlowDashDeps(DashboardOps(editor))
+    for i, question in enumerate(["First", "Second"]):
+        deps.start_request(question)
+        with agent_edits(None, deps.question):
+            editor.add_component("T/number", instance_id=f"n{i}")
+        with agent_edits(None, deps.question):
+            editor.add_component("T/number", instance_id=f"m{i}")
+        deps.end_request()
+    first, second = editor.turns
+    assert (first.run, first.question, first.summary) == (None, "First", "Added n0. Added m0.")
+    assert (second.question, second.summary) == ("Second", "Added n1. Added m1.")

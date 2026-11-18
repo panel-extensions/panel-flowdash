@@ -687,7 +687,7 @@ class TestTurns:
             runner.run_id,
             "Double the number",
         )
-        assert agent.summary == "Added double. Connected base.value to double.value."
+        assert agent.summary == "Added double. Connected base to double."
         assert editor.node_origin("double") == agent.id
         (artifact,) = runner.state.artifacts
         assert f"origin: {agent.id}" in artifact.applied_version.value
@@ -733,7 +733,7 @@ class TestTurns:
         runner = _runner(ops, ("get_dashboard", {}), ("replace_dashboard", broken))
         output = await runner.run("Replace")
         assert "Replaced the dashboard." in output
-        assert ops.editor.turns[-1].actor == "agent"
+        assert ops.editor.turns == [], "a replace that changes nothing opens no turn"
 
     @pytest.mark.parametrize("tool", ["set_config", "add_node"])
     async def test_config_cannot_set_an_origin(self, ops, tool):
@@ -770,3 +770,39 @@ class TestTurns:
         assert editor.turns == before
         results = [str(r.content) for r in _results(runner.messages)]
         assert results[1] == "No problems found."
+
+    async def test_a_failed_request_keeps_its_turn_and_the_next_opens_another(self, ops):
+        def failing(messages, info):
+            if sum(isinstance(m, ModelResponse) for m in messages):
+                raise RuntimeError("The model went away")
+            return ModelResponse(
+                parts=[ToolCallPart("add_node", {"component": "T/number", "name": "first"})]
+            )
+
+        async def stream(messages, info):
+            (part,) = failing(messages, info).parts
+            yield {
+                0: DeltaToolCall(
+                    name=part.tool_name,
+                    json_args=part.args_as_json_str(),
+                    tool_call_id="call-1",
+                )
+            }
+
+        agent = Agent(
+            FunctionModel(failing, stream_function=stream),
+            deps_type=FlowDashDeps,
+            toolsets=[dashboard_toolset()],
+        )
+        runner = AgentRunner(agent, RunState(flush_interval=0), deps=FlowDashDeps(ops))
+        runner.deps.start_request("Add one")
+        await runner.run("Add one")
+        runner.deps.end_request()
+        assert runner.error is not None
+        (failed,) = ops.editor.turns
+        assert (failed.question, failed.summary) == ("Add one", "Added first.")
+        again = _runner(ops, ("add_node", {"component": "T/number", "name": "second"}))
+        await again.run("Add another")
+        first, second = ops.editor.turns
+        assert first == failed and second.run == again.run_id != failed.run
+        assert ops.editor.node_origin("second") == second.id

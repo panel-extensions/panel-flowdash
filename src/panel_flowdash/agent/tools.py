@@ -93,6 +93,8 @@ class FlowDashDeps:
         self._reset(_UNPINNED)
 
     def _reset(self, pinned: t.Any, run_id: str | None = None):
+        # A request ends, finished or not, so its edits stop joining its turn.
+        self.ops.editor.end_agent_turns()
         self._pinned = pinned
         self._explicit = False
         self._run_id = run_id

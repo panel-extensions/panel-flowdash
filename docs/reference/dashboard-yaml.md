@@ -133,8 +133,12 @@ person makes while the agent works becomes a turn between two edits of the agent
 | `at` | yes, unless pending | When the turn's first edit was made, as an ISO 8601 date and time, e.g. `'2026-11-17T20:14:03Z'` (quoted, so other YAML readers keep it a string). |
 | `run` | no | The id of the assistant's run that made the turn. |
 | `question` | no; yes when pending | What the person asked the assistant. |
-| `summary` | no | What the turn changed, a few words per change. It names nodes and connections but never config values. |
+| `summary` | no | What the turn changed, a few words per change. It names nodes, and connections by their nodes, but never ports or config values. |
 | `status` | no | `pending` for a planned turn that has not run; left out for every other turn. |
+
+An agent's turn ends with its request, whether the request finished, failed or was
+cancelled; a turn of a request that failed is written like any other, with the edits it
+made before failing in its summary.
 
 Each node records the turn that created it as its `origin`. Which later turns changed
 it is not stored in the file. A dashboard keeps its last 200 turns, and older turns
@@ -148,7 +152,10 @@ Only the editor writes turns and origins. YAML handed to `DashboardOps.replace_y
 `validate` and `preview`, which is what the assistant writes, has its `turns` and
 node `origin` keys dropped before it is read: the dashboard keeps its turns, nodes
 already on it keep their origin, and new nodes get the turn of whoever made the
-change. `replace_yaml` warns when the YAML tried to change them. Importing a file
+change. Nodes are matched by name, so a node given another component under the same
+name keeps its origin, while a renamed node is new. `replace_yaml` warns when the YAML
+changes the turns or the origin of a node already on the dashboard, and YAML that
+changes nothing opens no turn. Importing a file
 (`FlowDash.import_dashboard`, dropping a file on the canvas or importing it as a new
 dashboard) takes the file's turns and origins as they are, and the import itself is
 a turn of the person who made it, which becomes the origin of nodes the file gives none.

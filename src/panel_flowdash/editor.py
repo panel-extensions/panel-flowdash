@@ -3073,6 +3073,14 @@ class FlowDash(Viewer):
         """
         self._turn_log.end_user_turn()
 
+    def end_agent_turns(self):
+        """End the turns of the agent's requests, so the next request's edits start a new turn.
+
+        The dashboard tools call it when a request ends, whether it finished,
+        failed or was cancelled.
+        """
+        self._turn_log.end_agent_turns()
+
     def _record_edit(self, *labels: str) -> DashboardTurn | None:
         """Mark the canvas changed and note the change in the turn it belongs to, which is returned.
 
@@ -3106,11 +3114,10 @@ class FlowDash(Viewer):
         return node_names(items)[instance_id]
 
     def _connect_label(self, verb, source_id, source_port, target_id, target_port) -> str:
+        # Only the nodes: a summary is shown to everyone who may read the
+        # dashboard, including people from whom a restricted node's ports are hidden.
         joiner = "from" if verb == "Disconnected" else "to"
-        return (
-            f"{verb} {self._node_name(source_id)}.{source_port} {joiner} "
-            f"{self._node_name(target_id)}.{target_port}"
-        )
+        return f"{verb} {self._node_name(source_id)} {joiner} {self._node_name(target_id)}"
 
     def add_component(
         self,
@@ -4025,7 +4032,10 @@ class FlowDash(Viewer):
         turn. With *keep_turns* the file's turns and origins are ignored
         instead: the canvas keeps its turns, nodes already on it keep their
         origin and new nodes get the import's turn. That is how the agent's
-        changes are loaded, so it cannot rewrite who made what.
+        changes are loaded, so it cannot rewrite who made what. Nodes are
+        matched by name: a node given another component under the same name
+        keeps its origin, and a renamed node is a new node with the import's
+        turn as its origin. A file that changes nothing opens no turn.
 
         Raises
         ------
@@ -4042,17 +4052,29 @@ class FlowDash(Viewer):
             self.load_model(model)
             self._record_import(model, before, present)
             return model
-        turn = self._note_turn()
         model.turns = self._turn_log.snapshot()
         present = {item["instance_id"] for item in self._tile_items}
         for item in model.items:
-            item.origin = (
-                self._origins.get(item.instance_id) if item.instance_id in present else turn.id
-            )
+            item.origin = self._origins.get(item.instance_id)
         self.ensure_components_loaded(self._model_component_ids(model))
         self._hydrate_model(model, keep_open_turns=True)
-        self._record_edit(*change_labels(before, dashboard_to_dict(self)))
+        labels = change_labels(before, dashboard_to_dict(self))
+        if not labels:
+            self._mark_dirty()
+            return model
+        turn = self._record_edit(*labels)
+        for item in model.items:
+            if item.instance_id not in present:
+                self._origins[item.instance_id] = turn.id
         return model
+
+    def _mark_dirty(self):
+        """Mark the canvas changed without noting an edit in a turn."""
+        self._recording_edit = True
+        try:
+            self.dirty = True
+        finally:
+            self._recording_edit = False
 
     def _record_import(self, model: DashboardModel, before: dict, present: set[str]):
         """Note an imported file that changed the canvas *before* in the turn of whoever imported it.
@@ -4064,11 +4086,7 @@ class FlowDash(Viewer):
         from panel_flowdash.agent.yaml_format import dashboard_to_dict
 
         if not change_labels(before, dashboard_to_dict(self)):
-            self._recording_edit = True
-            try:
-                self.dirty = True
-            finally:
-                self._recording_edit = False
+            self._mark_dirty()
             return
         turn = self._record_edit("Loaded a dashboard file")
         for item in model.items:

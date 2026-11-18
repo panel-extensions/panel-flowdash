@@ -117,7 +117,7 @@ class DashboardTurn:
         turn = cls(**values)
         if turn.id is None:
             raise TurnError("id", "is required.")
-        if not TURN_ID_PATTERN.match(turn.id):
+        if not TURN_ID_PATTERN.fullmatch(turn.id):
             raise TurnError(
                 "id",
                 f"must be 1 to 64 letters, digits, '_' and '-', starting with a letter or "
@@ -271,6 +271,10 @@ class TurnLog:
         """Close the person's open turn, so their next edit opens a new one."""
         self._open.pop(("user",), None)
 
+    def end_agent_turns(self):
+        """Close the agent's open turns, so the next request's edits open a new one."""
+        self._open = {key: turn for key, turn in self._open.items() if key[0] != "agent"}
+
     def current(self) -> DashboardTurn:
         """Return the turn an edit made now belongs to, opening it if needed."""
         agent = _agent_source()
@@ -329,11 +333,19 @@ class TurnLog:
                 return turn_id
 
 
+def _node(ref: t.Any) -> str:
+    # Summaries name only the nodes of an edge: a port may be hidden from people
+    # who cannot use the node's component, and summaries are shown to everyone.
+    return str(ref).partition(".")[0]
+
+
 def change_labels(old: t.Any, new: t.Any) -> list[str]:
     """Describe the change between two dashboard YAML documents as turn summary labels.
 
     Unlike the diff shown to the person, the labels name what changed but not
-    the values, so a summary never repeats a config value such as a query.
+    the values, so a summary never repeats a config value such as a query,
+    and edges by their nodes alone, so it never names the hidden port of a
+    node someone may not use.
     """
     from panel_flowdash.agent.diff import dashboard_changes
 
@@ -351,10 +363,10 @@ def change_labels(old: t.Any, new: t.Any) -> list[str]:
         elif path[0] == "edges" and change.op in ("add", "remove"):
             edge = change.new if change.op == "add" else change.old
             verb = "Connected {} to {}" if change.op == "add" else "Disconnected {} from {}"
-            label = verb.format(edge.get("from"), edge.get("to"))
+            label = verb.format(_node(edge.get("from")), _node(edge.get("to")))
         elif path[0] == "edges":
             source, _, target = change.label.partition(": transform")[0].partition(" → ")
-            label = f"Changed the transform from {source} to {target}"
+            label = f"Changed the transform from {_node(source)} to {_node(target)}"
 
         elif path[0] == "layout":
             label = "Changed the tile layout"

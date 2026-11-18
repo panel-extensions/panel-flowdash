@@ -92,7 +92,8 @@ def palette_actions(
             raise ValueError(
                 f"The palette does not offer {command!r} right now; call list_commands."
             )
-        with agent_edits(current_run_id(), deps.question if deps is not None else None):
+        run_id = current_run_id() or (deps._run_id if deps is not None else None)
+        with agent_edits(run_id, deps.question if deps is not None else None):
             controller.run(command)
         if deps is not None:
             # Like open_dashboard, a command run from the pinned dashboard takes the pin along.
