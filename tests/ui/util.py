@@ -21,6 +21,17 @@ _DOCUMENTS_IDLE = (
 # a busy CI runner takes longer than the 5 s that ``expect`` waits by default.
 DASHBOARD_LOAD_TIMEOUT = 20000
 
+# The number of inert elements on the page, across shadow roots.
+INERT_COUNT = """() => {
+  const found = []
+  const walk = (root) => root.querySelectorAll("*").forEach((el) => {
+    if (el.inert) found.push(el)
+    if (el.shadowRoot) walk(el.shadowRoot)
+  })
+  walk(document)
+  return found.length
+}"""
+
 
 def serve_component(page, app, suffix="", wait=True, **kwargs):
     """Serve *app* and, with *wait*, return once the page takes input.
