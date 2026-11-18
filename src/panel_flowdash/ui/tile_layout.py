@@ -52,6 +52,15 @@ def update_tile(editor, instance_id: str, **patch):
         editor._chosen_visibility.add(instance_id)
     editor._pending_tile_layout = layout
     editor._rebuild_tile_grid()
+    automatic = editor._auto_tiles or editor._deferred_tiles is not None
+    if automatic and not set(patch) - {"visible"} and editor._all_tiles_automatic([instance_id]):
+        # The rest is laid out by the editor, so a tile shown again joins its arrangement.
+        if patch.get("visible") is not False:
+            editor._auto_tiles.add(instance_id)
+        if editor._deferred_tiles is not None:
+            editor._deferred_rearrange = True
+        else:
+            editor._arrange_tiles()
     editor._record_edit(
         "Changed the tile layout",
         op="layout",

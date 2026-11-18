@@ -309,6 +309,32 @@ class TestTiles:
         assert [t["instance_id"] for t in tiles] == ["kpi", "kpi_2", "trend", "source"]
         assert tiles[0]["width"] == tiles[1]["width"] == 50
 
+    @pytest.mark.parametrize("who", ["agent", "person"])
+    def test_showing_a_source_between_requests_keeps_the_layout_automatic(self, ops, who):
+        from panel_flowdash.ui.tile_layout import update_tile
+
+        self._request(ops, GRAPH[:3], lambda: None)
+        if who == "agent":
+            ops.place_tile("source", visible=True)
+        else:
+            update_tile(ops.editor, "source", visible=True)
+        entry = next(t for t in _tiles(ops.editor) if t["instance_id"] == "source")
+        # The shown source gets a real place, last.
+        assert entry["visible"] is True and entry["width"] == 33.33 and "height" not in entry
+        assert _tiles(ops.editor)[-1]["instance_id"] == "source"
+        self._request(
+            ops, [("add_node", {"component": "V/headline", "name": "kpi_2"})], lambda: None
+        )
+        self._request(
+            ops, [("add_node", {"component": "V/chart", "name": "trend_2"})], lambda: None
+        )
+        tiles = _tiles(ops.editor)
+        widths = {t["instance_id"]: t.get("width") for t in tiles}
+        # Still arranged: the KPIs share a row, alike, and the charts pair up.
+        assert widths["kpi"] == widths["kpi_2"]
+        assert widths["trend"] == widths["trend_2"] == 50
+        assert tiles[-1]["instance_id"] == "source"
+
     def test_hidden_sources_say_what_they_are(self, ops):
         from panel_flowdash.ui.tile_layout import off_grid
 
