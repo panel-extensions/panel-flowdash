@@ -10,6 +10,7 @@ from panel_flowdash.auth import resolve_identity
 from panel_flowdash.component_library import normalize_components
 from panel_flowdash.editor import FlowDash
 
+from .test_ui_fullscreen_inert import _INERT
 from .util import serve_component
 
 pytest.importorskip("playwright")
@@ -108,6 +109,8 @@ def test_notifications_show_in_native_full_screen(page):
 def test_focus_stays_in_the_dashboard_in_the_window(page):
     app = _serve(page, query="?kiosk=1")
     wait_until(lambda: app._editor.fullscreen, page, timeout=10000)
+    # The browser makes the page behind inert once it renders the presentation layout.
+    wait_until(lambda: page.evaluate(_INERT) > 0, page)
     assert not _native(page)
     for key in ["Tab"] * 6 + ["Shift+Tab"] * 3:
         page.keyboard.press(key)

@@ -864,6 +864,8 @@ class ComponentGallery(Viewer):
             title = f"{base} {n}"
         return title
 
+    # Locked for the same reason as FlowDashApp._load_page_layout.
+    @pn.io.with_lock
     async def add_to_dashboard(self, component_id: str, dashboard_id: str | None = None):
         """Open a dashboard in the editor with *component_id* placed on it.
 

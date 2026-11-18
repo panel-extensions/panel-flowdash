@@ -433,7 +433,10 @@ export function render({model, el: root}) {
       }
     })
     dialog.addEventListener("keydown", onDialogKey)
-    input.addEventListener("input", () => renderResults())
+    input.addEventListener("input", () => {
+      state.runWhenLoaded = false
+      renderResults()
+    })
     state = {help, input, results, backdrop, flat: [], active: -1}
     shadow.append(backdrop)
     // In full screen the rest of the page is hidden and inert, so the dialog
@@ -476,7 +479,12 @@ export function render({model, el: root}) {
       select(state.active + (event.key === "ArrowDown" ? 1 : -1), true)
     } else if (event.key === "Enter") {
       event.preventDefault()
-      run(state.active)
+      if (model.items.length) {
+        run(state.active)
+      } else {
+        // Typed before the items arrived; they are filtered and run once loaded.
+        state.runWhenLoaded = true
+      }
     } else if (event.key === "?" && !state.input.value) {
       event.preventDefault()
       open(true)
@@ -533,6 +541,10 @@ export function render({model, el: root}) {
   model.on("items", () => {
     if (state && !state.help) {
       renderResults()
+      if (state.runWhenLoaded && model.items.length) {
+        state.runWhenLoaded = false
+        run(state.active)
+      }
     }
   })
 

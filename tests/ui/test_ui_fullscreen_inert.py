@@ -98,6 +98,9 @@ def _accessible(page) -> list[tuple[str, str]]:
 def _presenting(page, app):
     wait_until(lambda: app._editor.fullscreen, page, timeout=10000)
     wait_until(lambda: page.evaluate(_INERT) > 0, page)
+    # The tile's buttons and the overlay render after the tile's text.
+    expect(page.get_by_role("button", name="Tile button")).to_be_visible()
+    expect(page.get_by_role("button", name="Exit full screen")).to_be_attached()
 
 
 def test_tab_and_shift_tab_stay_in_the_dashboard(page):

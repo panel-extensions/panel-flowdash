@@ -1230,6 +1230,13 @@ class FlowDashApp(Viewer):
             )
         return True
 
+    # Navigation swaps the page while it awaits, so it holds the Document lock
+    # throughout. Unlocked, a locked callback running meanwhile on a worker
+    # thread can change models of the incoming page and send that change
+    # before the held page swap, which the browser rejects as referencing
+    # models it does not know, so the page swap never shows. Browser events
+    # wait for the navigation to finish meanwhile.
+    @pn.io.with_lock
     async def _load_page_layout(self):
         if pn.state.location is None:
             return
@@ -1601,6 +1608,7 @@ class FlowDashApp(Viewer):
             pn.state.location.param.update(pathname=target_path, search="?edit=true")
         pn.state.execute(partial(self._load_dashboard_edit, dashboard_id))
 
+    @pn.io.with_lock
     async def _load_dashboard_edit(self, dashboard_id: str):
         generation = self._begin_navigation()
         await self._run_navigation_task(
@@ -1921,10 +1929,9 @@ class FlowDashApp(Viewer):
         self._sync_menu_active(path)
         doc = pn.state.curdoc
         if doc is not None and doc.session_context is not None:
-            # Loading runs without the document lock, so started right away it
-            # can send the new page before the changes above (URL, breadcrumb)
-            # leave, and the browser rejects it: "reference ... isn't known".
-            # A locked next-tick callback runs once they went out.
+            # Started right away, loading could send the new page before the
+            # changes above (URL, breadcrumb) leave, and the browser rejects it:
+            # "reference ... isn't known". A next-tick callback runs once they went out.
             doc.add_next_tick_callback(partial(pn.state.execute, self._load_page_layout))
         else:
             pn.state.execute(self._load_page_layout)

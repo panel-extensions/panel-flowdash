@@ -48,7 +48,9 @@ def _open_split(page, editor, sizes=None):
 def _open_layout(page, editor):
     page.get_by_role("button", name="Layout").click()
     wait_until(lambda: editor.mode == "dashboard", page, timeout=8000)
-    wait_until(lambda: page.locator(".muuri-grid").bounding_box()["width"] > 1000, page)
+    # The grid has no box while the tab it is on is still hidden.
+    grid = page.locator(".muuri-grid")
+    wait_until(lambda: (box := grid.bounding_box()) is not None and box["width"] > 1000, page)
 
 
 def _tiles(page):

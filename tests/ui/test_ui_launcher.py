@@ -13,7 +13,7 @@ from panel_flowdash.component_library import normalize_components
 from panel_flowdash.dashboard_store import DashboardStore
 from panel_flowdash.editor import export_model
 
-from .util import serve_component
+from .util import DASHBOARD_LOAD_TIMEOUT, serve_component
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect
@@ -133,8 +133,8 @@ def test_card_opens_dashboard(page, tmp_path):
     _cards(page).get_by_text("Sales", exact=True).click()
 
     wait_until(lambda: page.url.endswith(f"/dash/{model.dashboard_id}"), page)
+    expect(page.get_by_text("gauge", exact=True)).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
     expect(_cards(page)).to_have_count(0)
-    expect(page.get_by_text("gauge", exact=True)).to_be_visible()
     # The breadcrumb switcher is created by the click and renamed by the load.
     expect(page.locator(".header").get_by_role("button", name="Sales")).to_be_visible()
     assert errors == []
@@ -238,4 +238,5 @@ def test_import_a_file(page, tmp_path):
     wait_until(lambda: [m.title for m in store.list_dashboards(_user())] == ["Imported"], page)
     (stored,) = store.list_dashboards(_user())
     wait_until(lambda: page.url.endswith(f"/dash/{stored.dashboard_id}"), page)
+    expect(page.get_by_text("gauge", exact=True)).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
     expect(_cards(page)).to_have_count(0)
