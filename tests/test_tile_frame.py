@@ -340,6 +340,7 @@ class TestAgent:
         assert [editor._inspect_tiles[i].framed for i in ids] == [True, True, False]
 
     def test_the_layout_at_the_end_of_an_agent_request_keeps_the_frame(self, ops):
+        pytest.importorskip("pydantic_ai")
         from panel_flowdash.agent.tools import FlowDashDeps
 
         editor = ops.editor
