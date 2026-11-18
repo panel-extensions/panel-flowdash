@@ -28,18 +28,34 @@ _NODE_STYLES = {
 }
 
 #: Outlines for the tile classes, added to the tiles' stylesheet. The grid item
-#: clips whatever is drawn outside the tile, so the outline is drawn inside it,
-#: over the frame's border.
+#: clips whatever is drawn outside the tile, and a view that fills the tile would
+#: cover an outline, so the ring is a pseudo-element inside the tile, above its
+#: content; on a framed tile it covers the frame's border.
 TILE_CSS = """
 :host(.fd-agent-added) {
-  outline: 2px solid var(--mui-palette-success-main, #2e7d32);
-  outline-offset: -2px;
-  border-radius: 12px;
+  --fd-agent-outline: var(--mui-palette-success-main, #2e7d32);
 }
 :host(.fd-agent-changed) {
-  outline: 2px solid var(--mui-palette-warning-main, #ed6c02);
-  outline-offset: -2px;
-  border-radius: 12px;
+  --fd-agent-outline: var(--mui-palette-warning-main, #ed6c02);
+}
+:host(.fd-agent-added),
+:host(.fd-agent-changed) {
+  position: relative;
+}
+:host(.fd-agent-added)::after,
+:host(.fd-agent-changed)::after {
+  border: 2px solid var(--fd-agent-outline);
+  border-radius: inherit;
+  box-sizing: border-box;
+  content: "";
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: 30;
+}
+:host(.flowdash-tile-framed.fd-agent-added)::after,
+:host(.flowdash-tile-framed.fd-agent-changed)::after {
+  inset: -1px;
 }
 """
 
@@ -76,8 +92,8 @@ class ChangeHighlighter:
     dashboard just before and after its change, so the user's own edits made
     while the agent works are never outlined. The marks add up over a run,
     on the dashboard the run edits, and are cleared when the next run starts,
-    when the user stops editing (the change is then saved or discarded), or
-    by :meth:`clear`.
+    when the user stops editing or discards the changes, when the dashboard
+    is reloaded, or by :meth:`clear`.
     """
 
     def __init__(self, session: AgentSession):
@@ -103,6 +119,9 @@ class ChangeHighlighter:
             self._grids.add(id(editor))
             editor._tile_grid.param.watch(lambda e, ed=editor: self._sync_tiles(ed), "objects")
             editor.param.watch(lambda e, ed=editor: self._on_editable(ed, e.new), "editable")
+            editor.param.watch(
+                lambda e, ed=editor: self._on_load(ed), "dashboard", onlychanged=False
+            )
         for name, kind in marks.items():
             instance_id = ids.get(name)
             if instance_id is None:
@@ -127,10 +146,20 @@ class ChangeHighlighter:
             self.clear()
             self._run_marks = {}
 
-    def _on_editable(self, editor, editable: bool):
-        if not editable and editor is self._editor:
+    def _forget(self, editor):
+        if editor is self._editor:
             self.clear()
             self._run_marks = {}
+
+    def _on_editable(self, editor, editable: bool):
+        if not editable:
+            self._forget(editor)
+
+    def _on_load(self, editor):
+        # Edits, undo and redo load a model quietly; opening a dashboard or
+        # discarding its changes reloads it, and the marks no longer apply.
+        if editor._hydrating and not editor._history_quiet:
+            self._forget(editor)
 
     def _on_edit(self, before: str | None, after: str):
         current = self.session.app._current_dashboard

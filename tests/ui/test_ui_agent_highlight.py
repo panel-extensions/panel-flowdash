@@ -21,6 +21,24 @@ from .test_ui_shell import _serve_app, _store_with
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
 
+def _pixel(page, x, y):
+    png = page.screenshot(clip={"x": x, "y": y, "width": 1, "height": 1})
+    return tuple(Image.open(io.BytesIO(png)).convert("RGB").getpixel((0, 0)))
+
+
+def _edge_pixels(page, locator):
+    """Return the pixels 1px inside the middle of each edge of an element's box."""
+    box = locator.bounding_box()
+    x, y, w, h = box["x"], box["y"], box["width"], box["height"]
+    points = [
+        (x + w / 2, y + 1),
+        (x + w - 2, y + h / 2),
+        (x + w / 2, y + h - 2),
+        (x + 1, y + h / 2),
+    ]
+    return [_pixel(page, px, py) for px, py in points]
+
+
 def _tinted_corner_pixels(page, locator, size=6):
     """Return the coloured pixels in the corners of an element's box."""
     box = locator.bounding_box()
@@ -84,8 +102,11 @@ def test_leaving_edit_mode_leaves_no_outline_on_the_tiles(page):
     page.get_by_role("button", name="Layout").first.click()
     marked = page.locator(f".{TILE_CLASSES['add']}")
     expect(marked).to_have_count(1, timeout=20000)
+    page.mouse.move(0, 0)
+    page.wait_for_timeout(500)
     # The outline is drawn inside the tile, where the grid item does not clip it.
-    expect(marked).to_have_css("outline-offset", "-2px")
+    for r, g, b in _edge_pixels(page, marked):
+        assert g > r + 30 and g > b + 30, (r, g, b)
 
     page.get_by_role("button", name="Done").first.click()
     page.get_by_role("button", name="Save and leave").click()
