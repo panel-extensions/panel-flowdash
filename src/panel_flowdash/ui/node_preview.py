@@ -20,6 +20,7 @@ import logging
 import math
 import numbers
 import reprlib
+import threading
 import typing as t
 import weakref
 from dataclasses import dataclass
@@ -545,14 +546,16 @@ def _arm(ref: weakref.ref[Coalescer], doc):
         doc.add_timeout_callback(partial(_fire, ref, doc), coalescer.delay * 1000)
     except Exception:
         # The session is being torn down, so there is nothing left to update.
-        coalescer._pending = False
+        with coalescer._lock:
+            coalescer._pending = False
 
 
 def _fire(ref: weakref.ref[Coalescer], doc):
     # Weak, so a pending timeout does not keep a removed card alive.
     if (coalescer := ref()) is None:
         return
-    coalescer._pending = False
+    with coalescer._lock:
+        coalescer._pending = False
     if coalescer._cancelled:
         return
     with set_curdoc(doc):
@@ -580,6 +583,7 @@ class Coalescer:
         self.delay = delay
         self._pending = False
         self._cancelled = False
+        self._lock = threading.Lock()
 
     def __call__(self):
         """Run the callback now, or schedule it once if a session is being served."""
@@ -589,13 +593,15 @@ class Coalescer:
         if doc is None:
             self._callback()
             return
-        if self._pending:
-            return
-        self._pending = True
+        with self._lock:
+            if self._pending:
+                return
+            self._pending = True
         try:
             doc.add_next_tick_callback(partial(_arm, weakref.ref(self), doc))
         except Exception:
-            self._pending = False
+            with self._lock:
+                self._pending = False
 
     def cancel(self):
         """Drop a pending call and ignore every later one."""

@@ -23,6 +23,7 @@ import hashlib
 import html
 import logging
 import re
+import threading
 import typing as t
 from functools import partial
 
@@ -282,6 +283,7 @@ class NodeCard(Viewer):
             sizing_mode="fixed",
             stylesheets=[_CARD_CSS],
         )
+        self._render_lock = threading.RLock()
         self._coalescer = Coalescer(self._render, self._document)
         self.param.watch(self.refresh, [p for p in self.param if p != "show_preview"])
         # Turning previews on or off is one change for the whole canvas, sent at once.
@@ -315,7 +317,8 @@ class NodeCard(Viewer):
 
     def _document(self):
         """Return the served document showing the card, if any."""
-        for model, _ in self._pane._models.values():
+        # A copy, since the event loop may add or remove the pane's models while another thread asks.
+        for model, _ in list(self._pane._models.values()):
             doc = model.document
             if doc is not None and doc.session_context is not None:
                 return doc
@@ -350,6 +353,11 @@ class NodeCard(Viewer):
             return None
 
     def _render(self):
+        # Turning previews on or off renders from the calling thread, maybe while the loop renders too.
+        with self._render_lock:
+            self._render_now()
+
+    def _render_now(self):
         self._preview = preview = self._build_preview()
         detail = self.status_detail or STATUS_TEXT[self.status]
         tops_in, tops_out = port_tops(len(self.inputs), len(self.outputs))

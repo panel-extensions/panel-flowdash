@@ -4,6 +4,7 @@ import contextlib
 import html
 import re
 import threading
+import time
 from html.parser import HTMLParser
 
 import numpy as np
@@ -756,13 +757,46 @@ class TestCoalescing:
         assert len(served.ticks) == 1
 
     async def test_calls_from_worker_threads_only_schedule_a_tick(self, served):
-        coalesce = Coalescer(lambda: None, lambda: served)
-        workers = [threading.Thread(target=coalesce) for _ in range(4)]
+        class SlowCoalescer(Coalescer):
+            # Widens the gap between checking and setting the flag, so racing threads meet in it.
+            @property
+            def _pending(self):
+                pending = self.__dict__.get("pending", False)
+                time.sleep(0.001)
+                return pending
+
+            @_pending.setter
+            def _pending(self, value):
+                self.__dict__["pending"] = value
+
+        coalesce = SlowCoalescer(lambda: None, lambda: served)
+        workers = [threading.Thread(target=coalesce) for _ in range(16)]
         for worker in workers:
             worker.start()
         for worker in workers:
             worker.join()
         assert len(served.ticks) == 1 and served.timeouts == []
+
+    def test_renders_from_two_threads_do_not_mix(self):
+        editor, ids = demo_editor()
+        node_card = card(editor, ids["filter"])
+        inside = []
+
+        def build(original=node_card._build_preview):
+            inside.append(1)
+            assert len(inside) == 1
+            time.sleep(0.005)
+            preview = original()
+            inside.pop()
+            return preview
+
+        node_card._build_preview = build
+        workers = [threading.Thread(target=node_card._render) for _ in range(8)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+        assert node_card.__panel__().height == node_card.height
 
     async def test_cancelled_call_never_runs(self, served):
         seen = []
