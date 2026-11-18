@@ -124,7 +124,7 @@ drawer opens over the page instead of beside it. The agent's edits appear on the
 a dashboard shown in view mode switches to edit mode, and Save, Discard and the
 unsaved-changes review work as for the user's own edits. The nodes and tiles the
 agent added (green) or changed (amber) during a request stay outlined until the next
-request.
+request or until the user leaves edit mode.
 
 - **Read**: list the components and dashboards, get a dashboard as YAML, validate
   YAML and preview a dashboard without showing it, getting each node's status and

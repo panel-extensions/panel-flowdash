@@ -68,6 +68,37 @@ async def test_an_agent_edit_outlines_the_new_node_until_the_next_run(monkeypatc
     assert "style" not in node
 
 
+async def test_leaving_edit_mode_clears_the_outlines(monkeypatch):
+    store = MemoryDashboardStore()
+    model = store.create_dashboard("alice", "Plant")
+    agent = Agent(
+        scripted(("add_node", {"component": "T/number"})),
+        deps_type=FlowDashDeps,
+        toolsets=[dashboard_toolset()],
+    )
+    app = _app(store, monkeypatch, agent=agent)
+    app._load_dashboard_sync(model.dashboard_id)
+    session = app._agent_session
+
+    await session.runner.run("Add a number")
+
+    assert app._editor.editable
+    ((instance_id, _),) = session.highlighter.marked.items()
+    app._editor._rebuild_tile_grid()
+    tile = app._editor._inspect_tiles[instance_id]
+    assert TILE_CLASSES["add"] in tile.css_classes
+
+    app._editor.editable = False
+
+    assert session.highlighter.marked == {}
+    assert TILE_CLASSES["add"] not in tile.css_classes
+    node = next(n for n in app._editor._flow.nodes if n["id"] == instance_id)
+    assert "style" not in node
+    app._editor._rebuild_tile_grid()
+    tiles = app._editor._inspect_tiles.values()
+    assert not any(set(TILE_CLASSES.values()) & set(t.css_classes) for t in tiles)
+
+
 async def test_the_users_own_edits_during_a_run_are_not_outlined(monkeypatch):
     store = MemoryDashboardStore()
     model = store.create_dashboard("alice", "Plant")

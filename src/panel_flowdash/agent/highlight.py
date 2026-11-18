@@ -1,4 +1,4 @@
-"""Marks the nodes and tiles an agent edit added or changed, until the next run."""
+"""Marks the nodes and tiles an agent edit added or changed, until the next run or the end of editing."""
 
 from __future__ import annotations
 
@@ -27,16 +27,18 @@ _NODE_STYLES = {
     },
 }
 
-#: Outlines for the tile classes, added to the tiles' stylesheet.
+#: Outlines for the tile classes, added to the tiles' stylesheet. The grid item
+#: clips whatever is drawn outside the tile, so the outline is drawn inside it,
+#: over the frame's border.
 TILE_CSS = """
 :host(.fd-agent-added) {
   outline: 2px solid var(--mui-palette-success-main, #2e7d32);
-  outline-offset: 2px;
+  outline-offset: -2px;
   border-radius: 12px;
 }
 :host(.fd-agent-changed) {
   outline: 2px solid var(--mui-palette-warning-main, #ed6c02);
-  outline-offset: 2px;
+  outline-offset: -2px;
   border-radius: 12px;
 }
 """
@@ -74,7 +76,8 @@ class ChangeHighlighter:
     dashboard just before and after its change, so the user's own edits made
     while the agent works are never outlined. The marks add up over a run,
     on the dashboard the run edits, and are cleared when the next run starts,
-    or by :meth:`clear`.
+    when the user stops editing (the change is then saved or discarded), or
+    by :meth:`clear`.
     """
 
     def __init__(self, session: AgentSession):
@@ -99,6 +102,7 @@ class ChangeHighlighter:
             # Tiles are built when the grid is (re)built, possibly after the edit.
             self._grids.add(id(editor))
             editor._tile_grid.param.watch(lambda e, ed=editor: self._sync_tiles(ed), "objects")
+            editor.param.watch(lambda e, ed=editor: self._on_editable(ed, e.new), "editable")
         for name, kind in marks.items():
             instance_id = ids.get(name)
             if instance_id is None:
@@ -120,6 +124,11 @@ class ChangeHighlighter:
 
     def _on_running(self, event):
         if event.new:
+            self.clear()
+            self._run_marks = {}
+
+    def _on_editable(self, editor, editable: bool):
+        if not editable and editor is self._editor:
             self.clear()
             self._run_marks = {}
 
