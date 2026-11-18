@@ -484,10 +484,12 @@ Each entry is a module name or `module:attribute`. A module offers what its
 `__flowdash_components__` attribute holds, or, without one, every object it
 exports that `@register` marks as a component: the names in its `__all__`, or
 without that, the public names defined in the module or its submodules, so
-components it merely imports from elsewhere are not offered again. `module:attribute` names a mapping of component id to component, a
-list of components or a single one. Ids come from the mapping's keys, or else
-are `<module>/<name>`, where `<module>` is the last part of the name of the
-module that defines the component.
+components it merely imports from elsewhere are not offered again. A facade
+module that only re-exports components lists them in `__all__` or
+`__flowdash_components__`. `module:attribute` names a mapping of component id
+to component, a list of components or a single one. Ids come from the
+mapping's keys, or else are `<module>/<name>`, where `<module>` is the last
+part of the name of the module that defines the component.
 
 To publish components from your own package, decorate them with
 `@register(component=True)` and declare the ids you want saved dashboards to
@@ -510,11 +512,11 @@ object a library names must carry `@register` metadata, and the app refuses to
 start when a library does not import, offers nothing, gives two components one
 id, or offers an id that the project, the built-in components or another
 library already uses, since letting one replace the other would change what
-saved dashboards load. The same goes for [former ids](#renaming-components-and-ports):
-a library component's `aliases` must not name an id or former id of another
-component, and its id must not be another component's former id. To
-resolve a clash, give the library's components other ids through a mapping,
-for example `"my_library:COMPONENTS"`.
+saved dashboards load. The same goes for
+[former ids](#renaming-components-and-ports): a library component's `aliases`
+must not name an id or former id of another component, and its id must not be
+another component's former id. To resolve a clash, give the library's
+components other ids through a mapping, for example `"my_library:COMPONENTS"`.
 
 `flowdash serve` puts the project directory first on `sys.path`, so a module in
 the project with the same name as a library, such as `my_project/my_library.py`,

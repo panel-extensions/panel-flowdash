@@ -176,8 +176,12 @@ class ComponentLibraryError(ValueError):
     """A component library named by ``FlowDashApp.component_libraries`` cannot be used."""
 
 
-def _library_object(name: str) -> Any:
-    """Import the object a library name refers to: ``module`` or ``module:attribute``."""
+def _library_object(name: str) -> tuple[Any, list[str]]:
+    """Import the object a library name refers to: ``module`` or ``module:attribute``.
+
+    Also returns the names of the components a module without ``__all__``
+    imports from elsewhere, which it does not offer.
+    """
     module_name, _, attribute = name.partition(":")
     if not module_name or (":" in name and not attribute):
         raise ComponentLibraryError(
@@ -191,22 +195,24 @@ def _library_object(name: str) -> Any:
         ) from exc
     if not attribute:
         if hasattr(module, LIBRARY_ATTRIBUTE):
-            return getattr(module, LIBRARY_ATTRIBUTE)
+            return getattr(module, LIBRARY_ATTRIBUTE), []
         names = getattr(module, "__all__", None)
         own_only = names is None
         if own_only:
             names = [n for n in vars(module) if not n.startswith("_")]
-        components = []
-        for obj in (getattr(module, n, None) for n in names):
+        components, imported = [], []
+        for attr in names:
+            obj = getattr(module, attr, None)
             if not PanelAppMetadata.from_app(obj).component or any(obj is c for c in components):
                 continue
             defined_in = getattr(obj, "__module__", None) or ""
             if own_only and not (
                 defined_in == module_name or defined_in.startswith(f"{module_name}.")
             ):
+                imported.append(attr)
                 continue
             components.append(obj)
-        return components
+        return components, imported
     obj = module
     for part in attribute.split("."):
         try:
@@ -215,7 +221,7 @@ def _library_object(name: str) -> Any:
             raise ComponentLibraryError(
                 f"Component library {name!r}: {module_name!r} has no attribute {attribute!r}."
             ) from None
-    return obj
+    return obj, []
 
 
 def library_components(name: str) -> dict[str, RegistryEntry]:
@@ -226,8 +232,9 @@ def library_components(name: str) -> dict[str, RegistryEntry]:
     module offers what its ``__flowdash_components__`` attribute holds, in
     any of those forms, and otherwise every object it exports that
     ``@register`` marks as a component: those named in its ``__all__``, or
-    without one, its public names defined in the module or its submodules. Only components are taken: a library adds no pages. Every
-    object a library names must carry ``@register`` metadata.
+    without one, its public names defined in the module or its submodules.
+    Only components are taken: a library adds no pages. Every object a
+    library names must carry ``@register`` metadata.
 
     Raises
     ------
@@ -236,7 +243,7 @@ def library_components(name: str) -> dict[str, RegistryEntry]:
         metadata, gives two components one id, or names nothing that holds
         a component.
     """
-    obj = _library_object(name)
+    obj, imported = _library_object(name)
     try:
         entries = normalize_components(obj, unique=True)
     except (TypeError, ValueError) as exc:
@@ -255,6 +262,14 @@ def library_components(name: str) -> dict[str, RegistryEntry]:
                 entry, metadata=dataclasses.replace(entry.metadata, page=False)
             )
         components[app_id] = entry
+    if not components and imported:
+        verb, pronoun = ("is", "it") if len(imported) == 1 else ("are", "them")
+        raise ComponentLibraryError(
+            f"Component library {name!r} holds no FlowDash components of its own: "
+            f"{', '.join(imported)} {verb} imported from other modules, which a module "
+            f"without __all__ does not offer. List {pronoun} in its __all__ or "
+            f"{LIBRARY_ATTRIBUTE} to offer {pronoun}."
+        )
     if not components:
         raise ComponentLibraryError(
             f"Component library {name!r} holds no FlowDash components. Name a module that "
@@ -262,6 +277,12 @@ def library_components(name: str) -> dict[str, RegistryEntry]:
             "'module:attribute' for a mapping, list or single component."
         )
     return components
+
+
+def _already(owner: str) -> str:
+    """Turn ``"the project offers"`` into ``"the project already offers"``."""
+    subject, _, verb = owner.rpartition(" ")
+    return f"{subject} already {verb}"
 
 
 def merge_libraries(
@@ -291,8 +312,8 @@ def merge_libraries(
     if not names:
         return registry
     merged = dict(registry)
-    owners = dict.fromkeys(registry, "the project")
-    owners.update(dict.fromkeys(reserved, "the built-in components"))
+    owners = dict.fromkeys(registry, "the project offers")
+    owners.update(dict.fromkeys(reserved, "the built-in components offer"))
     former: dict[str, str] = {}
     for app_id, entry in registry.items():
         for alias in entry.metadata.aliases:
@@ -304,9 +325,9 @@ def merge_libraries(
                 continue
             if app_id in owners:
                 raise ComponentLibraryError(
-                    f"Component library {name!r} offers '{app_id}', which {owners[app_id]} "
-                    "already offers. Component ids must be unique; give the library's "
-                    "components other ids with a mapping, e.g. 'module:COMPONENTS'."
+                    f"Component library {name!r} offers '{app_id}', which "
+                    f"{_already(owners[app_id])}. Component ids must be unique; give the "
+                    "library's components other ids with a mapping, e.g. 'module:COMPONENTS'."
                 )
             if app_id in former:
                 raise ComponentLibraryError(
@@ -315,7 +336,7 @@ def merge_libraries(
                 )
             for alias in entry.metadata.aliases:
                 if alias in owners:
-                    clash = f"an id {owners[alias]} already offers"
+                    clash = f"an id {_already(owners[alias])}"
                 elif alias in former:
                     clash = f"already a former id of '{former[alias]}'"
                 else:
@@ -324,7 +345,7 @@ def merge_libraries(
                     f"Component library {name!r} declares '{alias}' as a former id of "
                     f"'{app_id}', but it is {clash}."
                 )
-            owners[app_id] = f"library {name!r}"
+            owners[app_id] = f"library {name!r} offers"
             merged[app_id] = entry
             for alias in entry.metadata.aliases:
                 former[alias] = app_id
