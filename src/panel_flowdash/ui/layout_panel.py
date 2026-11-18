@@ -310,7 +310,7 @@ class LayoutPanel(Viewer):
         band = self.band_select.value
         if band in grid.responsive_layouts:
             grid.reset_responsive_layout(band)
-            self.editor.dirty = True
+            self.editor._record_edit("Changed the tile layout")
 
     @pn.io.hold()
     def refresh(self):

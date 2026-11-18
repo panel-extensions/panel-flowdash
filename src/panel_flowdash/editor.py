@@ -66,6 +66,7 @@ from panel_flowdash.registry import RegistryEntry
 from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transform_editor import TransformEditor
 from panel_flowdash.transforms import parse_transform, summarize_transform
+from panel_flowdash.turns import DashboardTurn, TurnLog, change_labels, strip_questions
 from panel_flowdash.ui.controls_bar import ControlsBar
 from panel_flowdash.ui.dashboard_bar import DashboardBar
 from panel_flowdash.ui.fullscreen import (
@@ -384,16 +385,26 @@ _FAILED_NODE_STYLE = {
 RESTRICTED_COMPONENT_ID = "flowdash:restricted"
 
 
-def export_model(model: DashboardModel, restricted: t.Collection[str] = ()) -> dict:
+def export_model(
+    model: DashboardModel, restricted: t.Collection[str] = (), *, questions: bool = True
+) -> dict:
     """Serialize *model* as a dashboard file, without its identity fields.
+
+    The file keeps the dashboard's turns and each item's origin, so a
+    dashboard that is imported elsewhere still shows how it was built.
 
     The items whose instance ids are in *restricted* keep only their id and
     position, and the edges touching them are left out, so the file reveals
     neither their component, config nor ports.
+
+    With *questions* False the turns leave out what was asked of the agent,
+    for a file shared beyond the people who asked.
     """
     data = model.to_dict()
     for key in _IDENTITY_FIELDS:
         del data[key]
+    if not questions:
+        data["turns"] = strip_questions(data["turns"])
     if restricted:
         data["items"] = [
             {**item, "component_id": RESTRICTED_COMPONENT_ID, "config": {}}
@@ -944,6 +955,13 @@ class FlowDash(Viewer):
         self._pending_grid_config: dict | None = None
         self._inspection_key: tuple[str, str] | None = None
 
+        # The turns of the dashboard and the turn each item was created in.
+        self._turn_log = TurnLog()
+        self._origins: dict[str, str] = {}
+        self._hydrating = False
+        self._recording_edit = False
+        self.param.watch(self._on_dirty, "dirty", onlychanged=False)
+
         self._settings_names = [name for name in self.settings.param if name != "name"]
         self._loading_settings = False
         self._refresh_timer = None
@@ -1407,7 +1425,9 @@ class FlowDash(Viewer):
                     self._edge_id_map[edge_id] = mapping
                     if self._edge_failed(mapping):
                         flow.patch_edge_props(edge_id, self._edge_chip(mapping))
-                self.dirty = True
+                self._record_edit(
+                    self._connect_label("Connected", src_id, src_handle, tgt_id, tgt_handle)
+                )
                 self._notify("success", f"Wired: {src_handle} → {tgt_handle}", duration=3000)
             else:
                 logger.warning("Edge rejected: %s", result)
@@ -1425,7 +1445,7 @@ class FlowDash(Viewer):
             self._drop_edge_editor(edge_id)
             if mapping:
                 self._dataflow_graph.remove_edge(*mapping)
-                self.dirty = True
+                self._record_edit(self._connect_label("Disconnected", *mapping))
 
         def _on_node_data_changed(event):
             if self._muted:
@@ -1443,7 +1463,7 @@ class FlowDash(Viewer):
             if node_id:
                 self._forget_node(node_id)
                 self._dispose_component(node_id)
-                self.dirty = True
+                self._record_edit(f"Removed {self._node_name(node_id)}")
                 self._sync_placed()
 
         flow.param.watch(self._on_selection_changed, "selection")
@@ -2112,7 +2132,7 @@ class FlowDash(Viewer):
             if item["instance_id"] == node_id:
                 item.setdefault("config", {}).update(applied)
                 break
-        self.dirty = True
+        self._record_edit(f"Changed the config of {self._node_name(node_id)}")
 
     def _seed_config_state(self, instance_id, config):
         """Overlay saved config onto a node's config state and return node data seed."""
@@ -2347,7 +2367,9 @@ class FlowDash(Viewer):
         self._import_dialog = self._build_import_dialog()
         self._inspect_dialog = make_inspect_sheet()
         # Saving is only offered with unsaved changes, and rearranging is a change.
-        self._flow.on("node_moved", lambda _payload: self._mark_rearranged())
+        self._flow.on(
+            "node_moved", lambda _payload: self._mark_rearranged("Moved nodes on the canvas")
+        )
         self._tile_grid.param.watch(self._on_tile_layout_edited, ["layout", "responsive_layouts"])
         self._settings_dialog = self._build_settings_dialog()
         self._settings_button.on_click(lambda _event: self._settings_view.show("general"))
@@ -2432,9 +2454,9 @@ class FlowDash(Viewer):
         classes = [c for c in view.css_classes if c != PRESENTING_CLASS]
         view.css_classes = [*classes, PRESENTING_CLASS] if presenting else classes
 
-    def _mark_rearranged(self):
+    def _mark_rearranged(self, label: str = "Changed the tile layout"):
         if self.editable:
-            self.dirty = True
+            self._record_edit(label)
 
     def _on_tile_layout_edited(self, event):
         # Only a layout the browser sent was edited by the user; the editor sets
@@ -2986,7 +3008,7 @@ class FlowDash(Viewer):
 
     def _on_setting_changed(self, *_events):
         if not self._loading_settings:
-            self.dirty = True
+            self._record_edit("Changed the settings")
 
     @param.depends("dashboard", "settings.refresh_period", watch=True)
     def _schedule_refresh_timer(self, *_events):
@@ -3021,6 +3043,81 @@ class FlowDash(Viewer):
     # ------------------------------------------------------------------
     # Public canvas API
     # ------------------------------------------------------------------
+
+    # ------------------------------------------------------------------
+    # Turns
+    # ------------------------------------------------------------------
+
+    @property
+    def turns(self) -> list[DashboardTurn]:
+        """The turns of the open dashboard, oldest first, as copies.
+
+        A turn is one request to the agent, or one batch of the person's edits
+        made between requests; each node records the turn that created it as
+        its origin. The editor opens a turn at the first edit that needs one:
+        an edit made in an agent's tool call joins the turn of that agent run,
+        any other edit the person's open turn. See :mod:`panel_flowdash.turns`.
+        """
+        return self._turn_log.snapshot()
+
+    def node_origin(self, instance_id: str) -> str | None:
+        """Return the id of the turn that created a node, or None if no turn is recorded."""
+        return self._origins.get(instance_id)
+
+    def end_turn(self):
+        """End the turn of the person's edits, so their next edit starts a new turn.
+
+        Call it when the person sends a request to an agent, which the
+        FlowDash assistant does, so the edits made before and after the
+        request form separate turns.
+        """
+        self._turn_log.end_user_turn()
+
+    def end_agent_turns(self):
+        """End the turns of the agent's requests, so the next request's edits start a new turn.
+
+        The dashboard tools call it when a request ends, whether it finished,
+        failed or was cancelled.
+        """
+        self._turn_log.end_agent_turns()
+
+    def _record_edit(self, *labels: str) -> DashboardTurn | None:
+        """Mark the canvas changed and note the change in the turn it belongs to, which is returned.
+
+        While a dashboard is being loaded nothing is noted, and None is returned.
+        """
+        turn = None if self._hydrating else self._note_turn(*labels)
+        self._recording_edit = True
+        try:
+            self.dirty = True
+        finally:
+            self._recording_edit = False
+        return turn
+
+    def _note_turn(self, *labels: str) -> DashboardTurn:
+        turn = self._turn_log.record(*labels)
+        self._turn_log.prune(set(self._origins.values()))
+        return turn
+
+    def _on_dirty(self, event):
+        # Code that marks the canvas changed without `_record_edit` still opens a turn.
+        if event.new and not self._recording_edit and not self._hydrating:
+            self._note_turn()
+
+    def _node_name(self, instance_id: str) -> str:
+        """Return the name a node has in the dashboard YAML, for a turn's summary."""
+        from panel_flowdash.agent.yaml_format import node_names
+
+        items = [{"instance_id": item["instance_id"]} for item in self._tile_items]
+        if not any(item["instance_id"] == instance_id for item in items):
+            items.append({"instance_id": instance_id})
+        return node_names(items)[instance_id]
+
+    def _connect_label(self, verb, source_id, source_port, target_id, target_port) -> str:
+        # Only the nodes: a summary is shown to everyone who may read the
+        # dashboard, including people from whom a restricted node's ports are hidden.
+        joiner = "from" if verb == "Disconnected" else "to"
+        return f"{verb} {self._node_name(source_id)} {joiner} {self._node_name(target_id)}"
 
     def add_component(
         self,
@@ -3083,7 +3180,9 @@ class FlowDash(Viewer):
             config or {},
             position,
         )
-        self.dirty = True
+        turn = self._record_edit(f"Added {self._node_name(instance_id)}")
+        if turn is not None:
+            self._origins[instance_id] = turn.id
         self._sync_placed()
         return instance_id
 
@@ -3255,7 +3354,7 @@ class FlowDash(Viewer):
     def remove_component(self, instance_id: str):
         """Remove a placed component along with its edges and its tile."""
         self._unplace(instance_id)
-        self.dirty = True
+        self._record_edit(f"Removed {self._node_name(instance_id)}")
         self._sync_placed()
 
     def _unplace(self, instance_id: str):
@@ -3317,7 +3416,7 @@ class FlowDash(Viewer):
                 **(self._edge_chip(mapping) if transform or self._edge_failed(mapping) else {}),
             }
         )
-        self.dirty = True
+        self._record_edit(self._connect_label("Connected", *mapping))
         return True
 
     def set_edge_transform(
@@ -3345,7 +3444,7 @@ class FlowDash(Viewer):
         result = self._dataflow_graph.set_edge_transform(*mapping, transform)
         if result is not True:
             return result
-        self.dirty = True
+        self._record_edit(self._connect_label("Changed the transform from", *mapping))
         chip = self._edge_chip(mapping)
         for edge_id, existing in self._edge_id_map.items():
             if existing == mapping:
@@ -3426,7 +3525,7 @@ class FlowDash(Viewer):
                 self._drop_edge_editor(edge_id)
                 with self._muted_canvas():
                     self._flow.remove_edge(edge_id)
-        self.dirty = True
+        self._record_edit(self._connect_label("Disconnected", *mapping))
 
     @pn.io.hold()
     def clear(self):
@@ -3434,7 +3533,7 @@ class FlowDash(Viewer):
         had_items = bool(self._tile_items)
         self._reset_canvas()
         if had_items:
-            self.dirty = True
+            self._record_edit("Cleared the dashboard")
         self._notify("info", "Cleared all component tiles.", duration=3000)
 
     def _reset_canvas(self):
@@ -3451,6 +3550,7 @@ class FlowDash(Viewer):
         self._edge_count = 0
         self._unresolved_edges = []
         self._unresolved_notice = None
+        self._origins = {}
         self._rebuild_sidebar()
         with self._muted_canvas():
             self._flow.param.update(nodes=[], edges=[])
@@ -3502,9 +3602,11 @@ class FlowDash(Viewer):
                 x=positions.get(item["instance_id"], (0, 0))[0],
                 y=positions.get(item["instance_id"], (0, 0))[1],
                 config=item.get("config", {}),
+                origin=self._origins.get(item["instance_id"]),
             )
             for item in self._tile_items
         ]
+        model.turns = self._turn_log.snapshot()
         model.edges = [
             DashboardEdge(
                 source=edge["source"],
@@ -3550,9 +3652,20 @@ class FlowDash(Viewer):
         """Return the ids of the components a dashboard model places."""
         return {item.component_id for item in model.items}
 
+    def _hydrate_model(self, model: DashboardModel, keep_open_turns: bool = False):
+        """Populate the canvas from *model*, assuming its components are loaded.
+
+        The model's turns replace the editor's. With *keep_open_turns* the
+        turns open to more edits stay open, for a change made by loading a model.
+        """
+        self._hydrating = True
+        try:
+            self._hydrate(model, keep_open_turns)
+        finally:
+            self._hydrating = False
+
     @pn.io.hold()
-    def _hydrate_model(self, model: DashboardModel):
-        """Populate the canvas from *model*, assuming its components are loaded."""
+    def _hydrate(self, model: DashboardModel, keep_open_turns: bool):
         # Every placement path, placeholders included, then sees one item per id,
         # so the canvas and the tiles agree and a save does not write repeats back.
         if duplicates := _drop_repeated_ids(model):
@@ -3564,6 +3677,11 @@ class FlowDash(Viewer):
             )
         with self._muted_canvas():
             self._reset_canvas()
+        self._turn_log.reset(model.turns, keep_open=keep_open_turns)
+        known = {turn.id for turn in model.turns}
+        self._origins = {
+            item.instance_id: item.origin for item in model.items if item.origin in known
+        }
         # After the previous components are disposed, so none of them reacts to the
         # new values, and before these are placed, so they see this dashboard's.
         self._apply_settings(model.settings)
@@ -3744,7 +3862,7 @@ class FlowDash(Viewer):
         if not self._unresolved_edges:
             return
         self._unresolved_edges = []
-        self.dirty = True
+        self._record_edit("Discarded the connections that could not be restored")
         self._sync_toolbar_state()
 
     @param.depends("editable", "read_only", watch=True)
@@ -3804,6 +3922,7 @@ class FlowDash(Viewer):
         self._pending_grid_config = dict(_EMPTY_GRID_CONFIG)
         self._layout_panel.band = None
         self._apply_settings(model.settings)
+        self._turn_log.reset([])
         self.dashboard = model
         self.dirty = False
 
@@ -3884,16 +4003,20 @@ class FlowDash(Viewer):
         self.param.trigger("saved")
         return model
 
-    def export_dashboard(self) -> dict:
+    def export_dashboard(self, *, questions: bool = True) -> dict:
         """Return the canvas as a JSON-serializable dict, as the Download button writes it.
 
         The dashboard id, owner and sharing rules are omitted, so the file can
-        be loaded into any dashboard with :meth:`import_dashboard`.
+        be loaded into any dashboard with :meth:`import_dashboard`. With
+        *questions* False its turns leave out what was asked of the agent,
+        see :func:`export_model`.
         """
         private = {iid for iid, placeholder in self._placeholders().items() if placeholder.private}
-        return export_model(self.to_model(), restricted=private)
+        return export_model(self.to_model(), restricted=private, questions=questions)
 
-    def import_dashboard(self, data: dict | str | bytes) -> DashboardModel:
+    def import_dashboard(
+        self, data: dict | str | bytes, *, keep_turns: bool = False
+    ) -> DashboardModel:
         """Replace the canvas with an exported dashboard, as dropping its file does.
 
         *data* is a downloaded dashboard file, as JSON text or a dict, or a
@@ -3903,16 +4026,72 @@ class FlowDash(Viewer):
         the file's title is used and saving creates a new one. The canvas is
         marked dirty.
 
+        The import is an edit of its own, in the turn of whoever makes it (see
+        :attr:`turns`). By default the file's turns and node origins replace
+        the canvas's, and nodes the file gives no origin get the import's
+        turn. With *keep_turns* the file's turns and origins are ignored
+        instead: the canvas keeps its turns, nodes already on it keep their
+        origin and new nodes get the import's turn. That is how the agent's
+        changes are loaded, so it cannot rewrite who made what. Nodes are
+        matched by name: a node given another component under the same name
+        keeps its origin, and a renamed node is a new node with the import's
+        turn as its origin. A file that changes nothing opens no turn.
+
         Raises
         ------
         ValueError
             If *data* is neither a dashboard export nor a dashboard in the YAML
             format.
         """
+        from panel_flowdash.agent.yaml_format import dashboard_to_dict
+
         model = self._imported_model(data)
-        self.load_model(model)
-        self.dirty = True
+        before = dashboard_to_dict(self)
+        if not keep_turns:
+            present = {item["instance_id"] for item in self._tile_items}
+            self.load_model(model)
+            self._record_import(model, before, present)
+            return model
+        model.turns = self._turn_log.snapshot()
+        present = {item["instance_id"] for item in self._tile_items}
+        for item in model.items:
+            item.origin = self._origins.get(item.instance_id)
+        self.ensure_components_loaded(self._model_component_ids(model))
+        self._hydrate_model(model, keep_open_turns=True)
+        labels = change_labels(before, dashboard_to_dict(self))
+        if not labels:
+            self._mark_dirty()
+            return model
+        turn = self._record_edit(*labels)
+        for item in model.items:
+            if item.instance_id not in present:
+                self._origins[item.instance_id] = turn.id
         return model
+
+    def _mark_dirty(self):
+        """Mark the canvas changed without noting an edit in a turn."""
+        self._recording_edit = True
+        try:
+            self.dirty = True
+        finally:
+            self._recording_edit = False
+
+    def _record_import(self, model: DashboardModel, before: dict, present: set[str]):
+        """Note an imported file that changed the canvas *before* in the turn of whoever imported it.
+
+        The turn becomes the origin of the nodes that were not on the canvas
+        and that the file gives no origin. A file that changes nothing opens
+        no turn, though the canvas is still marked changed.
+        """
+        from panel_flowdash.agent.yaml_format import dashboard_to_dict
+
+        if not change_labels(before, dashboard_to_dict(self)):
+            self._mark_dirty()
+            return
+        turn = self._record_edit("Loaded a dashboard file")
+        for item in model.items:
+            if item.instance_id not in present:
+                self._origins.setdefault(item.instance_id, turn.id)
 
     def _imported_model(self, data: dict | str | bytes) -> DashboardModel:
         """Parse an export into a model that takes the loaded dashboard's identity."""
@@ -4103,13 +4282,17 @@ class FlowDash(Viewer):
         pn.state.execute(partial(self._import_from_ui, model), schedule=True)
 
     async def _import_from_ui(self, model: DashboardModel):
+        from panel_flowdash.agent.yaml_format import dashboard_to_dict
+
+        before = dashboard_to_dict(self)
+        present = {item["instance_id"] for item in self._tile_items}
         try:
             await self.load_model_async(model)
         except Exception as exc:
             logger.exception("Failed to load dropped dashboard")
             self._notify("error", f"Could not load the dashboard: {exc}", duration=5000)
             return
-        self.dirty = True
+        self._record_import(model, before, present)
         if not self._placeholders() and not self._unresolved_edges:
             self._notify("success", f"Loaded {len(model.items)} components.", duration=3000)
 

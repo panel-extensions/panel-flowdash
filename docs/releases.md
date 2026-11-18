@@ -36,6 +36,8 @@ Permissions. Deployments with authentication should review these:
 
 Stores and saved data:
 
+- Dashboards record their turns (each request to the assistant, and each batch of manual edits between requests) and the turn that created each node. The dashboard model is at version 4 with `DashboardModel.turns` and `DashboardItem.origin`; `DashboardStore` adds a `turns_json` column to existing databases on open, and older dashboards load without turns. Custom stores should persist `turns` and each item's `origin`, as `to_dict`/`from_dict` do
+- The dashboard YAML format is at version 2 (`flowdash: 2`), with top-level `turns` and a node `origin`. Version 1 files still load; files are written as version 2, which older releases refuse
 - Saved items and edges that cannot be restored (a missing or failing component, a renamed port, a type that no longer fits) are kept as placeholders and saved back unchanged instead of being dropped with a warning. Remove them in the editor to delete them
 - `BaseDashboardStore.find_by_id_or_title(ref)` became `find_by_id_or_title(ref, identity=None, *, default_allow=True)`. Custom stores that override it must accept the new arguments, or `FlowDashApp` raises `TypeError` when `home_dashboard` is set
 - Stores declare `BaseDashboardStore.random_ids` (default `True`; `False` for `JSONFolderDashboardStore`, whose ids are title slugs). When ids can be guessed, a dashboard the user may not open gets the same not-found page as a missing one instead of naming its owner, so a custom store with guessable ids should set `random_ids = False`

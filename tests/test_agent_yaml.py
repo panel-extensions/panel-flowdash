@@ -19,7 +19,7 @@ from panel_flowdash.agent import (
     validate_dashboard,
 )
 from panel_flowdash.agent.yaml_format import node_names
-from panel_flowdash.dashboard_store import DashboardEdge, DashboardItem
+from panel_flowdash.dashboard_store import MODEL_VERSION, DashboardEdge, DashboardItem
 from panel_flowdash.editor import RESTRICTED_COMPONENT_ID
 from panel_flowdash.port_types import port_types_compatible
 
@@ -70,7 +70,7 @@ def _errors(issues):
 def test_seed_dashboard_round_trips(seed):
     data = json.loads(seed.read_text())
     text = dashboard_to_yaml(data)
-    assert dashboard_from_yaml(text) == data
+    assert dashboard_from_yaml(text) == {**data, "version": MODEL_VERSION, "turns": []}
     assert dashboard_to_yaml(dashboard_from_yaml(text)) == text
 
 
@@ -300,8 +300,8 @@ class TestValidate:
         assert _validate("flowdash: 1\nnodes:\n  a: {component: T/number, colour: red}\n") == [
             "nodes.a: unknown key 'colour'; expected component, config, position."
         ]
-        assert _validate("flowdash: 2\n") == [
-            "flowdash: unsupported format version 2; this release reads 1. "
+        assert _validate("flowdash: 3\n") == [
+            "flowdash: unsupported format version 3; this release reads 1 and 2. "
             "The file was written by a newer FlowDash."
         ]
         assert _validate("nodes: {}\n")[0].startswith("document:")

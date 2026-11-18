@@ -12,6 +12,7 @@ from panel_flowdash.component_spec import ComponentSpec
 from panel_flowdash.port_types import ANY, normalize_port_type
 from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transforms import TRANSFORMS
+from panel_flowdash.turns import TURN_ACTORS, TURN_ID_PATTERN, TURN_STATUSES
 
 from .yaml_format import FORMAT_VERSION, NAME_PATTERN
 
@@ -203,6 +204,7 @@ def dashboard_schema(
             "required": ["component"],
             "properties": {
                 "component": {"enum": [component_id, *sorted(former[component_id])]},
+                "origin": {"$ref": "#/$defs/turn_id"},
                 "config": config_schema(spec),
                 "position": {"$ref": "#/$defs/position"},
             },
@@ -218,6 +220,7 @@ def dashboard_schema(
             "required": ["component"],
             "properties": {
                 "component": {"const": "flowdash:restricted"},
+                "origin": {"$ref": "#/$defs/turn_id"},
                 "position": {"$ref": "#/$defs/position"},
             },
             "patternProperties": _EXTENSIONS,
@@ -239,6 +242,7 @@ def dashboard_schema(
             "flowdash": {"const": FORMAT_VERSION},
             "title": {"type": "string"},
             "settings": {"type": "object", "properties": settings},
+            "turns": {"type": "array", "items": {"$ref": "#/$defs/turn"}},
             "nodes": {
                 "type": "object",
                 "propertyNames": names,
@@ -268,6 +272,25 @@ def dashboard_schema(
                 "maxItems": 2,
             },
             "node": {"oneOf": node_variants},
+            "turn_id": {"type": "string", "pattern": TURN_ID_PATTERN.pattern},
+            "turn": {
+                "type": "object",
+                "required": ["id"],
+                "patternProperties": _EXTENSIONS,
+                "additionalProperties": False,
+                "properties": {
+                    "id": {"$ref": "#/$defs/turn_id"},
+                    "actor": {"enum": list(TURN_ACTORS)},
+                    "at": {"type": "string", "format": "date-time"},
+                    "run": {"type": "string"},
+                    "question": {"type": "string"},
+                    "summary": {"type": "string"},
+                    "status": {"enum": list(TURN_STATUSES)},
+                },
+                "if": {"not": {"required": ["status"]}},
+                "then": {"required": ["id", "actor", "at"]},
+                "else": {"required": ["id", "question"]},
+            },
             "edge": {
                 "type": "object",
                 "required": ["from", "to"],

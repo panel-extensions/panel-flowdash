@@ -154,6 +154,14 @@ dictionary. An existing SQLite database gains the column the first time it is op
 Settings that are not a dictionary with string keys are dropped with a warning, so the
 dashboard itself still loads. See [Dashboard settings and refresh](dashboard-settings.md).
 
+`turns` lists the requests to the assistant and the batches of manual edits that
+changed the dashboard, as `DashboardTurn` objects, and each item's `origin` names the
+turn that created it. The editor records them as edits happen (see the
+[dashboard YAML format](../reference/dashboard-yaml.md#turns)). Every store persists
+them; dashboards saved before turns existed (model version 3 and older) load without
+turns, an existing SQLite database gains a `turns_json` column the first time it is
+opened, and malformed stored turns are dropped with a warning like malformed settings.
+
 `updated_at` is when the store last wrote the dashboard, as a timezone-aware UTC
 `datetime`. Stores fill it in when they load a dashboard (the SQLite store from its
 `updated_at` column, the JSON folder store from the file's modification time) and the

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from panel_flowdash.auth import Identity, Permission, can_administer, can_edit, is_authorized
+from panel_flowdash.turns import DashboardTurn, decode_turns
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +28,10 @@ _RANDOM_ID = re.compile(r"[0-9a-f]{12}")
 
 # Titles already warned about as ambiguous, so a home page visit does not log each time.
 _AMBIGUOUS_TITLES: set[str] = set()
+
+# The version of :class:`DashboardModel` this release writes. Version 4 added
+# turns and node origins; older models load with neither.
+MODEL_VERSION = 4
 
 # What decoding a stored dashboard raises when its data is malformed. Deeply
 # nested JSON overflows the decoder with a RecursionError.
@@ -103,6 +108,7 @@ class DashboardItem:
 
     x, y store the ReactFlow node canvas position.
     Grid layout (widths, heights, visibility) lives in DashboardModel.tile_layout.
+    origin is the id of the turn that created the item, see DashboardModel.turns.
     """
 
     instance_id: str
@@ -110,24 +116,30 @@ class DashboardItem:
     x: float = 0
     y: float = 0
     config: dict[str, Any] = field(default_factory=dict)
+    origin: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "instance_id": self.instance_id,
             "component_id": self.component_id,
             "x": self.x,
             "y": self.y,
             "config": self.config,
         }
+        if self.origin is not None:
+            data["origin"] = self.origin
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DashboardItem:
+        origin = data.get("origin")
         return cls(
             instance_id=data["instance_id"],
             component_id=data["component_id"],
             x=data.get("x", 0),
             y=data.get("y", 0),
             config=data.get("config", {}),
+            origin=origin if isinstance(origin, str) else None,
         )
 
 
@@ -165,12 +177,12 @@ class DashboardEdge:
 
 @dataclass
 class DashboardModel:
-    """A persisted dashboard: nodes + edges + tile layout."""
+    """A persisted dashboard: nodes + edges + tile layout, and the turns that made them."""
 
     dashboard_id: str
     user_id: str
     title: str
-    version: int = 3
+    version: int = MODEL_VERSION
     items: list[DashboardItem] = field(default_factory=list)
     edges: list[DashboardEdge] = field(default_factory=list)
     tile_layout: list[dict[str, Any]] = field(default_factory=list)
@@ -181,6 +193,9 @@ class DashboardModel:
     permission: Permission = field(default_factory=Permission)
     # Dashboard-wide values, keyed by the parameter names of the editor's settings object.
     settings: dict[str, Any] = field(default_factory=dict)
+    # The requests to the agent and batches of manual edits that changed the
+    # dashboard, oldest first; each item's `origin` names one of them.
+    turns: list[DashboardTurn] = field(default_factory=list)
     # Bumped by the store on every save; None saves without a conflict check.
     revision: int | None = None
     # When the store last wrote the dashboard (UTC), filled in by the store on
@@ -206,6 +221,7 @@ class DashboardModel:
             "reference_width": self.reference_width,
             "permission": self.permission.to_dict(),
             "settings": copy.deepcopy(self.settings),
+            "turns": [turn.to_dict() for turn in self.turns],
             "revision": self.revision,
         }
 
@@ -220,7 +236,7 @@ class DashboardModel:
             dashboard_id=data["dashboard_id"],
             user_id=data["user_id"],
             title=data["title"],
-            version=data.get("version", 1),
+            version=_migrated(data.get("version", 1)),
             items=[DashboardItem.from_dict(i) for i in data.get("items", [])],
             edges=[DashboardEdge.from_dict(e) for e in data.get("edges", [])],
             tile_layout=data.get("tile_layout", []),
@@ -229,8 +245,16 @@ class DashboardModel:
             reference_width=data.get("reference_width"),
             permission=Permission.from_dict(data.get("permission")),
             settings=decode_settings(data.get("settings")),
+            turns=decode_turns(data.get("turns")),
             revision=_decode_revision(data.get("revision")),
         )
+
+
+def _migrated(version: Any) -> int:
+    """Return the model version a stored one is read as: older ones are upgraded on load."""
+    if isinstance(version, bool) or not isinstance(version, int):
+        return MODEL_VERSION
+    return max(version, MODEL_VERSION)
 
 
 def _parse_sqlite_time(value: Any) -> datetime | None:
@@ -679,6 +703,7 @@ class DashboardStore(BaseDashboardStore):
                 ("permission_json", "'{}'"),
                 ("reference_width_json", "'null'"),
                 ("settings_json", "'{}'"),
+                ("turns_json", "'[]'"),
             ]
             for col, default in migrations:
                 try:
@@ -775,6 +800,7 @@ class DashboardStore(BaseDashboardStore):
             "reference_width_json": json.dumps(dashboard.reference_width),
             "permission_json": json.dumps(dashboard.permission.to_dict()),
             "settings_json": json.dumps(dashboard.settings),
+            "turns_json": json.dumps([turn.to_dict() for turn in dashboard.turns]),
         }
         with self._get_conn() as conn:
             # Writing first takes the database's write lock, so the revision
@@ -859,7 +885,7 @@ class DashboardStore(BaseDashboardStore):
             dashboard_id=row["dashboard_id"],
             user_id=row["user_id"],
             title=row["title"],
-            version=row["version"],
+            version=_migrated(row["version"]),
             items=[DashboardItem.from_dict(i) for i in items],
             edges=[DashboardEdge.from_dict(e) for e in edges],
             tile_layout=tile_layout,
@@ -868,6 +894,7 @@ class DashboardStore(BaseDashboardStore):
             reference_width=json.loads(reference_raw),
             permission=permission,
             settings=self._row_settings(row) if "settings_json" in keys else {},
+            turns=self._row_turns(row) if "turns_json" in keys else [],
             revision=row["revision"] if "revision" in keys else 0,
             updated_at=_parse_sqlite_time(row["updated_at"]),
         )
@@ -884,3 +911,16 @@ class DashboardStore(BaseDashboardStore):
                     "Ignoring malformed settings of dashboard %r (%r)", row["dashboard_id"], exc
                 )
             return {}
+
+    def _row_turns(self, row: sqlite3.Row) -> list[DashboardTurn]:
+        """Decode a row's turns, or log (once per revision) and drop them if malformed."""
+        try:
+            return decode_turns(json.loads(row["turns_json"]))
+        except MALFORMED_ERRORS as exc:
+            key = (row["dashboard_id"], row["updated_at"], "turns")
+            if key not in self._warned:
+                self._warned.add(key)
+                logger.warning(
+                    "Ignoring malformed turns of dashboard %r (%r)", row["dashboard_id"], exc
+                )
+            return []

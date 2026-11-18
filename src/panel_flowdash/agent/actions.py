@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import typing as t
 
-from panel_agents import ActionRegistry
+from panel_agents import ActionRegistry, current_run_id
 
+from panel_flowdash.turns import agent_edits
 from panel_flowdash.ui.command_palette import CommandPaletteController
 
 if t.TYPE_CHECKING:
@@ -83,7 +84,7 @@ def palette_actions(
         Args:
             command: The command's id, e.g. "action:refresh" or "dashboard:<id>".
         """
-        refusal = deps.check_pin() if deps is not None else None
+        refusal = deps.check_pin(current_run_id()) if deps is not None else None
         if refusal is not None:
             return refusal
         offered = {item["id"]: item for item in controller.items()}
@@ -91,7 +92,9 @@ def palette_actions(
             raise ValueError(
                 f"The palette does not offer {command!r} right now; call list_commands."
             )
-        controller.run(command)
+        run_id = current_run_id() or (deps._run_id if deps is not None else None)
+        with agent_edits(run_id, deps.question if deps is not None else None):
+            controller.run(command)
         if deps is not None:
             # Like open_dashboard, a command run from the pinned dashboard takes the pin along.
             deps.repin()
