@@ -41,6 +41,9 @@ from panel_flowdash.ui.dashboard_bar import (
     COMPACT_BREAKPOINT,
     EDIT_COMPACT_BREAKPOINT,
     ICON_ONLY_WHEN_COMPACT,
+    LABEL_LINE_HEIGHT,
+    TOOLTIP_KEYFRAMES,
+    tooltip_css,
 )
 from panel_flowdash.ui.gallery import ComponentGallery
 from panel_flowdash.ui.launcher import (
@@ -111,11 +114,13 @@ def _without_query(search: str | None, *names: str) -> str:
 # The assistant's header toggle drops its label where the other top bar actions
 # do: below COMPACT_BREAKPOINT, and below EDIT_COMPACT_BREAKPOINT beside the edit actions.
 _EDIT_HEADER_CLASS = "fd-edit-header"
-_TOGGLE_ICON_ONLY = """
-  .pa-toggle > span:not(.pa-badge) { display: none; }
-  .pa-toggle { padding: 6px; }
+_TOGGLE_ICON_ONLY = f"""
+  .pa-toggle > span:not(.pa-badge) {{ display: none; }}
+  .pa-toggle {{ padding: 6px; min-height: calc({LABEL_LINE_HEIGHT} + 12px); }}
+  {tooltip_css(".pa-toggle{state}", "attr(aria-label)")}
 """
 _TOGGLE_ICON_ONLY_WHEN_COMPACT = f"""
+{TOOLTIP_KEYFRAMES}
 @media (max-width: {COMPACT_BREAKPOINT - 0.05}px) {{ {_TOGGLE_ICON_ONLY} }}
 @media (max-width: {EDIT_COMPACT_BREAKPOINT - 0.05}px) {{
   :host(.{_EDIT_HEADER_CLASS}) {{ {_TOGGLE_ICON_ONLY} }}

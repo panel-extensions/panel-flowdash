@@ -85,8 +85,13 @@ def test_separator_and_switcher_arrow_are_centred_on_the_text(
 
     text = _text_middle(switcher)
     assert abs(_box_middle(arrow, page) - text) <= 1
-    assert abs(_box_middle(separator, page) - text) <= 1
-    assert abs(_text_middle(crumb) - text) <= 1
+    if header_layout == "compact" and width < 1280:
+        # Beside the dashboard's actions the crumbs before the switcher give way.
+        expect(crumb).to_have_count(0)
+        expect(separator).to_have_count(0)
+    else:
+        assert abs(_box_middle(separator, page) - text) <= 1
+        assert abs(_text_middle(crumb) - text) <= 1
 
     if title == LONG_TITLE:
         truncated = switcher.evaluate(

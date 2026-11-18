@@ -52,15 +52,70 @@ COMPACT_BREAKPOINT = 1024
 EDIT_COMPACT_BREAKPOINT = _WIDE_BREAKPOINT
 
 
-def icon_only_below(width: int) -> str:
-    """Return a stylesheet showing only the icons of a button or toggle group below *width*."""
+# A button's label sets its line height. Without the label the icon keeps that
+# line height, so an icon-only button is as tall as a labelled one.
+LABEL_LINE_HEIGHT = "calc(0.8125rem * 1.75)"
+
+# Icon-only controls without a tooltip of their own show their name like a MUI
+# tooltip, below them, after the same short delay.
+_TOOLTIP_CSS = """
+  position: absolute;
+  top: calc(100% + 14px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1500;
+  padding: 4px 8px;
+  border-radius: var(--mui-shape-borderRadius, 4px);
+  background: var(--mui-palette-Tooltip-bg, rgba(97, 97, 97, 0.92));
+  color: var(--mui-palette-common-white, #fff);
+  font-family: inherit;
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.4em;
+  letter-spacing: normal;
+  text-transform: none;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: fd-tooltip-in 150ms 100ms both;
+"""
+TOOLTIP_KEYFRAMES = "@keyframes fd-tooltip-in { from { opacity: 0; } to { opacity: 1; } }"
+
+
+def tooltip_css(selector: str, content: str) -> str:
+    """Return CSS showing *content* as a tooltip below *selector* while it is hovered or focused.
+
+    *selector* is completed with the hover or focus state by the caller's
+    ``{state}`` placeholder, e.g. ``".pa-toggle{state}"``.
+    """
+    targets = ", ".join(
+        selector.format(state=state) + "::after" for state in (":hover", ":focus-visible")
+    )
+    return f"{targets} {{ content: {content}; {_TOOLTIP_CSS} }}"
+
+
+def icon_only_below(width: int, disabled_tooltip: str | None = None) -> str:
+    """Return a stylesheet showing only the icons of a button or toggle group below *width*.
+
+    The options of a toggle group show their names as tooltips; a button that
+    is disabled, where its own tooltip cannot show, shows *disabled_tooltip*.
+    """
+    disabled = (
+        tooltip_css(":host({state}) .MuiButton-root.Mui-disabled", f'"{disabled_tooltip}"')
+        if disabled_tooltip
+        else ""
+    )
     return f"""
+{TOOLTIP_KEYFRAMES}
 @media (max-width: {width - 0.05}px) {{
   .MuiButton-root, .MuiToggleButton-root {{ font-size: 0 !important; min-width: 0 !important; }}
   .MuiButton-startIcon {{ margin: 0 !important; }}
   .MuiButton-root .material-icons, .MuiToggleButton-root .material-icons {{
     font-size: 20px !important;
+    height: {LABEL_LINE_HEIGHT} !important;
+    line-height: {LABEL_LINE_HEIGHT} !important;
   }}
+  {tooltip_css(".MuiToggleButton-root{state}", "attr(aria-label)")}
+  {disabled}
 }}
 """
 
@@ -68,7 +123,8 @@ def icon_only_below(width: int) -> str:
 ICON_ONLY_WHEN_COMPACT = icon_only_below(COMPACT_BREAKPOINT)
 _ICON_ONLY_WHEN_NARROW = icon_only_below(EDIT_COMPACT_BREAKPOINT)
 
-_TOGGLE_SX = {"& .MuiToggleButton-root": {"textTransform": "none", "px": 1.5}}
+# The toggle groups are as tall as the outlined buttons beside them.
+_TOGGLE_SX = {"& .MuiToggleButton-root": {"textTransform": "none", "px": 1.5, "py": "6px"}}
 
 _DIRTY_DOT_SX = {
     "display": "inline-flex",
@@ -346,7 +402,7 @@ class DashboardBar(Viewer):
             size="small",
             margin=(0, 4),
             description="Discard",
-            stylesheets=[_ICON_ONLY_WHEN_NARROW],
+            stylesheets=[icon_only_below(EDIT_COMPACT_BREAKPOINT, disabled_tooltip="Discard")],
         )
         self.discard_button.on_click(lambda _event: self._confirm_discard())
         self.save_button = pmui.Button(
@@ -356,7 +412,7 @@ class DashboardBar(Viewer):
             size="small",
             margin=(0, 4),
             description="Save",
-            stylesheets=[_ICON_ONLY_WHEN_NARROW],
+            stylesheets=[icon_only_below(EDIT_COMPACT_BREAKPOINT, disabled_tooltip="Save")],
         )
         self.done_button = pmui.Button(
             label="Done",

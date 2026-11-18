@@ -9,7 +9,6 @@ import panel_material_ui as pmui
 
 # The app module imports this one; its route constants are only read at runtime.
 from panel_flowdash import app as app_module
-from panel_flowdash.ui.dashboard_bar import COMPACT_BREAKPOINT
 
 if t.TYPE_CHECKING:
     from panel_flowdash.app import FlowDashApp
@@ -59,8 +58,11 @@ _SHRINK = ":host { flex: 0 1 auto !important; min-width: 0 !important; }"
 # and its arrow, so the items after it never cover it.
 _SHRINK_SWITCHER = ":host { flex: 0 1 auto !important; min-width: 64px !important; }"
 # On a dashboard the top bar also holds its actions, so the crumbs before the
-# switcher give way below this width; the rail leads to them as well.
-_HIDE_WHEN_COMPACT = f"@media (max-width: {COMPACT_BREAKPOINT - 0.05}px) {{ :host {{ display: none !important; }} }}"
+# switcher give way where the brand does, before the title has to truncate; the
+# rail leads to them as well.
+_HIDE_WHEN_COMPACT = (
+    f"@media (max-width: {_BRAND_BREAKPOINT - 0.05}px) {{ :host {{ display: none !important; }} }}"
+)
 
 _CRUMB_SX = {
     "textTransform": "none",
@@ -199,9 +201,7 @@ class AppShell:
             margin=0,
             stylesheets=[_HIDE_WHEN_WIDE],
         )
-        app._editor._dashboard_bar.param.watch(
-            lambda _event: self._render_dashboard_slots(), "layout"
-        )
+        app._editor._dashboard_bar.param.watch(lambda _event: self._render_breadcrumb(), "layout")
         app._editor.param.watch(lambda _event: self._render_dashboard_slots(), "editable")
         self._header = [
             self.breadcrumb,
@@ -432,7 +432,8 @@ class AppShell:
     def _render_breadcrumb(self):
         crumbs = self.crumbs()
         dashboard = self._is_dashboard_route()
-        hide_before_last = [_HIDE_WHEN_NARROW, *([_HIDE_WHEN_COMPACT] if dashboard else [])]
+        beside_actions = dashboard and self._app._editor._dashboard_bar.in_header
+        hide_before_last = [_HIDE_WHEN_NARROW, *([_HIDE_WHEN_COMPACT] if beside_actions else [])]
         parts: list = []
         for i, crumb in enumerate(crumbs):
             last = i == len(crumbs) - 1
