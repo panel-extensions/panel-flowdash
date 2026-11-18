@@ -76,9 +76,36 @@ agent = create_agent(
 )
 ```
 
-The agent's instructions always list the components the user may place, with their
-ports and config fields, so you do not need to describe those. `create_agent` also
-takes pydantic-ai `model_settings`.
+By default the agent's instructions list the components the user may place, with
+their ports and config fields, so you do not need to describe those. `create_agent`
+also takes pydantic-ai `model_settings`.
+
+An agent added for one narrow job, e.g. answering questions about data with tools of
+your own, does not need all the dashboard tools, and every tool and line of
+instructions is sent with each request. `create_agent` takes three options for that:
+
+- `tools`: the names of the dashboard tools to offer, e.g. `["set_config",
+  "remove_node"]`. It selects tools; approvals and the user's rights apply as before.
+- `default_instructions=False`: leave out the instructions about the YAML format and
+  how to work on a dashboard. The agent still gets the rules about saving, refusals
+  and untrusted text after your own `instructions`.
+- `catalogue`: `"full"` (the default), `"compact"` for component ids and titles only,
+  or `"none"`. Without `list_components` and with `"none"` the agent cannot discover
+  components.
+
+For such an agent in the app, also pass `FlowDashApp(agent_palette=False)` to leave
+out the command palette tools:
+
+```python
+agent = create_agent(
+    "anthropic:<model>",
+    instructions="You answer questions about the data with the data tools ...",
+    toolsets=[my_data_tools],
+    tools=["set_config", "remove_node"],
+    default_instructions=False,
+    catalogue="none",
+)
+```
 
 ---
 
@@ -156,7 +183,8 @@ checks as the app:
 Dashboard titles, descriptions, config values, column names and data reach the agent
 as it works, and other people may have written them, so a dashboard can carry text
 that tries to instruct the agent ("prompt injection"). The agent is told to treat all
-of it as data, but plan for it to be fooled sometimes:
+of it as data, also with `default_instructions=False`, but plan for it to be fooled
+sometimes:
 
 - Saving, deleting and sharing always need the user's approval, and the approvals say
   what will happen. Read them before approving.
@@ -196,7 +224,8 @@ returns it. A chosen name follows the rules for
 and a name another node has is refused with a free variant suggested.
 
 `dashboard_toolset()` wraps them as a pydantic-ai toolset that runs against
-`FlowDashDeps(ops)`:
+`FlowDashDeps(ops)`; `dashboard_toolset(["get_dashboard", "set_config"])` offers only
+those tools:
 
 ```python
 from pydantic_ai import Agent

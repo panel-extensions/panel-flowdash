@@ -175,6 +175,15 @@ class FlowDashApp(Viewer):
         environment variable.""",
     )
 
+    agent_palette = param.Boolean(
+        default=True,
+        doc="""
+        Whether the agent gets the command palette as tools (list_commands
+        and run_command), e.g. to open a dashboard or refresh it. Turn it off
+        for an agent with a narrow job, whose requests then do not carry
+        their schemas.""",
+    )
+
     agent_model_settings = param.Dict(
         default=None,
         allow_None=True,

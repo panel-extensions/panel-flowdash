@@ -669,10 +669,37 @@ TOOLS = (
 )
 
 
-def dashboard_toolset() -> FunctionToolset[FlowDashDeps]:
-    """Return the dashboard tools, which run against ``FlowDashDeps.ops`` of each run's deps."""
+def dashboard_toolset(tools: t.Collection[str] | None = None) -> FunctionToolset[FlowDashDeps]:
+    """Return the dashboard tools, which run against ``FlowDashDeps.ops`` of each run's deps.
+
+    Parameters
+    ----------
+    tools
+        Names of the tools to offer, e.g. ``["get_dashboard", "set_config"]``.
+        Defaults to all of them. They keep the order of ``TOOLS`` whatever
+        order they are given in, a name given twice counts once, and an empty
+        collection gives no tools. Every tool sent to the model costs input
+        tokens on each request, so an agent with a narrow job is cheaper and
+        often more accurate with fewer.
+
+    Raises
+    ------
+    ValueError
+        If *tools* names a tool that does not exist.
+    TypeError
+        If *tools* is a single string rather than a collection of names.
+    """
+    if isinstance(tools, str):
+        raise TypeError(f"tools must be a collection of tool names, not the string {tools!r}.")
+    names = [func.__name__ for func in TOOLS]
+    if tools is not None and (unknown := sorted(set(tools) - set(names))):
+        raise ValueError(
+            f"Unknown dashboard tools: {', '.join(unknown)}. They are: {', '.join(names)}."
+        )
     toolset = FunctionToolset[FlowDashDeps]()
     for func in TOOLS:
+        if tools is not None and func.__name__ not in tools:
+            continue
         toolset.add_function(
             _guarded(func),
             takes_ctx=True,

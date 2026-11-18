@@ -80,7 +80,7 @@ class AgentSession:
                 ops=self.ops,
             ),
             run_kwargs={
-                "toolsets": [ActionToolset(self.actions)],
+                "toolsets": [ActionToolset(self.actions)] if app.agent_palette else [],
                 **(
                     {"model_settings": app.agent_model_settings}
                     if app.agent_model_settings
