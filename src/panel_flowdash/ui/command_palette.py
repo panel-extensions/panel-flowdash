@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 import typing as t
 
@@ -446,7 +447,12 @@ class CommandPaletteController:
             target = editor.edit_history.step_value(action)
             if target is not None:
                 await editor.ensure_components_loaded_async(components_of(target))
-            self._apply_step(action)
+            # This coroutine runs without the Document lock. Applying the
+            # version here would hold the Document on the loop while a locked
+            # browser callback holds it on a worker thread, and Panel can then
+            # restore a hold that callback already released, so no later change
+            # reaches the browser. The import above stays unlocked.
+            pn.state.execute(functools.partial(self._apply_step, action), schedule=True)
 
         pn.state.execute(step)
 

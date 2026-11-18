@@ -103,14 +103,17 @@ def test_leaving_edit_mode_leaves_no_outline_on_the_tiles(page):
     marked = page.locator(f".{TILE_CLASSES['add']}")
     expect(marked).to_have_count(1, timeout=20000)
     page.mouse.move(0, 0)
-    page.wait_for_timeout(500)
     # The outline is drawn inside the tile, where the grid item does not clip it.
-    for r, g, b in _edge_pixels(page, marked):
-        assert g > r + 30 and g > b + 30, (r, g, b)
+    # The grid may still be laying out, so the pixels are sampled until it settles.
+    wait_until(
+        lambda: all(g > r + 30 and g > b + 30 for r, g, b in _edge_pixels(page, marked)),
+        page,
+        timeout=10000,
+    )
 
     page.get_by_role("button", name="Done").first.click()
     page.get_by_role("button", name="Save and leave").click()
-    page.get_by_role("button", name="Edit").wait_for()
+    page.get_by_role("button", name="Edit", exact=True).wait_for()
 
     expect(page.locator(f".{TILE_CLASSES['add']}")).to_have_count(0)
     tiles = page.locator(".flowdash-tile:visible")
