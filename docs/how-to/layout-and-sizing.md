@@ -12,11 +12,10 @@ Switch between them with the *Dataflow* and *Layout* tabs in the dashboard bar
 while editing. To see the dashboard exactly as it will appear when served, press
 *Done* (or choose *View*): view mode is the preview.
 
-![Dashboard mode showing tiles in the grid, sidebar filters, and the breakpoint toolbar](../assets/images/dashboard-mode.png)
+![The Layout tab with a selected tile, the controls bar above the grid and the layout panel](../assets/images/dashboard-mode.png)
 
-The breakpoint toolbar (XS / SM / MD / AUTO) appears at the top of the layout
-tab; the sidebar filters on the left are the components
-marked `sidebar=True`, described next.
+The slider above the tiles is a component marked `sidebar=True`, shown in the
+controls bar as described [below](#sidebar-components).
 
 ## Arranging tiles
 
@@ -24,10 +23,22 @@ In the *Layout* tab every tile has a dashed frame, a drag handle at the top
 and a resize grip in its bottom-right corner. Drag a tile by its handle to
 move it, and drag the grip to resize it.
 
-The panel on the right edits one tile at a time:
+Clicking, dragging or resizing a tile selects it, with an outline in the
+primary color, and selects its component on the *Dataflow* canvas too;
+selecting a component on the canvas selects its tile in turn. The selection
+carries over between the *Dataflow*, *Layout* and *Split* tabs, and is not a
+change to save.
 
-- **Selected tile** picks a tile (it starts with the component selected on the
-  *Dataflow* canvas, if any) and sets its **Width** in columns of a 12-column
+The panel on the right arranges the dashboard:
+
+- **Arrange for** picks the screen size you arrange the tiles for: *Desktop*,
+  *Tablet* or *Phone*, one per band of the grid's `breakpoints` (see
+  [Responsive layouts](#responsive-layouts)). It starts at the band of the
+  main layout, usually *Desktop*. Under it the panel says which sizes follow
+  the main layout automatically and which were arranged separately, and
+  **Reset to automatic** discards the separate arrangement of the size shown.
+- **Selected tile** picks a tile (it follows the tile selected on the grid)
+  and sets its **Width** in columns of a 12-column
   grid and its **Height** in pixels, or *Automatic* to size it to its content.
   The heights offered stay within the component's `min_size` and `max_size`.
   **Hide tile** takes the tile off the dashboard without removing the
@@ -133,15 +144,13 @@ they settle on is what gets persisted.
 
 Arrange the tiles once, at the width you are working at, and the grid adapts the arrangement to narrower screens. The grid records the width you arranged the tiles at as `reference_width`. On a narrower screen each tile may shrink to half its authored width; once it would shrink further, it wraps onto a new line instead. Tiles in a row that no longer fits are split into evenly balanced lines, and a tile alone on a line takes the full width. In the `complex_dataflow` example the chart and map share a row on a desktop and stack above the table on a laptop with both side panels open.
 
-The grid's `breakpoints` divide the viewport into bands; the default `[768, 1200]` yields `xs` below 768px, `sm` between, and `md` above 1200px. In edit mode a toolbar lets you preview each band:
+The grid's `breakpoints` divide the viewport into bands; the default `[768, 1200]` yields `xs` below 768px (*Phone*), `sm` between (*Tablet*), and `md` above 1200px (*Desktop*). With one breakpoint the bands are *Phone* and *Desktop*, with three a *Laptop* band comes between *Tablet* and *Desktop*, and with more the bands between *Phone* and *Desktop* are named by their widths. **Arrange for** in the Layout tab's panel picks the band the grid shows and edits:
 
-- The band containing `reference_width` is marked **base**. Editing while it's shown changes the authored layout.
-- Other bands show the generated layout. Editing one saves a custom layout for that band, marked **custom**, and **Reset** discards it again.
-- **AUTO** returns to the natural width.
+- The band containing `reference_width` is the main layout. Editing it changes the authored layout, `tile_layout`, however narrow the grid is on your screen: the grid keeps the tiles' widths relative to the row and never mistakes a narrow editor for a tablet.
+- Any other band is shown at a width inside it, framed, with the layout generated from the main one. Editing it saves a separate layout for that band in `responsive_layouts`, and **Reset to automatic** discards it again. Width and height set in the panel's **Selected tile** section always apply to the main layout.
 
-In AUTO the band follows the grid's own width, which the side panels of the
-editor narrow. To change the authored layout on a smaller screen, pick the
-**base** chip first, or fold the layout panel.
+The *Split* tab always arranges the main layout, fitted to the width of its
+pane.
 
 Custom layouts are stored in `responsive_layouts`, a mapping from band label to a list of tile entries. Each entry records a tile's index, width (as a percentage of the row), height in pixels, and visibility:
 
