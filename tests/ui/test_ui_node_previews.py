@@ -1,5 +1,6 @@
 """UI tests for the previews of each node's value inside its card on the wiring canvas."""
 
+import time
 from functools import partial
 
 import pytest
@@ -137,20 +138,24 @@ def test_a_burst_of_changes_sends_few_card_updates(page):
     doc = next(iter(pane._models.values()))[0].document
 
     values = [step / 10 for step in range(30)]
+    moved = []
 
-    def move(value):
-        slider.value = value
-
-    def drag():
-        # One step every 15 ms, so the drag lasts three times the coalescing delay.
-        for i, value in enumerate(values):
-            doc.add_timeout_callback(partial(move, value), 15 * i)
+    def move(i):
+        slider.value = values[i]
+        moved.append(time.monotonic())
+        if i + 1 < len(values):
+            # Each step is timed from the one before, so a busy event loop
+            # stretches the drag rather than running its steps back to back.
+            doc.add_timeout_callback(partial(move, i + 1), 15)
 
     # Timers are set from the event loop, not from the test's thread.
-    doc.add_next_tick_callback(drag)
+    doc.add_next_tick_callback(partial(move, 0))
 
     wait_until(lambda: slider.value == values[-1], page, timeout=8000)
     expect(filtered).to_contain_text("1 row, 4 columns")
     page.wait_for_timeout(500)
-    assert 2 <= len(updates) <= 6
+    # The drag lasts at least three times the coalescing delay, and the card
+    # updates at most once per delay, plus once after the last step.
+    windows = (moved[-1] - moved[0]) / card(editor, ids["filter"])._coalescer.delay
+    assert 2 <= len(updates) <= windows + 2
     assert "1 row, 4 columns" in pane.object and "2.3" not in pane.object
