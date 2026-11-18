@@ -19,6 +19,11 @@ from .test_ui_shell import _serve_app, _store_with
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
 
+def _opened_row(page):
+    """The history row of the dashboard as opened, not the tooltip showing its detail."""
+    return page.locator(".MuiListItemText-root", has_text="Opened the dashboard")
+
+
 def test_reverting_from_the_drawer_restores_the_canvas(page):
     store, (dash,) = _store_with("Plant")
     agent = Agent(
@@ -46,7 +51,7 @@ def test_reverting_from_the_drawer_restores_the_canvas(page):
     # One item for the request, with the dashboard as opened folded below it.
     expect(page.get_by_text("Add another note")).to_be_visible()
     page.get_by_text(re.compile(r" edited$")).click()
-    page.get_by_text("Opened the dashboard").click()
+    _opened_row(page).click()
     revert = page.get_by_role("button", name="Revert to v1")
     revert.click()
     wait_until(lambda: len(editor._tile_items) == 1, page, timeout=20000)
@@ -83,7 +88,7 @@ def test_a_refused_revert_says_why_and_stops_spinning(page, monkeypatch):
 
     page.get_by_role("button", name="Artifacts").click()
     page.get_by_text(re.compile(r" edited$")).click()
-    page.get_by_text("Opened the dashboard").click()
+    _opened_row(page).click()
     revert = page.get_by_role("button", name="Revert to v1")
     revert.click()
     expect(page.get_by_text("which you may not use here").first).to_be_visible(timeout=10000)
@@ -181,7 +186,7 @@ def test_reverting_a_large_dashboard_ends_quickly(page, wind_app, monkeypatch):
 
     page.get_by_role("button", name="Artifacts").click(timeout=EXAMPLE_LOAD_TIMEOUT)
     page.get_by_text(re.compile(r" edited$")).click(timeout=EXAMPLE_LOAD_TIMEOUT)
-    page.get_by_text("Opened the dashboard").click(timeout=EXAMPLE_LOAD_TIMEOUT)
+    _opened_row(page).click(timeout=EXAMPLE_LOAD_TIMEOUT)
     start = time.monotonic()
     page.get_by_role("button", name="Revert to v1").click(timeout=EXAMPLE_LOAD_TIMEOUT)
     wait_until(lambda: editor.edit_history.artifact.applied == 1, page, timeout=10000)
