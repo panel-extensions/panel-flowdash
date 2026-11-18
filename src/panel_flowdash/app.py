@@ -112,12 +112,13 @@ def _without_query(search: str | None, *names: str) -> str:
 
 
 # The assistant's header toggle drops its label where the other top bar actions
-# do: below COMPACT_BREAKPOINT, and below EDIT_COMPACT_BREAKPOINT beside the edit actions.
+# do: below COMPACT_BREAKPOINT, and below EDIT_COMPACT_BREAKPOINT beside the edit
+# actions. It sits at the end of the bar, so its tooltip opens to its left.
 _EDIT_HEADER_CLASS = "fd-edit-header"
 _TOGGLE_ICON_ONLY = f"""
   .pa-toggle > span:not(.pa-badge) {{ display: none; }}
   .pa-toggle {{ padding: 6px; min-height: calc({LABEL_LINE_HEIGHT} + 12px); }}
-  {tooltip_css(".pa-toggle{state}", "attr(aria-label)")}
+  {tooltip_css(".pa-toggle{state}", "attr(aria-label)", placement="left")}
 """
 _TOGGLE_ICON_ONLY_WHEN_COMPACT = f"""
 {TOOLTIP_KEYFRAMES}

@@ -54,7 +54,10 @@ _OUTLINED = {
     False: ["View", "Edit", "Refresh now", "Update automatically"],
     True: ["Dataflow", "Layout", "Split", "Discard", "Done"],
 }
-_TEXT = {False: ["Share", "More actions", "Assistant"], True: ["More actions", "Assistant"]}
+_TEXT = {
+    False: ["Share", "Full screen", "More actions", "Assistant"],
+    True: ["Settings", "More actions", "Assistant"],
+}
 
 
 def _agent():
@@ -159,3 +162,19 @@ def test_crumbs_give_way_before_the_title_truncates(page, width):
     )
     expect(crumb).to_be_hidden()
     assert title.evaluate("el => el.scrollWidth <= el.clientWidth")
+
+
+def test_tapping_an_icon_only_control_leaves_no_tooltip_open(browser):
+    context = browser.new_context(
+        viewport={"width": 800, "height": 900}, has_touch=True, is_mobile=True
+    )
+    page = context.new_page()
+    try:
+        for edit, name in ((False, "View"), (True, "Dataflow")):
+            _serve(page, 800, edit)
+            button = _button(page, name)
+            button.tap()
+            page.wait_for_timeout(800)
+            assert button.evaluate(_TOOLTIP) == "none"
+    finally:
+        context.close()
