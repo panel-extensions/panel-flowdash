@@ -1,6 +1,8 @@
 """The built-in Markdown, Notes, Heading and Divider components."""
 
+import collections
 import decimal
+import fractions
 import html
 import re
 import typing as t
@@ -112,8 +114,30 @@ class TestTemplate:
             (decimal.Decimal("1e999999"), "f", "1.000000e+999999"),
             (decimal.Decimal("1e-999999"), "f", "1.000000e-999999"),
             (decimal.Decimal("1.5"), ".2f", "1.50"),
+            (decimal.Decimal("1e999999"), ".2e", "1.00e+999999"),
+            (fractions.Fraction(10**5000, 3), ".2f", "3.333333e+4999"),
+            (fractions.Fraction(10**500, 3), "", "3.333333e+499"),
+            (fractions.Fraction(1, 10**5000), "", "1.000000e-5000"),
+            (9999999999 * 10**600, "", "1.000000e+610"),
+            ({"a": 10**5000}, "", "a: 1.000000e+5000"),
+            ([[[[10**5000]]]], "", "1 item"),
+            (collections.deque([10**5000]), "", "1.000000e+5000"),
         ],
-        ids=["int", "negative-int", "decimal", "small-decimal", "plain-decimal"],
+        ids=[
+            "int",
+            "negative-int",
+            "decimal",
+            "small-decimal",
+            "plain-decimal",
+            "decimal-e-spec",
+            "fraction",
+            "fraction-past-float",
+            "small-fraction",
+            "rounded-mantissa",
+            "in-a-dict",
+            "nested",
+            "in-a-deque",
+        ],
     )
     def test_huge_numbers_are_shown_in_scientific_notation(self, value, spec, expected):
         assert format_value(value, spec) == expected
@@ -124,10 +148,31 @@ class TestTemplate:
         text = format_value("x" * 5000)
         assert (len(text), text[-1]) == (1000, "\u2026")
         assert len(format_value({i: i for i in range(100_000)})) < 1000
+        assert format_value({"a": 1, "b": 2}) == "a: 1, b: 2"
+        for big in (
+            collections.deque(range(1_000_000)),
+            collections.Counter(range(100_000)),
+            collections.OrderedDict((i, i) for i in range(100_000)),
+            {i: i for i in range(100_000)}.values(),
+        ):
+            assert format_value(big).endswith(" more")
         nested = []
         nested.append(nested)
         assert format_value(nested)
         assert len(fill_template("{{ value }}", [["x" * 5000] * 100] * 100)) == 1000
+        assert len(fill_template("{{ value }}" * 100, "x" * 5000)) == 20_000
+        assert len(render_markdown("{{ value }}" * 100, "x" * 5000)) < 20_100
+
+    def test_a_value_that_cannot_be_shown_gives_its_type(self):
+        class Broken:
+            def __str__(self):
+                raise RuntimeError
+
+            def __format__(self, spec):
+                raise RuntimeError
+
+        assert format_value(Broken()) == "Broken"
+        assert format_value(Broken(), ".2f") == "Broken"
 
 
 class TestRenderMarkdown:

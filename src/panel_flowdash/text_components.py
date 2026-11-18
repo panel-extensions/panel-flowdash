@@ -8,11 +8,10 @@ import itertools
 import math
 import numbers
 import re
-import reprlib
 import secrets
 import typing as t
 import weakref
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from html.parser import HTMLParser
 
 import panel as pn
@@ -34,10 +33,8 @@ _MAX_ITEMS = 50
 _MAX_DEPTH = 3
 _MAX_DIGITS = 600
 _HUGE_INT = 10**_MAX_DIGITS
-_REPR = reprlib.Repr()
-_REPR.maxlevel = _MAX_DEPTH
-_REPR.maxdict = _REPR.maxlist = _REPR.maxtuple = _REPR.maxset = _MAX_ITEMS
-_REPR.maxstring = _REPR.maxother = _MAX_FILL
+# What all the placeholders of one text may add up to.
+_MAX_TOTAL = 20 * _MAX_FILL
 # Raw HTML is shown as text; math is never typeset since the HTML pane leaves it alone.
 _MARKDOWN = MarkdownIt("gfm-like", {"html": False})
 
@@ -65,28 +62,54 @@ def _huge(value: t.Any) -> bool:
         return False
     if isinstance(value, numbers.Integral):
         return abs(value) >= _HUGE_INT
+    if isinstance(value, numbers.Rational):
+        return abs(value.numerator) >= _HUGE_INT or value.denominator >= _HUGE_INT
     if isinstance(value, decimal.Decimal):
         return value.is_finite() and value != 0 and abs(value.adjusted()) > _MAX_DIGITS
     return False
 
 
-def _scientific(value: t.Any) -> str:
+def _scientific(value: t.Any, spec: str) -> str:
     if isinstance(value, decimal.Decimal):
+        if spec and spec[-1] in "eEgG" and not _HUGE_SPEC.search(spec):
+            return format(value, spec)
         return format(value, ".6e")
-    exponent = math.floor(math.log10(abs(value)))
-    mantissa = 10 ** (math.log10(abs(value)) - exponent)
-    return f"{'-' if value < 0 else ''}{mantissa:.6f}e+{exponent}"
+    if isinstance(value, numbers.Integral):
+        log = math.log10(abs(value))
+    else:
+        log = math.log10(abs(value.numerator)) - math.log10(value.denominator)
+    exponent = math.floor(log)
+    mantissa = f"{10 ** (log - exponent):.6f}"
+    if mantissa.startswith("10."):
+        mantissa, exponent = f"{1:.6f}", exponent + 1
+    return f"{'-' if value < 0 else ''}{mantissa}e{exponent:+d}"
 
 
 def _clip(text: str) -> str:
     return text if len(text) <= _MAX_FILL else text[: _MAX_FILL - 1] + "\u2026"
 
 
+def _items(value: t.Any, depth: int, mapping: bool) -> str:
+    if depth >= _MAX_DEPTH:
+        noun = ("entry", "entries") if mapping else ("item", "items")
+        return f"{len(value):,} {noun[len(value) != 1]}"
+    parts = []
+    for item in itertools.islice(value, _MAX_ITEMS):
+        text = _format(item, "", depth + 1)
+        if mapping:
+            text += f": {_format(value[item], '', depth + 1)}"
+        parts.append(_clip(text))
+    text = ", ".join(parts)
+    if len(value) > _MAX_ITEMS:
+        text += f" and {len(value) - _MAX_ITEMS:,} more"
+    return text
+
+
 def _format(value: t.Any, spec: str, depth: int) -> str:
     if value is None or is_failure(value):
         return ""
     if _huge(value):
-        return _scientific(value)
+        return _scientific(value, spec)
     if spec and not _HUGE_SPEC.search(spec):
         try:
             return format(value, spec)
@@ -96,39 +119,57 @@ def _format(value: t.Any, spec: str, depth: int) -> str:
         return str(value)
     if isinstance(value, numbers.Integral):
         return f"{value:,}"
+    if isinstance(value, numbers.Rational):
+        try:
+            float(value)
+        except OverflowError:
+            return _scientific(value, spec)
     if isinstance(value, numbers.Real) and math.isfinite(value):
         return format(value, ",.10g")
-    if isinstance(value, (list, tuple, set, frozenset)):
-        if depth >= _MAX_DEPTH:
-            return summarize_value(value)
-        text = ", ".join(
-            _clip(_format(item, "", depth + 1)) for item in itertools.islice(value, _MAX_ITEMS)
-        )
-        if len(value) > _MAX_ITEMS:
-            text += f" and {len(value) - _MAX_ITEMS:,} more"
-        return text
+    if isinstance(value, (str, bytes, bytearray)):
+        return str(value[: _MAX_FILL + 1])
     if getattr(value, "shape", None) is not None:
         return summarize_value(value)
-    if isinstance(value, dict):
-        return _REPR.repr(value)
+    if isinstance(value, Mapping):
+        return _items(value, depth, mapping=True)
+    if isinstance(value, Collection):
+        return _items(value, depth, mapping=False)
     return str(value)
 
 
 def format_value(value: t.Any, spec: str = "") -> str:
     """Return *value* as the text a placeholder shows, formatted by *spec* if it applies.
 
-    The text is at most a thousand characters: a list shows its first items, and
-    a number too long to write out is shown in scientific notation.
+    The text is at most a thousand characters: a collection shows its first
+    items, and a number too long to write out is shown in scientific notation.
+    A value that cannot be shown gives its type's name.
     """
-    return _clip(_format(value, spec, 0))
+    try:
+        return _clip(_format(value, spec, 0))
+    except Exception:
+        return type(value).__name__
+
+
+class _Budget:
+    """Cut the placeholders of one text short once together they reach ``_MAX_TOTAL``."""
+
+    def __init__(self):
+        self.left = _MAX_TOTAL
+
+    def take(self, text: str) -> str:
+        if len(text) > self.left:
+            text = text[: self.left] + "\u2026" if self.left else ""
+        self.left -= min(len(text), self.left)
+        return text
 
 
 def fill_template(template: str, value: t.Any, escape: t.Callable[[str], str] = str) -> str:
     """Replace the ``{{ value }}`` placeholders of *template*, passing each filled text through *escape*."""
+    budget = _Budget()
 
     def replace(match: re.Match) -> str:
         key, spec = match.group(1), (match.group(2) or "").strip()
-        return escape(format_value(_lookup(value, key), spec))
+        return escape(budget.take(format_value(_lookup(value, key), spec)))
 
     return _PLACEHOLDER.sub(replace, template or "")
 
@@ -143,10 +184,11 @@ def render_markdown(template: str, value: t.Any) -> str:
     """
     fills: list[str] = []
     nonce = secrets.token_hex(4)
+    budget = _Budget()
 
     def mark(match: re.Match) -> str:
         key, spec = match.group(1), (match.group(2) or "").strip()
-        fills.append(format_value(_lookup(value, key), spec))
+        fills.append(budget.take(format_value(_lookup(value, key), spec)))
         return f"fdph{nonce}n{len(fills) - 1}e"
 
     marker = re.compile(f"fdph{nonce}n(\\d+)e")
