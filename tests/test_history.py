@@ -1182,6 +1182,8 @@ def _interleaved_request(editor):
     editor.end_agent_turns()
 
 
+# panel-agents' artifact view passes old and new button options, which older Panel warns about.
+@pytest.mark.filterwarnings("ignore:Both '.*' and '.*' were provided:PendingDeprecationWarning")
 async def test_the_drawer_cannot_undo_a_request_over_someone_elses_edit(editor):
     from panel_agents.components.artifacts import ArtifactView
 
@@ -1189,13 +1191,9 @@ async def test_the_drawer_cannot_undo_a_request_over_someone_elses_edit(editor):
     history = editor.edit_history
     view = ArtifactView(artifact=history.artifact, state=history.state, on_apply=history.restore)
     applied = history.artifact.applied
-    # On panel-agents releases that still offer it, the restore itself refuses.
     assert await view.undo_run("r1") is False
     assert _names(editor) == ["agent1", "agent2", "before", "mine"]
     assert history.artifact.applied == applied
-    with pytest.raises(PermissionError, match="Someone else edited"):
-        history.restore(history.artifact, history.artifact.versions[1])
-    # Going back over whole batches, and forward again, stays possible.
     assert await view.undo() and _names(editor) == ["agent1", "before", "mine"]
     assert await view.apply_version(applied) and _names(editor) == [
         "agent1",
@@ -1203,3 +1201,29 @@ async def test_the_drawer_cannot_undo_a_request_over_someone_elses_edit(editor):
         "before",
         "mine",
     ]
+
+
+# panel-agents' artifact view passes old and new button options, which older Panel warns about.
+@pytest.mark.filterwarnings("ignore:Both '.*' and '.*' were provided:PendingDeprecationWarning")
+async def test_reverting_to_before_a_split_request_works_and_inside_it_is_refused(editor):
+    from panel_agents.components.artifacts import ArtifactView
+
+    # v1 open, v2 before, v3 the request's first part, v4 mine, v5 its second part.
+    _interleaved_request(editor)
+    history = editor.edit_history
+    artifact = history.artifact
+    assert [(v.actor, v.metadata["op"]) for v in artifact.versions] == [
+        ("user", "open"),
+        ("user", "add_node"),
+        ("agent", "request"),
+        ("user", "add_node"),
+        ("agent", "request"),
+    ]
+    with pytest.raises(PermissionError, match="Someone else edited"):
+        history.restore(artifact, artifact.versions[2])
+    assert artifact.applied == 5
+    view = ArtifactView(artifact=artifact, state=history.state, on_apply=history.restore)
+    # Before the whole request is a deliberate revert of everything after it.
+    assert await view.apply_version(2) and _names(editor) == ["before"]
+    assert await view.apply_version(5)
+    assert await view.apply_version(1) and editor._tile_items == []

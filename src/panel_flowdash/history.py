@@ -1107,22 +1107,24 @@ class EditHistory:
 
 
 def _splits_a_request(artifact: Artifact, target: ArtifactVersion) -> bool:
-    """Whether going back to *target* jumps over part of an agent request with someone else's edit inside it.
+    """Whether going back to *target* lands inside an agent request that someone else's edit split.
 
-    That is a request whose versions lie on both sides of another actor's
-    version among those after *target* up to the applied one, as undoing
-    that request as a whole would do. Going back across whole requests and
-    bursts, and going forward, are allowed.
+    That is a request with versions both up to *target* and after it, with
+    another actor's version among those after *target*, so the canvas would
+    keep part of the request but lose the other actor's edit made during
+    it. Going back to before the whole request, or across whole requests
+    and bursts, is a deliberate revert and allowed; so is going forward.
     """
     applied = artifact.applied
     if applied is None or target.version >= applied:
         return False
-    keys = [(v.actor, v.run_id) for v in artifact.versions[target.version : applied]]
-    for i, key in enumerate(keys):
-        if key[0] != "agent" or key[1] is None:
+    after = [(v.actor, v.run_id) for v in artifact.versions[target.version : applied]]
+    for version in artifact.versions[: target.version]:
+        key = (version.actor, version.run_id)
+        if version.actor != "agent" or version.run_id is None or key not in after:
             continue
-        later = keys[i + 1 :]
-        if key in later and any(other != key for other in later[: later.index(key)]):
+        last = len(after) - 1 - after[::-1].index(key)
+        if any(other != key for other in after[:last]):
             return True
     return False
 
