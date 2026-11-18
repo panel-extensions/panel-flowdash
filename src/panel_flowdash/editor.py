@@ -2499,7 +2499,13 @@ class FlowDash(Viewer):
                     except param.Skip:
                         raise
                     except Exception as exc:
-                        yield _failed(exc)
+                        # Param does not catch a Skip raised by an async
+                        # generator, so end the run instead of raising one.
+                        try:
+                            failure = _failed(exc)
+                        except param.Skip:
+                            return
+                        yield failure
                         return
                     failures.pop(name, None)
                     yield value
