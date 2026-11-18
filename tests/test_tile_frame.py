@@ -183,6 +183,40 @@ class TestEditor:
         }
         assert next(iter(frame_choices(editor, "r"))) == "Default (unframed)"
 
+    def test_unframed_tiles_keep_the_frame_inset(self):
+        editor = _shown(_editor(), _model())
+        tiles = editor._inspect_tiles
+        assert tiles["p"].body.margin == tiles["r"].body.margin == 8
+
+    def test_inspector_follows_the_setting_and_frames_set_elsewhere(self):
+        editor = _shown(_editor(), _model())
+        tab = editor._inspector._tile_tab(
+            "r",
+            next(i for i in editor._tile_items if i["instance_id"] == "r"),
+            editor._component_specs["T/rule"],
+        )
+        frame = next(o for o in tab.objects if getattr(o, "label", None) == "Frame")
+        assert frame.value == FRAME_DEFAULT
+
+        update_tile(editor, "r", framed=True)
+        assert frame.value is True
+
+        update_tile(editor, "r", framed=None)
+        editor.settings.tile_cards = False
+        assert next(iter(frame.options)) == "Default (unframed)"
+        update_tile(editor, "p", framed=None)
+        tab = editor._inspector._tile_tab(
+            "p",
+            next(i for i in editor._tile_items if i["instance_id"] == "p"),
+            editor._component_specs["T/plain"],
+        )
+        frame = next(o for o in tab.objects if getattr(o, "label", None) == "Frame")
+        editor.settings.tile_cards = True
+        assert next(iter(frame.options)) == "Default (framed)"
+
+        frame.value = False
+        assert editor._inspect_tiles["p"].framed is False
+
     def test_layout_panel_sets_the_option(self):
         editor = _shown(_editor(), _model())
         panel = editor._layout_panel
@@ -259,6 +293,11 @@ class TestYAML:
             dashboard_from_yaml(text + f"    - {tile}\n")
         assert info.value.path == path
 
+    def test_null_means_default(self):
+        text = "flowdash: 3\nnodes:\n  r: {component: T/rule}\nlayout:\n  tiles:\n"
+        data = dashboard_from_yaml(text + "    - {node: r, framed: null}\n")
+        assert data["tile_layout"] == [{"instance_id": "r", "index": 0}]
+
     def test_version_2_files_still_load(self):
         text = (
             "flowdash: 2\nnodes:\n  r: {component: T/rule}\nlayout:\n  tiles:\n    - {node: r}\n"
@@ -267,7 +306,7 @@ class TestYAML:
 
     def test_schema_offers_the_option_on_base_tiles_only(self):
         layout = dashboard_schema({})["properties"]["layout"]["properties"]
-        assert layout["tiles"]["items"]["properties"]["framed"] == {"type": "boolean"}
+        assert layout["tiles"]["items"]["properties"]["framed"] == {"type": ["boolean", "null"]}
         responsive = layout["responsive"]["additionalProperties"]["items"]
         assert "framed" not in responsive["properties"]
 

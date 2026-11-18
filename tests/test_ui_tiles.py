@@ -134,7 +134,7 @@ class TestTileFrame:
         assert "flowdash-tile-framed" not in tile.css_classes
         assert "flowdash-tile-floating" in tile.css_classes
         assert tile.header.visible and tile.inspect_button.visible
-        assert tile.body.margin == 0
+        assert tile.body.margin == 8
 
         editor.settings.tile_titles = True
         assert not tile.titles.visible

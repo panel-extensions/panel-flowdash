@@ -146,7 +146,7 @@ def _tile_schema(names: dict[str, t.Any], *, framed: bool = True) -> dict[str, t
         "visible": {"type": "boolean"},
     }
     if framed:
-        properties["framed"] = {"type": "boolean"}
+        properties["framed"] = {"type": ["boolean", "null"]}
     return {
         "type": "object",
         "required": ["node"],

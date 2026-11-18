@@ -21,8 +21,8 @@ def chart(config):
     return pn.pane.Markdown("chart tile", height=120)
 
 
-def _border(tile) -> str:
-    return tile.evaluate("el => getComputedStyle(el).borderTopWidth")
+def _framed(tile) -> bool:
+    return tile.evaluate("el => getComputedStyle(el).borderTopColor") != "rgba(0, 0, 0, 0)"
 
 
 def _pick(page, label, option):
@@ -55,8 +55,8 @@ def test_frame_option_in_the_layout_tab_frames_the_tile_in_view_mode(page):
     _done(page, editor)
     tiles = page.locator(".flowdash-tile")
     expect(tiles).to_have_count(2)
-    wait_until(lambda: _border(tiles.nth(0)) == "1px", page=page)
-    assert _border(tiles.nth(1)) == "0px"
+    wait_until(lambda: _framed(tiles.nth(0)), page=page)
+    assert not _framed(tiles.nth(1))
 
     page.get_by_role("button", name="Edit").click()
     wait_until(lambda: editor.editable, timeout=8000)
@@ -70,10 +70,50 @@ def test_frame_option_in_the_layout_tab_frames_the_tile_in_view_mode(page):
     wait_until(lambda: tile_entry(editor, chart_id).get("framed") is False, timeout=8000)
 
     _done(page, editor)
-    wait_until(lambda: _border(tiles.nth(1)) == "1px", page=page)
-    assert _border(tiles.nth(0)) == "0px"
+    wait_until(lambda: _framed(tiles.nth(1)), page=page)
+    assert not _framed(tiles.nth(0))
     radius = tiles.nth(1).evaluate("el => getComputedStyle(el).borderTopLeftRadius")
     assert radius == "12px"
     saved = store.load_dashboard("alice", model.dashboard_id)
     saved = {e["instance_id"]: e.get("framed") for e in saved.tile_layout}
     assert saved == {chart_id: False, divider_id: True}
+
+
+_TEXT_LEFT = """el => {
+  const range = document.createRange()
+  range.selectNodeContents(el)
+  return range.getBoundingClientRect().left
+}"""
+
+
+def _text_left(locator):
+    return locator.evaluate(_TEXT_LEFT)
+
+
+def test_unframed_tiles_line_up_with_framed_ones(page):
+    editor = FlowDash(notifications=False)
+    editor.add_component("Text/Heading")
+    editor.add_component("Text/Markdown", config={"text": "Text in a card"})
+    editor.add_component("Text/Divider")
+    serve_component(page, editor)
+
+    page.get_by_role("button", name="Layout", exact=True).click()
+    wait_until(lambda: editor.mode == "dashboard", timeout=8000)
+    tiles = page.locator(".flowdash-tile")
+    expect(tiles.nth(1).get_by_text("Text in a card", exact=True)).to_be_visible()
+    heading = tiles.nth(0).get_by_role("heading", name="Heading")
+    arranging = _text_left(heading)
+
+    editor.editable = False
+    expect(tiles).to_have_count(3)
+    wait_until(lambda: _framed(tiles.nth(1)), page=page)
+    assert not _framed(tiles.nth(0)) and not _framed(tiles.nth(2))
+
+    left = _text_left(heading)
+    assert abs(left - _text_left(tiles.nth(1).get_by_text("Text in a card", exact=True))) <= 1
+    assert abs(left - arranging) <= 1
+    card = tiles.nth(1).bounding_box()
+    rule = tiles.nth(2).locator(".MuiDivider-root").bounding_box()
+    # The rule spans the cards' content box: inside their border and 8 px inset.
+    assert abs(rule["x"] - (card["x"] + 9)) <= 1
+    assert abs(rule["x"] + rule["width"] - (card["x"] + card["width"] - 9)) <= 1

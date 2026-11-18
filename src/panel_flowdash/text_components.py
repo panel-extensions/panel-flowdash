@@ -426,7 +426,7 @@ class Divider(Viewer):
         self._divider = pmui.Divider(
             objects=[self._label] if self.label else [],
             sizing_mode="stretch_width",
-            margin=(12, 12),
+            margin=(12, 0),
         )
 
     @param.depends("label", watch=True)

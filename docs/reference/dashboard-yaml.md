@@ -225,8 +225,8 @@ other edge, in the editor too.
 Each tile has a `node` naming its node, plus any of `width` (percent of the row,
 greater than 0 and at most 100), `height` (pixels), `visible` (`false` hides the
 tile while keeping its component in the dataflow) and `framed` (`true` or `false`
-draws the tile as a card in view mode or not; without it the tile follows its
-component's `framed` hint, then the dashboard's `tile_cards` setting). A tile in a
+draws the tile as a card in view mode or not; without it, or with `null`, the tile
+follows its component's `framed` hint, then the dashboard's `tile_cards` setting). A tile in a
 `responsive` layout may not set `framed`, since a tile's frame is the same at every
 screen size. Other keys are rejected, except
 `x-` keys, which are ignored. Nodes without a tile entry get

@@ -726,6 +726,8 @@ def _layout_entries(
         for key in ("width", "height"):
             if key in entry and entry[key] is not None:
                 _number(entry[key], f"{tile_path}.{key}")
+        if entry.get("framed", False) is None:
+            del entry["framed"]
         for key in ("visible", "framed"):
             if key in entry and not isinstance(entry[key], bool):
                 _fail(f"{tile_path}.{key}", f"must be true or false, got {entry[key]!r}.")
