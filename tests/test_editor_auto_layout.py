@@ -259,21 +259,55 @@ class TestTiles:
         shown = [t["instance_id"] for t in _tiles(ops.editor) if t.get("visible", True)]
         assert shown[-1] == "source"
 
-    @pytest.mark.parametrize("who", ["agent", "person"])
-    def test_a_source_shown_during_a_request_stays_shown(self, ops, who):
+    def _request(self, ops, calls, during):
         from panel_flowdash.agent.tools import FlowDashDeps
-        from panel_flowdash.ui.tile_layout import update_tile
 
         deps = FlowDashDeps(ops)
         deps.start_request("Build it")
-        _build(ops, GRAPH[:3])
-        if who == "agent":
-            ops.place_tile("source", visible=True)
-        else:
-            update_tile(ops.editor, "source", visible=True)
+        _build(ops, calls)
+        during()
         deps.end_request()
-        hidden = {t["instance_id"] for t in _tiles(ops.editor) if t.get("visible") is False}
-        assert hidden == set()
+
+    @pytest.mark.parametrize("who", ["agent", "person"])
+    def test_a_source_shown_during_a_request_is_arranged_and_stays_shown(self, ops, who):
+        from panel_flowdash.ui.tile_layout import update_tile
+
+        def show():
+            if who == "agent":
+                ops.place_tile("source", visible=True)
+            else:
+                update_tile(ops.editor, "source", visible=True)
+
+        self._request(ops, GRAPH, show)
+        tiles = _tiles(ops.editor)
+        widths = {t["instance_id"]: t.get("width") for t in tiles}
+        hidden = {t["instance_id"] for t in tiles if t.get("visible") is False}
+        assert hidden == {"combined"}
+        # The whole grid is arranged, the shown source last.
+        assert widths["trend"] == widths["split"] == 50
+        assert (widths["factor"], widths["kpi"]) == (33.33, 25)
+        assert [t["instance_id"] for t in tiles if t.get("visible", True)][-1] == "source"
+
+    def test_a_chart_hidden_during_a_request_leaves_a_proper_arrangement(self, ops):
+        self._request(ops, GRAPH, lambda: ops.place_tile("split", visible=False))
+        tiles = _tiles(ops.editor)
+        widths = {t["instance_id"]: t.get("width") for t in tiles}
+        # The 5 columns the control and the KPI leave are too few for the one chart left.
+        assert (widths["factor"], widths["kpi"]) == (33.33, 25)
+        assert widths["trend"] == widths["rows"] == 100
+        shown = [t["instance_id"] for t in tiles if t.get("visible", True)]
+        assert shown == ["factor", "kpi", "trend", "rows"]
+
+    def test_a_later_request_still_arranges(self, ops):
+        self._request(ops, GRAPH[:3], lambda: ops.place_tile("source", visible=True))
+        self._request(
+            ops, [("add_node", {"component": "V/headline", "name": "kpi_2"})], lambda: None
+        )
+        tiles = _tiles(ops.editor)
+        # Arranged again, not only inserted: the new KPI joins the first one's row and,
+        # as the shown source would move in beside them, both widen alike.
+        assert [t["instance_id"] for t in tiles] == ["kpi", "kpi_2", "trend", "source"]
+        assert tiles[0]["width"] == tiles[1]["width"] == 50
 
     def test_hidden_sources_say_what_they_are(self, ops):
         from panel_flowdash.ui.tile_layout import off_grid

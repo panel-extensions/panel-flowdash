@@ -44,10 +44,12 @@ def update_tile(editor, instance_id: str, **patch):
     entry.update(patch)
     for key in [k for k, v in patch.items() if v is None]:
         del entry[key]
-    editor._auto_tiles.clear()
-    if "visible" in patch and editor._deferred_tiles is not None:
-        # Shown or hidden on purpose, so the end of the request leaves it as it is.
-        editor._deferred_tiles.discard(instance_id)
+    # Showing or hiding a tile is not laying it out, so the editor may still arrange the rest.
+    if set(patch) - {"visible"}:
+        editor._auto_tiles.clear()
+    if "visible" in patch:
+        # Shown or hidden on purpose, so the editor does not hide it again.
+        editor._chosen_visibility.add(instance_id)
     editor._pending_tile_layout = layout
     editor._rebuild_tile_grid()
     editor._record_edit(

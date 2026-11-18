@@ -1077,6 +1077,8 @@ class FlowDash(Viewer):
         # While an agent request runs, the tiles it adds wait here to be laid out once it ends.
         self._deferred_tiles: set[str] | None = None
         self._deferred_rearrange = False
+        # Tiles shown or hidden on purpose, which the editor never hides as plumbing.
+        self._chosen_visibility: set[str] = set()
         # Set when deferred tiles were laid out, for the agent session to publish the result.
         self._layout_released = False
         self._hydrating = False
@@ -1722,6 +1724,7 @@ class FlowDash(Viewer):
         self._forget_layout(node_id)
         self._floating_nodes.discard(node_id)
         self._auto_tiles.discard(node_id)
+        self._chosen_visibility.discard(node_id)
         self._inspect_tiles.pop(node_id, None)
         if self._inspected_id == node_id:
             self._close_inspection_dialog()
@@ -3809,7 +3812,7 @@ class FlowDash(Viewer):
         They are the dashboard's plumbing, so their new tiles start hidden; the
         person can show them from the components not on the dashboard.
         """
-        ids = set(instance_ids)
+        ids = set(instance_ids) - self._chosen_visibility
         return [
             item["instance_id"]
             for item in tile_layout.grid_tiles(self)
@@ -4096,6 +4099,7 @@ class FlowDash(Viewer):
             self._dataflow_graph.remove_node(node_id)
         self._floating_nodes = set()
         self._auto_tiles = set()
+        self._chosen_visibility = set()
         self._tile_items = []
         self._tile_objects = []
         self._inspect_tiles.clear()
