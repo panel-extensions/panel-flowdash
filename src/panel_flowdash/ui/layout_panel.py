@@ -60,8 +60,8 @@ span { font-family: "Material Icons"; font-size: 18px; line-height: 1;
 """
 
 
-# Applied to the tile grid. TileGrid hides its handles outside edit mode, so
-# only the grid in the Layout tab shows them. The handles are faint icons by
+# Applied to the tile grid. TileGrid hides its handles outside edit mode, and
+# the Split tab hides them too, so only the grid in the Layout tab shows them. The handles are faint icons by
 # default; here every tile gets a dashed frame, a drag pill at the top and a
 # resize grip in the corner that stay visible. The tiles keep the padding they
 # have in view mode, where TileGrid draws no card, so content does not move
@@ -106,6 +106,8 @@ GRID_EDIT_CSS = """
   outline-offset: 5px;
 }
 :host(.fd-unframed-band) .muuri-grid.muuri-constrained { box-shadow: none; }
+:host(.fd-split-preview) .muuri-handle { display: none !important; }
+:host(.fd-split-preview) .muuri-grid .muuri-grid-item:not(:hover):not(.muuri-selected) { outline: none; }
 """
 
 

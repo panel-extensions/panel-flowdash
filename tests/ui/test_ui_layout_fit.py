@@ -81,12 +81,32 @@ def test_layout_tab_keeps_a_kpi_beside_the_heading_in_a_narrow_grid(page, width)
     assert not editor.dirty
 
 
-def test_split_tab_keeps_the_desktop_rows(page):
+def test_split_tab_reflows_for_the_pane_width(page):
     editor, (heading_id, kpi_id) = _editor()
     page.set_viewport_size({"width": 1440, "height": 900})
     serve_component(page, editor)
     page.get_by_role("button", name="Split").click()
     wait_until(lambda: editor.mode == "split", page, timeout=8000)
+    assert editor._tile_grid.preview_band is None
 
-    _assert_side_by_side(page, editor, heading_id, kpi_id)
+    # The pane is too narrow for the KPI's 300px beside the heading, so the
+    # generated layout puts each on a line of its own, as the dashboard would.
+    def stacked():
+        heading = _tile(page, editor, heading_id).bounding_box()
+        kpi = _tile(page, editor, kpi_id).bounding_box()
+        return heading and kpi and kpi["y"] >= heading["y"] + heading["height"] - 1
+
+    wait_until(stacked, page, timeout=8000)
+    grid = stable_box(page.locator(".muuri-grid").filter(visible=True).first, page)
+    assert grid["width"] < 600
+    for instance_id in (heading_id, kpi_id):
+        tile = _tile(page, editor, instance_id)
+        box = stable_box(tile, page)
+        assert box["x"] >= grid["x"] - 0.5
+        assert box["x"] + box["width"] <= grid["x"] + grid["width"] + 0.5
+        assert box["width"] > grid["width"] * 0.9
+        # Nothing in the tile is cut off at its edge.
+        assert tile.evaluate("el => el.scrollWidth <= el.clientWidth + 1")
+    assert tile_entry(editor, heading_id)["width"] == 75.0
     assert tile_entry(editor, kpi_id)["width"] == 25.0
+    assert editor._tile_grid.responsive_layouts == {}

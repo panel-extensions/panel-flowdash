@@ -1,4 +1,4 @@
-"""Tests for arranging tiles in the Split tab, which arranges the band of the main layout."""
+"""Tests for the tile grid in the Split tab, which shows the dashboard at the pane's width."""
 
 import pytest
 
@@ -23,24 +23,26 @@ async def test_split_grid_is_arranged_like_the_layout_tab(editor):
     assert not editor._inspect_tiles[map_id].header.visible
 
 
-async def test_split_grid_previews_the_base_band_at_the_pane_width(editor):
+async def test_split_grid_follows_the_pane_width(editor):
     editor.add_component(MAP)
     editor.mode = "split"
-    # Without a recorded width TileGrid assumes the layout was arranged at the largest breakpoint.
-    assert _band(editor) == "md"
     grid = editor._tile_grid
+    assert _band(editor) is None
     assert (grid.min_width, grid.max_width) == (None, None)
     assert not grid.show_breakpoint_toolbar
-    editor._tile_grid.reference_width = 1000
+    # A recorded width moves the Layout tab's base band, not the Split tab's.
+    grid.reference_width = 1000
+    assert _band(editor) is None
+    editor.mode = "dashboard"
     assert _band(editor) == "sm"
 
 
-async def test_custom_breakpoints_set_the_assumed_width():
-    editor = FlowDash({MAP: MapView}, notifications=False, breakpoints=[600, 900])
+async def test_split_grid_hides_the_tile_handles(editor):
     editor.add_component(MAP)
-    editor._tile_grid.reference_width = 700
     editor.mode = "split"
-    assert _band(editor) == "sm"
+    assert "fd-split-preview" in editor._tile_grid.css_classes
+    editor.mode = "dashboard"
+    assert "fd-split-preview" not in editor._tile_grid.css_classes
 
 
 async def test_wiring_tab_lets_the_grid_follow_its_width(editor):
@@ -48,14 +50,7 @@ async def test_wiring_tab_lets_the_grid_follow_its_width(editor):
     editor.mode = "split"
     editor.mode = "wiring"
     assert _band(editor) is None
-
-
-async def test_width_arranged_in_the_layout_tab_applies_in_the_split(editor):
-    editor.add_component(MAP)
-    editor.mode = "dashboard"
-    editor._tile_grid.reference_width = 1000
-    editor.mode = "split"
-    assert _band(editor) == "sm"
+    assert "fd-split-preview" not in editor._tile_grid.css_classes
 
 
 async def test_view_mode_grid_follows_the_page_width(editor):
@@ -64,13 +59,14 @@ async def test_view_mode_grid_follows_the_page_width(editor):
     editor.editable = False
     assert _band(editor) is None
     assert not editor._tile_grid.editable
+    assert "fd-split-preview" not in editor._tile_grid.css_classes
 
 
-async def test_loaded_dashboard_width_applies_in_the_split(editor):
+async def test_loaded_dashboard_keeps_the_split_following_its_width(editor):
     editor.add_component(MAP)
     editor.mode = "split"
     model = editor.to_model()
     model.reference_width = 1000
     editor.load_model(model)
     assert editor.mode == "split"
-    assert _band(editor) == "sm"
+    assert _band(editor) is None
