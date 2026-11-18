@@ -937,6 +937,11 @@ class EditHistory:
     def _on_apply(self, artifact: Artifact, version: ArtifactVersion) -> bool:
         if artifact.artifact_id != self.artifact_id:
             raise ValueError("That version belongs to a dashboard that is not open.")
+        if _splits_a_request(artifact, version):
+            raise PermissionError(
+                "Someone else edited while the assistant worked on this request, so going back "
+                "past part of it would also take back their edit. Step back with Undo instead."
+            )
         self._applying = True
         try:
             self.editor._restore_version(version.value)
@@ -1099,6 +1104,27 @@ class EditHistory:
         for recorder in self._recorders.values():
             recorder.close()
         self._recorders.clear()
+
+
+def _splits_a_request(artifact: Artifact, target: ArtifactVersion) -> bool:
+    """Whether going back to *target* jumps over part of an agent request with someone else's edit inside it.
+
+    That is a request whose versions lie on both sides of another actor's
+    version among those after *target* up to the applied one, as undoing
+    that request as a whole would do. Going back across whole requests and
+    bursts, and going forward, are allowed.
+    """
+    applied = artifact.applied
+    if applied is None or target.version >= applied:
+        return False
+    keys = [(v.actor, v.run_id) for v in artifact.versions[target.version : applied]]
+    for i, key in enumerate(keys):
+        if key[0] != "agent" or key[1] is None:
+            continue
+        later = keys[i + 1 :]
+        if key in later and any(other != key for other in later[: later.index(key)]):
+            return True
+    return False
 
 
 def components_of(text: t.Any) -> set[str]:

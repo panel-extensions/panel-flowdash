@@ -1167,3 +1167,39 @@ def test_undo_and_redo_land_exactly_on_each_version(seed):
 def _pair(rnd, ids, port):
     a, b = rnd.sample(ids, 2)
     return a, port, b, port
+
+
+def _interleaved_request(editor):
+    editor.add_component("T/number", instance_id="before")
+    state = editor.edit_history.state
+    state.apply(RunStarted(run_id="r1", agent_name="assistant", input="q"))
+    with _scope(run_id="r1", tool_call_id="c1", actor="agent"), agent_edits("r1"):
+        editor.add_component("T/number", instance_id="agent1")
+    editor.add_component("T/doubler", instance_id="mine")
+    with _scope(run_id="r1", tool_call_id="c2", actor="agent"), agent_edits("r1"):
+        editor.add_component("T/number", instance_id="agent2")
+    state.apply(RunFinished(run_id="r1"))
+    editor.end_agent_turns()
+
+
+async def test_the_drawer_cannot_undo_a_request_over_someone_elses_edit(editor):
+    from panel_agents.components.artifacts import ArtifactView
+
+    _interleaved_request(editor)
+    history = editor.edit_history
+    view = ArtifactView(artifact=history.artifact, state=history.state, on_apply=history.restore)
+    applied = history.artifact.applied
+    # On panel-agents releases that still offer it, the restore itself refuses.
+    assert await view.undo_run("r1") is False
+    assert _names(editor) == ["agent1", "agent2", "before", "mine"]
+    assert history.artifact.applied == applied
+    with pytest.raises(PermissionError, match="Someone else edited"):
+        history.restore(history.artifact, history.artifact.versions[1])
+    # Going back over whole batches, and forward again, stays possible.
+    assert await view.undo() and _names(editor) == ["agent1", "before", "mine"]
+    assert await view.apply_version(applied) and _names(editor) == [
+        "agent1",
+        "agent2",
+        "before",
+        "mine",
+    ]
