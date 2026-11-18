@@ -206,6 +206,7 @@ class SettingsDialog(param.Parameterized):
         self._entries: list[ShareEntry] = []
         self._initial_everyone = True
         self._requested: tuple[str, str | None, str] | None = None
+        self._opening = False
         self._refresh_began: float | None = None
         self._refresh_duration: float | None = None
         self._last_refresh: float | None = None
@@ -457,13 +458,19 @@ class SettingsDialog(param.Parameterized):
     def show(self, section: str = "general", dashboard_id: str | None = None, title: str = ""):
         """Open the dialog on *section* for a dashboard, by default the editor's."""
         self._requested = (section, dashboard_id, title)
-        if self.dialog.open:
+        # Filled before it opens and in the same message, since a view mounting
+        # as the dialog opens can miss a change that arrives while it mounts and
+        # keep showing the dialog's previous content.
+        with pn.io.hold():
             self._load()
-        else:
-            self.dialog.open = True
+            self._opening = True
+            try:
+                self.dialog.open = True
+            finally:
+                self._opening = False
 
     def _on_open(self, event):
-        if event.new:
+        if event.new and not self._opening:
             self._load()
 
     @pn.io.hold()
