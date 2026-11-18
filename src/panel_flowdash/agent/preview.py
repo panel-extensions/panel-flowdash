@@ -6,7 +6,7 @@ import json
 import math
 import typing as t
 
-from panel_flowdash.dataflow_engine import failure_text
+from panel_flowdash.dataflow_engine import exception_text, failure_text
 from panel_flowdash.util import is_failure, missing_inputs
 
 if t.TYPE_CHECKING:
@@ -88,6 +88,29 @@ def sample_value(value: t.Any, rows: int = 5) -> dict[str, t.Any]:
     return {"type": type(value).__name__, "value": _scalar(value)}
 
 
+def output_failures(editor: FlowDash, instance_id: str) -> dict[str, str]:
+    """Return why each output of a placed node failed, by port, for those whose latest run failed.
+
+    That covers an output holding a failure and one whose run raised while
+    the port kept its last value: without ``propagate_failures``, and on the
+    first run, which happens before the node's inputs are wired.
+    """
+    item = next(i for i in editor._tile_items if i["instance_id"] == instance_id)
+    spec = editor._component_specs.get(item["component_id"])
+    state = editor.graph.get_state(instance_id)
+    if spec is None or state is None:
+        return {}
+    raised = editor._output_failures.get(instance_id, {})
+    found = {}
+    for port in spec.outputs:
+        value = getattr(state, port.name, None)
+        if is_failure(value):
+            found[port.name] = failure_text(value)
+        elif port.name in raised:
+            found[port.name] = exception_text(raised[port.name])
+    return found
+
+
 def node_health(editor: FlowDash, instance_id: str) -> tuple[str, str | None]:
     """Return ``("ok", None)``, or ``("failed" | "waiting", message)`` for a placed node.
 
@@ -139,7 +162,9 @@ def preview_editor(
         ``status`` (the worst node status) and ``nodes``, keyed by node name,
         each with a ``status`` of ``ok``, ``waiting``, ``failed``,
         ``restricted``, ``missing`` or ``error``, a ``message`` explaining any
-        other status than ``ok`` and, with *samples*, ``outputs`` by port.
+        other status than ``ok`` and, with *samples*, ``outputs`` by port. A
+        node is ``failed`` when an input failed upstream or one of its own
+        outputs failed.
     """
     graph = editor.graph
     nodes: dict[str, dict[str, t.Any]] = {}
@@ -157,6 +182,9 @@ def preview_editor(
         state = graph.get_state(instance_id)
         entry: dict[str, t.Any] = {"component": item["component_id"], "status": "ok"}
         status, message = node_health(editor, instance_id)
+        if status == "ok" and (failed := output_failures(editor, instance_id)):
+            status = "failed"
+            message = "; ".join(f"output '{port}' failed: {text}" for port, text in failed.items())
         if status != "ok":
             entry["status"] = status
             entry["message"] = _scalar(message)

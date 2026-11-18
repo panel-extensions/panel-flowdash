@@ -86,7 +86,11 @@ class Edge:
 
 def failure_text(error: param.ReactiveError) -> str:
     """Describe a failure as ``Type: message``."""
-    exc = error.exception
+    return exception_text(error.exception)
+
+
+def exception_text(exc: BaseException) -> str:
+    """Describe an exception as ``Type: message``."""
     return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
 
 

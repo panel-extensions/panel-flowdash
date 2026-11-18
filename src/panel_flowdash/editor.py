@@ -25,8 +25,9 @@ import time
 import typing as t
 import uuid
 import weakref
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from functools import cache, partial
+from types import MappingProxyType
 
 import panel as pn
 import panel_material_ui as pmui
@@ -464,6 +465,29 @@ def current_dashboard() -> FlowDash | None:
     return editor
 
 
+def copy_context(context: t.Mapping[str, t.Any]) -> dict[str, t.Any]:
+    """Copy an editor's context one level down, so dicts, lists and sets in it are not shared."""
+    return {
+        key: copy.copy(value) if isinstance(value, (dict, list, set)) else value
+        for key, value in context.items()
+    }
+
+
+def dashboard_context() -> t.Mapping[str, t.Any]:
+    """Return a read-only view of the resources the host gave the editor showing this component.
+
+    Hosts hand resources to components through ``FlowDash(context=...)`` or
+    by adding to ``editor.context``, e.g. Lumen keeps its source bindings
+    under ``editor.context["lumen.sources"]``. Call it where
+    :func:`current_dashboard` works: while a component is created and while
+    one of its outputs runs; without an editor the view is empty. The view
+    follows later additions to the editor's dict, so code that runs in
+    threads of its own should take the view when the component is created.
+    """
+    editor = current_dashboard()
+    return MappingProxyType(editor.context if editor is not None else {})
+
+
 def _drop_repeated_ids(model: DashboardModel) -> int:
     """Keep only the first item of *model* with each instance id, returning how many were dropped."""
     seen: set[str] = set()
@@ -496,6 +520,16 @@ def _creating(editor_ref: weakref.ref[FlowDash], instance_id: str, wiring: list)
     finally:
         _INSTANTIATING.reset(token)
         editor._track_subscriptions(instance_id, before, wiring)
+
+
+@contextmanager
+def _current(editor_ref: weakref.ref[FlowDash]):
+    """Make `current_dashboard` return the editor while one of its components' outputs runs."""
+    token = _INSTANTIATING.set(editor_ref())
+    try:
+        yield
+    finally:
+        _INSTANTIATING.reset(token)
 
 
 class _ViewRuns:
@@ -633,6 +667,19 @@ class FlowDash(Viewer):
         The components to offer in the editor. A decorated function, a Viewer
         subclass, a mapping of explicit component ids, a project directory, or a
         list mixing any of those. Read at construction time.""",
+    )
+
+    context = param.Dict(
+        default={},
+        doc="""
+        Resources the host hands to components, such as connections or data
+        sources, by key. Components read them with `dashboard_context()`.
+        Prefix keys with your package's name, e.g. "lumen.sources". The
+        editor copies the dict it is given, and each dict, list or set in it,
+        so editors built from one dict, and previews built from an editor,
+        can replace or add entries without affecting each other; other values
+        are shared objects. Add to the dict rather than reassigning it, since
+        views components already hold do not follow a new dict.""",
     )
 
     controls_bar = param.Boolean(
@@ -907,6 +954,7 @@ class FlowDash(Viewer):
         self._restore_split = "mode" not in params
 
         super().__init__(**params)
+        self.context = copy_context(self.context)
 
         self._registry: dict[str, RegistryEntry] = normalize_components(self.components)
         if self.include_builtin_components:
@@ -978,6 +1026,8 @@ class FlowDash(Viewer):
         )
         self._component_instances: dict[str, Viewer] = {}
         self._component_wiring: dict[str, list[t.Callable[[], None]]] = {}
+        # The exception of each output whose latest run failed, by instance id and port.
+        self._output_failures: dict[str, dict[str, Exception]] = {}
         self._transform_editors: dict[str, TransformEditor] = {}
         self._load_component_extensions()
         self._palette = self._make_palette()
@@ -2256,11 +2306,15 @@ class FlowDash(Viewer):
             watcher = node_state.param.watch(_propagate_input, name)
             wiring.append(partial(node_state.param.unwatch, watcher))
 
+        failures = self._output_failures[node_id] = {}
+        wiring.append(partial(self._output_failures.pop, node_id, None))
         methods = instance.param.outputs()
         for name, (_, method, _) in methods.items():
             if not hasattr(node_state.param, name):
                 continue
-            ref = self._output_reference(instance, name, method, self.propagate_failures)
+            ref = self._output_reference(
+                instance, name, method, self.propagate_failures, editor, failures
+            )
             if is_async(method if callable(method) else getattr(instance, method)):
                 outlet = _Outlet(name=f"{node_id}_{name}")
                 outlet.value = ref
@@ -2292,7 +2346,9 @@ class FlowDash(Viewer):
         self._on_wiring_error(*source, node_id, port, exc)
 
     @staticmethod
-    def _output_reference(instance, name, method, propagate_failures=False):
+    def _output_reference(
+        instance, name, method, propagate_failures=False, editor_ref=None, failures=None
+    ):
         """Bind an output method to its dependencies, as a reference for a node port.
 
         Param resolves the reference whenever a dependency changes, awaiting
@@ -2300,7 +2356,11 @@ class FlowDash(Viewer):
         generator yields. A failing output is skipped, so the port keeps its
         last value, unless *propagate_failures* publishes the failure on the
         port instead. The first evaluation runs before any input is wired, so a
-        sync output failing there is skipped and not reported either way.
+        sync output failing there is skipped either way.
+
+        While the output runs, `current_dashboard` returns the editor of
+        *editor_ref*. *failures* records the exception of each output whose
+        latest run failed, including that first one, for the agent's reports.
         """
         fn = method if callable(method) else getattr(instance, method)
         deps = [
@@ -2311,8 +2371,13 @@ class FlowDash(Viewer):
         # A bind without arguments is not a reference; `name` never changes, so
         # depending on it evaluates the output once and keeps it bound.
         deps = deps or [instance.param.name]
+        failures = {} if failures is None else failures
+
+        def current():
+            return _current(editor_ref) if editor_ref is not None else nullcontext()
 
         def _failed(exc):
+            failures[name] = exc
             logger.error("Output '%s' failed: %s", name, exc, exc_info=exc)
             if propagate_failures:
                 return param.ReactiveError(exc)
@@ -2321,19 +2386,33 @@ class FlowDash(Viewer):
         if is_async_gen(fn):
 
             async def _output(*_):
-                try:
-                    async for value in fn():
-                        yield value
-                except Exception as exc:
-                    yield _failed(exc)
+                values = fn()
+                while True:
+                    try:
+                        with current():
+                            value = await values.__anext__()
+                    except StopAsyncIteration:
+                        return
+                    except param.Skip:
+                        raise
+                    except Exception as exc:
+                        yield _failed(exc)
+                        return
+                    failures.pop(name, None)
+                    yield value
 
         elif is_async(fn):
 
             async def _output(*_):
                 try:
-                    return await fn()
+                    with current():
+                        value = await fn()
+                except param.Skip:
+                    raise
                 except Exception as exc:
                     return _failed(exc)
+                failures.pop(name, None)
+                return value
 
         else:
             initial = [True]
@@ -2341,11 +2420,17 @@ class FlowDash(Viewer):
             def _output(*_):
                 quiet = bool(initial) and initial.pop()
                 try:
-                    return fn()
+                    with current():
+                        value = fn()
+                except param.Skip:
+                    raise
                 except Exception as exc:
                     if quiet:
+                        failures[name] = exc
                         raise param.Skip from exc
                     return _failed(exc)
+                failures.pop(name, None)
+                return value
 
         return param.bind(_output, *deps)
 

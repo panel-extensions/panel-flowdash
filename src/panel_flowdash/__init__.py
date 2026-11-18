@@ -32,7 +32,7 @@ from panel_flowdash.dashboard_store import (
     MemoryDashboardStore,
 )
 from panel_flowdash.dataflow_engine import DataflowGraph, build_node_state_class
-from panel_flowdash.editor import FlowDash, current_dashboard
+from panel_flowdash.editor import FlowDash, current_dashboard, dashboard_context
 from panel_flowdash.json_store import JSONFolderDashboardStore
 from panel_flowdash.port_types import (
     normalize_port_type,
@@ -85,6 +85,7 @@ __all__: list[str] = [
     "can_edit",
     "check_requirements",
     "current_dashboard",
+    "dashboard_context",
     "is_authorized",
     "normalize_components",
     "normalize_port_type",

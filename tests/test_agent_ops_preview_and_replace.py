@@ -3,11 +3,13 @@
 import asyncio
 import json
 
+import param
 import pytest
 import yaml
+from panel.viewable import Viewer
 
 from panel_flowdash import FlowDash, MemoryDashboardStore, register
-from panel_flowdash.agent import DashboardOps, OperationError
+from panel_flowdash.agent import DashboardOps, OperationError, OutputUnavailable
 from panel_flowdash.dashboard_store import DashboardEdge, DashboardItem
 
 from .test_agent_ops import COMPONENTS, _editor
@@ -171,3 +173,194 @@ def test_connect_refuses_an_input_a_restricted_node_feeds(secret_id):
         ops.connect(f"{number}.value", "double.value")
     assert ops.editor.graph.edges == []
     assert not [i for i in ops.validate() if i.severity == "error"]
+
+
+class Reciprocal(Viewer):
+    """A Viewer whose output fails once its input is zero."""
+
+    value = param.Number(default=1)
+
+    @param.output(param.Number)
+    @param.depends("value")
+    def inverse(self):
+        return 1 / self.value
+
+    def __panel__(self):
+        return str(self.value)
+
+
+@register(page=False, component=True, title="Zero", provides=[{"key": "value", "type": "float"}])
+def zero(config):
+    config.value = 0
+    return "zero"
+
+
+FAILING = (
+    "flowdash: 1\nnodes:\n  z: {component: T/zero}\n  r: {component: T/reciprocal}\n"
+    "  s: {component: T/reciprocal}\n  ok: {component: T/reciprocal}\nedges:\n"
+    "  - {from: z.value, to: r.value}\n  - {from: r.inverse, to: s.value}\n"
+)
+
+
+@pytest.fixture
+def failing():
+    editor = FlowDash(
+        {"T/zero": zero, "T/reciprocal": Reciprocal},
+        include_builtin_components=False,
+        notifications=False,
+        propagate_failures=True,
+    )
+    editor.new_dashboard("Failing")
+    yield DashboardOps(editor)
+    editor.dispose()
+
+
+@pytest.mark.failures
+def test_preview_marks_a_node_whose_output_failed(failing):
+    report = failing.preview(FAILING)
+    nodes = report["nodes"]
+    assert report["status"] == "failed"
+    assert nodes["r"]["status"] == "failed"
+    assert nodes["r"]["message"] == "output 'inverse' failed: ZeroDivisionError: division by zero"
+    assert nodes["r"]["outputs"]["inverse"]["type"] == "failure"
+    assert nodes["s"]["status"] == "failed"
+    assert nodes["s"]["message"].startswith("input 'value' failed upstream")
+    assert nodes["z"]["status"] == nodes["ok"]["status"] == "ok"
+
+
+@pytest.mark.failures
+def test_preview_without_samples_still_marks_a_failed_output(failing):
+    from panel_flowdash.agent.preview import preview_editor
+
+    failing.replace_yaml(FAILING, revision=failing.revision())
+    report = preview_editor(failing.editor, failing._names(), samples=False)
+    assert report["nodes"]["r"]["status"] == "failed"
+    assert "outputs" not in report["nodes"]["r"]
+
+
+@pytest.mark.failures
+def test_replacing_warns_about_the_node_that_failed_not_those_it_feeds(failing):
+    issues = failing.replace_yaml(FAILING, revision=failing.revision())
+    (failed,) = [i for i in issues if i.message.startswith("The node failed")]
+    assert failed.severity == "warning"
+    assert str(failed) == (
+        "nodes.r: The node failed: output 'inverse' failed: ZeroDivisionError: division by zero"
+    )
+
+
+@pytest.mark.failures
+async def test_replacing_async_warns_about_failed_nodes(failing):
+    issues = await failing.replace_yaml_async(FAILING, revision=failing.revision())
+    assert [i.path for i in issues if i.message.startswith("The node failed")] == ["nodes.r"]
+
+
+class Broken(Viewer):
+    """A Viewer whose output fails with its default config, on its very first run."""
+
+    divisor = param.Number(default=0)
+
+    @param.output(param.Number)
+    @param.depends("divisor")
+    def ratio(self):
+        return 1 / self.divisor
+
+    def __panel__(self):
+        return "broken"
+
+
+def _plain_editor(**params):
+    editor = FlowDash(
+        {"T/zero": zero, "T/reciprocal": Reciprocal, "T/broken": Broken},
+        include_builtin_components=False,
+        notifications=False,
+        **params,
+    )
+    editor.new_dashboard("Plain")
+    return DashboardOps(editor)
+
+
+BROKEN = "flowdash: 1\nnodes:\n  b: {component: T/broken}\n  ok: {component: T/reciprocal}\n"
+
+
+@pytest.mark.parametrize("propagate", [False, pytest.param(True, marks=pytest.mark.failures)])
+def test_an_output_failing_on_its_first_run_is_reported(propagate):
+    ops = _plain_editor(propagate_failures=propagate)
+    report = ops.preview(BROKEN)
+    reason = report["nodes"]["b"]["message"]
+    assert reason.startswith("output 'ratio' failed: ZeroDivisionError: ")
+    assert report["status"] == "failed"
+    assert report["nodes"]["b"] == {
+        "component": "T/broken",
+        "status": "failed",
+        "message": reason,
+        "outputs": {"ratio": {"type": None, "value": None}},
+    }
+    assert report["nodes"]["ok"]["status"] == "ok"
+    issues = ops.replace_yaml(BROKEN, revision=ops.revision())
+    assert [str(i) for i in issues] == [f"nodes.b: The node failed: {reason}"]
+    with pytest.raises(OutputUnavailable, match="'b' has failed") as info:
+        ops.node_output("b.ratio")
+    assert info.value.status == "failed"
+    assert ops.node_output("ok.inverse") == 1
+
+
+def test_an_output_that_recovers_is_no_longer_failed():
+    ops = _plain_editor()
+    ops.replace_yaml(BROKEN, revision=ops.revision())
+    broken = ops.editor._component_instances[ops._instance("b")]
+    broken.divisor = 4
+    assert ops.preview()["nodes"]["b"]["status"] == "ok"
+    assert ops.node_output("b.ratio") == 0.25
+    broken.divisor = 0
+    assert ops.preview()["nodes"]["b"]["status"] == "failed"
+    with pytest.raises(OutputUnavailable):
+        ops.node_output("b.ratio")
+
+
+def test_replacing_a_healthy_dashboard_adds_no_failure_warnings():
+    ops = _plain_editor()
+    text = "flowdash: 1\nnodes:\n  ok: {component: T/reciprocal}\n"
+    assert ops.replace_yaml(text, revision=ops.revision()) == []
+
+
+class Pending(Viewer):
+    """A Viewer whose output has no value until its input is set, by raising ``param.Skip``."""
+
+    value = param.Number(default=None, allow_None=True)
+
+    @param.output(param.Number)
+    @param.depends("value")
+    def doubled(self):
+        if self.value is None:
+            raise param.Skip
+        return self.value * 2
+
+    def __panel__(self):
+        return "pending"
+
+
+class AsyncPending(Pending):
+    @param.output(param.Number)
+    @param.depends("value")
+    async def doubled(self):
+        if self.value is None:
+            raise param.Skip
+        return self.value * 2
+
+
+@pytest.mark.parametrize("component", [Pending, AsyncPending])
+async def test_an_output_skipping_its_value_is_not_a_failure(component):
+    editor = FlowDash(
+        {"T/pending": component}, include_builtin_components=False, notifications=False
+    )
+    editor.new_dashboard("Pending")
+    ops = DashboardOps(editor)
+    text = "flowdash: 1\nnodes:\n  p: {component: T/pending}\n"
+    assert ops.preview(text)["nodes"]["p"]["status"] == "ok"
+    assert await ops.replace_yaml_async(text, revision=ops.revision()) == []
+    instance = editor._component_instances[ops._instance("p")]
+    instance.value = 2
+    instance.value = None
+    await asyncio.sleep(0.05)
+    assert ops.preview()["nodes"]["p"]["status"] == "ok"
+    editor.dispose()
