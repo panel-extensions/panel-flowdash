@@ -36,7 +36,13 @@ from panel_flowdash.ui.status_bar import (
     select_on_canvas,
 )
 from panel_flowdash.ui.text import text_alert, text_typography
-from panel_flowdash.ui.tile_layout import tile_entry, update_tile
+from panel_flowdash.ui.tile_layout import (
+    FRAME_DEFAULT,
+    frame_choices,
+    frame_value,
+    tile_entry,
+    update_tile,
+)
 
 if t.TYPE_CHECKING:
     from panel.viewable import Viewable
@@ -597,7 +603,40 @@ class Inspector(Viewer):
             sizing_mode="stretch_width",
             margin=(8, 0),
         )
+        frame = pmui.Select(
+            label="Frame",
+            options=frame_choices(editor, instance_id),
+            value=frame_value(layout),
+            description="Whether the tile is drawn as a card in view mode",
+            sizing_mode="stretch_width",
+            margin=(12, 0, 8, 0),
+        )
+        syncing = False
+
+        def set_frame(event):
+            if not syncing:
+                update_tile(
+                    editor, instance_id, framed=None if event.new == FRAME_DEFAULT else event.new
+                )
+
+        def sync_frame(*_events):
+            # Follows the dashboard's Frame tiles setting and frames set elsewhere, e.g. by the agent.
+            nonlocal syncing
+            syncing = True
+            try:
+                frame.param.update(
+                    options=frame_choices(editor, instance_id),
+                    value=frame_value(tile_entry(editor, instance_id)),
+                )
+                frame.param.trigger("value")
+            finally:
+                syncing = False
+
+        for owner, names in ((editor.settings, ["tile_cards"]), (editor._tile_grid, ["objects"])):
+            watcher = owner.param.watch(sync_frame, names)
+            self._releases.append(partial(owner.param.unwatch, watcher))
         show.param.watch(lambda e: update_tile(editor, instance_id, visible=e.new), "value")
+        frame.param.watch(set_frame, "value")
         width_select.param.watch(
             lambda e: update_tile(editor, instance_id, width=None if e.new == _AUTO else e.new),
             "value",
@@ -610,6 +649,7 @@ class Inspector(Viewer):
         hints = self._size_hints(spec)
         if hints:
             objects.append(_caption(hints))
+        objects.append(frame)
         arrange = pmui.Button(
             label="Arrange tiles",
             icon="dashboard",

@@ -138,16 +138,19 @@ def component_schema(spec: ComponentSpec, *, control: bool = False) -> dict[str,
     }
 
 
-def _tile_schema(names: dict[str, t.Any]) -> dict[str, t.Any]:
+def _tile_schema(names: dict[str, t.Any], *, framed: bool = True) -> dict[str, t.Any]:
+    properties = {
+        "node": names,
+        "width": {"type": "number", "exclusiveMinimum": 0, "maximum": 100},
+        "height": {"type": "number", "exclusiveMinimum": 0},
+        "visible": {"type": "boolean"},
+    }
+    if framed:
+        properties["framed"] = {"type": ["boolean", "null"]}
     return {
         "type": "object",
         "required": ["node"],
-        "properties": {
-            "node": names,
-            "width": {"type": "number", "exclusiveMinimum": 0, "maximum": 100},
-            "height": {"type": "number", "exclusiveMinimum": 0},
-            "visible": {"type": "boolean"},
-        },
+        "properties": properties,
         "patternProperties": _EXTENSIONS,
         "additionalProperties": False,
     }
@@ -259,7 +262,10 @@ def dashboard_schema(
                     "breakpoints": {"type": "array", "items": {"type": "number"}},
                     "responsive": {
                         "type": "object",
-                        "additionalProperties": {"type": "array", "items": tile},
+                        "additionalProperties": {
+                            "type": "array",
+                            "items": _tile_schema(names, framed=False),
+                        },
                     },
                 },
             },

@@ -9,9 +9,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from panel_flowdash.ui.tile import resolve_framed
+
 GRID_COLUMNS = 12
 
 HIDDEN = "hidden by you"
+
+# The frame choice of a tile without a frame option of its own.
+FRAME_DEFAULT = "default"
 
 
 def _layout(editor) -> list[dict]:
@@ -66,6 +71,24 @@ def move_tile(editor, instance_id: str, index: int):
     editor._record_edit(
         "Changed the tile layout", op="layout", args={"name": editor._node_name(instance_id)}
     )
+
+
+def frame_choices(editor, instance_id: str) -> dict[str, bool | str]:
+    """Return a tile's frame choices by label, naming what its default resolves to."""
+    item = next((i for i in editor._tile_items if i["instance_id"] == instance_id), None)
+    spec = editor._tile_spec(item) if item is not None else None
+    framed = resolve_framed(None, spec and spec.framed, editor.settings.tile_cards)
+    return {
+        f"Default ({'framed' if framed else 'unframed'})": FRAME_DEFAULT,
+        "Framed": True,
+        "Unframed": False,
+    }
+
+
+def frame_value(entry: dict) -> bool | str:
+    """Return the frame choice of a tile's layout *entry*."""
+    framed = entry.get("framed")
+    return framed if isinstance(framed, bool) else FRAME_DEFAULT
 
 
 def to_columns(width: float | None) -> int:

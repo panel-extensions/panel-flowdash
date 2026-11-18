@@ -18,12 +18,20 @@ if t.TYPE_CHECKING:
 TILE_KEY_PREFIX = "flowdash-tile-key-"
 
 # The frame is drawn only in view mode; while arranging, TileGrid draws its own
-# card around the tile, so the tile must not add a second border. Unless titles
+# card around the tile, so the tile must not add a second border. Every tile
+# keeps the frame's transparent border and inset, framed or not and in either
+# mode, so the content of unframed tiles lines up with the content of cards and
+# does not move when the frame comes and goes. Unless titles
 # are shown, the actions take no row: they float over the top-right corner, so
 # the content starts at the top edge, and appear on hover or when keyboard focus
 # is inside the tile. They stay focusable while transparent so Tab reaches and
 # reveals them.
 _TILE_CSS = """
+:host {
+  border: 1px solid transparent;
+  border-radius: 12px;
+  box-sizing: border-box;
+}
 :host(.flowdash-tile-framed) {
   background-color: var(--mui-palette-background-paper, var(--panel-surface-color, #fff));
   border: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.12));
@@ -71,6 +79,15 @@ _MORE_SX = {
     "& .MuiButton-startIcon": {"m": 0},
     "& .MuiButton-endIcon": {"display": "none"},
 }
+
+
+def resolve_framed(tile: bool | None, component: bool | None, dashboard: bool) -> bool:
+    """Return whether a tile is framed: its own option, else its component's hint, else the dashboard's."""
+    if tile is not None:
+        return tile
+    if component is not None:
+        return component
+    return dashboard
 
 
 def status_chip_sx(color: str) -> dict:
@@ -257,10 +274,7 @@ class Tile(pn.Column):
         self.titles.visible = titled
         self.header.visible = shown
         self.header.margin = (10, 8, 6, 16) if titled else 0
-        if not self._framed:
-            self.body.margin = 0
-        else:
-            self.body.margin = (0, 8, 8, 8) if titled else 8
+        self.body.margin = (0, 8, 8, 8) if titled else 8
         classes = [
             c
             for c in self.css_classes

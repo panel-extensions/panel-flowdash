@@ -106,6 +106,9 @@ class NotFound(OperationError, KeyError):
 # How long a preview or a bulk replace may take to import and start its components.
 DEFAULT_TIMEOUT = 30
 
+# The frame choices of a tile and the layout value each stores; None drops the tile's own.
+_FRAMES = {"default": None, "framed": True, "unframed": False}
+
 _REVISION = re.compile(r"# revision: (?P<token>[0-9a-f]+)\s*")
 
 
@@ -1139,6 +1142,7 @@ class DashboardOps:
         height: float | None = None,
         visible: bool | None = None,
         index: int | None = None,
+        frame: t.Literal["default", "framed", "unframed"] | None = None,
     ) -> dict[str, t.Any]:
         """Change how a node's tile is laid out and return its layout entry.
 
@@ -1152,6 +1156,10 @@ class DashboardOps:
             False hides the tile; the component keeps running in the dataflow.
         index
             Position among the tiles, 0 for the first.
+        frame
+            "framed" or "unframed" draws the tile as a card in view mode or
+            not; "default" follows the component, then the dashboard's
+            ``tile_cards`` setting.
         """
         self._require_edit()
         instance_id = self._instance(name)
@@ -1163,11 +1171,15 @@ class DashboardOps:
             raise OperationError(f"width is a percentage of the row, got {width}.")
         if height is not None and height <= 0:
             raise OperationError(f"height must be a positive number of pixels, got {height}.")
+        if frame is not None and frame not in _FRAMES:
+            raise OperationError(f"frame is one of {', '.join(_FRAMES)}, got {frame!r}.")
         patch = {
             key: value
             for key, value in (("width", width), ("height", height), ("visible", visible))
             if value is not None
         }
+        if frame is not None:
+            patch["framed"] = _FRAMES[frame]
         if index is not None:
             tile_layout.move_tile(editor, instance_id, index)
         if patch:

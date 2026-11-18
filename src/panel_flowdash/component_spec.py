@@ -78,6 +78,8 @@ class ComponentSpec:
     default_size: dict[str, Any] | None
     max_size: dict[str, Any] | None = None
     min_size: dict[str, Any] | None = None
+    # Whether the component's tile is framed: None follows the dashboard setting.
+    framed: bool | None = None
     config: list[ConfigField] = field(default_factory=list)
     config_state_class: type[param.Parameterized] | None = None
     config_editor: Callable | None = None
@@ -440,6 +442,7 @@ def build_component_spec(entry: RegistryEntry) -> ComponentSpec:
         default_size=_size_hint(entry.app_id, "default_size", metadata.default_size),
         max_size=_size_hint(entry.app_id, "max_size", metadata.max_size),
         min_size=_size_hint(entry.app_id, "min_size", metadata.min_size),
+        framed=metadata.framed,
         config=config,
         config_state_class=config_state_class,
         config_editor=metadata.config_editor,

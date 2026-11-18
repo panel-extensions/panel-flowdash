@@ -114,7 +114,7 @@ class TestVersions:
 
     def test_a_newer_version_says_so(self):
         with pytest.raises(DashboardYAMLError, match="written by a newer FlowDash"):
-            dashboard_from_yaml("flowdash: 3\n")
+            dashboard_from_yaml("flowdash: 4\n")
 
     def test_extension_keys_are_ignored_everywhere(self):
         data = dashboard_from_yaml(
