@@ -43,6 +43,11 @@ def _tile(page, editor, instance_id):
     return page.locator(f".{key}")
 
 
+def _item(page, editor, instance_id):
+    """The grid item holding a tile, which TileGrid marks as selected."""
+    return page.locator(".muuri-grid-item").filter(has=_tile(page, editor, instance_id))
+
+
 def test_split_shows_canvas_beside_grid(page):
     editor, _ids = _editor()
     _open_split(page, editor)
@@ -116,8 +121,8 @@ def test_selecting_a_node_outlines_its_tile(page):
 
     page.locator(f".react-flow__node[data-id='{chart_id}']").click()
     wait_until(lambda: editor._flow.selection.get("nodes") == [chart_id], page, timeout=8000)
-    expect(_tile(page, editor, chart_id)).to_have_class(re.compile("flowdash-tile-selected"))
-    expect(_tile(page, editor, map_id)).not_to_have_class(re.compile("flowdash-tile-selected"))
+    expect(_item(page, editor, chart_id)).to_have_class(re.compile("muuri-selected"))
+    expect(_item(page, editor, map_id)).not_to_have_class(re.compile("muuri-selected"))
 
 
 def test_clicking_a_tile_selects_its_node_and_inspects_it(page):
@@ -130,7 +135,7 @@ def test_clicking_a_tile_selects_its_node_and_inspects_it(page):
     expect(page.locator(f".react-flow__node[data-id='{map_id}']")).to_have_class(
         re.compile(r"\bselected\b")
     )
-    expect(_tile(page, editor, map_id)).to_have_class(re.compile("flowdash-tile-selected"))
+    expect(_item(page, editor, map_id)).to_have_class(re.compile("muuri-selected"))
     expect(page.get_by_role("button", name="Remove from dashboard")).to_be_visible()
     assert editor._inspector._shown == ("node", map_id)
 
@@ -138,7 +143,7 @@ def test_clicking_a_tile_selects_its_node_and_inspects_it(page):
     wait_until(
         lambda: (editor._flow.selection or {}).get("nodes") == [chart_id], page, timeout=8000
     )
-    expect(_tile(page, editor, map_id)).not_to_have_class(re.compile("flowdash-tile-selected"))
+    expect(_item(page, editor, map_id)).not_to_have_class(re.compile("muuri-selected"))
 
 
 def test_adding_and_removing_shows_on_both_sides(page):

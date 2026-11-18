@@ -219,6 +219,152 @@ class TestEditing:
         assert listed[0]["outputs"] == [{"name": "value", "type": "int"}]
 
 
+class TestNamedNodes:
+    def test_a_chosen_name_is_the_nodes_name_right_away(self, ops):
+        assert ops.add_node("T/number", name="base") == "base"
+        assert ops.add_node("T/doubler", name="paid_by_region") == "paid_by_region"
+        assert ops.add_node("T/scaled", name="scaled-Out_2") == "scaled-Out_2"
+        ops.connect("base.value", "paid_by_region.value")
+        ops.connect("paid_by_region.doubled", "scaled-Out_2.value")
+        assert ops.set_config("scaled-Out_2", {"factor": 4}) == {"factor": 4}
+        ops.place_tile("paid_by_region", width=50, index=0)
+        doc = yaml.safe_load(ops.get_dashboard())
+        assert list(doc["nodes"]) == ["base", "paid_by_region", "scaled-Out_2"]
+        assert doc["edges"] == [
+            {"from": "base.value", "to": "paid_by_region.value"},
+            {"from": "paid_by_region.doubled", "to": "scaled-Out_2.value"},
+        ]
+        assert doc["layout"]["tiles"][0] == {"node": "paid_by_region", "width": 50}
+        assert ops.preview()["nodes"]["paid_by_region"]["outputs"]["doubled"]["value"] == 42
+        ops.remove_node("base")
+        assert list(yaml.safe_load(ops.get_dashboard())["nodes"]) == [
+            "paid_by_region",
+            "scaled-Out_2",
+        ]
+
+    def test_named_and_generated_nodes_mix(self, ops):
+        generated = ops.add_node("T/number")
+        named = ops.add_node("T/doubler", name="doubled")
+        ops.connect(f"{generated}.value", "doubled.value")
+        assert generated.startswith("number_")
+        assert named == "doubled"
+        assert list(yaml.safe_load(ops.get_dashboard())["nodes"]) == [generated, "doubled"]
+
+    @pytest.mark.parametrize(
+        ("name", "reason"),
+        [
+            ("paid by region", "contain only letters"),
+            ("1st", "start with a letter"),
+            ("", "start with a letter"),
+            ("a.b", "contain only letters"),
+            ("Views__kpi", "may not contain '__'"),
+        ],
+    )
+    def test_an_invalid_name_is_refused(self, ops, name, reason):
+        with pytest.raises(OperationError, match=f"The node name {name!r} is not valid.*{reason}"):
+            ops.add_node("T/number", name=name)
+        assert ops.editor._tile_items == [] and not ops.editor.dirty
+
+    def test_a_taken_name_is_refused_with_a_free_one_suggested(self, ops):
+        ops.add_node("T/number", name="base")
+        ops.add_node("T/number", name="base_2")
+        with pytest.raises(
+            OperationError, match=r"A node named 'base' is already on the dashboard.*'base_3'"
+        ):
+            ops.add_node("T/doubler", name="base")
+        ops.add_node("T/number", name="trailing_")
+        with pytest.raises(OperationError, match=r"already on the dashboard.*'trailing_2'"):
+            ops.add_node("T/number", name="trailing_")
+        assert [i["instance_id"] for i in ops.editor._tile_items] == [
+            "base",
+            "base_2",
+            "trailing_",
+        ]
+
+    def test_a_generated_nodes_name_is_taken(self, ops):
+        generated = ops.add_node("T/number")
+        with pytest.raises(OperationError, match=f"A node named '{generated}' is already"):
+            ops.add_node("T/number", name=generated)
+        assert list(yaml.safe_load(ops.get_dashboard())["nodes"]) == [generated]
+
+    def test_a_restricted_nodes_name_is_taken(self, store):
+        (model,) = store._all_dashboards()
+        ops = DashboardOps(_editor(store))
+        ops.open_dashboard(model.dashboard_id)
+        with pytest.raises(OperationError, match="A node named 'secret' is already"):
+            ops.add_node("T/number", name="secret")
+
+    def test_a_name_longer_than_64_characters_is_refused(self, ops):
+        assert ops.add_node("T/number", name="n" * 64) == "n" * 64
+        with pytest.raises(OperationError, match="at most 64 characters, this one has 65"):
+            ops.add_node("T/number", name="n" * 65)
+        with pytest.raises(OperationError, match=r"'n{60}_2'"):
+            ops.add_node("T/number", name="n" * 64)
+
+    def test_an_unauthorized_component_is_refused_before_its_name(self, ops):
+        ops.add_node("T/number", name="base")
+        with pytest.raises(PermissionError, match="not authorized"):
+            ops.editor.add_component("T/secret", instance_id="base")
+
+    @pytest.mark.parametrize("modes", [[], ["dashboard"], ["dashboard", "wiring"]])
+    def test_reusing_a_removed_nodes_name_starts_a_fresh_tile(self, ops, modes):
+        ops.add_node("T/number", name="base")
+        ops.add_node("T/scaled", name="sc")
+        for mode in modes:
+            ops.editor.mode = mode
+        ops.place_tile("sc", width=40, height=123, visible=False, index=0)
+        ops.remove_node("sc")
+        ops.add_node("T/doubler", name="sc")
+        tiles = yaml.safe_load(ops.get_dashboard()).get("layout", {}).get("tiles", [])
+        assert [t for t in tiles if t["node"] == "sc" and len(t) > 1] == []
+        ops.editor.mode = "dashboard"
+        assert [e for e in ops.editor.layout if e["instance_id"] == "sc" and len(e) > 2] == []
+
+    def test_names_survive_export_import_and_the_store(self):
+        store = MemoryDashboardStore()
+        editor = _editor(store)
+        editor.new_dashboard("Named")
+        ops = DashboardOps(editor)
+        ops.add_node("T/number", name="base")
+        ops.add_node("T/doubler", name="paid_by_region")
+        ops.connect("base.value", "paid_by_region.value")
+        text = ops.get_dashboard()
+        exported = editor.export_dashboard()
+        dashboard_id = ops.save()
+        editor.dispose()
+
+        expected = {"base", "paid_by_region"}
+        assert {i["instance_id"] for i in exported["items"]} == expected
+        reopened = DashboardOps(_editor(store))
+        reopened.open_dashboard(dashboard_id)
+        assert set(yaml.safe_load(reopened.get_dashboard())["nodes"]) == expected
+        reopened.set_config("base", {})
+        for source in (text.split("\n", 1)[1], exported):
+            fresh = _editor()
+            fresh.import_dashboard(source)
+            assert {i["instance_id"] for i in fresh._tile_items} == expected
+            assert set(yaml.safe_load(DashboardOps(fresh).get_dashboard())["nodes"]) == expected
+            fresh.dispose()
+        reopened.editor.dispose()
+
+    def test_editing_the_yaml_keeps_a_chosen_names_identity(self, ops):
+        ops.add_node("T/number", name="base")
+        doc = yaml.safe_load(ops.get_dashboard())
+        doc["nodes"]["base"]["position"] = [10, 20]
+        doc["nodes"]["double"] = {"component": "T/doubler"}
+        doc["edges"] = [{"from": "base.value", "to": "double.value"}]
+        ops.replace_yaml(yaml.safe_dump(doc), revision=ops.revision())
+        assert [i["instance_id"] for i in ops.editor._tile_items] == ["base", "double"]
+        assert ops.editor.graph.edges[0]["source"] == "base"
+
+    def test_placing_without_a_name_still_generates_one(self, ops):
+        instance_id = ops.editor.add_component("T/number")
+        assert instance_id.startswith("T__number_")
+        assert ops.editor.add_component("T/number", instance_id="mine") == "mine"
+        with pytest.raises(ValueError, match="already on the dashboard"):
+            ops.editor.add_component("T/number", instance_id="mine")
+
+
 class TestPreview:
     def test_reports_health_and_samples(self, ops):
         number = ops.add_node("T/number")
