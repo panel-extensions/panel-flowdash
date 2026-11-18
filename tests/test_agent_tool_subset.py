@@ -3,7 +3,6 @@
 import pytest
 
 pytest.importorskip("pydantic_ai")
-pytest.importorskip("panel_agents")
 
 from panel_agents import RunState
 from panel_agents.adapters.pydantic_ai import AgentRunner

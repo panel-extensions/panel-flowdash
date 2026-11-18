@@ -6,7 +6,6 @@ import pytest
 
 pytest.importorskip("playwright")
 pytest.importorskip("pydantic_ai")
-pytest.importorskip("panel_agents")
 expect = pytest.importorskip("playwright.sync_api").expect
 
 from pydantic_ai import Agent

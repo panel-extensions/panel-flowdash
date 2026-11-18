@@ -2,7 +2,7 @@
 
 import json
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import panel as pn
 import param
@@ -34,7 +34,7 @@ from panel_flowdash.ui.launcher import (
     unique_title,
 )
 
-NOW = datetime(2026, 11, 16, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 11, 16, 12, 0, tzinfo=UTC)
 
 
 class FakeLocation(param.Parameterized):
@@ -150,15 +150,15 @@ class TestStoreTimestamps:
         model = store.create_dashboard("alice", "A")
         loaded = store.load_dashboard("alice", model.dashboard_id)
         assert loaded.updated_at is not None
-        assert loaded.updated_at.tzinfo is timezone.utc
-        assert abs(datetime.now(timezone.utc) - loaded.updated_at) < timedelta(minutes=1)
+        assert loaded.updated_at.tzinfo is UTC
+        assert abs(datetime.now(UTC) - loaded.updated_at) < timedelta(minutes=1)
 
     def test_json_store_reports_file_time(self, tmp_path):
         store = JSONFolderDashboardStore(tmp_path / "dashboards")
         model = store.create_dashboard("alice", "A")
         (loaded,) = store.list_dashboards("alice")
         assert loaded.dashboard_id == model.dashboard_id
-        assert abs(datetime.now(timezone.utc) - loaded.updated_at) < timedelta(minutes=1)
+        assert abs(datetime.now(UTC) - loaded.updated_at) < timedelta(minutes=1)
 
     def test_memory_store_stamps_saves(self):
         store = MemoryDashboardStore()

@@ -8,7 +8,7 @@ docs_url: https://panel-extensions.github.io/panel-flowdash/
 extension_type: panel
 github_url: https://github.com/panel-extensions/panel-flowdash
 github_user: panel-extensions
-minimal_python_version: py310
+minimal_python_version: py311
 project_short_description: Extends Panel with a dataflow and draggable grid based
     dashboard editor.
 project_slug: panel-flowdash

@@ -6,6 +6,8 @@ Initial release of panel-flowdash.
 
 ### Upgrading from 0.1.0rc2
 
+Installation. panel-flowdash requires Python 3.11 or newer; Python 3.10 is no longer supported. panel-agents is always installed, while the `agent` extra still adds pydantic-ai for the assistant.
+
 Look and defaults. Dashboards saved with rc2 load unchanged, but several defaults changed and the editor was redesigned, so they look and behave differently:
 
 - `FlowDashApp.nav_variant` (and `flowdash serve --nav-variant`) defaults to `"rail"`: a navigation rail, a breadcrumb with a dashboard switcher and a Ctrl/Cmd+K search. Set `nav_variant="right"` to keep the rc2 drawer; `"left"` and `"menubar"` work as before

@@ -1,12 +1,12 @@
-"""A failed request to the assistant shows in its chat and in the server log."""
+"""A failed request to the assistant shows in its chat, on its model-call card and in the server log."""
 
 import logging
 
 import pytest
 
 pytest.importorskip("pydantic_ai")
-pytest.importorskip("panel_agents")
 
+from panel_agents import ModelCallCard
 from pydantic_ai import Agent
 from pydantic_ai.models.function import FunctionModel
 
@@ -31,8 +31,8 @@ def _refusing_agent():
     )
 
 
-def _feed_texts(session):
-    return [str(getattr(m.object, "object", "")) for m in session.drawer.chat.feed.objects]
+def _feed_objects(session):
+    return [m.object for m in session.drawer.chat.feed.objects]
 
 
 @pytest.fixture(autouse=True)
@@ -53,8 +53,10 @@ async def test_a_failed_request_shows_in_the_chat_and_the_log(monkeypatch, caplo
 
     error = session.runner.error
     assert isinstance(error, RuntimeError)
-    texts = _feed_texts(session)
-    assert texts[0] == "What dashboards are there?"
-    assert [t for t in texts if ERROR in t] == texts[1:] and len(texts) == 2
+    question, model_call, alert = _feed_objects(session)
+    assert question.object == "What dashboards are there?"
+    assert isinstance(model_call, ModelCallCard)
+    assert (model_call.call.status, model_call.call.error) == ("failed", ERROR)
+    assert alert.object == ERROR
     assert [r.exc_info[1] for r in caplog.records if r.exc_info] == [error]
     assert not session.runner.state.running

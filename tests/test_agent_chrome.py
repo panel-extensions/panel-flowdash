@@ -5,7 +5,6 @@ import asyncio
 import pytest
 
 pytest.importorskip("pydantic_ai")
-pytest.importorskip("panel_agents")
 
 from panel_agents import events as ev
 from pydantic_ai import Agent

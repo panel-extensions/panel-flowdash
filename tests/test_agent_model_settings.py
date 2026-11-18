@@ -3,7 +3,6 @@
 import pytest
 
 pytest.importorskip("pydantic_ai")
-pytest.importorskip("panel_agents")
 
 from pydantic_ai import Agent
 from pydantic_ai.models.function import FunctionModel

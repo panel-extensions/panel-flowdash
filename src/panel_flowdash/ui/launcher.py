@@ -6,7 +6,7 @@ import copy
 import io
 import typing as t
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 from html import escape
 
@@ -245,7 +245,7 @@ def relative_time(when: datetime | None, now: datetime | None = None) -> str | N
     """Describe *when* relative to *now*, e.g. "12 minutes ago" or "yesterday"."""
     if when is None:
         return None
-    now = now or datetime.now(timezone.utc)
+    now = now or datetime.now(UTC)
     seconds = (now - when).total_seconds()
     if seconds < 60:
         return "just now"
@@ -592,7 +592,7 @@ class Launcher(Viewer):
             models = list(self._dashboards)
         if self.sort == "name":
             return sorted(models, key=lambda m: (m.title.casefold(), m.dashboard_id))
-        oldest = datetime.min.replace(tzinfo=timezone.utc)
+        oldest = datetime.min.replace(tzinfo=UTC)
         # Stable, so dashboards without a timestamp keep the store's recency order.
         return sorted(models, key=lambda m: m.updated_at or oldest, reverse=True)
 

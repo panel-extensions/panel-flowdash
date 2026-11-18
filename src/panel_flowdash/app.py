@@ -115,7 +115,7 @@ _COMPONENT_PALETTE_CARD_CSS = """
 
 # Logged when an agent is configured but its dependencies are missing.
 AGENT_EXTRA_MISSING = (
-    "The FlowDash agent needs Python 3.11 or newer and the agent extra: "
+    "The FlowDash agent needs the agent extra: "
     "pip install 'panel-flowdash[agent]', plus the client of your model provider, "
     "e.g. 'pydantic-ai-slim[openai]'"
 )
@@ -499,17 +499,15 @@ class FlowDashApp(Viewer):
 
         Returns ``None`` if it was cancelled by a newer navigation. If the task
         awaiting it is cancelled itself, e.g. when the session is torn down,
-        the cancellation propagates (Python >= 3.11).
+        the cancellation propagates.
         """
         task = asyncio.create_task(coroutine)
         self._main_task = task
         try:
             return await task
         except asyncio.CancelledError:
-            # Task.cancelling() is new in Python 3.11; before it the two cases
-            # look the same from here, so the cancellation is always swallowed.
-            cancelling = getattr(asyncio.current_task(), "cancelling", None)
-            if cancelling is not None and cancelling():
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
                 raise
             return None
 

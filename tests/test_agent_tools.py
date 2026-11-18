@@ -8,7 +8,6 @@ import param
 import pytest
 
 pytest.importorskip("pydantic_ai")
-pytest.importorskip("panel_agents")
 
 from panel_agents import RunState, events as ev
 from panel_agents.adapters.pydantic_ai import AgentRunner
