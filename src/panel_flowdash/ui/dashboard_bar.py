@@ -56,13 +56,13 @@ EDIT_COMPACT_BREAKPOINT = _WIDE_BREAKPOINT
 # line height, so an icon-only button is as tall as a labelled one.
 LABEL_LINE_HEIGHT = "calc(0.8125rem * 1.75)"
 
-# Icon-only controls without a tooltip of their own show their name like a MUI
-# tooltip, below them, after the same short delay.
+# Icon-only controls without a tooltip of their own show their name like the
+# MUI tooltips of the buttons beside them: beside the control with an arrow,
+# after the same delay. Only a device that can hover shows them on hover, so a
+# tap on a touch screen does not leave one open.
 _TOOLTIP_CSS = """
   position: absolute;
-  top: calc(100% + 14px);
-  left: 50%;
-  transform: translateX(-50%);
+  top: 50%;
   z-index: 1500;
   padding: 4px 8px;
   border-radius: var(--mui-shape-borderRadius, 4px);
@@ -76,21 +76,49 @@ _TOOLTIP_CSS = """
   text-transform: none;
   white-space: nowrap;
   pointer-events: none;
-  animation: fd-tooltip-in 150ms 100ms both;
+  animation: fd-tooltip-in 150ms 500ms both;
 """
+_TOOLTIP_ARROW_CSS = """
+  content: "";
+  position: absolute;
+  top: 50%;
+  z-index: 1500;
+  width: 8px;
+  height: 8px;
+  background: var(--mui-palette-Tooltip-bg, rgba(97, 97, 97, 0.92));
+  pointer-events: none;
+  animation: fd-tooltip-in 150ms 500ms both;
+"""
+_TOOLTIP_PLACEMENTS = {
+    "right": (
+        "left: calc(100% + 14px); transform: translateY(-50%);",
+        "left: calc(100% + 10px); transform: translateY(-50%) rotate(45deg);",
+    ),
+    "left": (
+        "right: calc(100% + 14px); transform: translateY(-50%);",
+        "right: calc(100% + 10px); transform: translateY(-50%) rotate(45deg);",
+    ),
+}
 TOOLTIP_KEYFRAMES = "@keyframes fd-tooltip-in { from { opacity: 0; } to { opacity: 1; } }"
 
 
-def tooltip_css(selector: str, content: str) -> str:
-    """Return CSS showing *content* as a tooltip below *selector* while it is hovered or focused.
+def tooltip_css(selector: str, content: str, placement: str = "right") -> str:
+    """Return CSS showing *content* as a tooltip beside *selector* while it is hovered or focused.
 
     *selector* is completed with the hover or focus state by the caller's
-    ``{state}`` placeholder, e.g. ``".pa-toggle{state}"``.
+    ``{state}`` placeholder, e.g. ``".pa-toggle{state}"``. *placement* is
+    ``"right"`` or ``"left"``.
     """
-    targets = ", ".join(
-        selector.format(state=state) + "::after" for state in (":hover", ":focus-visible")
-    )
-    return f"{targets} {{ content: {content}; {_TOOLTIP_CSS} }}"
+    box, arrow = _TOOLTIP_PLACEMENTS[placement]
+
+    def rules(state):
+        target = selector.format(state=state)
+        return (
+            f"{target}::after {{ content: {content}; {_TOOLTIP_CSS} {box} }}"
+            f"{target}::before {{ {_TOOLTIP_ARROW_CSS} {arrow} }}"
+        )
+
+    return f"@media (hover: hover) {{ {rules(':hover')} }} {rules(':focus-visible')}"
 
 
 def icon_only_below(width: int, disabled_tooltip: str | None = None) -> str:
@@ -121,6 +149,9 @@ def icon_only_below(width: int, disabled_tooltip: str | None = None) -> str:
 
 
 ICON_ONLY_WHEN_COMPACT = icon_only_below(COMPACT_BREAKPOINT)
+
+# Icon buttons are as tall as the text buttons beside them.
+_ICON_BUTTON_SX = {"p": f"calc(({LABEL_LINE_HEIGHT} + 12px - 20px) / 2)"}
 _ICON_ONLY_WHEN_NARROW = icon_only_below(EDIT_COMPACT_BREAKPOINT)
 
 # The toggle groups are as tall as the outlined buttons beside them.
@@ -352,6 +383,7 @@ class DashboardBar(Viewer):
             margin=(0, 4),
             align="center",
             css_classes=[TOGGLE_CLASS],
+            sx=_ICON_BUTTON_SX,
         )
         self.mode_toggle = pmui.RadioButtonGroup(
             options={":material/visibility: View": "view", ":material/edit: Edit": "edit"},
@@ -392,6 +424,7 @@ class DashboardBar(Viewer):
             margin=(0, 4),
             color="primary",
             description="Settings",
+            sx=_ICON_BUTTON_SX,
             stylesheets=[_HIDE_WHEN_WIDE],
         )
         self.settings_icon_button.on_click(lambda _event: self._click_settings())
