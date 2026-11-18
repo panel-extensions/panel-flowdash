@@ -1230,6 +1230,12 @@ class FlowDashApp(Viewer):
             )
         return True
 
+    # Navigation swaps the page while it awaits, so it holds the Document lock
+    # throughout. Unlocked, a locked callback running meanwhile on a worker
+    # thread can change models of the incoming page and send that change
+    # before the held page swap, which the browser rejects as referencing
+    # models it does not know, so the page swap never shows.
+    @pn.io.with_lock
     async def _load_page_layout(self):
         if pn.state.location is None:
             return
@@ -1601,6 +1607,7 @@ class FlowDashApp(Viewer):
             pn.state.location.param.update(pathname=target_path, search="?edit=true")
         pn.state.execute(partial(self._load_dashboard_edit, dashboard_id))
 
+    @pn.io.with_lock
     async def _load_dashboard_edit(self, dashboard_id: str):
         generation = self._begin_navigation()
         await self._run_navigation_task(
