@@ -132,7 +132,11 @@ class _Pending:
 
 @dataclass
 class _Request:
-    """An agent request's edits, published as one version when the request ends."""
+    """An agent request's edits since its last version, published together.
+
+    ``value`` and ``revision`` hold the canvas as the agent's latest edit
+    left it, so a person's edit made since does not end up in this version.
+    """
 
     artifact_id: str
     dashboard_id: str | None
@@ -142,6 +146,9 @@ class _Request:
     title: str | None
     ops: list[dict[str, t.Any]]
     tool_call_ids: list[str]
+    labels: list[str]
+    value: str | None = None
+    revision: str | None = None
 
 
 def compact(
@@ -399,6 +406,14 @@ class EditHistory:
         number = artifact.redo_run_version if artifact is not None else None
         return _describe(artifact.versions[number - 1]) if number else ""
 
+    def step_value(self, action: str) -> str | None:
+        """Return the version :meth:`undo` (*action* ``"undo"``) or :meth:`redo` would apply, if any."""
+        if action == "undo":
+            return self._undo_value()
+        artifact = self.artifact
+        number = artifact.redo_run_version if artifact is not None else None
+        return artifact.versions[number - 1].value if number else None
+
     def _undo_value(self, whole_runs: bool = True) -> str | None:
         """Return the version :meth:`undo` would apply, without publishing anything."""
         self._ensure_loaded()
@@ -464,9 +479,7 @@ class EditHistory:
         dashboard_id = current.dashboard_id if current is not None else None
         if dashboard_id != self._dashboard_id:
             self._move_to(dashboard_id)
-        if self._requests:
-            # The canvas is part way through an agent's request, which is not a version yet.
-            return
+        self._close_requests()
         if self.active and self.artifact is not None:
             # Saving can rename the dashboard, which its YAML holds.
             value, revision = self.snapshot()
@@ -563,8 +576,9 @@ class EditHistory:
             return
         agent = _agent_source()
         if agent is not None:
-            self._record_request(agent.run, op, args, turn)
+            self._record_request(agent.run, op, args, label, turn)
             return
+        self._close_requests()
         value, revision = self.snapshot()
         actor = "user" if agent is None else "agent"
         run_id = current_run_id() if agent is None else agent.run
@@ -616,9 +630,18 @@ class EditHistory:
             self.flush()
 
     def _record_request(
-        self, run_id: str | None, op: str, args: dict[str, t.Any], turn: DashboardTurn | None
+        self,
+        run_id: str | None,
+        op: str,
+        args: dict[str, t.Any],
+        label: str | None,
+        turn: DashboardTurn | None,
     ):
-        """Note an agent's edit in its request, which becomes one version when the request ends."""
+        """Note an agent's edit in its request, whose edits become one version when it ends.
+
+        A person's edit or a save in between publishes the request's edits so
+        far as a version of their own, see :meth:`_close_requests`.
+        """
         self.flush()
         turn_id = turn.id if turn is not None else None
         key = (self.artifact_id, turn_id or run_id)
@@ -637,13 +660,26 @@ class EditHistory:
                 title=current.title if current is not None else None,
                 ops=[],
                 tool_call_ids=[],
+                labels=[],
             )
         request.ops.append({"op": op, "args": dict(args)})
+        if label and label not in request.labels:
+            request.labels.append(label)
         tool_call_id = current_tool_call_id()
         if tool_call_id and tool_call_id not in request.tool_call_ids:
             request.tool_call_ids.append(tool_call_id)
-        # Unknown until the request's version is published.
-        self._head = None
+        request.value, request.revision = self.snapshot()
+        self._head = request.revision
+
+    def _close_requests(self):
+        """Publish the edits the open dashboard's requests made so far, keeping the requests open.
+
+        Called before a person's edit and on a save, so the history keeps the
+        agent's and the person's edits apart, each version with its real base.
+        """
+        for request in self._requests.values():
+            if request.artifact_id == self.artifact_id and request.ops:
+                self._publish_request(request)
 
     @property
     def requests_pending(self) -> bool:
@@ -660,7 +696,8 @@ class EditHistory:
         for key, request in list(self._requests.items()):
             if run_id is None or request.run_id == run_id:
                 del self._requests[key]
-                self._publish_request(request)
+                if request.ops:
+                    self._publish_request(request)
 
     def _on_event(self, event):
         if isinstance(event, (RunFinished, RunError)) and self._requests:
@@ -674,25 +711,25 @@ class EditHistory:
             )
             return
         self.flush()
-        value, revision = self.snapshot()
+        value, revision, ops, labels = request.value, request.revision, request.ops, request.labels
+        tool_call_ids = request.tool_call_ids
+        request.ops, request.tool_call_ids, request.labels = [], [], []
         artifact = self.artifact
         applied = artifact.applied_version if artifact is not None else None
         base = _value_revision(applied.value) if applied is not None else None
-        self._head = revision
-        if revision == base:
+        if value is None or revision == base:
             return
-        turn = next((t for t in self.editor._turn_log.turns if t.id == request.turn_id), None)
         self._publish(
             value,
             {
                 "op": "request",
                 "args": {},
-                "edits": len(request.ops),
-                "ops": request.ops[:MAX_BATCH_OPS],
-                "label": turn.summary if turn is not None and turn.summary else None,
+                "edits": len(ops),
+                "ops": ops[:MAX_BATCH_OPS],
+                "label": summarize(labels),
                 "turn": request.turn_id,
                 "start": request.start,
-                "tool_call_ids": request.tool_call_ids,
+                "tool_call_ids": tool_call_ids,
                 "base": base,
                 "revision": revision,
                 "version_id": uuid.uuid4().hex,
@@ -851,6 +888,12 @@ class EditHistory:
             ),
             None,
         )
+        if number is None:
+            return None
+        between = artifact.versions[number : applied.version - 1]
+        # With a person's edit in between, undo steps back one version, so it keeps theirs.
+        if any(v.actor != "agent" or v.run_id != applied.run_id for v in between):
+            return None
         return number
 
     def redo(self) -> bool:
@@ -1056,6 +1099,22 @@ class EditHistory:
         for recorder in self._recorders.values():
             recorder.close()
         self._recorders.clear()
+
+
+def components_of(text: t.Any) -> set[str]:
+    """Return the component ids a version's YAML places, e.g. to import them before restoring it."""
+    try:
+        doc = yaml.safe_load(text) if isinstance(text, str) else None
+    except yaml.YAMLError:
+        return set()
+    nodes = doc.get("nodes") if isinstance(doc, dict) else None
+    if not isinstance(nodes, dict):
+        return set()
+    return {
+        node["component"]
+        for node in nodes.values()
+        if isinstance(node, dict) and isinstance(node.get("component"), str)
+    }
 
 
 def _describe(version: ArtifactVersion | None) -> str:

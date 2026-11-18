@@ -11,13 +11,14 @@ import re
 import typing as t
 
 import panel as pn
-import yaml
 from panel_agents import AgentDrawer, RunState
 from panel_agents.adapters.pydantic_ai import ActionToolset, AgentRunner
 
 from panel_flowdash.util import confirm
 
 logger = logging.getLogger(__name__)
+
+from panel_flowdash.history import components_of
 
 from .actions import palette_actions
 from .assistant import create_agent
@@ -187,7 +188,7 @@ class AgentSession:
         """
         editor = self.app._editor
         try:
-            await editor.ensure_components_loaded_async(_components(version.value))
+            await editor.ensure_components_loaded_async(components_of(version.value))
             history.restore(artifact, version)
         except Exception as exc:
             self.app._notify("error", f"v{version.version} was not restored: {exc}", duration=8000)
@@ -320,19 +321,3 @@ def _collapse_notes(notes: list[str]) -> list[str]:
 
 #: Seconds the drawer waits for the config checks of a restored version before it gives up on them.
 RESTORE_CHECK_TIMEOUT = 15
-
-
-def _components(text: t.Any) -> set[str]:
-    """Return the component ids a version's YAML places, to import before restoring it."""
-    try:
-        doc = yaml.safe_load(text) if isinstance(text, str) else None
-    except yaml.YAMLError:
-        return set()
-    nodes = doc.get("nodes") if isinstance(doc, dict) else None
-    if not isinstance(nodes, dict):
-        return set()
-    return {
-        node["component"]
-        for node in nodes.values()
-        if isinstance(node, dict) and isinstance(node.get("component"), str)
-    }

@@ -4377,6 +4377,7 @@ class FlowDash(Viewer):
                 if result is not True:
                     logger.warning("Restoring a version could not wire %s: %s", key, result)
                     self._unresolved_edges.append(UnresolvedEdge(edge, result))
+        self._match_order(model)
         moved = {
             iid: (after[iid].x, after[iid].y)
             for iid in kept
@@ -4423,6 +4424,29 @@ class FlowDash(Viewer):
         self._sync_placed()
         self._sync_toolbar_state()
         return True
+
+    def _match_order(self, model: DashboardModel):
+        """Put the canvas's nodes and edges in *model*'s order, which its YAML, and so its revision, follows."""
+        rank = {item.instance_id: i for i, item in enumerate(model.items)}
+        order = sorted(
+            range(len(self._tile_items)),
+            key=lambda i: rank.get(self._tile_items[i]["instance_id"], len(rank) + i),
+        )
+        if order != list(range(len(order))):
+            objects = self._tile_objects
+            self._tile_items = [self._tile_items[i] for i in order]
+            if len(objects) == len(order):
+                self._tile_objects = [objects[i] for i in order]
+        edge_rank = {
+            (e.source, e.source_port, e.target, e.target_port): i
+            for i, e in enumerate(model.edges)
+        }
+        edges = self._dataflow_graph._edges
+        keys = sorted(edges, key=lambda key: edge_rank.get(key, len(edge_rank)))
+        if keys != list(edges):
+            reordered = {key: edges[key] for key in keys}
+            edges.clear()
+            edges.update(reordered)
 
     def _set_config(self, instance_id: str, config: dict[str, t.Any]):
         """Give a placed node exactly *config*, resetting fields it leaves out to their defaults."""

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import typing as t
 
+import panel as pn
 import param
 from panel.custom import JSComponent
 
@@ -413,9 +414,27 @@ class CommandPaletteController:
         return items
 
     def _step_history(self, action: str):
-        editor = self._editor
+        """Undo or redo, importing the components the version needs off the event loop first."""
+        doc = pn.state.curdoc
+        if doc is None or doc.session_context is None:
+            self._apply_step(action)
+            return
+
+        async def step():
+            editor = self._editor
+            from panel_flowdash.history import components_of
+
+            target = editor.edit_history.step_value(action)
+            if target is not None:
+                await editor.ensure_components_loaded_async(components_of(target))
+            self._apply_step(action)
+
+        pn.state.execute(step)
+
+    def _apply_step(self, action: str):
         from panel_flowdash.history import HistoryBusy
 
+        editor = self._editor
         try:
             done = editor.undo() if action == "undo" else editor.redo()
         except (PermissionError, HistoryBusy) as exc:

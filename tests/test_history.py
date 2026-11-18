@@ -1,5 +1,6 @@
 """The edit history: a version per edit, coalescing, undo and redo, storage, retention and rights."""
 
+import itertools
 import json
 import sqlite3
 import time
@@ -404,8 +405,6 @@ def test_an_agents_request_is_one_version_undone_as_a_whole(editor):
     state.apply(RunStarted(run_id="run-1", agent_name="assistant", input="Add two"))
     with _scope(run_id="run-1", tool_call_id="call-1", actor="agent"), agent_edits("run-1"):
         editor.add_component("T/number", instance_id="a1")
-    # A person's edit while the request runs is a version of its own.
-    editor.add_component("T/scaled", instance_id="theirs")
     with _scope(run_id="run-1", tool_call_id="call-2", actor="agent"), agent_edits("run-1"):
         editor.add_component("T/doubler", instance_id="a2")
         editor.connect("a1", "value", "a2", "value")
@@ -418,12 +417,70 @@ def test_an_agents_request_is_one_version_undone_as_a_whole(editor):
     assert [op["op"] for op in request.metadata["ops"]] == ["add_node", "add_node", "connect"]
     agent_turn = next(t for t in editor.turns if t.actor == "agent")
     assert request.metadata["turn"] == agent_turn.id
-    assert request.metadata["label"] == agent_turn.summary
-    assert sum(v.actor == "agent" for v in editor.edit_history.versions) == 1
-    # Undo goes back to before the request in one step, past the person's edit made meanwhile.
+    assert request.metadata["label"] == "Added a1. Added a2. Connected a1 to a2."
     assert editor.undo() and _names(editor) == ["mine"]
-    assert editor.redo() and _names(editor) == ["a1", "a2", "mine", "theirs"]
-    assert editor.undo(whole_runs=False) and _names(editor) == ["a1", "mine", "theirs"]
+    assert editor.redo() and _names(editor) == ["a1", "a2", "mine"]
+
+
+def test_a_persons_edit_during_a_request_splits_it_and_loses_nothing():
+    store = MemoryDashboardStore()
+    editor = _editor(store)
+    model = editor.new_dashboard("Mine")
+    editor.add_component("T/number", instance_id="before")
+    editor.save()
+    state = editor.edit_history.state
+    state.apply(RunStarted(run_id="r1", agent_name="assistant", input="q"))
+    with _scope(run_id="r1", tool_call_id="c1", actor="agent"), agent_edits("r1"):
+        editor.add_component("T/number", instance_id="agent1")
+    editor.add_component("T/doubler", instance_id="mine")
+    with _scope(run_id="r1", tool_call_id="c2", actor="agent"), agent_edits("r1"):
+        editor.add_component("T/number", instance_id="agent2")
+    state.apply(RunFinished(run_id="r1"))
+    editor.end_agent_turns()
+    versions = editor.edit_history.versions
+    assert [(v.actor, v.metadata["op"], v.run_id) for v in versions[-3:]] == [
+        ("agent", "request", "r1"),
+        ("user", "add_node", None),
+        ("agent", "request", "r1"),
+    ]
+    assert versions[-3].metadata["turn"] == versions[-1].metadata["turn"]
+    assert all(
+        v.metadata["base"] == p.metadata["revision"] for p, v in itertools.pairwise(versions)
+    )
+    # Undo steps back one version at a time, so the person's edit is never lost.
+    assert editor.undo() and _names(editor) == ["agent1", "before", "mine"]
+    assert editor.redo()
+    editor.save()
+
+    again = _editor(store)
+    again.load(model.dashboard_id)
+    assert [v.metadata["op"] for v in again.edit_history.versions] == [
+        "open",
+        "add_node",
+        "request",
+        "add_node",
+        "request",
+    ]
+    for expected in (["agent1", "before", "mine"], ["agent1", "before"], ["before"], []):
+        assert again.undo() and _names(again) == expected
+
+
+def test_a_save_during_a_request_publishes_its_edits_so_far(editor):
+    state = editor.edit_history.state
+    state.apply(RunStarted(run_id="r1", agent_name="assistant", input="q"))
+    with _scope(run_id="r1", tool_call_id="c1", actor="agent"), agent_edits("r1"):
+        editor.add_component("T/number", instance_id="a")
+    editor.save()
+    assert not editor.dirty
+    with _scope(run_id="r1", tool_call_id="c2", actor="agent"), agent_edits("r1"):
+        editor.add_component("T/number", instance_id="b")
+    state.apply(RunFinished(run_id="r1"))
+    assert [v.metadata["op"] for v in editor.edit_history.versions] == [
+        "open",
+        "request",
+        "request",
+    ]
+    assert editor.undo() and _names(editor) == []
 
 
 def test_a_failed_request_is_one_version_too(editor):
@@ -1062,3 +1119,51 @@ def test_a_restore_it_cannot_patch_loads_the_whole_version(editor, monkeypatch):
     )
     _two_nodes(editor)
     assert editor.undo() and _names(editor) == ["base"] and calls
+
+
+@pytest.mark.parametrize("seed", range(20))
+def test_undo_and_redo_land_exactly_on_each_version(seed):
+    import random
+
+    from panel_flowdash.history import _value_revision
+
+    rnd = random.Random(seed)
+    editor = _editor(MemoryDashboardStore())
+    editor.new_dashboard("Fuzz")
+    ids = []
+    for step in range(25):
+        r = rnd.random()
+        try:
+            if r < 0.3 or len(ids) < 2:
+                iid = f"n{step}"
+                editor.add_component(
+                    rnd.choice(["T/number", "T/doubler", "T/scaled"]),
+                    instance_id=iid,
+                    position={"x": rnd.randint(0, 500), "y": rnd.randint(0, 500)},
+                )
+                ids.append(iid)
+            elif r < 0.45:
+                iid = rnd.choice(ids)
+                editor.remove_component(iid)
+                ids.remove(iid)
+            elif r < 0.65:
+                editor.connect(*_pair(rnd, ids, "value"))
+            elif r < 0.75:
+                editor.disconnect(*_pair(rnd, ids, "value"))
+            elif r < 0.9:
+                editor._apply_config_patch(rnd.choice(ids), {"value": rnd.randint(0, 9)})
+            else:
+                editor.settings.refresh_period = rnd.randint(1, 60)
+        except Exception:
+            pass
+    history = editor.edit_history
+    for step in (editor.undo, editor.redo):
+        while step(**({"whole_runs": False} if step == editor.undo else {})):
+            applied = history.artifact.applied_version
+            assert history.snapshot()[1] == _value_revision(applied.value)
+    editor.dispose()
+
+
+def _pair(rnd, ids, port):
+    a, b = rnd.sample(ids, 2)
+    return a, port, b, port

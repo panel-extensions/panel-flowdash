@@ -148,8 +148,20 @@ def wind_app(page, tmp_path, monkeypatch):
 
 
 @pytest.mark.filterwarnings("ignore:The inplace keyword in DataFrame.reset_index")
-def test_reverting_a_large_dashboard_ends_quickly(page, wind_app):
+def test_reverting_a_large_dashboard_ends_quickly(page, wind_app, monkeypatch):
     import time
+
+    from panel_flowdash.editor import FlowDash
+
+    full_loads = []
+    load = FlowDash._hydrate_model
+
+    def counted(self, *args, **kwargs):
+        if self._history_quiet:
+            full_loads.append(args)
+        return load(self, *args, **kwargs)
+
+    monkeypatch.setattr(FlowDash, "_hydrate_model", counted)
 
     page.keyboard.press("Control+k")
     search = page.get_by_role("combobox", name=re.compile("^Search dashboards"))
@@ -171,6 +183,8 @@ def test_reverting_a_large_dashboard_ends_quickly(page, wind_app):
     page.get_by_role("button", name="Revert to v1").click()
     expect(page.get_by_text(re.compile(r"^v1 · .* · applied$"))).to_be_visible(timeout=5000)
     expect(page.locator(".MuiButton-loading")).to_have_count(0, timeout=5000)
-    assert time.monotonic() - start < 5
+    # Only what changed is patched: the dashboard is not loaded again.
+    assert full_loads == []
+    assert time.monotonic() - start < 2
     assert not any(i["component_id"] == "Text/Markdown" for i in editor._tile_items)
     assert editor.settings.description == ""
