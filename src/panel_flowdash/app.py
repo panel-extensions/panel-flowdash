@@ -577,9 +577,11 @@ class FlowDashApp(Viewer):
     @cache
     def _accepted_injected_params(app):
         if inspect.isclass(app) and issubclass(app, pn.viewable.Viewer):
-            return {
-                p for p in ("config", "executor", "instance_config", "context") if hasattr(app, p)
-            }
+            # An editor's `context` holds the host's resources, not where it is shown.
+            names = ("config", "executor", "instance_config") + (
+                () if issubclass(app, FlowDash) else ("context",)
+            )
+            return {p for p in names if hasattr(app, p)}
         return inspect.signature(app).parameters.keys() & {
             "config",
             "executor",

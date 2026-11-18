@@ -17,17 +17,16 @@ import typing as t
 import panel as pn
 
 from panel_flowdash.dashboard_store import DashboardModel
-from panel_flowdash.dataflow_engine import failure_text
 from panel_flowdash.editor import (
     _SESSION_EDITORS,
     FlowDash,
     _ReadOnlyEditorError,
+    copy_context,
     export_model,
 )
 from panel_flowdash.ui import tile_layout
-from panel_flowdash.util import is_failure
 
-from .preview import node_health, preview_editor
+from .preview import node_health, output_failures, preview_editor
 from .schema import component_schema
 from .validation import Issue, _check_value, _suggest, validate_dashboard
 from .yaml_format import (
@@ -403,11 +402,10 @@ class DashboardOps:
         status, message = node_health(self.editor, instance_id)
         if status != "ok":
             raise OutputUnavailable(name, status, message)
+        if (failed := output_failures(self.editor, instance_id).get(resolved)) is not None:
+            raise OutputUnavailable(name, "failed", failed)
         state = self.editor.graph.get_state(instance_id)
-        value = getattr(state, resolved, None) if state is not None else None
-        if is_failure(value):
-            raise OutputUnavailable(name, "failed", failure_text(value))
-        return value
+        return getattr(state, resolved, None) if state is not None else None
 
     def _readable(self, name: str) -> tuple[str, dict]:
         """Return the instance id and item of a node whose definition the user may read."""
@@ -665,7 +663,7 @@ class DashboardOps:
             inspect_outputs=editor.inspect_outputs,
             notifications=False,
             user=editor.user,
-            context=dict(editor.context),
+            context=copy_context(editor.context),
         )
         # The session's components keep finding the editor on screen, not this one.
         if session_editor is not None:
@@ -798,13 +796,18 @@ class DashboardOps:
         return [i for i in self.validate() if i.severity != "error"]
 
     def _failures(self) -> list[Issue]:
-        """Warn about each node that failed, by its own output or an input failing upstream."""
-        report = preview_editor(self.editor, self._names(), samples=False)
-        return [
-            Issue(f"nodes.{name}", f"The node failed: {node['message']}", "warning")
-            for name, node in report["nodes"].items()
-            if node["status"] == "failed"
-        ]
+        """Warn about each node whose own output failed; the nodes it feeds are not repeated."""
+        names = self._names()
+        issues = []
+        for item in self.editor._tile_items:
+            if "placeholder" in item:
+                continue
+            failed = output_failures(self.editor, item["instance_id"])
+            if failed:
+                reasons = "; ".join(f"output '{p}' failed: {text}" for p, text in failed.items())
+                name = names.get(item["instance_id"], item["instance_id"])
+                issues.append(Issue(f"nodes.{name}", f"The node failed: {reasons}", "warning"))
+        return issues
 
     def add_node(
         self,

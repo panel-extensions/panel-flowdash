@@ -9,7 +9,7 @@ import yaml
 from panel.viewable import Viewer
 
 from panel_flowdash import FlowDash, MemoryDashboardStore, register
-from panel_flowdash.agent import DashboardOps, OperationError
+from panel_flowdash.agent import DashboardOps, OperationError, OutputUnavailable
 from panel_flowdash.dashboard_store import DashboardEdge, DashboardItem
 
 from .test_agent_ops import COMPONENTS, _editor
@@ -239,27 +239,85 @@ def test_preview_without_samples_still_marks_a_failed_output(failing):
 
 
 @pytest.mark.failures
-def test_replacing_warns_about_each_failed_node(failing):
+def test_replacing_warns_about_the_node_that_failed_not_those_it_feeds(failing):
     issues = failing.replace_yaml(FAILING, revision=failing.revision())
-    failed = {i.path: i for i in issues if i.path in ("nodes.r", "nodes.s")}
-    assert set(failed) == {"nodes.r", "nodes.s"}
-    assert {i.severity for i in failed.values()} == {"warning"}
-    assert str(failed["nodes.r"]) == (
+    (failed,) = [i for i in issues if i.message.startswith("The node failed")]
+    assert failed.severity == "warning"
+    assert str(failed) == (
         "nodes.r: The node failed: output 'inverse' failed: ZeroDivisionError: division by zero"
     )
-    assert not [i for i in issues if i.path in ("nodes.z", "nodes.ok")]
 
 
 @pytest.mark.failures
 async def test_replacing_async_warns_about_failed_nodes(failing):
     issues = await failing.replace_yaml_async(FAILING, revision=failing.revision())
-    assert {i.path for i in issues if i.message.startswith("The node failed")} == {
-        "nodes.r",
-        "nodes.s",
+    assert [i.path for i in issues if i.message.startswith("The node failed")] == ["nodes.r"]
+
+
+class Broken(Viewer):
+    """A Viewer whose output fails with its default config, on its very first run."""
+
+    divisor = param.Number(default=0)
+
+    @param.output(param.Number)
+    @param.depends("divisor")
+    def ratio(self):
+        return 1 / self.divisor
+
+    def __panel__(self):
+        return "broken"
+
+
+def _plain_editor(**params):
+    editor = FlowDash(
+        {"T/zero": zero, "T/reciprocal": Reciprocal, "T/broken": Broken},
+        include_builtin_components=False,
+        notifications=False,
+        **params,
+    )
+    editor.new_dashboard("Plain")
+    return DashboardOps(editor)
+
+
+BROKEN = "flowdash: 1\nnodes:\n  b: {component: T/broken}\n  ok: {component: T/reciprocal}\n"
+
+
+@pytest.mark.parametrize("propagate", [False, pytest.param(True, marks=pytest.mark.failures)])
+def test_an_output_failing_on_its_first_run_is_reported(propagate):
+    ops = _plain_editor(propagate_failures=propagate)
+    report = ops.preview(BROKEN)
+    reason = report["nodes"]["b"]["message"]
+    assert reason.startswith("output 'ratio' failed: ZeroDivisionError: ")
+    assert report["status"] == "failed"
+    assert report["nodes"]["b"] == {
+        "component": "T/broken",
+        "status": "failed",
+        "message": reason,
+        "outputs": {"ratio": {"type": None, "value": None}},
     }
+    assert report["nodes"]["ok"]["status"] == "ok"
+    issues = ops.replace_yaml(BROKEN, revision=ops.revision())
+    assert [str(i) for i in issues] == [f"nodes.b: The node failed: {reason}"]
+    with pytest.raises(OutputUnavailable, match="'b' has failed") as info:
+        ops.node_output("b.ratio")
+    assert info.value.status == "failed"
+    assert ops.node_output("ok.inverse") == 1
 
 
-@pytest.mark.failures
-def test_replacing_a_healthy_dashboard_adds_no_failure_warnings(failing):
+def test_an_output_that_recovers_is_no_longer_failed():
+    ops = _plain_editor()
+    ops.replace_yaml(BROKEN, revision=ops.revision())
+    broken = ops.editor._component_instances[ops._instance("b")]
+    broken.divisor = 4
+    assert ops.preview()["nodes"]["b"]["status"] == "ok"
+    assert ops.node_output("b.ratio") == 0.25
+    broken.divisor = 0
+    assert ops.preview()["nodes"]["b"]["status"] == "failed"
+    with pytest.raises(OutputUnavailable):
+        ops.node_output("b.ratio")
+
+
+def test_replacing_a_healthy_dashboard_adds_no_failure_warnings():
+    ops = _plain_editor()
     text = "flowdash: 1\nnodes:\n  ok: {component: T/reciprocal}\n"
-    assert failing.replace_yaml(text, revision=failing.revision()) == []
+    assert ops.replace_yaml(text, revision=ops.revision()) == []

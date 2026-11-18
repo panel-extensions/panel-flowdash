@@ -228,8 +228,17 @@ def tables(config):
 editor = FlowDash([tables], context={"my_app.source": my_source})
 ```
 
-The editor keeps a shallow copy of the dict it is given. Add to `editor.context`
-to make more resources available later; the view a component holds follows such
-additions. Previews of the assistant run in a separate editor with a copy of the
-context, so the components they create find the same resources. `FlowDashApp` passes
-`editor_options={"context": ...}` on to its editor.
+`dashboard_context()` works while a component is created and while one of its
+outputs runs. Code that runs in threads of its own, such as a thread pool, does not
+know which editor it serves, so take the view when the component is created and use
+that.
+
+The editor copies the dict it is given, and each dict, list or set in it, so one
+editor replacing or adding an entry, e.g. `editor.context["lumen.sources"]["s1"] =
+source`, does not reach another editor built from the same dict. Other values, such
+as the sources themselves, are shared objects. Add to `editor.context` to make more
+resources available later; the view a component holds follows such additions, but not
+a new dict assigned to `editor.context`. Previews of the assistant run in a separate
+editor with a copy of the context, so the components they create find the same
+resources. `FlowDashApp` passes `editor_options={"context": ...}` on to the editor of
+each session, which gets its own copy.
