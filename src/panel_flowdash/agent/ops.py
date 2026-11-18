@@ -17,6 +17,7 @@ import typing as t
 import panel as pn
 
 from panel_flowdash.dashboard_store import DashboardModel
+from panel_flowdash.dataflow_engine import failure_text
 from panel_flowdash.editor import (
     _SESSION_EDITORS,
     FlowDash,
@@ -24,11 +25,13 @@ from panel_flowdash.editor import (
     export_model,
 )
 from panel_flowdash.ui import tile_layout
+from panel_flowdash.util import is_failure
 
-from .preview import preview_editor
+from .preview import node_health, preview_editor
 from .schema import component_schema
 from .validation import Issue, _check_value, _suggest, validate_dashboard
 from .yaml_format import (
+    RESTRICTED_COMPONENT,
     DashboardYAMLError,
     dashboard_from_dict,
     dashboard_to_dict,
@@ -45,6 +48,23 @@ class OperationError(ValueError):
 
     The message says what to change, so an agent can retry with a fix.
     """
+
+
+class OutputUnavailable(Exception):
+    """A node has no output value to read yet, or it failed, as a preview reports it.
+
+    ``status`` is ``"waiting"`` or ``"failed"``. It is not an
+    :class:`OperationError`, since asking again does not help until the
+    dashboard changes.
+    """
+
+    def __init__(self, name: str, status: str, message: str):
+        super().__init__(
+            f"'{name}' {'has failed' if status == 'failed' else 'is waiting'}: {message}"
+        )
+        self.name = name
+        self.status = status
+        self.message = message
 
 
 class NotFound(OperationError, KeyError):
@@ -251,6 +271,139 @@ class DashboardOps:
             if editor._dashboard_authorized(model, "view")
         ]
 
+    def nodes(self, component: str | None = None) -> list[dict[str, str]]:
+        """List the nodes of the editor's dashboard in the order they were placed.
+
+        Parameters
+        ----------
+        component
+            Only list nodes of this component id, or of a former id of it.
+
+        Returns
+        -------
+        list of dict
+            ``name`` and ``component`` of each node. A node of a component
+            the user may not use is listed as ``flowdash:restricted``, as
+            :meth:`get_dashboard` writes it, and never matches *component*.
+
+        Raises
+        ------
+        PermissionError
+            If the dashboard hides its definition from the user, as Download does.
+        """
+        self._require_source()
+        wanted = None if component is None else self.editor._resolve_component_id(component)
+        items = self._export()["items"]
+        names = node_names(items)
+        live = {i["instance_id"]: i for i in self.editor._tile_items}
+        listed = []
+        for item in items:
+            name = names[item["instance_id"]]
+            placeholder = live.get(item["instance_id"], {}).get("placeholder")
+            if placeholder is not None and placeholder.private:
+                if wanted is None:
+                    listed.append({"name": name, "component": RESTRICTED_COMPONENT})
+                continue
+            resolved = self.editor._resolve_component_id(item["component_id"])
+            if wanted is None or resolved == wanted:
+                listed.append({"name": name, "component": item["component_id"]})
+        return listed
+
+    def node_config(self, name: str) -> dict[str, t.Any]:
+        """Return a copy of a node's config.
+
+        Raises
+        ------
+        OperationError
+            If there is no such node, or it could not be loaded.
+        PermissionError
+            If the dashboard hides its definition from the user, or the node
+            is of a component the user may not use.
+        """
+        self._require_source()
+        _, item = self._readable(name)
+        return copy.deepcopy(item.get("config") or {})
+
+    def node_output(self, ref: str, port: str | None = None) -> t.Any:
+        """Return the current value of an output, as the nodes it feeds receive it.
+
+        The value is the live object, not a copy: a DataFrame or another
+        mutable value must not be changed.
+
+        Parameters
+        ----------
+        ref
+            The output as ``"<node>.<port>"``, or the node's name with *port*.
+        port
+            The output port, when *ref* is only the node's name.
+
+        Raises
+        ------
+        OutputUnavailable
+            If the node has no value to give, as :meth:`preview` reports it:
+            ``status`` is ``"waiting"`` while a required input is missing and
+            ``"failed"`` when an input failed upstream or the output itself
+            failed. Retrying the same call does not help until the dashboard
+            changes, so it is not an :class:`OperationError`.
+        OperationError
+            If there is no such node or output, or the node could not be loaded.
+        PermissionError
+            If the dashboard hides its definition or its outputs from the
+            user, or the node is of a component the user may not use.
+        """
+        self._require_source()
+        if not self._can_sample():
+            raise PermissionError(
+                "Only people who can inspect this dashboard may read its outputs."
+            )
+        if port is None:
+            name, dot, port = ref.partition(".")
+            if not dot:
+                raise OperationError(f"Name the output as '{ref}.<port>'.")
+        elif "." in ref:
+            raise OperationError(
+                f"Pass the output as '{ref}' or as a node name and a port, not both."
+            )
+        else:
+            name = ref
+        instance_id, item = self._readable(name)
+        spec = self.editor.component_specs[item["component_id"]]
+        resolved = spec.resolve_name(port)
+        if not any(p.name == resolved for p in spec.outputs):
+            raise OperationError(
+                f"'{name}' ({spec.title}) has no output '{port}'."
+                + (
+                    _suggest(port, [p.name for p in spec.outputs])
+                    if spec.outputs
+                    else " It has no outputs."
+                )
+            )
+        status, message = node_health(self.editor, instance_id)
+        if status != "ok":
+            raise OutputUnavailable(name, status, message)
+        state = self.editor.graph.get_state(instance_id)
+        value = getattr(state, resolved, None) if state is not None else None
+        if is_failure(value):
+            raise OutputUnavailable(name, "failed", failure_text(value))
+        return value
+
+    def _readable(self, name: str) -> tuple[str, dict]:
+        """Return the instance id and item of a node whose definition the user may read."""
+        instance_id = self._instance(name)
+        item = self._item(instance_id)
+        placeholder = item.get("placeholder")
+        if placeholder is not None:
+            if placeholder.private:
+                raise PermissionError(f"'{name}' is restricted.")
+            raise OperationError(f"'{name}' could not be loaded ({placeholder.message}).")
+        return instance_id, item
+
+    def _require_source(self):
+        if not self._source_visible():
+            raise PermissionError(
+                "Only people who can edit this dashboard may read its definition."
+            )
+
     def get_dashboard(self, dashboard_id: str | None = None) -> str:
         """Return a dashboard as YAML.
 
@@ -276,10 +429,7 @@ class DashboardOps:
             self.editor.dashboard is not None
             and dashboard_id == self.editor.dashboard.dashboard_id
         ):
-            if not self._source_visible():
-                raise PermissionError(
-                    "Only people who can edit this dashboard may read its definition."
-                )
+            self._require_source()
             text = dashboard_to_yaml(self.editor)
             return f"# revision: {_revision(text)}\n{text}"
         model = self._stored(dashboard_id)
