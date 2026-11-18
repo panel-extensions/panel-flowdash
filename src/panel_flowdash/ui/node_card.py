@@ -315,7 +315,8 @@ class NodeCard(Viewer):
 
     def _document(self):
         """Return the served document showing the card, if any."""
-        for model, _ in self._pane._models.values():
+        # A copy, since the event loop may render or drop the pane while another thread asks.
+        for model, _ in list(self._pane._models.values()):
             doc = model.document
             if doc is not None and doc.session_context is not None:
                 return doc

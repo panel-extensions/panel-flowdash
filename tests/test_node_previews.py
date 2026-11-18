@@ -3,6 +3,7 @@
 import contextlib
 import html
 import re
+import sys
 import threading
 from html.parser import HTMLParser
 
@@ -756,13 +757,26 @@ class TestCoalescing:
         assert len(served.ticks) == 1
 
     async def test_calls_from_worker_threads_only_schedule_a_tick(self, served):
-        coalesce = Coalescer(lambda: None, lambda: served)
-        workers = [threading.Thread(target=coalesce) for _ in range(4)]
-        for worker in workers:
-            worker.start()
-        for worker in workers:
-            worker.join()
-        assert len(served.ticks) == 1 and served.timeouts == []
+        interval = sys.getswitchinterval()
+        sys.setswitchinterval(1e-6)
+        try:
+            for _ in range(20):
+                served.ticks.clear()
+                barrier = threading.Barrier(16)
+
+                def document(barrier=barrier):
+                    barrier.wait()
+                    return served
+
+                coalesce = Coalescer(lambda: None, document)
+                workers = [threading.Thread(target=coalesce) for _ in range(16)]
+                for worker in workers:
+                    worker.start()
+                for worker in workers:
+                    worker.join()
+                assert len(served.ticks) == 1 and served.timeouts == []
+        finally:
+            sys.setswitchinterval(interval)
 
     async def test_cancelled_call_never_runs(self, served):
         seen = []
