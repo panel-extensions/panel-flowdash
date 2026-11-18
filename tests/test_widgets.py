@@ -1,6 +1,7 @@
 """The built-in widgets and views: ports, config, values and persistence."""
 
 import datetime as dt
+import gc
 import json
 
 import panel_material_ui as pmui
@@ -283,8 +284,8 @@ class TestDateRange:
     @pytest.mark.parametrize(
         ("bounds", "expected"),
         [
-            ({"default_end": "2024-12-31"}, (dt.date(2024, 12, 31), dt.date(2024, 12, 31))),
-            ({"default_start": "2999-01-01"}, (dt.date(2999, 1, 1), dt.date(2999, 1, 1))),
+            ({"default_end": "2024-12-31"}, (dt.date(2024, 12, 2), dt.date(2024, 12, 31))),
+            ({"default_start": "2999-01-01"}, (dt.date(2999, 1, 1), dt.date(2999, 1, 30))),
             (
                 {"default_start": "2000-01-01"},
                 (TODAY - dt.timedelta(days=29), TODAY),
@@ -300,8 +301,8 @@ class TestDateRange:
         node, _ = _place(editor, "Widgets/DateRange")
         start = _source(editor, "Test/date", "day", TODAY + dt.timedelta(days=10))
         assert editor.connect(start, "day", node, "start") is True
-        low, high = editor.graph.get_state(node).selected
-        assert low == high == TODAY + dt.timedelta(days=10)
+        start = TODAY + dt.timedelta(days=10)
+        assert editor.graph.get_state(node).selected == (start, start + dt.timedelta(days=29))
 
     def test_all_without_bounds_selects_nothing(self, editor):
         node, _ = _place(editor, "Widgets/DateRange", default_period="all")
@@ -417,6 +418,15 @@ class TestImage:
         assert "No image" not in image._pane.object
         editor.editable = True
         assert "No image" in image._pane.object
+        editor.read_only = True
+        assert "No image" not in image._pane.object
+
+    def test_removed_image_releases_its_editor_watcher(self, editor):
+        node, _ = _place(editor, "Widgets/Image")
+        watchers = len(editor.param.watchers.get("editable", {}).get("value", []))
+        editor.remove_component(node)
+        gc.collect()
+        assert len(editor.param.watchers.get("editable", {}).get("value", [])) < watchers
 
 
 CONFIGS = {

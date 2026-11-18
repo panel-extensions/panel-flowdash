@@ -334,6 +334,9 @@ class _NumberWidget(_WidgetComponent):
         return round(value) if self.is_integer else float(value)
 
 
+_SLIDER_MARGIN = (10, 20)
+
+
 class _BoundedSlider(_NumberWidget):
     """A slider over configured bounds, which wired start and end inputs override."""
 
@@ -345,6 +348,12 @@ class _BoundedSlider(_NumberWidget):
     )
 
     _widget_config = ("show_value", "color")
+
+    def _sync_widget(self, *events):
+        super()._sync_widget(*events)
+        # The minimum covers the side margins too, so the slider fits a wrapper
+        # that is min_widget_width wide, e.g. in the controls row.
+        self._widget.min_width = max(0, self.min_widget_width - 2 * _SLIDER_MARGIN[1])
 
     def _bounds(self) -> tuple[float, float]:
         start = self.default_start if self.start is None else self.start
@@ -419,7 +428,7 @@ class Slider(_BoundedSlider):
             end=max(self.default_start, self.default_end),
             value=self.default_value,
             sizing_mode="stretch_width",
-            margin=(10, 20),
+            margin=_SLIDER_MARGIN,
         )
 
     def __init__(self, **params):
@@ -489,7 +498,11 @@ class RangeSlider(_BoundedSlider):
 
     def _build_widget(self):
         return pmui.RangeSlider(
-            start=0, end=100, value=(0, 100), sizing_mode="stretch_width", margin=(10, 20)
+            start=0,
+            end=100,
+            value=(0, 100),
+            sizing_mode="stretch_width",
+            margin=_SLIDER_MARGIN,
         )
 
     def __init__(self, **params):
@@ -858,11 +871,13 @@ class DateRange(_WidgetComponent):
         start, end = self._widget.start, self._widget.end
         if value is not None:
             low, high = (_as_date(v) for v in value)
+            # A period that misses the bounds selects all of them, or, with only
+            # one bound, moves to it and keeps its length.
+            length = high - low
             if start is not None and high < start:
-                # The period lies before the bounds, so select all of them.
-                low, high = start, end if end is not None else start
+                low, high = start, end if end is not None else start + length
             elif end is not None and low > end:
-                low, high = start if start is not None else end, end
+                low, high = start if start is not None else end - length, end
             else:
                 low = low if start is None else max(low, start)
                 high = high if end is None else min(high, end)
@@ -1191,22 +1206,22 @@ class Image(Viewer):
         editor = current_dashboard()
         if editor is None:
             return
-        self._editing = editor.editable
+        modes = ("editable", "preview", "read_only")
         # Weak, so that the editor's watcher does not keep a removed image alive.
         image = weakref.ref(self)
 
-        def follow(event):
-            if (target := image()) is None:
-                editor.param.unwatch(watcher)
-            else:
-                target._editing = event.new
+        def follow(*events):
+            if (target := image()) is not None:
+                target._editing = editor.editable and not (editor.preview or editor.read_only)
 
-        watcher = editor.param.watch(follow, "editable")
+        follow()
+        watcher = editor.param.watch(follow, list(modes))
+        weakref.finalize(self, editor.param.unwatch, watcher)
 
     def _html(self) -> str:
         url = safe_image_url(self.default_url if self.url is None else self.url)
         if url is None:
-            # The placeholder only helps while the dashboard is being edited.
+            # The placeholder only helps someone editing the dashboard.
             empty = '<span class="fd-image-empty">No image</span>' if self._editing else ""
             return f'<div class="fd-image">{empty}</div>'
         return (
