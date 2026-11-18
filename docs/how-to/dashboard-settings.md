@@ -31,7 +31,7 @@ controls above the tiles or in a panel to their left, defaulting to the editor's
 and actions on one line, in a `FlowDashApp`'s top bar, or in a row of their own
 with a large title over the description and the refresh time, defaulting to the
 editor's `header_layout` (see [Serve a Project](serve-project.md#navigation)).
-`node_previews` (on by default) previews each component's current value inside
+`node_previews` (off by default) previews each component's current value inside
 its card on the wiring canvas, such as the first rows of a table or a sparkline
 of a series; without it a card summarizes the value in one line. It defaults to
 the editor's `node_previews`. The button beside the minimap button under the

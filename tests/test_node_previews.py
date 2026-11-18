@@ -3,6 +3,7 @@
 import contextlib
 import html
 import re
+import threading
 from html.parser import HTMLParser
 
 import numpy as np
@@ -214,6 +215,7 @@ DEMO = {
 
 def demo_editor(**params) -> tuple[FlowDash, dict[str, str]]:
     """Place one component of each kind of preview, a failed one and a waiting one."""
+    params.setdefault("node_previews", True)
     editor = FlowDash(DEMO, notifications=False, propagate_failures=FAILURES, **params)
     ids = {
         "turbines": editor.add_component("Demo/turbines", position=(0, 0)),
@@ -469,14 +471,14 @@ class TestHook:
         assert hook_preview(object()) is None
 
     async def test_raising_hook_falls_back_to_the_ports(self, caplog):
-        editor = FlowDash(DEMO, notifications=False)
+        editor = FlowDash(DEMO, notifications=False, node_previews=True)
         raising = editor.add_component("Demo/raising")
         assert card(editor, raising).preview.kind == "value"
         assert "fallback" in card(editor, raising).preview.html
         assert "The preview hook of Raising failed" in caplog.text
 
     async def test_hook_follows_the_component(self):
-        editor = FlowDash(DEMO, notifications=False)
+        editor = FlowDash(DEMO, notifications=False, node_previews=True)
         note = editor.add_component("Demo/note")
         preview = card(editor, note).preview
         assert preview.kind == "value"
@@ -492,7 +494,7 @@ class TestHook:
         assert hook_preview(Component()) is None
 
     async def test_markdown_previews_its_text_without_markup(self):
-        editor = FlowDash({}, notifications=False)
+        editor = FlowDash({}, notifications=False, node_previews=True)
         node = editor.add_component(
             "Text/Markdown",
             config={"text": "# Capacity\n\nGrew **12%** <img src=x onerror=alert(1)>"},
@@ -506,7 +508,7 @@ class TestHook:
         assert "Updated text" in _visible_text(card(editor, node).preview.html)
 
     async def test_notes_preview_their_plain_text(self):
-        editor = FlowDash({}, notifications=False)
+        editor = FlowDash({}, notifications=False, node_previews=True)
         node = editor.add_component(
             "Text/Notes", config={"text": "<p>First <strong>line</strong></p><p>Second</p>"}
         )
@@ -519,12 +521,12 @@ class TestHook:
         assert "Edited" in _visible_text(card(editor, node).preview.html)
 
     async def test_empty_notes_keep_the_compact_card(self):
-        editor = FlowDash({}, notifications=False)
+        editor = FlowDash({}, notifications=False, node_previews=True)
         node = editor.add_component("Text/Notes")
         assert card(editor, node).preview is None
 
     async def test_hook_watchers_are_released(self):
-        editor = FlowDash(DEMO, notifications=False)
+        editor = FlowDash(DEMO, notifications=False, node_previews=True)
         note = editor.add_component("Demo/note")
         instance, note_card = editor._component_instances[note], card(editor, note)
         editor.remove_component(note)
@@ -569,6 +571,14 @@ class TestCards:
         pane = card(editor, ids["filter"]).__panel__()
         assert pane.css_classes == [preview_class(["rows", "minimum"], ["kept"])]
         assert card(editor, ids["waiting"]).__panel__().css_classes == []
+
+    async def test_previews_are_off_by_default(self):
+        editor = FlowDash(DEMO, notifications=False)
+        src = editor.add_component("Demo/turbines")
+        assert not editor.settings.node_previews
+        assert editor._status_bar.preview_toggle.value is False
+        assert card(editor, src).preview is None
+        assert 'class="fd-summary"' in card(editor, src).__panel__().object
 
     async def test_setting_turns_previews_off(self):
         editor, ids = demo_editor()
@@ -635,7 +645,7 @@ class TestCards:
         assert len(calls) == 1
 
     async def test_card_skips_identical_updates(self):
-        editor = FlowDash(DEMO, notifications=False)
+        editor = FlowDash(DEMO, notifications=False, node_previews=True)
         src = editor.add_component("Demo/turbines")
         pane = card(editor, src).__panel__()
         events = []
@@ -656,7 +666,7 @@ class TestCards:
         editor = FlowDash(DEMO, notifications=False)
         widget = editor._settings_view._extra_form._widgets["node_previews"]
         assert widget.label == "Preview values on the canvas"
-        assert DashboardSettings.param.node_previews.default is True
+        assert DashboardSettings.param.node_previews.default is False
 
 
 class TestHandleRules:
@@ -745,6 +755,15 @@ class TestCoalescing:
         coalesce()
         assert len(served.ticks) == 1
 
+    async def test_calls_from_worker_threads_only_schedule_a_tick(self, served):
+        coalesce = Coalescer(lambda: None, lambda: served)
+        workers = [threading.Thread(target=coalesce) for _ in range(4)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+        assert len(served.ticks) == 1 and served.timeouts == []
+
     async def test_cancelled_call_never_runs(self, served):
         seen = []
         coalesce = Coalescer(lambda: seen.append(1), lambda: served)
@@ -770,7 +789,7 @@ class TestCoalescing:
         assert "1 row, 4 columns" in pane.object
 
     async def test_removed_node_is_not_updated_by_a_pending_timer(self, served):
-        editor = FlowDash(DEMO, notifications=False)
+        editor = FlowDash(DEMO, notifications=False, node_previews=True)
         src = editor.add_component("Demo/turbines")
         pane = card(editor, src).__panel__()
         events = []

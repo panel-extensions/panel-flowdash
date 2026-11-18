@@ -57,7 +57,7 @@ class DashboardSettings(param.Parameterized):
     )
 
     node_previews = param.Boolean(
-        default=True,
+        default=False,
         label="Preview values on the canvas",
         doc="""
         Whether each card on the wiring canvas previews its component's

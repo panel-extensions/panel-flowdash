@@ -197,9 +197,10 @@ component setting several outputs at once, are sent output by output.
 
 ### Previewing a component on the canvas
 
-Each card on the wiring canvas previews its component's current value below
-its ports, unless the dashboard's `node_previews` setting is off (see
-[Dashboard Settings](dashboard-settings.md#settings)). It previews the first
+When the dashboard's `node_previews` setting is on (see
+[Dashboard Settings](dashboard-settings.md#settings)), or the previews button
+under the canvas is pressed, each card on the wiring canvas previews its
+component's current value below its ports. It previews the first
 output holding a value, or for a component without outputs the first input
 holding one: a DataFrame as its first rows and columns, numbers as a
 sparkline, a list as chips, a dict as a few `key: value` lines and anything

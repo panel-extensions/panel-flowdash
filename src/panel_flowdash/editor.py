@@ -736,7 +736,7 @@ class FlowDash(Viewer):
     )
 
     node_previews = param.Boolean(
-        default=True,
+        default=False,
         doc="""
         Default of the ``node_previews`` dashboard setting for dashboards that
         do not store one: whether each card on the wiring canvas previews its
