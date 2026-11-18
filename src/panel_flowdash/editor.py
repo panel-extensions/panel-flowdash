@@ -4223,8 +4223,6 @@ class FlowDash(Viewer):
         # new values, and before these are placed, so they see this dashboard's.
         self._apply_settings(model.settings)
         self.dashboard = model
-        # Unlike palette drops (see `_on_component_dropped`) this replaces every
-        # node view at once, so no view already on the canvas can be blanked.
         aliases = self._component_aliases()
         with self._muted_canvas(), self._batched_canvas(), self._dataflow_graph.batch():
             for item in model.items:
@@ -5240,7 +5238,7 @@ class FlowDash(Viewer):
         self._import_dialog.open = True
 
     def _apply_import(self, model: DashboardModel):
-        # Scheduled for the same reason as palette drops (see `_on_component_dropped`).
+        # `_import_from_ui` is a coroutine, so it runs as its own task on the event loop.
         pn.state.execute(partial(self._import_from_ui, model), schedule=True)
 
     async def _import_from_ui(self, model: DashboardModel):
