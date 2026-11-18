@@ -105,6 +105,11 @@ prerelease-mode = "if-necessary-or-explicit"
 channels = ["microsoft"]
 
 [feature.test-ui.dependencies]
+# Panel 1.10 can write an update to a chat message ahead of the patch that adds the
+# message, so the browser drops it ("reference ... isn't known"). 1.11 orders these
+# writes, but needs Python 3.12, so only the UI tests can require it for now.
+# TODO: Move to the pyviz channel once 1.11.0 is released.
+panel = { version = ">=1.11.0b0", channel = "pyviz/label/dev" }
 playwright = "*"
 pytest-playwright = "*"
 pytest-rerunfailures = "*"
@@ -112,6 +117,10 @@ pytest-xdist = "*"
 jupyter_server = "*"
 esbuild = "*"
 packaging = "*"
+
+[feature.test-ui.pypi-dependencies]
+# Keeps panel-agents from pulling in the last stable Panel over the conda one.
+panel = ">=1.11.0b0"
 
 [feature.test-ui.tasks]
 _install-ui = 'playwright install chromium'
