@@ -51,6 +51,13 @@
       show_root_heading: true
       members: true
 
+### Parameters
+
+::: panel_flowdash.parameters
+    options:
+      show_root_heading: true
+      members: true
+
 ### Turns
 
 ::: panel_flowdash.turns

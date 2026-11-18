@@ -70,7 +70,12 @@ def _errors(issues):
 def test_seed_dashboard_round_trips(seed):
     data = json.loads(seed.read_text())
     text = dashboard_to_yaml(data)
-    assert dashboard_from_yaml(text) == {**data, "version": MODEL_VERSION, "turns": []}
+    assert dashboard_from_yaml(text) == {
+        **data,
+        "version": MODEL_VERSION,
+        "turns": [],
+        "parameters": {},
+    }
     assert dashboard_to_yaml(dashboard_from_yaml(text)) == text
 
 
@@ -300,8 +305,8 @@ class TestValidate:
         assert _validate("flowdash: 1\nnodes:\n  a: {component: T/number, colour: red}\n") == [
             "nodes.a: unknown key 'colour'; expected component, config, position."
         ]
-        assert _validate("flowdash: 4\n") == [
-            "flowdash: unsupported format version 4; this release reads 1, 2 and 3. "
+        assert _validate("flowdash: 5\n") == [
+            "flowdash: unsupported format version 5; this release reads 1, 2, 3 and 4. "
             "The file was written by a newer FlowDash."
         ]
         assert _validate("nodes: {}\n")[0].startswith("document:")

@@ -112,7 +112,7 @@ def test_a_version_1_file_reads_without_turns_or_origins():
     assert data["version"] == MODEL_VERSION
     assert data["turns"] == []
     assert all("origin" not in item for item in data["items"])
-    assert yaml.safe_load(dashboard_to_yaml(data))["flowdash"] == 3
+    assert yaml.safe_load(dashboard_to_yaml(data))["flowdash"] == 4
 
 
 @pytest.mark.parametrize(
@@ -136,14 +136,14 @@ def test_version_2_round_trips_turns_and_origins():
     assert [t["id"] for t in data["turns"]] == ["t1", "t2", "t3"]
     assert data["turns"][2] == {"id": "t3", "question": "Then triple it", "status": "pending"}
     assert {i["instance_id"]: i["origin"] for i in data["items"]} == {"base": "t1", "double": "t2"}
-    v3 = V2.replace("flowdash: 2", "flowdash: 3")
-    assert dashboard_to_dict(data) == yaml.safe_load(v3)
-    assert dashboard_to_yaml(data) == v3
+    v4 = V2.replace("flowdash: 2", "flowdash: 4")
+    assert dashboard_to_dict(data) == yaml.safe_load(v4)
+    assert dashboard_to_yaml(data) == v4
 
 
-@pytest.mark.parametrize("version", [0, 4, "2", True])
+@pytest.mark.parametrize("version", [0, 5, "2", True])
 def test_unknown_versions_are_refused(version):
-    with pytest.raises(DashboardYAMLError, match="this release reads 1, 2 and 3") as info:
+    with pytest.raises(DashboardYAMLError, match="this release reads 1, 2, 3 and 4") as info:
         dashboard_from_yaml(V2.replace("flowdash: 2", f"flowdash: {json.dumps(version)}"))
     assert info.value.path == "flowdash"
 
@@ -208,7 +208,7 @@ def test_the_model_migrates_older_versions():
     del data["turns"]
     data["version"] = 3
     loaded = DashboardModel.from_dict(data)
-    assert loaded.version == MODEL_VERSION == 4
+    assert loaded.version == MODEL_VERSION == 5
     assert loaded.turns == []
 
 
