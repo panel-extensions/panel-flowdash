@@ -1,5 +1,8 @@
 """The built-in Markdown, Notes, Heading and Divider components."""
 
+import collections
+import decimal
+import fractions
 import html
 import re
 import typing as t
@@ -104,6 +107,74 @@ class TestTemplate:
         assert format_value(3, ">99999999") == "3"
         assert format_value(3, ">5") == "    3"
 
+    @pytest.mark.parametrize(
+        ("value", "spec", "expected"),
+        [
+            (10**5000, "", "1.000000e+5000"),
+            (-(10**5000), ",.0f", "-1.000000e+5000"),
+            (decimal.Decimal("1e999999"), "f", "1.000000e+999999"),
+            (decimal.Decimal("1e-999999"), "f", "1.000000e-999999"),
+            (decimal.Decimal("1.5"), ".2f", "1.50"),
+            (decimal.Decimal("1e999999"), ".2e", "1.00e+999999"),
+            (fractions.Fraction(10**5000, 3), ".2f", "3.333333e+4999"),
+            (fractions.Fraction(10**500, 3), "", "3.333333e+499"),
+            (fractions.Fraction(1, 10**5000), "", "1.000000e-5000"),
+            (9999999999 * 10**600, "", "1.000000e+610"),
+            ({"a": 10**5000}, "", "a: 1.000000e+5000"),
+            ([[[[10**5000]]]], "", "1 item"),
+            (collections.deque([10**5000]), "", "1.000000e+5000"),
+        ],
+        ids=[
+            "int",
+            "negative-int",
+            "decimal",
+            "small-decimal",
+            "plain-decimal",
+            "decimal-e-spec",
+            "fraction",
+            "fraction-past-float",
+            "small-fraction",
+            "rounded-mantissa",
+            "in-a-dict",
+            "nested",
+            "in-a-deque",
+        ],
+    )
+    def test_huge_numbers_are_shown_in_scientific_notation(self, value, spec, expected):
+        assert format_value(value, spec) == expected
+
+    def test_long_values_are_cut_short(self):
+        assert format_value(list(range(1_000_000))).endswith("48, 49 and 999,950 more")
+        assert format_value([["a", "b"], ["c"]]) == "a, b, c"
+        text = format_value("x" * 5000)
+        assert (len(text), text[-1]) == (1000, "\u2026")
+        assert len(format_value({i: i for i in range(100_000)})) < 1000
+        assert format_value({"a": 1, "b": 2}) == "a: 1, b: 2"
+        for big in (
+            collections.deque(range(1_000_000)),
+            collections.Counter(range(100_000)),
+            collections.OrderedDict((i, i) for i in range(100_000)),
+            {i: i for i in range(100_000)}.values(),
+        ):
+            assert format_value(big).endswith(" more")
+        nested = []
+        nested.append(nested)
+        assert format_value(nested)
+        assert len(fill_template("{{ value }}", [["x" * 5000] * 100] * 100)) == 1000
+        assert len(fill_template("{{ value }}" * 100, "x" * 5000)) == 20_000
+        assert len(render_markdown("{{ value }}" * 100, "x" * 5000)) < 20_100
+
+    def test_a_value_that_cannot_be_shown_gives_its_type(self):
+        class Broken:
+            def __str__(self):
+                raise RuntimeError
+
+            def __format__(self, spec):
+                raise RuntimeError
+
+        assert format_value(Broken()) == "Broken"
+        assert format_value(Broken(), ".2f") == "Broken"
+
 
 class TestRenderMarkdown:
     VALUE: t.ClassVar[dict] = {"secret": "hunter2", "code": "a.b-c *x* <b>"}
@@ -131,11 +202,16 @@ class TestRenderMarkdown:
             "[link](https://evil.test/{{ value.secret }})",
             "<https://evil.test/{{ value.secret }}>",
             "[r]\n\n[r]: https://evil.test/{{ value.secret }}",
+            "```{{ value.secret }}\nx\n```",
         ],
     )
     def test_values_never_reach_a_url(self, template):
         rendered = render_markdown(template, self.VALUE)
         assert "hunter2" not in "".join(re.findall(r"<[^>]+>", rendered))
+
+    def test_a_fence_info_string_keeps_no_placeholder(self):
+        assert render_markdown("```{{ value }}\nx\n```", 1) == "<pre><code>x\n</code></pre>\n"
+        assert 'class="language-py"' in render_markdown("```py {{ value }}\nx\n```", 1)
 
     def test_values_fill_image_alt_text(self):
         rendered = render_markdown("![{{ value.secret }}](https://example.com/a.png)", self.VALUE)
