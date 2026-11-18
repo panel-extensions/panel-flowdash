@@ -47,8 +47,9 @@ The panel on the right arranges the dashboard:
   component from the dataflow.
 - **Not on the dashboard** lists the placed components that have no tile and
   why: *in controls bar* for `sidebar=True` components (*in sidebar* when
-  `controls_bar` is off), and *hidden by you* for tiles you hid, with a
-  **Show** action that puts the tile back.
+  `controls_bar` is off), and *hidden* for tiles you hid and for the tiles of
+  sources and transforms the agent added, with a **Show** action that puts the
+  tile back.
 
 The status bar under the grid summarizes it, e.g. "12-column grid, 4 tiles,
 2 components hidden". Changes made in the panel edit the authored layout (see

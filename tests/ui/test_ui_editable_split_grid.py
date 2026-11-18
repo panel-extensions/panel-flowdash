@@ -184,7 +184,7 @@ def test_hiding_a_tile_in_the_split_hides_it_in_the_main_layout(page):
     _assert_main_layout(editor)
 
     _open_layout(page, editor)
-    expect(page.get_by_text("hidden by you")).to_be_visible()
+    expect(page.get_by_text("hidden", exact=True)).to_be_visible()
     expect(_tile(page, editor, chart_id)).to_be_hidden()
 
 
@@ -204,5 +204,5 @@ def test_tile_options_in_the_split_inspector_edit_the_main_layout(page):
     _assert_main_layout(editor, reference_width=None)
 
     _open_layout(page, editor)
-    expect(page.get_by_text("hidden by you")).to_be_visible()
+    expect(page.get_by_text("hidden", exact=True)).to_be_visible()
     expect(_tile(page, editor, chart_id)).to_be_hidden()

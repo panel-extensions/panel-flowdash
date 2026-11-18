@@ -13,7 +13,7 @@ from panel_flowdash.ui.tile import resolve_framed
 
 GRID_COLUMNS = 12
 
-HIDDEN = "hidden by you"
+HIDDEN = "hidden"
 
 # The frame choice of a tile without a frame option of its own.
 FRAME_DEFAULT = "default"
