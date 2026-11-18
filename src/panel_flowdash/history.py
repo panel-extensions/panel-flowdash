@@ -27,7 +27,7 @@ import time
 import typing as t
 import uuid
 import weakref
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 
 import panel as pn
@@ -108,6 +108,8 @@ class _Pending:
     last: float
 
     labels: list[str]
+    # The labelled edits, which the label counts; unlabelled ones such as arranging the layout are left out.
+    counted: list[dict[str, t.Any]] = field(default_factory=list)
 
     def extend(
         self,
@@ -125,9 +127,11 @@ class _Pending:
         ops = metadata.setdefault("ops", [])
         if len(ops) < MAX_BATCH_OPS:
             ops.append({"op": op, "args": dict(args)})
-        if label and label not in self.labels:
-            self.labels.append(label)
-            metadata.update(describe_edits(ops, self.labels, edits=metadata["edits"]))
+        if label:
+            self.counted.append({"op": op, "args": dict(args)})
+            if label not in self.labels:
+                self.labels.append(label)
+            metadata.update(describe_edits(self.counted, self.labels))
 
 
 @dataclass
@@ -149,6 +153,7 @@ class _Request:
     labels: list[str]
     value: str | None = None
     revision: str | None = None
+    counted: list[dict[str, t.Any]] = field(default_factory=list)
 
 
 def compact(
@@ -622,6 +627,7 @@ class EditHistory:
             tool_call_id=tool_call_id,
             last=now,
             labels=[label] if label else [],
+            counted=[{"op": op, "args": dict(args)}] if label else [],
         )
         self._head = revision
         if window > 0:
@@ -663,8 +669,10 @@ class EditHistory:
                 labels=[],
             )
         request.ops.append({"op": op, "args": dict(args)})
-        if label and label not in request.labels:
-            request.labels.append(label)
+        if label:
+            request.counted.append({"op": op, "args": dict(args)})
+            if label not in request.labels:
+                request.labels.append(label)
         tool_call_id = current_tool_call_id()
         if tool_call_id and tool_call_id not in request.tool_call_ids:
             request.tool_call_ids.append(tool_call_id)
@@ -719,8 +727,8 @@ class EditHistory:
             return
         self.flush()
         value, revision, ops, labels = request.value, request.revision, request.ops, request.labels
-        tool_call_ids = request.tool_call_ids
-        request.ops, request.tool_call_ids, request.labels = [], [], []
+        tool_call_ids, counted = request.tool_call_ids, request.counted
+        request.ops, request.tool_call_ids, request.labels, request.counted = [], [], [], []
         artifact = self.artifact
         applied = artifact.applied_version if artifact is not None else None
         base = _value_revision(applied.value) if applied is not None else None
@@ -733,7 +741,7 @@ class EditHistory:
                 "args": {},
                 "edits": len(ops),
                 "ops": ops[:MAX_BATCH_OPS],
-                **describe_edits(ops, labels),
+                **describe_edits(counted, labels),
                 "turn": request.turn_id,
                 "start": request.start,
                 "tool_call_ids": tool_call_ids,
@@ -1192,13 +1200,14 @@ def _plural(n: int, noun: str) -> str:
 
 
 def describe_edits(
-    ops: t.Sequence[dict[str, t.Any]], labels: t.Sequence[str], *, edits: int | None = None
+    ops: t.Sequence[dict[str, t.Any]], labels: t.Sequence[str]
 ) -> dict[str, str | None]:
     """Return the ``label`` of a version made of several edits, and the ``detail`` listing them.
 
     A few edits are listed in the label, e.g. ``"Added a. Connected a to b."``;
     more are counted, e.g. ``"Added 8 components and 7 connections"``, with
-    every label in the detail.
+    every label in the detail. *ops* are the labelled edits, so bookkeeping
+    such as arranging the layout at the end of a request is not counted.
     """
     if len(labels) <= LISTED_LABELS:
         return {"label": summarize(labels), "detail": None}
@@ -1212,8 +1221,6 @@ def describe_edits(
         args = op.get("args") or {}
         key = args.get("name") or (args.get("source"), args.get("target"))
         counts.setdefault(verb, {}).setdefault(noun, set()).add(str(key))
-    # Edits beyond the ones kept in the version's metadata are counted as other changes.
-    other += max((edits or len(ops)) - len(ops), 0)
     parts = [
         f"{verb if i == 0 else verb.lower()} "
         + " and ".join(_plural(len(keys), noun) for noun, keys in nouns.items())

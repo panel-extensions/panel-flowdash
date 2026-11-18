@@ -432,8 +432,11 @@ def test_a_request_of_many_edits_is_counted_with_the_edits_in_its_detail(editor)
             editor.add_component("T/number", instance_id=name)
         editor.add_component("T/doubler", instance_id="d")
         editor.connect("a1", "value", "d", "value")
+        # Arranging the tiles at the end of a request is bookkeeping, recorded without a label.
+        editor._record_edit(op="arrange_layout")
     state.apply(RunFinished(run_id="run-1"))
     request = editor.edit_history.versions[-1]
+    assert request.metadata["ops"][-1]["op"] == "arrange_layout"
     assert request.metadata["label"] == "Added 4 components and 1 connection"
     assert (
         request.metadata["detail"] == "Added a1. Added a2. Added a3. Added d. Connected a1 to d."
@@ -461,8 +464,21 @@ def test_describe_edits_lists_a_few_and_counts_more():
         "Added 2 components, removed 1 component, configured 1 component and made 1 other change"
     )
     assert describe_edits(ops(("settings", {})) * 4, list("abcd"))["label"] == "Made 4 changes"
-    # Edits beyond the ones a version keeps are counted as other changes.
-    assert describe_edits(edits, labels, edits=8)["label"].endswith("and made 3 other changes")
+
+
+def test_a_burst_of_edits_is_relabelled_on_every_edit(editor):
+    editor.history_coalesce = 60
+    for name in ("a1", "a2", "a3", "a4"):
+        editor.add_component("T/number", instance_id=name)
+    pending = editor.edit_history._pending
+    assert pending.metadata["label"] == "Added 4 components"
+    pending.extend(
+        pending.value, pending.revision, "settings", {}, "Changed the settings", pending.last
+    )
+    pending.extend(
+        pending.value, pending.revision, "settings", {}, "Changed the settings", pending.last
+    )
+    assert pending.metadata["label"] == "Added 4 components and made 2 other changes"
 
 
 def test_a_persons_edit_during_a_request_splits_it_and_loses_nothing():
