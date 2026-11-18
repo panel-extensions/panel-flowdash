@@ -51,3 +51,42 @@ def test_notes_are_typed_into_the_tile_and_saved(page):
 
     editor.editable = False
     expect(notes).to_have_attribute("contenteditable", "false")
+
+
+def test_notes_the_editor_rewrites_on_render_stay_saved_as_they_are(page):
+    stored = "<p>Line one</p>\n<p>Hello   world</p><p></p><h1>T</h1>x"
+    editor = FlowDash({}, notifications=False)
+    node = editor.add_component("Text/Notes", config={"text": stored})
+    editor.load_model(editor.to_model(title="Notes"))
+    editor.mode = "dashboard"
+    assert not editor.dirty
+    serve_component(page, editor)
+
+    notes = page.locator(".ql-editor")
+    expect(notes).to_have_attribute("contenteditable", "true")
+    notes_widget = editor._component_instances[node]._editor
+    shown = "<p>Line one</p><p>Hello world</p><p></p><h1>T</h1><p>x</p>"
+    wait_until(lambda: notes_widget.value == shown, page)
+    page.wait_for_timeout(300)
+    assert editor.graph.get_config_state(node).text == stored
+    assert not editor.dirty
+
+    notes.get_by_text("x", exact=True).click()
+    page.keyboard.press("End")
+    page.keyboard.type("yz")
+    edited = shown.replace("x</p>", "xyz</p>")
+    wait_until(lambda: editor.graph.get_config_state(node).text == edited, page)
+    assert editor.dirty
+
+
+def test_notes_are_not_editable_in_preview(page):
+    editor = FlowDash({}, notifications=False)
+    node = editor.add_component("Text/Notes", config={"text": "<p>First</p>"})
+    editor.mode = "dashboard"
+    editor.preview = True
+    serve_component(page, editor)
+
+    expect(page.locator(".ql-editor")).to_have_attribute("contenteditable", "false")
+    editor.preview = False
+    expect(page.locator(".ql-editor")).to_have_attribute("contenteditable", "true")
+    assert editor.graph.get_config_state(node).text == "<p>First</p>"

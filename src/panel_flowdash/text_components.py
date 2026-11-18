@@ -438,7 +438,7 @@ class _NotesSanitizer(HTMLParser):
     def handle_endtag(self, tag):
         if tag in _HIDDEN:
             self._hidden = max(0, self._hidden - 1)
-        elif tag in self._open:
+        elif not self._hidden and tag in self._open:
             while self._open:
                 closed = self._open.pop()
                 self.parts.append(f"</{closed}>")
@@ -461,6 +461,116 @@ def sanitize_notes(markup: str) -> str:
     sanitizer.feed(markup or "")
     sanitizer.close()
     return "".join(sanitizer.parts)
+
+
+_NOTES_LINES = frozenset({"p", "h1", "h2", "h3", "li", "blockquote"})
+_NOTES_INLINE = frozenset({"strong", "em", "u", "s", "code"})
+_WHITESPACE = re.compile(r"[ \t\n\r\f]+")
+
+
+class _NotesLines(HTMLParser):
+    """Split sanitized notes into the lines the editor shows, with their formats.
+
+    Quill rewrites the HTML it is given into its own form: it joins blocks
+    without whitespace, collapses spaces, splits a paragraph at each line break,
+    drops trailing empty paragraphs and wraps loose text in a paragraph. Two
+    markups that give the same lines show the same notes.
+    """
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.lines: list[tuple] = []
+        self._blocks: list[tuple[str, tuple]] = []
+        self._inline: list[tuple] = []
+        self._runs: list[tuple] = []
+        self._started = False
+        self._break = False
+
+    def _kind(self) -> tuple:
+        depth, kind, classes = 0, "p", []
+        for tag, attrs in self._blocks:
+            if tag in ("ol", "ul"):
+                depth += 1
+                kind = ("li", "bullet" if tag == "ul" else "ordered", depth)
+            elif tag == "li":
+                listed = dict(attrs).get("data-list")
+                if depth and listed:
+                    kind = ("li", listed, depth)
+            elif kind == "p" and tag in _NOTES_LINES:
+                kind = tag
+            classes += [value for name, value in attrs if name == "class"]
+        return (kind, tuple(sorted(" ".join(classes).split())))
+
+    def _flush(self, explicit: bool = False):
+        runs: list[list] = []
+        for formats, text in self._runs:
+            text = _WHITESPACE.sub(" ", text)
+            if runs and runs[-1][0] == formats:
+                runs[-1][1] += text
+            else:
+                runs.append([formats, text])
+        text = "".join(text for _, text in runs)
+        if text.strip(" ") or explicit or self._started:
+            merged, previous = [], " "
+            for formats, chunk in runs:
+                if previous.endswith(" "):
+                    chunk = chunk.lstrip(" ")
+                if chunk:
+                    merged.append((formats, chunk))
+                    previous = chunk
+            if merged:
+                formats, chunk = merged[-1]
+                merged[-1] = (formats, chunk.rstrip(" "))
+                if not merged[-1][1]:
+                    merged.pop()
+            self.lines.append((self._kind(), tuple(merged)))
+        self._runs, self._started, self._break = [], False, False
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "br":
+            if self._break:
+                self._flush(explicit=True)
+            self._break = True
+            self._started = True
+        elif tag in _NOTES_INLINE or tag == "a":
+            self._inline.append((tag, dict(attrs).get("href")))
+        else:
+            if self._runs or self._break:
+                self._flush()
+            self._blocks.append((tag, tuple(attrs)))
+            self._started = tag in _NOTES_LINES
+
+    def handle_endtag(self, tag):
+        if tag in _NOTES_INLINE or tag == "a":
+            for index in range(len(self._inline) - 1, -1, -1):
+                if self._inline[index][0] == tag:
+                    del self._inline[index]
+                    break
+        elif self._blocks and self._blocks[-1][0] == tag:
+            if self._runs or self._started:
+                self._flush(explicit=True)
+            self._blocks.pop()
+
+    def handle_data(self, data):
+        if self._break:
+            self._flush(explicit=True)
+            self._started = True
+        self._runs.append((frozenset(self._inline), data))
+
+    def close(self):
+        super().close()
+        if self._runs or self._started:
+            self._flush()
+        while self.lines and not self.lines[-1][1]:
+            self.lines.pop()
+
+
+def notes_lines(markup: str) -> list[tuple]:
+    """Return the lines *markup* shows in the Notes editor, to compare notes regardless of form."""
+    parser = _NotesLines()
+    parser.feed(sanitize_notes(markup))
+    parser.close()
+    return parser.lines
 
 
 _NOTES_CSS = """
@@ -582,16 +692,21 @@ class Notes(Viewer):
         # Weak, so notes kept by the app do not keep a discarded editor alive.
         self._dashboard = None if dashboard is None else weakref.ref(dashboard)
         if dashboard is not None:
-            dashboard.param.watch(self._sync_editable, ["editable", "read_only"])
+            dashboard.param.watch(self._sync_editable, ["editable", "preview", "read_only"])
         self._sync_editable()
 
     @property
     def editing(self) -> bool:
-        """Whether the notes can be edited, as they can while the dashboard is."""
+        """Whether the notes can be edited, as they can while the dashboard is and is not previewed."""
         if self._dashboard is None:
             return True
         dashboard = self._dashboard()
-        return dashboard is not None and dashboard.editable and not dashboard.read_only
+        return (
+            dashboard is not None
+            and dashboard.editable
+            and not dashboard.read_only
+            and not dashboard.preview
+        )
 
     def _sync_editable(self, *events):
         editing = self.editing
@@ -602,7 +717,8 @@ class Notes(Viewer):
         )
 
     def _edited(self, event):
-        if self.editing:
+        # The editor sends back its own form of the notes it is shown, which is no edit.
+        if self.editing and notes_lines(event.new) != notes_lines(self.text):
             # The editor keeps showing what was typed; only what is saved is sanitized.
             self._typing = True
             try:
