@@ -34,8 +34,9 @@ editor's `header_layout` (see [Serve a Project](serve-project.md#navigation)).
 `node_previews` (on by default) previews each component's current value inside
 its card on the wiring canvas, such as the first rows of a table or a sparkline
 of a series; without it a card summarizes the value in one line. It defaults to
-the editor's `node_previews`, and the status bar under the canvas has a button
-that toggles it (see
+the editor's `node_previews`. The button beside the minimap button under the
+canvas shows or hides the previews for the current session only, starting from
+the setting, so it never marks the dashboard as changed (see
 [Previewing a component on the canvas](register-components.md#previewing-a-component-on-the-canvas)).
 
 ```python

@@ -282,8 +282,10 @@ class NodeCard(Viewer):
             sizing_mode="fixed",
             stylesheets=[_CARD_CSS],
         )
-        self._coalescer = Coalescer(self._render)
-        self.param.watch(self.refresh, list(self.param))
+        self._coalescer = Coalescer(self._render, self._document)
+        self.param.watch(self.refresh, [p for p in self.param if p != "show_preview"])
+        # Turning previews on or off is one change for the whole canvas, sent at once.
+        self.param.watch(lambda _event: self._render(), "show_preview")
         self._render()
 
     @property
@@ -306,6 +308,18 @@ class NodeCard(Viewer):
     def refresh(self, *_events):
         """Rebuild the card, e.g. once the value it previews changed."""
         self._coalescer()
+
+    def release(self):
+        """Stop updating the card, e.g. once its component has been removed."""
+        self._coalescer.cancel()
+
+    def _document(self):
+        """Return the served document showing the card, if any."""
+        for model, _ in self._pane._models.values():
+            doc = model.document
+            if doc is not None and doc.session_context is not None:
+                return doc
+        return None
 
     def _ports_html(self, ports: list[dict], tops: list[float], side: str, full: bool) -> str:
         width = "calc(100% - 24px)" if full else "calc(50% - 16px)"
@@ -332,7 +346,7 @@ class NodeCard(Viewer):
         try:
             return self.preview_source()
         except Exception:
-            logger.exception("Previewing %s failed", self.title)
+            logger.debug("Previewing %s failed", self.title, exc_info=True)
             return None
 
     def _render(self):
@@ -495,9 +509,13 @@ def node_card(
         watcher = failures.param.watch(update, "failed")
         wiring.append(partial(failures.param.unwatch, watcher))
     if instance is not None and callable(getattr(instance, PREVIEW_HOOK, None)):
-        own = [name for name in instance.param if name != "name"]
-        watcher = instance.param.watch(card.refresh, own)
-        wiring.append(partial(instance.param.unwatch, watcher))
+        # The ports are followed through the node state already.
+        ports = {p.name for p in (*spec.inputs, *spec.outputs)}
+        own = [name for name in instance.param if name != "name" and name not in ports]
+        if own:
+            watcher = instance.param.watch(card.refresh, own)
+            wiring.append(partial(instance.param.unwatch, watcher))
+    wiring.append(card.release)
     update()
     return card
 

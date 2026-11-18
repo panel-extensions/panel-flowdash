@@ -13,10 +13,13 @@ see :func:`hook_preview`.
 
 from __future__ import annotations
 
+import datetime as dt
+import heapq
 import html
 import logging
 import math
 import numbers
+import reprlib
 import typing as t
 import weakref
 from dataclasses import dataclass
@@ -41,6 +44,15 @@ MAX_TEXT_CHARS = 240
 MAX_POINTS = 48
 # Below this many numbers a sparkline says less than the numbers themselves.
 MIN_POINTS = 3
+# A hook's text up to this long, on one line, gets a one-line preview.
+MAX_LINE_CHARS = 48
+
+# Builds the text of a container item by item, so a large one is never written out whole.
+_REPR = reprlib.Repr()
+_REPR.maxstring = MAX_TEXT_CHARS
+_REPR.maxother = MAX_TEXT_CHARS
+_REPR.maxlist = _REPR.maxtuple = _REPR.maxset = _REPR.maxfrozenset = _REPR.maxdict = 8
+_REPR.maxlevel = 2
 
 _PAD = 5
 _CAPTION = 16
@@ -178,6 +190,41 @@ def _number(value: t.Any) -> bool:
     return isinstance(value, numbers.Real) and not isinstance(value, bool)
 
 
+def _float(value: t.Any) -> float:
+    """Return *value* as a float, or NaN for a missing value such as ``pd.NA`` or an overflow."""
+    try:
+        return float(value)
+    except (TypeError, ValueError, OverflowError):
+        return math.nan
+
+
+def _text(value: t.Any, limit: int) -> str:
+    """Return a short text for any value without writing out a large one in full."""
+    if isinstance(value, str):
+        return _clip(value, limit)
+    shape = getattr(value, "shape", None)
+    if isinstance(shape, tuple) and len(shape) > 1:
+        return f"{type(value).__name__} of shape {' x '.join(map(str, shape))}"
+    if isinstance(value, (list, tuple, set, frozenset, dict)):
+        return _clip(_REPR.repr(value), limit)
+    return _clip(str(value), limit)
+
+
+def _format_time(value: t.Any) -> str | None:
+    if type(value).__name__ == "datetime64":
+        value = value.astype("datetime64[us]").item()
+    if isinstance(value, dt.datetime):
+        try:
+            if value.time() == dt.time(0) and value.tzinfo is None:
+                return value.strftime("%Y-%m-%d")
+            return value.strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            return str(value)
+    if isinstance(value, dt.date):
+        return value.isoformat()
+    return None
+
+
 def format_value(value: t.Any, limit: int = MAX_CELL_CHARS) -> str:
     """Format one value for a cell or a line, e.g. ``1,234`` or ``0.1235``."""
     if isinstance(value, bool) or value is None:
@@ -186,13 +233,13 @@ def format_value(value: t.Any, limit: int = MAX_CELL_CHARS) -> str:
         # Below 10,000 an integer is as often a year or an id as a quantity.
         return f"{int(value):,}" if abs(int(value)) >= 10_000 else str(int(value))
     if isinstance(value, numbers.Real):
-        value = float(value)
+        value = _float(value)
         if math.isnan(value):
             return "NaN"
         return f"{value:,.4g}" if abs(value) < 1e15 else f"{value:.3g}"
-    if isinstance(value, str):
-        return _clip(value, limit)
-    return _clip(str(value), limit)
+    if (time := _format_time(value)) is not None:
+        return time
+    return _text(value, limit)
 
 
 def _caption(left: str, right: str = "") -> str:
@@ -223,8 +270,13 @@ def value_preview(label: str, text: str) -> Preview:
 
 
 def text_preview(text: str) -> Preview:
-    """Preview a snippet of plain text, up to three lines; markup is shown as typed."""
+    """Preview a snippet of plain text, up to three lines; markup is shown as typed.
+
+    A short single line gets the one-line box of a single value.
+    """
     text = _clip(str(text).strip(), MAX_TEXT_CHARS)
+    if "\n" not in text and len(text) <= MAX_LINE_CHARS:
+        return value_preview("", text)
     return Preview(
         "text",
         f'<div class="fd-preview fd-preview-text" style="height: {HEIGHTS["text"]}px">'
@@ -283,7 +335,7 @@ def _sample(values: t.Sequence, limit: int) -> list:
 
 def sparkline_svg(numbers_: t.Sequence[float]) -> str:
     """Draw *numbers_* as a polyline in a 100 by 24 box, skipping non-finite values."""
-    points = [(i, float(v)) for i, v in enumerate(numbers_) if math.isfinite(float(v))]
+    points = [(i, v) for i, v in enumerate(map(_float, numbers_)) if math.isfinite(v)]
     if not points:
         return ""
     low = min(v for _, v in points)
@@ -304,7 +356,7 @@ def sparkline_svg(numbers_: t.Sequence[float]) -> str:
 def series_preview(values: t.Sequence, caption: str) -> Preview | None:
     """Preview numbers as a sparkline, with their count and range; None if too few."""
     sample = _sample(values, MAX_POINTS)
-    finite = [float(v) for v in sample if math.isfinite(float(v))]
+    finite = [v for v in map(_float, sample) if math.isfinite(v)]
     if len(finite) < MIN_POINTS:
         return None
     span = f"{format_value(min(finite))} to {format_value(max(finite))}"
@@ -382,7 +434,7 @@ def summarize_value(value: t.Any, limit: int = 60) -> str:
     if isinstance(value, (list, tuple, set, frozenset)):
         if len(value) > 3:
             return _plural(len(value), "item")
-        text = ", ".join(map(str, value))
+        text = ", ".join(_text(item, limit) for item in value)
         if len(text) > limit:
             return _plural(len(value), "item")
         return text or "Empty"
@@ -391,7 +443,7 @@ def summarize_value(value: t.Any, limit: int = 60) -> str:
     described = describe_object(value)
     if described is not None:
         return described
-    return _clip(str(value), limit)
+    return _text(value, limit)
 
 
 def _count(items: t.Sized) -> str:
@@ -439,7 +491,7 @@ def build_preview(value: t.Any, label: str = "", showing: bool = False) -> Previ
     if isinstance(value, (set, frozenset)):
         if not value:
             return value_preview(label, "Empty")
-        return chips_preview(sorted(value, key=str)[:MAX_CHIPS], caption(_count(value)))
+        return chips_preview(heapq.nsmallest(MAX_CHIPS, value, key=str), caption(_count(value)))
     if isinstance(value, t.Mapping):
         if not value:
             return value_preview(label, "Empty")
@@ -447,9 +499,7 @@ def build_preview(value: t.Any, label: str = "", showing: bool = False) -> Previ
     described = describe_object(value)
     if described is not None:
         return value_preview("", described)
-    if isinstance(value, numbers.Number) or hasattr(value, "isoformat"):
-        return value_preview(label, format_value(value, MAX_TEXT_CHARS))
-    return value_preview(label, _clip(str(value), MAX_TEXT_CHARS))
+    return value_preview(label, format_value(value, MAX_TEXT_CHARS))
 
 
 def _numpy_sample(value: t.Any, limit: int = MAX_POINTS) -> list:
@@ -487,9 +537,15 @@ def hook_preview(instance: t.Any, label: str = "") -> Preview | None:
     return build_preview(value, label)
 
 
-def _session_doc():
-    doc = pn.state.curdoc
-    return doc if doc is not None and doc.session_context is not None else None
+def _arm(ref: weakref.ref[Coalescer], doc):
+    # Runs on the event loop, where timeouts may be added.
+    if (coalescer := ref()) is None or coalescer._cancelled:
+        return
+    try:
+        doc.add_timeout_callback(partial(_fire, ref, doc), coalescer.delay * 1000)
+    except Exception:
+        # The session is being torn down, so there is nothing left to update.
+        coalescer._pending = False
 
 
 def _fire(ref: weakref.ref[Coalescer], doc):
@@ -497,6 +553,8 @@ def _fire(ref: weakref.ref[Coalescer], doc):
     if (coalescer := ref()) is None:
         return
     coalescer._pending = False
+    if coalescer._cancelled:
+        return
     with set_curdoc(doc):
         pn.state.execute(coalescer._callback, schedule=True)
 
@@ -504,19 +562,30 @@ def _fire(ref: weakref.ref[Coalescer], doc):
 class Coalescer:
     """Call *callback* once for each burst of calls, *delay* seconds after the first.
 
-    Outside a served session the callback runs straight away. In a session the
-    calls of a burst, e.g. a slider being dragged, collapse into one call on the
-    event loop, which then sees the latest values.
+    *document* returns the served document the callback updates, or None
+    when there is none, in which case the callback runs straight away. In a
+    session the calls of a burst, e.g. a slider being dragged, collapse into
+    one call on the event loop, which then sees the latest values. Calls may
+    come from any thread: the timer is set from the event loop.
     """
 
-    def __init__(self, callback: t.Callable[[], None], delay: float = 0.15):
+    def __init__(
+        self,
+        callback: t.Callable[[], None],
+        document: t.Callable[[], t.Any],
+        delay: float = 0.15,
+    ):
         self._callback = callback
+        self._document = document
         self.delay = delay
         self._pending = False
+        self._cancelled = False
 
     def __call__(self):
         """Run the callback now, or schedule it once if a session is being served."""
-        doc = _session_doc()
+        if self._cancelled:
+            return
+        doc = self._document()
         if doc is None:
             self._callback()
             return
@@ -524,7 +593,10 @@ class Coalescer:
             return
         self._pending = True
         try:
-            doc.add_timeout_callback(partial(_fire, weakref.ref(self), doc), self.delay * 1000)
+            doc.add_next_tick_callback(partial(_arm, weakref.ref(self), doc))
         except Exception:
-            # The session is being torn down, so there is nothing left to update.
             self._pending = False
+
+    def cancel(self):
+        """Drop a pending call and ignore every later one."""
+        self._cancelled = True

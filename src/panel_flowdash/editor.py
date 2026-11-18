@@ -1968,10 +1968,14 @@ class FlowDash(Viewer):
 
     @param.depends("settings.node_previews", watch=True)
     def _sync_node_previews(self):
+        self._show_node_previews(self.settings.node_previews)
+
+    def _show_node_previews(self, shown: bool):
+        """Show or hide the previews on the canvas for this session, without changing the setting."""
+        self._node_previews_shown = shown
         flow = getattr(self, "_flow", None)
         if flow is None:
             return
-        shown = self.settings.node_previews
         with pn.io.hold():
             for node in flow.nodes:
                 if isinstance(card := node.get("view"), NodeCard):
@@ -3062,7 +3066,7 @@ class FlowDash(Viewer):
             failures,
             self._component_wiring.setdefault(instance_id, []),
             instance=self._component_instances.get(instance_id),
-            show_preview=self.settings.node_previews,
+            show_preview=getattr(self, "_node_previews_shown", self.settings.node_previews),
         )
         self._add_canvas_node(node_dict)
 

@@ -220,7 +220,11 @@ class StatusBar(Viewer):
             margin=(0, 0, 0, 4),
             styles={"flex": "none"},
         )
-        self.preview_toggle.link(settings, value="node_previews", bidirectional=True)
+        # Like the minimap, a view of this session only, which starts from the dashboard's setting.
+        self.preview_toggle.param.watch(
+            lambda event: self.editor._show_node_previews(event.new), "value"
+        )
+        settings.param.watch(self._follow_preview_setting, "node_previews")
         self._bar = pn.FlexBox(
             self.grid_label,
             self.issues_button,
@@ -254,6 +258,9 @@ class StatusBar(Viewer):
     def _on_tile_layout(self, _event):
         if self.editor.mode == "dashboard":
             self.sync()
+
+    def _follow_preview_setting(self, event):
+        self.preview_toggle.value = event.new
 
     def _follow_theme(self, event):
         self.editor._flow.color_mode = "dark" if event.new else "light"

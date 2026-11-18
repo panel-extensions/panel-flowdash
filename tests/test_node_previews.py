@@ -362,6 +362,43 @@ class TestBuilders:
     async def test_no_value_has_no_preview(self):
         assert build_preview(None, "x") is None
 
+    @pytest.mark.parametrize("dtype", ["Int64", "Float64", "int64[pyarrow]"])
+    async def test_nullable_values_are_gaps(self, dtype):
+        if "pyarrow" in dtype:
+            pytest.importorskip("pyarrow")
+        series = pd.Series([1, None, 3, 4, None], dtype=dtype)
+        preview = build_preview(series, "v")
+        assert preview.kind == "series"
+        assert "1 to 4" in preview.html
+        table = build_preview(pd.DataFrame({"a": series}), "rows")
+        assert "&lt;NA&gt;" in table.html
+
+    async def test_huge_numbers_do_not_overflow(self):
+        preview = build_preview([1, 10**400, 3, 4], "v")
+        assert preview.kind == "series"
+        assert sparkline_svg([10**400, 1, 2]).count(",") == 2
+
+    async def test_sets_show_a_few_items_without_sorting_them_all(self):
+        preview = build_preview(set(range(10_000)), "ids")
+        assert preview.kind == "chips"
+        assert preview.html.count('class="fd-pv-chip"') == MAX_CHIPS
+        assert "10,000 items" in preview.html
+
+    async def test_large_objects_are_not_written_out(self):
+        nested = {"rows": list(range(100_000)), "matrix": np.zeros((500, 500))}
+        markup = build_preview(nested, "v").html
+        assert len(markup) < 2000
+        assert "ndarray of shape 500 x 500" in markup
+        assert len(build_preview(np.zeros((500, 500)), "v").html) < 1000
+
+    async def test_midnight_timestamps_are_dates(self):
+        days = pd.Series(pd.date_range("2024-01-01", periods=3))
+        assert ">2024-01-01<" in build_preview(days, "days").html
+        assert ">2024-01-01<" in build_preview(pd.Timestamp("2024-01-01"), "day").html
+        assert ">2024-01-01 12:30<" in build_preview(pd.Timestamp("2024-01-01 12:30"), "t").html
+        frame = pd.DataFrame({"day": pd.date_range("2024-01-01", periods=2)})
+        assert ">2024-01-02<" in build_preview(frame, "rows").html
+
     @pytest.mark.parametrize("name", sorted(PAYLOADS))
     async def test_untrusted_text_is_escaped_everywhere(self, name):
         payload = PAYLOADS[name]
@@ -371,10 +408,22 @@ class TestBuilders:
             {payload: payload},
             pd.DataFrame({payload: [payload]}),
             pd.Series([payload]),
+            {payload, "other"},
+            {"nested": {payload: [payload]}, payload: (payload, 1)},
+            pd.DataFrame(
+                [[payload, 1]], columns=pd.MultiIndex.from_tuples([(payload, "a"), ("b", payload)])
+            ),
         ]
         for value in values:
             preview = build_preview(value, payload)
             _assert_escaped(preview.html)
+
+    async def test_untrusted_chart_dimensions_are_escaped(self):
+        hv = pytest.importorskip("holoviews")
+        curve = hv.Curve([(0, 1)], hv.Dimension(PAYLOAD), hv.Dimension(PAYLOAD + "y"))
+        markup = build_preview(curve, PAYLOAD).html
+        _assert_escaped(markup)
+        assert PAYLOAD in _visible_text(markup)
 
     async def test_untrusted_text_is_shown_as_typed(self):
         for value in (PAYLOAD, [PAYLOAD], {"k": PAYLOAD}, pd.DataFrame({"c": [PAYLOAD]})):
@@ -393,6 +442,16 @@ class TestHook:
         assert preview.kind == "text"
         _assert_escaped(preview.html)
         assert PAYLOAD in _visible_text(preview.html)
+
+    async def test_short_line_gets_a_one_line_box(self):
+        class Component:
+            def __flowdash_preview__(self):
+                return "A short <b>note</b>"
+
+        preview = hook_preview(Component())
+        assert (preview.kind, preview.height) == ("value", 22)
+        _assert_escaped(preview.html)
+        assert "A short <b>note</b>" in _visible_text(preview.html)
 
     async def test_other_values_are_previewed_like_outputs(self):
         class Component:
@@ -420,7 +479,7 @@ class TestHook:
         editor = FlowDash(DEMO, notifications=False)
         note = editor.add_component("Demo/note")
         preview = card(editor, note).preview
-        assert preview.kind == "text"
+        assert preview.kind == "value"
         assert "Capacity *grew* 12% &lt;b&gt;this&lt;/b&gt; year." in preview.html
         editor._component_instances[note].text = "Updated"
         assert "Updated" in card(editor, note).__panel__().object
@@ -488,7 +547,7 @@ class TestCards:
             "waiting": None,
             "zero": "value",
             "inverse": None if FAILURES else "value",
-            "note": "text",
+            "note": "value",
         }
         assert card(editor, ids["inverse"]).status == ("failed" if FAILURES else "ok")
         assert card(editor, ids["waiting"]).status == "waiting"
@@ -511,7 +570,7 @@ class TestCards:
         assert pane.css_classes == [preview_class(["rows", "minimum"], ["kept"])]
         assert card(editor, ids["waiting"]).__panel__().css_classes == []
 
-    async def test_toggle_follows_the_dashboard_setting(self):
+    async def test_setting_turns_previews_off(self):
         editor, ids = demo_editor()
         filtered = card(editor, ids["filter"])
         assert editor.settings.node_previews and filtered.show_preview
@@ -522,8 +581,33 @@ class TestCards:
         assert 'class="fd-summary"' in filtered.__panel__().object
         assert editor._status_bar.preview_toggle.value is False
         assert editor.dirty
-        editor._status_bar.preview_toggle.value = True
-        assert editor.settings.node_previews and filtered.preview.kind == "table"
+
+    async def test_canvas_toggle_is_session_state(self):
+        editor, ids = demo_editor()
+        editor.dirty = False
+        toggle = editor._status_bar.preview_toggle
+        toggle.value = False
+        assert not card(editor, ids["filter"]).show_preview
+        assert editor.settings.node_previews and not editor.dirty
+        placed = editor.add_component("Demo/turbines")
+        assert not card(editor, placed).show_preview
+        toggle.value = True
+        assert card(editor, ids["filter"]).preview.kind == "table"
+        assert card(editor, placed).show_preview
+
+    async def test_canvas_toggle_leaves_a_read_only_dashboard_unchanged(self):
+        editor, ids = demo_editor(read_only=True)
+        editor.dirty = False
+        editor._status_bar.preview_toggle.value = False
+        assert not card(editor, ids["filter"]).show_preview
+        assert not editor.dirty
+
+    async def test_toggling_renders_every_card_at_once(self, monkeypatch):
+        editor, ids = demo_editor()
+        doc = _FakeDoc()
+        monkeypatch.setattr(NodeCard, "_document", lambda self: doc)
+        editor._status_bar.preview_toggle.value = False
+        assert doc.ticks == [] and card(editor, ids["filter"]).preview is None
 
     async def test_editor_default_and_saved_setting(self):
         editor, ids = demo_editor(node_previews=False)
@@ -607,52 +691,92 @@ class TestHandleRules:
 
 
 class _FakeDoc:
+    """Collects the callbacks a served document would run on its event loop."""
+
     def __init__(self):
         self.session_context = object()
+        self.ticks = []
         self.timeouts = []
+
+    def add_next_tick_callback(self, callback):
+        self.ticks.append(callback)
 
     def add_timeout_callback(self, callback, timeout):
         self.timeouts.append((callback, timeout))
+
+    def run(self):
+        while self.ticks or self.timeouts:
+            while self.ticks:
+                self.ticks.pop(0)()
+            if self.timeouts:
+                self.timeouts.pop(0)[0]()
+
+
+@pytest.fixture
+def served(monkeypatch):
+    """Run scheduled callbacks only when the test says so, as the event loop would."""
+    monkeypatch.setattr(node_preview, "set_curdoc", lambda doc: contextlib.nullcontext())
+    monkeypatch.setattr(pn.state, "execute", lambda callback, schedule=None: callback())
+    doc = _FakeDoc()
+    monkeypatch.setattr(NodeCard, "_document", lambda self: doc)
+    return doc
 
 
 class TestCoalescing:
     async def test_runs_straight_away_without_a_session(self):
         calls = []
-        coalesce = Coalescer(lambda: calls.append(1))
+        coalesce = Coalescer(lambda: calls.append(1), lambda: None)
         coalesce()
         coalesce()
         assert calls == [1, 1]
 
-    async def test_burst_in_a_session_runs_once_with_the_latest_value(self, monkeypatch):
-        doc = _FakeDoc()
-        monkeypatch.setattr(node_preview, "_session_doc", lambda: doc)
-        monkeypatch.setattr(node_preview, "set_curdoc", lambda doc: contextlib.nullcontext())
-        monkeypatch.setattr(pn.state, "execute", lambda callback, schedule=None: callback())
+    async def test_burst_in_a_session_runs_once_with_the_latest_value(self, served):
         seen, state = [], {"value": 0}
-        coalesce = Coalescer(lambda: seen.append(state["value"]), delay=0.15)
+        coalesce = Coalescer(lambda: seen.append(state["value"]), lambda: served, delay=0.15)
         for value in range(50):
             state["value"] = value
             coalesce()
-        assert len(doc.timeouts) == 1 and doc.timeouts[0][1] == 150
-        doc.timeouts.pop()[0]()
+        # The timer is set from the event loop, whatever thread the calls came from.
+        assert len(served.ticks) == 1 and served.timeouts == []
+        served.ticks.pop()()
+        assert len(served.timeouts) == 1 and served.timeouts[0][1] == 150
+        served.timeouts.pop()[0]()
         assert seen == [49]
         coalesce()
-        assert len(doc.timeouts) == 1
+        assert len(served.ticks) == 1
 
-    async def test_slider_drag_sends_one_card_update(self, monkeypatch):
+    async def test_cancelled_call_never_runs(self, served):
+        seen = []
+        coalesce = Coalescer(lambda: seen.append(1), lambda: served)
+        coalesce()
+        served.ticks.pop()()
+        coalesce.cancel()
+        served.run()
+        coalesce()
+        served.run()
+        assert seen == []
+
+    async def test_slider_drag_sends_one_card_update(self, served):
         editor, ids = demo_editor()
         pane = card(editor, ids["filter"]).__panel__()
         events = []
         pane.param.watch(events.append, "object")
-        doc = _FakeDoc()
-        monkeypatch.setattr(node_preview, "_session_doc", lambda: doc)
-        monkeypatch.setattr(node_preview, "set_curdoc", lambda doc: contextlib.nullcontext())
-        monkeypatch.setattr(pn.state, "execute", lambda callback, schedule=None: callback())
         slider = editor._component_instances[ids["slider"]]
         for value in np.linspace(0, 3, 40):
             slider.value = float(value)
         assert events == []
-        while doc.timeouts:
-            doc.timeouts.pop()[0]()
+        served.run()
         assert len(events) == 1
         assert "1 row, 4 columns" in pane.object
+
+    async def test_removed_node_is_not_updated_by_a_pending_timer(self, served):
+        editor = FlowDash(DEMO, notifications=False)
+        src = editor.add_component("Demo/turbines")
+        pane = card(editor, src).__panel__()
+        events = []
+        pane.param.watch(events.append, "object")
+        editor._component_instances[src].size = 2
+        assert served.ticks
+        editor.remove_component(src)
+        served.run()
+        assert events == []
