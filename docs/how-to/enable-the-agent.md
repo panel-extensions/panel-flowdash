@@ -90,8 +90,7 @@ instructions is sent with each request. `create_agent` takes three options for t
   how to work on a dashboard, which name every dashboard tool. The agent still gets
   the rules about saving, refusals and untrusted text after your own `instructions`,
   and, when it is offered `replace_dashboard`, the rule to keep the `# revision:`
-  line of the YAML `get_dashboard` returns, without which its replacements are
-  refused as outdated.
+  line of the YAML `get_dashboard` returns, which `replace_dashboard` needs.
 - `catalogue`: `"full"` (the default), `"compact"` for component ids and titles only,
   or `"none"`. Without `list_components` and with `"none"` the agent cannot discover
   components.

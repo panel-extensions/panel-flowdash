@@ -12,7 +12,7 @@ from pydantic_ai.models.function import FunctionModel
 
 from panel_flowdash import MemoryDashboardStore
 from panel_flowdash.agent import DashboardOps, FlowDashDeps
-from panel_flowdash.agent.assistant import INSTRUCTIONS, SAFETY, create_agent
+from panel_flowdash.agent.assistant import _REVISION, INSTRUCTIONS, SAFETY, create_agent
 from panel_flowdash.agent.live import LiveDashboardOps
 from panel_flowdash.agent.tools import TOOLS, approval_policy, dashboard_toolset
 from panel_flowdash.editor import FlowDash
@@ -68,7 +68,9 @@ async def test_own_instructions_keep_the_safety_rules():
     seen = await _request(
         default_instructions=False, instructions="Answer questions about data.", catalogue="none"
     )
-    assert seen["instructions"].startswith("Answer questions about data.\n\n" + SAFETY)
+    assert (
+        seen["instructions"] == "Answer questions about data.\n\n" + (SAFETY + _REVISION).strip()
+    )
     assert "never put\n  links or images" in seen["instructions"]
     assert all(rule in INSTRUCTIONS for rule in SAFETY.splitlines())
 
