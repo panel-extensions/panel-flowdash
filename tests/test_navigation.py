@@ -355,7 +355,6 @@ class TestStaleNavigation:
 
         assert not any(isinstance(obj, pmui.Column) for obj in app._page.main)
 
-    @pytest.mark.skipif(sys.version_info < (3, 11), reason="needs Task.cancelling()")
     async def test_cancelling_navigation_itself_propagates(self, app):
         started = asyncio.Event()
 

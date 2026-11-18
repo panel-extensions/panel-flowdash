@@ -2,7 +2,7 @@
 
 The agent sees exactly what the palette offers at the moment it asks, and
 running a command takes the palette's own path, so the two cannot drift
-apart. Needs the ``panel-flowdash[agent]`` extra.
+apart.
 """
 
 from __future__ import annotations

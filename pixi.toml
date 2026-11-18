@@ -18,7 +18,7 @@ hatchling = "*"
 hatch-vcs = "*"
 
 [package.run-dependencies]
-python = ">=3.10"
+python = ">=3.11"
 python-gil = '*'
 pandas = ">=1.5"
 panel = ">=1.9.0"
@@ -45,6 +45,8 @@ panel_reactflow = ">=0.6.0b1"
 # 0.6.0b0 until panel-tiles 0.6.0 is released; then move this to ">=0.6.0"
 # to match pyproject.toml.
 panel_tiles = ">=0.6.0b0"
+# A prerelease floor, which uv's default mode allows for this package alone.
+panel-agents = ">=0.1.0b4"
 
 [feature.test.dependencies]
 pytest = ">=6"
@@ -59,8 +61,7 @@ test = "pytest"
 test-coverage = "pytest --cov=panel_flowdash --cov-report=xml --cov-report=term-missing"
 
 [feature.agent.pypi-dependencies]
-# A prerelease floor, which uv's default mode allows for this package alone.
-panel-agents = { version = ">=0.1.0b2", extras = ["pydantic-ai"] }
+panel-agents = { version = ">=0.1.0b4", extras = ["pydantic-ai"] }
 
 [feature.build.dependencies]
 python-build = "*"
@@ -78,8 +79,6 @@ pre-commit = "*"
 lint = "pre-commit run --all-files"
 lint-install = "pre-commit install"
 
-[feature.py310.dependencies]
-python = "3.10.*"
 [feature.py311.dependencies]
 python = "3.11.*"
 [feature.py312.dependencies]
@@ -131,8 +130,8 @@ docs-build = "zensical build"
 
 [environments]
 default = ["test", "agent"]
-test-310 = ["py310", "test"]
-test-311 = ["py311", "test", "agent"]
+# The floor runs without the agent extra, so pydantic-ai stays optional.
+test-311 = ["py311", "test"]
 test-312 = ["py312", "test", "agent"]
 test-313 = ["py313", "test", "agent"]
 test-314 = ["py314", "test", "agent"]

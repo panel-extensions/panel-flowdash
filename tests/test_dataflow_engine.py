@@ -722,10 +722,6 @@ class TestViewerComponents:
         assert isinstance(result, str)
         assert "Type mismatch" in result
 
-    @pytest.mark.skipif(
-        sys.version_info[:2] == (3, 10),
-        reason="param.output introspection differs on Python 3.10",
-    )
     async def test_viewer_cycle_rejected(self):
         class Node(Viewer):
             input_val = param.String(default="")

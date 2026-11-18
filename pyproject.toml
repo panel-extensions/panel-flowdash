@@ -17,7 +17,7 @@ dynamic = ["version"]
 description = 'Extends Panel with a dataflow and draggable grid based dashboard editor.'
 readme = "README.md"
 license = { text = "BSD" }
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [{ name = "Philipp Rudiger", email = "philipp.jfr@gmail.com" }]
 maintainers = [
     { name = "Philipp Rudiger", email = "philipp.jfr@gmail.com" },
@@ -26,7 +26,6 @@ classifiers = [
     "License :: OSI Approved :: BSD License",
     "Development Status :: 5 - Production/Stable",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -45,6 +44,8 @@ dependencies = [
     # copy_on_write option read by transforms arrived in 1.5.
     "pandas >=1.5",
     "panel >=1.9.3",
+    # ActionRegistry, which the command palette's agent actions build on.
+    "panel-agents >=0.1.0b4",
     # Page.rail and Page.header_color arrived in 0.17.0b3.
     "panel-material-ui >=0.17.0b3",
     # ReactFlow.fit_view, add_nodes/add_edges, graph validation and handle `top` arrived in 0.6.0.
@@ -66,9 +67,9 @@ Homepage = "https://github.com/panel-extensions/panel-flowdash"
 Source = "https://github.com/panel-extensions/panel-flowdash"
 
 [project.optional-dependencies]
-# The AI agent of panel_flowdash.agent.tools. panel-agents needs Python 3.11.
+# The AI agent of panel_flowdash.agent.tools, which runs on pydantic-ai.
 agent = [
-    "panel-agents[pydantic-ai]>=0.1.0b2; python_version >= '3.11'",
+    "panel-agents[pydantic-ai]>=0.1.0b4",
 ]
 dev = [
     "pre-commit",
@@ -148,7 +149,7 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
 [tool.mypy]
-python_version = '3.10'
+python_version = '3.11'
 no_implicit_optional = true
 check_untyped_defs = true
 

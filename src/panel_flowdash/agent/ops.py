@@ -586,7 +586,7 @@ class DashboardOps:
     async def _within(awaitable, timeout: float):
         try:
             await asyncio.wait_for(awaitable, timeout)
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise OperationError(
                 f"Loading the dashboard's components took longer than {timeout:g} seconds."
             ) from exc

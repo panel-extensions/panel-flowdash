@@ -14,7 +14,7 @@ import weakref
 from abc import ABC, abstractmethod
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -236,7 +236,7 @@ class DashboardModel:
 def _parse_sqlite_time(value: Any) -> datetime | None:
     """Parse a SQLite ``datetime('now')`` value, which is UTC without an offset."""
     try:
-        return datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+        return datetime.fromisoformat(value).replace(tzinfo=UTC)
     except (TypeError, ValueError):
         return None
 
@@ -527,7 +527,7 @@ class MemoryDashboardStore(BaseDashboardStore):
             revision = check_revision(dashboard, None if stored is None else stored.revision)
             self._dashboards[dashboard.dashboard_id] = copy.deepcopy(dashboard)
             self._dashboards[dashboard.dashboard_id].revision = revision
-            self._dashboards[dashboard.dashboard_id].updated_at = datetime.now(timezone.utc)
+            self._dashboards[dashboard.dashboard_id].updated_at = datetime.now(UTC)
             # Re-inserting moves the dashboard to the front of the recency order.
             if dashboard.dashboard_id in self._order:
                 self._order.remove(dashboard.dashboard_id)
@@ -555,7 +555,7 @@ class MemoryDashboardStore(BaseDashboardStore):
         if model is None or model.user_id != user_id:
             return False
         model.title = new_title
-        model.updated_at = datetime.now(timezone.utc)
+        model.updated_at = datetime.now(UTC)
         return True
 
     def set_permission(self, dashboard_id: str, permission: Permission) -> bool:
@@ -563,7 +563,7 @@ class MemoryDashboardStore(BaseDashboardStore):
         if model is None:
             return False
         model.permission = copy.deepcopy(permission)
-        model.updated_at = datetime.now(timezone.utc)
+        model.updated_at = datetime.now(UTC)
         return True
 
 

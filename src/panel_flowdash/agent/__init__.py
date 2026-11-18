@@ -2,9 +2,10 @@
 
 The YAML format, its JSON Schema, validation and the operations API need
 nothing beyond panel-flowdash itself. See the dashboard YAML format reference
-for the specification. The agent itself (`create_agent`, `FlowDashDeps`,
-`dashboard_toolset`, `palette_actions`) needs the ``panel-flowdash[agent]``
-extra and is imported on first use.
+for the specification. `palette_actions` builds on panel-agents, which
+FlowDash always installs. The agent itself (`create_agent`, `FlowDashDeps`,
+`dashboard_toolset`, `approval_policy`) runs on pydantic-ai, so it needs the
+``panel-flowdash[agent]`` extra; all of these are imported on first use.
 """
 
 from panel_flowdash.agent.ops import (
@@ -29,22 +30,23 @@ _AGENT_NAMES = {
     "approval_policy": "tools",
     "create_agent": "assistant",
     "dashboard_toolset": "tools",
-    "palette_actions": "actions",
 }
 
 
 def __getattr__(name):
+    import importlib
+
+    if name == "palette_actions":
+        return importlib.import_module(f"{__name__}.actions").palette_actions
     module = _AGENT_NAMES.get(name)
     if module is None:
         raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-    import importlib
-
     try:
         return getattr(importlib.import_module(f"{__name__}.{module}"), name)
     except ImportError as exc:
         raise ImportError(
-            f"panel_flowdash.agent.{name} needs Python 3.11 or newer and the agent "
-            "extra: pip install 'panel-flowdash[agent]'"
+            f"panel_flowdash.agent.{name} needs the agent extra: "
+            "pip install 'panel-flowdash[agent]'"
         ) from exc
 
 
