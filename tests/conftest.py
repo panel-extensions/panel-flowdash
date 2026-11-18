@@ -39,7 +39,14 @@ def pytest_configure(config):
 
 
 def pytest_collection_modifyitems(config, items):
-    """Skip tests of failure propagation on param releases that cannot carry failures."""
+    """Skip optional tests unless their option is given, and failure tests param cannot run."""
+    for marker, info in optional_markers.items():
+        if config.getoption(f"--{marker}"):
+            continue
+        skip = pytest.mark.skip(reason=info["skip-reason"])
+        for item in items:
+            if marker in item.keywords:
+                item.add_marker(skip)
     if ReactiveError is not None:
         return
     if os.environ.get("FLOWDASH_REQUIRE_FAILURES"):

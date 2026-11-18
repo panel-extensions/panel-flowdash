@@ -60,6 +60,7 @@ jobs:
             code:
               - 'src/**'
               - 'tests/ui/**'
+              - 'tests/conftest.py'
               - 'pyproject.toml'
               - 'pixi.toml'
               - '.github/workflows/ci.yml'
