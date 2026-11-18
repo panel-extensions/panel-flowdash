@@ -41,6 +41,8 @@ classifiers = [
 
 dependencies = [
     "packaging",
+    # Imported directly; panel stops depending on it in 1.11.
+    "pandas",
     "panel >=1.9.3",
     # Page.rail and Page.header_color arrived in 0.17.0b3.
     "panel-material-ui >=0.17.0b3",
