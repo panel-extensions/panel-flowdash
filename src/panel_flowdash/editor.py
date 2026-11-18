@@ -27,6 +27,7 @@ import uuid
 import weakref
 from contextlib import contextmanager
 from functools import cache, partial
+from types import MappingProxyType
 
 import panel as pn
 import panel_material_ui as pmui
@@ -464,6 +465,19 @@ def current_dashboard() -> FlowDash | None:
     return editor
 
 
+def dashboard_context() -> t.Mapping[str, t.Any]:
+    """Return a read-only view of the resources the host gave the editor showing this component.
+
+    Hosts hand resources to components through ``FlowDash(context=...)`` or
+    by adding to ``editor.context``, e.g. Lumen keeps its source bindings
+    under ``editor.context["lumen.sources"]``. Call it where
+    :func:`current_dashboard` works; without an editor the view is empty.
+    The view follows later additions to the editor's dict.
+    """
+    editor = current_dashboard()
+    return MappingProxyType(editor.context if editor is not None else {})
+
+
 def _drop_repeated_ids(model: DashboardModel) -> int:
     """Keep only the first item of *model* with each instance id, returning how many were dropped."""
     seen: set[str] = set()
@@ -633,6 +647,16 @@ class FlowDash(Viewer):
         The components to offer in the editor. A decorated function, a Viewer
         subclass, a mapping of explicit component ids, a project directory, or a
         list mixing any of those. Read at construction time.""",
+    )
+
+    context = param.Dict(
+        default={},
+        doc="""
+        Resources the host hands to components, such as connections or data
+        sources, by key. Components read them with `dashboard_context()`.
+        The editor keeps its own shallow copy of the dict it is given, and
+        previews run with a copy of it, so they see the same resources.
+        Prefix keys with your package's name, e.g. "lumen.sources".""",
     )
 
     controls_bar = param.Boolean(
@@ -907,6 +931,7 @@ class FlowDash(Viewer):
         self._restore_split = "mode" not in params
 
         super().__init__(**params)
+        self.context = dict(self.context)
 
         self._registry: dict[str, RegistryEntry] = normalize_components(self.components)
         if self.include_builtin_components:

@@ -665,6 +665,7 @@ class DashboardOps:
             inspect_outputs=editor.inspect_outputs,
             notifications=False,
             user=editor.user,
+            context=dict(editor.context),
         )
         # The session's components keep finding the editor on screen, not this one.
         if session_editor is not None:
@@ -742,8 +743,9 @@ class DashboardOps:
         Returns
         -------
         list of Issue
-            The warnings about the loaded dashboard, e.g. inputs still unconnected
-            or turns the YAML changed to no effect.
+            The warnings about the loaded dashboard, e.g. inputs still
+            unconnected or turns the YAML changed to no effect, and one for
+            each node that failed once loaded.
 
         Raises
         ------
@@ -754,7 +756,7 @@ class DashboardOps:
         doc, _, _, ignored = self._check_replace(text, revision)
         title = self._title_issue(doc)
         self.editor.import_dashboard(doc, keep_turns=True)
-        return title + ignored + self._warnings()
+        return title + ignored + self._warnings() + self._failures()
 
     async def replace_yaml_async(
         self, text: str, *, revision: str | None = None, timeout: float = DEFAULT_TIMEOUT
@@ -776,7 +778,7 @@ class DashboardOps:
         self._check_current(revision, dashboard_id)
         title = self._title_issue(doc)
         editor.import_dashboard(doc, keep_turns=True)
-        return title + ignored + self._warnings()
+        return title + ignored + self._warnings() + self._failures()
 
     def _title_issue(self, doc: dict) -> list[Issue]:
         current = self.editor.dashboard
@@ -794,6 +796,15 @@ class DashboardOps:
 
     def _warnings(self) -> list[Issue]:
         return [i for i in self.validate() if i.severity != "error"]
+
+    def _failures(self) -> list[Issue]:
+        """Warn about each node that failed, by its own output or an input failing upstream."""
+        report = preview_editor(self.editor, self._names(), samples=False)
+        return [
+            Issue(f"nodes.{name}", f"The node failed: {node['message']}", "warning")
+            for name, node in report["nodes"].items()
+            if node["status"] == "failed"
+        ]
 
     def add_node(
         self,

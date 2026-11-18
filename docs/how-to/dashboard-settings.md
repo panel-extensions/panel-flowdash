@@ -204,3 +204,32 @@ can read `current_dashboard().settings` in `__init__`. Read them again, or bind 
 After creation, `current_dashboard()` still finds the editor for the current
 session, which is the latest one created in it. Prefer to capture the editor when the
 component is created if a page holds more than one.
+
+## Hand resources to components
+
+A host that owns resources components need, such as database connections or data
+sources, passes them to the editor as its `context`, a dict keyed by name. Prefix
+the keys with your package's name so hosts and libraries do not collide; Lumen, for
+example, keeps its source bindings under `"lumen.sources"`. A component reads them
+with `dashboard_context()`, which returns a read-only view of the context of the
+editor showing it, or an empty one outside an editor:
+
+```python
+from panel_flowdash import FlowDash, dashboard_context, register
+
+
+@register(component=True, page=False, title="Tables", provides=["tables"])
+def tables(config):
+    source = dashboard_context().get("my_app.source")
+    config.tables = source.get_tables() if source is not None else []
+    return "Tables"
+
+
+editor = FlowDash([tables], context={"my_app.source": my_source})
+```
+
+The editor keeps a shallow copy of the dict it is given. Add to `editor.context`
+to make more resources available later; the view a component holds follows such
+additions. Previews of the assistant run in a separate editor with a copy of the
+context, so the components they create find the same resources. `FlowDashApp` passes
+`editor_options={"context": ...}` on to its editor.

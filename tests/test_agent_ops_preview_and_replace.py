@@ -3,8 +3,10 @@
 import asyncio
 import json
 
+import param
 import pytest
 import yaml
+from panel.viewable import Viewer
 
 from panel_flowdash import FlowDash, MemoryDashboardStore, register
 from panel_flowdash.agent import DashboardOps, OperationError
@@ -171,3 +173,93 @@ def test_connect_refuses_an_input_a_restricted_node_feeds(secret_id):
         ops.connect(f"{number}.value", "double.value")
     assert ops.editor.graph.edges == []
     assert not [i for i in ops.validate() if i.severity == "error"]
+
+
+class Reciprocal(Viewer):
+    """A Viewer whose output fails once its input is zero."""
+
+    value = param.Number(default=1)
+
+    @param.output(param.Number)
+    @param.depends("value")
+    def inverse(self):
+        return 1 / self.value
+
+    def __panel__(self):
+        return str(self.value)
+
+
+@register(page=False, component=True, title="Zero", provides=[{"key": "value", "type": "float"}])
+def zero(config):
+    config.value = 0
+    return "zero"
+
+
+FAILING = (
+    "flowdash: 1\nnodes:\n  z: {component: T/zero}\n  r: {component: T/reciprocal}\n"
+    "  s: {component: T/reciprocal}\n  ok: {component: T/reciprocal}\nedges:\n"
+    "  - {from: z.value, to: r.value}\n  - {from: r.inverse, to: s.value}\n"
+)
+
+
+@pytest.fixture
+def failing():
+    editor = FlowDash(
+        {"T/zero": zero, "T/reciprocal": Reciprocal},
+        include_builtin_components=False,
+        notifications=False,
+        propagate_failures=True,
+    )
+    editor.new_dashboard("Failing")
+    yield DashboardOps(editor)
+    editor.dispose()
+
+
+@pytest.mark.failures
+def test_preview_marks_a_node_whose_output_failed(failing):
+    report = failing.preview(FAILING)
+    nodes = report["nodes"]
+    assert report["status"] == "failed"
+    assert nodes["r"]["status"] == "failed"
+    assert nodes["r"]["message"] == "output 'inverse' failed: ZeroDivisionError: division by zero"
+    assert nodes["r"]["outputs"]["inverse"]["type"] == "failure"
+    assert nodes["s"]["status"] == "failed"
+    assert nodes["s"]["message"].startswith("input 'value' failed upstream")
+    assert nodes["z"]["status"] == nodes["ok"]["status"] == "ok"
+
+
+@pytest.mark.failures
+def test_preview_without_samples_still_marks_a_failed_output(failing):
+    from panel_flowdash.agent.preview import preview_editor
+
+    failing.replace_yaml(FAILING, revision=failing.revision())
+    report = preview_editor(failing.editor, failing._names(), samples=False)
+    assert report["nodes"]["r"]["status"] == "failed"
+    assert "outputs" not in report["nodes"]["r"]
+
+
+@pytest.mark.failures
+def test_replacing_warns_about_each_failed_node(failing):
+    issues = failing.replace_yaml(FAILING, revision=failing.revision())
+    failed = {i.path: i for i in issues if i.path in ("nodes.r", "nodes.s")}
+    assert set(failed) == {"nodes.r", "nodes.s"}
+    assert {i.severity for i in failed.values()} == {"warning"}
+    assert str(failed["nodes.r"]) == (
+        "nodes.r: The node failed: output 'inverse' failed: ZeroDivisionError: division by zero"
+    )
+    assert not [i for i in issues if i.path in ("nodes.z", "nodes.ok")]
+
+
+@pytest.mark.failures
+async def test_replacing_async_warns_about_failed_nodes(failing):
+    issues = await failing.replace_yaml_async(FAILING, revision=failing.revision())
+    assert {i.path for i in issues if i.message.startswith("The node failed")} == {
+        "nodes.r",
+        "nodes.s",
+    }
+
+
+@pytest.mark.failures
+def test_replacing_a_healthy_dashboard_adds_no_failure_warnings(failing):
+    text = "flowdash: 1\nnodes:\n  ok: {component: T/reciprocal}\n"
+    assert failing.replace_yaml(text, revision=failing.revision()) == []

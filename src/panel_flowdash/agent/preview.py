@@ -139,7 +139,9 @@ def preview_editor(
         ``status`` (the worst node status) and ``nodes``, keyed by node name,
         each with a ``status`` of ``ok``, ``waiting``, ``failed``,
         ``restricted``, ``missing`` or ``error``, a ``message`` explaining any
-        other status than ``ok`` and, with *samples*, ``outputs`` by port.
+        other status than ``ok`` and, with *samples*, ``outputs`` by port. A
+        node is ``failed`` when an input failed upstream or one of its own
+        outputs failed.
     """
     graph = editor.graph
     nodes: dict[str, dict[str, t.Any]] = {}
@@ -157,6 +159,14 @@ def preview_editor(
         state = graph.get_state(instance_id)
         entry: dict[str, t.Any] = {"component": item["component_id"], "status": "ok"}
         status, message = node_health(editor, instance_id)
+        if status == "ok" and spec is not None and state is not None:
+            failed = [
+                f"output '{port.name}' failed: {failure_text(value)}"
+                for port in spec.outputs
+                if is_failure(value := getattr(state, port.name, None))
+            ]
+            if failed:
+                status, message = "failed", "; ".join(failed)
         if status != "ok":
             entry["status"] = status
             entry["message"] = _scalar(message)
