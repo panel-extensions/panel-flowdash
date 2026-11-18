@@ -259,6 +259,32 @@ class TestTiles:
         shown = [t["instance_id"] for t in _tiles(ops.editor) if t.get("visible", True)]
         assert shown[-1] == "source"
 
+    @pytest.mark.parametrize("who", ["agent", "person"])
+    def test_a_source_shown_during_a_request_stays_shown(self, ops, who):
+        from panel_flowdash.agent.tools import FlowDashDeps
+        from panel_flowdash.ui.tile_layout import update_tile
+
+        deps = FlowDashDeps(ops)
+        deps.start_request("Build it")
+        _build(ops, GRAPH[:3])
+        if who == "agent":
+            ops.place_tile("source", visible=True)
+        else:
+            update_tile(ops.editor, "source", visible=True)
+        deps.end_request()
+        hidden = {t["instance_id"] for t in _tiles(ops.editor) if t.get("visible") is False}
+        assert hidden == set()
+
+    def test_hidden_sources_say_what_they_are(self, ops):
+        from panel_flowdash.ui.tile_layout import off_grid
+
+        _build(ops)
+        reasons = {o.instance_id: (o.reason, o.restorable) for o in off_grid(ops.editor)}
+        assert reasons == {
+            "source": ("data source · hidden", True),
+            "combined": ("transform · hidden", True),
+        }
+
     def test_tiles_wait_for_the_end_of_the_agents_request(self, ops):
         from panel_flowdash.agent.tools import FlowDashDeps
 

@@ -14,6 +14,8 @@ from panel_flowdash.ui.tile import resolve_framed
 GRID_COLUMNS = 12
 
 HIDDEN = "hidden"
+# The roles named in the reason a tile is hidden, as the editor hides theirs itself.
+_ROLE_NAMES = {"source": "data source", "transform": "transform"}
 
 # The frame choice of a tile without a frame option of its own.
 FRAME_DEFAULT = "default"
@@ -43,6 +45,9 @@ def update_tile(editor, instance_id: str, **patch):
     for key in [k for k, v in patch.items() if v is None]:
         del entry[key]
     editor._auto_tiles.clear()
+    if "visible" in patch and editor._deferred_tiles is not None:
+        # Shown or hidden on purpose, so the end of the request leaves it as it is.
+        editor._deferred_tiles.discard(instance_id)
     editor._pending_tile_layout = layout
     editor._rebuild_tile_grid()
     editor._record_edit(
@@ -110,11 +115,12 @@ class OffGrid:
     instance_id: str
     title: str
     reason: str
+    hidden: bool = False
 
     @property
     def restorable(self) -> bool:
         """Whether showing it again is a layout change, i.e. it was hidden."""
-        return self.reason == HIDDEN
+        return self.hidden
 
 
 def tile_title(editor, item: dict) -> str:
@@ -153,10 +159,18 @@ def off_grid(editor) -> list[OffGrid]:
         if _in_sidebar(editor, item):
             reason = _sidebar_reason(editor)
         elif item["instance_id"] in hidden:
-            reason = HIDDEN
+            role = _ROLE_NAMES.get(editor._node_role(item["component_id"]))
+            reason = f"{role} · {HIDDEN}" if role else HIDDEN
         else:
             continue
-        listed.append(OffGrid(item["instance_id"], tile_title(editor, item), reason))
+        listed.append(
+            OffGrid(
+                item["instance_id"],
+                tile_title(editor, item),
+                reason,
+                hidden=item["instance_id"] in hidden,
+            )
+        )
     return listed
 
 

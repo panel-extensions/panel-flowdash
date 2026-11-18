@@ -299,14 +299,21 @@ class TestArrangeTiles:
         assert entries["title"]["width"] == title
         assert {entries[f"kpi_{i}"]["width"] for i in range(count)} == {kpi}
 
-    @pytest.mark.parametrize(("count", "chart"), [(1, 75), (2, 50)])
-    def test_the_next_chart_fills_the_room_kpis_leave(self, count, chart):
+    @pytest.mark.parametrize(("count", "kpi"), [(1, 58.33), (2, 33.33), (3, 25)])
+    def test_a_chart_pair_stays_together(self, count, kpi):
+        # The grid would move the pair's first chart into room of 6 columns or more, so
+        # the KPIs widen, alike, only until less is left; the rest stays empty.
         entries = _kpis(count, heading=False)
-        assert {entries[f"kpi_{i}"]["width"] for i in range(count)} == {25}
-        assert entries["chart_0"]["width"] == chart
-        assert entries["chart_0"]["height"] == 320
-        assert entries["kpi_0"]["height"] == 130
-        assert entries["chart_1"]["width"] == 100
+        assert {entries[f"kpi_{i}"]["width"] for i in range(count)} == {kpi}
+        assert entries["chart_0"]["width"] == entries["chart_1"]["width"] == 50
+
+    @pytest.mark.parametrize(("count", "chart"), [(1, 75), (2, 50)])
+    def test_a_lone_chart_fills_the_room_kpis_leave(self, count, chart):
+        tiles = [TileBox(f"kpi_{i}", "kpi", {"width": 280, "height": 130}) for i in range(count)]
+        tiles.append(TileBox("chart", "chart", {"width": 560, "height": 320}))
+        entries = {e["instance_id"]: e for e in arrange_tiles(tiles, 1200)}
+        assert entries["chart"]["width"] == chart
+        assert (entries["chart"]["height"], entries["kpi_0"]["height"]) == (320, 130)
 
     def test_no_chart_fills_the_room_when_a_later_one_would_move_under_the_kpis(self):
         tiles = [TileBox(f"kpi_{i}", "kpi", {"width": 280, "height": 130}) for i in range(2)]
@@ -332,7 +339,7 @@ class TestArrangeTiles:
         # Charts at most 4 columns wide neither fill the room nor leave it alone.
         tiles += [
             TileBox(f"chart_{i}", "chart", {"height": 320}, max_size={"width": 400})
-            for i in range(2)
+            for i in range(3)
         ]
         entries = {e["instance_id"]: e for e in arrange_tiles(tiles, 1200)}
         assert entries["kpi_0"]["width"] == entries["kpi_1"]["width"] == round(100 * 4 / 12, 2)

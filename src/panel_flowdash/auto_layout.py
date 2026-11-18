@@ -590,6 +590,8 @@ class _Row:
     columns: list[int]
     # A row whose tiles keep their own heights, e.g. KPIs beside a chart.
     ragged: bool = False
+    # A row whose room is left empty on purpose.
+    keep: bool = False
 
     @property
     def free(self) -> int:
@@ -648,6 +650,12 @@ def _spread(row: _Row, width: float):
             return
 
 
+def _widen_to(row: _Row, total: int):
+    """Widen every tile of *row* by a column at a time, alike, until they take *total* columns."""
+    while sum(row.columns) < total and sum(row.columns) + len(row.columns) <= GRID_COLUMNS:
+        row.columns = [c + 1 for c in row.columns]
+
+
 def _family(tile: TileBox) -> str:
     return PACKED.get(tile.kind, tile.kind)
 
@@ -689,6 +697,14 @@ def _finish(row: _Row, tile: TileBox | None, width: float) -> bool:
     row.columns.append(columns)
     row.ragged = True
     return True
+
+
+def _pairs_charts(tiles: list[TileBox], j: int) -> bool:
+    """Whether the charts from *tiles[j]* on start with a pair, in an even run."""
+    k = j
+    while k < len(tiles) and tiles[k].kind == "chart":
+        k += 1
+    return k - j >= 2 and (k - j) % 2 == 0
 
 
 def _below(row: _Row, tiles: list[TileBox], j: int, width: float) -> bool:
@@ -748,7 +764,14 @@ def _rows_of(
                 first.tiles.insert(0, lead[0])
                 first.columns.insert(0, first.free)
                 lead = []
-            if (
+            if packed[-1].free and _pairs_charts(tiles, j):
+                # Pulling the first chart up would split the pair, so the row
+                # widens only until the pair's first chart no longer fits in
+                # the room, which stays empty.
+                pair = min(GRID_COLUMNS // 2, _widest(tiles[j], width))
+                _widen_to(packed[-1], GRID_COLUMNS - pair + 1)
+                packed[-1].keep = True
+            elif (
                 packed[-1].free
                 and j < len(tiles)
                 and _below(packed[-1], tiles, j, width)
@@ -770,7 +793,7 @@ def _close_gaps(rows: list[_Row], width: float):
     The grid moves a tile up into any gap it fits.
     """
     for k, row in enumerate(rows):
-        if not row.free or row.ragged or row.tiles[0].kind not in PACKED:
+        if not row.free or row.ragged or row.keep or row.tiles[0].kind not in PACKED:
             continue
         later = [c for other in rows[k + 1 :] for c in other.columns]
         if later and min(later) <= row.free:
