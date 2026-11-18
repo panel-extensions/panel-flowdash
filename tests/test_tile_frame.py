@@ -327,6 +327,33 @@ class TestAgent:
         assert ops.place_tile(name, frame="unframed")["framed"] is False
         assert "framed" not in ops.place_tile(name, frame="default")
 
+    def test_arranging_keeps_the_frame(self, ops):
+        names = [ops.add_node(c) for c in ("T/plain", "T/rule", "T/boxed")]
+        editor = ops.editor
+        editor.mode = "dashboard"
+        ops.place_tile(names[1], frame="framed")
+        ops.place_tile(names[2], frame="unframed")
+        ops.arrange_layout()
+        frames = {e["instance_id"]: e.get("framed") for e in editor.layout}
+        ids = [i["instance_id"] for i in editor._tile_items]
+        assert [frames.get(i) for i in ids] == [None, True, False]
+        assert [editor._inspect_tiles[i].framed for i in ids] == [True, True, False]
+
+    def test_the_layout_at_the_end_of_an_agent_request_keeps_the_frame(self, ops):
+        from panel_flowdash.agent.tools import FlowDashDeps
+
+        editor = ops.editor
+        editor.mode = "dashboard"
+        deps = FlowDashDeps(ops)
+        deps.start_request("Add a rule")
+        rule = ops.add_node("T/rule")
+        ops.add_node("T/plain")
+        ops.place_tile(rule, frame="framed")
+        deps.end_request()
+        instance_id = editor._tile_items[0]["instance_id"]
+        assert {e["instance_id"]: e.get("framed") for e in editor.layout}[instance_id] is True
+        assert editor._inspect_tiles[instance_id].framed is True
+
     def test_place_tile_refuses_an_unknown_frame(self, ops):
         name = ops.add_node("T/rule")
         with pytest.raises(OperationError, match="frame is one of default, framed, unframed"):

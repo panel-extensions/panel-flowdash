@@ -67,10 +67,12 @@ span { font-family: "Material Icons"; font-size: 18px; line-height: 1;
 # have in view mode, where TileGrid draws no card, so content does not move
 # when the dashboard switches between arranging and viewing.
 GRID_EDIT_CSS = """
+:host {
+  --tile-padding: 0px;
+}
 .muuri-grid:not(.muuri-no-handles) .muuri-grid-item {
   outline: 1px dashed var(--mui-palette-divider, rgba(127, 127, 127, 0.5));
   outline-offset: 2px;
-  padding: 0;
 }
 .muuri-grid:not(.muuri-no-handles) .muuri-grid-item:hover {
   outline: 2px solid var(--mui-palette-primary-main, #0072b5);
@@ -103,7 +105,6 @@ GRID_EDIT_CSS = """
   outline: 2px solid var(--mui-palette-primary-main, #0072b5);
   outline-offset: 5px;
 }
-.muuri-no-handles .muuri-grid-item.muuri-selected { outline: none; }
 :host(.fd-unframed-band) .muuri-grid.muuri-constrained { box-shadow: none; }
 """
 
