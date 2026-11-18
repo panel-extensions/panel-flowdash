@@ -30,6 +30,16 @@ def chip_label(health: DashboardHealth) -> str:
     return f"{tiles}/{tiles} up to date"
 
 
+# Below this width the top bar has no room for the chip's text, so the chip
+# shows only its coloured dot; the text stays its accessible name.
+_DOT_ONLY_BREAKPOINT = 800
+_DOT_ONLY_WHEN_NARROW = f"""
+@media (max-width: {_DOT_ONLY_BREAKPOINT - 0.05}px) {{
+  .MuiButton-root {{ font-size: 0 !important; gap: 0 !important; }}
+}}
+"""
+
+
 def _chip_sx(status: str) -> dict:
     color = _COLORS[status]
     return {
@@ -83,6 +93,7 @@ class HealthPopover(Viewer):
             visible=False,
             css_classes=["fd-health-chip"],
             sx=_chip_sx(OK),
+            stylesheets=[_DOT_ONLY_WHEN_NARROW],
         )
         self.chip.on_click(self._toggle)
         self._ok_note = pmui.Typography(
