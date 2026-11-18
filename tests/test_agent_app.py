@@ -84,11 +84,13 @@ async def test_the_agent_edits_the_open_dashboard_and_versions_can_be_applied(st
     (artifact,) = session.runner.state.artifacts
     opened, request = artifact.versions
     assert opened.metadata["op"] == "open"
+    # The two nodes, and their tiles laid out once as the request ended.
     assert (request.actor, request.metadata["op"], request.metadata["edits"]) == (
         "agent",
         "request",
-        2,
+        3,
     )
+    assert request.metadata["ops"][-1]["op"] == "arrange_layout"
     assert request.run_id == session.runner.run_id
     assert request.metadata["tool_call_ids"] == ["call-1", "call-2"]
     assert await session.apply_version(artifact, opened)
@@ -138,6 +140,71 @@ async def test_the_drawer_restores_versions_with_the_editors_checks(store, monke
     assert count == 3
     assert [i["component_id"] for i in app._editor._tile_items] == ["T/number"]
     assert len(artifact.versions) == count
+
+
+def _two_numbers():
+    return Agent(
+        scripted(
+            ("add_node", {"component": "T/number", "name": "a"}),
+            ("add_node", {"component": "T/number", "name": "b"}),
+        ),
+        deps_type=FlowDashDeps,
+        toolsets=[dashboard_toolset()],
+    )
+
+
+def _count_arrangements(monkeypatch, editor):
+    arrange, calls = type(editor)._arrange_tiles, []
+
+    def counted(self):
+        calls.append(1)
+        arrange(self)
+
+    monkeypatch.setattr(type(editor), "_arrange_tiles", counted)
+    return calls
+
+
+async def test_a_requests_tiles_are_laid_out_once_in_its_history_version(store, monkeypatch):
+    from panel_flowdash.agent.ops import read_revision
+
+    model = store.create_dashboard("alice", "Live")
+    app = _app(store, monkeypatch)
+    app._load_dashboard_sync(model.dashboard_id)
+    editor = app._editor
+    session = AgentSession(app, _two_numbers())
+    calls = _count_arrangements(monkeypatch, editor)
+    await session.runner.run("Build")
+    assert calls == [1]
+    (artifact,) = session.runner.state.artifacts
+    opened, request = artifact.versions
+    assert request.metadata["op"] == "request"
+    assert [o["op"] for o in request.metadata["ops"]] == ["add_node", "add_node", "arrange_layout"]
+    assert read_revision(request.value) == session.ops.revision()
+    laid_out = editor.layout
+    assert {e["instance_id"] for e in laid_out} == {"a", "b"}
+    # One undo takes back the whole request, and redo brings back its layout.
+    assert editor.undo() and editor._tile_items == []
+    assert editor.redo() and editor.layout == laid_out
+    assert await session.apply_version(artifact, opened)
+    assert await session.apply_version(artifact, request)
+    assert editor.layout == laid_out
+
+
+async def test_without_history_the_layout_is_the_agents_last_version(store, monkeypatch):
+    from panel_flowdash.agent.ops import read_revision
+
+    model = store.create_dashboard("alice", "Live")
+    app = _app(store, monkeypatch, editor_options={"history": False})
+    app._load_dashboard_sync(model.dashboard_id)
+    session = AgentSession(app, _two_numbers())
+    calls = _count_arrangements(monkeypatch, app._editor)
+    await session.runner.run("Build")
+    assert calls == [1]
+    (artifact,) = session.runner.state.artifacts
+    assert len(artifact.versions) == 3
+    latest = artifact.applied_version
+    assert latest.actor == "agent" and latest.run_id == session.runner.run_id
+    assert read_revision(latest.value) == session.ops.revision()
 
 
 @pytest.mark.parametrize("confirmed", [True, False])

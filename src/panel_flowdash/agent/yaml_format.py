@@ -14,12 +14,13 @@ import json
 import math
 import re
 import typing as t
-from collections import defaultdict
 
 import yaml
 
+from panel_flowdash.auto_layout import NodeBox, arrange_graph
 from panel_flowdash.dashboard_store import MODEL_VERSION, DashboardModel
 from panel_flowdash.turns import DashboardTurn, TurnError, strip_questions
+from panel_flowdash.ui.node_card import CARD_WIDTH
 
 # The version of the format this release writes.
 FORMAT_VERSION = 2
@@ -52,9 +53,8 @@ NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]*$")
 # where the type key is the component id with "/" replaced by "__".
 _GENERATED_ID = re.compile(r"^.*__(?P<tail>[^_].*_[0-9a-f]{6})$")
 
-# Canvas spacing of the nodes that are laid out because the file gives no position.
-_COLUMN_SPACING = 360
-_ROW_SPACING = 220
+# The card height nodes a file gives no position are laid out with.
+_CARD_HEIGHT = 160
 
 
 class DashboardYAMLError(ValueError):
@@ -678,37 +678,28 @@ def _number(value, path: str):
 
 
 def _auto_positions(names: list[str], edges: list[tuple[str, str]]) -> dict[str, list]:
-    """Lay nodes out in columns by their depth in the dataflow, sources on the left."""
-    upstream = defaultdict(set)
-    for source, target in edges:
-        if source != target:
-            upstream[target].add(source)
-    depth: dict[str, int] = {}
-    for start in names:
-        # Iterative depth-first walk, so long chains cannot overflow the stack.
-        stack, visiting = [start], {start}
-        while stack:
-            name = stack[-1]
-            if name in depth:
-                stack.pop()
-                visiting.discard(name)
-                continue
-            pending = [p for p in upstream.get(name, ()) if p not in depth and p not in visiting]
-            if pending:
-                stack.extend(pending)
-                visiting.update(pending)
-                continue
-            parents = [depth[p] for p in upstream.get(name, ()) if p in depth]
-            depth[name] = 1 + max(parents, default=-1)
-            stack.pop()
-            visiting.discard(name)
-    rows: dict[int, int] = defaultdict(int)
-    positions = {}
-    for name in names:
-        column = depth[name]
-        positions[name] = [column * _COLUMN_SPACING, rows[column] * _ROW_SPACING]
-        rows[column] += 1
-    return positions
+    """Lay nodes out by their dataflow, sources on the left, see :mod:`panel_flowdash.auto_layout`.
+
+    Their components are not known here, so every card gets the same size;
+    the editor lays out the nodes a file gives no position again once it
+    has loaded them.
+    """
+    boxes = [NodeBox(name, CARD_WIDTH, _CARD_HEIGHT) for name in names]
+    return {name: [x, y] for name, (x, y) in arrange_graph(boxes, edges).items()}
+
+
+def unplaced_nodes(doc: dict, data: dict) -> set[str]:
+    """Return the instance ids of the nodes *doc* gives no position.
+
+    *data* is what :func:`dashboard_from_dict` made of *doc*, whose items
+    follow the order of the document's nodes.
+    """
+    nodes = doc.get("nodes") or {}
+    return {
+        item["instance_id"]
+        for node, item in zip(nodes.values(), data.get("items") or [], strict=False)
+        if isinstance(node, dict) and node.get("position") is None
+    }
 
 
 def _component(nodes: dict, name: str) -> t.Any:

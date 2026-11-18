@@ -54,6 +54,36 @@ The status bar under the grid summarizes it, e.g. "12-column grid, 4 tiles,
 dashboard as having unsaved changes. Fold the panel with its arrow button to
 give the grid more room.
 
+### Automatic arrangement
+
+**Arrange layout** in the command palette lays every visible tile out by its
+kind: controls first, then KPIs, charts two to a row at their `default_size`
+height, tables at full width, and the tiles of data sources and transforms
+last. Controls, KPIs and data tiles keep the width of their `default_size` in
+whole columns, e.g. 3 of 12 for a 280 px KPI, and controls and KPIs share
+rows. Headings and other text tiles stay in front of the tile that followed
+them, so a heading keeps titling its section. The grid moves a tile up into
+any gap it fits, so the room a row of controls and KPIs leaves is filled on
+purpose: by the leading heading in the first row, else by the chart or table
+that follows, at its own height, else by widening the row's tiles to at most
+twice their width when a later chart or table would move into the room. The
+tiles of sources and transforms may move into such room. Other tiles in a row
+share one height. The
+layouts for narrower screens are generated from this one, and separate
+arrangements made for other screen sizes are dropped. **Arrange dataflow**
+does the same for the *Dataflow* canvas: sources on the left, views on the
+right, in columns by their depth in the dataflow, ordered so fewer edges
+cross, with groups of nodes that are not wired to each other side by side.
+Each is one change.
+
+Tiles and nodes the agent adds are laid out this way: a node the agent places
+goes beside the nodes it is connected to and follows as it is wired, until you
+move it, and the tiles a request adds are laid out once the request ends.
+While no tile was arranged by hand the whole grid is arranged again; afterwards
+new tiles are only added next to their kind. Arranging keeps every other
+setting of a tile's layout entry. The rules and spacing live in
+`panel_flowdash.auto_layout`.
+
 ---
 
 ## Sidebar components

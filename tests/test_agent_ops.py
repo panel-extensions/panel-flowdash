@@ -234,7 +234,8 @@ class TestNamedNodes:
             {"from": "base.value", "to": "paid_by_region.value"},
             {"from": "paid_by_region.doubled", "to": "scaled-Out_2.value"},
         ]
-        assert doc["layout"]["tiles"][0] == {"node": "paid_by_region", "width": 50}
+        assert doc["layout"]["tiles"][0]["node"] == "paid_by_region"
+        assert doc["layout"]["tiles"][0]["width"] == 50
         assert ops.preview()["nodes"]["paid_by_region"]["outputs"]["doubled"]["value"] == 42
         ops.remove_node("base")
         assert list(yaml.safe_load(ops.get_dashboard())["nodes"]) == [
@@ -316,9 +317,14 @@ class TestNamedNodes:
         ops.remove_node("sc")
         ops.add_node("T/doubler", name="sc")
         tiles = yaml.safe_load(ops.get_dashboard()).get("layout", {}).get("tiles", [])
-        assert [t for t in tiles if t["node"] == "sc" and len(t) > 1] == []
+        (tile,) = [t for t in tiles if t["node"] == "sc"]
+        assert tile.get("visible", True) and (tile.get("width"), tile.get("height")) != (40, 123)
         ops.editor.mode = "dashboard"
-        assert [e for e in ops.editor.layout if e["instance_id"] == "sc" and len(e) > 2] == []
+        (entry,) = [e for e in ops.editor.layout if e["instance_id"] == "sc"]
+        assert entry.get("visible", True) and (entry.get("width"), entry.get("height")) != (
+            40,
+            123,
+        )
 
     def test_names_survive_export_import_and_the_store(self):
         store = MemoryDashboardStore()
@@ -534,8 +540,10 @@ class TestConcurrentEdits:
 
     async def test_replacing_asynchronously(self, ops):
         number = ops.add_node("T/number")
-        text = ops.get_dashboard() + "  extra:\n    component: T/doubler\nedges:\n"
-        text += f"  - {{from: {number}.value, to: extra.value}}\n"
+        text = ops.get_dashboard().replace(
+            "nodes:\n", "nodes:\n  extra:\n    component: T/doubler\n", 1
+        )
+        text += f"edges:\n  - {{from: {number}.value, to: extra.value}}\n"
         assert await ops.replace_yaml_async(text) == []
         assert ops.editor.graph.edges
 

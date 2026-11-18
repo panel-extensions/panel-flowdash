@@ -951,7 +951,8 @@ class DashboardOps:
         config
             Values for some of its config fields.
         position
-            Canvas position ``(x, y)``; defaults to the next free slot.
+            Canvas position ``(x, y)``. Leave it out: the editor places the
+            node by its dataflow and keeps it in place as it is connected.
         name
             The node's name, e.g. ``"paid_by_region"``. It becomes the node's
             instance id, as for a node a YAML file names, so the YAML, the
@@ -1025,7 +1026,7 @@ class DashboardOps:
     def _place_node(self, spec, config, position, name) -> str:
         try:
             instance_id = self.editor.add_component(
-                spec.component_id, dict(config or {}), position, instance_id=name
+                spec.component_id, dict(config or {}), position, instance_id=name, arrange=True
             )
         except (KeyError, ValueError) as exc:
             raise OperationError(str(exc).strip("'\"")) from exc
@@ -1176,6 +1177,27 @@ class DashboardOps:
             for k, v in tile_layout.tile_entry(editor, instance_id).items()
             if k != "instance_id"
         }
+
+    def arrange_canvas(self) -> None:
+        """Lay out every node on the canvas by its dataflow, sources left and views right.
+
+        Nodes added without a position are placed this way already; this
+        also moves the nodes people placed, so call it only when asked to
+        tidy the canvas.
+        """
+        self._require_edit()
+        self.editor.arrange_canvas()
+
+    def arrange_layout(self) -> None:
+        """Lay out every visible tile by kind for each screen size.
+
+        Controls go first, then KPIs in a row, charts two to a row and tables
+        at full width, with headings kept in front of the tile they title.
+        New tiles join their kind on their own; this also rearranges the
+        tiles people laid out, so call it only when asked to tidy the layout.
+        """
+        self._require_edit()
+        self.editor.arrange_layout()
 
     def set_settings(self, settings: dict[str, t.Any]) -> dict[str, t.Any]:
         """Change some dashboard settings and return them all."""

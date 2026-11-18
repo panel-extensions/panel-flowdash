@@ -79,6 +79,7 @@ class FlowDashDeps:
         *question* is what the user asked, which the turn of the agent's edits records.
         """
         self.ops.editor.end_agent_turns()
+        self.ops.editor._defer_tile_layout()
         self._reset(_open_id(self.ops))
         self._explicit = True
         self._question = question if isinstance(question, str) else None
@@ -520,6 +521,9 @@ async def add_node(
 ) -> t.Any:
     """Place a component on the open dashboard and return the name of its node.
 
+    The node's canvas position and its tile are chosen for you from the
+    dataflow and the component's kind, and follow as you connect it.
+
     Args:
         component: A component id from list_components, e.g. "Views/kpi".
         config: Values for some of its config fields.
@@ -623,6 +627,28 @@ def place_tile(
     ops = ctx.deps.ops
     ops.place_tile(name, width=width, height=height, visible=visible, index=index)
     return _artifact(ops, f"Laid out the tile of '{name}'.")
+
+
+def arrange_canvas(ctx: RunContext[FlowDashDeps]) -> t.Any:
+    """Lay out every node on the canvas by its dataflow, sources left and views right.
+
+    New nodes are placed this way already. Use it only when the user asks to
+    tidy the canvas, since it also moves the nodes they placed.
+    """
+    ops = ctx.deps.ops
+    ops.arrange_canvas()
+    return _artifact(ops, "Arranged the canvas.")
+
+
+def arrange_layout(ctx: RunContext[FlowDashDeps]) -> t.Any:
+    """Lay out every tile by kind: controls, KPIs in a row, charts two per row, tables full width.
+
+    New tiles join their kind already. Use it only when the user asks to tidy
+    the layout, since it also moves the tiles they placed.
+    """
+    ops = ctx.deps.ops
+    ops.arrange_layout()
+    return _artifact(ops, "Arranged the tile layout.")
 
 
 def set_settings(ctx: RunContext[FlowDashDeps], settings: dict[str, t.Any]) -> t.Any:
@@ -787,6 +813,8 @@ EDIT_TOOLS = (
     disconnect,
     set_transform,
     place_tile,
+    arrange_canvas,
+    arrange_layout,
     set_settings,
     replace_dashboard,
 )
@@ -805,6 +833,8 @@ TOOLS = (
     disconnect,
     set_transform,
     place_tile,
+    arrange_canvas,
+    arrange_layout,
     set_settings,
     replace_dashboard,
     save_dashboard,

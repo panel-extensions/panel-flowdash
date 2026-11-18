@@ -37,6 +37,7 @@ def update_tile(editor, instance_id: str, **patch):
     entry.update(patch)
     for key in [k for k, v in patch.items() if v is None]:
         del entry[key]
+    editor._auto_tiles.clear()
     editor._pending_tile_layout = layout
     editor._rebuild_tile_grid()
     editor._record_edit(
@@ -59,6 +60,7 @@ def move_tile(editor, instance_id: str, index: int):
     by_id = {e["instance_id"]: e for e in layout if "instance_id" in e}
     for position, iid in enumerate(order):
         by_id.setdefault(iid, {"instance_id": iid})["index"] = position
+    editor._auto_tiles.clear()
     editor._pending_tile_layout = [*by_id.values(), *(e for e in layout if "instance_id" not in e)]
     editor._rebuild_tile_grid()
     editor._record_edit(
