@@ -875,10 +875,17 @@ async def test_an_artifact_view_stays_in_step_with_a_long_session():
     for factor in range(2, 10):
         editor._apply_config_patch("n", {"factor": factor})
     assert history.artifact is artifact
+    editor.history_limit = 3
+    editor.history_coalesce = 0
+    for k in range(20):
+        editor._apply_config_patch("n", {"factor": k % 9 + 2})
+    assert len(artifact.versions) == 30
+    assert sum(not v.dropped for v in artifact.versions) <= 3 + 10
     target = len(artifact.versions) - 3
     assert await view.apply_version(target, action="undo")
     assert artifact.applied == target
-    assert editor._tile_items[0]["config"]["factor"] == 6
+    expected = yaml.safe_load(artifact.versions[target - 1].value)["nodes"]["n"]["config"]
+    assert editor._tile_items[0]["config"]["factor"] == expected["factor"]
     applied = [
         r
         for r in store.load_history(editor.dashboard.dashboard_id)

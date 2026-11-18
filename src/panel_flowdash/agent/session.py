@@ -144,7 +144,15 @@ class AgentSession:
         """
         history = self.app._editor.edit_history
         if history.active:
-            return history.restore(artifact, version)
+            history.restore(artifact, version)
+            # The version is restored as recorded; its checks run off the event loop to tell the user.
+            problems = await self.ops._canvas_problems_async(self.ops.editor)
+            if problems:
+                names = self.ops._names()
+                self._notify_failed_checks(
+                    version, {names.get(iid, iid): found for iid, found in problems.items()}
+                )
+            return True
         current = self.app._current_dashboard
         if current is None or artifact.artifact_id != f"dashboard:{current.dashboard_id}":
             raise ValueError("That version belongs to a dashboard that is not open.")
@@ -162,17 +170,25 @@ class AgentSession:
                     "not restored. Try again."
                 ) from exc
             raise
-        failed = [i for i in issues if i.severity == "error"]
+        failed = [i for i in issues if i.severity == "error" and i.path.startswith("nodes.")]
         if failed:
-            nodes = sorted({i.path.split(".")[1] for i in failed if i.path.startswith("nodes.")})
-            self.app._notify(
-                "warning",
-                f"Restored v{version.version}, but {len(nodes)} "
-                f"{'node fails its' if len(nodes) == 1 else 'nodes fail their'} config "
-                "checks: " + "; ".join(f"{i.path.split('.')[1]}: {i.message}" for i in failed),
-                duration=10000,
-            )
+            problems: dict[str, list[str]] = {}
+            for issue in failed:
+                problems.setdefault(issue.path.split(".")[1], []).append(issue.message)
+            self._notify_failed_checks(version, problems)
         return True
+
+    def _notify_failed_checks(self, version: ArtifactVersion, problems: dict[str, list[str]]):
+        n = len(problems)
+        self.app._notify(
+            "warning",
+            f"Restored v{version.version}, but {n} "
+            f"{'node fails its' if n == 1 else 'nodes fail their'} config checks: "
+            + "; ".join(
+                f"{name}: {message}" for name, found in problems.items() for message in found
+            ),
+            duration=10000,
+        )
 
     async def _confirm_overwrite(self, version: ArtifactVersion) -> bool:
         if pn.state.curdoc is None or pn.state.curdoc.session_context is None:

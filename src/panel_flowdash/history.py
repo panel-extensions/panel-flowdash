@@ -583,6 +583,22 @@ class EditHistory:
             run_id=pending.run_id,
             tool_call_id=pending.tool_call_id,
         )
+        self._bound()
+
+    def _bound(self):
+        """Keep the values of at most about ``history_limit`` versions of the open dashboard in memory.
+
+        Past the limit and a margin, older versions keep their number and
+        author but lose their value, so open views stay in step.
+        """
+        limit, artifact = self.editor.history_limit, self.artifact
+        if not limit or artifact is None or self.busy:
+            return
+        kept = sum(not v.dropped for v in artifact.versions)
+        if kept > limit + max(limit // 10, 10):
+            self.state.drop_artifact_versions(
+                self.artifact_id, before=len(artifact.versions) - limit + 1
+            )
 
     def _publish(self, value: str, metadata: dict[str, t.Any], *, title: str | None, **fields):
         # The event is built here rather than with `publish_artifact`, which
