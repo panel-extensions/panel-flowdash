@@ -84,7 +84,7 @@ def palette_actions(
         Args:
             command: The command's id, e.g. "action:refresh" or "dashboard:<id>".
         """
-        refusal = deps.check_pin() if deps is not None else None
+        refusal = deps.check_pin(current_run_id()) if deps is not None else None
         if refusal is not None:
             return refusal
         offered = {item["id"]: item for item in controller.items()}

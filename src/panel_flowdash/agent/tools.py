@@ -79,6 +79,7 @@ class FlowDashDeps:
 
         *question* is what the user asked, which the turn of the agent's edits records.
         """
+        self.ops.editor.end_agent_turns()
         self._reset(_open_id(self.ops))
         self._explicit = True
         self._question = question if isinstance(question, str) else None
@@ -89,12 +90,14 @@ class FlowDashDeps:
         return self._question
 
     def end_request(self):
-        """Forget the request's pin once it is done."""
+        """Forget the request's pin once it is done, and end the turn of its edits.
+
+        Call it whether the request finished, failed or was cancelled.
+        """
+        self.ops.editor.end_agent_turns()
         self._reset(_UNPINNED)
 
     def _reset(self, pinned: t.Any, run_id: str | None = None):
-        # A request ends, finished or not, so its edits stop joining its turn.
-        self.ops.editor.end_agent_turns()
         self._pinned = pinned
         self._explicit = False
         self._run_id = run_id

@@ -116,3 +116,31 @@ async def test_commands_keep_to_the_dashboard_the_request_was_sent_on(monkeypatc
     output = await registry.invoke("run_command", {"command": "component:T/number"})
     assert "switched to another dashboard" in output
     assert app._editor._tile_items == []
+
+
+async def test_a_run_with_tools_and_palette_commands_is_one_turn(monkeypatch):
+    """Without start_request, a run's pin is kept across dashboard tools and palette commands."""
+    from panel_flowdash.agent.live import LiveDashboardOps
+    from panel_flowdash.agent.tools import FlowDashDeps, dashboard_toolset
+
+    store = MemoryDashboardStore()
+    mine = store.create_dashboard("alice", "Mine")
+    app = _app(store, monkeypatch)
+    app._load_dashboard_sync(mine.dashboard_id, edit=True)
+    deps = FlowDashDeps(LiveDashboardOps(app))
+    agent = Agent(
+        scripted(
+            ("add_node", {"component": "T/number", "name": "first"}),
+            ("run_command", {"command": "component:T/number"}),
+            ("add_node", {"component": "T/number", "name": "last"}),
+        ),
+        deps_type=FlowDashDeps,
+        toolsets=[dashboard_toolset(), ActionToolset(palette_actions(app, deps=deps))],
+    )
+    runner = AgentRunner(agent, RunState(flush_interval=0), deps=deps)
+    await runner.run("Add three numbers")
+    editor = app._editor
+    (turn,) = editor.turns
+    assert (turn.actor, turn.run) == ("agent", runner.run_id)
+    assert len(editor._tile_items) == 3
+    assert {editor.node_origin(i["instance_id"]) for i in editor._tile_items} == {turn.id}
