@@ -300,6 +300,16 @@ class TestNotes:
             ("<strong>x</strong>", "<p><strong>x</strong></p>"),
             ("<li>orphan</li>", "<p>orphan</p>"),
             ("<p><strong><em>a</em></strong></p>", "<p><em><strong>a</strong></em></p>"),
+            ("<p>x</p><p></p><p></p><p></p>", "<p>x</p><p></p><p></p>"),
+            (
+                '<ul><li>a</li><li class="ql-indent-1">b</li></ul>',
+                "<ul><li>a<ul><li>b</li></ul></li></ul>",
+            ),
+            (
+                '<ol><li data-list="bullet">a</li><li data-list="bullet" class="ql-indent-1">b</li></ol>',
+                "<ul><li>a<ul><li>b</li></ul></li></ul>",
+            ),
+            ("<p>\tab</p>", "<p>ab</p>"),
         ],
     )
     def test_lines_match_the_editors_form(self, markup, shown):
@@ -318,6 +328,8 @@ class TestNotes:
             ('<p><a href="https://a.test">l</a></p>', '<p><a href="https://b.test">l</a></p>'),
             ('<p class="ql-align-center">c</p>', "<p>c</p>"),
             ("<p>a&nbsp;b</p>", "<p>a b</p>"),
+            ("<p>a b</p>", "<p>a\tb</p>"),
+            ("<p>x</p>", "<p>x</p><ul><li></li></ul>"),
         ],
     )
     def test_lines_differ_when_the_notes_do(self, before, after):

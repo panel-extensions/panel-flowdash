@@ -465,7 +465,8 @@ def sanitize_notes(markup: str) -> str:
 
 _NOTES_LINES = frozenset({"p", "h1", "h2", "h3", "li", "blockquote"})
 _NOTES_INLINE = frozenset({"strong", "em", "u", "s", "code"})
-_WHITESPACE = re.compile(r"[ \t\n\r\f]+")
+_WHITESPACE = re.compile(r"[ \n\r\f]+")
+_INDENT = re.compile(r"^ql-indent-(\d)$")
 
 
 class _NotesLines(HTMLParser):
@@ -473,7 +474,8 @@ class _NotesLines(HTMLParser):
 
     Quill rewrites the HTML it is given into its own form: it joins blocks
     without whitespace, collapses spaces, splits a paragraph at each line break,
-    drops trailing empty paragraphs and wraps loose text in a paragraph. Two
+    drops trailing empty paragraphs, nests indented list items and wraps
+    loose text in a paragraph. Two
     markups that give the same lines show the same notes.
     """
 
@@ -492,10 +494,15 @@ class _NotesLines(HTMLParser):
             if tag in ("ol", "ul"):
                 depth += 1
                 kind = ("li", "bullet" if tag == "ul" else "ordered", depth)
+            elif tag == "li" and not depth:
+                pass
             elif tag == "li":
-                listed = dict(attrs).get("data-list")
-                if depth and listed:
-                    kind = ("li", listed, depth)
+                own = " ".join(value for name, value in attrs if name == "class").split()
+                indent = sum(int(m.group(1)) for c in own if (m := _INDENT.match(c)))
+                listed = dict(attrs).get("data-list") or kind[1]
+                kind = ("li", listed, depth + indent)
+                classes += [c for c in own if not _INDENT.match(c)]
+                continue
             elif kind == "p" and tag in _NOTES_LINES:
                 kind = tag
             classes += [value for name, value in attrs if name == "class"]
@@ -515,12 +522,14 @@ class _NotesLines(HTMLParser):
             for formats, chunk in runs:
                 if previous.endswith(" "):
                     chunk = chunk.lstrip(" ")
+                if not merged:
+                    chunk = chunk.lstrip(" \t")
                 if chunk:
                     merged.append((formats, chunk))
                     previous = chunk
             if merged:
                 formats, chunk = merged[-1]
-                merged[-1] = (formats, chunk.rstrip(" "))
+                merged[-1] = (formats, chunk.rstrip(" \t"))
                 if not merged[-1][1]:
                     merged.pop()
             self.lines.append((self._kind(), tuple(merged)))
@@ -561,7 +570,7 @@ class _NotesLines(HTMLParser):
         super().close()
         if self._runs or self._started:
             self._flush()
-        while self.lines and not self.lines[-1][1]:
+        while self.lines and self.lines[-1] == (("p", ()), ()):
             self.lines.pop()
 
 
