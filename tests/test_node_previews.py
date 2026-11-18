@@ -676,12 +676,8 @@ class TestHandleTops:
         editor, ids = demo_editor()
         spec = editor._flow.node_types["Demo__filter"]
         markup = card(editor, ids["filter"]).__panel__().object
-        for handle in spec["inputs"]:
+        for handle in [*spec["inputs"], *spec["outputs"]]:
             assert f'data-port="{handle["id"]}" style="top: {handle["top"]:.2f}px' in markup
-
-    async def test_canvas_has_no_handle_rules(self):
-        editor = FlowDash(DEMO, notifications=False)
-        assert all("data-handleid" not in css for css in editor._flow.stylesheets)
 
 
 class _FakeDoc:

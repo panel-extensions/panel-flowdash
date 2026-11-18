@@ -45,7 +45,7 @@ if t.TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["CARD_WIDTH", "NodeCard", "card_height", "port_offsets", "summarize_value"]
+__all__ = ["CARD_WIDTH", "NodeCard", "card_height", "port_offsets", "port_tops", "summarize_value"]
 
 CARD_WIDTH = 240
 _HEADER_HEIGHT = 34
