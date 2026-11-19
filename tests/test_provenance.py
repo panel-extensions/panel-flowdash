@@ -213,3 +213,17 @@ def test_a_closed_sheet_stays_closed_when_read_only_changes(viewing):
     viewing.read_only = True
     assert not _sheet(viewing).open and _sheet(viewing).objects == []
     assert viewing._span_view is None
+
+
+def test_later_changes_say_at_least_when_a_summary_was_cut_short(viewing):
+    viewing.editable = True
+    with agent_edits(run="run-2", question="Rewire it"):
+        viewing.connect("mine", "value", "double", "value")
+    with agent_edits(run="run-3", question="Add many"):
+        for i in range(10):
+            viewing.add_component("T/number", instance_id=f"n{i}")
+    viewing.editable = False
+    assert "And 2 more changes" in viewing.turns[-1].summary
+    viewing.show_how_made("double")
+    later = _sheet(viewing).objects[-1]
+    assert "Changed later by at least 1 request" in later.objects[0].object

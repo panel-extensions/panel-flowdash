@@ -114,6 +114,7 @@ from panel_flowdash.turns import (
     change_labels,
     changes_node,
     strip_questions,
+    summary_cut_short,
 )
 from panel_flowdash.ui import tile_layout
 from panel_flowdash.ui.controls_bar import ControlsBar
@@ -2270,6 +2271,13 @@ class FlowDash(Viewer):
         name = node_names(self._tile_items).get(instance_id, instance_id)
         return [copy.deepcopy(t) for t in turns[start + 1 :] if changes_node(t, name)]
 
+    def _later_turns_may_be_more(self, instance_id: str) -> bool:
+        """Whether a turn after a node's origin left changes out of its summary, so more may have changed it."""
+        origin = self._origins.get(instance_id)
+        turns = self._turn_log.turns
+        start = next((i for i, turn in enumerate(turns) if turn.id == origin), None)
+        return start is not None and any(summary_cut_short(t) for t in turns[start + 1 :])
+
     def _node_restricted(self, instance_id: str) -> bool:
         item = next((i for i in self._tile_items if i["instance_id"] == instance_id), None)
         if item is None:
@@ -2341,6 +2349,7 @@ class FlowDash(Viewer):
             state,
             redacted=self._turn_redacted(turn, instance_id),
             later=later,
+            more=turn is origin and self._later_turns_may_be_more(instance_id),
             on_open=lambda t: self.show_how_made(instance_id, t.id),
         )
         title = self._instance_title(instance_id)

@@ -58,6 +58,7 @@ def _later(
     later: Sequence[DashboardTurn],
     on_open: Callable[[DashboardTurn], None] | None,
     openable: Callable[[DashboardTurn], bool],
+    more: bool,
 ) -> Viewable:
     requests = [t for t in later if t.actor == "agent"]
     edits = len(later) - len(requests)
@@ -68,7 +69,7 @@ def _later(
         parts.append(f"{edits} manual edit{'s' * (edits != 1)}")
     objects: list[Viewable] = [
         pmui.Typography(
-            f"Changed later by {' and '.join(parts)}",
+            f"Changed later by {'at least ' if more else ''}{' and '.join(parts)}",
             variant="body2",
             margin=0,
             sx={"color": "text.secondary"},
@@ -102,6 +103,7 @@ def provenance_objects(
     redacted: bool,
     later: Sequence[DashboardTurn] = (),
     on_open: Callable[[DashboardTurn], None] | None = None,
+    more: bool = False,
 ) -> tuple[list[Viewable], SpanView | None]:
     """Show the agent request *turn* records and the turns that changed the node since.
 
@@ -110,7 +112,8 @@ def provenance_objects(
     run's versions but none of its model or tool calls. *redacted* hides the
     request's content (the question, summary, arguments, results and
     messages) and keeps its shape. *later* lists the turns that changed the
-    node after it was made; *on_open* is offered for those whose steps
+    node after it was made, and *more* says more may have, since a summary
+    names at most eight changes; *on_open* is offered for those whose steps
     *state* holds. Returns the objects and the span view among them, to
     release once closed.
     """
@@ -121,7 +124,7 @@ def provenance_objects(
     else:
         objects = [_fallback(turn, redacted)]
     if later:
-        objects.append(_later(later, on_open, lambda t: recorded(state, t.run)))
+        objects.append(_later(later, on_open, lambda t: recorded(state, t.run), more))
     return objects, span
 
 

@@ -386,6 +386,14 @@ def changes_node(turn: DashboardTurn, name: str) -> bool:
     )
 
 
+def summary_cut_short(turn: DashboardTurn) -> bool:
+    """Whether *turn*'s summary left changes out ("And 3 more changes"), so it may not name every node it changed."""
+    return any(
+        _MORE_LABELS.fullmatch(label.strip())
+        for label in (turn.summary or "").rstrip(".").split(". ")
+    )
+
+
 def _node(ref: t.Any) -> str:
     # Summaries name only the nodes of an edge: a port may be hidden from people
     # who cannot use the node's component, and summaries are shown to everyone.
@@ -449,4 +457,5 @@ __all__ = [
     "changes_node",
     "decode_turns",
     "strip_questions",
+    "summary_cut_short",
 ]
