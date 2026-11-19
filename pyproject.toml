@@ -57,7 +57,7 @@ dependencies = [
     "panel-splitjs >=0.4.0",
     # TileGrid.selected, preview_band and show_breakpoint_toolbar arrived in 0.6.0b0;
     # 0.6.0b1 adds the --tile-padding variable and clears edit-only state after editing.
-    "panel-tiles >=0.6.0b1",
+    "panel-tiles >=0.6.0b2",
     # Parameter.metadata, read for output port declarations, arrived in 2.3.
     "param >=2.3.0",
     "pyyaml",
