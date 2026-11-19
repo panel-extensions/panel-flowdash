@@ -157,3 +157,35 @@ async def test_the_users_own_edits_during_a_run_are_not_outlined(monkeypatch):
     components = {i["instance_id"]: i["component_id"] for i in app._editor._tile_items}
     marked = {components[iid]: kind for iid, kind in session.highlighter.marked.items()}
     assert marked == {"T/number": "add", "T/doubler": "add"}
+
+
+async def test_the_canvas_is_sent_again_only_when_the_marks_change(monkeypatch):
+    store = MemoryDashboardStore()
+    model = store.create_dashboard("alice", "Plant")
+    agent = Agent(
+        scripted(
+            ("add_node", {"component": "T/number", "name": "a"}),
+            ("add_node", {"component": "T/scaled", "name": "b"}),
+            ("set_config", {"name": "b", "config": {"factor": 3}}),
+            ("set_config", {"name": "a", "config": {}}),
+        ),
+        deps_type=FlowDashDeps,
+        toolsets=[dashboard_toolset()],
+    )
+    app = _app(store, monkeypatch, agent=agent)
+    app._load_dashboard_sync(model.dashboard_id, edit=True)
+    session = app._agent_session
+    resyncs = []
+    original = session.highlighter._resync_canvas
+    monkeypatch.setattr(
+        session.highlighter, "_resync_canvas", lambda ed: (resyncs.append(1), original(ed))
+    )
+
+    await session.runner.run("Add a number and a scaled number")
+
+    # One per node added; editing a node already outlined as added changes nothing.
+    assert len(resyncs) == 2
+    assert sorted(session.highlighter.marked.values()) == ["add", "add"]
+    for instance_id in session.highlighter.marked:
+        node = next(n for n in app._editor._flow.nodes if n["id"] == instance_id)
+        assert node["style"]["borderColor"].startswith("var(--mui-palette-success-main")

@@ -107,12 +107,19 @@ class ChangeHighlighter:
         session.runner.deps.edit_listeners.append(self._on_edit)
 
     def show(self, marks: dict[str, str]):
-        """Mark nodes of the open dashboard, given ``{node name: "add" | "change"}``."""
-        self.clear()
+        """Mark nodes of the open dashboard, given ``{node name: "add" | "change"}``.
+
+        Only the marks that differ from the ones shown are patched, and the
+        canvas is sent again only when one did, since that resends every node.
+        """
         editor = self.session.app._editor
+        if editor is not self._editor:
+            self.clear()
         if editor is None:
             return
         ids = {name: iid for iid, name in self.session.ops._names().items()}
+        wanted = {ids[name]: kind for name, kind in marks.items() if name in ids}
+        styles = self._node_styles(editor)
         self._editor = editor
         if id(editor) not in self._grids:
             # Tiles are built when the grid is (re)built, possibly after the edit.
@@ -122,14 +129,28 @@ class ChangeHighlighter:
             editor.param.watch(
                 lambda e, ed=editor: self._on_load(ed), "dashboard", onlychanged=False
             )
-        for name, kind in marks.items():
-            instance_id = ids.get(name)
-            if instance_id is None:
+        changed = False
+        for instance_id in [iid for iid in self.marked if iid not in wanted]:
+            del self.marked[instance_id]
+            editor._patch_canvas_props("node", instance_id, {"style": None})
+            self._set_tile_class(instance_id, None)
+            changed = True
+        for instance_id, kind in wanted.items():
+            # A node rebuilt since it was marked, e.g. by a reload, has lost its style.
+            style = _NODE_STYLES[kind]
+            if self.marked.get(instance_id) == kind and styles.get(instance_id) == style:
                 continue
             self.marked[instance_id] = kind
-            editor._patch_canvas_props("node", instance_id, {"style": _NODE_STYLES[kind]})
+            editor._patch_canvas_props("node", instance_id, {"style": style})
             self._set_tile_class(instance_id, kind)
-        self._resync_canvas(editor)
+            changed = True
+        if changed:
+            self._resync_canvas(editor)
+
+    @staticmethod
+    def _node_styles(editor) -> dict[str, t.Any]:
+        pending = editor._canvas_batch[0] if editor._canvas_batch is not None else []
+        return {node["id"]: node.get("style") for node in [*editor._flow.nodes, *pending]}
 
     def clear(self):
         editor = self._editor
