@@ -155,7 +155,11 @@ _ICON_BUTTON_SX = {"p": f"calc(({LABEL_LINE_HEIGHT} + 12px - 20px) / 2)"}
 _ICON_ONLY_WHEN_NARROW = icon_only_below(EDIT_COMPACT_BREAKPOINT)
 
 # The toggle groups are as tall as the outlined buttons beside them.
-_TOGGLE_SX = {"& .MuiToggleButton-root": {"textTransform": "none", "px": 1.5, "py": "6px"}}
+_TOGGLE_SX = {
+    "& .MuiToggleButton-root": {"textTransform": "none", "px": 1.5, "py": "6px"},
+    # Icon-only segments need less padding, which leaves the title room beside the Explore segment.
+    "@media (max-width: 799.95px)": {"& .MuiToggleButton-root": {"px": 0.75}},
+}
 
 _DIRTY_DOT_SX = {
     "display": "inline-flex",
@@ -199,6 +203,17 @@ def format_period(seconds: float) -> str:
     if seconds % 60 == 0:
         return f"{seconds // 60} min"
     return f"{seconds} s"
+
+
+_EXPLORE_LABEL = ":material/forum: Explore"
+
+# The view-mode toggle; people who may only view the dashboard get no Edit.
+_VIEW_OPTIONS = {
+    _EXPLORE_LABEL: "explore",
+    ":material/visibility: View": "view",
+    ":material/edit: Edit": "edit",
+}
+_READER_OPTIONS = {_EXPLORE_LABEL: "explore", ":material/visibility: View": "view"}
 
 
 class DashboardBar(Viewer):
@@ -386,7 +401,7 @@ class DashboardBar(Viewer):
             sx=_ICON_BUTTON_SX,
         )
         self.mode_toggle = pmui.RadioButtonGroup(
-            options={":material/visibility: View": "view", ":material/edit: Edit": "edit"},
+            options=_VIEW_OPTIONS,
             value="view",
             size="small",
             margin=(0, 12, 0, 4),
@@ -397,17 +412,19 @@ class DashboardBar(Viewer):
 
         self.mode_tabs = pmui.RadioButtonGroup(
             options={
+                _EXPLORE_LABEL: "explore",
                 ":material/account_tree: Dataflow": "wiring",
                 ":material/dashboard: Layout": "dashboard",
                 ":material/vertical_split: Split": "split",
             },
-            value=editor.mode,
+            value="explore" if editor.explore else editor.mode,
             size="small",
             margin=(0, 12, 0, 4),
             sx=_TOGGLE_SX,
             stylesheets=[_ICON_ONLY_WHEN_NARROW],
         )
-        self.mode_tabs.link(editor, value="mode", bidirectional=True)
+        self.mode_tabs.param.watch(self._on_tab, "value")
+        editor.param.watch(self._sync_switchers, ["explore", "mode", "read_only"])
         self.settings_button = pmui.Button(
             label="Settings",
             icon="tune",
@@ -577,7 +594,7 @@ class DashboardBar(Viewer):
         then the actions (``toolbar_extra`` such as Share) and the overflow menu.
         """
         editor = self.editor
-        actions = [] if editor.read_only else [self.mode_toggle]
+        actions = [self.mode_toggle]
         actions += [
             self.refresh_button,
             self.refresh_period,
@@ -676,8 +693,18 @@ class DashboardBar(Viewer):
         self.discard_button.disabled = not editor.dirty
         self.settings_button.disabled = editor.read_only
         self.settings_icon_button.disabled = editor.read_only
-        if self.mode_toggle.value != "view":
-            self.mode_toggle.value = "view"
+        self._sync_switchers()
+
+    def _sync_switchers(self, *_events):
+        """Show the open view in the View/Edit toggle and the edit tabs; readers get no Edit."""
+        editor = self.editor
+        options = _READER_OPTIONS if editor.read_only else _VIEW_OPTIONS
+        view = "explore" if editor.explore else "view"
+        if self.mode_toggle.options != options or self.mode_toggle.value != view:
+            self.mode_toggle.param.update(options=options, value=view)
+        tab = "explore" if editor.explore else editor.mode
+        if self.mode_tabs.value != tab:
+            self.mode_tabs.value = tab
 
     def _sync_lead(self):
         row = not self.in_header
@@ -788,7 +815,19 @@ class DashboardBar(Viewer):
 
     def _on_mode_toggled(self, event):
         if event.new == "edit":
+            self.editor.explore = False
             self.request_mode("edit")
+        elif event.new in ("explore", "view"):
+            self.editor.explore = event.new == "explore"
+
+    def _on_tab(self, event):
+        editor = self.editor
+        if event.new == "explore":
+            editor.explore = True
+        elif event.new is not None:
+            with param.parameterized.batch_call_watchers(editor):
+                editor.mode = event.new
+                editor.explore = False
 
     def request_mode(self, mode: str):
         """Switch to *mode* ("edit" or "view") through `on_mode`, or directly."""

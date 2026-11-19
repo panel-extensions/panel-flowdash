@@ -978,6 +978,16 @@ class FlowDash(Viewer):
         on the left. Only meaningful while `editable`.""",
     )
 
+    explore = param.Boolean(
+        default=False,
+        doc="""
+        Whether the Explore view is shown in place of the canvas and the tile
+        grid, in view and in edit mode: the dashboard's turns as a feed, each
+        with the outputs it made, live. See :mod:`panel_flowdash.explore`.""",
+    )
+
+    edited = param.Event(doc="Triggered after each edit is recorded in its turn.")
+
     node_previews = param.Boolean(
         default=False,
         doc="""
@@ -1234,6 +1244,7 @@ class FlowDash(Viewer):
         # The turns of the dashboard and the turn each item was created in.
         self._turn_log = TurnLog()
         self._origins: dict[str, str] = {}
+        self._explore_feed = None
         # The dashboard's parameters by name, each naming its node by instance id.
         self._parameters: dict[str, DashboardParameter] = {}
         # The component each parameter's node had when it was declared or loaded.
@@ -3061,14 +3072,15 @@ class FlowDash(Viewer):
         self._sync_toolbar_extra()
         self._sync_toolbar_state()
         self._stamp_refresh()
+        self._editor_row = pn.Row(
+            self._side_panel,
+            self._workspace_area,
+            self._panel_slot,
+            sizing_mode="stretch_both",
+        )
         return pn.Column(
             bar,
-            pn.Row(
-                self._side_panel,
-                self._workspace_area,
-                self._panel_slot,
-                sizing_mode="stretch_both",
-            ),
+            self._editor_row,
             self._status_bar,
             self._fullscreen_overlay,
             self._fullscreen_controller,
@@ -3077,6 +3089,38 @@ class FlowDash(Viewer):
             sizing_mode="stretch_both",
             stylesheets=[PRESENTATION_CSS],
         )
+
+    @property
+    def explore_feed(self):
+        """The :class:`~panel_flowdash.explore.ExploreFeed` the Explore view shows, made on first use."""
+        if self._explore_feed is None:
+            from panel_flowdash.explore import ExploreFeed
+
+            self._explore_feed = ExploreFeed(self)
+        return self._explore_feed
+
+    @pn.io.hold()
+    @param.depends("explore", watch=True)
+    def _show_explore(self):
+        """Show the Explore view or the canvas and tile grid; never both, as they share the tiles' views."""
+        view = self._view
+        if self.explore:
+            self.fullscreen = False
+            feed = self.explore_feed
+            view[1] = feed
+            self._status_bar.visible = False
+            feed.shown = True
+        else:
+            if self._explore_feed is not None:
+                self._explore_feed.shown = False
+            view[1] = self._editor_row
+            self._status_bar.visible = self.editable
+            self._sync_tile_drag()
+
+    @param.depends("edited", watch=True)
+    def _sync_explore(self):
+        if self._explore_feed is not None:
+            self._explore_feed._schedule()
 
     def _on_fullscreen_changed(self, event):
         self.fullscreen = event.new
@@ -3518,7 +3562,7 @@ class FlowDash(Viewer):
         self._inspector.visible = showing_canvas
         self._layout_panel.visible = interactive and showing_grid and not split
         self._panel_slot.visible = self._inspector.visible or self._layout_panel.visible
-        self._status_bar.visible = self.editable
+        self._status_bar.visible = self.editable and not self.explore
         self._split_view.events.active = split
         self._view_controls.param.update(beside_canvas=split, editing=interactive and showing_grid)
         if split != self._split_shown:
@@ -3568,7 +3612,7 @@ class FlowDash(Viewer):
 
     @property
     def _grid_on_screen(self) -> bool:
-        return self.mode in ("dashboard", "split") or not self.editable
+        return not self.explore and (self.mode in ("dashboard", "split") or not self.editable)
 
     def _on_split_collapsed(self, pane: int):
         """Fall back to the tab of the pane left over, keeping the split's sizes for next time."""
@@ -4769,6 +4813,7 @@ class FlowDash(Viewer):
             self._recording_edit = False
         if turn is not None:
             self._history.record(op, args or {}, label_for(labels), turn)
+            self.param.trigger("edited")
         return turn
 
     def _note_turn(self, *labels: str) -> DashboardTurn:
@@ -5733,6 +5778,8 @@ class FlowDash(Viewer):
         if not self._history_quiet:
             self._note_restricted()
             self._history.opened()
+        if self._explore_feed is not None:
+            self._explore_feed.sync()
 
     @contextmanager
     def _quiet_history(self):

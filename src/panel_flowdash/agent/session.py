@@ -125,6 +125,10 @@ class AgentSession:
                 else {}
             ),
         )
+        # The Explore view's composer asks this runner, so the drawer's chat is not needed beside it.
+        editor.explore_feed.attach(self.runner)
+        editor.param.watch(self._on_explore, "explore")
+        self._on_explore()
         self.highlighter = ChangeHighlighter(self)
         self.chrome = SessionChrome(self)
         self.history_notice = pmui.Alert(
@@ -138,6 +142,15 @@ class AgentSession:
             editor.edit_history.on_load = self._on_history_loaded
             self.drawer.param.watch(self._on_drawer_open, "open")
             self._place_history_notice()
+
+    def _on_explore(self, *_events):
+        """Close the drawer while Explore shows the chat, and bring back an approval left pending there."""
+        exploring = self.app._editor.explore
+        self.drawer.open_on_approval = not exploring
+        if exploring:
+            self.drawer.open = False
+        elif self.runner.state.pending_approvals:
+            self.drawer.open = True
 
     def _note_run(self, event):
         if isinstance(event, RunStarted) and event.parent_run_id is None:

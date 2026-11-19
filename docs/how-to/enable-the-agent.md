@@ -219,6 +219,27 @@ to people who may only view the dashboard, and to anyone who may not use the com
 of a node the request created. Set `editor_options={"provenance": False}` to leave the
 action out.
 
+### Explore
+
+**Explore**, next to View and Edit (and first among the Dataflow, Layout and Split tabs
+in edit mode), shows the dashboard as a conversation: one entry per turn, the question,
+the assistant's steps and answer, and below it a card for each node the turn created,
+showing that node live. A view or control shows what its tile shows; a data source or
+transform shows its output as a table. **Add to dashboard** on a card places the node's
+tile on the grid, and "On dashboard" says it is there already. A card whose node a later
+turn changed says so ("Changed later by 1 manual edit"), and a batch of manual edits is
+an entry of its own listing what changed. Nodes made before the dashboard recorded turns
+are listed, collapsed, in a first entry, and open one at a time.
+
+The question box at the bottom asks the assistant, as the drawer's chat does; while
+Explore is shown the drawer stays closed, and an approval the agent asks for there is
+answered in the feed. Leaving Explore with an approval pending opens the drawer on it.
+Requests made in this session show every step; after a reload, or for requests made
+by others, an entry shows what the dashboard file records, with the same redaction as
+**How was this made?**. People who may only view the dashboard get the feed without the
+question box and without **Add to dashboard**. Explore works without an agent too, then
+showing the recorded turns only.
+
 Each request to the agent stays on the dashboard that was open when the user sent it:
 if the user opens another dashboard while the agent works, every further tool call
 and palette command of that request is refused, so the agent stops instead of
