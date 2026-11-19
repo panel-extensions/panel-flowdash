@@ -6,7 +6,7 @@ Initial release of panel-flowdash.
 
 ### Upgrading from 0.1.0rc2
 
-Installation. panel-flowdash requires Python 3.12 or newer and Panel 1.11 or newer, which panel-material-ui 0.17 needs; Python 3.10 and 3.11 are no longer supported. It also requires panel-reactflow 0.6.0b5 and panel-tiles 0.6.0b2 or later. panel-agents is always installed, while the `agent` extra still adds pydantic-ai for the assistant.
+Installation. panel-flowdash requires Python 3.12 or newer and Panel 1.11 or newer, which panel-material-ui 0.17 needs; Python 3.10 and 3.11 are no longer supported. It also requires panel-reactflow 0.6.0b6 and panel-tiles 0.6.0b2 or later. panel-agents is always installed, while the `agent` extra still adds pydantic-ai for the assistant.
 
 Look and defaults. Dashboards saved with rc2 load unchanged, but several defaults changed and the editor was redesigned, so they look and behave differently:
 
@@ -98,6 +98,7 @@ Serving and API:
 - Every way of leaving a dashboard with unsaved changes asks first, including picking a dashboard in the switcher, creating a new one and reloading the tab, and the dialog lists what changed
 - An empty canvas shows a start card that adds a data source in one click
 - An input nothing is connected to gets a typed editor in the inspector, built from the component's Parameter or port type, so a filter value, a KPI reference or a year range needs no extra widget node. The value is stored under a node's `inputs`, next to `config`, and a connection always wins over it. A refused value says what the input needs, e.g. "Needs two numbers, like (2010, 2020)."
+- Dropping a table output on a number input, such as a KPI's value, offers to connect it through a column and an aggregation, with a preview of the number the input would get; dropping a component from the palette there offers the same. Any other refused drop says why
 - The KPI's Format is a dropdown of named formats with examples, or a custom format spec, and its Thresholds are rows of an "Up to" limit and a color. Both are stored as before
 - The Split tab shows the dashboard at its pane's width, as the dashboard would look at that width, and the Layout tab keeps a row of a heading and a KPI together below 1600 px. Requires panel-tiles 0.6.0b2 or later
 - Download a dashboard as JSON from the editor and drop the file onto the canvas to recreate it; `FlowDash.export_dashboard()` and `FlowDash.import_dashboard()` do the same from Python
