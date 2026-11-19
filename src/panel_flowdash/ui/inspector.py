@@ -26,6 +26,7 @@ from panel_flowdash.groups import component_nodes, group_id_of
 from panel_flowdash.input_literals import takes_literal
 from panel_flowdash.transforms import parse_transform, summarize_transform
 from panel_flowdash.ui.choice_widgets import form_widgets, widgets_key
+from panel_flowdash.ui.code_field import CodeField
 from panel_flowdash.ui.config_draft import ConfigDraft
 from panel_flowdash.ui.input_editor import LiteralEditor
 from panel_flowdash.ui.node_card import (
@@ -697,7 +698,7 @@ class Inspector(Viewer):
     ) -> pn.Param:
         widgets = form_widgets(state, names, choices)
         self._form_key = widgets_key(widgets)
-        return pn.Param(
+        form = pn.Param(
             state,
             parameters=names,
             widgets=widgets or None,
@@ -706,6 +707,22 @@ class Inspector(Viewer):
             sizing_mode="stretch_width",
             margin=0,
         )
+        editor = weakref.ref(self.editor)
+        for field in form.select(CodeField):
+            # Typed text is applied on blur, so Save is offered while some waits.
+            field.param.watch(
+                lambda _event: (e := editor()) is not None and e._sync_toolbar_state(), "unsent"
+            )
+        return form
+
+    def has_unsent_text(self) -> bool:
+        """Whether a code field shown holds typed text it has not applied yet."""
+        return any(field.unsent for field in pn.Column(*self._body).select(CodeField))
+
+    async def settle(self) -> None:
+        """Wait for the config check of an edit in the form shown, so a save includes it."""
+        if self._draft is not None:
+            await self._draft.settle()
 
     def _watch_choices(self, instance_id, spec, config_state, edited, names, holder):
         """Offer the node's config choices in *holder*'s form, asking again as its inputs or config change."""

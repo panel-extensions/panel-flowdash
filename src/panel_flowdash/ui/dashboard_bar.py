@@ -670,7 +670,9 @@ class DashboardBar(Viewer):
             items=items,
             stylesheets=[_DANGER_LAST_ITEM] if items and items[-1] is _CLEAR else [],
         )
-        self.save_button.disabled = editor.read_only or not editor.dirty
+        self.save_button.disabled = editor.read_only or not (
+            editor.dirty or editor._has_unsent_edits()
+        )
         self.discard_button.disabled = not editor.dirty
         self.settings_button.disabled = editor.read_only
         self.settings_icon_button.disabled = editor.read_only

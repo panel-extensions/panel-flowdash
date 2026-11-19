@@ -5,7 +5,7 @@ import param
 import pytest
 from panel.viewable import Viewer
 
-from panel_flowdash import register
+from panel_flowdash import MemoryDashboardStore, register
 from panel_flowdash.component_spec import build_component_spec
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.registry import RegistryEntry
@@ -21,7 +21,7 @@ SQL = {"flowdash": {"widget": "code", "language": "sql"}}
 @register(page=False, component=True, title="Query", config=["sql", "notes", "title"])
 class Query(Viewer):
     sql = param.String(default="SELECT 1", metadata=SQL)
-    notes = param.String(default="", metadata={"flowdash": {"widget": "code"}})
+    notes = param.String(default=None, allow_None=True, metadata={"flowdash": {"widget": "code"}})
     title = param.String(default="")
 
     def __panel__(self):
@@ -60,7 +60,14 @@ COMPONENTS = {"D/query": Query, "D/checked": CheckedQuery, "D/schema": schema_qu
 
 @pytest.fixture
 async def editor():
-    editor = FlowDash(COMPONENTS, notifications=False, include_builtin_components=False)
+    editor = FlowDash(
+        COMPONENTS,
+        notifications=False,
+        include_builtin_components=False,
+        store=MemoryDashboardStore(),
+        history_coalesce=0,
+    )
+    editor.new_dashboard("Queries")
     yield editor
     editor.dispose()
 
@@ -120,6 +127,53 @@ class TestInspector:
         field._editor.value = "SELECT 2"
         await _settle()
         assert editor._component_instances[node].sql == "SELECT 2"
+
+    async def test_an_unset_optional_field_shows_empty_and_undo_unsets_it(self, editor):
+        node = editor.add_component("D/query")
+        field = _field(editor, node, "Notes")
+        assert field._editor.value == "" and field.value is None
+        field._editor.value = "remember"
+        assert editor._component_instances[node].notes == "remember"
+        assert editor.undo()
+        field = _field(editor, node, "Notes")
+        assert editor._component_instances[node].notes is None
+        assert field._editor.value == "" and field._large.value == ""
+
+    async def test_a_disabled_field_is_read_only(self, editor):
+        field = CodeField(label="Sql", value="SELECT 1", disabled=True)
+        assert field._editor.readonly and field._large.readonly
+        assert field.expand_button.disabled
+        field.disabled = False
+        assert not field._editor.readonly
+
+    async def test_typed_text_offers_save_until_it_is_applied(self, editor):
+        node = editor.add_component("D/query")
+        editor.save()
+        field = _field(editor, node, "Sql")
+        assert editor._dashboard_bar.save_button.disabled
+        field._editor.value_input = "SELECT 2"
+        assert field.unsent and not editor._dashboard_bar.save_button.disabled
+        field._editor.value = "SELECT 2"
+        assert not field.unsent
+
+    async def test_save_waits_for_the_check_of_an_edit(self, editor):
+        node = editor.add_component("D/checked")
+        editor.save()
+        field = _field(editor, node, "Sql")
+        await _settle()
+        field._editor.value = "SELECT 42"
+        editor._save_from_button()
+        await _settle(0.5)
+        stored = editor.store.load_dashboard(editor.user, editor.dashboard.dashboard_id)
+        assert stored.items[0].config["sql"] == "SELECT 42"
+        assert not editor.dirty
+
+    async def test_the_builtin_markdown_text_is_edited_as_markdown(self):
+        editor = FlowDash(notifications=False)
+        node = editor.add_component("Text/Markdown")
+        field = _field(editor, node, "Text")
+        assert field._editor.language == "markdown"
+        editor.dispose()
 
     async def test_a_schema_field_gets_the_editor(self, editor):
         node = editor.add_component("D/schema")
