@@ -310,6 +310,22 @@ register_port_type("mylib.Query", columns=lambda query: query.schema)  # {name: 
 
 ---
 
+### 6. Edit code, SQL or Markdown in a code editor
+
+A text field holding a query, code or Markdown can ask for a code editor
+instead of a one-line text box:
+
+```python
+sql = param.String(default="", metadata={"flowdash": {"widget": "code", "language": "sql"}})
+```
+
+The inspector shows a few lines with highlighting for the `language` (any
+language Panel's `CodeEditor` knows, e.g. `sql`, `python`, `markdown` or
+`json`; `text` without one) and a button that opens the same text in a larger
+editor. The text is applied when the editor loses focus, not on every key, so a
+`check_config` runs once per edit. In a JSON schema the same declaration is
+`"x-flowdash": {"widget": "code", "language": "sql"}` on the property.
+
 ## How configuration reaches your component
 
 The way config is delivered depends on the component style.
