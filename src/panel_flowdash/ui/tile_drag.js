@@ -281,7 +281,7 @@ export function render({model}) {
     const tile = item?.querySelector(`[class*="${TILE_KEY_PREFIX}"]`)
     const info = tile ? model.tiles[keyOf(tile, TILE_KEY_PREFIX)] : null
     if (!info || !model.areas.length) { return }
-    drag = {kind: "tile", ...info, x0: e.clientX, y0: e.clientY, started: false}
+    drag = {kind: "tile", ...info, item, x0: e.clientX, y0: e.clientY, started: false}
   }
 
   function onMove(e) {
@@ -303,8 +303,22 @@ export function render({model}) {
     finish()
     if (!target || (current.kind === "tile" && target.area === "grid")) { return }
     const action = target.refused ? "refuse" : "move"
-    // After the grid has sent the layout the drag ended with, so the move applies to it.
-    setTimeout(() => model.send_msg({action, id: current.id, area: target.area, before: target.before}), 0)
+    const send = () => model.send_msg({action, id: current.id, area: target.area, before: target.before})
+    if (current.kind !== "tile") {
+      send()
+      return
+    }
+    // After the grid has sent the layout the drag ended with, so the move applies
+    // to it: Muuri ends a drag a frame or more after the pointer is released.
+    const until = performance.now() + 2000
+    const settled = () => {
+      if (current.item.classList.contains("muuri-item-dragging") && performance.now() < until) {
+        requestAnimationFrame(settled)
+      } else {
+        setTimeout(send, 50)
+      }
+    }
+    requestAnimationFrame(settled)
   }
 
   function onKey(e) {

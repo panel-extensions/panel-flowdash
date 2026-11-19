@@ -2774,6 +2774,11 @@ class FlowDash(Viewer):
         # it itself whenever the grid is rebuilt or sized.
         from_browser = self._tile_grid._in_process__events.get(pn.state.curdoc, {})
         if event.name in from_browser:
+            if event.name == "layout" and len(event.new) != len(self._grid_ids):
+                # Sent for tiles the grid showed before a change the browser has
+                # not applied yet, so it would size the wrong tiles.
+                self._tile_grid.layout = event.old
+                return
             self._auto_tiles.clear()
             self._mark_rearranged()
 
