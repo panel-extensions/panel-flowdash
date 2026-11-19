@@ -54,6 +54,9 @@ EARLIER_KIND = "outputs"
 
 EARLIER_TITLE = "Before the recorded requests"
 
+# Who the leading entry is from, with a dashboard for an avatar.
+EARLIER_AGENT = "Dashboard"
+
 #: The title of a card whose node uses a component the person may not use.
 RESTRICTED_TITLE = "Restricted output"
 
@@ -61,6 +64,9 @@ RESTRICTED_TITLE = "Restricted output"
 # shell hides it (``panel_flowdash.ui.shell.NARROW_BREAKPOINT``, which imports the app).
 RAIL_WIDTH = 80
 NARROW_BREAKPOINT = 600
+
+#: How many entries around the visible ones the feed renders; enough for any feed.
+FEED_LOAD_BUFFER = 100_000
 
 #: The height of a card showing a component's view, when its size hints give none.
 CARD_HEIGHT = 320
@@ -193,6 +199,10 @@ class ExploreFeed(Viewer):
             readonly=not composer,
             user="You",
             tool_labels=TOOL_LABELS,
+            # The feed renders every entry: a window of rendered entries that shifts
+            # as one is added re-renders the feed and loses the reader's place.
+            feed_params={"load_buffer": FEED_LOAD_BUFFER},
+            **({"avatars": {EARLIER_AGENT: "📊"}} if "avatars" in AgentChat.param else {}),
             inline_artifacts=lambda artifact: (
                 artifact.kind in NODE_KINDS.values() or artifact.kind == EARLIER_KIND
             ),
@@ -317,7 +327,7 @@ class ExploreFeed(Viewer):
                 artifact_id=f"{_EARLIER_RUN}:nodes",
                 value={"nodes": earlier},
                 kind=EARLIER_KIND,
-                title=f"{len(earlier)} output{'s' * (len(earlier) != 1)}",
+                title=EARLIER_TITLE,
                 run_id=_EARLIER_RUN,
                 timestamp=0.0,
             )
@@ -362,7 +372,7 @@ class ExploreFeed(Viewer):
             "were recorded. Open one to see it here."
         )
         return [
-            ev.RunStarted(run_id=_EARLIER_RUN, agent_name="Dashboard", timestamp=0.0),
+            ev.RunStarted(run_id=_EARLIER_RUN, agent_name=EARLIER_AGENT, timestamp=0.0),
             *_message(_EARLIER_RUN, "a", "assistant", text, 0.0),
             ev.RunFinished(run_id=_EARLIER_RUN, timestamp=0.0),
         ]
