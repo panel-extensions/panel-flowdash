@@ -39,10 +39,10 @@ def test_dropping_a_table_on_a_number_offers_a_transform(page):
 
     dialog = page.get_by_role("dialog")
     expect(dialog.get_by_text("Connect with a transform")).to_be_visible(timeout=8000)
-    expect(dialog.get_by_text("Gives 3.5")).to_be_visible()
+    expect(dialog.get_by_text("Gives 3.50")).to_be_visible()
     dialog.get_by_role("combobox", name="Aggregate").click()
     page.get_by_role("listbox").get_by_text("Maximum", exact=True).click()
-    expect(dialog.get_by_text("Gives 2.0")).to_be_visible(timeout=8000)
+    expect(dialog.get_by_text("Gives 2")).to_be_visible(timeout=8000)
     dialog.get_by_role("button", name="Connect").click()
 
     wait_until(lambda: len(editor.graph.edges) == 1, timeout=8000)

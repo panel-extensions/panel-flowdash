@@ -5,11 +5,13 @@ import param
 import pytest
 from panel.viewable import Viewer
 
-from panel_flowdash import register
+from panel_flowdash import register, register_port_type
 from panel_flowdash.agent import DashboardOps, OperationError
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.transforms import apply_transform, parse_transform
 from panel_flowdash.ui.transform_offer import bridge_kind, bridge_steps
+
+from .test_config_choices import port_types_restored  # noqa: F401
 
 
 @register(
@@ -45,7 +47,44 @@ class Total(Viewer):
         return "total"
 
 
-COMPONENTS = {"D/rows": Rows, "D/levels": Levels, "D/total": Total}
+@register(
+    page=False, component=True, title="Mixed", provides=[{"key": "rows", "type": "DataFrame"}]
+)
+class Mixed(Viewer):
+    @param.output(param.DataFrame)
+    def rows(self):
+        return pd.DataFrame(
+            {
+                "id": [1, 2],
+                "year": [2020, 2021],
+                "capacity": [500.25, 1000.25],
+                "empty": [float("nan"), float("nan")],
+                "when": pd.to_datetime(["2020-01-01", "2021-01-01"]),
+                "flag": [True, False],
+                "state": ["TX", "CA"],
+            }
+        )
+
+    def __panel__(self):
+        return "mixed"
+
+
+@register(
+    page=False,
+    component=True,
+    title="Turbines",
+    provides=[{"key": "rows", "type": "tests.Turbines"}],
+)
+class Turbines(Viewer):
+    @param.output(param.DataFrame)
+    def rows(self):
+        return pd.DataFrame({"capacity": [1.0, 2.0]})
+
+    def __panel__(self):
+        return "turbines"
+
+
+COMPONENTS = {"D/rows": Rows, "D/levels": Levels, "D/total": Total, "D/turbines": Turbines}
 
 
 @pytest.fixture
@@ -124,7 +163,7 @@ class TestOffer:
         assert editor.graph.edges == [] and editor._flow.edges == []
         assert list(offer._column.options.values()) == ["capacity", "count", "state"]
         assert offer._column.value == "capacity"
-        assert offer._result.object == "Gives 3.5"
+        assert offer._result.object == "Gives 3.50"
         assert "Rows of Rows is a table and Value of Total takes a number" in (
             offer._message.object
         )
@@ -134,12 +173,12 @@ class TestOffer:
         _drop(editor, rows, "rows", total, "value")
         offer = editor._transform_offer
         offer._how.value = "max"
-        assert offer._result.object == "Gives 2.0"
+        assert offer._result.object == "Gives 2"
         offer._column.value = "state"
-        assert "rejects the current value" in offer._result.object
-        assert offer._confirm.disabled
-        offer._how.value = "count"
+        assert list(offer._how.options.values()) == ["count"], "only count gives a number"
         assert offer._result.object == "Gives 2" and not offer._confirm.disabled
+        offer._column.value = "capacity"
+        assert "sum" in offer._how.options.values()
 
     def test_connect_creates_the_edge_with_the_steps(self, editor):
         rows, total = _placed(editor)
@@ -178,7 +217,8 @@ class TestOffer:
         assert offer._column_text.visible and not offer._column.visible
         assert offer._confirm.disabled
         offer._column_text.value = "capacity"
-        assert offer._result.object == "No value yet" and not offer._confirm.disabled
+        assert offer._result.object.startswith("The table has no value yet")
+        assert offer._confirm.disabled
 
     def test_dropping_a_component_on_a_number_input_offers_steps(self, editor):
         total = editor.add_component("D/total", instance_id="total")
@@ -204,17 +244,80 @@ class TestRefused:
                 "reason": "Type mismatch: no.",
             }
         )
-        editor._on_connection_refused({"reason": "Type mismatch: no."})
-        assert ("warning", "Not connected: Type mismatch: no.") in notes
+        if not notes:
+            pytest.skip("This panel-reactflow has no connection_refused event.")
+        assert notes == [("warning", "Not connected: Type mismatch: no.")]
 
-    def test_an_unbridgeable_edge_from_the_browser_is_still_refused(self, editor, monkeypatch):
+    def test_a_refusal_without_a_reason_still_says_so(self, editor, monkeypatch):
         notes = []
         monkeypatch.setattr(editor, "_notify", lambda *args, **kwargs: notes.append(args))
-        rows, total = _placed(editor)
-        editor.connect(rows, "rows", total, "value", bridge_steps("capacity", "sum"))
         editor._on_connection_refused({})
-        assert notes[-1] == ("warning", "Not connected: the port refuses it.")
+        assert notes == [("warning", "Not connected: the port refuses it.")]
+
+    def test_an_edge_the_graph_refuses_is_removed_from_the_page(self, editor, monkeypatch):
+        sent = []
+        monkeypatch.setattr(editor._flow, "_send_msg", sent.append)
+        rows, total = _placed(editor)
+        editor.add_component("D/levels", instance_id="levels")
+        editor.connect("levels", "levels", total, "value", bridge_steps(None, "sum"))
+        # Taken since the drag started: the browser drew it, the graph refuses it.
+        monkeypatch.setattr(editor, "_validate_connection", lambda *args, **kwargs: None)
+        _drop(editor, rows, "rows", total, "value")
+        assert {"type": "edge_rejected", "edge_id": f"{rows}-{total}"}.items() <= sent[-1].items()
         assert not editor._transform_offer.dialog.open
+        assert len(editor.graph.edges) == 1
+
+
+class TestBuiltinKPI:
+    @pytest.fixture
+    def kpi_editor(self):
+        editor = FlowDash(
+            {**COMPONENTS, "D/mixed": Mixed}, notifications=False, history_coalesce=0
+        )
+        yield editor
+        editor.dispose()
+
+    def test_only_results_the_kpi_can_show_can_be_connected(self, kpi_editor):
+        editor = kpi_editor
+        mixed = editor.add_component("D/mixed", instance_id="mixed")
+        kpi = editor.add_component("Widgets/KPI", instance_id="kpi")
+        _drop(editor, mixed, "rows", kpi, "value")
+        offer = editor._transform_offer
+        assert offer._column.value == "capacity", "a measure rather than an id or a year"
+        for column in ("when", "flag", "state"):
+            offer._column.value = column
+            assert list(offer._how.options.values()) == ["count"]
+        offer._column.value = "empty"
+        offer._how.value = "mean"
+        assert offer._confirm.disabled and "not a number" in offer._result.object
+        offer._column.value = "capacity"
+        offer._how.value = "sum"
+        assert offer._result.object == "Gives 1,500.50"
+        assert offer.confirm() is True
+        assert editor._component_instances[kpi].value == 1500.5
+
+    def test_closing_forgets_the_connection(self, kpi_editor):
+        editor = kpi_editor
+        rows = editor.add_component("D/rows", instance_id="rows")
+        kpi = editor.add_component("Widgets/KPI", instance_id="kpi")
+        _drop(editor, rows, "rows", kpi, "value")
+        editor._transform_offer.dialog.open = False
+        assert editor._transform_offer.mapping is None
+
+
+class TestSubtypes:
+    @pytest.mark.usefixtures("port_types_restored")
+    def test_a_registered_dataframe_subtype_bridges(self, editor):
+        register_port_type("tests.Turbines", subtype_of=["DataFrame"])
+        assert bridge_kind("tests.Turbines", "Number") == "column"
+        assert bridge_kind("any", "Number") is None
+        turbines = editor.add_component("D/turbines", instance_id="turbines")
+        total = editor.add_component("D/total", instance_id="total")
+        _drop(editor, turbines, "rows", total, "value")
+        assert editor._transform_offer.mapping == (turbines, "rows", total, "value")
+        ops = DashboardOps(editor)
+        with pytest.raises(OperationError, match="aggregate"):
+            ops.connect("turbines.rows", "total.value")
 
 
 class TestAgent:
