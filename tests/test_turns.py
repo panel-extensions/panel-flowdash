@@ -133,7 +133,7 @@ def test_pre_release_files_are_written_back_as_version_1(version):
 
 @pytest.mark.parametrize("version", [0, 5, "2", True])
 def test_unknown_versions_are_refused(version):
-    with pytest.raises(DashboardYAMLError, match="this release reads version 1") as info:
+    with pytest.raises(DashboardYAMLError, match="this release reads versions 1 to 4") as info:
         dashboard_from_yaml(V2.replace("flowdash: 1", f"flowdash: {json.dumps(version)}"))
     assert info.value.path == "flowdash"
 

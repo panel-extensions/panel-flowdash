@@ -800,8 +800,9 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
         newer = type(version) is int and version > READ_VERSIONS[-1]
         _fail(
             "flowdash",
-            f"unsupported format version {version!r}; this release reads version "
-            f"{FORMAT_VERSION}." + (" The file was written by a newer FlowDash." if newer else ""),
+            f"unsupported format version {version!r}; this release reads versions "
+            f"{READ_VERSIONS[0]} to {READ_VERSIONS[-1]}."
+            + (" The file was written by a newer FlowDash." if newer else ""),
         )
     _unknown_keys(doc, TOP_LEVEL_KEYS, "document")
     title = doc.get("title")

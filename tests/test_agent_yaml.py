@@ -314,7 +314,7 @@ class TestValidate:
             "nodes.a: unknown key 'colour'; expected component, origin, group, config, inputs, position."
         ]
         assert _validate("flowdash: 5\n") == [
-            "flowdash: unsupported format version 5; this release reads version 1. "
+            "flowdash: unsupported format version 5; this release reads versions 1 to 4. "
             "The file was written by a newer FlowDash."
         ]
         assert _validate("nodes: {}\n")[0].startswith("document:")

@@ -4,6 +4,10 @@ name = "panel-flowdash"
 channels = ["conda-forge", "pyviz", { channel = "pyviz/label/dev", priority = -1 }]
 platforms = ["osx-arm64", "linux-64", "win-64"]
 preview = ["pixi-build"]
+# Name the PyPI packages that the dev label's conda packages provide, so PyPI
+# packages depending on them (panel-agents, panel-reactflow, ...) do not install
+# a second copy from PyPI.
+conda-pypi-map = { "pyviz/label/dev" = "pixi-dev-label-map.json" }
 requires-pixi = ">=0.68.1"
 
 [package]
@@ -39,12 +43,6 @@ panel-material-ui = { version = ">=0.17.0b3", channel = "pyviz/label/dev" }
 panel = { version = ">=1.11.0rc0", channel = "pyviz/label/dev" }
 
 [pypi-dependencies]
-# PyPI packages that depend on panel-material-ui (panel-agents) would otherwise pull
-# in the last stable release over the conda one, since pixi does not map the dev
-# label's conda package to its PyPI name.
-panel-material-ui = ">=0.17.0b3"
-# Keeps panel-agents from pulling in the last stable Panel over the conda one.
-panel = ">=1.11.0rc0"
 # TODO: Add these to conda-forge / pyviz
 # Pre-release floors matching pyproject.toml until panel-reactflow and panel-tiles
 # 0.6.0 are released.
