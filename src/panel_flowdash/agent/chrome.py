@@ -35,7 +35,9 @@ TOOL_LABELS: dict[str, str | t.Callable[[dict], str]] = {
     "preview_dashboard": "Preview the dashboard",
     "add_node": lambda a: f"Add {str(a.get('component', 'a component')).split('/')[-1]}",
     "remove_node": lambda a: f"Remove {a['name']}",
-    "set_config": lambda a: f"Change {a['name']}: {_keys(a.get('config'))}",
+    "set_config": lambda a: (
+        f"Change {a['name']}: {_keys({**(a.get('config') or {}), **(a.get('inputs') or {})})}"
+    ),
     "connect": lambda a: f"Connect {_node(a.get('source'))} to {_node(a.get('target'))}",
     "disconnect": lambda a: f"Disconnect {_node(a.get('source'))} from {_node(a.get('target'))}",
     "set_transform": lambda a: (

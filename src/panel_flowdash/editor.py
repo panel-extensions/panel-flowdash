@@ -77,6 +77,7 @@ from panel_flowdash.groups import (
     unique_group_id,
 )
 from panel_flowdash.history import BURST_SECONDS, HISTORY_MAX_BYTES, EditHistory, label_for
+from panel_flowdash.input_literals import check_literal, stored_literal
 from panel_flowdash.parameters import (
     ContractError,
     ContractProblem,
@@ -522,7 +523,11 @@ def export_model(
             if parameter["node"] not in restricted
         }
         data["items"] = [
-            {**item, "component_id": RESTRICTED_COMPONENT_ID, "config": {}}
+            {
+                **{k: v for k, v in item.items() if k != "inputs"},
+                "component_id": RESTRICTED_COMPONENT_ID,
+                "config": {},
+            }
             if item["instance_id"] in restricted
             else item
             for item in data["items"]
@@ -2445,16 +2450,28 @@ class FlowDash(Viewer):
     # Config state
     # ------------------------------------------------------------------
 
-    def _apply_config_patch(self, node_id, patch):
-        """Apply an editor patch to a node's config state and persist it."""
-        applied = self._set_config_state(node_id, patch)
-        if not applied:
+    def _apply_config_patch(self, node_id, patch, inputs=None):
+        """Apply an editor patch to a node's config state, and *inputs* literals, as one edit.
+
+        The *inputs* are checked first, so a refused one changes nothing.
+        """
+        changed = self._set_input_values(node_id, inputs) if inputs else {}
+        applied = self._set_config_state(node_id, patch) if patch else {}
+        if not applied and not changed:
             return
         name = self._node_name(node_id)
+        if not applied:
+            labels = ", ".join(changed.values())
+            label = f"Set {labels} of {name}"
+        else:
+            label = f"Changed the config of {name}"
         self._record_edit(
-            f"Changed the config of {name}",
-            op="set_config",
-            args={"name": name, "keys": sorted(applied)},
+            label,
+            op="set_config" if applied else "set_input",
+            args={
+                "name": name,
+                "keys": sorted(applied) + [f"inputs.{p}" for p in sorted(changed)],
+            },
         )
 
     def _set_config_state(self, node_id, patch) -> dict:
@@ -5402,6 +5419,7 @@ class FlowDash(Viewer):
                 y=positions.get(item["instance_id"], (0, 0))[1],
                 config=item.get("config", {}),
                 origin=self._origins.get(item["instance_id"]),
+                inputs=copy.deepcopy(item.get("inputs") or {}),
             )
             for item in self._tile_items
         ]
@@ -5524,6 +5542,7 @@ class FlowDash(Viewer):
                             {spec.resolve_name(key): value for key, value in item.config.items()},
                             {"x": item.x, "y": item.y},
                         )
+                        self._set_inputs(item.instance_id, item.inputs)
                         continue
                     except Exception:
                         logger.exception(
@@ -5637,6 +5656,7 @@ class FlowDash(Viewer):
                 "instance_id": item.instance_id,
                 "component_id": item.component_id,
                 "config": copy.deepcopy(item.config),
+                "inputs": copy.deepcopy(item.inputs),
                 "placeholder": placeholder,
             }
         )
@@ -5943,6 +5963,7 @@ class FlowDash(Viewer):
         for iid in kept:
             if iid in placeholders and (
                 before[iid].config != after[iid].config
+                or before[iid].inputs != after[iid].inputs
                 or before[iid].component_id != after[iid].component_id
             ):
                 return False
@@ -5982,9 +6003,11 @@ class FlowDash(Viewer):
                     {spec.resolve_name(k): v for k, v in item.config.items()},
                     {"x": item.x, "y": item.y},
                 )
+                self._set_inputs(iid, item.inputs)
             for iid in kept:
                 if iid not in placeholders:
                     self._set_config(iid, after[iid].config)
+                    self._set_inputs(iid, after[iid].inputs)
             fresh = set(replaced) | set(added)
             for key, edge in new_edges.items():
                 old = old_edges.get(key)
@@ -6093,6 +6116,131 @@ class FlowDash(Viewer):
                     if rejected is not _MISSING:
                         self._rejected_config[instance_id][key] = rejected
         item["config"] = copy.deepcopy(target)
+
+    def _set_inputs(self, instance_id: str, inputs: dict[str, t.Any]):
+        """Give a placed node exactly *inputs* as the literal values of its inputs.
+
+        A value its input refuses, e.g. one of a port the component no longer
+        has, is logged and kept in the item, so saving writes it back unchanged.
+        """
+        item = next(i for i in self._tile_items if i["instance_id"] == instance_id)
+        spec = self._component_specs.get(item["component_id"])
+        target = {
+            spec.resolve_name(k) if spec else k: v for k, v in inputs.items() if v is not None
+        }
+        graph = self._dataflow_graph
+        current = graph.literals(instance_id)
+        for port in current:
+            if port not in target:
+                graph.clear_literal(instance_id, port)
+        for port, value in target.items():
+            if port in current and stored_literal(current[port]) == value:
+                continue
+            try:
+                graph.set_literal(instance_id, port, value)
+            except ValueError as exc:
+                logger.warning("Input value '%s' rejected on %s: %s", port, instance_id, exc)
+                graph.clear_literal(instance_id, port)
+        if target:
+            item["inputs"] = copy.deepcopy(target)
+        else:
+            item.pop("inputs", None)
+        if current or target:
+            self._refresh_inspector_inputs()
+
+    def _refresh_inspector_inputs(self):
+        if (inspector := getattr(self, "_inspector", None)) is not None:
+            inspector._refresh_inputs()
+
+    def input_values(self, instance_id: str) -> dict[str, t.Any]:
+        """Return the literal values set on the unconnected inputs of a placed node, by port.
+
+        A connected input's literal is listed too; it applies once the
+        connection is removed.
+        """
+        item = next((i for i in self._tile_items if i["instance_id"] == instance_id), None)
+        if item is None:
+            raise KeyError(f"No component '{instance_id}' is placed.")
+        return copy.deepcopy(item.get("inputs") or {})
+
+    def set_input_value(self, instance_id: str, port: str, value: t.Any):
+        """Give an input of a placed node a literal value, used while nothing is connected to it.
+
+        A connection always wins over the literal, which applies again once the
+        connection is removed. None removes the literal, and the input goes
+        back to its default. The change is recorded in the edit history.
+
+        Raises
+        ------
+        KeyError
+            If no component is placed under *instance_id*.
+        ValueError
+            If the component has no such input, the input cannot hold a
+            literal, e.g. a DataFrame, or it refuses *value*.
+        """
+        self.set_input_values(instance_id, {port: value})
+
+    def set_input_values(self, instance_id: str, values: t.Mapping[str, t.Any]):
+        """Set or remove (with None) the literal values of several inputs, as one edit.
+
+        Every value is checked before any is set, so a refused one changes
+        nothing; see :meth:`set_input_value`.
+        """
+        changed = self._set_input_values(instance_id, values)
+        if not changed:
+            return
+        name = self._node_name(instance_id)
+        labels = ", ".join(changed.values())
+        cleared = all(values.get(port) is None for port in changed)
+        self._record_edit(
+            f"{'Cleared' if cleared else 'Set'} {labels} of {name}",
+            op="set_input",
+            args={"name": name, "keys": sorted(changed)},
+        )
+
+    def _set_input_values(self, instance_id: str, values: t.Mapping[str, t.Any]) -> dict[str, str]:
+        """Apply literal values to a node's inputs without recording an edit.
+
+        Returns the label of each input that changed, by port. Raises like
+        :meth:`set_input_value`, before changing anything.
+        """
+        item = next((i for i in self._tile_items if i["instance_id"] == instance_id), None)
+        if item is None:
+            raise KeyError(f"No component '{instance_id}' is placed.")
+        if "placeholder" in item:
+            raise ValueError(f"'{instance_id}' could not be loaded, so its inputs cannot change.")
+        spec = self._component_specs[item["component_id"]]
+        ports = {p.name: p for p in spec.inputs}
+        resolved: dict[str, t.Any] = {}
+        for key, value in values.items():
+            port = ports.get(spec.resolve_name(key))
+            if port is None:
+                raise ValueError(f"'{spec.title}' has no input '{key}'.")
+            if value is not None and (reason := check_literal(port, value)) is not None:
+                raise ValueError(reason)
+            resolved[port.name] = value
+        inputs = dict(item.get("inputs") or {})
+        changed = {}
+        for port, value in resolved.items():
+            if value is None:
+                if port not in inputs:
+                    continue
+                del inputs[port]
+                self._dataflow_graph.clear_literal(instance_id, port)
+            else:
+                stored = stored_literal(value)
+                if inputs.get(port, _MISSING) == stored:
+                    continue
+                self._dataflow_graph.set_literal(instance_id, port, value)
+                inputs[port] = stored
+            changed[port] = port_label(ports[port])
+        if inputs:
+            item["inputs"] = inputs
+        else:
+            item.pop("inputs", None)
+        if changed:
+            self._refresh_inspector_inputs()
+        return changed
 
     def _restore_refusal(self, text: str) -> str | None:
         """Return why restoring a version of the history is refused, or None if it is allowed."""

@@ -34,6 +34,7 @@ from typing import Any
 import param
 
 from panel_flowdash.component_spec import ComponentSpec
+from panel_flowdash.input_literals import check_literal, port_literal
 from panel_flowdash.port_types import port_types_compatible
 from panel_flowdash.transforms import Transform, apply_transform, parse_transform
 from panel_flowdash.util import ReactiveError, is_failure
@@ -43,6 +44,8 @@ logger = logging.getLogger("panel_flowdash")
 _RESERVED_PARAMS = set(param.Parameterized.param)
 
 EdgeKey = tuple[str, str, str, str]
+
+_NO_LITERAL = object()
 
 # Frames left free below the recursion limit when an update has to stop, for
 # the hop already in progress to finish.
@@ -294,6 +297,8 @@ class DataflowGraph:
                 f"propagate_failures requires param >= 2.5, found {param.__version__}."
             )
         self._failures: dict[str, InputFailures] = {}
+        # Values set on unconnected inputs, by node and port, see `set_literal`.
+        self._literals: dict[str, dict[str, Any]] = {}
         self.propagate_failures = propagate_failures
 
         for comp_id, spec in specs.items():
@@ -341,6 +346,8 @@ class DataflowGraph:
             self._set_failure(target_id, target_port, None)
             if self._is_list_input(target_id, target_port):
                 self._bind_input(target_id, target_port)
+            elif target_port in self._literals.get(target_id, {}):
+                self._unbind_to_literal(target_id, target_port)
             else:
                 # Releases the binding to the removed node but keeps its last value.
                 target = self._nodes[target_id]
@@ -348,6 +355,7 @@ class DataflowGraph:
 
         state = self._nodes.pop(instance_id, None)
         self._failures.pop(instance_id, None)
+        self._literals.pop(instance_id, None)
         self._config_states.pop(instance_id, None)
         self._node_specs.pop(instance_id, None)
         if state is not None:
@@ -626,7 +634,10 @@ class DataflowGraph:
         incoming = self._incoming(target_id, target_port)
         is_list = self._is_list_input(target_id, target_port)
         if is_list and not incoming:
-            _unbind(target, target_port, [])
+            if target_port in self._literals.get(target_id, {}):
+                self._unbind_to_literal(target_id, target_port)
+            else:
+                _unbind(target, target_port, [])
             return
 
         error_source = ("", "") if is_list else next(iter(incoming))[:2]
@@ -850,11 +861,61 @@ class DataflowGraph:
         if target_state is not None and hasattr(target_state, target_port):
             if self._is_list_input(target_id, target_port):
                 self._bind_input(target_id, target_port)
+            elif target_port in self._literals.get(target_id, {}):
+                self._unbind_to_literal(target_id, target_port)
             else:
                 port = self._input_port(target_id, target_port)
                 _unbind(target_state, target_port, copy.deepcopy(port.default) if port else None)
         if edge is not None:
             self._dispose_edges([edge])
+
+    def _unbind_to_literal(self, instance_id: str, port: str):
+        _unbind(self._nodes[instance_id], port, copy.deepcopy(self._literals[instance_id][port]))
+
+    def is_wired(self, instance_id: str, port: str) -> bool:
+        """Whether an edge feeds the input *port* of a node."""
+        return bool(self._incoming(instance_id, port))
+
+    def literals(self, instance_id: str) -> dict[str, Any]:
+        """Return a copy of the literal values set on a node's inputs, by port."""
+        return copy.deepcopy(self._literals.get(instance_id, {}))
+
+    def set_literal(self, instance_id: str, port: str, value: Any):
+        """Give the input *port* of a node a literal value, used while no edge feeds it.
+
+        The value is checked against the input first; a wired input keeps the
+        value of its edge and takes the literal once the edge is removed.
+
+        Raises
+        ------
+        ValueError
+            If the input does not exist, cannot hold a literal or rejects *value*.
+        """
+        input_port = self._input_port(instance_id, port)
+        if input_port is None or instance_id not in self._nodes:
+            raise ValueError(f"'{instance_id}' has no input '{port}'.")
+        if (reason := check_literal(input_port, value)) is not None:
+            raise ValueError(reason)
+        value = port_literal(input_port, copy.deepcopy(value))
+        self._literals.setdefault(instance_id, {})[port] = value
+        if not self._incoming(instance_id, port):
+            self._unbind_to_literal(instance_id, port)
+
+    def clear_literal(self, instance_id: str, port: str):
+        """Remove the literal value of an input; an unwired input goes back to its default."""
+        literals = self._literals.get(instance_id, {})
+        if literals.pop(port, _NO_LITERAL) is _NO_LITERAL:
+            return
+        if not literals:
+            self._literals.pop(instance_id, None)
+        if self._incoming(instance_id, port):
+            return
+        if self._is_list_input(instance_id, port):
+            self._bind_input(instance_id, port)
+            return
+        input_port = self._input_port(instance_id, port)
+        default = copy.deepcopy(input_port.default) if input_port is not None else None
+        _unbind(self._nodes[instance_id], port, default)
 
     def get_state(self, instance_id: str) -> param.Parameterized | None:
         """Get the state instance for a node."""

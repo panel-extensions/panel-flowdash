@@ -23,9 +23,11 @@ from panel.viewable import Viewer
 from panel_flowdash.config_check import CheckResult
 from panel_flowdash.config_choices import Choices, has_choices, node_choices
 from panel_flowdash.groups import component_nodes, group_id_of
+from panel_flowdash.input_literals import takes_literal
 from panel_flowdash.transforms import parse_transform, summarize_transform
 from panel_flowdash.ui.choice_widgets import form_widgets, widgets_key
 from panel_flowdash.ui.config_draft import ConfigDraft
+from panel_flowdash.ui.input_editor import LiteralEditor
 from panel_flowdash.ui.node_card import (
     STATUS_TEXT,
     component_icon,
@@ -130,6 +132,11 @@ class Inspector(Viewer):
         self._config_status: tuple[str, str] | None = None
         self._data_column: pn.Column | None = None
         self._inputs_column: pn.Column | None = None
+        # What the shown input rows depend on, and their parts updated in place.
+        self._inputs_key: tuple = ()
+        self._literal_editors: dict[str, LiteralEditor] = {}
+        self._literal_captions: dict[str, pmui.Typography] = {}
+        self._value_captions: dict[str, pmui.Typography] = {}
         # The Move to buttons of the shown Tile tab.
         self._tile_move_buttons: list = []
         self._refresh_inputs: t.Callable[[], None] = lambda: None
@@ -270,6 +277,8 @@ class Inspector(Viewer):
         self._node_status = self._config_status = None
         self._data_column = None
         self._inputs_column = None
+        self._inputs_key = ()
+        self._literal_editors = {}
 
     # ------------------------------------------------------------------
     # Dashboard summary, shown without a selection
@@ -581,7 +590,14 @@ class Inspector(Viewer):
         config_state = editor._dataflow_graph.get_config_state(instance_id)
         names = [n for n in (config_state.param if config_state else []) if n != "name"]
         if not names:
-            return _caption("This component has no settings.")
+            caption = _caption("This component has no settings.")
+            if not has_choices(spec) or not any(takes_literal(p) for p in spec.inputs):
+                return caption
+            # The choices are offered for the values of the unconnected inputs.
+            self._form_key = ()
+            holder = pn.Column(pn.Column(margin=0), self._choices_progress(), margin=0)
+            self._watch_choices(instance_id, spec, None, None, [], holder)
+            return pn.Column(caption, holder, margin=0, sizing_mode="stretch_width")
         draft = None
         if spec.check_config is not None:
             draft = ConfigDraft(editor, instance_id, self._check_runs, self._check_results)
@@ -623,15 +639,7 @@ class Inspector(Viewer):
             sizing_mode="stretch_width",
         )
         if has_choices(spec):
-            holder.append(
-                pmui.LinearProgress(
-                    variant="indeterminate",
-                    visible=False,
-                    sizing_mode="stretch_width",
-                    margin=(4, 0, 0, 0),
-                    css_classes=["fd-choices-loading"],
-                )
-            )
+            holder.append(self._choices_progress())
             self._watch_choices(instance_id, spec, config_state, edited, names, holder)
         objects = [holder] if draft is None else [holder, draft.alert]
         if self.editor._rejected_config.get(instance_id):
@@ -648,6 +656,16 @@ class Inspector(Viewer):
         if len(objects) == 1:
             return holder
         return pn.Column(*objects, margin=0, sizing_mode="stretch_width")
+
+    @staticmethod
+    def _choices_progress() -> pmui.LinearProgress:
+        return pmui.LinearProgress(
+            variant="indeterminate",
+            visible=False,
+            sizing_mode="stretch_width",
+            margin=(4, 0, 0, 0),
+            css_classes=["fd-choices-loading"],
+        )
 
     def _rejected_alert(self, instance_id: str, config_state) -> Viewable | None:
         """Say which saved config values the node refused on load, and what it uses instead."""
@@ -721,6 +739,7 @@ class Inspector(Viewer):
             owner._choices[instance_id] = choices
             if widgets_key(form_widgets(state, names, choices)) != owner._form_key:
                 holder[0] = owner._param_form(state, names, choices)
+            owner._refresh_inputs()
 
         async def update():
             try:
@@ -756,17 +775,70 @@ class Inspector(Viewer):
         param.parameterized.async_executor(update)
 
     def _fill_inputs(self, instance_id: str, spec: ComponentSpec):
-        if self._inputs_column is not None and spec.inputs:
-            self._inputs_column[:] = self._inputs_section(instance_id, spec)
+        """Show the node's inputs, rebuilding the rows only when their wiring changes.
+
+        Otherwise the rows are updated in place, so a value being typed into an
+        input's field is not replaced while it changes the node's state.
+        """
+        if self._inputs_column is None or not spec.inputs:
+            return
+        rows = self._input_rows(instance_id, spec)
+        key = tuple((port, row[0]) for port, row in rows.items())
+        if key == self._inputs_key and self._inputs_column.objects:
+            for _key, update in rows.values():
+                update()
+            return
+        self._inputs_key = key
+        self._literal_editors = {}
+        self._inputs_column[:] = self._inputs_section(instance_id, spec)
+
+    def _input_rows(self, instance_id: str, spec: ComponentSpec) -> dict[str, tuple]:
+        """Return, per input, what its row shows that needs a rebuild, and how to update the rest."""
+        editor = self.editor
+        incoming = self._incoming(instance_id)
+        literals = editor.input_values(instance_id)
+        choices = self._choices.get(instance_id, {})
+        state = editor._dataflow_graph.get_state(instance_id)
+        rows = {}
+        for port in spec.inputs:
+            wired = incoming.get(port.name)
+            if wired is not None:
+                key = (
+                    "wired",
+                    wired[0],
+                    self._origin_text(wired[1]),
+                    repr(literals.get(port.name)),
+                )
+                caption = self._value_captions.get(port.name)
+
+                def update(caption=caption, name=port.name):
+                    if caption is not None:
+                        caption.object = summarize_value(getattr(state, name, None))
+
+            else:
+                key = ("free", takes_literal(port), widgets_key({"c": choices.get(port.name)}))
+
+                def update(name=port.name, port=port):
+                    literal = self._literal_editors.get(name)
+                    if literal is not None:
+                        literal.sync(literals.get(name), name in literals)
+                        self._literal_caption(name, name in literals, port)
+
+            rows[port.name] = (key, update)
+        return rows
+
+    def _incoming(self, instance_id: str) -> dict[str, tuple[str, tuple]]:
+        return {
+            mapping[3]: (edge_id, mapping)
+            for edge_id, mapping in self.editor._edge_id_map.items()
+            if mapping[2] == instance_id
+        }
 
     def _inputs_section(self, instance_id: str, spec: ComponentSpec) -> list[Viewable]:
         editor = self.editor
-        incoming = {
-            mapping[3]: (edge_id, mapping)
-            for edge_id, mapping in editor._edge_id_map.items()
-            if mapping[2] == instance_id
-        }
+        incoming = self._incoming(instance_id)
         state = editor._dataflow_graph.get_state(instance_id)
+        literals = editor.input_values(instance_id)
         connected = sum(1 for p in spec.inputs if p.name in incoming)
         objects: list[Viewable] = [
             pn.Row(
@@ -777,30 +849,16 @@ class Inspector(Viewer):
                 sizing_mode="stretch_width",
             )
         ]
+        self._value_captions = {}
+        self._literal_captions = {}
         for port in spec.inputs:
-            objects.append(self._input_row(port, incoming.get(port.name), state))
+            objects.append(
+                self._input_row(instance_id, port, incoming.get(port.name), state, literals)
+            )
         return objects
 
-    def _input_row(self, port, wired, state) -> Viewable:
+    def _origin_text(self, mapping: tuple) -> str:
         editor = self.editor
-        name = port_label(port) + (" *" if port.required else "")
-        title = text_typography(
-            f"{name}  {port.type or ''}".rstrip(),
-            variant="body2",
-            margin=0,
-            sx={"fontWeight": 500},
-        )
-        if wired is None:
-            needed = "Required, not connected" if port.required else "Not connected"
-            lines = [title, _caption(needed)]
-            return pmui.Paper(
-                *lines,
-                margin=(0, 0, 6, 0),
-                sizing_mode="stretch_width",
-                variant="outlined",
-                sx={"p": 1},
-            )
-        edge_id, mapping = wired
         source_id, source_port = mapping[0], mapping[1]
         source_component = editor._component_id_for_instance(source_id)
         source_spec = editor._component_specs.get(source_component or "")
@@ -811,19 +869,66 @@ class Inspector(Viewer):
         transform = summarize_transform(steps)
         if transform:
             origin += f", with transform {transform}"
+        return origin
+
+    def _input_row(self, instance_id, port, wired, state, literals) -> Viewable:
+        name = port_label(port) + (" *" if port.required else "")
+        title = text_typography(
+            f"{name}  {port.type or ''}".rstrip(),
+            variant="body2",
+            margin=0,
+            sx={"fontWeight": 500},
+        )
+        if wired is None:
+            lines: list = [title]
+            if takes_literal(port):
+                literal = LiteralEditor(
+                    port,
+                    literals.get(port.name),
+                    port.name in literals,
+                    partial(self.editor.set_input_value, instance_id, port.name),
+                    choices=self._choices.get(instance_id, {}).get(port.name),
+                )
+                self._literal_editors[port.name] = literal
+                caption = _caption("")
+                self._literal_captions[port.name] = caption
+                self._literal_caption(port.name, port.name in literals, port)
+                lines = [
+                    pn.Row(title, pn.layout.HSpacer(), literal.clear_button, margin=0),
+                    literal,
+                    caption,
+                ]
+            else:
+                lines.append(
+                    _caption("Required, not connected" if port.required else "Not connected")
+                )
+            return pmui.Paper(
+                *lines,
+                margin=(0, 0, 6, 0),
+                sizing_mode="stretch_width",
+                variant="outlined",
+                sx={"p": 1},
+                css_classes=["fd-input-row", f"fd-input-{port.name}"],
+            )
+        edge_id, mapping = wired
+        value_caption = _caption(summarize_value(getattr(state, port.name, None)))
+        self._value_captions[port.name] = value_caption
+        lines = [title, _caption(self._origin_text(mapping)), value_caption]
+        if port.name in literals:
+            lines.append(
+                _caption(
+                    f"The value set here ({summarize_value(literals[port.name])}) "
+                    "applies once disconnected.",
+                    css_classes=["fd-literal-overridden"],
+                )
+            )
         edit = pmui.IconButton(
             icon="edit", description="Inspect this connection", size="small", margin=0
         )
         edit.on_click(lambda _event: select_on_canvas(self._flow, edge_id=edge_id))
         return pmui.Paper(
             pn.Row(
-                pn.Column(
-                    title,
-                    _caption(origin),
-                    _caption(summarize_value(getattr(state, port.name, None))),
-                    margin=0,
-                    sizing_mode="stretch_width",
-                ),
+                pn.Column(*lines, margin=0, sizing_mode="stretch_width"),
                 edit,
                 margin=0,
                 sizing_mode="stretch_width",
@@ -832,7 +937,19 @@ class Inspector(Viewer):
             sizing_mode="stretch_width",
             variant="outlined",
             sx={"p": 1},
+            css_classes=["fd-input-row", f"fd-input-{port.name}"],
         )
+
+    def _literal_caption(self, name: str, is_set: bool, port) -> None:
+        caption = self._literal_captions.get(name)
+        if caption is None:
+            return
+        if is_set:
+            caption.object = "Set here; a connection would replace it."
+        elif port.required:
+            caption.object = "Required: set a value or connect it."
+        else:
+            caption.object = "Not connected; set a value or connect it."
 
     # Data
 

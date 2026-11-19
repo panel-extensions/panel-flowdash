@@ -135,6 +135,12 @@ def dashboard_changes(old: str | _Doc | None, new: str | _Doc | None) -> list[Da
             ("nodes", name, "config"),
             lambda key, name=name: f"{name}: {key}",
         )
+        changes += _mapping_changes(
+            previous.get("inputs") or {},
+            node.get("inputs") or {},
+            ("nodes", name, "inputs"),
+            lambda key, name=name: f"{name}: input {key}",
+        )
         if previous.get("position") != node.get("position"):
             changes.append(
                 DashboardChange(

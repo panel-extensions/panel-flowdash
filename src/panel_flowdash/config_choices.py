@@ -10,7 +10,8 @@ field from the node's config and live inputs, e.g. the tables of a wired
 database source. The hook is called as ``hook(config, inputs)``, sync or
 async, like ``check_config``, and returns ``{field: choices}`` where choices
 are a list of values, a ``{label: value}`` dict or a :class:`Choices`. Its
-choices replace the declared ones of the same field.
+choices replace the declared ones of the same field. Choices under the name
+of an input are offered for the literal value it takes while unconnected.
 
 Columns are read from DataFrames directly, and from other values through the
 ``columns`` reader of their port type, see
@@ -24,6 +25,7 @@ import typing as t
 from dataclasses import dataclass, field
 
 from panel_flowdash.config_check import CHECK_TIMEOUT, node_config, node_inputs, run_hook
+from panel_flowdash.input_literals import takes_literal
 from panel_flowdash.port_types import column_reader
 
 if t.TYPE_CHECKING:
@@ -195,7 +197,7 @@ async def compute_choices(
             type(computed).__name__,
         )
         return result
-    fields = {f.name for f in spec.config}
+    fields = {f.name for f in spec.config} | {p.name for p in spec.inputs if takes_literal(p)}
     for name, value in computed.items():
         name = spec.resolve_name(name)
         choices = as_choices(value)
