@@ -304,6 +304,20 @@ class TestYAML:
         )
         assert dashboard_from_yaml(text)["tile_layout"] == [{"instance_id": "r", "index": 0}]
 
+    def test_version_3_files_load_and_export_as_the_current_version(self):
+        text = (
+            "flowdash: 3\nnodes:\n  r: {component: T/rule}\nlayout:\n  tiles:\n"
+            "    - {node: r, framed: false, area: sidebar}\n"
+        )
+        data = dashboard_from_yaml(text)
+        assert data["tile_layout"] == [
+            {"instance_id": "r", "index": 0, "framed": False, "area": "sidebar"}
+        ]
+        assert dashboard_to_dict(data)["flowdash"] == 4
+        assert dashboard_to_dict(data)["layout"]["tiles"] == [
+            {"node": "r", "framed": False, "area": "sidebar"}
+        ]
+
     def test_schema_offers_the_option_on_base_tiles_only(self):
         layout = dashboard_schema({})["properties"]["layout"]["properties"]
         assert layout["tiles"]["items"]["properties"]["framed"] == {"type": ["boolean", "null"]}

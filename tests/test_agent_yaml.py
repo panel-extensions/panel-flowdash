@@ -11,6 +11,7 @@ import yaml
 
 from panel_flowdash import FlowDash, MemoryDashboardStore, register
 from panel_flowdash.agent import (
+    FORMAT_VERSION,
     DashboardYAMLError,
     component_schema,
     dashboard_from_yaml,
@@ -80,8 +81,11 @@ def test_seed_dashboard_round_trips(seed):
     assert dashboard_to_yaml(dashboard_from_yaml(text)) == text
 
 
+@pytest.mark.parametrize("version", [2, 3, FORMAT_VERSION])
 @pytest.mark.parametrize("seed", SEEDS, ids=lambda p: p.stem)
-def test_seed_dashboard_round_trips_through_the_editor_and_validates(wind, seed):
+def test_seed_dashboard_round_trips_through_the_editor_and_validates(wind, seed, version):
+    # The seeds hold no key added after version 2, so with that header the
+    # text is what 0.1.0rc3 wrote for them.
     store = MemoryDashboardStore()
     wind.seed_dashboards(store, "demo")
     editor = FlowDash(
@@ -90,8 +94,11 @@ def test_seed_dashboard_round_trips_through_the_editor_and_validates(wind, seed)
     try:
         editor.load(seed.stem)
         exported = editor.export_dashboard()
-        text = dashboard_to_yaml(exported)
+        current = dashboard_to_yaml(exported)
+        text = current.replace(f"flowdash: {FORMAT_VERSION}\n", f"flowdash: {version}\n", 1)
+        assert text.startswith(f"flowdash: {version}\n")
         assert _errors(validate_dashboard(text, **_catalog(editor))) == []
+        assert dashboard_to_yaml(dashboard_from_yaml(text)) == current
         editor.import_dashboard(text)
         assert editor.export_dashboard() == exported
         assert editor.dirty
@@ -403,6 +410,11 @@ class TestValidate:
 
 
 class TestSchema:
+    def test_schema_names_the_written_version(self):
+        schema = dashboard_schema({})
+        assert schema["properties"]["flowdash"] == {"const": FORMAT_VERSION}
+        assert schema["$id"].endswith(f"/dashboard-{FORMAT_VERSION}.json")
+
     def test_component_schema_lists_ports_and_config(self, wind):
         editor = FlowDash(str(WIND), notifications=False)
         schema = component_schema(editor.component_specs["Views/kpi"])

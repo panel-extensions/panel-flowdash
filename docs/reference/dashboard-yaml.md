@@ -309,15 +309,26 @@ listed tiles.
 
 ## Earlier versions
 
-Version 3 files start with `flowdash: 3` and may not hold `parameters`, `groups` or a node `group`. They load
-unchanged, and exporting them again writes version 4.
+panel-flowdash 0.1.0rc3 wrote version 2. Version 4 adds to it:
 
-Version 2 files start with `flowdash: 2` and may not hold a tile's `framed` or `area`,
-`parameters` or groups. They load unchanged, and exporting them again writes version 4.
+- a tile's `framed` and `area` in `layout.tiles`, see [Layout](#layout);
+- the top-level `parameters`, see [Parameters](#parameters);
+- the top-level `groups` and a node's `group`, see [Groups](#groups).
 
-Version 1 files start with `flowdash: 1` and may not hold `turns`, a node `origin`,
-a tile's `framed` or `area`, `parameters` or groups. They load as a dashboard without turns whose nodes
-have no origin, and exporting it again writes version 4.
+Version 3, which had the tile keys but not `parameters` or `groups`, was only written
+by development builds between 0.1.0rc3 and 0.1.0rc4. Files of versions 1 to 3 load
+unchanged, and exporting them again writes version 4. A file of a version may not hold
+keys a later version added:
+
+- Version 3 files start with `flowdash: 3` and may not hold `parameters`, `groups` or
+  a node `group`.
+- Version 2 files start with `flowdash: 2` and may not hold those or a tile's `framed`
+  or `area`.
+- Version 1 files start with `flowdash: 1` and may not hold any of those, `turns` or a
+  node `origin`. They load as a dashboard without turns whose nodes have no origin.
+
+A file with a version later than 4 is refused with a message saying a newer FlowDash
+wrote it. 0.1.0rc3 and earlier refuse version 4 files the same way.
 
 ## Not in version 4
 
