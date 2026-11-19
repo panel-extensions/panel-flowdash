@@ -1223,6 +1223,7 @@ class FlowDash(Viewer):
         self._inspected_id: str | None = None
         self._span_view = None
         self._how_made_shown: tuple[str, str | None] | None = None
+        self._how_made_caption: str | None = None
         self._own_runs: set[str] = set()
         # Responsive grid settings waiting to be applied; empty values must also be
         # applied so a loaded dashboard doesn't inherit the previous one's overrides.
@@ -2353,9 +2354,14 @@ class FlowDash(Viewer):
         self._how_made_shown = (instance_id, turn_id)
         self._inspected_id = instance_id
         if not open_sheet:
-            # Re-rendering for new rights never reopens a sheet the person closed.
-            self._inspect_dialog.objects = objects
+            # Re-rendering for new rights never reopens a sheet the person closed, and keeps
+            # its header, so a click on Close already on its way still closes it.
+            current = self._inspect_dialog.objects
+            header = current[:1] if current and caption == self._how_made_caption else objects[:1]
+            self._how_made_caption = caption
+            self._inspect_dialog.objects = [*header, *body]
             return
+        self._how_made_caption = caption
         self._inspect_dialog.param.update(objects=objects, open=True)
         if not self.editable:
             reserve_space(self._workspace_area, True)

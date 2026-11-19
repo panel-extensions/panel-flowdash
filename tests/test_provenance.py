@@ -185,7 +185,10 @@ def test_replacing_the_sheet_releases_the_span(viewing):
 def test_the_sheet_follows_a_change_of_read_only(viewing):
     viewing.agent_state = RunState.from_events(_run())
     viewing.show_how_made("double")
+    header = _sheet(viewing).objects[0]
     viewing.read_only = True
+    # The header, and its Close button, stay, so a click on its way still lands.
+    assert _sheet(viewing).objects[0] is header
     assert "The question is hidden." in _sheet(viewing).objects[1].objects[0].object
 
 
