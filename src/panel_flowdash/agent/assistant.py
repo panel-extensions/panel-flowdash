@@ -43,7 +43,8 @@ How to work:
   you write, so nodes are easy to recognise and refer to.
 - Positions and tile layout are automatic: leave out `position` and `layout`
   for new nodes. Add a source with the nodes it feeds, one group at a time.
-  Call arrange_canvas or arrange_layout only when asked to tidy up.
+  Give a dashboard with a single KPI a heading. Call arrange_canvas or
+  arrange_layout only when asked to tidy up.
 - Connect an output only to an input of a compatible type; each input takes
   one edge unless it accepts a list.
 - After changing the dataflow, run preview_dashboard and fix nodes that failed

@@ -240,12 +240,110 @@ class TestTiles:
             "source",
             "combined",
         ]
-        widths = {t["instance_id"]: t["width"] for t in tiles}
+        widths = {t["instance_id"]: t.get("width") for t in tiles}
         assert widths["trend"] == widths["split"] == 50
         assert widths["rows"] == 100
         # The control and the KPI share a row at their own widths; no chart fits the rest.
         assert (widths["factor"], widths["kpi"]) == (33.33, 25)
-        assert widths["source"] == widths["combined"] == 33.33
+        # The source and the transform are plumbing: their tiles start hidden.
+        hidden = {t["instance_id"] for t in tiles if t.get("visible") is False}
+        assert hidden == {"source", "combined"}
+
+    def test_arranging_keeps_plumbing_hidden_and_puts_shown_plumbing_last(self, ops):
+        _build(ops)
+        ops.arrange_layout()
+        hidden = {t["instance_id"] for t in _tiles(ops.editor) if t.get("visible") is False}
+        assert hidden == {"source", "combined"}
+        ops.place_tile("source", visible=True)
+        ops.arrange_layout()
+        shown = [t["instance_id"] for t in _tiles(ops.editor) if t.get("visible", True)]
+        assert shown[-1] == "source"
+
+    def _request(self, ops, calls, during):
+        from panel_flowdash.agent.tools import FlowDashDeps
+
+        deps = FlowDashDeps(ops)
+        deps.start_request("Build it")
+        _build(ops, calls)
+        during()
+        deps.end_request()
+
+    @pytest.mark.parametrize("who", ["agent", "person"])
+    def test_a_source_shown_during_a_request_is_arranged_and_stays_shown(self, ops, who):
+        from panel_flowdash.ui.tile_layout import update_tile
+
+        def show():
+            if who == "agent":
+                ops.place_tile("source", visible=True)
+            else:
+                update_tile(ops.editor, "source", visible=True)
+
+        self._request(ops, GRAPH, show)
+        tiles = _tiles(ops.editor)
+        widths = {t["instance_id"]: t.get("width") for t in tiles}
+        hidden = {t["instance_id"] for t in tiles if t.get("visible") is False}
+        assert hidden == {"combined"}
+        # The whole grid is arranged, the shown source last.
+        assert widths["trend"] == widths["split"] == 50
+        assert (widths["factor"], widths["kpi"]) == (33.33, 25)
+        assert [t["instance_id"] for t in tiles if t.get("visible", True)][-1] == "source"
+
+    def test_a_chart_hidden_during_a_request_leaves_a_proper_arrangement(self, ops):
+        self._request(ops, GRAPH, lambda: ops.place_tile("split", visible=False))
+        tiles = _tiles(ops.editor)
+        widths = {t["instance_id"]: t.get("width") for t in tiles}
+        # The 5 columns the control and the KPI leave are too few for the one chart left.
+        assert (widths["factor"], widths["kpi"]) == (33.33, 25)
+        assert widths["trend"] == widths["rows"] == 100
+        shown = [t["instance_id"] for t in tiles if t.get("visible", True)]
+        assert shown == ["factor", "kpi", "trend", "rows"]
+
+    def test_a_later_request_still_arranges(self, ops):
+        self._request(ops, GRAPH[:3], lambda: ops.place_tile("source", visible=True))
+        self._request(
+            ops, [("add_node", {"component": "V/headline", "name": "kpi_2"})], lambda: None
+        )
+        tiles = _tiles(ops.editor)
+        # Arranged again, not only inserted: the new KPI joins the first one's row and,
+        # as the shown source would move in beside them, both widen alike.
+        assert [t["instance_id"] for t in tiles] == ["kpi", "kpi_2", "trend", "source"]
+        assert tiles[0]["width"] == tiles[1]["width"] == 50
+
+    @pytest.mark.parametrize("who", ["agent", "person"])
+    def test_showing_a_source_between_requests_keeps_the_layout_automatic(self, ops, who):
+        from panel_flowdash.ui.tile_layout import update_tile
+
+        self._request(ops, GRAPH[:3], lambda: None)
+        if who == "agent":
+            ops.place_tile("source", visible=True)
+        else:
+            update_tile(ops.editor, "source", visible=True)
+        entry = next(t for t in _tiles(ops.editor) if t["instance_id"] == "source")
+        # The shown source gets a real place, last.
+        assert entry["visible"] is True and entry["width"] == 33.33 and "height" not in entry
+        assert _tiles(ops.editor)[-1]["instance_id"] == "source"
+        self._request(
+            ops, [("add_node", {"component": "V/headline", "name": "kpi_2"})], lambda: None
+        )
+        self._request(
+            ops, [("add_node", {"component": "V/chart", "name": "trend_2"})], lambda: None
+        )
+        tiles = _tiles(ops.editor)
+        widths = {t["instance_id"]: t.get("width") for t in tiles}
+        # Still arranged: the KPIs share a row, alike, and the charts pair up.
+        assert widths["kpi"] == widths["kpi_2"]
+        assert widths["trend"] == widths["trend_2"] == 50
+        assert tiles[-1]["instance_id"] == "source"
+
+    def test_hidden_sources_say_what_they_are(self, ops):
+        from panel_flowdash.ui.tile_layout import off_grid
+
+        _build(ops)
+        reasons = {o.instance_id: (o.reason, o.restorable) for o in off_grid(ops.editor)}
+        assert reasons == {
+            "source": ("data source · hidden", True),
+            "combined": ("transform · hidden", True),
+        }
 
     def test_tiles_wait_for_the_end_of_the_agents_request(self, ops):
         from panel_flowdash.agent.tools import FlowDashDeps
@@ -303,10 +401,10 @@ class TestTiles:
     def test_removing_a_tile_closes_the_gap(self, ops):
         _build(ops, GRAPH[:3])
         ops.add_node("V/headline", name="kpi_2")
-        widths = {e["instance_id"]: e["width"] for e in ops.editor.layout}
+        widths = {e["instance_id"]: e.get("width") for e in ops.editor.layout}
         assert (widths["kpi"], widths["kpi_2"], widths["trend"]) == (25, 25, 50)
         ops.remove_node("kpi_2")
-        widths = {e["instance_id"]: e["width"] for e in ops.editor.layout}
+        widths = {e["instance_id"]: e.get("width") for e in ops.editor.layout}
         assert (widths["kpi"], widths["trend"]) == (25, 75)
 
     def test_the_turn_names_only_the_added_node(self, ops):

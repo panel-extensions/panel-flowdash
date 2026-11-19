@@ -13,7 +13,9 @@ from panel_flowdash.ui.tile import resolve_framed
 
 GRID_COLUMNS = 12
 
-HIDDEN = "hidden by you"
+HIDDEN = "hidden"
+# The roles named in the reason a tile is hidden, as the editor hides theirs itself.
+_ROLE_NAMES = {"source": "data source", "transform": "transform"}
 
 # The frame choice of a tile without a frame option of its own.
 FRAME_DEFAULT = "default"
@@ -42,9 +44,23 @@ def update_tile(editor, instance_id: str, **patch):
     entry.update(patch)
     for key in [k for k, v in patch.items() if v is None]:
         del entry[key]
-    editor._auto_tiles.clear()
+    # Showing or hiding a tile is not laying it out, so the editor may still arrange the rest.
+    if set(patch) - {"visible"}:
+        editor._auto_tiles.clear()
+    if "visible" in patch:
+        # Shown or hidden on purpose, so the editor does not hide it again.
+        editor._chosen_visibility.add(instance_id)
     editor._pending_tile_layout = layout
     editor._rebuild_tile_grid()
+    automatic = editor._auto_tiles or editor._deferred_tiles is not None
+    if automatic and not set(patch) - {"visible"} and editor._all_tiles_automatic([instance_id]):
+        # The rest is laid out by the editor, so a tile shown again joins its arrangement.
+        if patch.get("visible") is not False:
+            editor._auto_tiles.add(instance_id)
+        if editor._deferred_tiles is not None:
+            editor._deferred_rearrange = True
+        else:
+            editor._arrange_tiles()
     editor._record_edit(
         "Changed the tile layout",
         op="layout",
@@ -110,11 +126,12 @@ class OffGrid:
     instance_id: str
     title: str
     reason: str
+    hidden: bool = False
 
     @property
     def restorable(self) -> bool:
         """Whether showing it again is a layout change, i.e. it was hidden."""
-        return self.reason == HIDDEN
+        return self.hidden
 
 
 def tile_title(editor, item: dict) -> str:
@@ -153,10 +170,18 @@ def off_grid(editor) -> list[OffGrid]:
         if _in_sidebar(editor, item):
             reason = _sidebar_reason(editor)
         elif item["instance_id"] in hidden:
-            reason = HIDDEN
+            role = _ROLE_NAMES.get(editor._node_role(item["component_id"]))
+            reason = f"{role} · {HIDDEN}" if role else HIDDEN
         else:
             continue
-        listed.append(OffGrid(item["instance_id"], tile_title(editor, item), reason))
+        listed.append(
+            OffGrid(
+                item["instance_id"],
+                tile_title(editor, item),
+                reason,
+                hidden=item["instance_id"] in hidden,
+            )
+        )
     return listed
 
 

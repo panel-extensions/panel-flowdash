@@ -27,7 +27,6 @@ from panel_flowdash.ui.tile_bands import (
 from panel_flowdash.ui.tile_layout import (
     FRAME_DEFAULT,
     GRID_COLUMNS,
-    HIDDEN,
     frame_choices,
     frame_value,
     grid_tiles,
@@ -52,7 +51,6 @@ _SECTION_SX = {"color": "text.secondary", "fontWeight": 500}
 _AUTO = "auto"
 _HEIGHTS = (200, 300, 400, 500, 600, 800)
 
-_REASON_ICONS = {HIDDEN: "visibility_off"}
 
 _ICON_CSS = """
 span { font-family: "Material Icons"; font-size: 18px; line-height: 1;
@@ -238,7 +236,8 @@ class LayoutPanel(Viewer):
             _heading("Not on the dashboard"),
             _caption(
                 "Placed components without a tile: those shown beside the dashboard "
-                "and tiles you hid. Show a hidden one to put it back.",
+                "and hidden tiles, such as the data sources the assistant left off. "
+                "Show a hidden one to put it back.",
                 margin=(0, 0, 8, 0),
             ),
             self._off_grid,
@@ -412,7 +411,7 @@ class LayoutPanel(Viewer):
 
     def _off_grid_row(self, entry: OffGrid) -> Viewable:
         icon = pn.pane.HTML(
-            f'<span aria-hidden="true">{_REASON_ICONS.get(entry.reason, "tune")}</span>',
+            f'<span aria-hidden="true">{"visibility_off" if entry.hidden else "tune"}</span>',
             width=20,
             margin=(2, 10, 0, 0),
             stylesheets=[_ICON_CSS],

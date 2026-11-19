@@ -17,17 +17,20 @@ Canvas
 
 Tiles
     Tiles are grouped by kind in this order: controls, KPIs, charts, tables
-    and last the tiles of data sources and transforms. Controls, KPIs and
-    data tiles keep the width of their ``default_size`` in whole columns and
-    are packed into rows, charts fill a grid of two columns, and tables take
-    the full width. Text tiles (headings, notes) stay in front of the tile
-    they preceded, so a heading keeps titling its section. The grid moves a
-    tile up into any gap it fits, so the room a row of packed tiles leaves is
-    filled on purpose: by the leading heading in the first row, else by the
-    chart or table that follows, else by widening the row's tiles to at most
-    twice their width. Tiles in a row share one height. The grid generates the layouts
-    of narrower breakpoint bands from the arranged one; a band with a layout
-    of its own gets new tiles inserted at the band's width.
+    and last the tiles of data sources and transforms, which start hidden
+    when the editor places them. Controls, KPIs and data tiles keep the
+    width of their ``default_size`` in whole columns and are packed into
+    rows; controls and KPIs share a row only when they all fit in it.
+    Charts fill a grid of two columns, an odd one out taking at most twice
+    its default width, and tables take the full width. Text tiles
+    (headings, notes) stay in front of the tile they preceded, so a heading
+    keeps titling its section. The grid moves a tile up into any gap it
+    fits, so the room a row of packed tiles leaves is filled on purpose: by
+    the leading heading in the first row, else by the chart or table that
+    follows, else by widening the row's tiles to at most twice their width.
+    Tiles in a row share one height. The grid generates the layouts of
+    narrower breakpoint bands from the arranged one; a band with a layout of
+    its own gets new tiles inserted at the band's width.
 """
 
 from __future__ import annotations
@@ -496,8 +499,8 @@ HEADING_MIN_COLUMNS = 4
 FILLER_MIN_COLUMNS = 6
 #: How many times their own width the tiles of a row may widen to close a gap.
 MAX_WIDENING = 2
-#: Kinds whose tiles may move up into a gap: small status tiles that fit in anywhere.
-GAP_FILLERS = frozenset({"data"})
+#: Kinds whose tiles start hidden when the editor places them: the dashboard's plumbing.
+HIDDEN_KINDS = frozenset({"data"})
 #: A view whose default width is at most this many pixels is laid out as a KPI.
 KPI_MAX_WIDTH = 320
 #: Tags that make a view a KPI or a table, or a tile text.
@@ -587,6 +590,8 @@ class _Row:
     columns: list[int]
     # A row whose tiles keep their own heights, e.g. KPIs beside a chart.
     ragged: bool = False
+    # A row whose room is left empty on purpose.
+    keep: bool = False
 
     @property
     def free(self) -> int:
@@ -606,15 +611,27 @@ def _pack_tiles(tiles: list[TileBox], width: float) -> list[_Row]:
 
 
 def _chart_rows(tiles: list[TileBox], width: float) -> list[_Row]:
-    """Put charts two to a row where two fit, the odd one out on a row of its own."""
+    """Put charts two to a row where two fit, the odd one out on a row of its own.
+
+    A chart on its own takes at most twice its default width.
+    """
     least = max(_column_bounds(t, width)[0] for t in tiles)
     per_row = 2 if least <= GRID_COLUMNS // 2 else 1
     rows = []
     for i in range(0, len(tiles), per_row):
         chunk = tiles[i : i + per_row]
         share = GRID_COLUMNS // len(chunk)
-        rows.append(_Row(chunk, [min(share, _column_bounds(t, width)[1]) for t in chunk]))
+        rows.append(_Row(chunk, [min(share, _widest(t, width)) for t in chunk]))
     return rows
+
+
+def _widest(tile: TileBox, width: float) -> int:
+    """Return the most columns a chart or table takes: twice its default width, within its bounds."""
+    least, most = _column_bounds(tile, width)
+    pixels = tile.default_size.get("width")
+    if pixels:
+        most = min(most, max(least, MAX_WIDENING * round(pixels * GRID_COLUMNS / width)))
+    return most
 
 
 def _spread(row: _Row, width: float):
@@ -631,6 +648,12 @@ def _spread(row: _Row, width: float):
                 grown = True
         if not grown:
             return
+
+
+def _widen_to(row: _Row, total: int):
+    """Widen every tile of *row* by a column at a time, alike, until they take *total* columns."""
+    while sum(row.columns) < total and sum(row.columns) + len(row.columns) <= GRID_COLUMNS:
+        row.columns = [c + 1 for c in row.columns]
 
 
 def _family(tile: TileBox) -> str:
@@ -666,14 +689,22 @@ def _finish(row: _Row, tile: TileBox | None, width: float) -> bool:
     """Put *tile*, a chart or table, into the room left in a row of packed tiles, if it fits."""
     if tile is None or tile.kind not in ("chart", "table"):
         return False
-    least, most = _column_bounds(tile, width)
-    columns = min(row.free, most)
+    least = _column_bounds(tile, width)[0]
+    columns = min(row.free, _widest(tile, width))
     if columns < max(least, FILLER_MIN_COLUMNS):
         return False
     row.tiles.append(tile)
     row.columns.append(columns)
     row.ragged = True
     return True
+
+
+def _pairs_charts(tiles: list[TileBox], j: int) -> bool:
+    """Whether the charts from *tiles[j]* on start with a pair, in an even run."""
+    k = j
+    while k < len(tiles) and tiles[k].kind == "chart":
+        k += 1
+    return k - j >= 2 and (k - j) % 2 == 0
 
 
 def _below(row: _Row, tiles: list[TileBox], j: int, width: float) -> bool:
@@ -688,12 +719,10 @@ def _below(row: _Row, tiles: list[TileBox], j: int, width: float) -> bool:
     while k < len(rest) and rest[k].kind == tiles[j].kind == "chart":
         k += 1
     charts, others = rest[:k], rest[k:]
-    widths = [GRID_COLUMNS // 2 if len(charts) > 1 else GRID_COLUMNS] if charts else []
-    widths += [
-        _columns(t, width) if t.kind in PACKED else GRID_COLUMNS
-        for t in others
-        if t.kind not in GAP_FILLERS
-    ]
+    widths = (
+        [GRID_COLUMNS // 2 if len(charts) > 1 else _widest(charts[0], width)] if charts else []
+    )
+    widths += [_columns(t, width) if t.kind in PACKED else GRID_COLUMNS for t in others]
     return all(w > room for w in widths)
 
 
@@ -720,13 +749,29 @@ def _rows_of(
             j += 1
         run = tiles[i:j]
         if tile.kind in PACKED:
-            packed = _pack_tiles(run, width)
+            # Controls and KPIs share a row only when they all fit in it, so a kind stays together.
+            if sum(_columns(t, width) for t in run) <= GRID_COLUMNS:
+                packed = _pack_tiles(run, width)
+            else:
+                packed = [
+                    row
+                    for kind in TILE_KINDS
+                    if (part := [t for t in run if t.kind == kind])
+                    for row in _pack_tiles(part, width)
+                ]
             first = packed[0]
             if not rows and len(lead) == 1 and first.free >= HEADING_MIN_COLUMNS:
                 first.tiles.insert(0, lead[0])
                 first.columns.insert(0, first.free)
                 lead = []
-            if (
+            if packed[-1].free and _pairs_charts(tiles, j):
+                # Pulling the first chart up would split the pair, so the row
+                # widens only until the pair's first chart no longer fits in
+                # the room, which stays empty.
+                pair = min(GRID_COLUMNS // 2, _widest(tiles[j], width))
+                _widen_to(packed[-1], GRID_COLUMNS - pair + 1)
+                packed[-1].keep = True
+            elif (
                 packed[-1].free
                 and j < len(tiles)
                 and _below(packed[-1], tiles, j, width)
@@ -748,14 +793,9 @@ def _close_gaps(rows: list[_Row], width: float):
     The grid moves a tile up into any gap it fits.
     """
     for k, row in enumerate(rows):
-        if not row.free or row.ragged or row.tiles[0].kind not in PACKED:
+        if not row.free or row.ragged or row.keep or row.tiles[0].kind not in PACKED:
             continue
-        later = [
-            c
-            for other in rows[k + 1 :]
-            for t, c in zip(other.tiles, other.columns, strict=True)
-            if t.kind not in GAP_FILLERS
-        ]
+        later = [c for other in rows[k + 1 :] for c in other.columns]
         if later and min(later) <= row.free:
             _spread(row, width)
 

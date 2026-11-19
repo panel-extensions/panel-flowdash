@@ -294,6 +294,9 @@ def _size_layout(layout: list[dict], specs: list, reference_width: int) -> list[
 _PLACEMENT_MARGIN = 40
 # Flow units each repeated auto-placement shifts, so nodes don't stack exactly.
 _PLACEMENT_CASCADE = 40
+# The lowest zoom of the canvas, low enough to fit a dashboard the agent built
+# into a canvas narrowed by the palette, the inspector and the agent's drawer.
+_CANVAS_MIN_ZOOM = 0.2
 # Horizontal gap, in flow units, between a node dropped on a port and the node it wires to.
 _DROP_WIRE_OFFSET = 360
 # The canvas accepts only this drag type, so drags from unrelated lists are ignored.
@@ -1074,6 +1077,8 @@ class FlowDash(Viewer):
         # While an agent request runs, the tiles it adds wait here to be laid out once it ends.
         self._deferred_tiles: set[str] | None = None
         self._deferred_rearrange = False
+        # Tiles shown or hidden on purpose, which the editor never hides as plumbing.
+        self._chosen_visibility: set[str] = set()
         # Set when deferred tiles were laid out, for the agent session to publish the result.
         self._layout_released = False
         self._hydrating = False
@@ -1509,6 +1514,7 @@ class FlowDash(Viewer):
             # Fitting the view uses the whole pane, so a corner minimap would cover
             # the nodes there; the status bar offers it for large graphs instead.
             show_minimap=False,
+            min_zoom=_CANVAS_MIN_ZOOM,
             sizing_mode="stretch_both",
             min_height=600,
             stylesheets=[_FLOW_STYLESHEET],
@@ -1718,6 +1724,7 @@ class FlowDash(Viewer):
         self._forget_layout(node_id)
         self._floating_nodes.discard(node_id)
         self._auto_tiles.discard(node_id)
+        self._chosen_visibility.discard(node_id)
         self._inspect_tiles.pop(node_id, None)
         if self._inspected_id == node_id:
             self._close_inspection_dialog()
@@ -3336,7 +3343,7 @@ class FlowDash(Viewer):
         if not (pending or rearrange):
             return
         if self._all_tiles_automatic(pending):
-            self._arrange_tiles()
+            self._arrange_tiles(self._plumbing(pending))
         else:
             self._place_new_tiles(pending)
         run_id = run_id or self._history.request_run()
@@ -3782,19 +3789,35 @@ class FlowDash(Viewer):
 
         return [tiles[i] for i in sorted(range(len(tiles)), key=key)]
 
-    def _arrange_tiles(self):
-        """Lay out every visible tile by its kind."""
-        boxes = [self._tile_box(item) for item in self._tile_order()]
+    def _arrange_tiles(self, hide: t.Collection[str] = ()):
+        """Lay out every visible tile by its kind, hiding the tiles of *hide* first."""
+        boxes = [
+            self._tile_box(item) for item in self._tile_order() if item["instance_id"] not in hide
+        ]
         width, _ = self._tile_bands()
         previous = {e["instance_id"]: e for e in self.layout}
         layout = auto_layout.arrange_tiles(boxes, width, previous)
         shown = {box.id for box in boxes}
-        hidden = [dict(e) for e in self.layout if e.get("instance_id") not in shown]
+        hidden = [dict(e) for e in self.layout if e.get("instance_id") not in shown | set(hide)]
+        hidden += [{**previous.get(iid, {}), "instance_id": iid, "visible": False} for iid in hide]
         for index, entry in enumerate(hidden, start=len(layout)):
             entry["index"] = index
         # Narrower bands follow the arranged layout, rather than keep layouts made for the old one.
         self._set_tile_layout(layout + hidden, {})
         self._auto_tiles = shown
+
+    def _plumbing(self, instance_ids: t.Iterable[str]) -> list[str]:
+        """Return the shown tiles of *instance_ids* that are data sources and transforms.
+
+        They are the dashboard's plumbing, so their new tiles start hidden; the
+        person can show them from the components not on the dashboard.
+        """
+        ids = set(instance_ids) - self._chosen_visibility
+        return [
+            item["instance_id"]
+            for item in tile_layout.grid_tiles(self)
+            if item["instance_id"] in ids and self._tile_box(item).kind in auto_layout.HIDDEN_KINDS
+        ]
 
     def _place_new_tiles(self, instance_ids: t.Iterable[str]):
         """Give the tiles of *instance_ids*, which nobody laid out yet, a place among the others.
@@ -3806,12 +3829,23 @@ class FlowDash(Viewer):
         if self._deferred_tiles is not None:
             self._deferred_tiles.update(instance_ids)
             return
-        tiles = {item["instance_id"]: item for item in tile_layout.grid_tiles(self)}
+        hide = self._plumbing(instance_ids)
+        tiles = {
+            item["instance_id"]: item
+            for item in tile_layout.grid_tiles(self)
+            if item["instance_id"] not in hide
+        }
         new = [iid for iid in instance_ids if iid in tiles]
-        if not new:
+        if not (new or hide):
             return
-        if self._all_tiles_automatic(new):
-            self._arrange_tiles()
+        if self._all_tiles_automatic([*new, *hide]):
+            self._arrange_tiles(hide)
+            return
+        if hide:
+            layout = [e for e in self.layout if e.get("instance_id") not in hide]
+            layout += [{"instance_id": iid, "visible": False} for iid in hide]
+            self._set_tile_layout(layout, self._grid_config()["responsive_layouts"])
+        if not new:
             return
         boxes = [self._tile_box(tiles[iid]) for iid in new]
         kinds = {iid: self._tile_box(item).kind for iid, item in tiles.items()}
@@ -4065,6 +4099,7 @@ class FlowDash(Viewer):
             self._dataflow_graph.remove_node(node_id)
         self._floating_nodes = set()
         self._auto_tiles = set()
+        self._chosen_visibility = set()
         self._tile_items = []
         self._tile_objects = []
         self._inspect_tiles.clear()

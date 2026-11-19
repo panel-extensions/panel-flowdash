@@ -196,6 +196,7 @@ def test_clicking_a_tile_pans_to_its_off_screen_node(page):
     # Opening the split fits the view; zooming in before that fit lands would be undone.
     wait_until(lambda: bool(fitted), page, timeout=8000)
     page.wait_for_timeout(500)
+    fitted_zoom = (editor._flow.viewport or {}).get("zoom") or 1
 
     zoom_in = page.locator(".react-flow__controls-zoomin")
     for _ in range(5):
@@ -209,8 +210,8 @@ def test_clicking_a_tile_pans_to_its_off_screen_node(page):
         return p["x"] <= cx <= p["x"] + p["width"] and p["y"] <= cy <= p["y"] + p["height"]
 
     wait_until(lambda: not inside(), page, timeout=8000)
-    # Each step zooms by 1.2 from the fitted minimum of 0.5.
-    zoom = 0.5 * 1.2**5
+    # Each step zooms by 1.2 from the fitted zoom.
+    zoom = fitted_zoom * 1.2**5
     wait_until(
         lambda: (editor._flow.viewport or {}).get("zoom") == pytest.approx(zoom),
         page,

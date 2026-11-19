@@ -97,7 +97,7 @@ class TestTileLayoutHelpers:
         map_id, chart_id, filter_id = _place(editor, MAP, CHART, FILTER)
         update_tile(editor, chart_id, visible=False)
         assert off_grid(editor) == [
-            OffGrid(chart_id, "Chart", HIDDEN),
+            OffGrid(chart_id, "Chart", HIDDEN, hidden=True),
             OffGrid(filter_id, "State Filter", "in controls bar"),
         ]
         assert [entry.restorable for entry in off_grid(editor)] == [True, False]

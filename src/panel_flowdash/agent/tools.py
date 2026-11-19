@@ -645,7 +645,8 @@ def place_tile(
         name: The node's name in the dashboard YAML.
         width: Percent of the row, greater than 0 and at most 100.
         height: Height in pixels.
-        visible: False hides the tile; the component keeps running.
+        visible: False hides the tile; the component keeps running. Tiles of
+            sources and transforms start hidden; True shows one.
         index: Position among the tiles, 0 for the first.
         frame: "framed" or "unframed" draws the tile as a card or not; "default"
             follows the component, then the dashboard's tile_cards setting.
