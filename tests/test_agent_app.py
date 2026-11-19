@@ -12,7 +12,7 @@ from panel_flowdash.agent.assistant import INSTRUCTIONS, catalogue, create_agent
 from panel_flowdash.agent.session import AgentSession
 from panel_flowdash.agent.tools import FlowDashDeps, dashboard_toolset
 
-from .test_agent_tools import _app, scripted
+from .test_agent_tools import _app, responses, scripted
 
 
 @pytest.fixture(autouse=True)
@@ -429,3 +429,29 @@ async def test_the_session_shares_its_runs_and_redacts_them_for_viewers(store, m
     editor.read_only = True
     session.drawer.show_run("r")
     assert session.drawer._span.redacted
+
+
+async def test_failed_calls_in_batched_steps_do_not_abort_the_run(store, monkeypatch):
+    model = store.create_dashboard("alice", "Live")
+    app = _app(store, monkeypatch)
+    app._load_dashboard_sync(model.dashboard_id)
+    agent = create_agent(
+        responses(
+            [
+                ("add_node", {"component": "T/number", "name": "a"}),
+                ("add_node", {"component": "T/doubler", "name": "b"}),
+            ],
+            # A step mixing a connection that works with one that fails...
+            [
+                ("connect", {"source": "a.value", "target": "b.value"}),
+                ("connect", {"source": "a.value", "target": "b.nope"}),
+            ],
+            # ...and failing connections in the steps after it.
+            [("connect", {"source": "a.value", "target": "b.wrong"})],
+            [("connect", {"source": "a.value", "target": "b.other"})],
+        )
+    )
+    session = AgentSession(app, agent)
+    await session.runner.run("Build")
+    assert session.runner.error is None
+    assert len(app._editor.graph.edges) == 1

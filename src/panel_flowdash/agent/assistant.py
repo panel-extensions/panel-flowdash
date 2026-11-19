@@ -178,6 +178,9 @@ def _describe_components(ops: DashboardOps, compact: bool, lookup: bool) -> str:
 
 _CATALOGUES = ("full", "compact", "none")
 
+# Failures a tool may have in a run, counted until a step calls it without one.
+TOOL_RETRIES = 3
+
 
 def create_agent(
     model: t.Any = None,
@@ -187,6 +190,7 @@ def create_agent(
     tools: t.Collection[str] | None = None,
     default_instructions: bool = True,
     catalogue: t.Literal["full", "compact", "none"] = "full",
+    tool_retries: int = TOOL_RETRIES,
     **kwargs: t.Any,
 ) -> Agent[FlowDashDeps, str]:
     """Create the default FlowDash agent.
@@ -231,6 +235,11 @@ def create_agent(
         titles, or ``"none"``. The ids-only forms point the agent to
         list_components when it is offered. With ``"none"`` and without
         list_components the agent cannot discover components.
+    tool_retries
+        How often in a run each dashboard tool may fail with a mistake the
+        model is asked to fix. pydantic-ai counts a tool's failures until a
+        step calls it without one, so in steps of parallel calls a few
+        failed connections add up quickly; one retry would end the run.
     **kwargs
         Passed on to ``pydantic_ai.Agent``.
     """
@@ -250,7 +259,10 @@ def create_agent(
         deps_type=FlowDashDeps,
         name="FlowDash",
         instructions=text or None,
-        toolsets=[dashboard_toolset(tools), *kwargs.pop("toolsets", [])],
+        toolsets=[
+            dashboard_toolset(tools, max_retries=tool_retries),
+            *kwargs.pop("toolsets", []),
+        ],
         model_settings=model_settings,
         **kwargs,
     )
