@@ -442,13 +442,23 @@ def _text(value: t.Any) -> str:
 # --------------------------------------------------------------------------
 
 
-def list_components(ctx: RunContext[FlowDashDeps], query: str = "") -> str:
+def list_components(
+    ctx: RunContext[FlowDashDeps], query: str = "", components: list[str] | None = None
+) -> str:
     """List the components you may place, with their inputs, outputs and config fields.
 
     Args:
         query: Only list components matching all of these words, e.g. "map" or "table".
+        components: Only list these component ids, e.g. ["Views/kpi", "Views/map"],
+            to look up several components in one call.
     """
-    return _text(ctx.deps.ops.list_components(query))
+    listed = ctx.deps.ops.list_components(query)
+    if not components:
+        return _text(listed)
+    listed = [c for c in listed if c["component"] in components]
+    missing = sorted(set(components) - {c["component"] for c in listed})
+    text = _text(listed)
+    return text + (f"\nNo component {', '.join(missing)} you may place." if missing else "")
 
 
 def list_dashboards(ctx: RunContext[FlowDashDeps]) -> str:
@@ -523,7 +533,8 @@ async def add_node(
     """Place a component on the open dashboard and return the name of its node.
 
     The node's canvas position and its tile are chosen for you from the
-    dataflow and the component's kind, and follow as you connect it.
+    dataflow and the component's kind, and follow as you connect it. Pass
+    the config values you know now rather than in a later set_config.
 
     Args:
         component: A component id from list_components, e.g. "Views/kpi".
@@ -784,7 +795,12 @@ def remove_parameter(ctx: RunContext[FlowDashDeps], name: str) -> t.Any:
 
 
 async def replace_dashboard(ctx: RunContext[FlowDashDeps], dashboard_yaml: str) -> t.Any:
-    """Replace the whole open dashboard with YAML; use it for large changes.
+    """Replace the whole open dashboard with YAML.
+
+    Use it to rewrite most of the dashboard, or when the user asks for it, e.g.
+    with YAML they pasted. Otherwise build and change dashboards with add_node,
+    connect and set_config: positions and the layout are automatic, and only
+    the user can rename a dashboard.
 
     Args:
         dashboard_yaml: The whole dashboard in the YAML format, edited from what
@@ -972,7 +988,9 @@ TOOLS = (
 )
 
 
-def dashboard_toolset(tools: t.Collection[str] | None = None) -> FunctionToolset[FlowDashDeps]:
+def dashboard_toolset(
+    tools: t.Collection[str] | None = None, *, max_retries: int | None = None
+) -> FunctionToolset[FlowDashDeps]:
     """Return the dashboard tools, which run against ``FlowDashDeps.ops`` of each run's deps.
 
     Parameters
@@ -984,6 +1002,9 @@ def dashboard_toolset(tools: t.Collection[str] | None = None) -> FunctionToolset
         collection gives no tools. Every tool sent to the model costs input
         tokens on each request, so an agent with a narrow job is cheaper and
         often more accurate with fewer.
+    max_retries
+        How often in a run each tool may fail with a mistake the model is
+        asked to fix; pydantic-ai's default (1) when None.
 
     Raises
     ------
@@ -999,7 +1020,7 @@ def dashboard_toolset(tools: t.Collection[str] | None = None) -> FunctionToolset
         raise ValueError(
             f"Unknown dashboard tools: {', '.join(unknown)}. They are: {', '.join(names)}."
         )
-    toolset = FunctionToolset[FlowDashDeps]()
+    toolset = FunctionToolset[FlowDashDeps](max_retries=max_retries)
     for func in TOOLS:
         if tools is not None and func.__name__ not in tools:
             continue

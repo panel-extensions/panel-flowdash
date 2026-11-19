@@ -38,16 +38,23 @@ the dashboard on other data or inputs. A parameter's `expects` is written by
 FlowDash; leave it as it is.
 
 How to work:
-- Start with get_dashboard to see the open dashboard, and list_components to
-  find components; use only component ids, ports and config fields that exist.
-- Make small changes with add_node, connect, set_config, place_tile and the
-  other operations. For larger rewrites write the whole YAML, check it with
-  validate_dashboard and load it with replace_dashboard.
+- Start with get_dashboard to see the open dashboard. Use only component ids,
+  ports and config fields that exist; to look components up, describe all
+  you need in one list_components call.
+- Build and change dashboards with add_node, connect, set_config, place_tile
+  and the other operations, and fix problems with them too. Write the whole
+  YAML (checked with validate_dashboard, loaded with replace_dashboard) only
+  to rewrite most of an existing dashboard, never just to set positions, the
+  layout or the title: those are automatic, and only the user can rename a
+  dashboard.
+- Make independent changes together, as parallel tool calls in one step: add
+  every node a request needs at once, then make all their connections at
+  once, then the remaining config changes, instead of one call per step.
 - Give every node you add a short descriptive name in snake_case, e.g.
   add_node("Views/kpi", name="total_revenue"), and use the same names in YAML
   you write, so nodes are easy to recognise and refer to.
 - Positions and tile layout are automatic: leave out `position` and `layout`
-  for new nodes. Add a source with the nodes it feeds, one group at a time.
+  for new nodes. Add a source together with the nodes it feeds.
   Give a dashboard with a single KPI a heading. Call arrange_canvas or
   arrange_layout only when asked to tidy up.
 - Group nodes on the canvas (group_nodes, or `groups` and a node's `group` in
@@ -153,11 +160,18 @@ def _describe_components(ops: DashboardOps, compact: bool, lookup: bool) -> str:
     if len(text) <= CATALOGUE_LIMIT and not compact:
         return text
     lines = [f"- {c['component']} ({c['title']})" for c in components]
-    hint = " (call list_components with a query for their ports and config)" if lookup else ""
+    hint = (
+        " (call list_components with their ids or a query for their ports and config)"
+        if lookup
+        else ""
+    )
     return f"Components you may place{hint}:\n" + "\n".join(lines)
 
 
 _CATALOGUES = ("full", "compact", "none")
+
+# Failures a tool may have in a run, counted until a step calls it without one.
+TOOL_RETRIES = 3
 
 
 def create_agent(
@@ -168,6 +182,7 @@ def create_agent(
     tools: t.Collection[str] | None = None,
     default_instructions: bool = True,
     catalogue: t.Literal["full", "compact", "none"] = "full",
+    tool_retries: int = TOOL_RETRIES,
     **kwargs: t.Any,
 ) -> Agent[FlowDashDeps, str]:
     """Create the default FlowDash agent.
@@ -212,6 +227,11 @@ def create_agent(
         titles, or ``"none"``. The ids-only forms point the agent to
         list_components when it is offered. With ``"none"`` and without
         list_components the agent cannot discover components.
+    tool_retries
+        How often in a run each dashboard tool may fail with a mistake the
+        model is asked to fix. pydantic-ai counts a tool's failures until a
+        step calls it without one, so in steps of parallel calls a few
+        failed connections add up quickly; one retry would end the run.
     **kwargs
         Passed on to ``pydantic_ai.Agent``.
     """
@@ -231,7 +251,10 @@ def create_agent(
         deps_type=FlowDashDeps,
         name="FlowDash",
         instructions=text or None,
-        toolsets=[dashboard_toolset(tools), *kwargs.pop("toolsets", [])],
+        toolsets=[
+            dashboard_toolset(tools, max_retries=tool_retries),
+            *kwargs.pop("toolsets", []),
+        ],
         model_settings=model_settings,
         **kwargs,
     )
