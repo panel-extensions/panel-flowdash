@@ -1,5 +1,7 @@
 """UI tests of groups on the wiring canvas: grouping a selection, collapsing and ungrouping."""
 
+import re
+
 import panel as pn
 import panel_material_ui as pmui
 import pytest
@@ -67,6 +69,16 @@ def test_grouping_the_selection_frames_it_and_keeps_the_nodes_in_place(page):
     (group_id,) = editor.groups
     frame = _node(page, group_node_id(group_id))
     expect(frame).to_be_visible()
+    # The new frame is selected on the canvas, in the page and in Python alike.
+    wait_until(
+        lambda: editor._flow.selection == {"nodes": [group_node_id(group_id)], "edges": []},
+        timeout=8000,
+    )
+    expect(frame).to_have_class(re.compile(r"\bselected\b"))
+    for node_id in (first, second):
+        expect(_node(page, node_id)).not_to_have_class(re.compile(r"\bselected\b"))
+    page.wait_for_timeout(1000)
+    assert editor._flow.selection == {"nodes": [group_node_id(group_id)], "edges": []}
     wait_until(lambda: editor._inspector._shown == ("group", group_id), timeout=8000)
     expect(page.get_by_text("Ungroup")).to_be_visible()
     frame_box = frame.bounding_box()

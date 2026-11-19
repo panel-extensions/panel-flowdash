@@ -173,8 +173,6 @@ class Inspector(Viewer):
             sx={"borderLeft": 1, "borderColor": "divider", "bgcolor": "background.paper"},
         )
         self._sync_collapsed()
-        # A group just made, shown while nothing is selected on the canvas.
-        self._shown_group: str | None = None
         self._flow.param.watch(self._on_selection, "selection")
         self._watcher = CanvasWatcher(self._flow, self._on_canvas_changed)
 
@@ -186,8 +184,6 @@ class Inspector(Viewer):
         selection = self._flow.selection or {}
         nodes, edges = selection.get("nodes") or [], selection.get("edges") or []
         components = tuple(n for n in nodes if group_id_of(n) is None)
-        if not nodes and not edges and self._shown_group in self.editor._groups:
-            return ("group", self._shown_group)
         if len(nodes) == 1 and not edges and (group_id := group_id_of(nodes[0])):
             return ("group", group_id)
         if len(components) > 1 and not edges:
@@ -198,9 +194,7 @@ class Inspector(Viewer):
             return ("edge", edges[0])
         return None
 
-    def _on_selection(self, event):
-        if (event.new or {}).get("nodes") or (event.new or {}).get("edges"):
-            self._shown_group = None
+    def _on_selection(self, _event):
         if self.visible:
             self.refresh()
 
@@ -439,15 +433,8 @@ class Inspector(Viewer):
         return objects
 
     def _group(self, instance_ids: tuple[str, ...]):
-        # Grouping sends every node to the page again, the grouped ones
-        # deselected so the page drops their selection. The inspector then
-        # shows the new group until something else is selected.
-        for node in self._flow.nodes:
-            if node["id"] in instance_ids:
-                node["selected"] = False
         group_id = self.editor.group_nodes(instance_ids)
-        self._shown_group = group_id
-        self.refresh(force=True)
+        select_on_canvas(self._flow, node_id=self.editor._group_node_id(group_id))
 
     def _group_view(self, group_id: str) -> list[Viewable]:
         editor = self.editor
