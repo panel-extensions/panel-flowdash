@@ -81,11 +81,11 @@ def test_seed_dashboard_round_trips(seed):
     assert dashboard_to_yaml(dashboard_from_yaml(text)) == text
 
 
-@pytest.mark.parametrize("version", [2, 3, FORMAT_VERSION])
+@pytest.mark.parametrize("version", [1, 2, 3, 4])
 @pytest.mark.parametrize("seed", SEEDS, ids=lambda p: p.stem)
 def test_seed_dashboard_round_trips_through_the_editor_and_validates(wind, seed, version):
-    # The seeds hold no key added after version 2, so with that header the
-    # text is what 0.1.0rc3 wrote for them.
+    # The seeds hold no key added after version 1, so they read the same under
+    # every header, including the 3 and 4 that development builds wrote.
     store = MemoryDashboardStore()
     wind.seed_dashboards(store, "demo")
     editor = FlowDash(
@@ -311,10 +311,10 @@ def _validate(text):
 class TestValidate:
     def test_structural_errors_name_the_key(self):
         assert _validate("flowdash: 1\nnodes:\n  a: {component: T/number, colour: red}\n") == [
-            "nodes.a: unknown key 'colour'; expected component, config, inputs, position."
+            "nodes.a: unknown key 'colour'; expected component, origin, group, config, inputs, position."
         ]
         assert _validate("flowdash: 5\n") == [
-            "flowdash: unsupported format version 5; this release reads 1, 2, 3 and 4. "
+            "flowdash: unsupported format version 5; this release reads version 1. "
             "The file was written by a newer FlowDash."
         ]
         assert _validate("nodes: {}\n")[0].startswith("document:")
@@ -325,7 +325,9 @@ class TestValidate:
         assert _validate(
             "flowdash: 1\nnodes:\n  a: {component: T/number}\n"
             "layout:\n  tiles:\n    - {node: a, colour: red}\n"
-        ) == ["layout.tiles[0]: unknown key 'colour'; expected node, width, height, visible."]
+        ) == [
+            "layout.tiles[0]: unknown key 'colour'; expected node, width, height, visible, framed, area."
+        ]
 
     def test_unknown_component_suggests_a_close_match(self):
         (error,) = _validate("flowdash: 1\nnodes:\n  a: {component: T/numbers}\n")

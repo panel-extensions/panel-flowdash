@@ -121,7 +121,7 @@ def secret(config, instance_config):
 COMPONENTS = {"T/table": table, "T/pick": pick, "T/secret": secret}
 
 DOC = """\
-flowdash: 4
+flowdash: 1
 title: Picks
 parameters:
   cols:
@@ -235,7 +235,7 @@ class TestCoerce:
 class TestFormat:
     def test_round_trip(self, editor):
         doc = dashboard_to_dict(editor)
-        assert doc["flowdash"] == 4
+        assert doc["flowdash"] == 1
         assert doc["parameters"]["which"] == {"node": "first", "field": "column", "type": "string"}
         assert doc["parameters"]["cols"]["description"] == "The table's columns"
         again = _editor()
@@ -250,9 +250,10 @@ class TestFormat:
         assert model.parameters["which"].node == "first"
         assert set(model.parameters) == {"cols", "which", "limit"}
 
-    def test_earlier_versions_have_no_parameters(self):
-        with pytest.raises(DashboardYAMLError, match="document: unknown key 'parameters'"):
-            dashboard_from_yaml(DOC.replace("flowdash: 4", "flowdash: 3"))
+    @pytest.mark.parametrize("version", [2, 3, 4])
+    def test_pre_release_files_load(self, version):
+        data = dashboard_from_yaml(DOC.replace("flowdash: 1", f"flowdash: {version}"))
+        assert data["parameters"] == dashboard_from_yaml(DOC)["parameters"]
 
     @pytest.mark.parametrize(
         "change, path",

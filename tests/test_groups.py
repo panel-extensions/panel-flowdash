@@ -81,7 +81,7 @@ def show(config):
 COMPONENTS = {"T/table": table, "T/pick": pick, "T/show": show}
 
 DOC = """\
-flowdash: 4
+flowdash: 1
 title: Picks
 groups:
   picks: {label: Two picks, collapsed: true}
@@ -205,7 +205,7 @@ class TestYAML:
             ),
             (lambda d: d["groups"].update(empty={}), "groups.empty: has no nodes"),
             (lambda d: d["groups"]["picks"].update(size=3), "groups.picks"),
-            (lambda d: d.update(flowdash=3), "document"),
+            (lambda d: d.update(flowdash=5), "written by a newer FlowDash"),
         ],
     )
     def test_refuses_malformed_groups(self, edit, message):

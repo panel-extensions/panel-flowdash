@@ -6,15 +6,14 @@ content as the JSON export, keyed by readable node names instead of generated id
 and loading it goes through the same path as importing a downloaded file, so the
 same permission checks apply.
 
-This page specifies version 4 of the format. Every file starts with `flowdash: 4`,
-the integer 4. Every change to the format, including a new optional key, comes with a
-new version number. A release reads the versions it knows and rejects a file with a
-later version, or with keys it does not know, saying that a newer FlowDash may have
-written it. This release writes version 4 and reads versions 1 to 4, see
-[Earlier versions](#earlier-versions).
+This page specifies version 1 of the format. Every file starts with `flowdash: 1`,
+the integer 1. A release that changes the format gives it a new version number. A
+release reads the versions it knows and rejects a file with a later version, or with
+keys it does not know, saying that a newer FlowDash may have written it. Files from
+older pre-releases of panel-flowdash still load.
 
 ```yaml
-flowdash: 4
+flowdash: 1
 title: State Deep Dive
 settings:
   refresh_period: 0
@@ -84,7 +83,7 @@ layout:
 
 | Key | Required | Meaning |
 | --- | --- | --- |
-| `flowdash` | yes | The format version, `4`. |
+| `flowdash` | yes | The format version, `1`. |
 | `title` | no | The dashboard's title. Loading a file into an existing dashboard keeps that dashboard's title. |
 | `settings` | no | Dashboard-wide settings, keyed by the parameter names of the app's `DashboardSettings` class, e.g. `description`, `refresh_period`, `tile_cards`. |
 | `parameters` | no | The config fields the dashboard can be run with, a mapping from parameter name to parameter. |
@@ -125,7 +124,7 @@ Quote a value to make it a string whatever it looks like. The writer quotes ever
 string another YAML reader could take for a different type.
 
 A file in this format may also be written as JSON with the same keys; it is read
-under the same rules. Flow-style YAML (`{flowdash: 4, ...}`) is read too.
+under the same rules. Flow-style YAML (`{flowdash: 1, ...}`) is read too.
 
 ## Parameters
 
@@ -307,30 +306,7 @@ the same at every screen size. Other keys are rejected, except `x-` keys, which 
 ignored. Nodes without a tile entry get their component's default size, after the
 listed tiles.
 
-## Earlier versions
-
-panel-flowdash 0.1.0rc3 wrote version 2. Version 4 adds to it:
-
-- a tile's `framed` and `area` in `layout.tiles`, see [Layout](#layout);
-- the top-level `parameters`, see [Parameters](#parameters);
-- the top-level `groups` and a node's `group`, see [Groups](#groups).
-
-Versions 1 and 3 were only written by development builds: version 1 before 0.1.0rc3,
-and version 3, which added a tile's `framed`, between 0.1.0rc3 and 0.1.0rc4. Files of
-versions 1 to 3 load unchanged, and exporting them again writes version 4. A file of a version may not hold
-keys a later version added:
-
-- Version 3 files start with `flowdash: 3` and may not hold `parameters`, `groups` or
-  a node `group`.
-- Version 2 files start with `flowdash: 2` and may not hold those or a tile's `framed`
-  or `area`.
-- Version 1 files start with `flowdash: 1` and may not hold any of those, `turns` or a
-  node `origin`. They load as a dashboard without turns whose nodes have no origin.
-
-A file with a version later than 4 is refused with a message saying a newer FlowDash
-wrote it. 0.1.0rc3 refuses version 4 files the same way.
-
-## Not in version 4
+## Not in the format
 
 A file describes what a dashboard is built from, not the state it is in:
 

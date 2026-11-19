@@ -32,9 +32,11 @@ _RANDOM_ID = re.compile(r"[0-9a-f]{12}")
 # Titles already warned about as ambiguous, so a home page visit does not log each time.
 _AMBIGUOUS_TITLES: set[str] = set()
 
-# The version of :class:`DashboardModel` this release writes. Version 4 added
-# turns and node origins, version 5 parameters and groups; older models load without them.
-MODEL_VERSION = 5
+# The version of :class:`DashboardModel` this release writes. Version 3 is the
+# last released one; version 4 adds turns, node origins, parameters and groups,
+# which older models load without. Changes made before a release that ships them
+# do not bump it: development builds wrote some version 4 models as 5.
+MODEL_VERSION = 4
 
 # What decoding a stored dashboard raises when its data is malformed. Deeply
 # nested JSON overflows the decoder with a RecursionError.
@@ -274,9 +276,9 @@ class DashboardModel:
 
 def _migrated(version: Any) -> int:
     """Return the model version a stored one is read as: older ones are upgraded on load."""
-    if isinstance(version, bool) or not isinstance(version, int):
+    if isinstance(version, bool) or not isinstance(version, int) or version <= 5:
         return MODEL_VERSION
-    return max(version, MODEL_VERSION)
+    return version
 
 
 def _parse_sqlite_time(value: Any) -> datetime | None:

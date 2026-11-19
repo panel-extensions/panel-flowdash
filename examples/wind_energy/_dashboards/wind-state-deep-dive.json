@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "title": "State Deep Dive",
   "items": [
     {
@@ -313,5 +313,8 @@
     "refresh_period": 0,
     "capacity_unit": "MW",
     "color_scheme": "blues"
-  }
+  },
+  "turns": [],
+  "parameters": {},
+  "groups": []
 }

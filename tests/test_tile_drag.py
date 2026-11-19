@@ -270,13 +270,13 @@ class TestYAML:
         ],
     )
     def test_invalid_area_is_refused(self, tile, path):
-        text = "flowdash: 3\nnodes:\n  r: {component: T/region}\nlayout:\n  tiles:\n"
+        text = "flowdash: 1\nnodes:\n  r: {component: T/region}\nlayout:\n  tiles:\n"
         with pytest.raises(DashboardYAMLError) as info:
             dashboard_from_yaml(text + f"    - {tile}\n")
         assert info.value.path == path
 
     def test_responsive_layouts_may_not_set_an_area(self):
-        text = "flowdash: 3\nnodes:\n  r: {component: T/region}\nlayout:\n  responsive:\n"
+        text = "flowdash: 1\nnodes:\n  r: {component: T/region}\nlayout:\n  responsive:\n"
         with pytest.raises(DashboardYAMLError, match="unknown key"):
             dashboard_from_yaml(text + "    sm:\n      - {node: r, area: top}\n")
 
