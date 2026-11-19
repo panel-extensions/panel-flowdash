@@ -49,7 +49,8 @@ dependencies = [
     # panel-material-ui 0.17 needs Panel 1.11, as 1.10 pins it below 0.17.
     "panel >=1.11.0rc0",
     # RunState undo and redo and drop_artifact_versions, which the edit history builds on;
-    # 0.1.0b8 shows a version's metadata["detail"] as the history row's tooltip; 0.1.0b9 has SpanView.
+    # 0.1.0b8 shows a version's metadata["detail"] as the history row's tooltip; 0.1.0b9 has SpanView;
+    # 0.1.0b10 has AgentChat's document layout with inline artifact cells.
     "panel-agents >=0.1.0b10",
     # Page.rail and Page.header_color arrived in 0.17.0b3.
     "panel-material-ui >=0.17.0b3",

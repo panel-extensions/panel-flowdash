@@ -76,11 +76,13 @@ class TestDashboardBarSections:
         editor.param.update(editable=False, read_only=True)
         bar = editor._dashboard_bar
         assert bar._actions.objects == [
+            bar.mode_toggle,
             bar.refresh_button,
             bar.refresh_period,
             bar.fullscreen_button,
             bar.download_button,
         ]
+        assert list(bar.mode_toggle.options.values()) == ["explore", "view"]
 
     async def test_title_follows_the_dashboard(self, store_editor):
         assert store_editor._dashboard_bar.title.object == "Plant"
@@ -436,7 +438,8 @@ class TestAppModes:
         app._show_view_mode()
         assert app._editor.read_only
         assert not app._share_button.visible
-        assert app._editor._dashboard_bar.mode_toggle not in app._editor._dashboard_bar._actions
+        bar = app._editor._dashboard_bar
+        assert "edit" not in bar.mode_toggle.options.values()
 
     async def test_components_route_starts_from_an_empty_canvas(self, app):
         _open(app)

@@ -54,6 +54,18 @@ def _fallback(turn: DashboardTurn, redacted: bool) -> Viewable:
     )
 
 
+def later_summary(later: Sequence[DashboardTurn], more: bool = False) -> str:
+    """Say how many requests and manual edits changed a node after it was made, e.g. "Changed later by 2 requests"."""
+    requests = sum(t.actor == "agent" for t in later)
+    edits = len(later) - requests
+    parts = []
+    if requests:
+        parts.append(f"{requests} request{'s' * (requests != 1)}")
+    if edits:
+        parts.append(f"{edits} manual edit{'s' * (edits != 1)}")
+    return f"Changed later by {'at least ' if more else ''}{' and '.join(parts)}"
+
+
 def _later(
     later: Sequence[DashboardTurn],
     on_open: Callable[[DashboardTurn], None] | None,
@@ -61,15 +73,9 @@ def _later(
     more: bool,
 ) -> Viewable:
     requests = [t for t in later if t.actor == "agent"]
-    edits = len(later) - len(requests)
-    parts = []
-    if requests:
-        parts.append(f"{len(requests)} request{'s' * (len(requests) != 1)}")
-    if edits:
-        parts.append(f"{edits} manual edit{'s' * (edits != 1)}")
     objects: list[Viewable] = [
         pmui.Typography(
-            f"Changed later by {'at least ' if more else ''}{' and '.join(parts)}",
+            later_summary(later, more),
             variant="body2",
             margin=0,
             sx={"color": "text.secondary"},
@@ -128,4 +134,4 @@ def provenance_objects(
     return objects, span
 
 
-__all__ = ["provenance_objects", "recorded"]
+__all__ = ["later_summary", "provenance_objects", "recorded"]

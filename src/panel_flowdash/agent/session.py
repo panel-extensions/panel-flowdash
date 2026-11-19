@@ -112,6 +112,11 @@ class AgentSession:
         self.runner.state.subscribe(self._note_run)
         # Background checks of restored versions, kept so they are not collected while they run.
         self._checks: set[asyncio.Task] = set()
+        chat_params = (
+            {"models": list(models), "model_id": model, "remember_model": MODEL_KEY}
+            if models and len(models) > 1
+            else {}
+        )
         self.drawer = AgentDrawer(
             self.runner,
             title="Assistant",
@@ -119,12 +124,15 @@ class AgentSession:
             on_apply=self.apply_version,
             # Someone else's request is redacted for people who may not see what it touched.
             redact_runs=editor.run_redacted,
-            chat_params=(
-                {"models": list(models), "model_id": model, "remember_model": MODEL_KEY}
-                if models and len(models) > 1
-                else {}
-            ),
+            chat_params=chat_params,
         )
+        # The Explore view's composer asks this runner, so the drawer's chat is not needed
+        # beside it; it offers the same models and follows the drawer's pick.
+        editor.explore_feed.attach(
+            self.runner, chat_params=chat_params, model_chat=self.drawer.chat
+        )
+        editor.param.watch(self._on_explore, "explore")
+        self._on_explore()
         self.highlighter = ChangeHighlighter(self)
         self.chrome = SessionChrome(self)
         self.history_notice = pmui.Alert(
@@ -138,6 +146,15 @@ class AgentSession:
             editor.edit_history.on_load = self._on_history_loaded
             self.drawer.param.watch(self._on_drawer_open, "open")
             self._place_history_notice()
+
+    def _on_explore(self, *_events):
+        """Close the drawer while Explore shows the chat, and bring back an approval left pending there."""
+        exploring = self.app._editor.explore
+        self.drawer.open_on_approval = not exploring
+        if exploring:
+            self.drawer.open = False
+        elif self.runner.state.pending_approvals:
+            self.drawer.open = True
 
     def _note_run(self, event):
         if isinstance(event, RunStarted) and event.parent_run_id is None:

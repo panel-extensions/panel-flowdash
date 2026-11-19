@@ -87,7 +87,7 @@ class TestSplitTab:
 
     async def test_offered_by_the_edit_tabs(self, editor):
         tabs = editor._dashboard_bar.mode_tabs
-        assert list(tabs.options.values()) == ["wiring", "dashboard", "split"]
+        assert list(tabs.options.values()) == ["explore", "wiring", "dashboard", "split"]
         tabs.value = "split"
         assert editor.mode == "split"
 
