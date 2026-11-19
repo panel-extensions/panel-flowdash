@@ -80,8 +80,12 @@ def test_the_tile_menu_shows_it_and_a_viewer_sees_their_own_request_in_full(page
     sheet = page.locator(".flowdash-inspect-sheet")
     expect(sheet.locator(".sv-question")).to_have_text("Add another note")
 
-    # Viewing only, the person who asked still sees their own request.
+    # Viewing only, the person who asked still sees their own request. The sheet is
+    # shown again for the new rights, so wait for that before closing it, or it
+    # would open again over the header.
+    shown = editor._span_view
     editor.read_only = True
+    wait_until(lambda: editor._span_view not in (None, shown), page, timeout=8000)
     expect(sheet.locator(".sv-question")).to_have_text("Add another note")
     page.get_by_role("button", name="Close inspector").click()
     page.get_by_role("button", name="Assistant", exact=True).click()

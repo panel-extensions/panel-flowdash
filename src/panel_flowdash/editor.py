@@ -2286,17 +2286,25 @@ class FlowDash(Viewer):
 
         Their own requests are always shown in full. Anyone else's are
         redacted for people who may not edit the dashboard, and when the
-        request created a node whose component this person may not use.
+        request created or changed a node whose component this person may
+        not use.
         """
         if run_id is not None and run_id in self._own_runs:
             return False
         if self.read_only:
             return True
-        turns = {turn.id for turn in self._turn_log.turns if run_id and turn.run == run_id}
+        turns = [turn for turn in self._turn_log.turns if run_id and turn.run == run_id]
+        if not turns:
+            return False
+        from panel_flowdash.agent.yaml_format import node_names
+
+        made = {turn.id for turn in turns}
+        names = node_names(self._tile_items)
         return any(
             self._node_restricted(instance_id)
-            for instance_id, origin in self._origins.items()
-            if origin in turns
+            for instance_id, name in names.items()
+            if self._origins.get(instance_id) in made
+            or any(changes_node(turn, name) for turn in turns)
         )
 
     def _turn_redacted(self, turn: DashboardTurn, instance_id: str) -> bool:

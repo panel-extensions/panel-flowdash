@@ -187,3 +187,17 @@ def test_the_sheet_follows_a_change_of_read_only(viewing):
     viewing.show_how_made("double")
     viewing.read_only = True
     assert "The question is hidden." in _sheet(viewing).objects[1].objects[0].object
+
+
+def test_a_request_that_changed_a_restricted_node_is_redacted():
+    editor = _editor(MemoryDashboardStore(), finance=True)
+    editor.new_dashboard("Pay")
+    editor.add_component("T/secret", instance_id="secret")
+    editor.add_component("T/doubler", instance_id="double")
+    with agent_edits(run="run-c", question="Double the salaries"):
+        editor.connect("secret", "value", "double", "value")
+    assert editor.origin_turn("double").run is None
+    assert not editor.run_redacted("run-c")
+    editor.authorize_component = lambda entry: entry.app_id != "T/secret"
+    assert editor.run_redacted("run-c")
+    editor.dispose()
