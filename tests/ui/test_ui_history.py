@@ -106,6 +106,18 @@ def test_the_history_is_there_after_a_reload_and_reverts(page):
     assert errors == []
 
 
+def test_a_history_of_a_newer_format_is_named_in_the_drawer(page):
+    store, (dash,) = _store_with("Plant")
+    store.append_history(dash, {"flowdash_history": 99})
+    agent = Agent(scripted(), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()])
+    _serve_app(page, store, f"/dash/{dash}?edit=true", agent=agent)
+    page.get_by_role("button", name="Done").wait_for()
+    page.get_by_role("button", name="Assistant", exact=True).click()
+    expect(page.get_by_text("History was written by a newer FlowDash")).to_be_visible(
+        timeout=10000
+    )
+
+
 def test_a_refused_revert_says_why_and_stops_spinning(page, monkeypatch):
     from panel_flowdash.history import EditHistory
 

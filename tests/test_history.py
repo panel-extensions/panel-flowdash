@@ -1335,25 +1335,45 @@ def test_a_shown_history_loads_each_dashboard_as_it_is_opened(any_store):
     assert len(history.artifact.versions) == 3
 
 
-def test_a_dashboard_changed_outside_the_editor_is_a_version_when_shown(any_store):
-    first = _editor(any_store)
+def _changed_outside(store):
+    first = _editor(store)
     model = first.new_dashboard("Mine")
     _two_nodes(first)
     first.save()
-    stored = any_store.load_dashboard(model.user_id, model.dashboard_id)
+    stored = store.load_dashboard(model.user_id, model.dashboard_id)
     stored.items = [item for item in stored.items if item.instance_id == "base"]
     stored.edges = []
-    any_store.save_dashboard(stored)
+    store.save_dashboard(stored)
+    return model
 
+
+def test_a_dashboard_changed_outside_the_editor_becomes_a_version_at_the_first_undo(any_store):
+    model = _changed_outside(any_store)
     second = _editor(any_store)
     second.load(model.dashboard_id)
     assert _names(second) == ["base"]
     history = second.edit_history
     history.load()
-    last = history.artifact.versions[-1]
-    assert (last.metadata["op"], last.metadata["label"]) == ("open", "Opened the dashboard")
-    assert history.artifact.applied == last.version
+    assert len(history.artifact.versions) == 3
+    assert len(_published(any_store, model.dashboard_id)) == 3
     assert second.undo() and _names(second) == ["base", "double"]
+    opened = history.artifact.versions[3]
+    assert (opened.metadata["op"], opened.metadata["label"]) == ("open", "Opened the dashboard")
+    assert len(_published(any_store, model.dashboard_id)) == 4
+
+
+def test_viewing_a_dashboard_never_writes_to_its_history(any_store):
+    model = _changed_outside(any_store)
+    before = any_store.load_history(model.dashboard_id)
+    viewer = _editor(any_store, history_limit=1, history_max_bytes=10)
+    viewer.load(model.dashboard_id)
+    viewer.editable = False
+    viewer.edit_history.shown = True
+    viewer.edit_history.load()
+    viewer.load(model.dashboard_id)
+    assert len(viewer.edit_history.versions) == 1
+    viewer.edit_history.close()
+    assert any_store.load_history(model.dashboard_id) == before
 
 
 def test_the_stored_history_starts_with_its_format(any_store):
@@ -1396,6 +1416,7 @@ def test_a_history_of_a_newer_format_is_neither_shown_nor_extended(any_store, ca
     reopened.load(model.dashboard_id)
     reopened.edit_history.load()
     assert reopened.edit_history.artifact is None
+    assert "newer FlowDash" in reopened.edit_history.refused
     assert "format version 2" in caplog.text
     reopened.add_component("T/number", instance_id="b")
     assert any_store.load_history(model.dashboard_id) == records
@@ -1455,3 +1476,57 @@ def test_a_node_a_batch_removed_again_shows_no_ports_to_whom_may_not_use_it(fina
     other = _editor(store, finance=True)
     other.load(dashboard_id)
     assert "secret.value" in json.dumps(other.edit_history.versions[-1].metadata)
+
+
+def test_max_bytes_keeps_the_version_the_latest_save_holds():
+    records = [{"flowdash_history": 1}, *(_version(n, 1000) for n in range(10))]
+    records.insert(4, {"type": "FLOWDASH_SAVED", "version_id": "v2", "revision": 1})
+    kept = compact(records, None, None, max_bytes=3 * 1600)
+    assert [
+        r.get("metadata", {}).get("version_id")
+        for r in kept
+        if r.get("type") == "ARTIFACT_PUBLISHED"
+    ] == [
+        "v2",
+        "v8",
+        "v9",
+    ]
+    assert {"type": "FLOWDASH_SAVED", "version_id": "v2", "revision": 1} in kept
+
+
+def test_reopening_after_a_large_unsaved_session_finds_the_saved_dashboard(any_store):
+    editor = _editor(any_store, history_coalesce=0)
+    model = editor.new_dashboard("Mine")
+    editor.add_component("T/number", instance_id="saved")
+    editor.save()
+    for i in range(20):
+        editor.add_component("T/number", instance_id=f"unsaved{i}")
+    editor.dispose()
+
+    reopened = _editor(any_store, history_max_bytes=4000)
+    reopened.load(model.dashboard_id)
+    assert _names(reopened) == ["saved"]
+    versions = reopened.edit_history.versions
+    assert versions[-1].metadata["args"].get("name") == "saved"
+    assert not any("unsaved" in v.value for v in versions)
+
+
+def test_a_failed_load_adds_no_header_to_the_stored_history(any_store, monkeypatch):
+    import panel_flowdash.history as history_module
+
+    editor = _editor(any_store)
+    model = editor.new_dashboard("Mine")
+    editor.add_component("T/number", instance_id="a")
+    editor.save()
+    before = len(any_store.load_history(model.dashboard_id))
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("unreadable")
+
+    monkeypatch.setattr(history_module, "decode", fail)
+    reopened = _editor(any_store)
+    reopened.load(model.dashboard_id)
+    reopened.add_component("T/number", instance_id="b")
+    records = any_store.load_history(model.dashboard_id)
+    assert len(records) > before
+    assert sum("flowdash_history" in r for r in records) == 1

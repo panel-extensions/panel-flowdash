@@ -77,6 +77,12 @@ HEADER_KEY = "flowdash_history"
 #: Histories without a header record were written before it and are version 1.
 FORMAT_VERSION = 1
 
+#: Shown instead of a stored history of a newer format version.
+NEWER_FORMAT = (
+    "History was written by a newer FlowDash and isn't shown; changes in this session "
+    "won't be recorded."
+)
+
 #: About how many bytes of YAML a dashboard's stored history keeps by default.
 HISTORY_MAX_BYTES = 16 * 2**20
 
@@ -216,11 +222,24 @@ def compact(
         or r["timestamp"] >= cutoff
     ]
     if max_bytes is not None and kept:
-        total, start = 0, len(kept)
-        while start > 0 and (start == len(kept) or total + _size(kept[start - 1]) <= max_bytes):
+        # The version the latest save holds stays, so reopening finds the line to the saved dashboard.
+        saved = next(
+            (r.get("version_id") for r in reversed(records) if r.get("type") == SAVED_RECORD), None
+        )
+        pin = (
+            None
+            if saved is None
+            else _latest(kept, lambda r: (r.get("metadata") or {}).get("version_id") == saved)
+        )
+        total = _size(kept[pin]) if pin is not None else 0
+        start = len(kept)
+        while start > 0 and (
+            start == len(kept) or start - 1 == pin or total + _size(kept[start - 1]) <= max_bytes
+        ):
             start -= 1
-            total += _size(kept[start])
-        kept = kept[start:]
+            if start != pin:
+                total += _size(kept[start])
+        kept = ([kept[pin]] if pin is not None and pin < start else []) + kept[start:]
     if len(kept) == len(published):
         return records
     kept_ids = {id(r) for r in kept}
@@ -382,6 +401,9 @@ class EditHistory:
         self._unheaded: dict[str, bool] = {}
         self._timer = False
         self._requests: dict[tuple[str, str | None], _Request] = {}
+        self._refused: dict[str, str] = {}
+        #: Called after :meth:`load`, e.g. to show :attr:`refused`.
+        self.on_load: t.Callable[[], None] | None = None
         #: Whether the versions are on screen, e.g. in the assistant's drawer,
         #: so a dashboard opened meanwhile loads its stored history at once.
         self.shown = False
@@ -414,6 +436,11 @@ class EditHistory:
         self._ensure_loaded()
         artifact = self.artifact
         return list(artifact.versions) if artifact is not None else []
+
+    @property
+    def refused(self) -> str | None:
+        """Why the open dashboard's stored history is not shown, if it was loaded and is not."""
+        return self._refused.get(self.artifact_id)
 
     @property
     def busy(self) -> bool:
@@ -527,17 +554,16 @@ class EditHistory:
     def load(self):
         """Load the open dashboard's stored history now, to show it before any edit.
 
-        When the dashboard reads differently from the latest stored version
-        on its line, e.g. because it was changed outside the editor, the
-        canvas is published as a version, so the version shown as applied
-        is the canvas and every earlier one can be restored.
+        Loading writes nothing to the store: the dashboard as opened becomes
+        a version at the first edit, undo or restore, as without loading. In
+        view mode retention is applied to what is shown, not to the store.
         """
         if not self.active:
             return
         self.flush()
         self._ensure_loaded()
-        if self.artifact is not None and not self.busy:
-            self._ensure_base()
+        if self.on_load is not None:
+            self.on_load()
 
     def saved(self):
         """Note that the canvas as it is now was saved, under the editor's dashboard id.
@@ -1058,6 +1084,7 @@ class EditHistory:
                     version,
                     FORMAT_VERSION,
                 )
+                self._refused[artifact_id] = NEWER_FORMAT
                 return
             if artifact_id not in self.state.artifacts:
                 head = self._baseline[1] if self._baseline is not None else self._head
@@ -1075,9 +1102,10 @@ class EditHistory:
         except Exception:
             logger.exception("Could not load the edit history of dashboard %r", dashboard_id)
             kept = []
+        else:
+            # A history stored before the header existed stays without one: it reads as version 1.
+            self._unheaded[dashboard_id] = not kept
         self._count_stored(dashboard_id, kept)
-        # A history stored before the header existed stays without one: it reads as version 1.
-        self._unheaded[dashboard_id] = not kept
         self._recorders[artifact_id] = HistoryRecorder(
             self.state, partial(self._write, dashboard_id, artifact_id), artifact_ids=[artifact_id]
         )
@@ -1105,13 +1133,17 @@ class EditHistory:
     def _retain(self, dashboard_id: str) -> list[dict]:
         """Drop what retention no longer keeps from the stored history, and return the rest."""
         editor = self.editor
-        max_age = editor.history_max_days * 86400 if editor.history_max_days else None
-        return editor.store.rewrite_history(
-            dashboard_id,
-            lambda records: compact(
+
+        def retain(records):
+            return compact(
                 records, editor.history_limit, max_age, max_bytes=editor.history_max_bytes
-            ),
-        )
+            )
+
+        max_age = editor.history_max_days * 86400 if editor.history_max_days else None
+        if not editor.editable:
+            # Viewing a dashboard never writes to its store.
+            return retain(editor.store.load_history(dashboard_id))
+        return editor.store.rewrite_history(dashboard_id, retain)
 
     def _append(self, dashboard_id: str, record: dict[str, t.Any]):
         store = self.editor.store
