@@ -154,16 +154,28 @@ _RING_AND_EDGE = """
 """
 
 
-def _rings_on_edges(page):
+def _rings_on_edges(page, preview):
+    """Return the rings, and whether each sits on its tile's edge in the mode asked for.
+
+    The tiles must be laid out in that mode: drawn as cards only while
+    arranging, both frames shown in view mode, and at a real size, since the
+    ring also matches the edge of a card the grid has not sized yet.
+    """
     marked = page.locator(f".{TILE_CLASSES['add']}")
     rings = [marked.nth(i).evaluate(_RING_AND_EDGE) for i in range(marked.count())]
+    laid_out = (
+        len(rings) == 2
+        and all(ring["card"] is not preview for ring in rings)
+        and all(ring["edge"][2] >= 100 and ring["edge"][3] >= 50 for ring in rings)
+        and (not preview or sorted(ring["framed"] for ring in rings) == [False, True])
+    )
     aligned = all(
         all(abs(r - e) <= 1 for r, e in zip(ring["ring"], ring["edge"], strict=True))
         and ring["ringRadius"] == ring["edgeRadius"]
         and ring["ringWidth"] == "2px"
         for ring in rings
     )
-    return rings, aligned
+    return rings, laid_out and aligned
 
 
 @pytest.mark.parametrize("preview", [False, True], ids=["arranging", "view"])
@@ -200,15 +212,5 @@ def test_the_tile_outline_sits_on_the_tiles_visible_edge(page, preview):
 
     for width in (1280, 700):
         page.set_viewport_size({"width": width, "height": 900})
-        result = {}
-
-        def aligned(result=result):
-            result["rings"], ok = _rings_on_edges(page)
-            return ok
-
         # The grid lays the tiles out again after the change.
-        wait_until(aligned, page, timeout=10000)
-        rings = result["rings"]
-        assert all(ring["card"] is not preview for ring in rings)
-        if preview:
-            assert sorted(ring["framed"] for ring in rings) == [False, True]
+        wait_until(lambda: _rings_on_edges(page, preview)[1], page, timeout=10000)
