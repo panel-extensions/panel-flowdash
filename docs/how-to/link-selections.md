@@ -149,4 +149,6 @@ A Vega pane sends a selection once the drag pauses for the link's
 `debounce` set on the pane itself is kept. Equal selections in a row are
 reported once. Selections that arrive while one is being reported, for
 example while the filters it drives run their queries, replace each other,
-and only the newest is reported next.
+and only the newest is reported next. After a slow report the link waits half
+as long, up to 200 milliseconds, before the next one, so a drag's selections
+collect rather than each running its own queries.

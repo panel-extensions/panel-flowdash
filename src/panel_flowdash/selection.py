@@ -20,6 +20,7 @@ from __future__ import annotations
 import datetime as dt
 import math
 import threading
+import time
 import typing as t
 import weakref
 from dataclasses import dataclass
@@ -36,9 +37,12 @@ SELECTION_TYPE = register_port_type("Selection")
 # so a drag reports once it pauses rather than on every mouse move.
 DEBOUNCE = 150
 
-# Milliseconds a link waits before reporting a selection, so selections that arrived
-# together, e.g. while the previous one was being reported, are reported once.
+# Milliseconds a link waits before reporting a selection, so selections that arrive
+# together are reported once. After a report that took longer, e.g. while the filters
+# it drove ran their queries, it waits half that long, up to COALESCE_MAX, so the
+# selections a drag sends meanwhile replace each other rather than queue.
 COALESCE = 10
+COALESCE_MAX = 200
 
 
 @dataclass(frozen=True)
@@ -581,7 +585,9 @@ class SelectionLink(param.Parameterized):
     Equal selections in a row are reported once. Selections that arrive
     while one is being reported, for example while the filters it drives
     run their queries, replace each other, and only the newest is reported
-    next, so at most one is in flight.
+    next, so at most one is in flight. After a slow report the link waits
+    half as long, up to ``COALESCE_MAX`` milliseconds, before the next, so
+    a drag's selections collect rather than each running its own report.
     """
 
     value = param.ClassSelector(class_=Selection, default=EMPTY, doc="The latest selection.")
@@ -602,6 +608,7 @@ class SelectionLink(param.Parameterized):
         self._pending: Selection | None = None
         self._scheduled = False
         self._reporting = False
+        self._last_report = 0.0
         self._unwatch: list[t.Callable[[], None]] = []
 
     @property
@@ -622,7 +629,8 @@ class SelectionLink(param.Parameterized):
             self._scheduled = True
         doc = pn.state.curdoc
         if doc is not None and doc.session_context is not None:
-            doc.add_timeout_callback(self._flush, COALESCE)
+            wait = min(max(COALESCE, self._last_report * 500), COALESCE_MAX)
+            doc.add_timeout_callback(self._flush, wait)
         else:
             self._flush()
 
@@ -640,7 +648,9 @@ class SelectionLink(param.Parameterized):
                         self._reporting = False
                         return
                 if selection != self.value:
+                    started = time.monotonic()
                     self.value = selection
+                    self._last_report = time.monotonic() - started
         except BaseException:
             with self._lock:
                 self._reporting = False

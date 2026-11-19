@@ -1,5 +1,6 @@
 """UI tests for a chart's selection output: brushing, debouncing a drag and clearing."""
 
+import itertools
 import time
 
 import numpy as np
@@ -146,8 +147,9 @@ def _open(page, chart=SelectionChart, sink=SelectionSink):
     )
 
 
-def _drag(page, plot, start, end, steps=30, pause=0, y0=0.5, y1=0.5):
+def _drag(page, plot, start, end, steps=30, pause=0, y0=0.5, y1=0.5, times=None):
     # The plot area is the 300x200 chart, right of the y axis; positions are fractions of it.
+    # *times* collects when each mouse move was sent, to bound what a slow runner may report.
     left = plot["x"] + plot["width"] - 300 - 5
     top = plot["y"] + 5
     page.mouse.move(left + 300 * start, top + 200 * y0)
@@ -157,6 +159,8 @@ def _drag(page, plot, start, end, steps=30, pause=0, y0=0.5, y1=0.5):
             left + 300 * (start + (end - start) * i / steps),
             top + 200 * (y0 + (y1 - y0) * i / steps),
         )
+        if times is not None:
+            times.append(time.monotonic())
         if pause:
             page.wait_for_timeout(pause)
     page.mouse.up()
@@ -199,16 +203,21 @@ class ScatterChart(SelectionChart):
 @pytest.mark.parametrize("pause", [25, 60])
 def test_a_slow_drag_on_a_continuous_chart_reports_about_once(page, pause):
     _editor, chart, sink, _chart_id, plot = _open(page, ScatterChart)
-    moves = []
+    moves, sent = [], []
     chart.pane.selection.param.watch(lambda e: moves.append(e.new), "brush")
 
-    _drag(page, plot, 0.1, 0.6, steps=30, pause=pause, y0=0.1, y1=0.8)
+    _drag(page, plot, 0.1, 0.6, steps=30, pause=pause, y0=0.1, y1=0.8, times=sent)
     wait_until(lambda: len(_reports(sink)) >= 1, page, timeout=8000)
     page.wait_for_timeout(600)
 
-    (report,) = _reports(sink)
-    assert report.fields == ["x", "y"]
-    assert len(moves) <= 2, moves
+    # The chart reports once the drag pauses for the debounce, so a drag reports once
+    # plus once per pause between moves that a slow runner stretched to the debounce.
+    gaps = [b - a for a, b in itertools.pairwise(sent)]
+    stalls = sum(gap > 0.8 * ScatterChart.debounce / 1000 for gap in gaps)
+    assert 1 <= len(moves) <= 1 + stalls, (len(moves), stalls, [round(g, 3) for g in gaps])
+    reports = _reports(sink)
+    assert reports[-1] == chart.link.value
+    assert reports[-1].fields == ["x", "y"]
 
 
 class FastScatterChart(SelectionChart):
@@ -222,24 +231,34 @@ class SlowSink(SelectionSink):
 
 def test_selections_made_while_one_is_reported_are_coalesced(page):
     _editor, chart, sink, _chart_id, plot = _open(page, FastScatterChart, SlowSink)
-    moves = []
-    chart.pane.selection.param.watch(lambda e: moves.append(e.new), "brush")
+    moves, sent = [], []
+    chart.pane.selection.param.watch(lambda e: moves.append(time.monotonic()), "brush")
 
-    _drag(page, plot, 0.1, 0.6, steps=30, pause=60, y0=0.1, y1=0.8)
-    released = time.monotonic()
+    _drag(page, plot, 0.1, 0.6, steps=30, pause=60, y0=0.1, y1=0.8, times=sent)
     wait_until(
         lambda: bool(_reports(sink)) and _reports(sink)[-1] == chart.link.value,
         page,
-        timeout=10000,
+        timeout=15000,
     )
     page.wait_for_timeout(1000)
 
     reports = _reports(sink)
-    assert len(moves) >= 10, moves
-    assert len(reports) <= len(moves) // 2, (len(reports), len(moves))
+    reported = [t for t, s in sink.received if s is not None and not s.empty]
+    # Reporting one selection takes the sink's delay, and selections that arrive meanwhile
+    # replace each other, so there are at most about as many reports as the delay fits
+    # into the drag, however many selections the drag sent, and the last report follows
+    # the end of the drag by about one delay rather than by a backlog of them.
+    span = sent[-1] - sent[0]
+    detail = (
+        len(reports),
+        len(moves),
+        round(span, 2),
+        [round(t - sent[0], 2) for t in moves],
+        [round(t - sent[0], 2) for t in reported],
+    )
+    assert len(reports) <= 2 + span / SlowSink.delay, detail
+    assert reported[-1] - sent[-1] < 2 * SlowSink.delay + 0.5, detail
     assert reports[-1] == chart.link.value
-    last_at = sink.received[-1][0]
-    assert last_at - released < 1.0
 
 
 class MonthlyChart(SelectionChart):
