@@ -81,6 +81,7 @@ from panel_flowdash.placeholders import (
     unresolved_summary,
 )
 from panel_flowdash.registry import RegistryEntry
+from panel_flowdash.selection import release_links
 from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transform_editor import TransformEditor
 from panel_flowdash.transforms import parse_transform, summarize_transform
@@ -486,6 +487,10 @@ def export_text(data: dict, extension: str = "json", restricted_edges=()) -> str
 _INSTANTIATING: contextvars.ContextVar[FlowDash | None] = contextvars.ContextVar(
     "panel_flowdash_instantiating", default=None
 )
+# The node whose component is being created, for `current_node_id`.
+_INSTANTIATING_NODE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "panel_flowdash_instantiating_node", default=None
+)
 # The latest editor of each served session; weak on both sides so a session can end.
 _SESSION_EDITORS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
@@ -505,6 +510,16 @@ def current_dashboard() -> FlowDash | None:
         ref = _SESSION_EDITORS.get(pn.state.curdoc)
         editor = ref() if ref is not None else None
     return editor
+
+
+def current_node_id() -> str | None:
+    """Return the id of the node whose component is being created, or None.
+
+    Call it from a component's ``__init__`` or function body, e.g. to stamp
+    the values the component outputs with the node they come from. Later,
+    use :meth:`FlowDash.node_id` with the component instead.
+    """
+    return _INSTANTIATING_NODE.get()
 
 
 def copy_context(context: t.Mapping[str, t.Any]) -> dict[str, t.Any]:
@@ -557,9 +572,11 @@ def _creating(editor_ref: weakref.ref[FlowDash], instance_id: str, wiring: list)
         return
     before = editor._subscriptions()
     token = _INSTANTIATING.set(editor)
+    node_token = _INSTANTIATING_NODE.set(instance_id)
     try:
         yield
     finally:
+        _INSTANTIATING_NODE.reset(node_token)
         _INSTANTIATING.reset(token)
         editor._track_subscriptions(instance_id, before, wiring)
 
@@ -1210,6 +1227,8 @@ class FlowDash(Viewer):
     def _dispose_component(self, instance_id: str):
         """Call the ``dispose`` hook of the component placed as *instance_id*, if it has one.
 
+        Selection links made for it with ``link_selection`` are unlinked.
+
         The watchers and output references wiring the component to its node
         are released first, so nothing flows into or out of it any more.
         Popping the instance first makes this a no-op on any later call, so a
@@ -1217,6 +1236,8 @@ class FlowDash(Viewer):
         """
         self._release_wiring(instance_id)
         instance = self._component_instances.pop(instance_id, None)
+        if instance is not None:
+            release_links(instance)
         hook = getattr(instance, "dispose", None)
         if not callable(hook):
             return
@@ -3815,6 +3836,16 @@ class FlowDash(Viewer):
         joiner = "from" if verb == "Disconnected" else "to"
         return f"{verb} {self._node_name(source_id)} {joiner} {self._node_name(target_id)}"
 
+    def node_id(self, component: t.Any) -> str | None:
+        """Return the id of the node *component* was created for, or None if it is not one of this editor's.
+
+        Only components that are ``Viewer`` classes are known by instance;
+        a function component can call :func:`current_node_id` from its body.
+        """
+        return next(
+            (nid for nid, inst in self._component_instances.items() if inst is component), None
+        )
+
     def add_component(
         self,
         component_id: str,
@@ -3975,6 +4006,7 @@ class FlowDash(Viewer):
             raise
         before = self._subscriptions()
         token = _INSTANTIATING.set(self)
+        node_token = _INSTANTIATING_NODE.set(instance_id)
         try:
             view = self._instantiate_for_node(entry, node_state, config_state)
         except Exception:
@@ -3983,6 +4015,7 @@ class FlowDash(Viewer):
             self._dispose_component(instance_id)
             raise
         finally:
+            _INSTANTIATING_NODE.reset(node_token)
             _INSTANTIATING.reset(token)
         self._track_subscriptions(instance_id, before)
         # The component is instantiated even while blocked, so it can subscribe

@@ -33,7 +33,7 @@ from panel_flowdash.dashboard_store import (
     MemoryDashboardStore,
 )
 from panel_flowdash.dataflow_engine import DataflowGraph, build_node_state_class
-from panel_flowdash.editor import FlowDash, current_dashboard, dashboard_context
+from panel_flowdash.editor import FlowDash, current_dashboard, current_node_id, dashboard_context
 from panel_flowdash.json_store import JSONFolderDashboardStore
 from panel_flowdash.parameters import (
     ContractContext,
@@ -49,6 +49,15 @@ from panel_flowdash.port_types import (
     register_port_type,
 )
 from panel_flowdash.registry import PanelAppMetadata, RegistryEntry, panel_app, register
+from panel_flowdash.selection import (
+    SELECTION_TYPE,
+    Predicate,
+    Selection,
+    SelectionLink,
+    from_holoviews,
+    from_vega,
+    link_selection,
+)
 from panel_flowdash.session_state import build_session_state_class, check_requirements
 from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transforms import Transform
@@ -61,6 +70,7 @@ except importlib.metadata.PackageNotFoundError as e:  # pragma: no cover
     __version__ = "unknown"
 
 __all__: list[str] = [
+    "SELECTION_TYPE",
     "AuthConfig",
     "BaseDashboardStore",
     "CheckWarning",
@@ -89,7 +99,10 @@ __all__: list[str] = [
     "ParameterContract",
     "ParameterError",
     "Permission",
+    "Predicate",
     "RegistryEntry",
+    "Selection",
+    "SelectionLink",
     "Transform",
     "__version__",
     "agent_edits",
@@ -101,8 +114,12 @@ __all__: list[str] = [
     "can_edit",
     "check_requirements",
     "current_dashboard",
+    "current_node_id",
     "dashboard_context",
+    "from_holoviews",
+    "from_vega",
     "is_authorized",
+    "link_selection",
     "normalize_components",
     "normalize_port_type",
     "panel_app",

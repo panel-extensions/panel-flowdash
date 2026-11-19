@@ -37,6 +37,13 @@
       show_root_heading: true
       members: true
 
+### Selections
+
+::: panel_flowdash.selection
+    options:
+      show_root_heading: true
+      members: true
+
 ### Dataflow Engine
 
 ::: panel_flowdash.dataflow_engine
