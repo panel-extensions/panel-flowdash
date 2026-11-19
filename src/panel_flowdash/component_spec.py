@@ -62,6 +62,8 @@ class ConfigField:
     type: str | None = None
     label: str | None = None
     default: Any = None
+    # Choices the field declares, e.g. {"choices": "columns", "of": "data"}.
+    choices: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +89,7 @@ class ComponentSpec:
     # What a value bound to a parameter on the component's config must satisfy,
     # see panel_flowdash.parameters.ParameterContract.
     contract: Any = None
+    config_choices: Callable | None = None
     # Former port and config names mapped to current ones.
     port_aliases: dict[str, str] = field(default_factory=dict)
 
@@ -138,6 +141,7 @@ def _config_from_param_class(
                 type=_param_type_name(p),
                 label=p.label or pname,
                 default=p.default,
+                choices=_declared_choices(getattr(p, "metadata", None)),
             )
         )
 
@@ -146,28 +150,208 @@ def _config_from_param_class(
     return state_cls, fields
 
 
+_JSON_TYPES = {
+    param.Boolean: "boolean",
+    param.Integer: "integer",
+    param.Number: "number",
+    param.String: "string",
+    param.List: "array",
+    param.Dict: "object",
+}
+
+
+def _field_schema(p: param.Parameter) -> dict[str, Any]:
+    """Return the JSON schema the canvas validates one config field's value against.
+
+    Only what JSON schema states plainly is kept: the basic type, nullability
+    and numeric bounds. Anything else, such as a selector, a tuple, a nested
+    model or an untyped param, gets a schema without a type, so its values are
+    not checked by the canvas; the param still validates them.
+    """
+    prop: dict[str, Any] = {}
+    if p.label:
+        prop["title"] = p.label
+    if p.doc:
+        prop["description"] = " ".join(p.doc.split())
+    if isinstance(p, param.Selector):
+        return prop
+    kind = next((k for cls, k in _JSON_TYPES.items() if type(p) is cls), None)
+    if kind is None:
+        return prop
+    prop["type"] = [kind, "null"] if p.allow_None else kind
+    if kind in ("integer", "number"):
+        low, high = p.bounds or (None, None)
+        if low is not None:
+            prop["minimum"] = low
+        if high is not None:
+            prop["maximum"] = high
+    return prop
+
+
+def config_json_schema(cls: type[param.Parameterized] | None) -> dict[str, Any] | None:
+    """Return the JSON schema of the config of a node of a component, for the canvas.
+
+    The canvas validates the data of every node placed against it, so every
+    field maps to a valid property, see :func:`_field_schema`.
+    """
+    if cls is None:
+        return None
+    properties = {
+        name: _field_schema(p)
+        for name, p in cls.param.objects("existing").items()
+        if name not in _BASE_PARAMS and not name.startswith("_")
+    }
+    return {"type": "object", "properties": properties}
+
+
+def config_value(parameter: param.Parameter, value: Any) -> Any:
+    """Return *value* in the form *parameter* takes, e.g. a list read from JSON as a tuple."""
+    if isinstance(parameter, param.Tuple) and isinstance(value, list):
+        return tuple(value)
+    return value
+
+
+def _declared_choices(metadata: Any) -> dict[str, Any] | None:
+    """Return the choices a param's or schema property's FlowDash metadata declares."""
+    flowdash = metadata.get("flowdash") if isinstance(metadata, dict) else None
+    if not isinstance(flowdash, dict) or not flowdash.get("choices"):
+        return None
+    return {key: flowdash[key] for key in ("choices", "of") if key in flowdash}
+
+
+_SCHEMA_PARAMS: dict[str, type[param.Parameter]] = {
+    "string": param.String,
+    "integer": param.Integer,
+    "number": param.Number,
+    "boolean": param.Boolean,
+    "array": param.List,
+    "object": param.Dict,
+}
+
+
+def _schema_type(prop: dict[str, Any]) -> tuple[str | None, bool]:
+    """Return the JSON type of a schema property and whether it allows null.
+
+    ``{"type": ["integer", "null"]}`` and ``{"anyOf": [{"type": "integer"},
+    {"type": "null"}]}`` both give ``("integer", True)``; a union of several
+    types gives no type.
+    """
+    nullable = False
+    kinds = prop.get("type")
+    if kinds is None and isinstance(prop.get("anyOf"), list):
+        kinds = [option.get("type") for option in prop["anyOf"] if isinstance(option, dict)]
+    if isinstance(kinds, list):
+        nullable = "null" in kinds
+        kinds = [k for k in kinds if k != "null"]
+        kinds = kinds[0] if len(kinds) == 1 else None
+    return (kinds if isinstance(kinds, str) else None), nullable
+
+
+def _schema_items(prop: dict[str, Any]) -> dict[str, Any]:
+    items = prop.get("items")
+    if items is None and isinstance(prop.get("anyOf"), list):
+        items = next(
+            (o.get("items") for o in prop["anyOf"] if isinstance(o, dict) and "items" in o), None
+        )
+    return items if isinstance(items, dict) else {}
+
+
+def _schema_enum(prop: dict[str, Any]) -> tuple[list[Any] | None, bool]:
+    """Return the values an ``enum`` or ``const`` property allows, without null, and whether null is allowed.
+
+    Values listed in an ``anyOf`` with a null option, as Pydantic writes
+    ``Optional[Literal[...]]``, are found too.
+    """
+    options = [prop]
+    if isinstance(prop.get("anyOf"), list):
+        options += [o for o in prop["anyOf"] if isinstance(o, dict)]
+    values: list[Any] | None = None
+    for option in options:
+        if "enum" in option:
+            values = [*(values or []), *option["enum"]]
+        elif "const" in option:
+            values = [*(values or []), option["const"]]
+    if values is None:
+        return None, False
+    _, nullable = _schema_type(prop)
+    nullable = nullable or None in values
+    return [v for v in values if v is not None], nullable
+
+
+def _param_from_schema(prop: dict[str, Any], default: Any) -> param.Parameter:
+    """Build the Parameter a JSON schema property describes, untyped if it cannot be typed."""
+    common: dict[str, Any] = {"default": default}
+    if prop.get("description"):
+        common["doc"] = prop["description"]
+    if prop.get("title"):
+        common["label"] = prop["title"]
+    values, nullable = _schema_enum(prop)
+    kind, type_nullable = _schema_type(prop)
+    item_values, _ = _schema_enum(_schema_items(prop))
+    try:
+        if values is not None:
+            if default is not None and default not in values:
+                values.append(default)
+            return param.Selector(
+                objects=values,
+                allow_None=nullable or default is None,
+                **common,
+            )
+        if kind == "array" and item_values is not None and not isinstance(default, tuple):
+            return param.ListSelector(
+                objects=item_values, **dict(common, default=list(default or []))
+            )
+    except Exception:
+        return param.Parameter(allow_None=True, **common)
+    cls = _SCHEMA_PARAMS.get(kind or "")
+    if cls is None:
+        return param.Parameter(allow_None=True, **common)
+    kwargs = dict(common, allow_None=type_nullable or default is None)
+    if cls in (param.Integer, param.Number):
+        bounds = (prop.get("minimum"), prop.get("maximum"))
+        if bounds != (None, None):
+            kwargs["bounds"] = bounds
+    elif cls is param.List and isinstance(default, tuple):
+        cls = param.Tuple
+        kwargs["length"] = len(default)
+    elif cls is param.List:
+        item_kind, _ = _schema_type(_schema_items(prop))
+        item_type = {"string": str, "integer": int, "boolean": bool}.get(item_kind or "")
+        if item_type is not None:
+            kwargs["item_type"] = item_type
+    try:
+        return cls(**kwargs)
+    except Exception:
+        return param.Parameter(allow_None=True, **common)
+
+
 def _config_from_mapping(
     schema: dict[str, Any],
 ) -> tuple[type[param.Parameterized], list[ConfigField]]:
-    """Build a config state class from a JSON-Schema-like properties dict."""
+    """Build a config state class from a JSON-Schema-like properties dict.
+
+    Properties are typed from their JSON ``type`` (``string``, ``integer``,
+    ``number``, ``boolean``, ``array``, ``object``), with ``enum`` giving a
+    selector and ``minimum``/``maximum`` bounds; an untyped property accepts
+    any value. ``"x-flowdash": {"choices": "columns", "of": "<input>"}``
+    declares choices as a param's ``metadata`` does.
+    """
     properties = schema.get("properties", schema)
     fields: list[ConfigField] = []
     params: dict[str, param.Parameter] = {}
     for name, prop in properties.items():
         prop = prop if isinstance(prop, dict) else {}
         default = prop.get("default")
-        enum = prop.get("enum")
-        if enum is not None:
-            p = param.Selector(default=default, objects=list(enum))
-        else:
-            p = param.Parameter(default=default, allow_None=True)
+        p = _param_from_schema(prop, default)
         params[name] = p
+        kind, _ = _schema_type(prop)
         fields.append(
             ConfigField(
                 name=name,
-                type=prop.get("type"),
+                type=kind,
                 label=prop.get("title", name),
                 default=default,
+                choices=_declared_choices({"flowdash": prop.get("x-flowdash")}),
             )
         )
     state_cls = type("ConfigState_schema", (param.Parameterized,), params)
@@ -195,13 +379,71 @@ def _is_pydantic_model(cls: type) -> bool:
     return hasattr(cls, "model_fields") and hasattr(cls, "model_validate")
 
 
+def _resolve_refs(prop: dict[str, Any], defs: dict[str, Any]) -> dict[str, Any]:
+    """Return *prop* with ``$ref`` pointers into *defs*, also in its ``anyOf``, replaced by their targets."""
+    ref = prop.get("$ref")
+    if isinstance(ref, str) and ref.startswith("#/$defs/"):
+        target = defs.get(ref.rsplit("/", 1)[-1])
+        if isinstance(target, dict):
+            # The target's title and description name its class, not this field.
+            target = {k: v for k, v in target.items() if k not in ("title", "description")}
+            prop = {**target, **{k: v for k, v in prop.items() if k != "$ref"}}
+    if isinstance(prop.get("items"), dict):
+        prop["items"] = _resolve_refs(dict(prop["items"]), defs)
+    if isinstance(prop.get("anyOf"), list):
+        prop["anyOf"] = [
+            _resolve_refs(dict(o), defs) if isinstance(o, dict) else o for o in prop["anyOf"]
+        ]
+    return prop
+
+
+def _json_default(annotation: Any, default: Any) -> Any:
+    """Return a Pydantic field's default as JSON data, as a saved dashboard holds it.
+
+    A nested model becomes a dict, an Enum member its value and a tuple a
+    list, since node data must be JSON. A default that cannot be converted is
+    kept as it is.
+    """
+    if default is None:
+        return None
+    try:
+        from pydantic import TypeAdapter
+
+        return TypeAdapter(annotation).dump_python(default, mode="json")
+    except Exception:
+        return default
+
+
 def _pydantic_to_properties(cls: type) -> dict[str, Any]:
+    """Return the JSON schema properties of a Pydantic model, with its Python defaults.
+
+    The types come from the model's JSON schema, with ``$ref`` pointers such
+    as an Enum's resolved, and the defaults from its fields, as JSON data. A
+    model whose JSON schema cannot be generated gives untyped properties.
+    """
+    try:
+        schema = cls.model_json_schema()
+    except Exception:
+        schema = {}
+    described = schema.get("properties", {}) if isinstance(schema, dict) else {}
+    defs = schema.get("$defs", {}) if isinstance(schema, dict) else {}
     properties = {}
     for name, fieldinfo in cls.model_fields.items():
         default = getattr(fieldinfo, "default", None)
         if default is ... or repr(default) == "PydanticUndefined":
             default = None
-        properties[name] = {"default": default, "title": name}
+        prop = _resolve_refs(
+            dict(described.get(fieldinfo.alias or name) or described.get(name) or {}), defs
+        )
+        default = _json_default(fieldinfo.annotation, default)
+        prop.setdefault("title", name.replace("_", " ").title())
+        extra = (
+            fieldinfo.json_schema_extra if isinstance(fieldinfo.json_schema_extra, dict) else {}
+        )
+        if "x-flowdash" in extra:
+            prop["x-flowdash"] = extra["x-flowdash"]
+        prop["default"] = default
+        properties[name] = prop
     return {"properties": properties}
 
 
@@ -451,6 +693,7 @@ def build_component_spec(entry: RegistryEntry) -> ComponentSpec:
         config_editor=metadata.config_editor,
         check_config=metadata.check_config,
         contract=metadata.contract,
+        config_choices=metadata.config_choices,
         port_aliases=port_aliases,
     )
     entry.spec = spec

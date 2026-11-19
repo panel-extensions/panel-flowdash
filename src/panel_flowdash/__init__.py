@@ -22,6 +22,7 @@ from panel_flowdash.component_spec import (
     build_component_specs,
 )
 from panel_flowdash.config_check import CheckWarning
+from panel_flowdash.config_choices import Choices, columns_of
 from panel_flowdash.dashboard_store import (
     BaseDashboardStore,
     DashboardConflictError,
@@ -74,6 +75,7 @@ __all__: list[str] = [
     "AuthConfig",
     "BaseDashboardStore",
     "CheckWarning",
+    "Choices",
     "ComponentSpec",
     "ConfigField",
     "ContractContext",
@@ -113,6 +115,7 @@ __all__: list[str] = [
     "can_administer",
     "can_edit",
     "check_requirements",
+    "columns_of",
     "current_dashboard",
     "current_node_id",
     "dashboard_context",

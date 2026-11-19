@@ -148,7 +148,7 @@ class CheckResult(list):
         return f"CheckResult({list(self)!r}, warnings={self.warnings!r})"
 
 
-class _TimedOut(Exception):
+class _TimedOut(TimeoutError):
     """The check did not finish within the time allowed."""
 
 
@@ -220,29 +220,26 @@ def _call(check: Callable, config: dict, inputs: dict, started: t.Callable[[], N
     return result
 
 
-async def run_check(
-    spec: ComponentSpec,
+async def run_hook(
+    hook: Callable,
     config: t.Mapping[str, t.Any],
     inputs: t.Mapping[str, t.Any],
     *,
     editor: FlowDash | None = None,
     timeout: float = CHECK_TIMEOUT,
-) -> CheckResult:
-    """Run the check of *spec* and return its problems, an empty list when it passes.
+) -> t.Any:
+    """Call a ``hook(config, inputs)`` of a component the way checks are called and return its result.
 
-    An async check runs on the event loop, a sync one in a worker thread.
-    Either kind is given *timeout* seconds; one that takes longer counts as a
-    problem. While it runs :func:`~panel_flowdash.current_dashboard` returns
-    *editor*.
+    An async hook runs on the event loop, a sync one in a worker thread of
+    this module's pool. Either kind is given *timeout* seconds, raising
+    :class:`TimeoutError` if it takes longer or no worker is free in time.
+    While it runs :func:`~panel_flowdash.current_dashboard` returns *editor*.
     """
-    check = spec.check_config
-    if check is None:
-        return CheckResult()
     instantiating = _instantiating()
     token = instantiating.set(editor)
     try:
-        if inspect.iscoroutinefunction(check):
-            future = asyncio.ensure_future(check(dict(config), dict(inputs)))
+        if inspect.iscoroutinefunction(hook):
+            future = asyncio.ensure_future(hook(dict(config), dict(inputs)))
         else:
             loop = asyncio.get_running_loop()
             running = loop.create_future()
@@ -252,7 +249,7 @@ async def run_check(
 
             context = contextvars.copy_context()
             future = loop.run_in_executor(
-                _executor(), context.run, _call, check, dict(config), dict(inputs), started
+                _executor(), context.run, _call, hook, dict(config), dict(inputs), started
             )
             done, _ = await asyncio.wait({running, future}, timeout=timeout)
             if not done:
@@ -263,11 +260,32 @@ async def run_check(
         if not done:
             future.cancel()
             raise _TimedOut()
-        return _problems(future.result())
-    except Exception as exc:
-        return _failed(spec, exc)
+        return future.result()
     finally:
         instantiating.reset(token)
+
+
+async def run_check(
+    spec: ComponentSpec,
+    config: t.Mapping[str, t.Any],
+    inputs: t.Mapping[str, t.Any],
+    *,
+    editor: FlowDash | None = None,
+    timeout: float = CHECK_TIMEOUT,
+) -> CheckResult:
+    """Run the check of *spec* and return its problems, an empty list when it passes.
+
+    The check is called as :func:`run_hook` calls hooks; one that takes
+    longer than *timeout* counts as a problem.
+    """
+    if spec.check_config is None:
+        return CheckResult()
+    try:
+        return _problems(
+            await run_hook(spec.check_config, config, inputs, editor=editor, timeout=timeout)
+        )
+    except Exception as exc:
+        return _failed(spec, exc)
 
 
 def run_check_sync(
