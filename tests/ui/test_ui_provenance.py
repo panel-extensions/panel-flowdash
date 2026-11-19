@@ -33,15 +33,74 @@ def _report(apps):
     for app in apps:
         session = app._agent_session
         runner = session.runner if session is not None else None
-        print("session", session, "running", getattr(runner, "running", None))
+        sys.stdout.write(
+            " ".join(
+                map(
+                    str,
+                    (
+                        "session",
+                        session,
+                        "running",
+                        getattr(runner, "running", None),
+                    ),
+                )
+            )
+            + "\n"
+        )
         if runner is not None:
             for event in runner.state.events[-15:]:
-                print("event", type(event).__name__, getattr(event, "run_id", None))
-            print("task", getattr(runner, "_task", None))
+                sys.stdout.write(
+                    " ".join(
+                        map(
+                            str,
+                            (
+                                "event",
+                                type(event).__name__,
+                                getattr(event, "run_id", None),
+                            ),
+                        )
+                    )
+                    + "\n"
+                )
+            sys.stdout.write(
+                " ".join(
+                    map(
+                        str,
+                        (
+                            "task",
+                            getattr(runner, "_task", None),
+                        ),
+                    )
+                )
+                + "\n"
+            )
     for thread in threading.enumerate():
-        print("thread", thread.name)
+        sys.stdout.write(
+            " ".join(
+                map(
+                    str,
+                    (
+                        "thread",
+                        thread.name,
+                    ),
+                )
+            )
+            + "\n"
+        )
     for tid, frame in sys._current_frames().items():
-        print("stack", tid, "".join(traceback.format_stack(frame)[-6:]))
+        sys.stdout.write(
+            " ".join(
+                map(
+                    str,
+                    (
+                        "stack",
+                        tid,
+                        "".join(traceback.format_stack(frame)[-6:]),
+                    ),
+                )
+            )
+            + "\n"
+        )
 
 
 def _ask_for_a_note(page):
