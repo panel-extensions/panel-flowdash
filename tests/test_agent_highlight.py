@@ -8,7 +8,7 @@ from pydantic_ai import Agent
 
 from panel_flowdash import MemoryDashboardStore
 from panel_flowdash.agent.diff import dashboard_changes
-from panel_flowdash.agent.highlight import TILE_CLASSES, changed_nodes
+from panel_flowdash.agent.highlight import GRID_CSS, TILE_CLASSES, changed_nodes
 from panel_flowdash.agent.tools import FlowDashDeps, dashboard_toolset
 
 from .test_agent_tools import _app, scripted
@@ -60,6 +60,7 @@ async def test_an_agent_edit_outlines_the_new_node_until_the_next_run(monkeypatc
     app._editor._rebuild_tile_grid()
     tile = app._editor._inspect_tiles.get(instance_id)
     assert tile is not None and TILE_CLASSES["add"] in tile.css_classes
+    assert GRID_CSS in app._editor._tile_grid.stylesheets
 
     session.runner.state.running = True
     assert session.highlighter.marked == {}

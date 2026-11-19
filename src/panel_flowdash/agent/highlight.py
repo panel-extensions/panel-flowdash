@@ -27,23 +27,20 @@ _NODE_STYLES = {
     },
 }
 
-#: Outlines for the tile classes, added to the tiles' stylesheet. The grid item
-#: clips whatever is drawn outside the tile, and a view that fills the tile would
-#: cover an outline, so the ring is a pseudo-element inside the tile, above its
-#: content; on a framed tile it covers the frame's border.
-TILE_CSS = """
-:host(.fd-agent-added) {
+#: The ring for the tile classes, added to the tile grid's stylesheet. It is
+#: drawn on the grid item that holds the tile, which is the card while the
+#: tiles are arranged and the tile's own box in view mode, so it sits on the
+#: tile's visible edge with its radius (the tile's 12px in view mode) and
+#: moves and resizes with it. It is a pseudo-element above the content, since
+#: a view that fills the tile would cover an inset shadow.
+GRID_CSS = """
+.muuri-grid-item:has(> * > .fd-agent-added) {
   --fd-agent-outline: var(--mui-palette-success-main, #2e7d32);
 }
-:host(.fd-agent-changed) {
+.muuri-grid-item:has(> * > .fd-agent-changed) {
   --fd-agent-outline: var(--mui-palette-warning-main, #ed6c02);
 }
-:host(.fd-agent-added),
-:host(.fd-agent-changed) {
-  position: relative;
-}
-:host(.fd-agent-added)::after,
-:host(.fd-agent-changed)::after {
+.muuri-grid-item:has(> * > :is(.fd-agent-added, .fd-agent-changed))::after {
   border: 2px solid var(--fd-agent-outline);
   border-radius: inherit;
   box-sizing: border-box;
@@ -53,9 +50,8 @@ TILE_CSS = """
   position: absolute;
   z-index: 30;
 }
-:host(.flowdash-tile-framed.fd-agent-added)::after,
-:host(.flowdash-tile-framed.fd-agent-changed)::after {
-  inset: -1px;
+.muuri-no-card .muuri-grid-item:has(> * > :is(.fd-agent-added, .fd-agent-changed))::after {
+  border-radius: 12px;
 }
 """
 
@@ -125,6 +121,8 @@ class ChangeHighlighter:
             # Tiles are built when the grid is (re)built, possibly after the edit.
             self._grids.add(id(editor))
             editor._tile_grid.param.watch(lambda e, ed=editor: self._sync_tiles(ed), "objects")
+            if GRID_CSS not in editor._tile_grid.stylesheets:
+                editor._tile_grid.stylesheets = [*editor._tile_grid.stylesheets, GRID_CSS]
             editor.param.watch(lambda e, ed=editor: self._on_editable(ed, e.new), "editable")
             editor.param.watch(
                 lambda e, ed=editor: self._on_load(ed), "dashboard", onlychanged=False
@@ -209,8 +207,6 @@ class ChangeHighlighter:
         tile = self._editor._inspect_tiles.get(instance_id)
         if tile is None:
             return
-        if TILE_CSS not in tile.stylesheets:
-            tile.stylesheets = [*tile.stylesheets, TILE_CSS]
         classes = [c for c in tile.css_classes if c not in TILE_CLASSES.values()]
         if kind is not None:
             classes.append(TILE_CLASSES[kind])
