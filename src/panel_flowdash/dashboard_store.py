@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from panel_flowdash.auth import Identity, Permission, can_administer, can_edit, is_authorized
+from panel_flowdash.groups import DashboardGroup, decode_groups
 from panel_flowdash.parameters import DashboardParameter, decode_parameters
 from panel_flowdash.turns import DashboardTurn, decode_turns
 
@@ -32,7 +33,7 @@ _RANDOM_ID = re.compile(r"[0-9a-f]{12}")
 _AMBIGUOUS_TITLES: set[str] = set()
 
 # The version of :class:`DashboardModel` this release writes. Version 4 added
-# turns and node origins, version 5 parameters; older models load without them.
+# turns and node origins, version 5 parameters and groups; older models load without them.
 MODEL_VERSION = 5
 
 # What decoding a stored dashboard raises when its data is malformed. Deeply
@@ -201,6 +202,8 @@ class DashboardModel:
     # The config fields the dashboard can be run with, by name; each names an
     # item by instance id, see panel_flowdash.parameters.
     parameters: dict[str, DashboardParameter] = field(default_factory=dict)
+    # Nodes framed together on the canvas, see panel_flowdash.groups.
+    groups: list[DashboardGroup] = field(default_factory=list)
     # Bumped by the store on every save; None saves without a conflict check.
     revision: int | None = None
     # When the store last wrote the dashboard (UTC), filled in by the store on
@@ -228,6 +231,7 @@ class DashboardModel:
             "settings": copy.deepcopy(self.settings),
             "turns": [turn.to_dict() for turn in self.turns],
             "parameters": {name: p.to_dict() for name, p in self.parameters.items()},
+            "groups": [group.to_dict() for group in self.groups],
             "revision": self.revision,
         }
 
@@ -253,6 +257,7 @@ class DashboardModel:
             settings=decode_settings(data.get("settings")),
             turns=decode_turns(data.get("turns")),
             parameters=decode_parameters(data.get("parameters")),
+            groups=decode_groups(data.get("groups")),
             revision=_decode_revision(data.get("revision")),
         )
 
@@ -787,6 +792,7 @@ class DashboardStore(BaseDashboardStore):
                 ("settings_json", "'{}'"),
                 ("turns_json", "'[]'"),
                 ("parameters_json", "'{}'"),
+                ("groups_json", "'[]'"),
             ]
             for col, default in migrations:
                 try:
@@ -968,6 +974,7 @@ class DashboardStore(BaseDashboardStore):
             "parameters_json": json.dumps(
                 {name: p.to_dict() for name, p in dashboard.parameters.items()}
             ),
+            "groups_json": json.dumps([group.to_dict() for group in dashboard.groups]),
         }
         with self._get_conn() as conn:
             # Writing first takes the database's write lock, so the revision
@@ -1067,6 +1074,7 @@ class DashboardStore(BaseDashboardStore):
             settings=self._row_settings(row) if "settings_json" in keys else {},
             turns=self._row_turns(row) if "turns_json" in keys else [],
             parameters=self._row_parameters(row) if "parameters_json" in keys else {},
+            groups=self._row_groups(row) if "groups_json" in keys else [],
             revision=row["revision"] if "revision" in keys else 0,
             updated_at=_parse_sqlite_time(row["updated_at"]),
         )
@@ -1109,3 +1117,16 @@ class DashboardStore(BaseDashboardStore):
                     "Ignoring malformed parameters of dashboard %r (%r)", row["dashboard_id"], exc
                 )
             return {}
+
+    def _row_groups(self, row: sqlite3.Row) -> list[DashboardGroup]:
+        """Decode a row's groups, or log (once per revision) and drop them if malformed."""
+        try:
+            return decode_groups(json.loads(row["groups_json"]))
+        except MALFORMED_ERRORS as exc:
+            key = (row["dashboard_id"], row["updated_at"], "groups")
+            if key not in self._warned:
+                self._warned.add(key)
+                logger.warning(
+                    "Ignoring malformed groups of dashboard %r (%r)", row["dashboard_id"], exc
+                )
+            return []

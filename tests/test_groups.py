@@ -1,0 +1,397 @@
+"""Groups: nodes framed together on the canvas, collapsed into one node, in the file and the stores."""
+
+import json
+import sqlite3
+from contextlib import closing
+
+import param
+import pytest
+import yaml
+
+from panel_flowdash import FlowDash, MemoryDashboardStore, register
+from panel_flowdash.agent import DashboardOps, OperationError
+from panel_flowdash.agent.yaml_format import (
+    DashboardYAMLError,
+    dashboard_from_yaml,
+    dashboard_to_dict,
+)
+from panel_flowdash.dashboard_store import DashboardModel, DashboardStore
+from panel_flowdash.groups import (
+    DashboardGroup,
+    GroupError,
+    decode_groups,
+    group_node_data,
+    group_node_id,
+    group_ports,
+    unique_group_id,
+)
+from panel_flowdash.json_store import JSONFolderDashboardStore
+
+
+class TableConfig(param.Parameterized):
+    columns = param.List(default=["a", "b"])
+
+
+@register(
+    page=False,
+    component=True,
+    title="Table",
+    config_schema=TableConfig,
+    provides=[{"key": "table", "type": "str"}],
+)
+def table(config, instance_config):
+    config.table = ",".join(instance_config.columns)
+    return "table"
+
+
+class PickConfig(param.Parameterized):
+    column = param.String(default="a")
+
+
+@register(
+    page=False,
+    component=True,
+    title="Pick",
+    config_schema=PickConfig,
+    provides=[{"key": "picked", "type": "str"}],
+    requires=[{"key": "table", "type": "str", "required": True}],
+)
+def pick(config, instance_config):
+    def update(*_):
+        config.picked = (
+            instance_config.column if instance_config.column in (config.table or "") else None
+        )
+
+    config.param.watch(update, "table")
+    update()
+    return "pick"
+
+
+@register(
+    page=False,
+    component=True,
+    title="Show",
+    provides=[],
+    requires=[{"key": "picked", "type": "str", "required": True}],
+)
+def show(config):
+    return "show"
+
+
+COMPONENTS = {"T/table": table, "T/pick": pick, "T/show": show}
+
+DOC = """\
+flowdash: 4
+title: Picks
+groups:
+  picks: {label: Two picks, collapsed: true}
+nodes:
+  data: {component: T/table, config: {columns: [a, b, c]}, position: [0, 0]}
+  first: {component: T/pick, group: picks, config: {column: a}, position: [300, 0]}
+  second: {component: T/pick, group: picks, config: {column: c}, position: [300, 200]}
+  out: {component: T/show, position: [700, 0]}
+edges:
+  - {from: data.table, to: first.table}
+  - {from: data.table, to: second.table}
+  - {from: first.picked, to: out.picked}
+"""
+
+
+def _editor(**params):
+    return FlowDash(
+        components=COMPONENTS,
+        include_builtin_components=False,
+        notifications=False,
+        user="alice",
+        history_coalesce=0,
+        **params,
+    )
+
+
+@pytest.fixture
+def editor():
+    editor = _editor()
+    editor.new_dashboard("Picks")
+    editor.import_dashboard(DOC)
+    yield editor
+    editor.dispose()
+
+
+def _canvas(editor, node_id):
+    return next(n for n in editor._flow.nodes if n["id"] == node_id)
+
+
+class TestPorts:
+    def test_an_outside_output_feeding_two_inner_ports_is_one_input(self):
+        edges = [
+            ("data", "table", "first", "table"),
+            ("data", "table", "second", "table"),
+            ("first", "picked", "out", "picked"),
+            ("first", "picked", "second", "column"),
+        ]
+        inputs, outputs = group_ports({"first", "second"}, edges)
+        assert [(p.name, p.ends) for p in inputs] == [
+            ("table", (("first", "table"), ("second", "table")))
+        ]
+        assert [(p.name, p.ends) for p in outputs] == [("picked", (("first", "picked"),))]
+
+    def test_ports_of_the_same_name_are_numbered(self):
+        edges = [("a", "x", "first", "table"), ("b", "x", "second", "table")]
+        inputs, _ = group_ports({"first", "second"}, edges)
+        assert [p.name for p in inputs] == ["table", "table_2"]
+
+    def test_handle_map_names_each_inner_port_and_its_direction(self):
+        group = DashboardGroup("g", nodes=["first", "second"])
+        edges = [("data", "table", "first", "table"), ("first", "table", "out", "picked")]
+        data = group_node_data(group, *group_ports(group.nodes, edges))
+        assert data["inputs"] == [{"id": "in:table", "label": "table"}]
+        assert data["outputs"] == [{"id": "out:table", "label": "table"}]
+        assert data["handle_map"] == [
+            {"node": "first", "handle": "table", "group_handle": "in:table", "direction": "input"},
+            {
+                "node": "first",
+                "handle": "table",
+                "group_handle": "out:table",
+                "direction": "output",
+            },
+        ]
+
+
+class TestModel:
+    def test_round_trip_and_repair(self):
+        group = DashboardGroup("g", label="G", nodes=["a", "b"], collapsed=True)
+        assert decode_groups([group.to_dict()]) == [group]
+        # A node in two groups stays in the first; an emptied group goes.
+        decoded = decode_groups([group.to_dict(), {"id": "h", "nodes": ["a"]}])
+        assert [g.id for g in decoded] == ["g"]
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            {"id": "a b", "nodes": ["x"]},
+            {"id": "g", "nodes": "x"},
+            {"id": "g", "collapsed": "yes"},
+        ],
+    )
+    def test_malformed_groups_raise(self, value):
+        with pytest.raises(GroupError):
+            decode_groups([value])
+
+    def test_unique_ids(self):
+        assert unique_group_id("Paid revenue!", []) == "Paid_revenue"
+        assert unique_group_id("g", ["g", "g_2"]) == "g_3"
+        assert unique_group_id("", []) == "group"
+
+
+class TestYAML:
+    def test_reads_groups_and_members(self):
+        data = dashboard_from_yaml(DOC)
+        assert data["groups"] == [
+            {"id": "picks", "label": "Two picks", "collapsed": True, "nodes": ["first", "second"]}
+        ]
+
+    def test_writes_groups_and_node_keys(self, editor):
+        doc = dashboard_to_dict(editor)
+        assert doc["groups"] == {"picks": {"label": "Two picks", "collapsed": True}}
+        assert doc["nodes"]["first"]["group"] == "picks"
+        assert "group" not in doc["nodes"]["data"]
+
+    @pytest.mark.parametrize(
+        ("edit", "message"),
+        [
+            (
+                lambda d: d["nodes"]["first"].update(group="nope"),
+                "nodes.first.group: names no group",
+            ),
+            (lambda d: d["groups"].update(empty={}), "groups.empty: has no nodes"),
+            (lambda d: d["groups"]["picks"].update(size=3), "groups.picks"),
+            (lambda d: d.update(flowdash=3), "document"),
+        ],
+    )
+    def test_refuses_malformed_groups(self, edit, message):
+        doc = yaml.safe_load(DOC)
+        edit(doc)
+        with pytest.raises(DashboardYAMLError, match=message):
+            dashboard_from_yaml(yaml.safe_dump(doc))
+
+    def test_version_3_files_have_no_group_key(self):
+        doc = yaml.safe_load(DOC)
+        doc["flowdash"] = 3
+        del doc["groups"]
+        with pytest.raises(DashboardYAMLError, match=r"nodes\.first"):
+            dashboard_from_yaml(yaml.safe_dump(doc))
+
+
+class TestEditor:
+    def test_import_draws_a_collapsed_frame_with_ports(self, editor):
+        assert editor.groups["picks"].nodes == ["first", "second"]
+        frame = _canvas(editor, group_node_id("picks"))
+        assert frame["type"] == "group"
+        assert frame["label"] == "Two picks"
+        assert frame["data"]["collapsed"] is True
+        assert [h["id"] for h in frame["data"]["inputs"]] == ["in:table"]
+        assert [h["id"] for h in frame["data"]["outputs"]] == ["out:picked"]
+        assert _canvas(editor, "first")["parentId"] == group_node_id("picks")
+
+    def test_positions_stay_absolute_in_the_model(self, editor):
+        model = editor.to_model()
+        positions = {item.instance_id: (item.x, item.y) for item in model.items}
+        assert positions["first"] == (300, 0)
+        assert positions["second"] == (300, 200)
+        assert model.groups == [DashboardGroup("picks", "Two picks", ["first", "second"], True)]
+
+    def test_group_and_ungroup_are_undoable_edits(self, editor):
+        editor.ungroup("picks")
+        assert editor.groups == {}
+        assert not any(n["type"] == "group" for n in editor._flow.nodes)
+        assert "parentId" not in _canvas(editor, "first")
+        assert editor.to_model().items[1].x == 300
+        group_id = editor.group_nodes(["data", "first"], "Load and pick")
+        assert group_id == "Load_and_pick"
+        assert _canvas(editor, "data")["parentId"] == group_node_id(group_id)
+        frame = _canvas(editor, group_node_id(group_id))
+        assert [h["id"] for h in frame["data"]["outputs"]] == ["out:table", "out:picked"]
+        assert editor.undo(whole_runs=False)
+        assert editor.groups == {}
+        assert editor.undo(whole_runs=False)
+        assert list(editor.groups) == ["picks"]
+        assert _canvas(editor, "second")["parentId"] == group_node_id("picks")
+
+    def test_grouping_refuses_grouped_and_unknown_nodes(self, editor):
+        with pytest.raises(ValueError, match="already in group 'picks'"):
+            editor.group_nodes(["first", "data"])
+        with pytest.raises(ValueError, match="No component"):
+            editor.group_nodes(["nope"])
+        with pytest.raises(ValueError, match="at least one"):
+            editor.group_nodes([])
+
+    def test_connections_update_the_ports(self, editor):
+        editor.disconnect("first", "picked", "out", "picked")
+        frame = _canvas(editor, group_node_id("picks"))
+        assert frame["data"]["outputs"] == []
+        editor.connect("second", "picked", "out", "picked")
+        frame = _canvas(editor, group_node_id("picks"))
+        assert [h["id"] for h in frame["data"]["outputs"]] == ["out:picked"]
+        assert frame["data"]["handle_map"][-1]["node"] == "second"
+
+    def test_removing_the_last_node_removes_the_group(self, editor):
+        editor.remove_component("first")
+        assert editor.groups["picks"].nodes == ["second"]
+        editor.remove_component("second")
+        assert editor.groups == {}
+        assert not any(n["type"] == "group" for n in editor._flow.nodes)
+
+    def test_expanding_pushes_neighbours_aside_and_collapsing_moves_them_back(self, editor):
+        before = dict(_canvas(editor, "out")["position"])
+        editor.expand_group("picks")
+        assert editor.groups["picks"].collapsed is False
+        pushed = _canvas(editor, "out")["position"]
+        assert pushed["x"] > before["x"]
+        assert _canvas(editor, "data")["position"] == {"x": 0, "y": 0}
+        editor.collapse_group("picks")
+        assert _canvas(editor, "out")["position"] == before
+
+    def test_a_node_moved_after_the_push_stays(self, editor):
+        editor.expand_group("picks")
+        editor._flow.patch_node_props("out", {"position": {"x": 2000, "y": 0}})
+        editor.collapse_group("picks")
+        assert _canvas(editor, "out")["position"] == {"x": 2000, "y": 0}
+
+    def test_collapse_from_the_canvas_is_recorded(self, editor):
+        editor._flow.collapse_group(group_node_id("picks"), False)
+        assert editor.groups["picks"].collapsed is False
+        assert editor.dirty
+
+    def test_deleting_the_frame_on_the_canvas_deletes_the_group_and_its_nodes(self, editor):
+        editor._flow.remove_node(group_node_id("picks"))
+        assert editor.groups == {}
+        assert {i["instance_id"] for i in editor._tile_items} == {"data", "out"}
+
+    def test_arranging_keeps_groups(self, editor):
+        editor.arrange_canvas()
+        assert editor.groups["picks"].nodes == ["first", "second"]
+        assert _canvas(editor, "first")["parentId"] == group_node_id("picks")
+
+    def test_rename(self, editor):
+        editor.rename_group("picks", "Renamed")
+        assert _canvas(editor, group_node_id("picks"))["label"] == "Renamed"
+        assert dashboard_to_dict(editor)["groups"]["picks"]["label"] == "Renamed"
+
+
+class TestStores:
+    def _model(self):
+        model = DashboardModel(dashboard_id="d1", user_id="alice", title="T")
+        model.groups = [DashboardGroup("g", "G", ["a"], True)]
+        return model
+
+    def test_memory_store(self):
+        store = MemoryDashboardStore()
+        store.save_dashboard(self._model())
+        assert store.load_dashboard("alice", "d1").groups == self._model().groups
+
+    def test_sqlite_store_and_malformed_rows(self, tmp_path):
+        store = DashboardStore(tmp_path / "db.sqlite")
+        store.save_dashboard(self._model())
+        assert store.load_dashboard("alice", "d1").groups == self._model().groups
+        with closing(sqlite3.connect(tmp_path / "db.sqlite")) as conn, conn:
+            conn.execute("UPDATE dashboards SET groups_json = '[{\"id\": 1}]'")
+        assert store.load_dashboard("alice", "d1").groups == []
+
+    def test_json_store(self, tmp_path):
+        store = JSONFolderDashboardStore(tmp_path)
+        store.save_dashboard(self._model())
+        assert store.load_dashboard("alice", "d1").groups == self._model().groups
+        path = next(tmp_path.glob("*.json"))
+        data = json.loads(path.read_text())
+        data["groups"] = "bad"
+        path.write_text(json.dumps(data))
+        assert store.load_dashboard("alice", "d1").groups == []
+
+
+class TestOps:
+    def test_group_and_ungroup(self, editor):
+        ops = DashboardOps(editor)
+        ops.ungroup("picks")
+        result = ops.group_nodes(["first", "second"], label="Picks again")
+        assert result["group"] == "Picks_again"
+        assert result["inputs"] == [{"name": "table", "connects": ["first.table", "second.table"]}]
+        assert result["outputs"] == [{"name": "picked", "connects": ["first.picked"]}]
+        with pytest.raises(OperationError, match="already in group"):
+            ops.group_nodes(["first"])
+        with pytest.raises(OperationError, match="No group"):
+            ops.ungroup("nope")
+
+
+class TestAgent:
+    async def test_the_agent_groups_and_ungroups_without_approval(self, editor):
+        from .test_agent_tools import _runner
+
+        ops = DashboardOps(editor)
+        runner = _runner(
+            ops,
+            ("ungroup", {"name": "picks"}),
+            ("group_nodes", {"nodes": ["data", "first"], "label": "Load"}),
+        )
+        output = await runner.run("Group the table with the first pick")
+        assert "Grouped as 'Load'" in output
+        assert editor.groups["Load"].nodes == ["data", "first"]
+        assert "picks" not in editor.groups
+
+    async def test_a_mistake_goes_back_to_the_model(self, editor):
+        from .test_agent_tools import _runner
+
+        runner = _runner(DashboardOps(editor), ("group_nodes", {"nodes": ["first"]}))
+        output = await runner.run("Group first")
+        assert "already in group 'picks'" in output
+
+
+def test_the_schema_accepts_groups(editor):
+    jsonschema = pytest.importorskip("jsonschema")
+    from panel_flowdash.agent import dashboard_schema
+
+    schema = dashboard_schema(editor.component_specs)
+    doc = dashboard_to_dict(editor)
+    jsonschema.validate(doc, schema)
+    doc["groups"]["picks"]["size"] = 3
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(doc, schema)

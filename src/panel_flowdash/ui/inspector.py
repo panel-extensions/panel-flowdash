@@ -22,6 +22,7 @@ from panel.viewable import Viewer
 
 from panel_flowdash.config_check import CheckResult
 from panel_flowdash.config_choices import Choices, has_choices, node_choices
+from panel_flowdash.groups import component_nodes, group_id_of
 from panel_flowdash.transforms import parse_transform, summarize_transform
 from panel_flowdash.ui.choice_widgets import form_widgets, widgets_key
 from panel_flowdash.ui.config_draft import ConfigDraft
@@ -172,6 +173,8 @@ class Inspector(Viewer):
             sx={"borderLeft": 1, "borderColor": "divider", "bgcolor": "background.paper"},
         )
         self._sync_collapsed()
+        # A group just made, shown while nothing is selected on the canvas.
+        self._shown_group: str | None = None
         self._flow.param.watch(self._on_selection, "selection")
         self._watcher = CanvasWatcher(self._flow, self._on_canvas_changed)
 
@@ -179,16 +182,25 @@ class Inspector(Viewer):
     # What is shown
     # ------------------------------------------------------------------
 
-    def _selected(self) -> tuple[str, str] | None:
+    def _selected(self) -> tuple[str, t.Any] | None:
         selection = self._flow.selection or {}
         nodes, edges = selection.get("nodes") or [], selection.get("edges") or []
+        components = tuple(n for n in nodes if group_id_of(n) is None)
+        if not nodes and not edges and self._shown_group in self.editor._groups:
+            return ("group", self._shown_group)
+        if len(nodes) == 1 and not edges and (group_id := group_id_of(nodes[0])):
+            return ("group", group_id)
+        if len(components) > 1 and not edges:
+            return ("nodes", components)
         if len(nodes) == 1 and not edges:
             return ("node", nodes[0])
         if len(edges) == 1 and not nodes:
             return ("edge", edges[0])
         return None
 
-    def _on_selection(self, _event):
+    def _on_selection(self, event):
+        if (event.new or {}).get("nodes") or (event.new or {}).get("edges"):
+            self._shown_group = None
         if self.visible:
             self.refresh()
 
@@ -218,8 +230,13 @@ class Inspector(Viewer):
 
     def _exists(self) -> bool:
         kind, item_id = self._shown or ("", "")
+        placed = {item["instance_id"] for item in self.editor._tile_items}
         if kind == "node":
-            return any(item["instance_id"] == item_id for item in self.editor._tile_items)
+            return item_id in placed
+        if kind == "nodes":
+            return all(i in placed for i in item_id)
+        if kind == "group":
+            return item_id in self.editor._groups
         return item_id in self.editor._edge_id_map
 
     @pn.io.hold()
@@ -236,6 +253,10 @@ class Inspector(Viewer):
             objects = self._summary_view()
         elif self._shown[0] == "node":
             objects = self._node_view(self._shown[1])
+        elif self._shown[0] == "nodes":
+            objects = self._selection_view(self._shown[1])
+        elif self._shown[0] == "group":
+            objects = self._group_view(self._shown[1])
         else:
             objects = self._edge_view(self._shown[1])
         self._body[:] = objects
@@ -263,7 +284,7 @@ class Inspector(Viewer):
     def _summary_view(self) -> list[Viewable]:
         editor = self.editor
         dashboard = editor.dashboard
-        nodes, edges = len(editor._flow.nodes), len(editor._flow.edges)
+        nodes, edges = len(component_nodes(editor._flow.nodes)), len(editor._flow.edges)
         objects: list[Viewable] = [
             text_typography(
                 dashboard.title if dashboard is not None else "Untitled dashboard",
@@ -374,6 +395,116 @@ class Inspector(Viewer):
             self._status_chip.param.update(
                 label=detail or STATUS_TEXT[status], color=_STATUS_COLOR[status]
             )
+
+    # ------------------------------------------------------------------
+    # Several selected components, and a selected group
+    # ------------------------------------------------------------------
+
+    def _selection_view(self, instance_ids: tuple[str, ...]) -> list[Viewable]:
+        editor = self.editor
+        count = len(instance_ids)
+        grouped = [i for i in instance_ids if editor.group_of(i) is not None]
+        objects: list[Viewable] = [
+            pn.Row(
+                _avatar("select_all"),
+                text_typography(
+                    f"{count} components selected",
+                    variant="subtitle1",
+                    margin=0,
+                    sx={"fontWeight": 500},
+                ),
+                margin=(0, 0, 8, 0),
+                sizing_mode="stretch_width",
+            )
+        ]
+        button = pmui.Button(
+            label="Group",
+            icon="workspaces",
+            variant="outlined",
+            disabled=bool(grouped),
+            margin=(8, 0, 0, 0),
+            sx={"textTransform": "none"},
+        )
+        button.on_click(lambda _event: self._group(instance_ids))
+        objects.append(button)
+        objects.append(
+            _caption(
+                f"{len(grouped)} of them already belong to a group. Ungroup them first."
+                if grouped
+                else "Frames the components together on the canvas. A group can be "
+                "collapsed into one node showing the connections that cross it.",
+                margin=(8, 0, 0, 0),
+            )
+        )
+        return objects
+
+    def _group(self, instance_ids: tuple[str, ...]):
+        # Grouping sends every node to the page again, the grouped ones
+        # deselected so the page drops their selection. The inspector then
+        # shows the new group until something else is selected.
+        for node in self._flow.nodes:
+            if node["id"] in instance_ids:
+                node["selected"] = False
+        group_id = self.editor.group_nodes(instance_ids)
+        self._shown_group = group_id
+        self.refresh(force=True)
+
+    def _group_view(self, group_id: str) -> list[Viewable]:
+        editor = self.editor
+        group = editor._groups[group_id]
+        names = {i["instance_id"]: editor._node_name(i["instance_id"]) for i in editor._tile_items}
+        inputs, outputs = editor._group_ports(group)
+        label = pmui.TextInput(
+            label="Label",
+            value=group.title,
+            sizing_mode="stretch_width",
+            margin=(0, 0, 4, 0),
+        )
+        label.param.watch(lambda event: editor.rename_group(group_id, event.new), "value")
+        objects: list[Viewable] = [
+            pn.Row(
+                _avatar("workspaces"),
+                pn.Column(
+                    text_typography(
+                        group.title, variant="subtitle1", margin=0, sx={"fontWeight": 500}
+                    ),
+                    _caption(
+                        f"{len(group.nodes)} component{'' if len(group.nodes) == 1 else 's'}"
+                        + (", collapsed" if group.collapsed else ""),
+                        margin=(2, 0, 0, 0),
+                    ),
+                    margin=0,
+                    sizing_mode="stretch_width",
+                ),
+                margin=(0, 0, 8, 0),
+                sizing_mode="stretch_width",
+            ),
+            label,
+        ]
+        for heading, ports in (("Inputs", inputs), ("Outputs", outputs)):
+            objects.append(_heading(heading))
+            if not ports:
+                objects.append(
+                    _caption(
+                        f"No connection {'into' if heading == 'Inputs' else 'out of'} the group.",
+                        margin=(0, 0, 2, 0),
+                    )
+                )
+            for port in ports:
+                ends = ", ".join(f"{names.get(n, n)}.{p}" for n, p in port.ends)
+                objects.append(_caption(f"{port.label}: {ends}", margin=(0, 0, 2, 0)))
+        objects.append(_heading("Components"))
+        objects.append(_caption(", ".join(names.get(n, n) for n in group.nodes), margin=0))
+        ungroup = pmui.Button(
+            label="Ungroup",
+            icon="layers_clear",
+            variant="text",
+            margin=(16, 0, 0, 0),
+            sx={"textTransform": "none"},
+        )
+        ungroup.on_click(lambda _event: editor.ungroup(group_id))
+        objects.append(ungroup)
+        return objects
 
     def _remove_button(self, instance_id: str) -> pmui.Button:
         button = pmui.Button(

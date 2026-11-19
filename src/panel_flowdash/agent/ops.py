@@ -1286,6 +1286,55 @@ class DashboardOps:
             if k != "instance_id"
         }
 
+    def group_nodes(
+        self, nodes: list[str], label: str | None = None, name: str | None = None
+    ) -> dict[str, t.Any]:
+        """Frame nodes together on the canvas as one group, collapsed into one node.
+
+        Returns the group's name and its ports: one input per outside output
+        feeding the group, with the inner ports it connects to, and one output
+        per inner output read from outside.
+        """
+        self._require_edit()
+        ids = [self._instance(node) for node in nodes]
+        try:
+            group_id = self.editor.group_nodes(ids, label, group_id=name)
+        except ValueError as exc:
+            raise OperationError(str(exc)) from exc
+        return self.group(group_id)
+
+    def group(self, name: str) -> dict[str, t.Any]:
+        """Return a group's label, nodes, whether it is collapsed, and its ports."""
+        editor = self.editor
+        group = editor.groups.get(name)
+        if group is None:
+            raise NotFound(f"No group '{name}'." + _suggest(name, list(editor.groups)))
+        names = self._names()
+        inputs, outputs = editor._group_ports(group)
+
+        def ports(items):
+            return [
+                {"name": port.name, "connects": [f"{names[n]}.{p}" for n, p in port.ends]}
+                for port in items
+            ]
+
+        return {
+            "group": group.id,
+            "label": group.title,
+            "nodes": [names[n] for n in group.nodes],
+            "collapsed": group.collapsed,
+            "inputs": ports(inputs),
+            "outputs": ports(outputs),
+        }
+
+    def ungroup(self, name: str) -> list[str]:
+        """Remove a group's frame, keeping its nodes; returns their names."""
+        self._require_edit()
+        if name not in self.editor.groups:
+            raise NotFound(f"No group '{name}'." + _suggest(name, list(self.editor.groups)))
+        names = self._names()
+        return [names[n] for n in self.editor.ungroup(name)]
+
     def arrange_canvas(self) -> None:
         """Lay out every node on the canvas by its dataflow, sources left and views right.
 

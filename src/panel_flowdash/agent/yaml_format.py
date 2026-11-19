@@ -19,6 +19,7 @@ import yaml
 
 from panel_flowdash.auto_layout import NodeBox, arrange_graph
 from panel_flowdash.dashboard_store import MODEL_VERSION, DashboardModel
+from panel_flowdash.groups import DashboardGroup, GroupError, check_group_id
 from panel_flowdash.parameters import DashboardParameter, ParameterError, check_name
 from panel_flowdash.turns import DashboardTurn, TurnError, strip_questions
 from panel_flowdash.ui.node_card import CARD_WIDTH
@@ -35,16 +36,19 @@ TOP_LEVEL_KEYS = (
     "settings",
     "parameters",
     "turns",
+    "groups",
     "nodes",
     "edges",
     "layout",
 )
-NODE_KEYS = ("component", "origin", "config", "position")
+NODE_KEYS = ("component", "origin", "group", "config", "position")
+GROUP_KEYS = ("label", "collapsed")
 TURN_KEYS = ("id", "actor", "at", "run", "question", "summary", "status")
-# Versions 1 to 3 had no parameters, and version 1 neither turns nor node origins.
-_V3_TOP_LEVEL_KEYS = tuple(k for k in TOP_LEVEL_KEYS if k != "parameters")
+# Versions 1 to 3 had no parameters or groups, and version 1 neither turns nor node origins.
+_V3_TOP_LEVEL_KEYS = tuple(k for k in TOP_LEVEL_KEYS if k not in ("parameters", "groups"))
 _V1_TOP_LEVEL_KEYS = tuple(k for k in _V3_TOP_LEVEL_KEYS if k != "turns")
-_V1_NODE_KEYS = tuple(k for k in NODE_KEYS if k != "origin")
+_V3_NODE_KEYS = tuple(k for k in NODE_KEYS if k != "group")
+_V1_NODE_KEYS = tuple(k for k in _V3_NODE_KEYS if k != "origin")
 EDGE_KEYS = ("from", "to", "transform")
 LAYOUT_KEYS = ("tiles", "reference_width", "breakpoints", "responsive")
 TILE_KEYS = ("node", "width", "height", "visible", "framed", "area")
@@ -265,12 +269,25 @@ def dashboard_to_dict(
     if turns:
         doc["turns"] = turns
     turn_ids = {turn["id"] for turn in turns}
+    membership = {}
+    groups = {}
+    for group in data.get("groups") or []:
+        members = [n for n in group.get("nodes") or [] if n in names and n not in membership]
+        if not members:
+            continue
+        entry = {key: group[key] for key in GROUP_KEYS if group.get(key)}
+        groups[group["id"]] = entry
+        membership.update(dict.fromkeys(members, group["id"]))
+    if groups:
+        doc["groups"] = groups
     nodes = {}
     assert len(set(names.values())) == len(items), "two items share an instance id"
     for item in items:
         node: dict[str, t.Any] = {"component": item["component_id"]}
         if item.get("origin") in turn_ids:
             node["origin"] = item["origin"]
+        if item["instance_id"] in membership:
+            node["group"] = membership[item["instance_id"]]
         if item.get("config"):
             node["config"] = copy.deepcopy(item["config"])
         node["position"] = _position(item)
@@ -882,7 +899,11 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
     for name, node in nodes.items():
         path = f"nodes.{name}"
         node = _mapping(node, path)
-        _unknown_keys(node, NODE_KEYS if version >= 2 else _V1_NODE_KEYS, path)
+        _unknown_keys(
+            node,
+            NODE_KEYS if version >= 4 else _V3_NODE_KEYS if version >= 2 else _V1_NODE_KEYS,
+            path,
+        )
         component = node.get("component")
         if not isinstance(component, str) or not component:
             _fail(f"{path}.component", "is required and names a component, e.g. 'Views/kpi'.")
@@ -910,6 +931,7 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
         items.append(item)
 
     parameters = _parameters(doc.get("parameters"), ids)
+    groups = _groups(doc.get("groups"), nodes, ids)
 
     layout = _mapping(doc.get("layout"), "layout")
     _unknown_keys(layout, LAYOUT_KEYS, "layout")
@@ -940,6 +962,7 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
         "settings": copy.deepcopy(settings),
         "turns": turns,
         "parameters": parameters,
+        "groups": groups,
     }
 
 
@@ -962,6 +985,34 @@ def _parameters(value: t.Any, ids: dict[str, str]) -> dict[str, dict]:
         parsed.node = ids[parsed.node]
         parameters[name] = parsed.to_dict()
     return parameters
+
+
+def _groups(value: t.Any, nodes: dict, ids: dict[str, str]) -> list[dict]:
+    """Check the groups of a document and the nodes naming them, and return them as export dicts."""
+    groups: dict[str, DashboardGroup] = {}
+    for group_id, group in _mapping(value, "groups").items():
+        path = f"groups.{group_id}"
+        group = _mapping(group, path)
+        _unknown_keys(group, GROUP_KEYS, path)
+        try:
+            check_group_id(group_id)
+            groups[group_id] = DashboardGroup.from_dict({"id": group_id, **group})
+        except GroupError as exc:
+            _fail(path if exc.key == "id" else f"{path}.{exc.key}", exc.reason)
+    for name, node in nodes.items():
+        group_id = node.get("group") if isinstance(node, dict) else None
+        if group_id is None:
+            continue
+        if not isinstance(group_id, str) or group_id not in groups:
+            _fail(f"nodes.{name}.group", f"names no group: {group_id!r}.")
+        groups[group_id].nodes.append(ids[name])
+    for group_id, group in groups.items():
+        if not group.nodes:
+            _fail(
+                f"groups.{group_id}",
+                "has no nodes; give at least one node 'group: " + group_id + "'.",
+            )
+    return [group.to_dict() for group in groups.values()]
 
 
 def _turns(value: t.Any) -> list[dict]:

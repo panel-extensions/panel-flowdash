@@ -75,6 +75,7 @@ def test_seed_dashboard_round_trips(seed):
         "version": MODEL_VERSION,
         "turns": [],
         "parameters": {},
+        "groups": [],
     }
     assert dashboard_to_yaml(dashboard_from_yaml(text)) == text
 
