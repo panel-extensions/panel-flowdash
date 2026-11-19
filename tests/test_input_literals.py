@@ -9,6 +9,7 @@ import pytest
 from panel.viewable import Viewer
 
 from panel_flowdash import (
+    Choices,
     ComponentSpec,
     DataflowGraph,
     FlowDash,
@@ -93,7 +94,38 @@ class Years(Viewer):
         return "years"
 
 
-COMPONENTS = {"D/num": Num, "D/show": Show, "D/count": count, "D/years": Years}
+@register(page=False, component=True, title="Span", provides=[{"key": "out", "type": "tuple"}])
+class Span(Viewer):
+    @param.output(param.Tuple)
+    def out(self):
+        return (1, 2)
+
+    def __panel__(self):
+        return "span"
+
+
+def slow_choices(config, inputs):
+    time.sleep(0.4)
+    return {"tag": Choices(["late", "later"], restrict=False)}
+
+
+@register(page=False, component=True, title="Slow", config_choices=slow_choices)
+class Slow(Viewer):
+    limit = param.Integer(default=None, allow_None=True)
+    tag = param.String(default="")
+
+    def __panel__(self):
+        return "slow"
+
+
+COMPONENTS = {
+    "D/num": Num,
+    "D/show": Show,
+    "D/count": count,
+    "D/years": Years,
+    "D/span": Span,
+    "D/slow": Slow,
+}
 
 
 def _editor(**params):
@@ -387,15 +419,54 @@ class TestExplain:
             (param.Tuple(default=(1, 2, 3)), (1,), "Needs 3 values, like (1, 2, 3)."),
             (param.Selector(objects=["a", "b"]), "z", "Needs one of: a, b."),
             (param.List(), 3, "Needs a list, like [1, 2]."),
+            (
+                param.List(item_type=str),
+                [1, 2],
+                "Items must be instances of str, not int.",
+            ),
+            (
+                param.List(bounds=(0, 2)),
+                [1, 2, 3],
+                "Length must be between 0 and 2 (inclusive), not 3.",
+            ),
+            (
+                param.String("a", regex="^[a-z]+$"),
+                "ABC",
+                "Value 'ABC' does not match regex '^[a-z]+$'.",
+            ),
+            (
+                param.Number(1, bounds=(0, 5), inclusive_bounds=(True, False)),
+                5,
+                "Must be less than 5, not 5.",
+            ),
+            (param.DateRange(), (1, 2), "Needs two dates."),
+            (
+                param.Selector(objects=list("abcdefghij")),
+                "z",
+                "Needs one of: a, b, c, d, e, f, g, h and 2 more.",
+            ),
         ],
     )
     def test_refusals_are_in_words(self, parameter, value, words):
         class Holder(param.Parameterized):
             p = parameter
 
-        with pytest.raises(ValueError) as info:
+        with pytest.raises((ValueError, TypeError)) as info:
             Holder.param.p._validate(value)
         assert explain(Holder.param.p, info.value) == words
+
+    def test_a_reversed_range_is_refused(self, editor):
+        years = editor.add_component("D/years", instance_id="years")
+        with pytest.raises(ValueError, match="must not be after its end"):
+            editor.set_input_value(years, "span", [2015, 2010])
+
+    def test_disconnecting_a_declared_input_restores_the_components_default(self, editor):
+        years = editor.add_component("D/years", instance_id="years")
+        span = editor.add_component("D/span", instance_id="span")
+        editor.connect(span, "out", years, "span")
+        assert editor._component_instances[years].span == (1, 2)
+        editor.disconnect(span, "out", years, "span")
+        assert editor._component_instances[years].span == (2000, 2020)
 
     def test_clearing_a_declared_input_restores_the_components_default(self, editor):
         years = editor.add_component("D/years", instance_id="years")
@@ -530,6 +601,25 @@ class TestInspector:
         literal._holder.value = None
         assert editor.input_values(show) == {"value": 30}
         assert literal._holder.value == 30 and not literal._error.visible
+
+    async def test_typing_survives_choices_arriving_late(self, editor):
+        node = editor.add_component("D/slow", instance_id="slow")
+        select_on_canvas(editor._flow, node_id=node)
+        await _settle(0.1)
+        inspector = editor._inspector
+        literal = _literal_editor(inspector, "limit")
+        field = literal._form[0]._widgets["value"]
+        tag = _literal_editor(inspector, "tag")
+        await _settle(1.0)
+        assert inspector._choices_busy is None
+        assert _literal_editor(inspector, "limit") is literal
+        assert literal._form[0]._widgets["value"] is field, "the field typed into stays"
+        assert _literal_editor(inspector, "tag") is tag
+        new_field = tag._form[0]._widgets["value"]
+        assert new_field.options == ["late", "later"]
+        tag.set_choices(Choices(["other"], restrict=False))
+        assert tag._form[0]._widgets["value"] is new_field, "new options, same field"
+        assert new_field.options == ["other"]
 
     async def test_undo_updates_the_field(self, editor):
         _, show = _placed(editor)

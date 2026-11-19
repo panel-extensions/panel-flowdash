@@ -157,6 +157,14 @@ def check_literal(port: InputPort, value: t.Any) -> str | None:
     except (TypeError, ValueError) as exc:
         return f"Input '{label}' cannot hold {value!r}: {exc}"
     converted = port_literal(port, value)
+    if (
+        isinstance(parameter, param.Range)
+        and isinstance(converted, tuple)
+        and len(converted) == 2
+        and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in converted)
+        and converted[0] > converted[1]
+    ):
+        return f"The start of a range must not be after its end, as in {converted!r}."
     for check in (parameter, port.parameter):
         if check is None:
             continue
@@ -183,29 +191,38 @@ _BOUNDS = (
         re.compile(r"must be at (most|least) (.+), not (.+?)\.?$"),
         lambda m: f"Must be at {m[1]} {m[2]}, not {m[3]}.",
     ),
+    (
+        re.compile(r"must be (less|greater) than (.+), not (.+?)\.?$"),
+        lambda m: f"Must be {m[1]} than {m[2]}, not {m[3]}.",
+    ),
 )
 _PARAMETER_NAME = re.compile(r"^(Attribute '\w+' of )?\w+ parameter( '[^']*')? ")
+_CLASS = re.compile(r"<class '(?:[\w.]+\.)?(\w+)'>")
+# Messages param gives when a value has the wrong type or shape, not when it
+# breaks a constraint of the right type.
+_WRONG_TYPE = re.compile(
+    r"only takes (numeric|a tuple|a string|date)|must be an integer|must be True or False"
+    r"|must be a list, not|value must be an instance of|is not of the correct length"
+)
+_LISTED_OPTIONS = 8
 
 
-def explain(parameter: param.Parameter, exc: Exception) -> str:
-    """Say in words why *parameter* refuses a value, without param's internal names.
+def _options(parameter: param.Selector) -> str:
+    names = [str(name) for name in parameter.get_range()]
+    shown = ", ".join(names[:_LISTED_OPTIONS])
+    more = len(names) - _LISTED_OPTIONS
+    return f"{shown} and {more} more" if more > 0 else shown
 
-    E.g. "Needs two numbers, like (2010, 2020)." for a range given three.
-    """
-    message = str(exc)
-    for pattern, words in _BOUNDS:
-        if match := pattern.search(message):
-            return words(match)
+
+def _type_words(parameter: param.Parameter) -> str | None:
+    if isinstance(parameter, param.DateRange):
+        return "Needs two dates."
     if isinstance(parameter, param.Range):
         return "Needs two numbers, like (2010, 2020)."
     if isinstance(parameter, param.Tuple):
         length = parameter.length or 2
         example = ", ".join(str(i + 1) for i in range(length))
         return f"Needs {length} values, like ({example})."
-    if isinstance(parameter, param.ListSelector):
-        return f"Needs some of: {', '.join(map(str, parameter.get_range()))}."
-    if isinstance(parameter, param.Selector):
-        return f"Needs one of: {', '.join(map(str, parameter.get_range()))}."
     for cls, words in (
         (param.Boolean, "Needs true or false."),
         (param.Integer, "Needs a whole number."),
@@ -216,8 +233,29 @@ def explain(parameter: param.Parameter, exc: Exception) -> str:
     ):
         if isinstance(parameter, cls):
             return words
-    stripped = _PARAMETER_NAME.sub("", message)
-    return stripped[:1].upper() + stripped[1:]
+    return None
+
+
+def explain(parameter: param.Parameter, exc: Exception) -> str:
+    """Say in words why *parameter* refuses a value, without param's internal names.
+
+    A value of the wrong type or shape gets what the input needs, e.g. "Needs
+    two numbers, like (2010, 2020)." for a range given three numbers; a value
+    that breaks a constraint, e.g. a bound or a pattern, gets param's reason
+    without the parameter's name.
+    """
+    message = str(exc)
+    for pattern, words in _BOUNDS:
+        if match := pattern.search(message):
+            return words(match)
+    if isinstance(parameter, param.ListSelector):
+        return f"Needs some of: {_options(parameter)}."
+    if isinstance(parameter, param.Selector):
+        return f"Needs one of: {_options(parameter)}."
+    if _WRONG_TYPE.search(message) and (words := _type_words(parameter)):
+        return words
+    cleaned = _CLASS.sub(r"\1", _PARAMETER_NAME.sub("", message))
+    return cleaned[:1].upper() + cleaned[1:]
 
 
 def literal_schema(port: InputPort) -> dict[str, t.Any] | None:

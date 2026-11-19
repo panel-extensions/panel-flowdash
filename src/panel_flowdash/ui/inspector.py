@@ -133,7 +133,8 @@ class Inspector(Viewer):
         self._data_column: pn.Column | None = None
         self._inputs_column: pn.Column | None = None
         # What the shown input rows depend on, and their parts updated in place.
-        self._inputs_key: tuple = ()
+        self._inputs_key: dict[str, tuple] = {}
+        self._connected_caption: pmui.Typography | None = None
         self._literal_editors: dict[str, LiteralEditor] = {}
         self._literal_captions: dict[str, pmui.Typography] = {}
         self._value_captions: dict[str, pmui.Typography] = {}
@@ -277,7 +278,7 @@ class Inspector(Viewer):
         self._node_status = self._config_status = None
         self._data_column = None
         self._inputs_column = None
-        self._inputs_key = ()
+        self._inputs_key = {}
         self._literal_editors = {}
 
     # ------------------------------------------------------------------
@@ -775,22 +776,36 @@ class Inspector(Viewer):
         param.parameterized.async_executor(update)
 
     def _fill_inputs(self, instance_id: str, spec: ComponentSpec):
-        """Show the node's inputs, rebuilding the rows only when their wiring changes.
+        """Show the node's inputs, rebuilding only the rows whose wiring changed.
 
-        Otherwise the rows are updated in place, so a value being typed into an
-        input's field is not replaced while it changes the node's state.
+        The other rows are updated in place, and new choices for an input are
+        offered in its field, so a value being typed into one input's field is
+        not replaced while another input changes or choices arrive.
         """
         if self._inputs_column is None or not spec.inputs:
             return
         rows = self._input_rows(instance_id, spec)
-        key = tuple((port, row[0]) for port, row in rows.items())
-        if key == self._inputs_key and self._inputs_column.objects:
-            for _key, update in rows.values():
-                update()
+        column = self._inputs_column
+        if not column.objects or list(rows) != list(self._inputs_key):
+            self._inputs_key = {port: row[0] for port, row in rows.items()}
+            self._literal_editors = {}
+            column[:] = self._inputs_section(instance_id, spec)
             return
-        self._inputs_key = key
-        self._literal_editors = {}
-        self._inputs_column[:] = self._inputs_section(instance_id, spec)
+        incoming = self._incoming(instance_id)
+        state = self.editor._dataflow_graph.get_state(instance_id)
+        literals = self.editor.input_values(instance_id)
+        ports = {port.name: port for port in spec.inputs}
+        for index, (name, (key, update)) in enumerate(rows.items(), start=1):
+            if key == self._inputs_key.get(name):
+                update()
+                continue
+            self._inputs_key[name] = key
+            self._literal_editors.pop(name, None)
+            column[index] = self._input_row(
+                instance_id, ports[name], incoming.get(name), state, literals
+            )
+        connected = sum(1 for name in ports if name in incoming)
+        self._connected_caption.object = f"{connected} of {len(ports)} connected"
 
     def _input_rows(self, instance_id: str, spec: ComponentSpec) -> dict[str, tuple]:
         """Return, per input, what its row shows that needs a rebuild, and how to update the rest."""
@@ -809,18 +824,19 @@ class Inspector(Viewer):
                     self._origin_text(wired[1]),
                     repr(literals.get(port.name)),
                 )
-                caption = self._value_captions.get(port.name)
 
-                def update(caption=caption, name=port.name):
+                def update(name=port.name):
+                    caption = self._value_captions.get(name)
                     if caption is not None:
                         caption.object = summarize_value(getattr(state, name, None))
 
             else:
-                key = ("free", takes_literal(port), widgets_key({"c": choices.get(port.name)}))
+                key = ("free", takes_literal(port))
 
                 def update(name=port.name, port=port):
                     literal = self._literal_editors.get(name)
                     if literal is not None:
+                        literal.set_choices(choices.get(name))
                         literal.sync(literals.get(name), name in literals)
                         self._literal_caption(name, name in literals, port)
 
@@ -840,11 +856,14 @@ class Inspector(Viewer):
         state = editor._dataflow_graph.get_state(instance_id)
         literals = editor.input_values(instance_id)
         connected = sum(1 for p in spec.inputs if p.name in incoming)
+        self._connected_caption = _caption(
+            f"{connected} of {len(spec.inputs)} connected", margin=(18, 0, 0, 0)
+        )
         objects: list[Viewable] = [
             pn.Row(
                 _heading("Inputs"),
                 pn.layout.HSpacer(),
-                _caption(f"{connected} of {len(spec.inputs)} connected", margin=(18, 0, 0, 0)),
+                self._connected_caption,
                 margin=0,
                 sizing_mode="stretch_width",
             )

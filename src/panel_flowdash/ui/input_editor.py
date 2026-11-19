@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import typing as t
+from functools import partial
 
 import panel as pn
 import panel_material_ui as pmui
@@ -128,6 +129,15 @@ class LiteralEditor(Viewer):
         key = widgets_key(widgets)
         if key == self.choices_key and self._form.objects:
             return
+        current = self._form[0] if self._form.objects else None
+        spec = widgets.get("value") or {}
+        field = getattr(current, "_widgets", {}).get("value") if current is not None else None
+        if field is not None and spec and type(field) is spec.get("type"):
+            # The same kind of field with other options: update it, so text
+            # being typed into it stays.
+            field.param.update(**{k: v for k, v in spec.items() if k != "type"})
+            self.choices_key = key
+            return
         self.choices_key = key
         self._form[:] = [
             pn.Param(
@@ -154,8 +164,17 @@ class LiteralEditor(Viewer):
         try:
             if self._holder.value != value:
                 self._holder.value = value
-            if self._text is not None and self._text.value != _as_text(value):
-                self._text.value = _as_text(value)
+        finally:
+            self._syncing = False
+        if self._text is not None:
+            _later(partial(self._show_text, _as_text(value)))
+
+    def _show_text(self, text: str):
+        if self._text.value == text:
+            return
+        self._syncing = True
+        try:
+            self._text.value = text
         finally:
             self._syncing = False
 
@@ -181,7 +200,7 @@ class LiteralEditor(Viewer):
             return
         try:
             self._holder.value = port_literal(self.port, value)
-        except ValueError as exc:
+        except (ValueError, TypeError) as exc:
             self._refuse(explain(self._parameter, exc))
 
     def _edited(self, event):
@@ -211,6 +230,20 @@ class LiteralEditor(Viewer):
     def __panel__(self):
         """Render the editor."""
         return self._layout
+
+
+def _later(callback: t.Callable[[], None]):
+    """Run *callback* after the current change from the browser has been processed.
+
+    A value written back to a field from within the callback of the change
+    the browser sent for it is not sent back, so the field would keep showing
+    what was typed.
+    """
+    doc = pn.state.curdoc
+    if doc is not None and doc.session_context is not None:
+        doc.add_next_tick_callback(callback)
+    else:
+        callback()
 
 
 def _initial(port: InputPort, parameter: param.Parameter) -> t.Any:

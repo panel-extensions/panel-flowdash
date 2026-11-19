@@ -854,7 +854,7 @@ class DataflowGraph:
         )
 
     def remove_edge(self, source_id: str, source_port: str, target_id: str, target_port: str):
-        """Remove an edge and reset the target input to its default."""
+        """Remove an edge and reset the target input to its literal or its default, see `_default`."""
         edge = self._drop_edge((source_id, source_port, target_id, target_port))
         self._set_failure(target_id, target_port, None)
         target_state = self._nodes.get(target_id)
@@ -864,8 +864,7 @@ class DataflowGraph:
             elif target_port in self._literals.get(target_id, {}):
                 self._unbind_to_literal(target_id, target_port)
             else:
-                port = self._input_port(target_id, target_port)
-                _unbind(target_state, target_port, copy.deepcopy(port.default) if port else None)
+                _unbind(target_state, target_port, self._default(target_id, target_port))
         if edge is not None:
             self._dispose_edges([edge])
 
@@ -917,14 +916,21 @@ class DataflowGraph:
         if self._is_list_input(instance_id, port):
             self._bind_input(instance_id, port)
             return
+        _unbind(self._nodes[instance_id], port, self._default(instance_id, port))
+
+    def _default(self, instance_id: str, port: str) -> Any:
+        """Return a copy of the value an unwired input without a literal goes back to.
+
+        That is the port's default, or for a port without one the default of
+        the component's Parameter, the value the component had before.
+        """
         input_port = self._input_port(instance_id, port)
-        default = None
-        if input_port is not None:
-            # A declared input without a fallback goes back to its component's default.
-            default = input_port.default
-            if default is None and input_port.parameter is not None:
-                default = input_port.parameter.default
-        _unbind(self._nodes[instance_id], port, copy.deepcopy(default))
+        if input_port is None:
+            return None
+        default = input_port.default
+        if default is None and input_port.parameter is not None:
+            default = input_port.parameter.default
+        return copy.deepcopy(default)
 
     def get_state(self, instance_id: str) -> param.Parameterized | None:
         """Get the state instance for a node."""
