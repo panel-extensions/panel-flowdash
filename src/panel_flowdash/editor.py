@@ -1150,10 +1150,10 @@ class FlowDash(Viewer):
         # `_settle_nodes` and `_place_new_tiles`.
         self._floating_nodes: set[str] = set()
         self._auto_tiles: set[str] = set()
-        # When a tile was released over the top bar or the sidebar, and whether the
-        # grid has since sent the layout its drag ended with, which the move records.
-        self._tile_released: float | None = None
-        self._tile_release_layout = False
+        # The tiles released over the top bar or the sidebar and not dropped there
+        # yet, oldest first: when, and whether the grid has since sent the layout
+        # the drag ended with, which the move's version then holds.
+        self._tile_releases: dict[str, dict[str, t.Any]] = {}
         # Set when the editor moved nodes, so the canvas fits them once the agent's request ends.
         self._fit_pending = False
         # While an agent request runs, the tiles it adds wait here to be laid out once it ends.
@@ -2788,8 +2788,8 @@ class FlowDash(Viewer):
                 self._tile_grid.layout = event.old
                 return
             self._auto_tiles.clear()
-            if self._awaiting_tile_drop():
-                self._tile_release_layout = True
+            if (release := self._awaiting_tile_drop()) is not None:
+                release["held"] = True
             else:
                 self._mark_rearranged()
 
@@ -2929,6 +2929,8 @@ class FlowDash(Viewer):
             for instance_id, key in controls.keys.items()
             if instance_id in items
         }
+        if not enabled:
+            self._end_tile_release()
         drag.param.update(
             enabled=enabled,
             areas=[tile_layout.TOP] if split else [tile_layout.TOP, tile_layout.SIDEBAR],
@@ -2936,26 +2938,49 @@ class FlowDash(Viewer):
             controls=handles,
         )
 
-    def _on_tile_released(self, _instance_id: str):
-        self._end_tile_release()
-        self._tile_released = time.monotonic()
+    def _on_tile_released(self, instance_id: str):
+        self._end_tile_release(instance_id)
+        at = time.monotonic()
+        self._tile_releases[instance_id] = {"at": at, "held": False}
+        ref = weakref.ref(self)
 
-    def _awaiting_tile_drop(self) -> bool:
-        """Whether a tile released beside the grid has not been dropped there yet."""
-        if self._tile_released is None:
-            return False
-        if time.monotonic() - self._tile_released < _TILE_DROP_WAIT:
-            return True
-        # The drop never came; the caller records the layout, held one included.
-        self._tile_released, self._tile_release_layout = None, False
-        return False
+        def expire():
+            editor = ref()
+            if editor is not None and editor._tile_releases.get(instance_id, {}).get("at") == at:
+                editor._end_tile_release(instance_id)
 
-    def _end_tile_release(self, recorded: bool = False):
-        """Forget the tile released beside the grid, recording its drag's layout unless *recorded*."""
-        held = self._tile_release_layout
-        self._tile_released, self._tile_release_layout = None, False
-        if held and not recorded:
-            self._mark_rearranged()
+        self._call_later(_TILE_DROP_WAIT, expire)
+
+    def _call_later(self, seconds: float, callback: t.Callable[[], None]):
+        """Call *callback* once after *seconds*, in a served session; elsewhere never."""
+        from panel.io.state import set_curdoc
+
+        doc = pn.state.curdoc
+        if doc is None or doc.session_context is None:
+            return
+
+        def run():
+            with set_curdoc(doc):
+                callback()
+
+        doc.add_timeout_callback(run, int(seconds * 1000))
+
+    def _awaiting_tile_drop(self) -> dict[str, t.Any] | None:
+        """Return the latest release of a tile beside the grid still waiting for its drop."""
+        now = time.monotonic()
+        for instance_id, release in list(self._tile_releases.items()):
+            if now - release["at"] >= _TILE_DROP_WAIT:
+                # The drop never came; the caller records the layout, held one included.
+                del self._tile_releases[instance_id]
+        return next(reversed(self._tile_releases.values()), None)
+
+    def _end_tile_release(self, instance_id: str | None = None, recorded: bool = False):
+        """Forget the release of *instance_id*, or every one, recording held layouts unless *recorded*."""
+        ids = list(self._tile_releases) if instance_id is None else [instance_id]
+        releases = [self._tile_releases.pop(i, None) for i in ids]
+        if not recorded and any(r is not None and r["held"] for r in releases):
+            # Not `_mark_rearranged`: the layout came while editing, even if that just ended.
+            self._record_edit("Changed the tile layout", op="layout")
 
     def _on_tile_dropped(self, instance_id: str, area: str, before: str | None):
         moved = False
@@ -2965,10 +2990,10 @@ class FlowDash(Viewer):
         except ValueError as exc:
             self._notify("info", str(exc), duration=4000)
         finally:
-            self._end_tile_release(recorded=moved)
+            self._end_tile_release(instance_id, recorded=moved)
 
     def _on_tile_refused(self, instance_id: str, area: str):
-        self._end_tile_release()
+        self._end_tile_release(instance_id)
         item = next((i for i in self._tile_items if i["instance_id"] == instance_id), None)
         if item is not None:
             self._notify("info", tile_layout.refusal(self, item, area), duration=4000)

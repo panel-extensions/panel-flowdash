@@ -424,6 +424,49 @@ class TestDragBridge:
         _send_grid_layout(editor, ["select", "heading", "chart", "kpi"])
         assert len(editor.edit_history.versions) == count + 1
 
+    def test_a_release_without_a_drop_records_the_layout_once_it_expires(
+        self, editor, monkeypatch
+    ):
+        later = []
+        monkeypatch.setattr(
+            editor, "_call_later", lambda _seconds, callback: later.append(callback)
+        )
+        editor.dirty = False
+        count = len(editor.edit_history.versions)
+        editor._tile_drag._handle_msg({"action": "release", "id": "kpi", "area": "sidebar"})
+        _send_grid_layout(editor, ["select", "heading", "chart", "kpi"])
+        assert not editor.dirty
+        assert len(later) == 1
+        later[0]()
+        assert editor.dirty
+        versions = editor.edit_history.versions[count:]
+        assert [v.metadata["ops"] for v in versions] == [[{"op": "layout", "args": {}}]]
+
+    def test_leaving_edit_mode_records_a_held_layout(self, editor):
+        count = len(editor.edit_history.versions)
+        drag = editor._tile_drag
+        drag._handle_msg({"action": "release", "id": "kpi", "area": "sidebar"})
+        _send_grid_layout(editor, ["select", "heading", "chart", "kpi"])
+        editor.editable = False
+        drag._handle_msg({"action": "move", "id": "kpi", "area": "sidebar", "before": None})
+        assert area_of(editor, _item(editor, "kpi")) == GRID
+        versions = editor.edit_history.versions[count:]
+        assert [v.metadata["ops"] for v in versions] == [[{"op": "layout", "args": {}}]]
+
+    def test_a_second_release_keeps_the_first_move_whole(self, editor):
+        drag, count = editor._tile_drag, len(editor.edit_history.versions)
+        drag._handle_msg({"action": "release", "id": "kpi", "area": "sidebar"})
+        _send_grid_layout(editor, ["select", "heading", "chart", "kpi"])
+        drag._handle_msg({"action": "release", "id": "heading", "area": "top"})
+        drag._handle_msg({"action": "move", "id": "kpi", "area": "sidebar", "before": None})
+        _send_grid_layout(editor, ["select", "chart", "heading"])
+        drag._handle_msg({"action": "move", "id": "heading", "area": "top", "before": None})
+        versions = editor.edit_history.versions[count:]
+        assert [v.metadata["ops"] for v in versions] == [
+            [{"op": "layout", "args": {"name": "kpi", "area": SIDEBAR}}],
+            [{"op": "layout", "args": {"name": "heading", "area": TOP}}],
+        ]
+
     def test_drops_are_ignored_while_viewing(self, editor):
         editor.editable = False
         editor._tile_drag._handle_msg({"action": "move", "id": "kpi", "area": "sidebar"})

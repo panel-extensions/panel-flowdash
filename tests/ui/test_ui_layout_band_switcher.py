@@ -91,7 +91,7 @@ def test_edits_under_tablet_go_to_its_own_layout(page):
     wait_until(lambda: "sm" in editor._tile_grid.responsive_layouts, page, timeout=8000)
     assert editor._tile_grid.layout == base
     assert editor._tile_grid.reference_width is None
-    assert editor.dirty
+    wait_until(lambda: editor.dirty, page, timeout=8000)
     expect(page.get_by_text("Tablet is arranged separately.")).to_be_visible()
     reset = page.get_by_role("button", name="Reset to automatic")
     expect(reset).to_be_visible()

@@ -223,6 +223,7 @@ def test_a_drag_off_the_grid_is_one_version(page, coalesce):
     editor = _editor(history_coalesce=coalesce)
     serve_component(page, editor)
     versions = len(editor.edit_history.versions)
+    before = _areas(editor)
     grid = _grid_box(page)
     _drag_tile(page, "Heading", (grid["x"] + 30, grid["y"] + grid["height"] - 40))
     move = {"op": "layout", "args": {"name": "heading", "area": SIDEBAR}}
@@ -234,6 +235,20 @@ def test_a_drag_off_the_grid_is_one_version(page, coalesce):
     page.wait_for_timeout(1500)
     assert len(_published(editor)) == versions + 1
     assert _areas(editor)[SIDEBAR] == ["heading"]
+
+    editor.undo()
+    wait_until(lambda: _areas(editor) == before, page, timeout=8000)
+    expect(page.locator(".muuri-grid-item")).to_have_count(3)
+
+
+def test_a_tile_dropped_above_the_grid_goes_to_an_empty_top_bar(page):
+    page.set_viewport_size({"width": 1400, "height": 900})
+    editor = _editor(controls_position="left")
+    serve_component(page, editor)
+    assert _areas(editor)[TOP] == []
+    grid = _grid_box(page)
+    _drag_tile(page, "Heading", (grid["x"] + grid["width"] / 2, grid["y"] - 20))
+    wait_until(lambda: _areas(editor)[TOP] == ["heading"], page, timeout=8000)
 
 
 def test_tiles_keep_their_sizes_when_one_moves_to_the_top_bar(page):
