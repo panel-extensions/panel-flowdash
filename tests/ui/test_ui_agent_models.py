@@ -79,10 +79,25 @@ def test_a_picked_model_answers_the_next_request_and_its_details_name_it(page):
     runs = apps[0]._agent_session.runner.state.runs.values()
     wait_until(lambda: [run.models for run in runs] == [["fast-model"], ["deep-model"]], page)
 
-    page.get_by_text("Details").last.click()
+    expect(page.get_by_text("Details", exact=True)).to_have_count(2, timeout=15000)
+    page.get_by_text("Details", exact=True).last.click()
     dialog = page.get_by_role("dialog")
     expect(dialog.get_by_text("deep-model").first).to_be_visible()
     expect(dialog.get_by_text("fast-model")).to_have_count(0)
+
+
+def test_the_keyboard_opens_the_picker_in_the_drawer(page):
+    apps = _open(page, agent_models=MODELS)
+    button = page.get_by_role("button", name="Model: Fast")
+    button.focus()
+    page.keyboard.press("Enter")
+    listbox = page.get_by_role("listbox", name="Model")
+    expect(listbox).to_be_visible()
+    page.keyboard.press("ArrowDown")
+    page.keyboard.press("Enter")
+    expect(page.get_by_role("button", name="Model: Deep")).to_be_focused()
+    wait_until(lambda: apps[0]._agent_session.runner.model is MODELS[1].model, page)
+    assert not apps[0]._agent_session.runner.state.runs
 
 
 def test_the_browser_remembers_the_pick(page):

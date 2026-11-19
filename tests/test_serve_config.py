@@ -305,6 +305,7 @@ def test_cli_models_split_on_commas_and_beat_a_project_agent_string(project, mon
         ('agent_models = ["test", {"label": "x"}]\n', [], None, "agent_models\\[1\\]"),
         ('agent_models = [{"id": "a", "price": 1}]\n', [], None, "unknown keys 'price'"),
         ("", ["--agent-model", "=Fast"], None, "--agent-model: '=Fast' names no model"),
+        ("", ["--agent-model", ""], None, "--agent-model: an empty value names no model"),
         ("", [], "a,=B", "FLOWDASH_AGENT_MODELS: '=B' names no model"),
     ],
 )

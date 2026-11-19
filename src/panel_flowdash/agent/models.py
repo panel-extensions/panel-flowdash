@@ -34,6 +34,8 @@ def parse_models(
     if not text:
         return []
     texts = [text] if isinstance(text, str) else list(text)
+    if any(not chunk.strip() for chunk in texts) and not isinstance(text, str):
+        raise ValueError(f"{source}: an empty value names no model; write it as id or id=label.")
     models = []
     for item in (item for chunk in texts for item in chunk.split(",")):
         if not item.strip():
