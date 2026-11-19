@@ -45,8 +45,8 @@ dependencies = [
     "pandas >=1.5",
     "panel >=1.9.3",
     # RunState undo and redo and drop_artifact_versions, which the edit history builds on;
-    # 0.1.0b8 shows a version's metadata["detail"] as the history row's tooltip.
-    "panel-agents >=0.1.0b8",
+    # 0.1.0b8 shows a version's metadata["detail"] as the history row's tooltip; 0.1.0b9 has SpanView.
+    "panel-agents >=0.1.0b9",
     # Page.rail and Page.header_color arrived in 0.17.0b3.
     "panel-material-ui >=0.17.0b3",
     # ReactFlow.fit_view, add_nodes/add_edges, graph validation and handle `top` arrived in
@@ -73,7 +73,7 @@ Source = "https://github.com/panel-extensions/panel-flowdash"
 [project.optional-dependencies]
 # The AI agent of panel_flowdash.agent.tools, which runs on pydantic-ai.
 agent = [
-    "panel-agents[pydantic-ai]>=0.1.0b8",
+    "panel-agents[pydantic-ai]>=0.1.0b9",
 ]
 dev = [
     "pre-commit",

@@ -411,3 +411,15 @@ async def test_the_assistant_starts_whatever_layout_its_drawer_has(store, monkey
     session = AgentSession(_app(store, monkeypatch), create_agent("test"))
     if layout == "no_body":
         assert session.drawer._content.objects[-1] is session.history_notice
+
+
+async def test_the_session_shares_its_runs_and_redacts_them_for_viewers(store, monkeypatch):
+    session = AgentSession(_app(store, monkeypatch), create_agent("test"))
+    editor = session.app._editor
+    assert editor.agent_state is session.runner.state
+    editor.read_only = False
+    session.drawer.show_run("r")
+    assert not session.drawer._span.redacted
+    editor.read_only = True
+    session.drawer.show_run("r")
+    assert session.drawer._span.redacted

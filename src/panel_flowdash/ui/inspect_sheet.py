@@ -97,7 +97,9 @@ def reserve_space(layout: pn.layout.ListLike, sheet_open: bool):
     layout.css_classes = [*classes, "flowdash-inspecting"] if sheet_open else classes
 
 
-def sheet_header(title: str, on_close: Callable[[], None]) -> pn.Row:
+def sheet_header(
+    title: str, on_close: Callable[[], None], caption: str = "Inspect data"
+) -> pn.Row:
     """Title the sheet with what is inspected, and offer to close it."""
     close = pmui.IconButton(
         icon="close", description="Close inspector", size="small", margin=0, align="start"
@@ -105,9 +107,7 @@ def sheet_header(title: str, on_close: Callable[[], None]) -> pn.Row:
     close.on_click(lambda _event: on_close())
     return pn.Row(
         pn.Column(
-            pmui.Typography(
-                "Inspect data", variant="caption", margin=0, sx={"color": "text.secondary"}
-            ),
+            pmui.Typography(caption, variant="caption", margin=0, sx={"color": "text.secondary"}),
             text_typography(title, variant="h6", margin=0),
             margin=0,
             sizing_mode="stretch_width",

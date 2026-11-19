@@ -265,6 +265,38 @@ class Inspector(Viewer):
             objects = self._edge_view(self._shown[1])
         self._body[:] = objects
 
+    def show_extra(
+        self,
+        caption: str,
+        title: str,
+        objects: list[Viewable],
+        release: t.Callable[[], None] | None = None,
+    ):
+        """Show *objects* in place of the selection's view until the selection changes or Back is pressed.
+
+        *release* is called when they are replaced.
+        """
+        self._release()
+        if release is not None:
+            self._releases.append(release)
+        back = pmui.IconButton(
+            icon="arrow_back", description="Back", size="small", margin=0, align="start"
+        )
+        back.on_click(lambda _event: self.refresh(force=True))
+        header = pn.Row(
+            back,
+            pn.Column(
+                _caption(caption),
+                text_typography(title, variant="subtitle1", margin=0, sx={"fontWeight": 500}),
+                margin=0,
+                sizing_mode="stretch_width",
+            ),
+            margin=(0, 0, 8, 0),
+            sizing_mode="stretch_width",
+            css_classes=["flowdash-inspector-extra"],
+        )
+        self._body[:] = [header, *objects]
+
     def refresh_summary(self):
         """Rebuild the dashboard summary if it is shown, e.g. after the issues changed."""
         if self.visible and self._shown is None:
@@ -570,7 +602,22 @@ class Inspector(Viewer):
             margin=0,
             sx={"& .MuiTab-root": {"textTransform": "none", "minWidth": 0}},
         )
-        return [header, tabs, self._remove_button(instance_id)]
+        objects = [header, tabs, self._remove_button(instance_id)]
+        if editor.made_by_agent(instance_id):
+            objects.insert(1, self._how_made_button(instance_id))
+        return objects
+
+    def _how_made_button(self, instance_id: str) -> pmui.Button:
+        button = pmui.Button(
+            label="How was this made?",
+            icon="manage_search",
+            variant="text",
+            size="small",
+            margin=(0, 0, 8, 0),
+            sx={"textTransform": "none"},
+        )
+        button.on_click(lambda _event: self.editor.show_how_made(instance_id))
+        return button
 
     # Settings
 

@@ -2656,7 +2656,8 @@ class TestInspectOutputs:
         editor._inspect_tiles[instance_id].inspect_button.clicks += 1
 
     async def test_off_by_default_tiles_have_no_inspect_action(self):
-        editor = FlowDash(COMPONENTS, notifications=False)
+        # "How was this made?" shares the side sheet, so it is turned off to see the sheet left out.
+        editor = FlowDash(COMPONENTS, notifications=False, provenance=False)
         editor.add_component(SELECTOR)
         editor.editable = False
 

@@ -34,6 +34,7 @@ import panel_material_ui as pmui
 import panel_reactflow as pr
 import param
 from panel.viewable import Children, Viewer
+from panel_agents import RunState
 from panel_tiles import TileGrid
 
 from panel_flowdash import auto_layout
@@ -111,7 +112,9 @@ from panel_flowdash.turns import (
     TurnLog,
     agent_edits,
     change_labels,
+    changes_node,
     strip_questions,
+    summary_cut_short,
 )
 from panel_flowdash.ui import tile_layout
 from panel_flowdash.ui.controls_bar import ControlsBar
@@ -146,6 +149,7 @@ from panel_flowdash.ui.node_card import (
     port_tops,
 )
 from panel_flowdash.ui.palette import ComponentPalette, palette_entry, palette_items
+from panel_flowdash.ui.provenance import provenance_objects
 from panel_flowdash.ui.roles import component_role
 from panel_flowdash.ui.settings_dialog import SettingsDialog
 from panel_flowdash.ui.split_view import SplitView
@@ -1043,6 +1047,27 @@ class FlowDash(Viewer):
         dashboard-wide parameters. Read at construction time.""",
     )
 
+    provenance = param.Boolean(
+        default=True,
+        doc="""
+        Whether a node an agent's request created offers "How was this
+        made?", in its tile's More menu and in the inspector, opening a side
+        sheet with that request: its question, model calls, tool calls and
+        the versions it published, from the run the node's origin turn
+        names. People who may not edit the dashboard see the request's
+        shape without its content.""",
+    )
+
+    agent_state = param.ClassSelector(
+        class_=RunState,
+        default=None,
+        allow_None=True,
+        doc="""
+        The panel-agents ``RunState`` holding the agent's runs, which
+        "How was this made?" shows. None uses the edit history's, which an
+        assistant shares when history is on.""",
+    )
+
     show_in_editor = param.Callable(
         default=None,
         allow_None=True,
@@ -1197,6 +1222,10 @@ class FlowDash(Viewer):
         self._tile_selection_follows = True
         self._rebuilding_grid = False
         self._inspected_id: str | None = None
+        self._span_view = None
+        self._how_made_shown: tuple[str, str | None] | None = None
+        self._how_made_caption: str | None = None
+        self._own_runs: set[str] = set()
         # Responsive grid settings waiting to be applied; empty values must also be
         # applied so a loaded dashboard doesn't inherit the previous one's overrides.
         self._pending_grid_config: dict | None = None
@@ -2198,15 +2227,159 @@ class FlowDash(Viewer):
             )
         )
         self._inspected_id = instance_id
+        self._how_made_shown = None
+        self._release_span()
         self._inspect_dialog.param.update(objects=objects, open=True)
         reserve_space(self._workspace_area, True)
+
+    def _release_span(self):
+        if self._span_view is not None:
+            self._span_view.release()
+            self._span_view = None
 
     def _close_inspection_dialog(self):
         """Close the sheet and let go of the values it shows, whose tile may be gone."""
         self._inspected_id = None
+        self._how_made_shown = None
+        self._release_span()
         if self._inspect_dialog.open or self._inspect_dialog.objects:
             self._inspect_dialog.param.update(open=False, objects=[])
             reserve_space(self._workspace_area, False)
+
+    def origin_turn(self, instance_id: str) -> DashboardTurn | None:
+        """Return a copy of the turn that created a node, or None if no turn is recorded."""
+        origin = self._origins.get(instance_id)
+        turn = next((t for t in self._turn_log.turns if t.id == origin), None)
+        return copy.deepcopy(turn) if turn is not None else None
+
+    def made_by_agent(self, instance_id: str) -> bool:
+        """Whether "How was this made?" applies: an agent's request created the node."""
+        if not self.provenance:
+            return False
+        turn = self.origin_turn(instance_id)
+        return turn is not None and turn.actor == "agent"
+
+    def later_turns(self, instance_id: str) -> list[DashboardTurn]:
+        """Return copies of the turns after a node's origin whose summary says they changed it."""
+        origin = self._origins.get(instance_id)
+        turns = self._turn_log.turns
+        start = next((i for i, turn in enumerate(turns) if turn.id == origin), None)
+        if start is None:
+            return []
+        from panel_flowdash.agent.yaml_format import node_names
+
+        name = node_names(self._tile_items).get(instance_id, instance_id)
+        return [copy.deepcopy(t) for t in turns[start + 1 :] if changes_node(t, name)]
+
+    def _later_turns_may_be_more(self, instance_id: str) -> bool:
+        """Whether a turn after a node's origin left changes out of its summary, so more may have changed it."""
+        origin = self._origins.get(instance_id)
+        turns = self._turn_log.turns
+        start = next((i for i, turn in enumerate(turns) if turn.id == origin), None)
+        return start is not None and any(summary_cut_short(t) for t in turns[start + 1 :])
+
+    def _node_restricted(self, instance_id: str) -> bool:
+        item = next((i for i in self._tile_items if i["instance_id"] == instance_id), None)
+        if item is None:
+            return False
+        if "placeholder" in item or item.get("component_id") == RESTRICTED_COMPONENT_ID:
+            return True
+        return not self._component_authorized(self._resolve_component_id(item["component_id"]))
+
+    def note_own_run(self, run_id: str):
+        """Record that the person using this editor asked for run *run_id*, so it is never redacted for them."""
+        self._own_runs.add(run_id)
+
+    def run_redacted(self, run_id: str | None) -> bool:
+        """Whether a request is shown to the person viewing without its content.
+
+        Their own requests are always shown in full. Anyone else's are
+        redacted for people who may not edit the dashboard, and when the
+        request created or changed a node whose component this person may
+        not use.
+        """
+        if run_id is not None and run_id in self._own_runs:
+            return False
+        if self.read_only:
+            return True
+        turns = [turn for turn in self._turn_log.turns if run_id and turn.run == run_id]
+        if not turns:
+            return False
+        from panel_flowdash.agent.yaml_format import node_names
+
+        made = {turn.id for turn in turns}
+        names = node_names(self._tile_items)
+        return any(
+            self._node_restricted(instance_id)
+            for instance_id, name in names.items()
+            if self._origins.get(instance_id) in made
+            or any(changes_node(turn, name) for turn in turns)
+        )
+
+    def _turn_redacted(self, turn: DashboardTurn, instance_id: str) -> bool:
+        if turn.run is not None and turn.run in self._own_runs:
+            return False
+        return self._node_restricted(instance_id) or self.run_redacted(turn.run)
+
+    def show_how_made(self, instance_id: str, turn_id: str | None = None):
+        """Show the agent request that created a node, or the later turn *turn_id* that changed it.
+
+        It shows the request's span (question, model calls, tool calls and
+        published versions) while :attr:`agent_state` holds the run's steps,
+        and what the turn records otherwise, followed by the turns that
+        changed the node later. On the Dataflow canvas it replaces the
+        inspector's content; elsewhere it opens the side sheet. Requests are
+        redacted as :meth:`run_redacted` decides, and when the node's
+        component is one the person may not use.
+        """
+        self._render_how_made(instance_id, turn_id, open_sheet=True)
+
+    def _render_how_made(self, instance_id: str, turn_id: str | None, *, open_sheet: bool):
+        if not self.made_by_agent(instance_id):
+            return
+        origin = self.origin_turn(instance_id)
+        turn = origin
+        if turn_id is not None:
+            turn = next((t for t in self.later_turns(instance_id) if t.id == turn_id), origin)
+        state = self.agent_state if self.agent_state is not None else self._history.state
+        self._release_span()
+        later = self.later_turns(instance_id) if turn is origin else []
+        body, self._span_view = provenance_objects(
+            turn,
+            state,
+            redacted=self._turn_redacted(turn, instance_id),
+            later=later,
+            more=turn is origin and self._later_turns_may_be_more(instance_id),
+            on_open=lambda t: self.show_how_made(instance_id, t.id),
+        )
+        title = self._instance_title(instance_id)
+        caption = "How this was made" if turn is origin else "How this was changed"
+        if self._inspector.visible:
+            span, self._span_view = self._span_view, None
+            self._close_inspection_dialog()
+            self._inspector.show_extra(caption, title, body, span.release if span else None)
+            return
+        objects = [sheet_header(title, self._close_inspection_dialog, caption=caption), *body]
+        self._how_made_shown = (instance_id, turn_id)
+        self._inspected_id = instance_id
+        if not open_sheet:
+            # Re-rendering for new rights never reopens a sheet the person closed, and keeps
+            # its header, so a click on Close already on its way still closes it.
+            current = self._inspect_dialog.objects
+            header = current[:1] if current and caption == self._how_made_caption else objects[:1]
+            self._how_made_caption = caption
+            self._inspect_dialog.objects = [*header, *body]
+            return
+        self._how_made_caption = caption
+        self._inspect_dialog.param.update(objects=objects, open=True)
+        if not self.editable:
+            reserve_space(self._workspace_area, True)
+
+    @param.depends("read_only", watch=True)
+    def _reshow_how_made(self):
+        shown = self._how_made_shown
+        if shown is not None and self._inspect_dialog.open and self._inspected_id == shown[0]:
+            self._render_how_made(*shown, open_sheet=False)
 
     def _can_inspect_tile(self, spec: ComponentSpec | None) -> bool:
         return bool(self._can_inspect() and spec and spec.outputs)
@@ -2234,6 +2407,7 @@ class FlowDash(Viewer):
             label=name,
             subtitle=" ".join(description.split("\n\n")[0].split()) or None,
             on_show_in_editor=partial(self._on_show_in_editor, instance_id),
+            on_how_made=partial(self.show_how_made, instance_id),
             css_classes=["flowdash-tile", f"{TILE_KEY_PREFIX}{next(self._tile_keys)}"],
             **bounds,
         )
@@ -2273,20 +2447,24 @@ class FlowDash(Viewer):
             wiring.append(partial(failures.param.unwatch, watcher))
         return tile
 
-    def _sync_tile(self, tile: Tile, spec: ComponentSpec | None):
+    def _sync_tile(self, instance_id: str, tile: Tile, spec: ComponentSpec | None):
         """Offer a tile's actions to whoever is viewing it now."""
         show_in_editor = self._can_show_in_editor()
-        tile.set_actions(inspect=self._can_inspect_tile(spec), show_in_editor=show_in_editor)
+        tile.set_actions(
+            inspect=self._can_inspect_tile(spec),
+            show_in_editor=show_in_editor,
+            how_made=self.made_by_agent(instance_id),
+        )
         if isinstance(tile.view, FailureOverlay):
             for button in tile.view.actions:
                 button.visible = show_in_editor
 
-    @param.depends("editable", "show_in_editor", watch=True)
+    @param.depends("editable", "show_in_editor", "provenance", watch=True)
     def _sync_tile_actions(self):
         for item in self._tile_items:
             tile = self._inspect_tiles.get(item["instance_id"])
             if tile is not None:
-                self._sync_tile(tile, self._tile_spec(item))
+                self._sync_tile(item["instance_id"], tile, self._tile_spec(item))
 
     def _tile_spec(self, item: dict) -> ComponentSpec | None:
         """Return the spec whose hints apply to a tile; a placeholder keeps its saved size."""
@@ -2314,7 +2492,7 @@ class FlowDash(Viewer):
             tile = self._inspect_tiles[instance_id] = self._make_tile(item, spec, view, bounds)
         tile.set_chrome(not self._tile_grid.editable)
         tile.set_style(framed=self._tile_framed(item), titled=self.settings.tile_titles)
-        self._sync_tile(tile, spec)
+        self._sync_tile(instance_id, tile, spec)
         return tile
 
     def _tile_framed(self, item: dict) -> bool:
@@ -2404,7 +2582,7 @@ class FlowDash(Viewer):
     @param.depends("read_only", "settings.viewers_can_inspect", watch=True)
     def _sync_inspect_buttons(self):
         self._sync_tile_actions()
-        if not self._can_inspect():
+        if not self._can_inspect() and self._how_made_shown is None:
             self._close_inspection_dialog()
 
     def _show_inspection(self, key, title, value, position, flow, leftward=False):
@@ -3353,7 +3531,7 @@ class FlowDash(Viewer):
             self._settings_dialog,
             self._transform_offer.dialog,
         ]
-        if self.inspect_outputs:
+        if self.inspect_outputs or self.provenance:
             dialogs.insert(0, self._inspect_dialog)
         shared_dialog = page_dialog() if self.include_page_dialog else None
         if shared_dialog is not None:
