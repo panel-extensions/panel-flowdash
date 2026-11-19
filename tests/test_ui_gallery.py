@@ -260,15 +260,19 @@ class TestFilters:
     async def test_role_filter_and_counts(self, app):
         gallery = _gallery(app)
         counts = gallery.role_counts()
-        assert counts["source"] == 1
-        assert counts["transform"] == 1
+        roles = [
+            component_role(entry, (), ())
+            for entry in normalize_components(BUILTIN_COMPONENTS).values()
+        ]
         views = [
             app_id
             for app_id, entry in normalize_components(BUILTIN_COMPONENTS).items()
             if component_role(entry, (), ()) == "view"
         ]
+        assert counts["source"] == 1
+        assert counts["transform"] == 1 + roles.count("transform")
         assert counts["view"] == 2 + len(views)
-        assert counts["widget"] == len(BUILTIN_COMPONENTS) - len(views)
+        assert counts["widget"] == roles.count("widget")
         assert counts["all"] == len(gallery.entries)
         gallery.role = "view"
         assert sorted(_visible(gallery)) == sorted([CHART, NOTES, *views])
@@ -301,7 +305,7 @@ class TestFilters:
         gallery._on_accepts(
             next(i for i in gallery.accepts_menu.items if i["label"] == "DataFrame")
         )
-        assert set(_visible(gallery)) == {FILTER, CHART}
+        assert set(_visible(gallery)) == {FILTER, CHART, "Data/FilterBySelection"}
         assert gallery.accepts_menu.label == "Accepts DataFrame"
         gallery._on_accepts(gallery.accepts_menu.items[0])
         assert gallery.accepts is None

@@ -25,11 +25,14 @@ import typing as t
 import weakref
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 import panel as pn
 import param
+from panel.viewable import Viewer
 
 from panel_flowdash.port_types import register_port_type
+from panel_flowdash.registry import register
 
 SELECTION_TYPE = register_port_type("Selection")
 
@@ -43,6 +46,66 @@ DEBOUNCE = 150
 # selections a drag sends meanwhile replace each other rather than queue.
 COALESCE = 10
 COALESCE_MAX = 200
+
+
+def _temporal_kind(value: t.Any) -> str | None:
+    if isinstance(value, (dt.datetime, pd.Timestamp, np.datetime64)):
+        return "datetime"
+    if isinstance(value, dt.date):
+        return "date"
+    return None
+
+
+def _as_datetime(value: t.Any) -> t.Any:
+    """Return a numpy or pandas datetime as a Python one; NaT as None."""
+    if isinstance(value, np.datetime64):
+        value = pd.Timestamp(value)
+    if value is pd.NaT:
+        return None
+    if isinstance(value, pd.Timestamp):
+        return value.to_pydatetime(warn=False)
+    return value
+
+
+def _plain(value: t.Any) -> t.Any:
+    """Return a numpy scalar as the Python value JSON can hold."""
+    item = getattr(value, "item", None)
+    return item() if callable(item) and getattr(value, "ndim", None) == 0 else value
+
+
+def _parse_temporal(value: t.Any, kind: str | None) -> t.Any:
+    if kind == "datetime" and isinstance(value, str):
+        return dt.datetime.fromisoformat(value)
+    if kind == "date" and isinstance(value, str):
+        return dt.date.fromisoformat(value)
+    return value
+
+
+def _short(value: t.Any) -> str:
+    if _temporal_kind(value) == "datetime":
+        stamp = pd.Timestamp(value)
+        if pd.isna(stamp):
+            return "NaT"
+        if stamp == stamp.normalize():
+            return stamp.strftime("%Y-%m-%d")
+        return stamp.strftime("%Y-%m-%d %H:%M:%S")
+    return str(value)
+
+
+def _comparable(value: t.Any, column: pd.Series) -> t.Any:
+    """Return *value* as a value of *column*'s type where they are temporal."""
+    if value is None or not pd.api.types.is_datetime64_any_dtype(column.dtype):
+        return value
+    if isinstance(value, (dt.date, np.datetime64)) and not pd.isna(value):
+        stamp = pd.Timestamp(value)
+        zone = getattr(column.dtype, "tz", None)
+        if zone is not None:
+            stamp = stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp
+            stamp = stamp.tz_convert(zone)
+        elif stamp.tzinfo is not None:
+            stamp = stamp.tz_convert("UTC").tz_localize(None)
+        return stamp
+    return value
 
 
 @dataclass(frozen=True)
@@ -73,11 +136,22 @@ class Predicate:
             raise ValueError(f"A range predicate takes (start, end), got {self.values!r}.")
 
     def mask(self, frame: pd.DataFrame) -> pd.Series:
-        """Return which rows of *frame* match."""
+        """Return which rows of *frame* match.
+
+        Bounds and values are made comparable with the column: on a datetime
+        column dates become midnights, and naive datetimes, which charts
+        report in UTC, are converted to the column's timezone. A range on an
+        unordered categorical column raises ``ValueError``.
+        """
         column = frame[self.field]
         if self.op == "in":
-            return column.isin(self.values)
-        start, end = self.values
+            return column.isin([_comparable(v, column) for v in self.values])
+        if isinstance(column.dtype, pd.CategoricalDtype) and not column.dtype.ordered:
+            raise ValueError(
+                f"The column {self.field!r} holds unordered categories, so it has no range to "
+                "select; select its values instead."
+            )
+        start, end = (_comparable(v, column) for v in self.values)
         keep = pd.Series(True, index=frame.index)
         if start is not None:
             keep &= column >= start
@@ -86,24 +160,42 @@ class Predicate:
         return keep
 
     def to_dict(self) -> dict[str, t.Any]:
-        """Return the predicate as a dict of its fields."""
-        return {
-            "field": self.field,
-            "op": self.op,
-            "values": list(self.values),
-            "closed": self.closed,
-        }
+        """Return the predicate as a dict JSON can hold.
+
+        Dates and datetimes are written in ISO format, and ``types`` names
+        the kind of each value that was one, e.g. ``[None, "datetime"]``.
+        """
+        values, types = [], []
+        for value in self.values:
+            kind = _temporal_kind(value)
+            types.append(kind)
+            if kind is not None:
+                value = _as_datetime(value)
+                kind = None if value is None else kind
+            types[-1] = kind
+            values.append(_plain(value) if kind is None else value.isoformat())
+        data = {"field": self.field, "op": self.op, "values": values, "closed": self.closed}
+        if any(types):
+            data["types"] = types
+        return data
 
     @classmethod
     def from_dict(cls, data: t.Mapping[str, t.Any]) -> Predicate:
         """Return the predicate :meth:`to_dict` described."""
-        return cls(data["field"], data["op"], tuple(data["values"]), data.get("closed", "both"))
+        types = data.get("types") or [None] * len(data["values"])
+        values = tuple(
+            _parse_temporal(value, kind) for value, kind in zip(data["values"], types, strict=True)
+        )
+        return cls(data["field"], data["op"], values, data.get("closed", "both"))
 
     def __str__(self) -> str:
-        """Describe the predicate, e.g. ``category in [A, B]`` or ``10 <= price < 20``."""
+        """Describe the predicate, e.g. ``category in [A, B]`` or ``10 <= price < 20``.
+
+        Datetimes are shown to the second, and as dates when they are midnights.
+        """
         if self.op == "in":
-            return f"{self.field} in [{', '.join(map(str, self.values))}]"
-        start, end = self.values
+            return f"{self.field} in [{', '.join(map(_short, self.values))}]"
+        start, end = (None if v is None else _short(v) for v in self.values)
         upper = "<" if self.closed == "left" else "<="
         if start is None:
             return f"{self.field} {upper} {end}"
@@ -170,7 +262,13 @@ class Selection:
             return frame
         keep = pd.Series(True, index=frame.index)
         for predicate in self.predicates:
-            keep &= predicate.mask(frame)
+            try:
+                keep &= predicate.mask(frame)
+            except TypeError as exc:
+                raise ValueError(
+                    f"The selection on {predicate.field!r} cannot be compared with the column's "
+                    f"values of type {frame[predicate.field].dtype}: {exc}"
+                ) from exc
         return frame[keep]
 
     def to_dict(self) -> dict[str, t.Any]:
@@ -483,10 +581,29 @@ def from_vega(
 
 
 def _element(element):
-    """Return the element a DynamicMap shows last, or *element* itself."""
+    """Return the element a selection is made on, or why it cannot be told.
+
+    A DynamicMap gives the element it shows last. An Overlay gives its only
+    layer, or its first when every layer has the same dimensions; layers that
+    differ are ambiguous and give a reason instead.
+    """
     if type(element).__name__ == "DynamicMap":
-        return element.last
+        element = element.last
+    if type(element).__name__ in ("Overlay", "NdOverlay"):
+        layers = list(element.values())
+        if not layers:
+            return "The overlay has no layers to read the selection from."
+        if len({tuple(_dims(layer)) for layer in layers}) > 1:
+            return (
+                "The overlay's layers have different dimensions, so it is unclear which one the "
+                "selection is made on; pass that layer as the element."
+            )
+        element = layers[0]
     return element
+
+
+# Elements whose y axis shows a measure per group, e.g. the height of a bar, not row values.
+_AGGREGATING_ELEMENTS = ("Bars", "Histogram")
 
 
 def _dims(element) -> list[str]:
@@ -516,10 +633,15 @@ def from_holoviews(stream, element=None, *, key: str | None = None, source: str 
     categorical and its values are unique, such as the categories of
     ``Bars``, and the rows' positions otherwise, which filters refuse. A
     ``Lasso`` stream's polygon cannot be a filter and is unsupported. For a
-    ``DynamicMap``, the element it shows last is used.
+    ``DynamicMap``, the element it shows last is used, and for an
+    ``Overlay`` its layer, if the layers agree on their dimensions. On
+    ``Bars`` and ``Histogram`` the y axis is a measure per group, so a
+    ``BoundsXY`` box keeps only its x range and ``BoundsY`` is unsupported.
     """
     name = type(stream).__name__
     element = _element(element)
+    if isinstance(element, str):
+        return Selection(source=source, unsupported=element)
     if name == "Lasso":
         return Selection(
             source=source,
@@ -541,9 +663,21 @@ def from_holoviews(stream, element=None, *, key: str | None = None, source: str 
         if bounds is None:
             return Selection(source=source)
         dims = _dims(element)
+        aggregating = type(element).__name__ in _AGGREGATING_ELEMENTS
+        if name == "BoundsY" and aggregating:
+            return Selection(
+                source=source,
+                unsupported=(
+                    f"A box across the {type(element).__name__} heights selects a range of "
+                    f"{dims[1]!r} per group, not of the rows' values, so it cannot filter them. "
+                    "Select along the x axis instead."
+                ),
+            )
         if name == "BoundsXY":
             x0, y0, x1, y1 = bounds
-            pairs = [(dims[0], x0, x1), (dims[1], y0, y1)]
+            pairs = [(dims[0], x0, x1)]
+            if not aggregating:
+                pairs.append((dims[1], y0, y1))
         else:
             pairs = [(dims[0] if name == "BoundsX" else dims[1], *bounds)]
         frame = element.dframe()
@@ -818,3 +952,69 @@ def _set(ref, name, value):
     owner = ref()
     if owner is not None:
         setattr(owner, name, value)
+
+
+# ---------------------------------------------------------------------------
+# Filtering
+# ---------------------------------------------------------------------------
+
+
+@register(
+    page=False,
+    component=True,
+    title="Filter by selection",
+    icon="filter_alt",
+    description=(
+        "Keeps the rows of a DataFrame that match a chart's selection, wired from the chart's "
+        "selection output: within each brushed range and among the clicked values. An empty "
+        "selection keeps every row. Feed the chart itself the unfiltered data, so it keeps "
+        "showing everything with its selection highlighted."
+    ),
+    tags=["transform"],
+    requires=[
+        {"key": "data", "type": "DataFrame", "required": True},
+        {"key": "selection", "type": SELECTION_TYPE, "required": False, "blocking": False},
+    ],
+    provides=[{"key": "filtered", "type": "DataFrame"}],
+    default_size={"width": 280, "height": 90},
+    min_size={"width": 160, "height": 60},
+)
+class SelectionFilter(Viewer):
+    """The rows of a DataFrame that match a selection."""
+
+    data = param.DataFrame(default=None, allow_None=True, doc="The rows to filter.")
+
+    selection = param.ClassSelector(
+        class_=Selection, default=None, allow_None=True, doc="The selection rows must match."
+    )
+
+    @param.output(param.DataFrame)
+    @param.depends("data", "selection")
+    def filtered(self):
+        """Return the rows of ``data`` matching ``selection``, all of them without one."""
+        if self.data is None or self.selection is None:
+            return self.data
+        return self.selection.filter(self.data)
+
+    def _summary(self):
+        if self.data is None:
+            return "Waiting for data"
+        total = len(self.data)
+        if self.selection is None or self.selection.empty:
+            return f"All {total:,} rows"
+        try:
+            kept = len(self.selection.filter(self.data))
+        except (ValueError, TypeError) as exc:
+            return str(exc)
+        return f"{kept:,} of {total:,} rows: {self.selection}"
+
+    def __panel__(self):
+        """Return a line saying how many rows the selection keeps."""
+        from panel_flowdash.ui.text import text_typography
+
+        summary = param.rx(
+            param.bind(
+                lambda data, selection: self._summary(), self.param.data, self.param.selection
+            )
+        )
+        return text_typography(summary, sizing_mode="stretch_width", margin=(5, 10))

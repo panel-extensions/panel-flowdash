@@ -46,6 +46,29 @@ Vega-Lite point selection without `fields`, has `index` set instead of
 predicates. It cannot be applied to other data, so filters refuse it: select
 on fields instead.
 
+## Filter a DataFrame by a selection
+
+The built-in **Filter by selection** node (`Data/FilterBySelection`) takes a
+DataFrame on `data` and a selection on `selection`, and outputs the matching
+rows on `filtered`. Until a selection arrives, and whenever it is empty, every
+row passes. Its tile says how many rows the selection keeps, such as
+`412 of 1,000 rows: category in [A, B]`.
+
+```python
+ops.add_node("Data/FilterBySelection", {}, name="brushed")
+ops.connect("sales.data", "chart.data")
+ops.connect("sales.data", "brushed.data")
+ops.connect("chart.selection", "brushed.selection")
+ops.connect("brushed.filtered", "revenue.value", [
+    {"op": "column", "column": "price"},
+    {"op": "aggregate", "how": "sum"},
+])
+```
+
+A data source with its own query engine can do better than filtering fetched
+rows: Lumen's filter node, for example, turns a selection into a `WHERE`
+clause its source runs.
+
 ## Give a component a selection output
 
 `link_selection` follows a `pn.pane.Vega` or a HoloViews stream and writes

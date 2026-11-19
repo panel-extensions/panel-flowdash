@@ -145,7 +145,7 @@ class TestRoles:
     def test_groups_follow_ports_in_order(self, editor):
         assert _groups(editor) == {
             "Data sources": ["Demo/prices", "Demo/feed"],
-            "Transforms": ["Demo/filter", "Demo/shouter"],
+            "Transforms": ["Demo/filter", "Demo/shouter", *_builtin("transform")],
             "Views": ["Demo/chart", "Demo/header", *_builtin("view")],
             "Widgets": _builtin("widget"),
         }
@@ -254,7 +254,7 @@ class TestSearch:
         assert found == expected
 
     def test_search_drops_empty_groups(self, editor):
-        editor._palette_panel.query = "chart"
+        editor._palette_panel.query = "header"
         assert list(_groups(editor)) == ["Views"]
         assert editor._palette.expanded == [(0,)]
 
@@ -283,9 +283,9 @@ class TestSearch:
         }
 
     def test_placing_keeps_the_filter(self, editor):
-        editor._palette_panel.query = "chart"
-        editor.add_component("Demo/chart")
-        assert _groups(editor) == {"Views": ["Demo/chart"]}
+        editor._palette_panel.query = "header"
+        editor.add_component("Demo/header")
+        assert _groups(editor) == {"Views": ["Demo/header"]}
 
     def test_drop_from_filtered_palette_adds_the_dragged_component(self, editor):
         editor._palette_panel.query = "chart"
@@ -390,4 +390,4 @@ class TestAuthorization:
         editor._palette_panel.query = "dataframe"
         assert "Demo/filter" in _groups(editor)["Transforms"]
         editor.authorize_component = lambda entry: entry.app_id != "Demo/filter"
-        assert "Transforms" not in _groups(editor)
+        assert "Demo/filter" not in _groups(editor).get("Transforms", [])

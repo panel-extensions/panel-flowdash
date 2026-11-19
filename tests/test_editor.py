@@ -43,6 +43,11 @@ from panel_flowdash.widgets import BUILTIN_COMPONENTS, _WidgetComponent
 BUILTIN_VIEWS = [
     cid for cid, cls in BUILTIN_COMPONENTS.items() if "view" in cls.__panel_app_metadata__.tags
 ]
+BUILTIN_TRANSFORMS = [
+    cid
+    for cid, cls in BUILTIN_COMPONENTS.items()
+    if "transform" in cls.__panel_app_metadata__.tags
+]
 INPUT_WIDGETS = [
     cid for cid, cls in BUILTIN_COMPONENTS.items() if issubclass(cls, _WidgetComponent)
 ]
@@ -322,7 +327,9 @@ class TestBuiltinWidgets:
     # panel-reactflow's form passes both `name` and `label` to its widgets, which
     # Panel 1.9 warns about; warnings-as-errors would force the JSON fallback.
     @pytest.mark.filterwarnings("ignore:Both 'name' and 'label':PendingDeprecationWarning")
-    @pytest.mark.parametrize("component_id", list(BUILTIN_COMPONENTS))
+    @pytest.mark.parametrize(
+        "component_id", [c for c in BUILTIN_COMPONENTS if c not in BUILTIN_TRANSFORMS]
+    )
     def test_widget_config_renders_a_schema_form(self, component_id):
         editor = FlowDash({}, notifications=False)
         instance_id = editor.add_component(component_id)
@@ -2493,7 +2500,8 @@ class TestRequiredInputPlaceholder:
     async def test_builtin_widgets_are_not_gated(self):
         editor = FlowDash({}, notifications=False)
         for component_id in BUILTIN_COMPONENTS:
-            editor.add_component(component_id)
+            if component_id not in BUILTIN_TRANSFORMS:
+                editor.add_component(component_id)
 
         assert not any(
             isinstance(view, pn.Column) and len(view) and isinstance(view[0], WaitingPlaceholder)
@@ -3620,7 +3628,10 @@ class TestPalette:
         assert list(groups) == ["Data sources", "Transforms", "Views", "Widgets"]
         assert all(g["draggable"] is False for g in groups.values())
         assert [i["component_id"] for i in groups["Data sources"]["items"]] == [SELECTOR]
-        assert [i["component_id"] for i in groups["Transforms"]["items"]] == [SHOUTER]
+        assert [i["component_id"] for i in groups["Transforms"]["items"]] == [
+            SHOUTER,
+            *BUILTIN_TRANSFORMS,
+        ]
         assert [i["component_id"] for i in groups["Views"]["items"]] == [CHART, *BUILTIN_VIEWS]
         assert all(i["draggable"] for g in groups.values() for i in g["items"])
         assert editor._palette.drag_type in editor._flow.drop_types
