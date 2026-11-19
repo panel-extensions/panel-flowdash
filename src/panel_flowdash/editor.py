@@ -66,6 +66,7 @@ from panel_flowdash.placeholders import (
     unresolved_summary,
 )
 from panel_flowdash.registry import RegistryEntry
+from panel_flowdash.selection import release_links
 from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transform_editor import TransformEditor
 from panel_flowdash.transforms import parse_transform, summarize_transform
@@ -1187,6 +1188,8 @@ class FlowDash(Viewer):
     def _dispose_component(self, instance_id: str):
         """Call the ``dispose`` hook of the component placed as *instance_id*, if it has one.
 
+        Selection links made for it with ``link_selection`` are unlinked.
+
         The watchers and output references wiring the component to its node
         are released first, so nothing flows into or out of it any more.
         Popping the instance first makes this a no-op on any later call, so a
@@ -1194,6 +1197,8 @@ class FlowDash(Viewer):
         """
         self._release_wiring(instance_id)
         instance = self._component_instances.pop(instance_id, None)
+        if instance is not None:
+            release_links(instance)
         hook = getattr(instance, "dispose", None)
         if not callable(hook):
             return

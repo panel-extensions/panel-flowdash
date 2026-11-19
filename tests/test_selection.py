@@ -55,7 +55,7 @@ def test_selection_keeps_rows_matching_every_predicate():
     )
     assert selection.filter(FRAME).price.tolist() == [15.0, 35.0]
     assert selection.fields == ["category", "price"]
-    assert str(selection) == "category in [A, B]; price in [10, 40]"
+    assert str(selection) == "category in [A, B]; 10 <= price <= 40"
 
 
 def test_range_closed_on_the_left_leaves_out_its_end():
@@ -63,7 +63,9 @@ def test_range_closed_on_the_left_leaves_out_its_end():
     left = Predicate("price", "range", (5, 25), closed="left")
     assert FRAME[both.mask(FRAME)].price.tolist() == [5.0, 15.0, 25.0]
     assert FRAME[left.mask(FRAME)].price.tolist() == [5.0, 15.0]
-    assert str(left) == "price in [5, 25)"
+    assert str(left) == "5 <= price < 25"
+    assert str(Predicate("price", "range", (None, 5))) == "price <= 5"
+    assert str(Predicate("price", "range", (5, None))) == "price >= 5"
 
 
 def test_open_ended_range():
@@ -88,6 +90,17 @@ def test_selections_compare_by_value():
     b = Selection([Predicate("category", "in", ("A",))], source="chart")
     assert a == b
     assert a != Selection((Predicate("category", "in", ["B"]),), source="chart")
+
+
+def test_selection_round_trips_through_a_dict():
+    selection = Selection(
+        (Predicate("category", "in", ("A",)), Predicate("price", "range", (1, 2), closed="left")),
+        source="chart",
+    )
+    assert Selection.from_dict(selection.to_dict()) == selection
+    by_position = Selection(source="chart", index=(1, 2))
+    assert Selection.from_dict(by_position.to_dict()) == by_position
+    assert Selection.from_dict(EMPTY.to_dict()) == EMPTY
 
 
 def test_selection_by_position_cannot_filter():
@@ -188,14 +201,62 @@ def test_vega_time_unit_brush_starting_on_a_unit_start_keeps_that_unit():
     assert selection.predicates[0].values == (dt.datetime(2024, 1, 1), dt.datetime(2025, 1, 1))
 
 
-def test_vega_time_unit_without_consecutive_periods_keeps_the_brushed_range():
+def test_vega_time_unit_brush_covering_no_unit_start_selects_nothing():
     selection = from_vega(
-        {"month_date": [ms("2025-01-27"), ms("2025-04-22")]},
+        {"yearmonth_date": [ms("2025-01-10"), ms("2025-01-20")]},
         "interval",
-        spec(field="date", timeUnit="month", type="temporal"),
+        spec(field="date", timeUnit="yearmonth", type="temporal"),
     )
-    assert selection.predicates[0].closed == "both"
-    assert selection.predicates[0].values == (dt.datetime(2025, 1, 27), dt.datetime(2025, 4, 22))
+    assert FRAME[selection.predicates[0].mask(FRAME)].empty
+
+
+def test_vega_local_time_units_are_cut_in_the_browsers_timezone():
+    # Months in New York start at 05:00 UTC; Panel sends naive datetimes as UTC.
+    selection = from_vega(
+        {"yearmonth_date": [ms("2025-01-27"), ms("2025-03-10")]},
+        "interval",
+        spec(field="date", timeUnit="yearmonth", type="temporal"),
+        timezone="America/New_York",
+    )
+    assert selection.predicates[0].values == (
+        dt.datetime(2025, 2, 1, 5),
+        dt.datetime(2025, 4, 1, 4),
+    )
+
+
+def test_vega_utc_time_units_are_cut_in_utc():
+    selection = from_vega(
+        {"utcyearmonth_date": [ms("2025-01-27"), ms("2025-03-10")]},
+        "interval",
+        spec(field="date", timeUnit="utcyearmonth", type="temporal"),
+        timezone="America/New_York",
+    )
+    assert selection.predicates[0].values == (dt.datetime(2025, 2, 1), dt.datetime(2025, 4, 1))
+
+
+def test_vega_year_weeks_start_on_sunday():
+    # 2025-01-05 and 2025-01-12 are Sundays.
+    selection = from_vega(
+        {"yearweek_date": [ms("2025-01-04"), ms("2025-01-13")]},
+        "interval",
+        spec(field="date", timeUnit="yearweek", type="temporal"),
+    )
+    assert selection.predicates[0].values == (dt.datetime(2025, 1, 5), dt.datetime(2025, 1, 19))
+
+
+@pytest.mark.parametrize(
+    "unit", ["month", "hours", "monthdate", "quarter", "date", "day", "utcmonth"]
+)
+def test_vega_repeating_time_units_are_unsupported(unit):
+    # Vega sends repeating units as dates in its dummy year 2012.
+    selection = from_vega(
+        {f"{unit}_date": [ms("2012-01-27"), ms("2012-04-22")]},
+        "interval",
+        spec(field="date", timeUnit=unit, type="temporal"),
+    )
+    assert not selection.empty
+    with pytest.raises(ValueError, match=r"same .* in every year"):
+        selection.filter(FRAME)
 
 
 def test_vega_binned_field_with_a_step_snaps_to_the_bins_whose_midpoint_is_brushed():
@@ -217,6 +278,15 @@ def test_vega_binned_brush_covering_no_midpoint_keeps_its_range():
     assert selection.predicates == (Predicate("price", "range", (11, 14)),)
 
 
+def test_vega_binned_field_of_a_chart_that_does_not_aggregate_keeps_the_brushed_range():
+    unaggregated = {
+        "mark": "tick",
+        "encoding": {"x": {"field": "price", "bin": {"step": 10}, "type": "quantitative"}},
+    }
+    selection = from_vega({"price": [13, 34]}, "interval", unaggregated)
+    assert selection.predicates == (Predicate("price", "range", (13, 34)),)
+
+
 def test_vega_binned_field_without_a_step_keeps_the_brushed_range():
     binned = spec(field="price", bin={"maxbins": 30}, type="quantitative")
     selection = from_vega({"price": [24.3, 87.3]}, "interval", binned)
@@ -230,13 +300,6 @@ def test_vega_point_with_fields_keeps_the_values():
         spec(field="category", type="nominal"),
     )
     assert selection.predicates == (Predicate("category", "in", ("A", "C")),)
-
-
-def test_vega_point_on_a_temporal_field():
-    selection = from_vega(
-        [{"date": ms("2025-02-01")}], "point", spec(field="date", type="temporal")
-    )
-    assert selection.predicates[0].values == (dt.datetime(2025, 2, 1),)
 
 
 def test_vega_point_without_fields_selects_by_position():
@@ -291,9 +354,9 @@ def test_holoviews_bounds_xy_are_ranges_on_the_first_two_dimensions():
 
 
 def test_holoviews_bounds_x_and_y():
-    points = _Element(FRAME, ["price"], ["category"])
+    points = _Element(FRAME, ["price"], ["date"])
     assert from_holoviews(_stream("BoundsX", boundsx=(1, 2)), points).fields == ["price"]
-    assert from_holoviews(_stream("BoundsY", boundsy=(1, 2)), points).fields == ["category"]
+    assert from_holoviews(_stream("BoundsY", boundsy=(1, 2)), points).fields == ["date"]
     assert from_holoviews(_stream("BoundsXY", bounds=None), points).empty
 
 
@@ -311,6 +374,31 @@ def test_holoviews_selection1d_on_repeated_keys_selects_by_position_or_a_given_k
     selection = from_holoviews(_stream("Selection1D", index=[0, 1]), points, key="price")
     assert selection.predicates == (Predicate("price", "in", (5.0, 15.0)),)
     assert from_holoviews(_stream("Selection1D", index=[]), points).empty
+
+
+def test_holoviews_bounds_on_a_categorical_axis_are_unsupported():
+    bars = _Element(FRAME, ["category"], ["price"])
+    selection = from_holoviews(_stream("BoundsXY", bounds=(0, 0, 1, 10)), bars)
+    with pytest.raises(ValueError, match="categorical axis 'category'"):
+        selection.filter(FRAME)
+
+
+def test_holoviews_selection1d_on_a_continuous_key_selects_by_position():
+    curve = _Element(pd.DataFrame({"x": [0.5, 1.5, 2.5], "y": [1, 2, 3]}), ["x"], ["y"])
+    assert from_holoviews(_stream("Selection1D", index=[1]), curve).index == (1,)
+
+
+def test_holoviews_lasso_is_unsupported():
+    selection = from_holoviews(_stream("Lasso", geometry=[[0, 0], [1, 1], [1, 0]]), None)
+    with pytest.raises(ValueError, match="lasso"):
+        selection.check_filterable()
+
+
+def test_holoviews_dynamic_map_uses_the_element_it_shows_last():
+    frame = pd.DataFrame({"category": ["A", "B"], "price": [1, 2]})
+    dmap = type("DynamicMap", (), {"last": _Element(frame, ["category"], ["price"])})()
+    selection = from_holoviews(_stream("Selection1D", index=[1]), dmap)
+    assert selection.predicates == (Predicate("category", "in", ("B",)),)
 
 
 def test_holoviews_unknown_stream_is_refused():
@@ -393,6 +481,12 @@ def test_link_vega_follows_the_pane_and_sets_its_debounce():
     assert link.value.empty
 
 
+def test_link_vega_keeps_a_debounce_set_on_the_pane():
+    pane = pn.pane.Vega(BRUSH, debounce=500)
+    SelectionLink(debounce=150).link_vega(pane)
+    assert pane.debounce == 500
+
+
 def test_link_vega_clears_when_the_pane_gets_another_chart():
     pane = pn.pane.Vega(BRUSH)
     link = SelectionLink().link_vega(pane)
@@ -472,6 +566,25 @@ def test_link_selection_gives_a_component_a_selection_output_stamped_with_its_no
 
     chart.link.link_vega(pn.pane.Vega(BRUSH))
     assert sink.selection == Selection(source=chart_id)
+
+
+def test_removing_the_node_unlinks_its_selection():
+    editor = FlowDash(
+        {CHART_ID: BrushChart}, include_builtin_components=False, notifications=False
+    )
+    chart_id = editor.add_component(CHART_ID)
+    chart = editor._component_instances[chart_id]
+    editor.remove_component(chart_id)
+    chart.pane.selection.param.update(brush={"category": ["A"]})
+    assert chart.selection.empty
+
+
+def test_link_selection_takes_an_explicit_source():
+    holder = SelectionSink()
+    pane = pn.pane.Vega(BRUSH)
+    link_selection(holder, pane, source=lambda: "chart_1")
+    pane.selection.param.update(brush={"category": ["A"]})
+    assert holder.selection.source == "chart_1"
 
 
 def test_current_node_id_outside_creation_is_none():
