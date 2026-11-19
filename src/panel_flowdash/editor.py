@@ -1058,6 +1058,8 @@ class FlowDash(Viewer):
         self._edge_id_map: dict[str, tuple[str, str, str, str]] = {}
         self._tile_items: list[dict] = []
         self._tile_objects: list[Viewable] = []
+        # Saved config values a node's config refused on load, by node, kept to tell the person.
+        self._rejected_config: dict[str, dict[str, t.Any]] = {}
         # Saved edges that could not be wired, kept to be saved unchanged, and the
         # notice about them waiting for an editor to see it.
         self._unresolved_edges: list[UnresolvedEdge] = []
@@ -2316,10 +2318,13 @@ class FlowDash(Viewer):
         applied = {}
         for key, value in patch.items():
             if config_state is not None and hasattr(config_state.param, key):
+                rejected = self._rejected_config.get(node_id, {}).pop(key, _MISSING)
                 try:
                     setattr(config_state, key, config_value(config_state.param[key], value))
                 except Exception as exc:
                     logger.warning("Config '%s' rejected on %s: %s", key, node_id, exc)
+                    if rejected is not _MISSING:
+                        self._rejected_config[node_id][key] = rejected
                     continue
             applied[key] = value
         if applied:
@@ -2340,6 +2345,7 @@ class FlowDash(Viewer):
                     setattr(config_state, key, config_value(config_state.param[key], value))
                 except Exception as exc:
                     logger.warning("Saved config '%s' rejected on %s: %s", key, instance_id, exc)
+                    self._rejected_config.setdefault(instance_id, {})[key] = value
         return {name: getattr(config_state, name) for name in config_state.param if name != "name"}
 
     def _bind_config_to_viewer(self, node_id, instance, config_state, wiring):
@@ -4487,6 +4493,7 @@ class FlowDash(Viewer):
         self._chosen_visibility = set()
         self._tile_items = []
         self._tile_objects = []
+        self._rejected_config = {}
         self._inspect_tiles.clear()
         self._close_inspection_dialog()
         self._edge_id_map.clear()
@@ -5221,10 +5228,13 @@ class FlowDash(Viewer):
         patch = {k: v for k, v in target.items() if current.get(k, _MISSING) != v}
         for key, value in patch.items():
             if config_state is not None and hasattr(config_state.param, key):
+                rejected = self._rejected_config.get(instance_id, {}).pop(key, _MISSING)
                 try:
                     setattr(config_state, key, config_value(config_state.param[key], value))
                 except Exception as exc:
                     logger.warning("Config '%s' rejected on %s: %s", key, instance_id, exc)
+                    if rejected is not _MISSING:
+                        self._rejected_config[instance_id][key] = rejected
         item["config"] = copy.deepcopy(target)
 
     def _restore_refusal(self, text: str) -> str | None:

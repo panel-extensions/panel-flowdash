@@ -468,9 +468,43 @@ class Inspector(Viewer):
                 )
             )
             self._watch_choices(instance_id, spec, config_state, edited, names, holder)
-        if draft is None:
+        objects = [holder] if draft is None else [holder, draft.alert]
+        if self.editor._rejected_config.get(instance_id):
+            rejected = pn.Column(margin=0, sizing_mode="stretch_width")
+
+            def show_rejected(*_events):
+                alert = self._rejected_alert(instance_id, config_state)
+                rejected[:] = [] if alert is None else [alert]
+
+            show_rejected()
+            watcher = config_state.param.watch(show_rejected, names)
+            self._releases.append(partial(config_state.param.unwatch, watcher))
+            objects.insert(0, rejected)
+        if len(objects) == 1:
             return holder
-        return pn.Column(holder, draft.alert, margin=0, sizing_mode="stretch_width")
+        return pn.Column(*objects, margin=0, sizing_mode="stretch_width")
+
+    def _rejected_alert(self, instance_id: str, config_state) -> Viewable | None:
+        """Say which saved config values the node refused on load, and what it uses instead."""
+        rejected = self.editor._rejected_config.get(instance_id)
+        if not rejected:
+            return None
+        lines = [
+            f"{config_state.param[key].label or key}: {value!r} is not available, "
+            f"using {getattr(config_state, key)!r}."
+            for key, value in rejected.items()
+            if key in config_state.param
+        ]
+        if not lines:
+            return None
+        return text_alert(
+            "\n\n".join(lines),
+            severity="warning",
+            title="Saved settings not applied",
+            margin=(0, 0, 8, 0),
+            sizing_mode="stretch_width",
+            css_classes=["fd-config-rejected"],
+        )
 
     def _param_form(
         self, state: param.Parameterized, names: list[str], choices: dict[str, Choices]

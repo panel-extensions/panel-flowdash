@@ -44,14 +44,29 @@ class SuggestInput(_KeepValue, pmui.AutocompleteInput):
     """A text field suggesting a field's choices."""
 
 
-class OptionalIntInput(pmui.IntInput):
-    """An integer field that shows None as empty; the plain one renders it as 0."""
+class _ShowsNone:
+    """Shows None as an empty field.
+
+    The plain number inputs format their value with a default formatter,
+    which renders None as 0, so without a format of their own these show
+    the value unformatted.
+    """
+
+    def _get_properties(self, doc):
+        props = super()._get_properties(doc)
+        if self.format is None:
+            props["data"].format = None
+        return props
+
+
+class OptionalIntInput(_ShowsNone, pmui.IntInput):
+    """An integer field that may be left empty."""
 
     value = param.Integer(default=None, allow_None=True)
 
 
-class OptionalFloatInput(pmui.FloatInput):
-    """A number field that shows None as empty; the plain one renders it as 0."""
+class OptionalFloatInput(_ShowsNone, pmui.FloatInput):
+    """A number field that may be left empty."""
 
     value = param.Number(default=None, allow_None=True)
 
@@ -111,12 +126,6 @@ def choice_widget(
     }
 
 
-def _selector_options(parameter: param.Selector) -> dict[str, t.Any]:
-    """Return a selector's options as declared, without values it was given since."""
-    declared = ((parameter.metadata or {}).get("flowdash") or {}).get("objects")
-    return dict(declared) if declared is not None else dict(parameter.get_range())
-
-
 def plain_widget(parameter: param.Parameter, current: t.Any) -> dict[str, t.Any] | None:
     """Return the widget spec for a field without choices, or None for Panel's default.
 
@@ -126,12 +135,12 @@ def plain_widget(parameter: param.Parameter, current: t.Any) -> dict[str, t.Any]
     optional number shows None as empty rather than as 0 or its lower bound.
     """
     if isinstance(parameter, param.ListSelector):
-        options = _selector_options(parameter)
+        options = dict(parameter.get_range())
         extra = [value for value in current or [] if value not in options.values()]
         options.update({_missing(value): value for value in extra})
         return {"type": ChoiceMultiSelect, "options": options}
     if isinstance(parameter, param.Selector):
-        return _select(parameter, _selector_options(parameter), current)
+        return _select(parameter, dict(parameter.get_range()), current)
     if isinstance(parameter, param.Number) and parameter.allow_None:
         widget = OptionalIntInput if isinstance(parameter, param.Integer) else OptionalFloatInput
         return {"type": widget, "placeholder": EMPTY}

@@ -1,8 +1,10 @@
 """UI tests for config fields that offer choices from a node's inputs."""
 
+import param
 import pytest
 from panel.tests.util import wait_until
 
+from panel_flowdash import register
 from panel_flowdash.editor import FlowDash
 from tests.test_config_choices import COMPONENTS
 from tests.ui.util import serve_component
@@ -82,3 +84,30 @@ def test_a_value_set_elsewhere_is_kept_and_marked(page):
     page.wait_for_timeout(500)
     assert editor._component_instances[pick].column == "missing"
     assert editor._tile_items[1]["config"]["column"] == "missing"
+
+
+class OptionalNumbers(param.Parameterized):
+    ratio = param.Number(default=None, allow_None=True)
+    bounded = param.Number(default=None, allow_None=True, bounds=(0, 10))
+    count = param.Integer(default=None, allow_None=True)
+
+
+@register(page=False, component=True, title="Optional", config_schema=OptionalNumbers)
+def optional(config):
+    return "optional"
+
+
+def test_optional_numbers_show_empty_until_set(page):
+    editor = FlowDash(
+        {"Demo/optional": optional}, notifications=False, include_builtin_components=False
+    )
+    node = editor.add_component("Demo/optional", position=(0, 0))
+    serve_component(page, editor)
+
+    _node(page, node).click()
+    for name in ("Ratio", "Bounded", "Count"):
+        expect(page.get_by_role("textbox", name=name, exact=True)).to_have_value("", timeout=8000)
+    ratio = page.get_by_role("textbox", name="Ratio", exact=True)
+    ratio.fill("2.5")
+    ratio.press("Enter")
+    wait_until(lambda: editor.graph.get_config_state(node).ratio == 2.5, timeout=8000)

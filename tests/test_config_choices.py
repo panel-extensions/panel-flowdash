@@ -13,6 +13,8 @@ import pytest
 from panel.viewable import Viewer
 
 from panel_flowdash import Choices, columns_of, port_types, register, register_port_type
+from panel_flowdash.agent import DashboardOps, OperationError
+from panel_flowdash.agent.schema import config_schema
 from panel_flowdash.component_spec import build_component_spec
 from panel_flowdash.config_choices import compute_choices, node_choices
 from panel_flowdash.dashboard_store import DashboardModel
@@ -804,11 +806,40 @@ class TestSavedConfig:
         editor._tile_items[0]["config"] = {"mode": "gone"}
         reloaded = self._reload(editor)
         state = reloaded.graph.get_config_state(node)
-        assert state.mode == "gone"
+        assert state.mode == "a"
+        assert state.param.mode.objects == ["a", "b"]
+        assert Modes.param.mode.objects == ["a", "b"]
         assert reloaded._tile_items[0]["config"] == {"mode": "gone"}
+        assert config_schema(reloaded._component_specs["Demo/modes"])["properties"]["mode"][
+            "enum"
+        ] == ["a", "b"]
+
         select_on_canvas(reloaded._flow, node_id=node)
-        assert _form(reloaded)._widgets["mode"].options == {
-            "gone (not available)": "gone",
-            "a": "a",
-            "b": "b",
-        }
+
+        def rejected():
+            return [
+                a.object
+                for a in pn.Column(*reloaded._inspector._body).select()
+                if "fd-config-rejected" in getattr(a, "css_classes", [])
+            ]
+
+        (text,) = rejected()
+        assert "Mode" in text and "'gone' is not available, using 'a'." in text
+        _form(reloaded)._widgets["mode"].value = "b"
+        assert rejected() == []
+        assert reloaded._tile_items[0]["config"] == {"mode": "b"}
+
+    async def test_the_assistant_cannot_set_a_value_a_selector_lacks(self):
+        editor = FlowDash(
+            {"Demo/modes": Modes}, notifications=False, include_builtin_components=False
+        )
+        ops = DashboardOps(editor)
+        ops.add_node("Demo/modes", name="m")
+        for _ in range(2):
+            with pytest.raises(OperationError):
+                ops.set_config("m", {"mode": "typo"})
+        assert editor.graph.get_config_state(ops._instance("m")).mode == "a"
+        assert Modes.param.mode.objects == ["a", "b"]
+        assert config_schema(editor._component_specs["Demo/modes"])["properties"]["mode"][
+            "enum"
+        ] == ["a", "b"]

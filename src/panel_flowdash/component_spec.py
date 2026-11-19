@@ -145,7 +145,7 @@ def _config_from_param_class(
             )
         )
 
-    params = {name: _lenient(copy.copy(p)) for name, p in selected.items()}
+    params = {name: copy.copy(p) for name, p in selected.items()}
     state_cls = type(f"ConfigState_{cls.__name__}", (param.Parameterized,), params)
     return state_cls, fields
 
@@ -174,7 +174,6 @@ def _field_schema(p: param.Parameter) -> dict[str, Any]:
     if p.doc:
         prop["description"] = " ".join(p.doc.split())
     if isinstance(p, param.Selector):
-        # Config selectors keep values their objects no longer hold, see _lenient.
         return prop
     kind = next((k for cls, k in _JSON_TYPES.items() if type(p) is cls), None)
     if kind is None:
@@ -210,21 +209,6 @@ def config_value(parameter: param.Parameter, value: Any) -> Any:
     if isinstance(parameter, param.Tuple) and isinstance(value, list):
         return tuple(value)
     return value
-
-
-def _lenient(p: param.Parameter) -> param.Parameter:
-    """Return config param *p* accepting values outside its objects, if it is a selector.
-
-    A saved value its objects no longer hold is kept, and the inspector marks
-    it as not available, rather than resetting it to the default on load.
-    """
-    if isinstance(p, param.Selector):
-        # Param adds an outside value to the objects, so the inspector offers these instead.
-        metadata = dict(p.metadata or {})
-        metadata["flowdash"] = {**metadata.get("flowdash", {}), "objects": dict(p.get_range())}
-        p.metadata = metadata
-        p.check_on_set = False
-    return p
 
 
 def _declared_choices(metadata: Any) -> dict[str, Any] | None:
@@ -358,7 +342,7 @@ def _config_from_mapping(
     for name, prop in properties.items():
         prop = prop if isinstance(prop, dict) else {}
         default = prop.get("default")
-        p = _lenient(_param_from_schema(prop, default))
+        p = _param_from_schema(prop, default)
         params[name] = p
         kind, _ = _schema_type(prop)
         fields.append(
