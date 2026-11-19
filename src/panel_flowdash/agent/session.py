@@ -109,6 +109,10 @@ class AgentSession:
         self.runner.state.subscribe(self._note_run)
         # Background checks of restored versions, kept so they are not collected while they run.
         self._checks: set[asyncio.Task] = set()
+        # The drawer shows dashboard versions and tool results in CodeEditors, created after
+        # the page loaded its JavaScript; Panel before 1.11 does not load the editor's
+        # script for them then, and the Preview tab stays blank.
+        pn.extension("codeeditor")
         self.drawer = AgentDrawer(
             self.runner,
             title="Assistant",

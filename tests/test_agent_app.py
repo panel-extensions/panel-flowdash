@@ -1,6 +1,9 @@
 """The default agent and its connection to a FlowDashApp session."""
 
+import panel as pn
 import pytest
+from bokeh.document import Document
+from panel.io.state import set_curdoc
 
 pytest.importorskip("pydantic_ai")
 
@@ -40,6 +43,12 @@ async def test_a_configured_model_gives_the_default_agent(store, monkeypatch):
     assert isinstance(session, AgentSession)
     assert session.runner.agent.name == "FlowDash"
     assert session.runner.approval_policy.requires_approval("save_dashboard", {})
+
+
+async def test_the_session_loads_the_code_editor_for_the_drawer(store, monkeypatch):
+    with set_curdoc(Document()):
+        AgentSession(_app(store, monkeypatch), create_agent("test"))
+        assert "codeeditor" in pn.state._extensions
 
 
 async def test_the_catalogue_lists_only_components_the_user_may_place(store, monkeypatch):
