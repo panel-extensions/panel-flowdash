@@ -98,3 +98,112 @@ def test_selection_input_only_takes_selections():
     )
     with pytest.raises(OperationError, match="Type mismatch"):
         ops.connect("rows.data", "brushed.selection")
+
+
+import datetime as dt
+import json
+
+import numpy as np
+
+from panel_flowdash import from_holoviews
+
+TIMES = pd.DataFrame(
+    {
+        "when": pd.date_range("2025-01-01", periods=4, freq="D"),
+        "price": [1.0, np.nan, 3.0, 4.0],
+        "kind": pd.Categorical(["a", "b", "a", "c"]),
+        "size": pd.Categorical(["s", "m", "l", "m"], categories=["s", "m", "l"], ordered=True),
+    }
+)
+
+
+def keep(predicate, frame=TIMES):
+    return Selection((predicate,)).filter(frame)
+
+
+def test_naive_bounds_are_read_as_utc_on_a_tz_aware_column():
+    frame = TIMES.assign(when=TIMES.when.dt.tz_localize("UTC").dt.tz_convert("America/New_York"))
+    kept = keep(
+        Predicate(
+            "when", "range", (dt.datetime(2025, 1, 2), dt.datetime(2025, 1, 3)), closed="left"
+        ),
+        frame,
+    )
+    assert kept.index.tolist() == [1]
+
+
+def test_date_bounds_on_a_datetime_column():
+    kept = keep(
+        Predicate("when", "range", (dt.date(2025, 1, 2), dt.date(2025, 1, 4)), closed="left")
+    )
+    assert kept.index.tolist() == [1, 2]
+
+
+@pytest.mark.parametrize(
+    "bound", [np.datetime64("2025-01-02T00:00:00", "us"), np.datetime64("2025-01-02", "ns")]
+)
+def test_numpy_datetime_bounds(bound):
+    assert keep(Predicate("when", "range", (bound, None))).index.tolist() == [1, 2, 3]
+
+
+def test_missing_values_are_left_out():
+    assert keep(Predicate("price", "range", (0, 10))).index.tolist() == [0, 2, 3]
+    assert keep(Predicate("price", "in", (1.0, 3.0))).index.tolist() == [0, 2]
+
+
+def test_ranges_on_categories():
+    assert keep(Predicate("size", "range", ("m", "l"))).index.tolist() == [1, 2, 3]
+    assert keep(Predicate("kind", "in", ("a",))).index.tolist() == [0, 2]
+    with pytest.raises(ValueError, match="unordered categories"):
+        keep(Predicate("kind", "range", ("a", "b")))
+
+
+def test_values_that_cannot_be_compared_name_the_field_and_type():
+    with pytest.raises(
+        ValueError, match="'price' cannot be compared with the column's values of type float64"
+    ):
+        keep(Predicate("price", "range", ("a", "b")))
+
+
+def test_tile_shows_why_a_selection_cannot_filter():
+    lasso = from_holoviews(type("Lasso", (), {})(), None)
+    instance = SelectionFilter(data=FRAME, selection=lasso)
+    assert "lasso" in instance._summary()
+    tz = TIMES.assign(when=TIMES.when.dt.tz_localize("UTC"))
+    instance = SelectionFilter(
+        data=tz, selection=Selection((Predicate("price", "range", ("a", "b")),))
+    )
+    assert "cannot be compared" in instance._summary()
+
+
+@pytest.mark.parametrize(
+    "value, kind",
+    [
+        (np.datetime64("2025-01-02T03:04:05", "us"), "datetime"),
+        (np.datetime64("2025-01-02T03:04:05", "ns"), "datetime"),
+        (pd.Timestamp("2025-01-02 03:04:05"), "datetime"),
+        (pd.Timestamp("2025-01-02 03:04:05", tz="UTC"), "datetime"),
+        (dt.datetime(2025, 1, 2, 3, 4, 5), "datetime"),
+        (dt.date(2025, 1, 2), "date"),
+        (np.datetime64("NaT", "ns"), None),
+        (np.float64(1.5), None),
+    ],
+)
+def test_dict_is_json_safe_for_every_temporal_type(value, kind):
+    data = Predicate("x", "in", (value,)).to_dict()
+    restored = Predicate.from_dict(json.loads(json.dumps(data)))
+    assert data.get("types", [None]) == [kind]
+    if kind is None:
+        assert restored.values == ((None,) if isinstance(value, np.datetime64) else (1.5,))
+    else:
+        assert pd.Timestamp(restored.values[0]) == pd.Timestamp(value)
+
+
+def test_temporal_bounds_are_shown_to_the_second():
+    predicate = Predicate(
+        "when",
+        "range",
+        (pd.Timestamp("2025-02-01"), dt.datetime(2025, 3, 1, 12, 30, 15, 999)),
+        closed="left",
+    )
+    assert str(predicate) == "2025-02-01 <= when < 2025-03-01 12:30:15"

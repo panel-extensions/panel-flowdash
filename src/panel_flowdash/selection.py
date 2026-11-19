@@ -25,6 +25,7 @@ import typing as t
 import weakref
 from dataclasses import dataclass
 
+import numpy as np
 import pandas as pd
 import panel as pn
 import param
@@ -48,7 +49,7 @@ COALESCE_MAX = 200
 
 
 def _temporal_kind(value: t.Any) -> str | None:
-    if isinstance(value, (dt.datetime, pd.Timestamp)):
+    if isinstance(value, (dt.datetime, pd.Timestamp, np.datetime64)):
         return "datetime"
     if isinstance(value, dt.date):
         return "date"
@@ -56,7 +57,14 @@ def _temporal_kind(value: t.Any) -> str | None:
 
 
 def _as_datetime(value: t.Any) -> t.Any:
-    return value.to_pydatetime() if isinstance(value, pd.Timestamp) else value
+    """Return a numpy or pandas datetime as a Python one; NaT as None."""
+    if isinstance(value, np.datetime64):
+        value = pd.Timestamp(value)
+    if value is pd.NaT:
+        return None
+    if isinstance(value, pd.Timestamp):
+        return value.to_pydatetime(warn=False)
+    return value
 
 
 def _plain(value: t.Any) -> t.Any:
@@ -70,6 +78,33 @@ def _parse_temporal(value: t.Any, kind: str | None) -> t.Any:
         return dt.datetime.fromisoformat(value)
     if kind == "date" and isinstance(value, str):
         return dt.date.fromisoformat(value)
+    return value
+
+
+def _short(value: t.Any) -> str:
+    if _temporal_kind(value) == "datetime":
+        stamp = pd.Timestamp(value)
+        if pd.isna(stamp):
+            return "NaT"
+        if stamp == stamp.normalize():
+            return stamp.strftime("%Y-%m-%d")
+        return stamp.strftime("%Y-%m-%d %H:%M:%S")
+    return str(value)
+
+
+def _comparable(value: t.Any, column: pd.Series) -> t.Any:
+    """Return *value* as a value of *column*'s type where they are temporal."""
+    if value is None or not pd.api.types.is_datetime64_any_dtype(column.dtype):
+        return value
+    if isinstance(value, (dt.date, np.datetime64)) and not pd.isna(value):
+        stamp = pd.Timestamp(value)
+        zone = getattr(column.dtype, "tz", None)
+        if zone is not None:
+            stamp = stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp
+            stamp = stamp.tz_convert(zone)
+        elif stamp.tzinfo is not None:
+            stamp = stamp.tz_convert("UTC").tz_localize(None)
+        return stamp
     return value
 
 
@@ -101,11 +136,22 @@ class Predicate:
             raise ValueError(f"A range predicate takes (start, end), got {self.values!r}.")
 
     def mask(self, frame: pd.DataFrame) -> pd.Series:
-        """Return which rows of *frame* match."""
+        """Return which rows of *frame* match.
+
+        Bounds and values are made comparable with the column: on a datetime
+        column dates become midnights, and naive datetimes, which charts
+        report in UTC, are converted to the column's timezone. A range on an
+        unordered categorical column raises ``ValueError``.
+        """
         column = frame[self.field]
         if self.op == "in":
-            return column.isin(self.values)
-        start, end = self.values
+            return column.isin([_comparable(v, column) for v in self.values])
+        if isinstance(column.dtype, pd.CategoricalDtype) and not column.dtype.ordered:
+            raise ValueError(
+                f"The column {self.field!r} holds unordered categories, so it has no range to "
+                "select; select its values instead."
+            )
+        start, end = (_comparable(v, column) for v in self.values)
         keep = pd.Series(True, index=frame.index)
         if start is not None:
             keep &= column >= start
@@ -123,7 +169,11 @@ class Predicate:
         for value in self.values:
             kind = _temporal_kind(value)
             types.append(kind)
-            values.append(_plain(value) if kind is None else _as_datetime(value).isoformat())
+            if kind is not None:
+                value = _as_datetime(value)
+                kind = None if value is None else kind
+            types[-1] = kind
+            values.append(_plain(value) if kind is None else value.isoformat())
         data = {"field": self.field, "op": self.op, "values": values, "closed": self.closed}
         if any(types):
             data["types"] = types
@@ -139,10 +189,13 @@ class Predicate:
         return cls(data["field"], data["op"], values, data.get("closed", "both"))
 
     def __str__(self) -> str:
-        """Describe the predicate, e.g. ``category in [A, B]`` or ``10 <= price < 20``."""
+        """Describe the predicate, e.g. ``category in [A, B]`` or ``10 <= price < 20``.
+
+        Datetimes are shown to the second, and as dates when they are midnights.
+        """
         if self.op == "in":
-            return f"{self.field} in [{', '.join(map(str, self.values))}]"
-        start, end = self.values
+            return f"{self.field} in [{', '.join(map(_short, self.values))}]"
+        start, end = (None if v is None else _short(v) for v in self.values)
         upper = "<" if self.closed == "left" else "<="
         if start is None:
             return f"{self.field} {upper} {end}"
@@ -209,7 +262,13 @@ class Selection:
             return frame
         keep = pd.Series(True, index=frame.index)
         for predicate in self.predicates:
-            keep &= predicate.mask(frame)
+            try:
+                keep &= predicate.mask(frame)
+            except TypeError as exc:
+                raise ValueError(
+                    f"The selection on {predicate.field!r} cannot be compared with the column's "
+                    f"values of type {frame[predicate.field].dtype}: {exc}"
+                ) from exc
         return frame[keep]
 
     def to_dict(self) -> dict[str, t.Any]:
@@ -945,7 +1004,7 @@ class SelectionFilter(Viewer):
             return f"All {total:,} rows"
         try:
             kept = len(self.selection.filter(self.data))
-        except ValueError as exc:
+        except (ValueError, TypeError) as exc:
             return str(exc)
         return f"{kept:,} of {total:,} rows: {self.selection}"
 

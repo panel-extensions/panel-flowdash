@@ -53,6 +53,10 @@ How to work:
   one edge unless it accepts a list.
 - After changing the dataflow, run preview_dashboard and fix nodes that failed
   or still wait for input.
+- To let a brush or click on a chart filter other views, feed the chart the
+  unfiltered data and connect its `selection` output to a Filter by selection
+  node on the same data; feed the other views from that node, never the chart
+  itself.
 """
 
 _SAVING = """\
