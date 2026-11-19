@@ -26,81 +26,24 @@ pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference alrea
 
 
 def _report(apps):
-    """Print what the agent session did, for a run that never answered."""
+    """Write what the agent session did and where every thread is, for a run that never answered."""
     import threading
     import traceback
 
+    lines = []
     for app in apps:
         session = app._agent_session
         runner = session.runner if session is not None else None
-        sys.stdout.write(
-            " ".join(
-                map(
-                    str,
-                    (
-                        "session",
-                        session,
-                        "running",
-                        getattr(runner, "running", None),
-                    ),
-                )
-            )
-            + "\n"
-        )
+        lines.append(f"session {session} running {getattr(runner, 'running', None)}")
         if runner is not None:
-            for event in runner.state.events[-15:]:
-                sys.stdout.write(
-                    " ".join(
-                        map(
-                            str,
-                            (
-                                "event",
-                                type(event).__name__,
-                                getattr(event, "run_id", None),
-                            ),
-                        )
-                    )
-                    + "\n"
-                )
-            sys.stdout.write(
-                " ".join(
-                    map(
-                        str,
-                        (
-                            "task",
-                            getattr(runner, "_task", None),
-                        ),
-                    )
-                )
-                + "\n"
-            )
-    for thread in threading.enumerate():
-        sys.stdout.write(
-            " ".join(
-                map(
-                    str,
-                    (
-                        "thread",
-                        thread.name,
-                    ),
-                )
-            )
-            + "\n"
-        )
+            lines += [
+                f"event {type(e).__name__} {getattr(e, 'run_id', None)}"
+                for e in runner.state.events[-15:]
+            ]
+    lines += [f"thread {thread.name}" for thread in threading.enumerate()]
     for tid, frame in sys._current_frames().items():
-        sys.stdout.write(
-            " ".join(
-                map(
-                    str,
-                    (
-                        "stack",
-                        tid,
-                        "".join(traceback.format_stack(frame)[-6:]),
-                    ),
-                )
-            )
-            + "\n"
-        )
+        lines.append(f"stack {tid}\n" + "".join(traceback.format_stack(frame)[-8:]))
+    sys.stdout.write("\n".join(lines) + "\n")
 
 
 def _ask_for_a_note(page):
