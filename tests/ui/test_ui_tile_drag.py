@@ -227,6 +227,8 @@ def test_tiles_keep_their_sizes_when_one_moves_to_the_top_bar(page):
     wait_until(lambda: tile_sizes_match(page, editor), page, timeout=8000)
     # The KPI leads the grid, so its removal shifts every tile after it.
     editor._layout_panel.tile_select.value = "kpi"
+    # The panel's buttons are rebuilt for the selected tile; a slow browser may still show the old ones.
+    page.wait_for_timeout(1500)
     page.get_by_text("Move to top bar").first.click()
     wait_until(lambda: _areas(editor)[TOP] == ["region", "kpi"], page, timeout=8000)
     page.wait_for_timeout(500)

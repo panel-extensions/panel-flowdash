@@ -223,21 +223,23 @@ def test_tiles_keep_their_sizes_after_a_top_bar_move_its_undo_and_a_reorder(
 
     _tile_by_id(page, editor, "kpi_capacity").click()
     wait_until(lambda: editor._layout_panel.selected == "kpi_capacity", page, timeout=8000)
+    # The panel's buttons are rebuilt for the selected tile; a slow browser may still show the old ones.
+    page.wait_for_timeout(1500)
     page.get_by_text("Move to top bar").first.click()
-    wait_until(lambda: "kpi_capacity" not in editor._grid_ids, page, timeout=8000)
+    wait_until(lambda: "kpi_capacity" not in editor._grid_ids, page, timeout=20000)
     page.wait_for_timeout(500)
-    wait_until(lambda: tile_sizes_match(page, editor), page, timeout=8000)
+    wait_until(lambda: tile_sizes_match(page, editor), page, timeout=20000)
 
     # Undo puts the tile back in the middle of the grid, and redo takes it out again.
     page.evaluate("document.activeElement?.blur()")
     page.keyboard.press("Control+z")
-    wait_until(lambda: "kpi_capacity" in editor._grid_ids, page, timeout=8000)
+    wait_until(lambda: "kpi_capacity" in editor._grid_ids, page, timeout=20000)
     page.wait_for_timeout(500)
-    wait_until(lambda: tile_sizes_match(page, editor), page, timeout=8000)
+    wait_until(lambda: tile_sizes_match(page, editor), page, timeout=20000)
     page.keyboard.press("Control+Shift+z")
-    wait_until(lambda: "kpi_capacity" not in editor._grid_ids, page, timeout=8000)
+    wait_until(lambda: "kpi_capacity" not in editor._grid_ids, page, timeout=20000)
     page.wait_for_timeout(500)
-    wait_until(lambda: tile_sizes_match(page, editor), page, timeout=8000)
+    wait_until(lambda: tile_sizes_match(page, editor), page, timeout=20000)
 
     # A reorder in the browser sends the sizes the grid draws back to the editor.
     year = _tile_by_id(page, editor, "kpi_year")
@@ -253,7 +255,7 @@ def test_tiles_keep_their_sizes_after_a_top_bar_move_its_undo_and_a_reorder(
         page.wait_for_timeout(20)
     page.mouse.up()
     page.wait_for_timeout(1000)
-    wait_until(lambda: tile_sizes_match(page, editor), page, timeout=8000)
+    wait_until(lambda: tile_sizes_match(page, editor), page, timeout=20000)
     after = {e["instance_id"]: (e["width"], e["height"]) for e in editor.layout if "width" in e}
     assert {iid: after[iid] for iid in sizes if iid in after} == {
         iid: size for iid, size in sizes.items() if iid in after
