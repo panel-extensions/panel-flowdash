@@ -399,7 +399,7 @@ class LayoutPanel(Viewer):
         item = next(i for i in self.editor._tile_items if i["instance_id"] == self.selected)
         self._tile_actions[:] = [
             self.hide_button,
-            *move_buttons(self.editor, item, margin=(4, 0, 0, 0)),
+            *move_buttons(self.editor, item, then=self.tile_select.focus, margin=(4, 0, 0, 0)),
         ]
 
     def _spec(self, instance_id: str):
@@ -451,7 +451,9 @@ class LayoutPanel(Viewer):
             item = next(
                 i for i in self.editor._tile_items if i["instance_id"] == entry.instance_id
             )
-            objects += move_buttons(self.editor, item, areas=[GRID], margin=0)
+            objects += move_buttons(
+                self.editor, item, areas=[GRID], then=self.tile_select.focus, margin=0
+            )
         return pmui.Paper(
             pn.Row(*objects, margin=0, sizing_mode="stretch_width", align="center"),
             variant="outlined",

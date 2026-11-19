@@ -71,3 +71,43 @@ def stable_box(locator, page=None, timeout=8000):
 def center(box):
     """The center point of a bounding box."""
     return box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+
+
+# The width and height each tile on the grid is drawn at, by the key class of its tile.
+_DRAWN_SIZES = """() => {
+  const out = {}
+  const walk = (root) => root.querySelectorAll("*").forEach((el) => {
+    if (el.classList?.contains("muuri-grid-item")) {
+      const tile = el.querySelector('[class*="flowdash-tile-key-"]')
+      const key = tile && [...tile.classList].find((c) => c.startsWith("flowdash-tile-key-"))
+      if (key) out[key] = [parseFloat(el.getAttribute("data-width")), parseFloat(el.style.height)]
+    }
+    if (el.shadowRoot) walk(el.shadowRoot)
+  })
+  walk(document)
+  return out
+}"""
+
+
+def tile_sizes_match(page, editor):
+    """Whether every tile is drawn at the width and height its layout entry gives it."""
+    keys = {
+        next(c for c in tile.css_classes if c.startswith("flowdash-tile-key-")): iid
+        for iid, tile in editor._inspect_tiles.items()
+        if iid in editor._grid_ids
+    }
+    # What the grid was told to draw, one entry per tile in its order.
+    entries = dict(zip(editor._grid_ids, editor._tile_grid.layout, strict=False))
+    drawn = page.evaluate(_DRAWN_SIZES)
+    shown = [
+        k
+        for k, iid in keys.items()
+        if entries.get(iid, {}).get("visible", True) and {"width", "height"} <= entries[iid].keys()
+    ]
+    if not shown or any(k not in drawn for k in shown):
+        return False
+    return all(
+        abs(drawn[k][0] - entries[keys[k]]["width"]) < 0.01
+        and abs(drawn[k][1] - entries[keys[k]]["height"]) < 0.5
+        for k in shown
+    )

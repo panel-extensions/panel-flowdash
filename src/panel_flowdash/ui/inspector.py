@@ -129,6 +129,8 @@ class Inspector(Viewer):
         self._config_status: tuple[str, str] | None = None
         self._data_column: pn.Column | None = None
         self._inputs_column: pn.Column | None = None
+        # The Move to buttons of the shown Tile tab.
+        self._tile_move_buttons: list = []
         self._refresh_inputs: t.Callable[[], None] = lambda: None
         # The latest config check started per node, see ConfigDraft.
         self._check_runs: dict[str, int] = {}
@@ -770,7 +772,15 @@ class Inspector(Viewer):
         self, instance_id: str, item: dict, spec: ComponentSpec, area: str | None, releases: list
     ) -> list[Viewable]:
         editor = self.editor
-        moves = move_buttons(editor, item, margin=(12, 8, 0, 0))
+
+        def refocus():
+            # The pressed button went with the rebuilt tab; the first move left takes the focus.
+            button = next(iter(self._tile_move_buttons), None)
+            if button is not None:
+                button.focus()
+
+        moves = move_buttons(editor, item, then=refocus, margin=(12, 8, 0, 0))
+        self._tile_move_buttons = moves
         if area != GRID:
             where = AREA_NAMES.get(area, "sidebar")
             return [

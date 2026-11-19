@@ -7,7 +7,7 @@ of a hidden grid until it is shown again.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 import panel_material_ui as pmui
@@ -197,6 +197,11 @@ def fits_beside(editor, item: dict) -> bool:
 
 def refusal(editor, item: dict, area: str) -> str:
     """Explain why a component that does not fit beside the grid cannot go to *area*."""
+    if "placeholder" in item:
+        return (
+            f"{tile_title(editor, item)} is not available to you, so it stays where it is "
+            "for those who can use it."
+        )
     return (
         f"{tile_title(editor, item)} needs the room of a tile; only controls, KPIs "
         f"and text fit in the {AREA_NAMES[area]}."
@@ -294,11 +299,17 @@ def move_targets(editor, item: dict) -> list[str]:
 
 
 def move_buttons(
-    editor, item: dict, areas: Iterable[str] | None = None, **params
+    editor,
+    item: dict,
+    areas: Iterable[str] | None = None,
+    then: Callable[[], None] | None = None,
+    **params,
 ) -> list[pmui.Button]:
     """Return a "Move to ..." button for each area the component can be moved to, of *areas* if given.
 
-    They do what dragging the component there does, for keyboards and screen readers.
+    They do what dragging the component there does, for keyboards and screen
+    readers. *then* is called after a move, e.g. to put the focus back on the
+    rebuilt panel, since the button pressed goes away with the move.
     """
     buttons = []
     for area in move_targets(editor, item):
@@ -313,7 +324,13 @@ def move_buttons(
             sx={"textTransform": "none"},
             **params,
         )
-        button.on_click(lambda _event, area=area: move_to_area(editor, item["instance_id"], area))
+
+        def move(_event, area=area):
+            move_to_area(editor, item["instance_id"], area)
+            if then is not None:
+                then()
+
+        button.on_click(move)
         buttons.append(button)
     return buttons
 

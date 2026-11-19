@@ -9,7 +9,7 @@ from panel_flowdash import FlowDash, register
 from panel_flowdash.dashboard_store import MemoryDashboardStore
 from panel_flowdash.ui.tile_layout import GRID, SIDEBAR, TOP, area_items
 
-from .util import center, serve_component, stable_box
+from .util import center, serve_component, stable_box, tile_sizes_match
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect
@@ -209,3 +209,17 @@ def test_a_drag_off_the_grid_is_one_version(page):
     assert len(editor.edit_history.versions) == versions + 1
     move = {"op": "layout", "args": {"name": "heading", "area": SIDEBAR}}
     assert move in editor.edit_history.versions[-1].metadata["ops"]
+
+
+def test_tiles_keep_their_sizes_when_one_moves_to_the_top_bar(page):
+    page.set_viewport_size({"width": 1400, "height": 900})
+    editor = _editor()
+    editor.add_component("Widgets/Select", instance_id="select")
+    serve_component(page, editor)
+    wait_until(lambda: tile_sizes_match(page, editor), page, timeout=8000)
+    # The KPI leads the grid, so its removal shifts every tile after it.
+    editor._layout_panel.tile_select.value = "kpi"
+    page.get_by_text("Move to top bar").first.click()
+    wait_until(lambda: _areas(editor)[TOP] == ["region", "kpi"], page, timeout=8000)
+    page.wait_for_timeout(500)
+    wait_until(lambda: tile_sizes_match(page, editor), page, timeout=8000)

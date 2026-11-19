@@ -6,13 +6,14 @@ import sys
 from pathlib import Path
 
 import pytest
+from panel.tests.util import wait_until
 
 from panel_flowdash import MemoryDashboardStore
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.auth import resolve_identity
 from panel_flowdash.registry import build_registry
 
-from .util import serve_component, stable_box
+from .util import serve_component, stable_box, tile_sizes_match
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect
@@ -183,3 +184,66 @@ def test_palette_hint_never_covers_an_entry(page, serve_example, height, query):
     # Within a pixel, as scrolling to the end lands on a fractional offset.
     assert box["y"] >= region["y"] - 1
     assert box["y"] + box["height"] <= min(region["y"] + region["height"], hint["y"]) + 1
+
+
+def _tile_by_id(page, editor, instance_id):
+    key = next(
+        c
+        for c in editor._inspect_tiles[instance_id].css_classes
+        if c.startswith("flowdash-tile-key-")
+    )
+    return page.locator(".muuri-grid-item").filter(has=page.locator(f".{key}"))
+
+
+def test_tiles_keep_their_sizes_after_a_move_to_the_top_bar_and_a_reorder(
+    page, serve_example, monkeypatch
+):
+    apps = []
+    init = FlowDashApp.__init__
+
+    def remember(self, *args, **kwargs):
+        init(self, *args, **kwargs)
+        apps.append(self)
+
+    monkeypatch.setattr(FlowDashApp, "__init__", remember)
+    page.set_viewport_size({"width": 1600, "height": 1000})
+    serve_example("wind-overview")
+    editor = apps[0]._editor
+    page.get_by_role("button", name="Edit", exact=True).click(timeout=EXAMPLE_LOAD_TIMEOUT)
+    wait_until(lambda: editor.editable, page, timeout=8000)
+    page.get_by_role("button", name="Layout").click()
+    wait_until(
+        lambda: editor.mode == "dashboard" and editor._tile_grid.editable, page, timeout=8000
+    )
+    expect(page.locator(".muuri-grid-item").filter(visible=True).first).to_be_visible(
+        timeout=EXAMPLE_LOAD_TIMEOUT
+    )
+    sizes = {e["instance_id"]: (e["width"], e["height"]) for e in editor.layout if "width" in e}
+    wait_until(lambda: tile_sizes_match(page, editor), page, timeout=EXAMPLE_LOAD_TIMEOUT)
+
+    _tile_by_id(page, editor, "kpi_capacity").click()
+    wait_until(lambda: editor._layout_panel.selected == "kpi_capacity", page, timeout=8000)
+    page.get_by_text("Move to top bar").first.click()
+    wait_until(lambda: "kpi_capacity" not in editor._grid_ids, page, timeout=8000)
+    page.wait_for_timeout(500)
+    wait_until(lambda: tile_sizes_match(page, editor), page, timeout=8000)
+
+    # A reorder in the browser sends the sizes the grid draws back to the editor.
+    year = _tile_by_id(page, editor, "kpi_year")
+    year.hover()
+    handle = stable_box(year.locator(".muuri-handle.drag"), page)
+    first = stable_box(page.locator(".muuri-grid-item").filter(visible=True).first, page)
+    page.mouse.move(handle["x"] + 4, handle["y"] + 4)
+    page.mouse.down()
+    for k in range(1, 21):
+        x = handle["x"] + (first["x"] + 10 - handle["x"]) * k / 20
+        y = handle["y"] + (first["y"] + 20 - handle["y"]) * k / 20
+        page.mouse.move(x, y)
+        page.wait_for_timeout(20)
+    page.mouse.up()
+    page.wait_for_timeout(1000)
+    wait_until(lambda: tile_sizes_match(page, editor), page, timeout=8000)
+    after = {e["instance_id"]: (e["width"], e["height"]) for e in editor.layout if "width" in e}
+    assert {iid: after[iid] for iid in sizes if iid in after} == {
+        iid: size for iid, size in sizes.items() if iid in after
+    }

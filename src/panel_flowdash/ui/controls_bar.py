@@ -128,6 +128,19 @@ _HANDLE_CSS = """
 """
 
 
+# While tiles are arranged the top bar stays in view as the grid scrolls, so a
+# tile dragged down a long dashboard, which scrolls it, can still be dropped there.
+_STICKY = "fd-controls-sticky"
+_STICKY_CSS = """
+:host(.fd-controls-sticky) {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--mui-palette-background-default, #fff);
+}
+"""
+
+
 class ControlsBar(Viewer):
     """The views of the components shown beside the tiles: a top bar and a sidebar.
 
@@ -198,21 +211,16 @@ class ControlsBar(Viewer):
             sizing_mode="stretch_width",
             visible=False,
             css_classes=["fd-controls-bar", f"fd-area-top-{self._uid}"],
+            stylesheets=[_STICKY_CSS],
         )
         self._hide = pmui.IconButton(
-            icon="chevron_left", description="Hide controls", size="small", margin=0
+            icon="chevron_left", description="Hide sidebar", size="small", margin=0
         )
         self._hide.on_click(lambda _event: setattr(self, "collapsed", True))
         self._show = pmui.IconButton(
-            icon="tune", description="Show controls", size="small", margin=0
+            icon="tune", description="Show sidebar", size="small", margin=0
         )
         self._show.on_click(lambda _event: setattr(self, "collapsed", False))
-        self._heading = pmui.Typography(
-            "Controls",
-            variant="overline",
-            margin=0,
-            sx={"color": "text.secondary", "letterSpacing": "0.08em", "lineHeight": 2},
-        )
         panel_sx = {
             "borderRadius": 0,
             "borderRight": 1,
@@ -225,7 +233,8 @@ class ControlsBar(Viewer):
             "flexShrink": 0,
         }
         self._panel = pmui.Paper(
-            pn.Row(self._heading, pn.HSpacer(), self._hide, margin=0, align="center"),
+            # No heading: what the sidebar holds can be any control, KPI or text.
+            pn.Row(pn.HSpacer(), self._hide, margin=0, align="center"),
             margin=0,
             elevation=0,
             width=_PANEL_WIDTH,
@@ -246,7 +255,8 @@ class ControlsBar(Viewer):
             sx={**panel_sx, "alignItems": "center"},
         )
         # Built once: a new Row on every layout would re-render the grid and all its tiles.
-        self._grid_slot = pn.Column(margin=0, sizing_mode="stretch_both")
+        # The grid scrolls beside the sidebar, which so stays in view.
+        self._grid_slot = pn.Column(margin=0, sizing_mode="stretch_both", scroll="y-auto")
         self._left_row = pn.Row(
             self._panel, self._strip, self._grid_slot, margin=0, sizing_mode="stretch_both"
         )
@@ -337,6 +347,8 @@ class ControlsBar(Viewer):
         if list(self._controls) != top:
             self._controls[:] = top
         self._row.visible = bool(top)
+        classes = [c for c in self._row.css_classes if c != _STICKY]
+        self._row.css_classes = [*classes, _STICKY] if self.editing else classes
         body = side if not self.collapsed else []
         if list(self._panel)[1:] != body:
             self._panel[1:] = body

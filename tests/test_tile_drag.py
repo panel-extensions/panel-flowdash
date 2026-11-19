@@ -409,3 +409,41 @@ class TestAutoLayout:
         assert _areas(editor)[SIDEBAR] == ["kpi"]
         assert _areas(editor)[TOP] == ["region", "select"]
         assert "kpi2" in _areas(editor)[GRID]
+
+
+class TestPlaceholders:
+    def test_a_placeholder_keeps_its_area_when_saved(self):
+        store = MemoryDashboardStore()
+        model = DashboardModel(
+            dashboard_id="d1",
+            user_id="alice",
+            title="Areas",
+            items=[
+                DashboardItem(instance_id="r", component_id="T/region"),
+                DashboardItem(instance_id="c", component_id="T/chart"),
+            ],
+            tile_layout=[
+                {"instance_id": "c", "index": 0},
+                {"instance_id": "r", "index": 1, "area": "sidebar"},
+            ],
+        )
+        store.save_dashboard(model)
+        editor = _editor(
+            store=store,
+            user="alice",
+            authorize_component=lambda entry: entry.app_id != "T/region",
+        )
+        editor.load("d1")
+        editor.mode = "dashboard"
+        assert "r" in editor._placeholders()
+        assert "r" in editor._grid_ids
+        assert move_targets(editor, _item(editor, "r")) == []
+        editor.add_component("Widgets/KPI", instance_id="kpi")
+        editor.save()
+        saved = {e["instance_id"]: e for e in store._load_any("d1").tile_layout}
+        assert saved["r"]["area"] == "sidebar"
+
+        other = _editor(store=store, user="alice")
+        other.load("d1")
+        other.mode = "dashboard"
+        assert _areas(other)[SIDEBAR] == ["r"]

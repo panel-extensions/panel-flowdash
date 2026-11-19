@@ -32,10 +32,28 @@ function keyOf(el, prefix) {
   return cls ? cls.slice(prefix.length) : null
 }
 
-function visibleRect(rect) {
-  const top = Math.max(rect.top, 0)
-  const bottom = Math.min(rect.bottom, window.innerHeight)
-  return {left: rect.left, right: rect.right, top, bottom, width: rect.width, height: bottom - top}
+// The elements around *el* that scroll, across shadow roots, nearest first.
+function scrollers(el) {
+  const found = []
+  for (let node = el; node; node = node.parentNode ?? node.host) {
+    if (node.nodeType === Node.ELEMENT_NODE && /auto|scroll/.test(getComputedStyle(node).overflowY)) {
+      found.push(node)
+    }
+  }
+  return found
+}
+
+// The part of *rect* that is on screen, inside the elements that scroll it.
+function visibleRect(rect, clips) {
+  let {left, right, top, bottom} = rect
+  top = Math.max(top, 0)
+  bottom = Math.min(bottom, window.innerHeight)
+  for (const clip of clips) {
+    const r = clip.getBoundingClientRect()
+    top = Math.max(top, r.top)
+    bottom = Math.min(bottom, r.bottom)
+  }
+  return {left, right, top, bottom, width: right - left, height: bottom - top}
 }
 
 function box(rect, styles) {
@@ -54,16 +72,46 @@ export function render({model}) {
   const primary = "var(--mui-palette-primary-main, #1976d2)"
   const muted = "var(--mui-palette-text-disabled, #9e9e9e)"
 
-  function grid() {
-    return collect(document, hasClass(model.grid)).find(shown) ?? null
+  // The page's targets are found once per drag, since walking every shadow
+  // root on each pointer move would be slow on a large dashboard.
+  function findTargets() {
+    const areaClasses = Object.fromEntries(model.areas.map(a => [`fd-area-${a}-${model.uid}`, a]))
+    const found = {grid: null, areas: Object.fromEntries(model.areas.map(a => [a, []]))}
+    collect(document, el => {
+      if (!el.classList?.length) { return false }
+      if (el.classList.contains(model.grid) && shown(el)) { found.grid ??= el }
+      for (const cls of el.classList) {
+        if (cls in areaClasses) { found.areas[areaClasses[cls]].push(el) }
+      }
+      return false
+    })
+    found.clips = found.grid ? scrollers(found.grid.parentNode ?? found.grid.host) : []
+    found.controls = new Map()
+    for (const els of Object.values(found.areas)) {
+      for (const el of els) {
+        found.controls.set(el, collect(el.shadowRoot ?? el, hasClass(`fd-control-${model.uid}`))
+          .map(c => ({el: c, id: model.controls[keyOf(c, "fd-key-")]?.id}))
+          .filter(c => c.id && c.id !== drag.id))
+      }
+    }
+    found.tiles = []
+    if (found.grid) {
+      for (const item of collect(found.grid.shadowRoot ?? found.grid, hasClass("muuri-grid-item"))) {
+        const tile = item.querySelector(`[class*="${TILE_KEY_PREFIX}"]`)
+        const id = tile ? model.tiles[keyOf(tile, TILE_KEY_PREFIX)]?.id : null
+        if (id) { found.tiles.push({el: item, id}) }
+      }
+    }
+    return found
   }
 
   function zones() {
     const zones = []
-    const gridEl = grid()
-    const gridRect = gridEl ? visibleRect(gridEl.getBoundingClientRect()) : null
+    const found = drag.found
+    const gridEl = found.grid
+    const gridRect = gridEl ? visibleRect(gridEl.getBoundingClientRect(), found.clips) : null
     for (const area of model.areas) {
-      const el = collect(document, hasClass(`fd-area-${area}-${model.uid}`)).find(shown)
+      const el = found.areas[area].find(shown)
       if (el) {
         zones.push({area, el, rect: el.getBoundingClientRect(), empty: false})
       } else if (gridRect) {
@@ -80,30 +128,20 @@ export function render({model}) {
   }
 
   function controlsIn(zone) {
-    if (!zone.el) { return [] }
-    return collect(zone.el.shadowRoot ?? zone.el, hasClass(`fd-control-${model.uid}`))
-      .filter(shown)
-      .map(el => ({el, id: model.controls[keyOf(el, "fd-key-")]?.id}))
-      .filter(c => c.id && c.id !== drag.id)
+    return (drag.found.controls.get(zone.el) ?? []).filter(c => shown(c.el))
   }
 
-  function tilesIn(zone) {
-    const items = collect(zone.el.shadowRoot ?? zone.el, hasClass("muuri-grid-item")).filter(shown)
-    const tiles = []
-    for (const item of items) {
-      const tile = item.querySelector(`[class*="${TILE_KEY_PREFIX}"]`)
-      const id = tile ? model.tiles[keyOf(tile, TILE_KEY_PREFIX)]?.id : null
-      if (id) { tiles.push({el: item, id}) }
-    }
-    const rows = el => el.getBoundingClientRect()
-    return tiles.sort((a, b) => (rows(a.el).top - rows(b.el).top) || (rows(a.el).left - rows(b.el).left))
+  function tilesIn() {
+    const tiles = drag.found.tiles.filter(t => shown(t.el))
+    const rect = el => el.getBoundingClientRect()
+    return tiles.sort((a, b) => (rect(a.el).top - rect(b.el).top) || (rect(a.el).left - rect(b.el).left))
   }
 
   // The component the drop goes in front of, and a marker showing where.
   function insertion(zone, x, y) {
     if (zone.empty) { return {before: null, marker: null} }
     const vertical = zone.area === "sidebar"
-    const members = zone.area === "grid" ? tilesIn(zone) : controlsIn(zone)
+    const members = zone.area === "grid" ? tilesIn() : controlsIn(zone)
     let last = null
     for (const member of members) {
       const r = member.el.getBoundingClientRect()
@@ -166,7 +204,7 @@ export function render({model}) {
       if (refused) {
         const hint = document.createElement("div")
         hint.className = "fd-tile-drag-hint"
-        hint.textContent = model.refusal
+        hint.textContent = drag.refusal || model.refusal
         Object.assign(hint.style, {
           position: "fixed", left: `${x + 14}px`, top: `${y + 14}px`, padding: "4px 10px",
           borderRadius: "4px", whiteSpace: "nowrap",
@@ -217,6 +255,7 @@ export function render({model}) {
       document.documentElement.style.cursor = "grabbing"
     }
     drag.started = true
+    drag.found = findTargets()
     paint(e.clientX, e.clientY)
   }
 
