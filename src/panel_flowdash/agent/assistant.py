@@ -41,16 +41,23 @@ the dashboard on other data or inputs. A parameter's `expects` is written by
 FlowDash; leave it as it is.
 
 How to work:
-- Start with get_dashboard to see the open dashboard, and list_components to
-  find components; use only component ids, ports and config fields that exist.
-- Make small changes with add_node, connect, set_config, place_tile and the
-  other operations. For larger rewrites write the whole YAML, check it with
-  validate_dashboard and load it with replace_dashboard.
+- Start with get_dashboard to see the open dashboard. Use only component ids,
+  ports and config fields that exist; to look components up, describe all
+  you need in one list_components call.
+- Build and change dashboards with add_node, connect, set_config, place_tile
+  and the other operations, and fix problems with them too. Write the whole
+  YAML (checked with validate_dashboard, loaded with replace_dashboard) only
+  to rewrite most of an existing dashboard, never just to set positions, the
+  layout or the title: those are automatic, and only the user can rename a
+  dashboard.
+- Make independent changes together, as parallel tool calls in one step: add
+  every node a request needs at once, then make all their connections at
+  once, then the remaining config changes, instead of one call per step.
 - Give every node you add a short descriptive name in snake_case, e.g.
   add_node("Views/kpi", name="total_revenue"), and use the same names in YAML
   you write, so nodes are easy to recognise and refer to.
 - Positions and tile layout are automatic: leave out `position` and `layout`
-  for new nodes. Add a source with the nodes it feeds, one group at a time.
+  for new nodes. Add a source together with the nodes it feeds.
   Give a dashboard with a single KPI a heading. Call arrange_canvas or
   arrange_layout only when asked to tidy up.
 - Group nodes on the canvas (group_nodes, or `groups` and a node's `group` in
@@ -161,7 +168,11 @@ def _describe_components(ops: DashboardOps, compact: bool, lookup: bool) -> str:
     if len(text) <= CATALOGUE_LIMIT and not compact:
         return text
     lines = [f"- {c['component']} ({c['title']})" for c in components]
-    hint = " (call list_components with a query for their ports and config)" if lookup else ""
+    hint = (
+        " (call list_components with their ids or a query for their ports and config)"
+        if lookup
+        else ""
+    )
     return f"Components you may place{hint}:\n" + "\n".join(lines)
 
 

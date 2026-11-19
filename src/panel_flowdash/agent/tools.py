@@ -442,13 +442,23 @@ def _text(value: t.Any) -> str:
 # --------------------------------------------------------------------------
 
 
-def list_components(ctx: RunContext[FlowDashDeps], query: str = "") -> str:
+def list_components(
+    ctx: RunContext[FlowDashDeps], query: str = "", components: list[str] | None = None
+) -> str:
     """List the components you may place, with their inputs, outputs and config fields.
 
     Args:
         query: Only list components matching all of these words, e.g. "map" or "table".
+        components: Only list these component ids, e.g. ["Views/kpi", "Views/map"],
+            to look up several components in one call.
     """
-    return _text(ctx.deps.ops.list_components(query))
+    listed = ctx.deps.ops.list_components(query)
+    if not components:
+        return _text(listed)
+    listed = [c for c in listed if c["component"] in components]
+    missing = sorted(set(components) - {c["component"] for c in listed})
+    text = _text(listed)
+    return text + (f"\nNo component {', '.join(missing)} you may place." if missing else "")
 
 
 def list_dashboards(ctx: RunContext[FlowDashDeps]) -> str:

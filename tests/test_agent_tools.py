@@ -287,6 +287,14 @@ async def test_a_request_publishes_one_applied_version_with_a_semantic_diff(ops)
     assert ops.editor.dirty and ops.editor.graph.edges
 
 
+async def test_list_components_describes_several_components_in_one_call(ops):
+    runner = _runner(ops, ("list_components", {"components": ["T/number", "T/doubler", "T/nope"]}))
+    output = await runner.run("What do these take?")
+    assert '"component": "T/number"' in output and '"component": "T/doubler"' in output
+    assert '"component": "T/scaled"' not in output
+    assert output.endswith("No component T/nope you may place.")
+
+
 async def test_mistakes_are_sent_back_for_the_model_to_fix(ops):
     runner = _runner(ops, ("add_node", {"component": "T/numbers"}))
     output = await runner.run("Add a number")

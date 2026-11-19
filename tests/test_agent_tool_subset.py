@@ -87,7 +87,7 @@ async def test_own_instructions_keep_the_revision_rule_only_with_replace_dashboa
 
 async def test_compact_catalogue_points_to_list_components_only_when_offered():
     offered = await _request(catalogue="compact", default_instructions=False)
-    assert "call list_components with a query" in offered["instructions"]
+    assert "call list_components with their ids or a query" in offered["instructions"]
     assert "out(" not in offered["instructions"]
     without = await _request(
         catalogue="compact", default_instructions=False, tools=["get_dashboard"]
