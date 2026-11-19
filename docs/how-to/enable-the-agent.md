@@ -155,6 +155,20 @@ The agent cannot undo or redo through the command palette; those commands are th
 user's. With `editor_options={"history": False}` each tool call publishes a version
 instead, and applying one that predates the user's own edits asks first.
 
+A node the agent added offers **How was this made?**, in its tile's More menu and as a
+button in the inspector when the node is selected. It opens a side sheet with the request
+that created the node: the question, every model call (model, tokens, the share read
+from the cache, duration and failed attempts) and tool call with its arguments and
+result, and the versions of the dashboard it published. The same view opens from the
+**Details** link under each answer in the chat and from **How was this made?** on a
+request in the version history. A node knows its request through its `origin` turn,
+which names the agent's run. The model and tool calls are kept in memory for the
+session that made them; after a reload, or in another session, the sheet shows what the
+dashboard file records instead: the question, when it was asked and what it changed.
+People who may only view the dashboard see which tools and models ran, with tokens and
+timings, but not the question, arguments, results, messages or errors. Set
+`editor_options={"provenance": False}` to leave the action out.
+
 Each request to the agent stays on the dashboard that was open when the user sent it:
 if the user opens another dashboard while the agent works, every further tool call
 and palette command of that request is refused, so the agent stops instead of

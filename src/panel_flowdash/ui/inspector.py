@@ -568,7 +568,22 @@ class Inspector(Viewer):
             margin=0,
             sx={"& .MuiTab-root": {"textTransform": "none", "minWidth": 0}},
         )
-        return [header, tabs, self._remove_button(instance_id)]
+        objects = [header, tabs, self._remove_button(instance_id)]
+        if editor.made_by_agent(instance_id):
+            objects.insert(1, self._how_made_button(instance_id))
+        return objects
+
+    def _how_made_button(self, instance_id: str) -> pmui.Button:
+        button = pmui.Button(
+            label="How was this made?",
+            icon="manage_search",
+            variant="text",
+            size="small",
+            margin=(0, 0, 8, 0),
+            sx={"textTransform": "none"},
+        )
+        button.on_click(lambda _event: self.editor.show_how_made(instance_id))
+        return button
 
     # Settings
 

@@ -120,13 +120,14 @@ class Tile(pn.Column):
 
     The title bar holds an optional title and subtitle, a status chip and
     the tile actions: Inspect, Expand (a full-screen dialog of the tile) and
-    a More menu with what has no button of its own (Show in editor), which
+    a More menu with what has no button of its own (Show in editor, How was
+    this made?), which
     is left out when it would be empty. :meth:`set_style` chooses whether
     the tile is a framed card and whether it shows its title. Only a titled
     card gives the title bar a row; otherwise the bar floats over the
     tile's top-right corner on hover or keyboard focus and takes no space.
     Callers choose which actions apply with :meth:`set_actions` and react to
-    them through ``on_inspect`` and ``on_show_in_editor``.
+    them through ``on_inspect``, ``on_show_in_editor`` and ``on_how_made``.
 
     ``title`` may be a reactive expression; ``label`` is the plain name the
     actions' accessible names and the expand dialog use. ``view`` is the
@@ -143,13 +144,16 @@ class Tile(pn.Column):
         subtitle: str | None = None,
         on_inspect: Callable[[], None] | None = None,
         on_show_in_editor: Callable[[], None] | None = None,
+        on_how_made: Callable[[], None] | None = None,
         **params,
     ):
         self.view = view
         self.on_inspect = on_inspect
         self.on_show_in_editor = on_show_in_editor
+        self.on_how_made = on_how_made
         self._inspect = False
         self._show_in_editor = False
+        self._how_made = False
         self._arranging = False
         self._framed = True
         self._titled = False
@@ -286,10 +290,11 @@ class Tile(pn.Column):
             classes.append("flowdash-tile-floating")
         self.css_classes = classes
 
-    def set_actions(self, *, inspect: bool, show_in_editor: bool):
-        """Offer Inspect and Show in editor only where they apply to the current viewer."""
+    def set_actions(self, *, inspect: bool, show_in_editor: bool, how_made: bool = False):
+        """Offer Inspect, Show in editor and How was this made? only where they apply to the current viewer."""
         self._inspect = inspect
         self._show_in_editor = show_in_editor
+        self._how_made = how_made
         self.inspect_button.visible = inspect
         self._sync_menu()
 
@@ -323,9 +328,15 @@ class Tile(pn.Column):
         items = []
         if self._show_in_editor:
             items.append({"label": "Show in editor", "icon": "account_tree", "action": "editor"})
+        if self._how_made:
+            items.append(
+                {"label": "How was this made?", "icon": "manage_search", "action": "how_made"}
+            )
         self.more_menu.param.update(items=items, visible=bool(items))
 
     def _on_menu(self, item):
         action = item.get("action") if isinstance(item, dict) else None
         if action == "editor" and self.on_show_in_editor is not None:
             self.on_show_in_editor()
+        elif action == "how_made" and self.on_how_made is not None:
+            self.on_how_made()

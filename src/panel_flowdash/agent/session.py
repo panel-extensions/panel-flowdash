@@ -103,10 +103,16 @@ class AgentSession:
                 ),
             },
         )
+        editor.agent_state = self.runner.state
         # Background checks of restored versions, kept so they are not collected while they run.
         self._checks: set[asyncio.Task] = set()
         self.drawer = AgentDrawer(
-            self.runner, title="Assistant", variant="persistent", on_apply=self.apply_version
+            self.runner,
+            title="Assistant",
+            variant="persistent",
+            on_apply=self.apply_version,
+            # People who may not edit the dashboard see a request's shape, not its content.
+            redact_runs=lambda _run_id: editor.read_only,
         )
         self.highlighter = ChangeHighlighter(self)
         self.chrome = SessionChrome(self)
