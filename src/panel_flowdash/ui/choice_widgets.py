@@ -7,6 +7,14 @@ import typing as t
 import panel_material_ui as pmui
 import param
 
+from panel_flowdash.component_spec import widget_hint
+from panel_flowdash.ui.number_widgets import (
+    FORMAT_WIDGET,
+    THRESHOLDS_WIDGET,
+    FormatInput,
+    ThresholdsInput,
+)
+
 if t.TYPE_CHECKING:
     from panel_flowdash.config_choices import Choices
 
@@ -132,7 +140,9 @@ def plain_widget(parameter: param.Parameter, current: t.Any) -> dict[str, t.Any]
     A list selector is a multi-select and a selector a dropdown, either
     keeping a value its objects no longer hold, marked as not available, and
     a dropdown offering an empty option if the selector allows None. An
-    optional number shows None as empty rather than as 0 or its lower bound.
+    optional number shows None as empty rather than as 0 or its lower bound. A
+    number format or a list of thresholds gets its own editor, see
+    :mod:`panel_flowdash.ui.number_widgets`.
     """
     if isinstance(parameter, param.ListSelector):
         options = dict(parameter.get_range())
@@ -141,6 +151,11 @@ def plain_widget(parameter: param.Parameter, current: t.Any) -> dict[str, t.Any]
         return {"type": ChoiceMultiSelect, "options": options}
     if isinstance(parameter, param.Selector):
         return _select(parameter, dict(parameter.get_range()), current)
+    hint = widget_hint(parameter)
+    if hint == FORMAT_WIDGET and isinstance(parameter, param.String):
+        return {"type": FormatInput}
+    if hint == THRESHOLDS_WIDGET and isinstance(parameter, param.List):
+        return {"type": ThresholdsInput}
     if isinstance(parameter, param.Number) and parameter.allow_None:
         widget = OptionalIntInput if isinstance(parameter, param.Integer) else OptionalFloatInput
         return {"type": widget, "placeholder": EMPTY}

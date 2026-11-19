@@ -265,6 +265,22 @@ async def run_hook(
         instantiating.reset(token)
 
 
+_STORED: contextvars.ContextVar[dict[str, t.Any] | None] = contextvars.ContextVar(
+    "flowdash_stored_config", default=None
+)
+
+
+def stored_config() -> dict[str, t.Any] | None:
+    """Return the config the node has now, while a check of a change to it runs.
+
+    None while a node that is not placed yet is checked. A check can use it
+    to refuse only what a change brings in, and to warn about values a
+    dashboard already holds, so an old dashboard stays editable.
+    """
+    stored = _STORED.get()
+    return dict(stored) if stored is not None else None
+
+
 async def run_check(
     spec: ComponentSpec,
     config: t.Mapping[str, t.Any],
@@ -272,20 +288,25 @@ async def run_check(
     *,
     editor: FlowDash | None = None,
     timeout: float = CHECK_TIMEOUT,
+    stored: t.Mapping[str, t.Any] | None = None,
 ) -> CheckResult:
     """Run the check of *spec* and return its problems, an empty list when it passes.
 
     The check is called as :func:`run_hook` calls hooks; one that takes
-    longer than *timeout* counts as a problem.
+    longer than *timeout* counts as a problem. *stored* is the node's config
+    before the change, which the check reads with :func:`stored_config`.
     """
     if spec.check_config is None:
         return CheckResult()
+    token = _STORED.set(dict(stored) if stored is not None else None)
     try:
         return _problems(
             await run_hook(spec.check_config, config, inputs, editor=editor, timeout=timeout)
         )
     except Exception as exc:
         return _failed(spec, exc)
+    finally:
+        _STORED.reset(token)
 
 
 def run_check_sync(
@@ -295,6 +316,7 @@ def run_check_sync(
     *,
     editor: FlowDash | None = None,
     timeout: float = CHECK_TIMEOUT,
+    stored: t.Mapping[str, t.Any] | None = None,
 ) -> CheckResult:
     """Like :func:`run_check`, for callers that cannot await.
 
@@ -308,6 +330,7 @@ def run_check_sync(
         return CheckResult()
     instantiating = _instantiating()
     token = instantiating.set(editor)
+    stored_token = _STORED.set(dict(stored) if stored is not None else None)
     try:
         context = contextvars.copy_context()
         running = threading.Event()
@@ -327,6 +350,7 @@ def run_check_sync(
     except Exception as exc:
         return _failed(spec, exc)
     finally:
+        _STORED.reset(stored_token)
         instantiating.reset(token)
 
 
@@ -382,7 +406,9 @@ async def check_node(
         if spec is None:
             return CheckResult()
         base = node_config(editor, instance_id, spec)
-        problems = await run_check(spec, config, inputs, editor=editor, timeout=timeout)
+        problems = await run_check(
+            spec, config, inputs, editor=editor, timeout=timeout, stored=base
+        )
         current, _, _ = _check_args(editor, instance_id)
         if current is None or same_config(base, node_config(editor, instance_id, current)):
             return problems
@@ -402,7 +428,8 @@ def check_node_sync(
     spec, config, inputs = _check_args(editor, instance_id, patch)
     if spec is None:
         return CheckResult()
-    return run_check_sync(spec, config, inputs, editor=editor, timeout=timeout)
+    stored = node_config(editor, instance_id, spec)
+    return run_check_sync(spec, config, inputs, editor=editor, timeout=timeout, stored=stored)
 
 
 def node_wiring(editor: FlowDash, instance_id: str) -> tuple[tuple[t.Any, ...], ...]:
@@ -525,4 +552,5 @@ __all__ = [
     "recheck_node",
     "run_check",
     "run_check_sync",
+    "stored_config",
 ]

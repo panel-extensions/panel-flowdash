@@ -11,9 +11,11 @@ import panel_material_ui as pmui
 import param
 from panel.viewable import Viewer
 
+from panel_flowdash.config_check import CheckWarning, stored_config
 from panel_flowdash.registry import register
 from panel_flowdash.selection import SelectionFilter
 from panel_flowdash.text_components import TEXT_COMPONENTS
+from panel_flowdash.ui.number_widgets import format_problem, thresholds_problems
 
 _COMMON_CONFIG = ["label", "description", "min_widget_width"]
 _SLIDER_FORMAT = pmui.FloatSlider.param.format.default
@@ -994,11 +996,35 @@ _KPI_CSS = """
 """
 
 
+def check_kpi(config, inputs):
+    """Refuse a format or thresholds the KPI cannot use, as its inspector fields do.
+
+    A value the dashboard already holds only warns, so a KPI saved with one
+    stays editable and loads and saves it unchanged; a change that brings in
+    a new one is refused.
+    """
+    stored = stored_config() or {}
+    problems = []
+    if (problem := format_problem(config.get("format") or "")) is not None:
+        new = (config.get("format") or "") != (stored.get("format") or "")
+        problems.append(problem if new else CheckWarning(problem))
+    thresholds = config.get("thresholds") or []
+    kept = stored.get("thresholds") or []
+    if not isinstance(thresholds, (list, tuple)):
+        return [*problems, *thresholds_problems(thresholds)]
+    for index, pair in enumerate(thresholds, start=1):
+        for problem in thresholds_problems([pair]):
+            problem = problem.replace("Threshold 1", f"Threshold {index}", 1)
+            problems.append(CheckWarning(problem) if pair in kept else problem)
+    return problems
+
+
 @register(
     page=False,
     component=True,
     title="KPI",
     icon="speed",
+    check_config=check_kpi,
     description=(
         "Card showing one headline number under a short label. Wire a Number to the value "
         "input; wire a second Number to reference to show the change from it, e.g. last "
@@ -1029,8 +1055,9 @@ class KPI(Viewer):
     format = param.String(
         default="",
         doc="""
-        Python format spec of the number, e.g. ',.0f', '.1%' or '.3s'. Empty
+        Python format spec of the number, e.g. ',.0f', '.1%' or '.2e'. Empty
         shows whole numbers with thousands separators and others with two decimals.""",
+        metadata={"flowdash": {"widget": "format"}},
     )
     prefix = param.String(default="", doc="Text before the number, e.g. '$'.")
     suffix = param.String(default="", doc="Text after the number, e.g. ' kWh'.")
@@ -1052,6 +1079,7 @@ class KPI(Viewer):
         of the first pair whose limit it does not exceed, e.g. [[50, "error"],
         [80, "warning"], [100, "success"]]. Colors are theme names (primary,
         secondary, success, warning, error, info) or CSS colors.""",
+        metadata={"flowdash": {"widget": "thresholds"}},
     )
     value = param.Number(default=None, allow_None=True)
     reference = param.Number(default=None, allow_None=True)
