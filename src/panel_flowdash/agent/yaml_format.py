@@ -19,20 +19,31 @@ import yaml
 
 from panel_flowdash.auto_layout import NodeBox, arrange_graph
 from panel_flowdash.dashboard_store import MODEL_VERSION, DashboardModel
+from panel_flowdash.parameters import DashboardParameter, ParameterError, check_name
 from panel_flowdash.turns import DashboardTurn, TurnError, strip_questions
 from panel_flowdash.ui.node_card import CARD_WIDTH
 
 # The version of the format this release writes.
-FORMAT_VERSION = 3
+FORMAT_VERSION = 4
 
 # The versions of the format this release reads.
-READ_VERSIONS = (1, 2, 3)
+READ_VERSIONS = (1, 2, 3, 4)
 
-TOP_LEVEL_KEYS = ("flowdash", "title", "settings", "turns", "nodes", "edges", "layout")
+TOP_LEVEL_KEYS = (
+    "flowdash",
+    "title",
+    "settings",
+    "parameters",
+    "turns",
+    "nodes",
+    "edges",
+    "layout",
+)
 NODE_KEYS = ("component", "origin", "config", "position")
 TURN_KEYS = ("id", "actor", "at", "run", "question", "summary", "status")
-# Version 1 had neither turns nor node origins.
-_V1_TOP_LEVEL_KEYS = tuple(k for k in TOP_LEVEL_KEYS if k != "turns")
+# Versions 1 to 3 had no parameters, and version 1 neither turns nor node origins.
+_V3_TOP_LEVEL_KEYS = tuple(k for k in TOP_LEVEL_KEYS if k != "parameters")
+_V1_TOP_LEVEL_KEYS = tuple(k for k in _V3_TOP_LEVEL_KEYS if k != "turns")
 _V1_NODE_KEYS = tuple(k for k in NODE_KEYS if k != "origin")
 EDGE_KEYS = ("from", "to", "transform")
 LAYOUT_KEYS = ("tiles", "reference_width", "breakpoints", "responsive")
@@ -234,6 +245,15 @@ def dashboard_to_dict(
         doc["title"] = data["title"]
     if data.get("settings"):
         doc["settings"] = copy.deepcopy(data["settings"])
+    parameters = {}
+    for name, parameter in (data.get("parameters") or {}).items():
+        entry = copy.deepcopy(parameter)
+        if entry.get("node") not in names:
+            continue
+        entry["node"] = names[entry["node"]]
+        parameters[name] = entry
+    if parameters:
+        doc["parameters"] = parameters
     turns = [
         {key: turn[key] for key in TURN_KEYS if turn.get(key) is not None}
         for turn in data.get("turns") or []
@@ -762,7 +782,14 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
             f"{', '.join(map(str, READ_VERSIONS[:-1]))} and {READ_VERSIONS[-1]}."
             + (" The file was written by a newer FlowDash." if newer else ""),
         )
-    _unknown_keys(doc, TOP_LEVEL_KEYS if version >= 2 else _V1_TOP_LEVEL_KEYS, "document")
+    allowed = (
+        TOP_LEVEL_KEYS
+        if version >= 4
+        else _V3_TOP_LEVEL_KEYS
+        if version >= 2
+        else _V1_TOP_LEVEL_KEYS
+    )
+    _unknown_keys(doc, allowed, "document")
     title = doc.get("title")
     if title is not None and not isinstance(title, str):
         _fail("title", f"must be a string, got {title!r}.")
@@ -875,6 +902,8 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
             item["origin"] = origin
         items.append(item)
 
+    parameters = _parameters(doc.get("parameters"), ids)
+
     layout = _mapping(doc.get("layout"), "layout")
     _unknown_keys(layout, LAYOUT_KEYS, "layout")
     reference_width = layout.get("reference_width")
@@ -903,7 +932,29 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
         "reference_width": reference_width,
         "settings": copy.deepcopy(settings),
         "turns": turns,
+        "parameters": parameters,
     }
+
+
+def _parameters(value: t.Any, ids: dict[str, str]) -> dict[str, dict]:
+    """Check the parameters of a document and return them as export dicts, nodes by instance id."""
+    parameters = {}
+    for name, parameter in _mapping(value, "parameters").items():
+        path = f"parameters.{name}"
+        try:
+            check_name(name)
+        except ParameterError as exc:
+            _fail(path, exc.reason)
+        _json_value(parameter, path)
+        try:
+            parsed = DashboardParameter.from_dict(parameter)
+        except ParameterError as exc:
+            _fail(f"{path}.{exc.key}" if exc.key != "parameter" else path, exc.reason)
+        if parsed.node not in ids:
+            _fail(f"{path}.node", f"names no node: {parsed.node!r}.")
+        parsed.node = ids[parsed.node]
+        parameters[name] = parsed.to_dict()
+    return parameters
 
 
 def _turns(value: t.Any) -> list[dict]:

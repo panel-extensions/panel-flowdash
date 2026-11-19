@@ -84,6 +84,9 @@ class ComponentSpec:
     config_state_class: type[param.Parameterized] | None = None
     config_editor: Callable | None = None
     check_config: Callable | None = None
+    # What a value bound to a parameter on the component's config must satisfy,
+    # see panel_flowdash.parameters.ParameterContract.
+    contract: Any = None
     # Former port and config names mapped to current ones.
     port_aliases: dict[str, str] = field(default_factory=dict)
 
@@ -447,6 +450,7 @@ def build_component_spec(entry: RegistryEntry) -> ComponentSpec:
         config_state_class=config_state_class,
         config_editor=metadata.config_editor,
         check_config=metadata.check_config,
+        contract=metadata.contract,
         port_aliases=port_aliases,
     )
     entry.spec = spec

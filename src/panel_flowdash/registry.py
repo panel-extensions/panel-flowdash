@@ -80,6 +80,7 @@ class PanelAppMetadata:
     config: list[str] = field(default_factory=list)
     config_editor: Callable | None = None
     check_config: Callable | None = None
+    contract: Any = None
     handles_failures: list[str] = field(default_factory=list)
     # Former component ids and former port names, so dashboards saved before a
     # rename still resolve.
@@ -159,6 +160,7 @@ def register(
     config: list[str] | None = None,
     config_editor: Callable | None = None,
     check_config: Callable | None = None,
+    contract: Any = None,
     handles_failures: list[str] | None = None,
     aliases: list[str] | None = None,
     port_aliases: dict[str, str] | None = None,
@@ -193,6 +195,14 @@ def register(
     A sync check runs in a worker thread and must not change the editor. A
     config with problems is refused in the inspector and by the agent tools,
     and reported by validation and previews.
+
+    The ``contract`` argument takes a
+    :class:`~panel_flowdash.ParameterContract`: what the dashboard needs of
+    a value bound to a parameter on one of the component's config fields,
+    e.g. the columns its downstream nodes read from a data source. Its
+    ``expects(context)`` writes the parameter's ``expects`` and its
+    ``check(context, expects)`` runs whenever the parameter is rebound,
+    see :mod:`panel_flowdash.parameters`.
 
     The ``placeholder`` argument sets the message a dashboard tile shows while a
     blocking input of the component is unset, in place of the default
@@ -250,6 +260,7 @@ def register(
         config=list(config or []),
         config_editor=config_editor,
         check_config=check_config,
+        contract=contract,
         handles_failures=list(handles_failures or []),
         aliases=_name_list(aliases),
         port_aliases=_port_aliases(port_aliases),

@@ -6,19 +6,25 @@ content as the JSON export, keyed by readable node names instead of generated id
 and loading it goes through the same path as importing a downloaded file, so the
 same permission checks apply.
 
-This page specifies version 3 of the format. Every file starts with `flowdash: 3`,
-the integer 3. Every change to the format, including a new optional key, comes with a
+This page specifies version 4 of the format. Every file starts with `flowdash: 4`,
+the integer 4. Every change to the format, including a new optional key, comes with a
 new version number. A release reads the versions it knows and rejects a file with a
 later version, or with keys it does not know, saying that a newer FlowDash may have
-written it. This release writes version 3 and reads versions 1, 2 and 3, see
+written it. This release writes version 4 and reads versions 1 to 4, see
 [Earlier versions](#earlier-versions).
 
 ```yaml
-flowdash: 3
+flowdash: 4
 title: State Deep Dive
 settings:
   refresh_period: 0
   capacity_unit: MW
+parameters:
+  state:
+    node: state
+    field: value
+    type: string
+    description: The state to look at
 turns:
   - id: t3fa2c1d0
     actor: user
@@ -78,9 +84,10 @@ layout:
 
 | Key | Required | Meaning |
 | --- | --- | --- |
-| `flowdash` | yes | The format version, `3`. |
+| `flowdash` | yes | The format version, `4`. |
 | `title` | no | The dashboard's title. Loading a file into an existing dashboard keeps that dashboard's title. |
 | `settings` | no | Dashboard-wide settings, keyed by the parameter names of the app's `DashboardSettings` class, e.g. `description`, `refresh_period`, `tile_cards`. |
+| `parameters` | no | The config fields the dashboard can be run with, a mapping from parameter name to parameter. |
 | `turns` | no | Who changed the dashboard and why, a list, oldest first. |
 | `nodes` | no | The placed components, a mapping from node name to node. |
 | `edges` | no | The connections between ports, a list. |
@@ -117,7 +124,39 @@ Quote a value to make it a string whatever it looks like. The writer quotes ever
 string another YAML reader could take for a different type.
 
 A file in this format may also be written as JSON with the same keys; it is read
-under the same rules. Flow-style YAML (`{flowdash: 3, ...}`) is read too.
+under the same rules. Flow-style YAML (`{flowdash: 4, ...}`) is read too.
+
+## Parameters
+
+A parameter names one config field of one node, so the dashboard can be run again
+with another value there: other data for a source, another starting value for a
+widget. Its default is whatever the field holds; binding a value writes it into the
+field before anything computes. Config values never hold placeholders.
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `node` | yes | The name of the node. |
+| `field` | yes | The config field, or a dotted path into one, e.g. `spec.tables.orders`; a number picks a list item. The first part must be a config field of the node's component. |
+| `type` | no | How a value is read: `string`, `number`, `integer`, `boolean`, `date`, `datetime`, `value` (the default: any JSON, text read as JSON if it parses) or `source`, `table`, `file` and `uri`, which are text whose meaning the app gives them. |
+| `description` | no | What the parameter is, for whoever binds it. |
+| `expects` | no | What the dashboard relies on of a bound value, written by the contract of the node's component. |
+
+Parameter names start with a letter or underscore and hold up to 64 letters, digits,
+`_` and `-`. A parameter whose node is removed is removed with it.
+
+A component can declare a contract for the parameters on its config
+(`register(contract=...)`, see `panel_flowdash.parameters.ParameterContract`). The
+contract writes `expects` when the parameter is declared, when a file that gives none
+is loaded and when the dashboard is saved, and checks each value bound to the
+parameter against it before anything changes, naming the nodes that would fail. Only
+the editor writes `expects`: YAML handed to `DashboardOps.replace_yaml` keeps what the
+canvas recorded for a parameter that points where it did, and has it computed again
+otherwise.
+
+Bind values with `FlowDash.bind_parameters(values)` or
+`DashboardOps.bind_parameters(values)`, which apply them as one edit, or with
+`panel_flowdash.parameters.bind_document(doc, values)`, which writes them into a copy
+of a parsed file for a run without an editor.
 
 ## Turns
 
@@ -235,14 +274,17 @@ tile.
 
 ## Earlier versions
 
-Version 2 files start with `flowdash: 2` and may not hold a tile's `framed`. They load
-unchanged, and exporting them again writes version 3.
+Version 3 files start with `flowdash: 3` and may not hold `parameters`. They load
+unchanged, and exporting them again writes version 4.
 
-Version 1 files start with `flowdash: 1` and may not hold `turns`, a node `origin` or
-a tile's `framed`. They load as a dashboard without turns whose nodes have no origin,
-and exporting it again writes version 3.
+Version 2 files start with `flowdash: 2` and may not hold a tile's `framed` or `parameters`. They load
+unchanged, and exporting them again writes version 4.
 
-## Not in version 3
+Version 1 files start with `flowdash: 1` and may not hold `turns`, a node `origin`,
+a tile's `framed` or `parameters`. They load as a dashboard without turns whose nodes
+have no origin, and exporting it again writes version 4.
+
+## Not in version 4
 
 A file describes what a dashboard is built from, not the state it is in:
 

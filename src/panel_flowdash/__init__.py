@@ -35,6 +35,14 @@ from panel_flowdash.dashboard_store import (
 from panel_flowdash.dataflow_engine import DataflowGraph, build_node_state_class
 from panel_flowdash.editor import FlowDash, current_dashboard, dashboard_context
 from panel_flowdash.json_store import JSONFolderDashboardStore
+from panel_flowdash.parameters import (
+    ContractContext,
+    ContractError,
+    ContractProblem,
+    DashboardParameter,
+    ParameterContract,
+    ParameterError,
+)
 from panel_flowdash.port_types import (
     normalize_port_type,
     port_types_compatible,
@@ -58,10 +66,14 @@ __all__: list[str] = [
     "CheckWarning",
     "ComponentSpec",
     "ConfigField",
+    "ContractContext",
+    "ContractError",
+    "ContractProblem",
     "DashboardConflictError",
     "DashboardEdge",
     "DashboardItem",
     "DashboardModel",
+    "DashboardParameter",
     "DashboardSettings",
     "DashboardStore",
     "DashboardStoreError",
@@ -74,6 +86,8 @@ __all__: list[str] = [
     "MemoryDashboardStore",
     "OutputPort",
     "PanelAppMetadata",
+    "ParameterContract",
+    "ParameterError",
     "Permission",
     "RegistryEntry",
     "Transform",

@@ -36,6 +36,7 @@ from panel_flowdash.editor import (
     copy_context,
     export_model,
 )
+from panel_flowdash.parameters import ContractError, ParameterError
 from panel_flowdash.ui import tile_layout
 
 from .preview import node_health, output_failures, preview_editor
@@ -1303,6 +1304,79 @@ class DashboardOps:
                 raise OperationError(f"Setting '{key}': {reason}")
         editor.settings.param.update(**settings)
         return editor._settings_values()
+
+    # ------------------------------------------------------------------
+    # Parameters
+    # ------------------------------------------------------------------
+
+    def parameters(self) -> dict[str, dict[str, t.Any]]:
+        """Return the dashboard's parameters by name, as the YAML writes them."""
+        self._require_source()
+        return copy.deepcopy(dashboard_to_dict(self.editor).get("parameters") or {})
+
+    def declare_parameter(
+        self,
+        name: str,
+        node: str,
+        field: str,
+        *,
+        type: str = "value",
+        description: str | None = None,
+    ) -> dict[str, t.Any]:
+        """Declare a parameter on a node's config field, or redeclare one, and return it.
+
+        What its contract expects is computed by the node's component, see
+        :meth:`~panel_flowdash.editor.FlowDash.declare_parameter`.
+
+        Raises
+        ------
+        OperationError
+            If the node does not exist or the name, field or type is malformed.
+        """
+        self._require_edit()
+        instance_id, _ = self._changeable(node)
+        try:
+            self.editor.declare_parameter(name, instance_id, field, type, description)
+        except ParameterError as exc:
+            raise OperationError(f"Parameter '{name}': {exc}") from None
+        return self.parameters()[name]
+
+    def remove_parameter(self, name: str) -> None:
+        """Remove a parameter; its node keeps the value the field holds."""
+        self._require_edit()
+        if not self.editor.remove_parameter(name):
+            raise OperationError(
+                f"'{name}' is not a parameter." + _suggest(name, self.parameters())
+            )
+
+    def bind_parameters(self, values: dict[str, t.Any]) -> list[Issue]:
+        """Write values into their parameters' fields as one edit, and return the warnings.
+
+        Values given as text are read as their parameter's type. The
+        contract of each parameter checks its value first, then each changed
+        node's config check runs; nothing changes unless all pass. Parameters
+        on nodes the user may not use are not found.
+
+        Raises
+        ------
+        OperationError
+            If a name is not a parameter, a value is not of its type, a
+            contract refuses a value (naming the nodes that would fail) or a
+            config check refuses the result.
+        """
+        self._require_edit()
+        editor = self.editor
+        try:
+            patches, problems, warnings = editor._binding(values, timeout=self.check_timeout)
+            editor._apply_binding(values, patches)
+        except (ParameterError, ContractError) as exc:
+            raise OperationError(str(exc)) from None
+        self.last_check = CheckResult(warnings=warnings)
+        return [
+            Issue(f"parameters.{name}", str(problem), "warning")
+            for name, items in problems.items()
+            for problem in items
+        ]
 
     def save(self) -> str:
         """Store the editor's dashboard and return its id.

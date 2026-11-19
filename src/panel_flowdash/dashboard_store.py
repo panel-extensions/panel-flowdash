@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from panel_flowdash.auth import Identity, Permission, can_administer, can_edit, is_authorized
+from panel_flowdash.parameters import DashboardParameter, decode_parameters
 from panel_flowdash.turns import DashboardTurn, decode_turns
 
 logger = logging.getLogger(__name__)
@@ -31,8 +32,8 @@ _RANDOM_ID = re.compile(r"[0-9a-f]{12}")
 _AMBIGUOUS_TITLES: set[str] = set()
 
 # The version of :class:`DashboardModel` this release writes. Version 4 added
-# turns and node origins; older models load with neither.
-MODEL_VERSION = 4
+# turns and node origins, version 5 parameters; older models load without them.
+MODEL_VERSION = 5
 
 # What decoding a stored dashboard raises when its data is malformed. Deeply
 # nested JSON overflows the decoder with a RecursionError.
@@ -197,6 +198,9 @@ class DashboardModel:
     # The requests to the agent and batches of manual edits that changed the
     # dashboard, oldest first; each item's `origin` names one of them.
     turns: list[DashboardTurn] = field(default_factory=list)
+    # The config fields the dashboard can be run with, by name; each names an
+    # item by instance id, see panel_flowdash.parameters.
+    parameters: dict[str, DashboardParameter] = field(default_factory=dict)
     # Bumped by the store on every save; None saves without a conflict check.
     revision: int | None = None
     # When the store last wrote the dashboard (UTC), filled in by the store on
@@ -223,6 +227,7 @@ class DashboardModel:
             "permission": self.permission.to_dict(),
             "settings": copy.deepcopy(self.settings),
             "turns": [turn.to_dict() for turn in self.turns],
+            "parameters": {name: p.to_dict() for name, p in self.parameters.items()},
             "revision": self.revision,
         }
 
@@ -247,6 +252,7 @@ class DashboardModel:
             permission=Permission.from_dict(data.get("permission")),
             settings=decode_settings(data.get("settings")),
             turns=decode_turns(data.get("turns")),
+            parameters=decode_parameters(data.get("parameters")),
             revision=_decode_revision(data.get("revision")),
         )
 
@@ -780,6 +786,7 @@ class DashboardStore(BaseDashboardStore):
                 ("reference_width_json", "'null'"),
                 ("settings_json", "'{}'"),
                 ("turns_json", "'[]'"),
+                ("parameters_json", "'{}'"),
             ]
             for col, default in migrations:
                 try:
@@ -958,6 +965,9 @@ class DashboardStore(BaseDashboardStore):
             "permission_json": json.dumps(dashboard.permission.to_dict()),
             "settings_json": json.dumps(dashboard.settings),
             "turns_json": json.dumps([turn.to_dict() for turn in dashboard.turns]),
+            "parameters_json": json.dumps(
+                {name: p.to_dict() for name, p in dashboard.parameters.items()}
+            ),
         }
         with self._get_conn() as conn:
             # Writing first takes the database's write lock, so the revision
@@ -1056,6 +1066,7 @@ class DashboardStore(BaseDashboardStore):
             permission=permission,
             settings=self._row_settings(row) if "settings_json" in keys else {},
             turns=self._row_turns(row) if "turns_json" in keys else [],
+            parameters=self._row_parameters(row) if "parameters_json" in keys else {},
             revision=row["revision"] if "revision" in keys else 0,
             updated_at=_parse_sqlite_time(row["updated_at"]),
         )
@@ -1085,3 +1096,16 @@ class DashboardStore(BaseDashboardStore):
                     "Ignoring malformed turns of dashboard %r (%r)", row["dashboard_id"], exc
                 )
             return []
+
+    def _row_parameters(self, row: sqlite3.Row) -> dict[str, DashboardParameter]:
+        """Decode a row's parameters, or log (once per revision) and drop them if malformed."""
+        try:
+            return decode_parameters(json.loads(row["parameters_json"]))
+        except MALFORMED_ERRORS as exc:
+            key = (row["dashboard_id"], row["updated_at"], "parameters")
+            if key not in self._warned:
+                self._warned.add(key)
+                logger.warning(
+                    "Ignoring malformed parameters of dashboard %r (%r)", row["dashboard_id"], exc
+                )
+            return {}

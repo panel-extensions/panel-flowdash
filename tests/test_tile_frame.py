@@ -260,7 +260,7 @@ class TestYAML:
     def test_round_trip(self):
         data = _model([{"instance_id": "r", "index": 0, "width": 50, "framed": True}]).to_dict()
         doc = dashboard_to_dict(data)
-        assert doc["flowdash"] == 3
+        assert doc["flowdash"] == 4
         assert doc["layout"]["tiles"] == [{"node": "r", "width": 50, "framed": True}]
         loaded = dashboard_from_yaml(dashboard_to_yaml(data))
         assert loaded["tile_layout"] == [

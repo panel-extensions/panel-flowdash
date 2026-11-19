@@ -45,6 +45,8 @@ TOOL_LABELS: dict[str, str | t.Callable[[dict], str]] = {
     "arrange_canvas": "Arrange the canvas",
     "arrange_layout": "Arrange the tile layout",
     "set_settings": lambda a: f"Change the settings: {_keys(a.get('settings'))}",
+    "declare_parameter": lambda a: f"Make {a.get('node')}.{a.get('field')} a parameter",
+    "remove_parameter": lambda a: f"Remove parameter {a.get('name')}",
     "replace_dashboard": "Rewrite the dashboard",
     "save_dashboard": "Save the dashboard",
     "delete_dashboard": lambda a: f"Delete {a['title']}",

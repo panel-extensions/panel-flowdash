@@ -163,6 +163,28 @@ class _Checker:
                 if reason:
                     self.error(f"{path}.config.{key}", reason)
 
+    def check_parameters(self, doc: dict):
+        """Check each parameter names a config field of its node's component."""
+        nodes = doc.get("nodes") or {}
+        for name, parameter in (doc.get("parameters") or {}).items():
+            node = nodes[parameter["node"]]
+            if node["component"] == RESTRICTED:
+                self.error(
+                    f"parameters.{name}.node",
+                    "names a restricted node, whose config you may not change.",
+                )
+                continue
+            spec = self.spec_for(node["component"])
+            if spec is None:
+                continue
+            first = spec.resolve_name(str(parameter["field"]).split(".")[0])
+            fields = [f.name for f in spec.config]
+            if first not in fields:
+                self.error(
+                    f"parameters.{name}.field",
+                    f"'{spec.title}' has no config field '{first}'." + _suggest(first, fields),
+                )
+
     def check_restricted(self, doc: dict):
         """Check the document keeps the canvas's restricted nodes and their connections."""
         if self.restricted_nodes is None:
@@ -488,6 +510,7 @@ def validate_dashboard(
         return [Issue(exc.path, exc.reason)]
     checker.check_settings(doc.get("settings") or {})
     checker.check_nodes(doc.get("nodes") or {})
+    checker.check_parameters(doc)
     checker.check_restricted(doc)
     checker.check_edges(doc)
     checker.check_layout(doc, set(controls))
