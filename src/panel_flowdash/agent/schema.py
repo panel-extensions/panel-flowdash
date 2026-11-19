@@ -148,6 +148,7 @@ def _tile_schema(names: dict[str, t.Any], *, framed: bool = True) -> dict[str, t
     }
     if framed:
         properties["framed"] = {"type": ["boolean", "null"]}
+        properties["area"] = {"enum": ["grid", "top", "sidebar"]}
     return {
         "type": "object",
         "required": ["node"],

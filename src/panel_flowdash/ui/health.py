@@ -7,6 +7,7 @@ import weakref
 
 import param
 
+from panel_flowdash.ui import tile_layout
 from panel_flowdash.util import _blocking_ports, missing_inputs
 
 if t.TYPE_CHECKING:
@@ -61,8 +62,8 @@ class DashboardHealth(param.Parameterized):
         ]
 
     def _is_tile(self, item: dict) -> bool:
-        entry = self._editor._component_entries.get(item["component_id"])
-        return "placeholder" in item or entry is None or not entry.metadata.sidebar
+        area = tile_layout.area_of(self._editor, item)
+        return area is None or area == tile_layout.GRID
 
     def track(self):
         """Watch the failures and blocking inputs of the nodes on the canvas."""

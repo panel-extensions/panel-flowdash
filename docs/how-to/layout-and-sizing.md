@@ -46,10 +46,10 @@ The panel on the right arranges the dashboard:
   **Hide tile** takes the tile off the dashboard without removing the
   component from the dataflow.
 - **Not on the dashboard** lists the placed components that have no tile and
-  why: *in controls bar* for `sidebar=True` components (*in sidebar* when
-  `controls_bar` is off), and *hidden* for tiles you hid and for the tiles of
-  sources and transforms the agent added, with a **Show** action that puts the
-  tile back.
+  why: *in top bar* or *in sidebar* for components shown beside the grid (*in
+  sidebar* when `controls_bar` is off), with a **Move to grid** action, and
+  *hidden* for tiles you hid and for the tiles of sources and transforms the
+  agent added, with a **Show** action that puts the tile back.
 
 The status bar under the grid summarizes it, e.g. "12-column grid, 4 tiles,
 2 components hidden". Changes made in the panel edit the authored layout (see
@@ -128,6 +128,24 @@ shown while the dashboard has no controls. Set the default with
 `FlowDash(controls_position=...)` or `FlowDashApp(controls_position=...)` (also
 readable from a project's `__init__.py`); each dashboard can override it with
 the *Controls* choice in its settings, saved as the `controls_position` setting.
+
+### Moving components beside the grid
+
+On the Layout tab any control, KPI or text can sit in the top bar, in the
+sidebar or on the grid, whatever its registration. Drag a tile by its handle
+onto the top bar or the sidebar, which are outlined while you drag (an empty one
+appears as a strip along the top or the left edge of the grid). Drag a
+component beside the grid by the grip at its left back onto the grid, where it
+goes in front of the tile under the pointer, or to another place in its bar.
+Charts, tables and data previews stay on the grid: they need the room of a tile,
+so their drop targets say so and refuse them. The **Move to grid**, **Move to
+top bar** and **Move to sidebar** buttons in the inspector's *Tile* tab and the
+layout panel do the same from the keyboard.
+
+Each move is one edit in the history, so undo takes it back, and the dashboard
+saves it as the tile's `area` (see [Dashboard YAML](../reference/dashboard-yaml.md#layout)).
+A tile moved off the grid keeps its width and height for when it comes back.
+Controls you never moved follow the `controls_position` setting.
 
 The component still participates in the dataflow exactly like any other node,
 its ports wire up the same way; only its placement changes. Pass

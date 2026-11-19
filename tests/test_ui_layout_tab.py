@@ -98,7 +98,7 @@ class TestTileLayoutHelpers:
         update_tile(editor, chart_id, visible=False)
         assert off_grid(editor) == [
             OffGrid(chart_id, "Chart", HIDDEN, hidden=True),
-            OffGrid(filter_id, "State Filter", "in controls bar"),
+            OffGrid(filter_id, "State Filter", "in top bar", area="top"),
         ]
         assert [entry.restorable for entry in off_grid(editor)] == [True, False]
         assert map_id not in [entry.instance_id for entry in off_grid(editor)]
@@ -106,7 +106,7 @@ class TestTileLayoutHelpers:
     async def test_off_grid_says_sidebar_without_a_controls_bar(self, editor):
         editor.controls_bar = False
         _, _, filter_id = _place(editor, MAP, CHART, FILTER)
-        assert OffGrid(filter_id, "State Filter", "in sidebar") in off_grid(editor)
+        assert OffGrid(filter_id, "State Filter", "in sidebar", area="top") in off_grid(editor)
 
 
 class TestLayoutPanel:
@@ -178,7 +178,7 @@ class TestLayoutPanel:
         assert chart_id not in panel.tile_select.options.values()
         texts = _texts(panel._off_grid)
         assert texts[:2] == ["Chart", HIDDEN]
-        assert "State Filter" in texts and "in controls bar" in texts
+        assert "State Filter" in texts and "in top bar" in texts
         show = [
             b
             for b in panel._off_grid.select(pn.viewable.Viewable)

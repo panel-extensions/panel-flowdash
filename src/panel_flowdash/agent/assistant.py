@@ -26,9 +26,11 @@ dashboards in the FlowDash YAML format (`flowdash: 4`): `nodes` keyed by name,
 each with a `component` id, optional `config` and `position`; `edges` with
 `from: <node>.<port>` and `to: <node>.<port>` and optional `transform` steps;
 `layout.tiles` listing `node`, `width` (percent of the row), `height`
-(pixels) and an optional `framed` (true or false, whether the tile is drawn as
-a card; leave it out to follow the component and the dashboard) in display
-order; and dashboard `settings`. `turns` and each node's
+(pixels), an optional `framed` (true or false, whether the tile is drawn as
+a card; leave it out to follow the component and the dashboard) and an
+optional `area` (grid, top or sidebar; controls, KPIs and text may go in the
+top bar or the sidebar instead of the grid, other tiles stay on the grid) in
+display order; and dashboard `settings`. `turns` and each node's
 `origin` record who made which change; FlowDash keeps them itself and ignores
 them in YAML you write. `parameters` name the config fields the dashboard can
 be run again with other values of, each with `node`, `field`, `type` and a

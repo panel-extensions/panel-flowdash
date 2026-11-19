@@ -47,11 +47,13 @@ _V1_TOP_LEVEL_KEYS = tuple(k for k in _V3_TOP_LEVEL_KEYS if k != "turns")
 _V1_NODE_KEYS = tuple(k for k in NODE_KEYS if k != "origin")
 EDGE_KEYS = ("from", "to", "transform")
 LAYOUT_KEYS = ("tiles", "reference_width", "breakpoints", "responsive")
-TILE_KEYS = ("node", "width", "height", "visible", "framed")
-# A tile's frame applies at every screen size, so a responsive layout cannot set
-# it, and version 2 had no frame.
-RESPONSIVE_TILE_KEYS = tuple(k for k in TILE_KEYS if k != "framed")
+TILE_KEYS = ("node", "width", "height", "visible", "framed", "area")
+# A tile's frame and area apply at every screen size, so a responsive layout
+# cannot set them, and version 2 had neither.
+RESPONSIVE_TILE_KEYS = tuple(k for k in TILE_KEYS if k not in ("framed", "area"))
 _V2_TILE_KEYS = RESPONSIVE_TILE_KEYS
+# Where a node is shown: as a tile on the grid, in the top bar or in the sidebar.
+TILE_AREAS = ("grid", "top", "sidebar")
 # Keys starting with this are accepted, and ignored, in every mapping of the format
 # except config and settings, for tools that annotate dashboard files.
 EXTENSION_PREFIX = "x-"
@@ -751,6 +753,11 @@ def _layout_entries(
         for key in ("visible", "framed"):
             if key in entry and not isinstance(entry[key], bool):
                 _fail(f"{tile_path}.{key}", f"must be true or false, got {entry[key]!r}.")
+        if "area" in entry and entry["area"] not in TILE_AREAS:
+            _fail(
+                f"{tile_path}.area",
+                f"must be one of {', '.join(TILE_AREAS)}, got {entry['area']!r}.",
+            )
         entries.append({"instance_id": ids[name], "index": i, **entry})
     return entries
 

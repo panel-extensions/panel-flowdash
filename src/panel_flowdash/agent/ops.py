@@ -1222,6 +1222,7 @@ class DashboardOps:
         visible: bool | None = None,
         index: int | None = None,
         frame: t.Literal["default", "framed", "unframed"] | None = None,
+        area: t.Literal["grid", "top", "sidebar"] | None = None,
     ) -> dict[str, t.Any]:
         """Change how a node's tile is laid out and return its layout entry.
 
@@ -1234,18 +1235,32 @@ class DashboardOps:
         visible
             False hides the tile; the component keeps running in the dataflow.
         index
-            Position among the tiles, 0 for the first.
+            Position among the tiles, 0 for the first, or among the nodes of
+            its area when it is beside the grid.
         frame
             "framed" or "unframed" draws the tile as a card in view mode or
             not; "default" follows the component, then the dashboard's
             ``tile_cards`` setting.
+        area
+            "grid" shows the node as a tile; "top" in the bar above the grid
+            and "sidebar" in the panel left of it, which only controls, KPIs
+            and text fit.
         """
         self._require_edit()
         instance_id = self._instance(name)
         editor = self.editor
-        entry = editor._component_entries.get(self._item(instance_id)["component_id"])
-        if entry is not None and entry.metadata.sidebar:
-            raise OperationError(f"'{name}' is a control, shown in the controls bar, not a tile.")
+        item = self._item(instance_id)
+        if area is not None and area not in tile_layout.AREAS:
+            raise OperationError(f"area is one of {', '.join(tile_layout.AREAS)}, got {area!r}.")
+        if area not in (None, tile_layout.GRID) and not tile_layout.fits_beside(editor, item):
+            raise OperationError(tile_layout.refusal(editor, item, area))
+        placed = area or tile_layout.area_of(editor, item)
+        sized = any(v is not None for v in (width, height, visible, frame))
+        if placed not in (None, tile_layout.GRID) and sized:
+            raise OperationError(
+                f"'{name}' is in the {tile_layout.AREA_NAMES[placed]}, not a tile on the grid; "
+                "width, height, visible and frame apply on the grid (area='grid')."
+            )
         if width is not None and not 0 < width <= 100:
             raise OperationError(f"width is a percentage of the row, got {width}.")
         if height is not None and height <= 0:
@@ -1259,7 +1274,9 @@ class DashboardOps:
         }
         if frame is not None:
             patch["framed"] = _FRAMES[frame]
-        if index is not None:
+        if area is not None or (placed not in (None, tile_layout.GRID) and index is not None):
+            tile_layout.move_to_area(editor, instance_id, placed, index=index)
+        elif index is not None:
             tile_layout.move_tile(editor, instance_id, index)
         if patch:
             tile_layout.update_tile(editor, instance_id, **patch)

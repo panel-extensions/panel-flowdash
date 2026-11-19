@@ -265,23 +265,29 @@ Each tile has a `node` naming its node, plus any of `width` (percent of the row,
 greater than 0 and at most 100), `height` (pixels), `visible` (`false` hides the
 tile while keeping its component in the dataflow) and `framed` (`true` or `false`
 draws the tile as a card in view mode or not; without it, or with `null`, the tile
-follows its component's `framed` hint, then the dashboard's `tile_cards` setting). A tile in a
-`responsive` layout may not set `framed`, since a tile's frame is the same at every
-screen size. Other keys are rejected, except
-`x-` keys, which are ignored. Nodes without a tile entry get
-their component's default size, after the listed tiles. Control components have no
-tile.
+follows its component's `framed` hint, then the dashboard's `tile_cards` setting) and
+`area` (`grid`, `top` or `sidebar`: where the node is shown). Without an `area`, control
+components (registered with `sidebar=True`) go where the dashboard's `controls_position`
+setting puts them and every other node gets a tile on the grid. Controls, KPIs and text
+may be placed in the `top` bar or the `sidebar`; an `area` that puts a chart, table or
+data preview beside the grid is ignored and the node stays on the grid. Entries in the
+top bar and the sidebar keep their `width` and `height` for when the node is moved back
+to the grid, and their order in the list is their order in their area. A tile in a
+`responsive` layout may not set `framed` or `area`, since a tile's frame and area are
+the same at every screen size. Other keys are rejected, except `x-` keys, which are
+ignored. Nodes without a tile entry get their component's default size, after the
+listed tiles.
 
 ## Earlier versions
 
 Version 3 files start with `flowdash: 3` and may not hold `parameters`. They load
 unchanged, and exporting them again writes version 4.
 
-Version 2 files start with `flowdash: 2` and may not hold a tile's `framed` or `parameters`. They load
-unchanged, and exporting them again writes version 4.
+Version 2 files start with `flowdash: 2` and may not hold a tile's `framed` or `area`, or
+`parameters`. They load unchanged, and exporting them again writes version 4.
 
 Version 1 files start with `flowdash: 1` and may not hold `turns`, a node `origin`,
-a tile's `framed` or `parameters`. They load as a dashboard without turns whose nodes
+a tile's `framed` or `area`, or `parameters`. They load as a dashboard without turns whose nodes
 have no origin, and exporting it again writes version 4.
 
 ## Not in version 4

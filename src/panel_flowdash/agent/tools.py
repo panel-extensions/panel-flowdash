@@ -638,8 +638,9 @@ def place_tile(
     visible: bool | None = None,
     index: int | None = None,
     frame: t.Literal["default", "framed", "unframed"] | None = None,
+    area: t.Literal["grid", "top", "sidebar"] | None = None,
 ) -> t.Any:
-    """Change how a node's tile is laid out on the dashboard.
+    """Change how a node's tile is laid out on the dashboard, or where it is shown.
 
     Args:
         name: The node's name in the dashboard YAML.
@@ -647,12 +648,18 @@ def place_tile(
         height: Height in pixels.
         visible: False hides the tile; the component keeps running. Tiles of
             sources and transforms start hidden; True shows one.
-        index: Position among the tiles, 0 for the first.
+        index: Position among the tiles, 0 for the first, or within the node's
+            area when it is in the top bar or the sidebar.
         frame: "framed" or "unframed" draws the tile as a card or not; "default"
             follows the component, then the dashboard's tile_cards setting.
+        area: "grid" shows the node as a tile, "top" in the bar above the grid,
+            "sidebar" in the panel beside it. Only controls, KPIs and text fit
+            in the top bar or the sidebar.
     """
     ops = ctx.deps.ops
-    ops.place_tile(name, width=width, height=height, visible=visible, index=index, frame=frame)
+    ops.place_tile(
+        name, width=width, height=height, visible=visible, index=index, frame=frame, area=area
+    )
     return _artifact(ops, f"Laid out the tile of '{name}'.")
 
 
