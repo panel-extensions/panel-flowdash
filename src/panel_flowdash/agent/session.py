@@ -21,6 +21,21 @@ from panel_flowdash.util import confirm
 
 logger = logging.getLogger(__name__)
 
+
+def _load_code_editor():
+    """Load the CodeEditor's script for the served page, once per page.
+
+    The drawer shows dashboard versions and tool results in CodeEditors, created
+    after the page loaded its JavaScript; Panel before 1.11 does not load the
+    editor's script for them then, and the Preview tab stays blank.
+    """
+    doc = pn.state.curdoc
+    if doc is None or doc.session_context is None:
+        return
+    if "codeeditor" not in (pn.state._extensions or ()):
+        pn.extension("codeeditor")
+
+
 from panel_flowdash.history import components_of
 
 from .actions import palette_actions
@@ -109,10 +124,7 @@ class AgentSession:
         self.runner.state.subscribe(self._note_run)
         # Background checks of restored versions, kept so they are not collected while they run.
         self._checks: set[asyncio.Task] = set()
-        # The drawer shows dashboard versions and tool results in CodeEditors, created after
-        # the page loaded its JavaScript; Panel before 1.11 does not load the editor's
-        # script for them then, and the Preview tab stays blank.
-        pn.extension("codeeditor")
+        _load_code_editor()
         self.drawer = AgentDrawer(
             self.runner,
             title="Assistant",
