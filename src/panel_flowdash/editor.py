@@ -161,6 +161,7 @@ from panel_flowdash.ui.text import (
 from panel_flowdash.ui.tile import TILE_KEY_PREFIX, Tile, resolve_framed
 from panel_flowdash.ui.tile_bands import band_labels, base_band, reference_width
 from panel_flowdash.ui.tile_drag import TileDrag
+from panel_flowdash.ui.transform_offer import TransformOffer, bridge_kind
 from panel_flowdash.util import (
     close_dialog,
     gate_view,
@@ -1720,10 +1721,21 @@ class FlowDash(Viewer):
                 )
                 self._notify("success", f"Wired: {src_handle} → {tgt_handle}", duration=3000)
             else:
-                logger.warning("Edge rejected: %s", result)
-                self._notify("error", result, duration=5000)
                 with self._muted_canvas():
                     flow.remove_edge(edge.get("id", ""))
+                # Adding and removing the edge leaves `edges` as it was, so nothing
+                # tells the browser to drop the edge it drew.
+                flow._send_msg(
+                    {"type": "edge_rejected", "edge_id": edge.get("id"), "reason": result}
+                )
+                bridge = result is not True and self._bridge(
+                    src_id, src_handle, tgt_id, tgt_handle
+                )
+                if bridge:
+                    self._transform_offer.offer((src_id, src_handle, tgt_id, tgt_handle), bridge)
+                    return
+                logger.warning("Edge rejected: %s", result)
+                self._notify("error", result, duration=5000)
 
         def _on_edge_deleted(event):
             if self._muted:
@@ -1767,6 +1779,7 @@ class FlowDash(Viewer):
         flow.param.watch(self._on_selection_changed, "selection")
         flow.on("edge_added", _on_edge_added)
         flow.on("edge_deleted", _on_edge_deleted)
+        flow.on("connection_refused", self._on_connection_refused)
         flow.on("node_data_changed", _on_node_data_changed)
         flow.on("node_deleted", _on_node_deleted)
         flow.on("group_toggled", self._on_group_toggled)
@@ -1805,11 +1818,48 @@ class FlowDash(Viewer):
         return None
 
     def _validate_connection(self, source_id, source_port, target_id, target_port, transform=None):
-        """Return why a connection would be refused, or None, including restricted inputs."""
-        return self._restricted_input_error(
+        """Return why a connection would be refused, or None, including restricted inputs.
+
+        A connection without steps whose types only transform steps can
+        bridge, e.g. a table to a number, is allowed, so dropping it offers
+        those steps instead of refusing it.
+        """
+        reason = self._restricted_input_error(
             target_id, target_port
         ) or self._dataflow_graph.validate_connection(
             source_id, source_port, target_id, target_port, transform
+        )
+        if reason is not None and not transform:
+            if self._bridge(source_id, source_port, target_id, target_port):
+                return None
+        return reason
+
+    def _bridge(self, source_id, source_port, target_id, target_port) -> str | None:
+        """Return the kind of steps that would let this connection through, or None.
+
+        Only a connection that every rule but its types allows can be bridged;
+        see :func:`~panel_flowdash.ui.transform_offer.bridge_kind`.
+        """
+        source = self._port_spec(source_id, source_port, output=True)
+        target = self._port_spec(target_id, target_port, output=False)
+        if source is None or target is None:
+            return None
+        kind = bridge_kind(source.type, target.type)
+        if kind is None or self._dataflow_graph._is_list_input(target_id, target_port):
+            return None
+        if self._restricted_input_error(target_id, target_port) is not None:
+            return None
+        if self._dataflow_graph.validate_connection(
+            source_id, source_port, target_id, target_port, types=False
+        ):
+            return None
+        return kind
+
+    def _on_connection_refused(self, event):
+        """Say why a connection dropped onto a port was refused, as the canvas draws nothing."""
+        reason = event.get("reason") if isinstance(event, dict) else None
+        self._notify(
+            "warning", f"Not connected: {reason or 'the port refuses it.'}", duration=5000
         )
 
     @contextmanager
@@ -2776,6 +2826,7 @@ class FlowDash(Viewer):
         self._pending_import: DashboardModel | None = None
         self._import_message = markdown_pane()
         self._import_dialog = self._build_import_dialog()
+        self._transform_offer = TransformOffer(self)
         self._inspect_dialog = make_inspect_sheet()
         # Saving is only offered with unsaved changes, and rearranging is a change.
         self._flow.on("node_moved", self._on_node_moved)
@@ -3294,7 +3345,12 @@ class FlowDash(Viewer):
         self._tile_grid.param.update(editable=interactive, card=interactive)
         self._sync_preview_band()
         # Column children rather than Row children, so the dialogs take no flex space.
-        dialogs = [self._clear_dialog, self._import_dialog, self._settings_dialog]
+        dialogs = [
+            self._clear_dialog,
+            self._import_dialog,
+            self._settings_dialog,
+            self._transform_offer.dialog,
+        ]
         if self.inspect_outputs:
             dialogs.insert(0, self._inspect_dialog)
         shared_dialog = page_dialog() if self.include_page_dialog else None
@@ -6736,14 +6792,21 @@ class FlowDash(Viewer):
         else:
             candidates = [(node_id, handle_id, instance_id, port.name) for port in spec.inputs]
         reasons = []
+        bridges = []
         for candidate in candidates:
             reason = self._validate_connection(*candidate)
             if reason is None:
                 result = self.connect(*candidate)
                 if result is True:
                     return
+                if bridge := self._bridge(*candidate):
+                    bridges.append((candidate, bridge))
+                    continue
                 reason = result
             reasons.append(reason)
+        if bridges:
+            self._transform_offer.offer(*bridges[0])
+            return
         title = self._component_entries[component_id].title
         detail = f": {reasons[0]}" if reasons else ""
         self._notify("warning", f"Added '{title}' but could not connect it{detail}", duration=5000)

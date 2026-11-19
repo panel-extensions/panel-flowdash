@@ -48,6 +48,16 @@ under the canvas counts it as an issue, such as
 edits are kept while you select other things, so you can look at the source
 and come back.
 
+### Connect a table to a number
+
+Dragging a DataFrame output onto a number input, such as a KPI's value, opens
+**Connect with a transform** instead of refusing the drop: pick a column and an
+aggregation (sum, mean, count, minimum, maximum or last value) and the dialog
+shows the number the input would get. **Connect** creates the edge with a
+*Column* and an *Aggregate* step, which you can edit later like any other
+steps. A Series output only asks for the aggregation. A drop that no steps
+can fix is refused with the reason in a notification.
+
 A transformed edge is drawn dashed in the accent color, with a chip that names
 a single step, for example `fx first 500`, or counts several, `fx 3 steps`.
 Remove every step to turn the edge back into a plain connection.
@@ -62,7 +72,7 @@ Remove every step to turn the edge back into a plain connection.
 | Filter rows | `filter` | DataFrame | `column`, `comparison` (`==`, `!=`, `<`, `<=`, `>`, `>=`, `in`), `value` | the matching rows |
 | Sort | `sort` | DataFrame, Series, list or tuple | `column` (DataFrames only), `ascending` (default `True`) | the sorted value; a tuple becomes a list |
 | First rows | `head` | DataFrame, Series, list or tuple | `n` (default 5) | the first `n` rows or items |
-| Aggregate | `aggregate` | Series, list or tuple | `how`: `sum`, `mean`, `min`, `max`, `count` or `nunique` | a single Python number |
+| Aggregate | `aggregate` | Series, list or tuple | `how`: `sum`, `mean`, `min`, `max`, `count`, `nunique` or `last` (None if empty) | a single Python number |
 | Unique values | `unique` | Series, list or tuple | none | a list of the distinct values in order of appearance, without missing values for a Series |
 | Round | `round` | a number or a Series | `digits` (default 0) | the rounded value; an `int` for a number rounded to 0 digits |
 | Format | `format` | anything | `spec`, a [format spec](https://docs.python.org/3/library/string.html#formatspec) such as `,.2f` or `.0%`, and `prefix` and `suffix` strings | a string |

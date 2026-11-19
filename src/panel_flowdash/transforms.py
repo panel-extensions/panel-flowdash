@@ -220,12 +220,14 @@ class Head(Transform):
 
 
 class Aggregate(Transform):
-    """Reduce a Series or list to a single value."""
+    """Reduce a Series or list to a single value; ``last`` takes its last value, None if empty."""
 
     op = "aggregate"
     label = "Aggregate"
 
-    how = param.Selector(default="sum", objects=["sum", "mean", "min", "max", "count", "nunique"])
+    how = param.Selector(
+        default="sum", objects=["sum", "mean", "min", "max", "count", "nunique", "last"]
+    )
 
     @classmethod
     def accepts(cls, value) -> bool:
@@ -233,6 +235,8 @@ class Aggregate(Transform):
 
     def apply(self, value):
         series = value if isinstance(value, pd.Series) else pd.Series(list(value))
+        if self.how == "last":
+            return _scalar(series.iloc[-1]) if len(series) else None
         return _scalar(getattr(series, self.how)())
 
     def summary(self) -> str:

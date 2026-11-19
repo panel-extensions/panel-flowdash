@@ -1695,10 +1695,15 @@ class TestDisplayModes:
         assert editor._tile_grid not in editor._workspace_area.objects
 
     async def test_dialogs_stay_mounted_in_both_modes(self, editor):
-        dialogs = [editor._clear_dialog, editor._import_dialog, editor._settings_dialog]
-        assert editor._workspace_area.objects[-3:] == dialogs
+        dialogs = [
+            editor._clear_dialog,
+            editor._import_dialog,
+            editor._settings_dialog,
+            editor._transform_offer.dialog,
+        ]
+        assert editor._workspace_area.objects[-4:] == dialogs
         editor.mode = "dashboard"
-        assert editor._workspace_area.objects[-3:] == dialogs
+        assert editor._workspace_area.objects[-4:] == dialogs
 
     async def test_non_editable_always_shows_the_grid(self, editor):
         editor.editable = False
