@@ -308,6 +308,9 @@ export function render({model}) {
       send()
       return
     }
+    // Ahead of the layout the grid sends when the drag ends, so the editor
+    // records that layout as part of the move rather than as an edit of its own.
+    model.send_msg({action: "release", id: current.id, area: target.area})
     // After the grid has sent the layout the drag ended with, so the move applies
     // to it: Muuri ends a drag a frame or more after the pointer is released.
     const until = performance.now() + 2000

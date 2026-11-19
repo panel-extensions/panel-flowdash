@@ -331,6 +331,9 @@ _DROP_WIRE_OFFSET = 360
 _PALETTE_DRAG_TYPE = "application/x-flowdash-component"
 # The DataTransfer type of files dragged in from the OS.
 _FILES_DROP_TYPE = "Files"
+# Seconds the drop of a tile released beside the grid is waited for; the page sends
+# it at most about two seconds after the release, once the grid's drag has ended.
+_TILE_DROP_WAIT = 3.0
 # Left out of exports: they tie a dashboard to one store, owner and audience, and
 # importing a file must not let it claim another dashboard's id, sharing rules or
 # the revision a save is checked against.
@@ -1147,6 +1150,10 @@ class FlowDash(Viewer):
         # `_settle_nodes` and `_place_new_tiles`.
         self._floating_nodes: set[str] = set()
         self._auto_tiles: set[str] = set()
+        # When a tile was released over the top bar or the sidebar, and whether the
+        # grid has since sent the layout its drag ended with, which the move records.
+        self._tile_released: float | None = None
+        self._tile_release_layout = False
         # Set when the editor moved nodes, so the canvas fits them once the agent's request ends.
         self._fit_pending = False
         # While an agent request runs, the tiles it adds wait here to be laid out once it ends.
@@ -2656,6 +2663,7 @@ class FlowDash(Viewer):
             uid=self._view_controls.uid,
             on_move=self._on_tile_dropped,
             on_refuse=self._on_tile_refused,
+            on_release=self._on_tile_released,
         )
         self._save_button = bar.save_button
         self._download_button = bar.download_button
@@ -2780,7 +2788,10 @@ class FlowDash(Viewer):
                 self._tile_grid.layout = event.old
                 return
             self._auto_tiles.clear()
-            self._mark_rearranged()
+            if self._awaiting_tile_drop():
+                self._tile_release_layout = True
+            else:
+                self._mark_rearranged()
 
     def _build_clear_dialog(self):
         cancel = pmui.Button(label="Cancel", variant="text")
@@ -2925,15 +2936,39 @@ class FlowDash(Viewer):
             controls=handles,
         )
 
+    def _on_tile_released(self, _instance_id: str):
+        self._end_tile_release()
+        self._tile_released = time.monotonic()
+
+    def _awaiting_tile_drop(self) -> bool:
+        """Whether a tile released beside the grid has not been dropped there yet."""
+        if self._tile_released is None:
+            return False
+        if time.monotonic() - self._tile_released < _TILE_DROP_WAIT:
+            return True
+        # The drop never came; the caller records the layout, held one included.
+        self._tile_released, self._tile_release_layout = None, False
+        return False
+
+    def _end_tile_release(self, recorded: bool = False):
+        """Forget the tile released beside the grid, recording its drag's layout unless *recorded*."""
+        held = self._tile_release_layout
+        self._tile_released, self._tile_release_layout = None, False
+        if held and not recorded:
+            self._mark_rearranged()
+
     def _on_tile_dropped(self, instance_id: str, area: str, before: str | None):
-        if not self.editable or not any(i["instance_id"] == instance_id for i in self._tile_items):
-            return
+        moved = False
         try:
-            tile_layout.move_to_area(self, instance_id, area, before)
+            if self.editable and any(i["instance_id"] == instance_id for i in self._tile_items):
+                moved = tile_layout.move_to_area(self, instance_id, area, before)
         except ValueError as exc:
             self._notify("info", str(exc), duration=4000)
+        finally:
+            self._end_tile_release(recorded=moved)
 
     def _on_tile_refused(self, instance_id: str, area: str):
+        self._end_tile_release()
         item = next((i for i in self._tile_items if i["instance_id"] == instance_id), None)
         if item is not None:
             self._notify("info", tile_layout.refusal(self, item, area), duration=4000)

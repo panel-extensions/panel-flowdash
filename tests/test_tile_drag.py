@@ -1,9 +1,13 @@
 """Tests for moving components between the tile grid, the top bar and the sidebar."""
 
+import time
+
 import panel as pn
 import panel_material_ui as pmui
 import pytest
 import yaml
+from bokeh.document import Document
+from panel.io.state import set_curdoc
 
 from panel_flowdash import FlowDash, register
 from panel_flowdash.agent import DashboardOps, OperationError, dashboard_schema
@@ -72,6 +76,17 @@ def editor():
 
 def _item(editor, instance_id):
     return next(i for i in editor._tile_items if i["instance_id"] == instance_id)
+
+
+def _send_grid_layout(editor, order: list[str]):
+    """Send the grid layout the browser reports after a drag that left the tiles in *order*."""
+    grid = editor._tile_grid
+    by_id = dict(zip(editor._grid_ids, grid.layout, strict=True))
+    layout = [
+        {**by_id[iid], "index": editor._grid_ids.index(iid), "visible": True} for iid in order
+    ]
+    with set_curdoc(Document()):
+        grid._process_events({"layout": layout})
 
 
 def _areas(editor) -> dict[str, list[str]]:
@@ -379,6 +394,35 @@ class TestDragBridge:
         editor._tile_drag._handle_msg({"action": "move", "id": "chart", "area": "top"})
         assert area_of(editor, _item(editor, "chart")) == GRID
         assert len(editor.edit_history.versions) == count
+
+    def test_a_drag_off_the_grid_is_one_version(self, editor):
+        drag, count = editor._tile_drag, len(editor.edit_history.versions)
+        drag._handle_msg({"action": "release", "id": "kpi", "area": "sidebar"})
+        _send_grid_layout(editor, ["select", "heading", "chart", "kpi"])
+        drag._handle_msg({"action": "move", "id": "kpi", "area": "sidebar", "before": None})
+        versions = editor.edit_history.versions[count:]
+        assert [v.metadata["ops"] for v in versions] == [
+            [{"op": "layout", "args": {"name": "kpi", "area": SIDEBAR}}]
+        ]
+        editor.undo()
+        assert _areas(editor)[GRID] == ["select", "kpi", "heading", "chart"]
+
+    def test_the_layout_of_a_refused_drag_is_its_own_version(self, editor):
+        drag, count = editor._tile_drag, len(editor.edit_history.versions)
+        drag._handle_msg({"action": "release", "id": "chart", "area": "top"})
+        _send_grid_layout(editor, ["chart", "select", "kpi", "heading"])
+        assert len(editor.edit_history.versions) == count
+        drag._handle_msg({"action": "refuse", "id": "chart", "area": "top"})
+        versions = editor.edit_history.versions[count:]
+        assert [v.metadata["ops"] for v in versions] == [[{"op": "layout", "args": {}}]]
+
+    def test_a_layout_long_after_a_release_is_its_own_version(self, editor, monkeypatch):
+        count = len(editor.edit_history.versions)
+        editor._tile_drag._handle_msg({"action": "release", "id": "kpi", "area": "sidebar"})
+        clock = time.monotonic() + 10
+        monkeypatch.setattr(time, "monotonic", lambda: clock)
+        _send_grid_layout(editor, ["select", "heading", "chart", "kpi"])
+        assert len(editor.edit_history.versions) == count + 1
 
     def test_drops_are_ignored_while_viewing(self, editor):
         editor.editable = False

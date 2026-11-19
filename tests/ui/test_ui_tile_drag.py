@@ -55,6 +55,17 @@ def _areas(editor):
 AREAS = (GRID, TOP, SIDEBAR)
 
 
+def _published(editor) -> list[dict]:
+    """Return the metadata of the published versions.
+
+    Unlike ``edit_history.versions``, this does not publish the edit in
+    progress, which from the test's thread could split an edit the server is
+    still recording.
+    """
+    artifact = editor.edit_history.artifact
+    return [v.metadata for v in artifact.versions] if artifact is not None else []
+
+
 def _tile(page, text):
     return page.locator(".muuri-grid-item").filter(has_text=text)
 
@@ -135,16 +146,19 @@ def test_reorder_the_top_bar_and_undo(page):
     serve_component(page, editor)
     top = stable_box(page.locator(".fd-controls-bar"), page)
     _drag_tile(page, "KPI", (top["x"] + top["width"] - 40, top["y"] + top["height"] / 2))
-    wait_until(lambda: _areas(editor)[TOP] == ["region", "kpi"], page, timeout=8000)
-    page.wait_for_timeout(500)
-    versions = len(editor.edit_history.versions)
+    moved = "Moved kpi to the top bar"
+    wait_until(
+        lambda: [m["label"] for m in _published(editor)[-1:]] == [moved], page, timeout=8000
+    )
+    versions = len(_published(editor))
 
     handles = page.locator(".fd-controls-bar .fd-control-handle")
     region = stable_box(handles.nth(0), page)
     _drag_control(page, handles.nth(1), (region["x"] + 24, region["y"] + region["height"] / 2))
-    wait_until(lambda: _areas(editor)[TOP] == ["kpi", "region"], page, timeout=8000)
+    wait_until(lambda: len(_published(editor)) > versions, page, timeout=8000)
     page.wait_for_timeout(500)
-    assert len(editor.edit_history.versions) == versions + 1
+    assert len(_published(editor)) == versions + 1
+    assert _areas(editor)[TOP] == ["kpi", "region"]
 
     editor.undo()
     wait_until(lambda: _areas(editor)[TOP] == ["region", "kpi"], page, timeout=8000)
@@ -203,20 +217,23 @@ def test_a_moved_tile_is_saved_and_reloaded(page):
     expect(page.locator(".fd-control-handle").first).to_be_hidden()
 
 
-def test_a_drag_off_the_grid_is_one_version(page):
+@pytest.mark.parametrize("coalesce", [0, 1])
+def test_a_drag_off_the_grid_is_one_version(page, coalesce):
     page.set_viewport_size({"width": 1400, "height": 900})
-    editor = _editor(history_coalesce=1)
+    editor = _editor(history_coalesce=coalesce)
     serve_component(page, editor)
-    editor.edit_history.flush()
     versions = len(editor.edit_history.versions)
     grid = _grid_box(page)
     _drag_tile(page, "Heading", (grid["x"] + 30, grid["y"] + grid["height"] - 40))
-    wait_until(lambda: _areas(editor)[SIDEBAR] == ["heading"], page, timeout=8000)
-    page.wait_for_timeout(500)
-    editor.edit_history.flush()
-    assert len(editor.edit_history.versions) == versions + 1
     move = {"op": "layout", "args": {"name": "heading", "area": SIDEBAR}}
-    assert move in editor.edit_history.versions[-1].metadata["ops"]
+    wait_until(
+        lambda: any(move in m.get("ops", []) for m in _published(editor)[versions:]),
+        page,
+        timeout=8000,
+    )
+    page.wait_for_timeout(1500)
+    assert len(_published(editor)) == versions + 1
+    assert _areas(editor)[SIDEBAR] == ["heading"]
 
 
 def test_tiles_keep_their_sizes_when_one_moves_to_the_top_bar(page):
