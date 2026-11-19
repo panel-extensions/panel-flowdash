@@ -590,6 +590,8 @@ class TestInspectorDraft:
         except AssertionError:
             dump()
             raise
+        if any("after draft.settle" in m for _, m in log):
+            dump()
 
     async def _held_back(self, editor, note):
         query = editor.add_component(QUERY)
