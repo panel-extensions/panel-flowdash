@@ -46,6 +46,8 @@ _NUMERIC_COLUMNS = ("integer", "number")
 _KEY_LIKE = re.compile(r"(^|[_\s])(id|key|code|index|idx|year|yr|zip|fips)($|[_\s])", re.I)
 
 _ERROR_STYLE = {"color": "var(--mui-palette-error-main)"}
+# Explicit, since an update with no styles keeps the error color.
+_NOTE_STYLE = {"color": "var(--mui-palette-text-secondary)"}
 
 
 def _is_subtype(source: str | None, of: str) -> bool:
@@ -209,35 +211,43 @@ class TransformOffer(Viewer):
         self._result.param.update(object=reason, styles=_ERROR_STYLE)
         self._confirm.disabled = True
 
+    def _allow(self, text: str):
+        self._result.param.update(object=text, styles=_NOTE_STYLE)
+        self._confirm.disabled = False
+
     def _preview(self):
-        """Show the number the input would get, and allow connecting only if there is one."""
+        """Show the number the input would get, and allow connecting only if there is one.
+
+        A table without a value yet can be connected all the same, with the
+        steps chosen; the input gets its number once the table has one.
+        """
         editor = self._editor()
         if editor is None or self._mapping is None:
             return
         if self._kind == "column" and not self.steps()[0]["column"]:
             self._refuse("Pick a column.")
             return
+        source_id, source_port = self._mapping[:2]
+        value = getattr(editor.graph.get_state(source_id), source_port, None)
+        if value is not None:
+            try:
+                result = apply_transform(parse_transform(self.steps()), value)
+            except Exception as exc:
+                self._refuse(f"This gives no number: {exc}")
+                return
+            number = as_number(result)
+            if number is None:
+                shown = "nothing" if result is None else repr(result)
+                self._refuse(f"This gives {shown}, not a number the input can show.")
+                return
         reason = editor._validate_connection(*self._mapping, transform=self.steps())
         if reason is not None:
             self._refuse(reason)
             return
-        source_id, source_port = self._mapping[:2]
-        value = getattr(editor.graph.get_state(source_id), source_port, None)
         if value is None:
-            self._refuse("The table has no value yet, so there is no number to show.")
-            return
-        try:
-            result = apply_transform(parse_transform(self.steps()), value)
-        except Exception as exc:
-            self._refuse(f"This gives no number: {exc}")
-            return
-        number = as_number(result)
-        if number is None:
-            shown = "nothing" if result is None else repr(result)
-            self._refuse(f"This gives {shown}, not a number the input can show.")
-            return
-        self._result.param.update(object=f"Gives {show_number(number)}", styles={})
-        self._confirm.disabled = False
+            self._allow("The table has no value yet; the input gets its number once it has one.")
+        else:
+            self._allow(f"Gives {show_number(number)}")
 
     def confirm(self) -> bool | str:
         """Create the connection with the chosen steps and close, or show why it failed."""

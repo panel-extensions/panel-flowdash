@@ -62,6 +62,7 @@ class Mixed(Viewer):
                 "when": pd.to_datetime(["2020-01-01", "2021-01-01"]),
                 "flag": [True, False],
                 "state": ["TX", "CA"],
+                "nullable": pd.array([1, None], dtype="Int64"),
             }
         )
 
@@ -218,7 +219,9 @@ class TestOffer:
         assert offer._confirm.disabled
         offer._column_text.value = "capacity"
         assert offer._result.object.startswith("The table has no value yet")
-        assert offer._confirm.disabled
+        assert not offer._confirm.disabled
+        assert offer.confirm() is True
+        assert editor.graph.edges[0]["transform"] == bridge_steps("capacity", "sum")
 
     def test_dropping_a_component_on_a_number_input_offers_steps(self, editor):
         total = editor.add_component("D/total", instance_id="total")
@@ -290,9 +293,15 @@ class TestBuiltinKPI:
         offer._column.value = "empty"
         offer._how.value = "mean"
         assert offer._confirm.disabled and "not a number" in offer._result.object
+        offer._column.value = "nullable"
+        offer._how.value = "last"
+        assert offer._result.object == "This gives <NA>, not a number the input can show."
         offer._column.value = "capacity"
         offer._how.value = "sum"
         assert offer._result.object == "Gives 1,500.50"
+        assert offer._result.styles["color"] != "var(--mui-palette-error-main)", (
+            "a valid choice after a refused one is not shown as an error"
+        )
         assert offer.confirm() is True
         assert editor._component_instances[kpi].value == 1500.5
 
