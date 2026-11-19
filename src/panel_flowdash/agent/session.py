@@ -120,10 +120,22 @@ class AgentSession:
         if editor.history:
             editor.edit_history.on_load = self._on_history_loaded
             self.drawer.param.watch(self._on_drawer_open, "open")
-            # AgentDrawer has no slot for a host's notices yet, so it goes below the drawer's header.
-            content = getattr(self.drawer, "_content", None)
-            if content is not None:
-                content.insert(1, self.history_notice)
+            self._place_history_notice()
+
+    def _place_history_notice(self):
+        """Put the history notice above the drawer's body, or leave it out if the drawer has changed.
+
+        AgentDrawer has no slot for a host's notices yet, so this reaches into its layout.
+        """
+        content = getattr(self.drawer, "_content", None)
+        if not isinstance(content, pn.layout.ListLike):
+            return
+        body = getattr(self.drawer, "_body", None)
+        index = next((i for i, obj in enumerate(content.objects) if obj is body), None)
+        if index is None:
+            content.append(self.history_notice)
+        else:
+            content.insert(index, self.history_notice)
 
     def _on_drawer_open(self, event=None):
         """Load the dashboard's stored history while the drawer is open, so it lists its versions."""

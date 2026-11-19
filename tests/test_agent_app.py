@@ -383,3 +383,31 @@ async def test_the_model_hears_of_a_run_of_the_users_edits_once(store, monkeypat
         "[The app published versions 1 to 4 of the artifact 'Live' "
         f"('dashboard:{model.dashboard_id}') and now holds the latest.]"
     ]
+
+
+async def test_the_history_notice_sits_above_the_drawers_body(store, monkeypatch):
+    session = AgentSession(_app(store, monkeypatch), create_agent("test"))
+    content = session.drawer._content.objects
+    assert content.index(session.history_notice) == content.index(session.drawer._body) - 1
+
+
+@pytest.mark.parametrize("layout", ["pane", "tuple", "no_body"])
+async def test_the_assistant_starts_whatever_layout_its_drawer_has(store, monkeypatch, layout):
+    import panel as pn
+    from panel_agents import AgentDrawer
+
+    init = AgentDrawer.__init__
+
+    def changed(self, *args, **kwargs):
+        init(self, *args, **kwargs)
+        if layout == "pane":
+            self._content = pn.pane.Markdown("drawer")
+        elif layout == "tuple":
+            self._content = tuple(self._content.objects)
+        else:
+            self._body = None
+
+    monkeypatch.setattr(AgentDrawer, "__init__", changed)
+    session = AgentSession(_app(store, monkeypatch), create_agent("test"))
+    if layout == "no_body":
+        assert session.drawer._content.objects[-1] is session.history_notice
