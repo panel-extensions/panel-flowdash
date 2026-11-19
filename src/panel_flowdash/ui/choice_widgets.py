@@ -44,6 +44,18 @@ class SuggestInput(_KeepValue, pmui.AutocompleteInput):
     """A text field suggesting a field's choices."""
 
 
+class OptionalIntInput(pmui.IntInput):
+    """An integer field that shows None as empty; the plain one renders it as 0."""
+
+    value = param.Integer(default=None, allow_None=True)
+
+
+class OptionalFloatInput(pmui.FloatInput):
+    """A number field that shows None as empty; the plain one renders it as 0."""
+
+    value = param.Number(default=None, allow_None=True)
+
+
 def _missing(value: t.Any) -> str:
     return f"{value} (not available)"
 
@@ -51,11 +63,11 @@ def _missing(value: t.Any) -> str:
 def _empty_value(parameter: param.Parameter, current: t.Any) -> tuple[bool, t.Any]:
     """Return whether *parameter* can be left empty and the value that leaves it so.
 
-    A text field is empty as ``""``, or as None when it holds None; any
-    other field only as None, if it allows None.
+    A text field is empty as None when it allows None and defaults to it,
+    and as ``""`` otherwise; any other field only as None, if it allows None.
     """
     if isinstance(parameter, param.String):
-        return True, None if current is None and parameter.allow_None else ""
+        return True, None if parameter.allow_None and parameter.default is None else ""
     return bool(parameter.allow_None), None
 
 
@@ -99,22 +111,29 @@ def choice_widget(
     }
 
 
+def _selector_options(parameter: param.Selector) -> dict[str, t.Any]:
+    """Return a selector's options as declared, without values it was given since."""
+    declared = ((parameter.metadata or {}).get("flowdash") or {}).get("objects")
+    return dict(declared) if declared is not None else dict(parameter.get_range())
+
+
 def plain_widget(parameter: param.Parameter, current: t.Any) -> dict[str, t.Any] | None:
     """Return the widget spec for a field without choices, or None for Panel's default.
 
-    A list selector is a multi-select, a selector that allows None a dropdown
-    with an empty option, and an optional number that is None an empty number
-    field that shows None as empty rather than as 0 or its lower bound.
+    A list selector is a multi-select and a selector a dropdown, either
+    keeping a value its objects no longer hold, marked as not available, and
+    a dropdown offering an empty option if the selector allows None. An
+    optional number shows None as empty rather than as 0 or its lower bound.
     """
     if isinstance(parameter, param.ListSelector):
-        options = dict(parameter.get_range())
+        options = _selector_options(parameter)
         extra = [value for value in current or [] if value not in options.values()]
         options.update({_missing(value): value for value in extra})
         return {"type": ChoiceMultiSelect, "options": options}
-    if isinstance(parameter, param.Selector) and parameter.allow_None:
-        return _select(parameter, dict(parameter.get_range()), current)
+    if isinstance(parameter, param.Selector):
+        return _select(parameter, _selector_options(parameter), current)
     if isinstance(parameter, param.Number) and parameter.allow_None:
-        widget = pmui.IntInput if isinstance(parameter, param.Integer) else pmui.FloatInput
+        widget = OptionalIntInput if isinstance(parameter, param.Integer) else OptionalFloatInput
         return {"type": widget, "placeholder": EMPTY}
     return None
 

@@ -2,6 +2,7 @@
 
 import asyncio
 import enum
+import json
 import time
 
 import pandas as pd
@@ -14,6 +15,7 @@ from panel.viewable import Viewer
 from panel_flowdash import Choices, columns_of, port_types, register, register_port_type
 from panel_flowdash.component_spec import build_component_spec
 from panel_flowdash.config_choices import compute_choices, node_choices
+from panel_flowdash.dashboard_store import DashboardModel
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.registry import RegistryEntry
 from panel_flowdash.ui.choice_widgets import (
@@ -341,7 +343,9 @@ class TestChoiceWidget:
         }
         nullable = param.String(default=None, allow_None=True)
         assert choice_widget(nullable, Choices(["a"]), None)["options"] == {EMPTY: None, "a": "a"}
-        assert choice_widget(nullable, Choices(["a"]), "a")["options"] == {EMPTY: "", "a": "a"}
+        assert choice_widget(nullable, Choices(["a"]), "a")["options"] == {EMPTY: None, "a": "a"}
+        text = param.String(default="x", allow_None=True)
+        assert choice_widget(text, Choices(["a"]), "a")["options"] == {EMPTY: "", "a": "a"}
 
     def test_a_field_that_allows_none_can_be_cleared(self):
         field = param.Integer(default=None, allow_None=True)
@@ -398,8 +402,13 @@ class TestPlainWidget:
         assert spec["type"] is ChoiceSelect
         assert spec["options"] == {EMPTY: None, "x": "x", "y": "y"}
 
-    def test_a_selector_without_none_keeps_panels_widget(self):
-        assert plain_widget(param.Selector(default="x", objects=["x", "y"]), "x") is None
+    def test_a_selector_without_none_has_no_empty_option(self):
+        spec = plain_widget(param.Selector(default="x", objects=["x", "y"]), "x")
+        assert spec["type"] is ChoiceSelect and spec["options"] == {"x": "x", "y": "y"}
+
+    def test_a_selector_keeps_a_value_its_objects_lack(self):
+        spec = plain_widget(param.Selector(default="x", objects=["x", "y"]), "gone")
+        assert spec["options"] == {"gone (not available)": "gone", "x": "x", "y": "y"}
 
     @pytest.mark.parametrize("cls", [param.Integer, param.Number])
     def test_an_optional_number_shows_none_as_empty(self, cls):
@@ -409,6 +418,8 @@ class TestPlainWidget:
         state = State()
         form = pn.Param(state, parameters=["n"], widgets={"n": plain_widget(State.param.n, None)})
         assert form._widgets["n"].value is None
+        # The browser shows the model's value; a plain number input sends 0 for None.
+        assert form._widgets["n"].get_root().data.value is None
         form._widgets["n"].value = 3
         assert state.n == 3
 
@@ -629,6 +640,7 @@ def _schema_components():
         inner: Inner = Inner()
         color: Color = Color.red
         maybe_color: Color | None = None
+        colors: list[Color] = []
         anything: object = None
         kinds: list[Literal["a", "b"]] = []
         mode: Literal["x", "y"] | None = None
@@ -672,6 +684,23 @@ class TestPlacingSchemaComponents:
         form = _form(editor)
         names = [n for n in state.param if n != "name"]
         assert names and all(n in form._widgets for n in names)
+
+    async def test_ref_fields_are_labelled_by_their_own_name(self):
+        @register(
+            page=False,
+            component=True,
+            title="Schema",
+            config_schema=_schema_components()["pydantic"],
+        )
+        def app(config):
+            return "schema"
+
+        spec = build_component_spec(RegistryEntry.from_app(app, app_id="Demo/schema"))
+        labels = {f.name: f.label for f in spec.config}
+        assert labels["inner"] == "Inner" and labels["maybe_color"] == "Maybe Color"
+        assert labels["colors"] == "Colors"
+        p = spec.config_state_class.param
+        assert isinstance(p.colors, param.ListSelector) and p.colors.objects == ["red", "blue"]
 
     async def test_pydantic_defaults_are_json_data(self):
         @register(
@@ -729,3 +758,57 @@ class TestInspectorCoalescing:
         await _settle(0.8)
         assert 1 <= len(CALLS) <= 2
         assert "when" in CALLS[-1].columns
+
+
+@register(page=False, component=True, title="Params", config_schema=_schema_components()["param"])
+def params_app(config):
+    return "params"
+
+
+@register(page=False, component=True, title="Json", config_schema=_schema_components()["json"])
+def json_app(config):
+    return "json"
+
+
+@register(page=False, component=True, title="Modes", config=["mode"])
+class Modes(Viewer):
+    mode = param.Selector(default="a", objects=["a", "b"])
+
+    def __panel__(self):
+        return self.mode
+
+
+class TestSavedConfig:
+    def _reload(self, editor):
+        data = json.loads(json.dumps(editor.to_model().to_dict()))
+        reloaded = FlowDash(
+            editor.components, notifications=False, include_builtin_components=False
+        )
+        reloaded.load_model(DashboardModel.from_dict(data))
+        return reloaded
+
+    @pytest.mark.parametrize(("app", "field"), [(params_app, "span"), (json_app, "pair")])
+    async def test_a_tuple_survives_save_and_reload(self, app, field):
+        editor = FlowDash({"Demo/app": app}, notifications=False, include_builtin_components=False)
+        node = editor.add_component("Demo/app")
+        editor._apply_config_patch(node, {field: [5, 6]})
+        assert getattr(editor.graph.get_config_state(node), field) == (5, 6)
+        reloaded = self._reload(editor)
+        assert getattr(reloaded.graph.get_config_state(node), field) == (5, 6)
+
+    async def test_a_saved_selector_value_its_objects_lack_is_kept_and_flagged(self):
+        editor = FlowDash(
+            {"Demo/modes": Modes}, notifications=False, include_builtin_components=False
+        )
+        node = editor.add_component("Demo/modes")
+        editor._tile_items[0]["config"] = {"mode": "gone"}
+        reloaded = self._reload(editor)
+        state = reloaded.graph.get_config_state(node)
+        assert state.mode == "gone"
+        assert reloaded._tile_items[0]["config"] == {"mode": "gone"}
+        select_on_canvas(reloaded._flow, node_id=node)
+        assert _form(reloaded)._widgets["mode"].options == {
+            "gone (not available)": "gone",
+            "a": "a",
+            "b": "b",
+        }

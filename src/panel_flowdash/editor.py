@@ -43,6 +43,7 @@ from panel_flowdash.component_spec import (
     _flowdash_metadata,
     build_component_specs,
     config_json_schema,
+    config_value,
 )
 from panel_flowdash.dashboard_store import (
     BaseDashboardStore,
@@ -2316,7 +2317,7 @@ class FlowDash(Viewer):
         for key, value in patch.items():
             if config_state is not None and hasattr(config_state.param, key):
                 try:
-                    setattr(config_state, key, value)
+                    setattr(config_state, key, config_value(config_state.param[key], value))
                 except Exception as exc:
                     logger.warning("Config '%s' rejected on %s: %s", key, node_id, exc)
                     continue
@@ -2336,7 +2337,7 @@ class FlowDash(Viewer):
         for key, value in (config or {}).items():
             if hasattr(config_state.param, key):
                 try:
-                    setattr(config_state, key, value)
+                    setattr(config_state, key, config_value(config_state.param[key], value))
                 except Exception as exc:
                     logger.warning("Saved config '%s' rejected on %s: %s", key, instance_id, exc)
         return {name: getattr(config_state, name) for name in config_state.param if name != "name"}
@@ -5221,7 +5222,7 @@ class FlowDash(Viewer):
         for key, value in patch.items():
             if config_state is not None and hasattr(config_state.param, key):
                 try:
-                    setattr(config_state, key, value)
+                    setattr(config_state, key, config_value(config_state.param[key], value))
                 except Exception as exc:
                     logger.warning("Config '%s' rejected on %s: %s", key, instance_id, exc)
         item["config"] = copy.deepcopy(target)

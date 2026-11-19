@@ -145,7 +145,7 @@ def _config_from_param_class(
             )
         )
 
-    params = {name: copy.copy(p) for name, p in selected.items()}
+    params = {name: _lenient(copy.copy(p)) for name, p in selected.items()}
     state_cls = type(f"ConfigState_{cls.__name__}", (param.Parameterized,), params)
     return state_cls, fields
 
@@ -160,24 +160,13 @@ _JSON_TYPES = {
 }
 
 
-def _json_safe(value: Any) -> bool:
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return True
-    if isinstance(value, list):
-        return all(_json_safe(v) for v in value)
-    if isinstance(value, dict):
-        return all(isinstance(k, str) and _json_safe(v) for k, v in value.items())
-    return False
-
-
 def _field_schema(p: param.Parameter) -> dict[str, Any]:
     """Return the JSON schema the canvas validates one config field's value against.
 
-    Only what JSON schema states plainly is kept: the basic type, nullability,
-    plain JSON enum values and numeric bounds. Anything else, such as a tuple,
-    an Enum, a nested model or an untyped param, gets a schema without a type,
-    so its values are not checked by the canvas; the param still validates
-    them.
+    Only what JSON schema states plainly is kept: the basic type, nullability
+    and numeric bounds. Anything else, such as a selector, a tuple, a nested
+    model or an untyped param, gets a schema without a type, so its values are
+    not checked by the canvas; the param still validates them.
     """
     prop: dict[str, Any] = {}
     if p.label:
@@ -185,9 +174,7 @@ def _field_schema(p: param.Parameter) -> dict[str, Any]:
     if p.doc:
         prop["description"] = " ".join(p.doc.split())
     if isinstance(p, param.Selector):
-        values = list(p.get_range().values()) if not isinstance(p, param.ListSelector) else None
-        if values is not None and all(_json_safe(v) for v in values):
-            prop["enum"] = values + ([None] if p.allow_None and None not in values else [])
+        # Config selectors keep values their objects no longer hold, see _lenient.
         return prop
     kind = next((k for cls, k in _JSON_TYPES.items() if type(p) is cls), None)
     if kind is None:
@@ -216,6 +203,28 @@ def config_json_schema(cls: type[param.Parameterized] | None) -> dict[str, Any] 
         if name not in _BASE_PARAMS and not name.startswith("_")
     }
     return {"type": "object", "properties": properties}
+
+
+def config_value(parameter: param.Parameter, value: Any) -> Any:
+    """Return *value* in the form *parameter* takes, e.g. a list read from JSON as a tuple."""
+    if isinstance(parameter, param.Tuple) and isinstance(value, list):
+        return tuple(value)
+    return value
+
+
+def _lenient(p: param.Parameter) -> param.Parameter:
+    """Return config param *p* accepting values outside its objects, if it is a selector.
+
+    A saved value its objects no longer hold is kept, and the inspector marks
+    it as not available, rather than resetting it to the default on load.
+    """
+    if isinstance(p, param.Selector):
+        # Param adds an outside value to the objects, so the inspector offers these instead.
+        metadata = dict(p.metadata or {})
+        metadata["flowdash"] = {**metadata.get("flowdash", {}), "objects": dict(p.get_range())}
+        p.metadata = metadata
+        p.check_on_set = False
+    return p
 
 
 def _declared_choices(metadata: Any) -> dict[str, Any] | None:
@@ -349,7 +358,7 @@ def _config_from_mapping(
     for name, prop in properties.items():
         prop = prop if isinstance(prop, dict) else {}
         default = prop.get("default")
-        p = _param_from_schema(prop, default)
+        p = _lenient(_param_from_schema(prop, default))
         params[name] = p
         kind, _ = _schema_type(prop)
         fields.append(
@@ -392,7 +401,11 @@ def _resolve_refs(prop: dict[str, Any], defs: dict[str, Any]) -> dict[str, Any]:
     if isinstance(ref, str) and ref.startswith("#/$defs/"):
         target = defs.get(ref.rsplit("/", 1)[-1])
         if isinstance(target, dict):
+            # The target's title and description name its class, not this field.
+            target = {k: v for k, v in target.items() if k not in ("title", "description")}
             prop = {**target, **{k: v for k, v in prop.items() if k != "$ref"}}
+    if isinstance(prop.get("items"), dict):
+        prop["items"] = _resolve_refs(dict(prop["items"]), defs)
     if isinstance(prop.get("anyOf"), list):
         prop["anyOf"] = [
             _resolve_refs(dict(o), defs) if isinstance(o, dict) else o for o in prop["anyOf"]
@@ -439,7 +452,7 @@ def _pydantic_to_properties(cls: type) -> dict[str, Any]:
             dict(described.get(fieldinfo.alias or name) or described.get(name) or {}), defs
         )
         default = _json_default(fieldinfo.annotation, default)
-        prop.setdefault("title", name)
+        prop.setdefault("title", name.replace("_", " ").title())
         extra = (
             fieldinfo.json_schema_extra if isinstance(fieldinfo.json_schema_extra, dict) else {}
         )
