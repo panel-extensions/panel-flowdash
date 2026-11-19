@@ -21,6 +21,8 @@ from panel.layout import Column
 from panel.widgets import CodeEditor
 from panel.widgets.base import CompositeWidget
 
+from panel_flowdash.component_spec import widget_hint
+
 #: The ``widget`` metadata value that asks for a code editor.
 CODE_WIDGET = "code"
 
@@ -32,12 +34,9 @@ _LABEL_SX = {"color": "text.secondary"}
 
 def code_language(parameter: param.Parameter) -> str | None:
     """Return the language a text param is edited as code in, or None if it is plain text."""
-    if not isinstance(parameter, param.String):
+    if not isinstance(parameter, param.String) or widget_hint(parameter) != CODE_WIDGET:
         return None
-    flowdash = (parameter.metadata or {}).get("flowdash")
-    if not isinstance(flowdash, dict) or flowdash.get("widget") != CODE_WIDGET:
-        return None
-    language = flowdash.get("language")
+    language = (parameter.metadata or {})["flowdash"].get("language")
     return language if isinstance(language, str) and language else "text"
 
 
