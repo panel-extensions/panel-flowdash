@@ -10,6 +10,7 @@ check sees the node's inputs.
 
 from __future__ import annotations
 
+import asyncio
 import typing as t
 import weakref
 from functools import partial
@@ -29,6 +30,21 @@ from panel_flowdash.ui.text import text_alert
 
 if t.TYPE_CHECKING:
     from panel_flowdash.editor import FlowDash
+
+
+def _schedule(check: t.Callable[[], t.Awaitable]):
+    """Run *check* on the event loop, or to completion here outside a session without one.
+
+    Without a session nor a running loop, e.g. in a script or a sync test,
+    param would start a loop of its own and leave it open.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        if pn.state.curdoc is None:
+            asyncio.run(check())
+            return
+    param.parameterized.async_executor(check)
 
 
 class ConfigDraft:
@@ -171,9 +187,7 @@ class ConfigDraft:
         self._runs[self.instance_id] = run
         # A rewire by the agent proposes too; the draft is the person's, so it
         # must not be applied inside the agent's tool call and turn.
-        person_context().run(
-            param.parameterized.async_executor, partial(self.check, run, dict(self._pending))
-        )
+        person_context().run(_schedule, partial(self.check, run, dict(self._pending)))
 
     async def check(self, run: int, pending: dict[str, t.Any]) -> CheckResult:
         """Check *pending* and apply it if it passes and no newer change was made meanwhile.
