@@ -143,6 +143,7 @@ from panel_flowdash.ui.text import (
 )
 from panel_flowdash.ui.tile import TILE_KEY_PREFIX, Tile, resolve_framed
 from panel_flowdash.ui.tile_bands import band_labels, base_band, reference_width
+from panel_flowdash.ui.tile_drag import TileDrag
 from panel_flowdash.util import (
     close_dialog,
     gate_view,
@@ -216,7 +217,7 @@ _UNFRAMED_BAND = "fd-unframed-band"
 
 # Keys of a persisted layout entry the editor applies itself rather than TileGrid,
 # whose layout the browser rewrites with only the keys it knows.
-_TILE_OPTIONS = ("framed",)
+_TILE_OPTIONS = ("framed", "area")
 
 
 def _key_layout(layout: list, instance_ids: list[str]) -> list[dict]:
@@ -239,6 +240,12 @@ def _key_saved_layout(layout: list | None, legacy_ids: list[str]) -> list[dict]:
         elif i < len(legacy_ids):
             keyed.append({**spec, "instance_id": legacy_ids[i]})
     return keyed
+
+
+def _display_rank(entries: dict[str, dict], item: dict, position: int) -> tuple:
+    """Order a placed item by its layout index, then those without one by placement."""
+    index = entries.get(item["instance_id"], {}).get("index")
+    return (index is None, index or 0, position)
 
 
 def _align_layout(keyed: list[dict], instance_ids: list[str]) -> list[dict]:
@@ -1098,6 +1105,16 @@ class FlowDash(Viewer):
         self._grid_ids: list[str | None] = []
         # Each tile's own frame option, by instance id, kept beside the grid's layout.
         self._tile_frames: dict[str, bool] = {}
+        # The area saved with each tile on the grid that has one, kept beside the
+        # grid's layout like the frames: "grid" for a component that would go
+        # beside it, or where a placeholder goes for those who can load it.
+        self._grid_areas: dict[str, str] = {}
+        # The area and layout entry of each component shown beside the grid, by instance id.
+        self._area_entries: dict[str, tuple[str, dict]] = {}
+        # The grid's layout while it waits for the browser to drop removed tiles.
+        self._deferred_grid_layout: list[dict] | None = None
+        # The views shown beside the grid, by area, as (instance id, view) in order.
+        self._area_views: dict[str, list] = {}
         # The framed tiles of the grid, by instance id, kept so a grid rebuild
         # does not re-render them.
         self._inspect_tiles: dict[str, Tile] = {}
@@ -1808,6 +1825,8 @@ class FlowDash(Viewer):
 
     def _forget_layout(self, node_id: str):
         self._grid_ids = [None if i == node_id else i for i in self._grid_ids]
+        self._area_entries.pop(node_id, None)
+        self._grid_areas.pop(node_id, None)
         self._pending_tile_layout = [
             spec for spec in self._pending_tile_layout if spec.get("instance_id") != node_id
         ]
@@ -2215,8 +2234,11 @@ class FlowDash(Viewer):
         if controls is None or controls.position == self.settings.controls_position:
             return
         controls.position = self.settings.controls_position
-        if self._grid_on_screen:
-            self._apply_mode_state()
+        # Controls that were not moved follow the setting.
+        if self._grid_populated:
+            self._rebuild_tile_grid()
+        else:
+            self._rebuild_sidebar()
 
     @param.depends("settings.node_previews", watch=True)
     def _sync_node_previews(self):
@@ -2629,6 +2651,12 @@ class FlowDash(Viewer):
     def _build_component_view(self):
         self._dashboard_bar = bar = DashboardBar(editor=self, layout=self.settings.header_layout)
         self._view_controls = ControlsBar(editor=self, position=self.settings.controls_position)
+        self._tile_drag = TileDrag(
+            grid=self._grid_class,
+            uid=self._view_controls.uid,
+            on_move=self._on_tile_dropped,
+            on_refuse=self._on_tile_refused,
+        )
         self._save_button = bar.save_button
         self._download_button = bar.download_button
         self._refresh_button = bar.refresh_button
@@ -2701,6 +2729,7 @@ class FlowDash(Viewer):
             self._status_bar,
             self._fullscreen_overlay,
             self._fullscreen_controller,
+            self._tile_drag,
             self._split_view.storage,
             sizing_mode="stretch_both",
             stylesheets=[PRESENTATION_CSS],
@@ -2745,6 +2774,11 @@ class FlowDash(Viewer):
         # it itself whenever the grid is rebuilt or sized.
         from_browser = self._tile_grid._in_process__events.get(pn.state.curdoc, {})
         if event.name in from_browser:
+            if event.name == "layout" and len(event.new) != len(self._grid_ids):
+                # Sent for tiles the grid showed before a change the browser has
+                # not applied yet, so it would size the wrong tiles.
+                self._tile_grid.layout = event.old
+                return
             self._auto_tiles.clear()
             self._mark_rearranged()
 
@@ -2831,6 +2865,7 @@ class FlowDash(Viewer):
                 show_breakpoint_toolbar=False,
                 sizing_mode="stretch_both",
                 stylesheets=[GRID_EDIT_CSS],
+                css_classes=[self._grid_class],
             )
             self._tile__grid.param.watch(self._on_tile_layout, "layout")
             self._tile__grid.param.watch(
@@ -2838,6 +2873,70 @@ class FlowDash(Viewer):
             )
             self._tile__grid.param.watch(self._on_tile_selected, "selected")
         return self._tile__grid
+
+    @property
+    def _grid_class(self) -> str:
+        return f"fd-grid-{id(self):x}"
+
+    def _sync_tile_drag(self):
+        """Tell the page which tiles and components can be dragged where, and whether now."""
+        drag = getattr(self, "_tile_drag", None)
+        if drag is None:
+            return
+        controls = self._view_controls
+        split = self.mode == "split"
+        enabled = (
+            self.editable
+            and not self.preview
+            and self._grid_on_screen
+            and self.controls_bar
+            and not self.fullscreen
+        )
+        items = {item["instance_id"]: item for item in self._tile_items}
+        tiles = {}
+        for instance_id in self._grid_ids:
+            tile = self._inspect_tiles.get(instance_id)
+            if instance_id not in items or tile is None:
+                continue
+            key = next((c for c in tile.css_classes if c.startswith(TILE_KEY_PREFIX)), None)
+            if key is not None:
+                item = items[instance_id]
+                tiles[key[len(TILE_KEY_PREFIX) :]] = {
+                    "id": instance_id,
+                    "fits": tile_layout.fits_beside(self, item),
+                    # A placeholder stays put because it cannot be loaded, not for its size.
+                    "refusal": "Unavailable components stay on the grid"
+                    if "placeholder" in item
+                    else "",
+                }
+        handles = {
+            key: {
+                "id": instance_id,
+                "fits": True,
+                "title": tile_layout.tile_title(self, items[instance_id]),
+            }
+            for instance_id, key in controls.keys.items()
+            if instance_id in items
+        }
+        drag.param.update(
+            enabled=enabled,
+            areas=[tile_layout.TOP] if split else [tile_layout.TOP, tile_layout.SIDEBAR],
+            tiles=tiles,
+            controls=handles,
+        )
+
+    def _on_tile_dropped(self, instance_id: str, area: str, before: str | None):
+        if not self.editable or not any(i["instance_id"] == instance_id for i in self._tile_items):
+            return
+        try:
+            tile_layout.move_to_area(self, instance_id, area, before)
+        except ValueError as exc:
+            self._notify("info", str(exc), duration=4000)
+
+    def _on_tile_refused(self, instance_id: str, area: str):
+        item = next((i for i in self._tile_items if i["instance_id"] == instance_id), None)
+        if item is not None:
+            self._notify("info", tile_layout.refusal(self, item, area), duration=4000)
 
     def _preview_band(self) -> str | None:
         """Return the band the grid is laid out and edited for, or None to follow its width.
@@ -3026,7 +3125,7 @@ class FlowDash(Viewer):
         self._panel_slot.visible = self._inspector.visible or self._layout_panel.visible
         self._status_bar.visible = self.editable
         self._split_view.events.active = split
-        self._view_controls.beside_canvas = split
+        self._view_controls.param.update(beside_canvas=split, editing=interactive and showing_grid)
         if split != self._split_shown:
             self._split_shown = split
             self._fold_inspector(split)
@@ -3053,6 +3152,7 @@ class FlowDash(Viewer):
         if showing_canvas:
             self._fit_placed_nodes()
         self._sync_tile_selection()
+        self._sync_tile_drag()
 
     @param.depends("mode", watch=True)
     def _remember_mode(self):
@@ -3161,26 +3261,47 @@ class FlowDash(Viewer):
         self._pending_tile_layout = self.layout
         self._pending_grid_config = self._grid_config()
 
-    def _rebuild_sidebar(self):
-        """Publish views of the placed components that opted into sidebar placement.
+    def _rebuild_sidebar(self, entries: dict[str, dict] | None = None):
+        """Publish views of the placed components shown beside the grid, in the top bar or sidebar.
 
         Independent of the wiring/dashboard toggle, so it runs whenever the
         canvas changes rather than only when the tile grid is visible.
+        *entries* are the layout entries by instance id, read from the layout
+        unless given.
         """
-        sidebar_views = []
-        for i, item in enumerate(self._tile_items):
-            entry = self._component_entries.get(item["component_id"])
-            if entry is None or not entry.metadata.sidebar:
-                continue
-            view = self._tile_objects[i] if i < len(self._tile_objects) else None
-            if view is None:
-                view = markdown_pane(f"*{escape_markdown(entry.title)}*")
-            sidebar_views.append(view)
-        self.sidebar = sidebar_views
-        self._view_controls.sync()
+        if entries is None:
+            entries = {e["instance_id"]: e for e in self.layout if "instance_id" in e}
+        positions = {item["instance_id"]: i for i, item in enumerate(self._tile_items)}
+        areas = {}
+        for area in (tile_layout.TOP, tile_layout.SIDEBAR):
+            views = areas[area] = []
+            for item in tile_layout.area_items(self, area, entries):
+                i = positions[item["instance_id"]]
+                view = self._tile_objects[i] if i < len(self._tile_objects) else None
+                if view is None:
+                    title = tile_layout.tile_title(self, item)
+                    view = markdown_pane(f"*{escape_markdown(title)}*")
+                views.append((item["instance_id"], view))
+        self._area_views = areas
+        self._view_controls.placed = {
+            iid: area for area, views in areas.items() for iid, _ in views
+        }
+        self.sidebar = [view for views in areas.values() for _, view in views]
+        if self._view_controls.sync():
+            self._place_controls()
+        self._sync_tile_drag()
         bar = self._dashboard_bar
         bar.health.track()
         bar.health_popover.sync()
+
+    def _place_controls(self):
+        """Place the top bar and sidebar around the grid again, after the sidebar came or went."""
+        if self.mode == "split" or not self._grid_on_screen:
+            return
+        controls = self._view_controls
+        placed = (controls._row, controls._left_row, self._tile_grid)
+        rest = [o for o in self._workspace_area if not any(o is p for p in placed)]
+        self._workspace_area[:] = [*controls.layout(self._tile_grid), *rest]
 
     @pn.io.hold()
     def _rebuild_tile_grid(self):
@@ -3192,21 +3313,37 @@ class FlowDash(Viewer):
             for spec in layout
             if isinstance(spec.get("framed"), bool)
         }
+        entries = {spec["instance_id"]: spec for spec in layout if "instance_id" in spec}
         config = self._pending_grid_config
         if config is None and self._grid_populated:
             config = self._grid_config()
         grid_views, grid_ids = [], []
-        for i, item in enumerate(self._tile_items):
-            entry = self._component_entries.get(item["component_id"])
-            if "placeholder" not in item and (entry is None or entry.metadata.sidebar):
+        self._grid_areas, self._area_entries = {}, {}
+        # The grid's objects follow the tiles' display order. TileGrid sorts its
+        # tiles by object order when the objects change and only moves them to
+        # their layout index afterwards, so other orders leave tiles overlapping.
+        positions = range(len(self._tile_items))
+        for i in sorted(positions, key=lambda i: _display_rank(entries, self._tile_items[i], i)):
+            item = self._tile_items[i]
+            instance_id = item["instance_id"]
+            area = tile_layout.area_of(self, item, entries)
+            if area != tile_layout.GRID:
+                if area is not None and instance_id in entries:
+                    self._area_entries[instance_id] = (area, dict(entries[instance_id]))
                 continue
+            stored = entries.get(instance_id, {}).get("area")
+            if stored == tile_layout.GRID or (
+                "placeholder" in item and stored in tile_layout.AREAS
+            ):
+                self._grid_areas[instance_id] = stored
             view = self._tile_objects[i] if i < len(self._tile_objects) else None
             if view is None:
-                view = markdown_pane(f"*{escape_markdown(entry.title)}*")
+                view = markdown_pane(f"*{escape_markdown(tile_layout.tile_title(self, item))}*")
             grid_views.append(self._grid_view(item, view))
             grid_ids.append(item["instance_id"])
         # TileGrid keeps the selection on its tile while the objects change, but
         # the instance ids only follow afterwards.
+        changed = grid_ids != self._grid_ids
         self._rebuilding_grid = True
         try:
             self._tile_grid[:] = grid_views
@@ -3214,14 +3351,40 @@ class FlowDash(Viewer):
             self._rebuilding_grid = False
         self._grid_ids = grid_ids
         self._grid_populated = True
-        self._rebuild_sidebar()
+        self._rebuild_sidebar(entries)
         # Size hints in pixels convert to the layout's percentages at the restored reference width.
         if config is not None:
             self._apply_grid_config(config)
             self._pending_grid_config = None
-        self._tile_grid.layout = self._sized_layout(_align_layout(layout, grid_ids))
+        self._set_grid_layout(self._sized_layout(_align_layout(layout, grid_ids)), changed)
         self._pending_tile_layout = []
         self._sync_tile_selection()
+
+    def _set_grid_layout(self, layout: list[dict], changed: bool = False):
+        """Give the grid its positional *layout*, after its objects when they *changed*.
+
+        TileGrid applies a layout that arrives with its objects to the tiles it
+        showed before (its `objects` handler runs after its `layout` handler),
+        so with a tile removed from the middle each later tile would take the
+        size of the tile after it. A rendered grid therefore gets its objects
+        in one message and the layout in the next; `layout` reads the waiting
+        one meanwhile.
+        """
+        doc = pn.state.curdoc
+        # A rebuild in the same message as one that changed the tiles waits as well.
+        removed = changed or self._deferred_grid_layout is not None
+        if not (removed and doc is not None and self._tile_grid._models):
+            self._deferred_grid_layout = None
+            self._tile_grid.layout = layout
+            return
+        self._deferred_grid_layout = layout
+
+        def flush():
+            if self._deferred_grid_layout is layout:
+                self._deferred_grid_layout = None
+                self._tile_grid.layout = layout
+
+        doc.add_next_tick_callback(flush)
 
     def _placed_layout(self, keyed: list[dict]) -> list[dict]:
         """Drop the layout entries of tiles that are no longer placed."""
@@ -3235,16 +3398,34 @@ class FlowDash(Viewer):
         One entry per tile, keyed by the tile's ``instance_id``.
         """
         if self._grid_populated:
-            keyed = _key_layout(self._tile_grid.layout, self._grid_ids)
+            grid_layout = self._deferred_grid_layout
+            if grid_layout is None:
+                grid_layout = self._tile_grid.layout
+            keyed = _key_layout(grid_layout, self._grid_ids)
             ids = {spec["instance_id"] for spec in keyed}
             keyed += [
                 {"instance_id": iid}
                 for iid in self._grid_ids
-                if iid in self._tile_frames and iid not in ids
+                if (iid in self._tile_frames or iid in self._grid_areas) and iid not in ids
             ]
             for spec in keyed:
                 if spec["instance_id"] in self._tile_frames:
                     spec["framed"] = self._tile_frames[spec["instance_id"]]
+                if spec["instance_id"] in self._grid_areas:
+                    spec["area"] = self._grid_areas[spec["instance_id"]]
+            # Beside the grid, after its tiles, so each area keeps its order.
+            beside = sorted(
+                self._area_entries.values(),
+                key=lambda pair: (
+                    tile_layout.AREAS.index(pair[0]),
+                    pair[1].get("index") is None,
+                    pair[1].get("index") or 0,
+                ),
+            )
+            keyed += [
+                {**entry, "index": len(self._grid_ids) + rank}
+                for rank, (_, entry) in enumerate(beside)
+            ]
             return self._placed_layout(keyed)
         return self._placed_layout(self._pending_tile_layout)
 
@@ -4537,6 +4718,8 @@ class FlowDash(Viewer):
         self._tile_items = []
         self._tile_objects = []
         self._rejected_config = {}
+        self._area_entries = {}
+        self._grid_areas = {}
         self._inspect_tiles.clear()
         self._close_inspection_dialog()
         self._edge_id_map.clear()

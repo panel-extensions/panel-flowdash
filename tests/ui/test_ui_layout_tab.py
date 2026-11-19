@@ -49,7 +49,7 @@ def test_layout_tab_shows_handles_options_and_the_grid_summary(page):
     expect(page.get_by_text("Selected tile")).to_be_visible()
     expect(page.get_by_text("12-column grid")).to_be_visible()
     expect(page.get_by_text("2 tiles, 1 component hidden")).to_be_visible()
-    expect(page.get_by_text("in controls bar")).to_be_visible()
+    expect(page.get_by_text("in top bar")).to_be_visible()
     # The handles stay visible in the Layout tab rather than only on hover.
     drag = page.locator(".muuri-handle.drag").first
     expect(drag).to_be_visible()

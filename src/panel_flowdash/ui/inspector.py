@@ -40,9 +40,13 @@ from panel_flowdash.ui.status_bar import (
 )
 from panel_flowdash.ui.text import text_alert, text_typography
 from panel_flowdash.ui.tile_layout import (
+    AREA_NAMES,
     FRAME_DEFAULT,
+    GRID,
+    area_of,
     frame_choices,
     frame_value,
+    move_buttons,
     tile_entry,
     update_tile,
 )
@@ -125,6 +129,8 @@ class Inspector(Viewer):
         self._config_status: tuple[str, str] | None = None
         self._data_column: pn.Column | None = None
         self._inputs_column: pn.Column | None = None
+        # The Move to buttons of the shown Tile tab.
+        self._tile_move_buttons: list = []
         self._refresh_inputs: t.Callable[[], None] = lambda: None
         # The latest config check started per node, see ConfigDraft.
         self._check_runs: dict[str, int] = {}
@@ -739,17 +745,52 @@ class Inspector(Viewer):
     # Tile
 
     def _tile_tab(self, instance_id: str, item: dict, spec: ComponentSpec) -> Viewable:
+        """Return the tile's options, rebuilt when the component moves to or from the grid."""
         editor = self.editor
-        entry = editor._component_entries.get(item["component_id"])
-        if entry is not None and entry.metadata.sidebar:
-            return pn.Column(
+        holder = pn.Column(sizing_mode="stretch_width", margin=0)
+        releases: list = []
+        shown = None
+
+        def fill(*_events):
+            nonlocal shown
+            area = area_of(editor, item)
+            if area == shown:
+                return
+            shown = area
+            for release in releases:
+                release()
+            releases.clear()
+            holder[:] = self._tile_options(instance_id, item, spec, area, releases)
+
+        watcher = editor._view_controls.param.watch(fill, "placed")
+        self._releases.append(partial(editor._view_controls.param.unwatch, watcher))
+        self._releases.append(lambda: [release() for release in releases])
+        fill()
+        return holder
+
+    def _tile_options(
+        self, instance_id: str, item: dict, spec: ComponentSpec, area: str | None, releases: list
+    ) -> list[Viewable]:
+        editor = self.editor
+
+        def refocus():
+            # The pressed button went with the rebuilt tab; the first move left takes the focus.
+            button = next(iter(self._tile_move_buttons), None)
+            if button is not None:
+                button.focus()
+
+        moves = move_buttons(editor, item, then=refocus, margin=(12, 8, 0, 0))
+        self._tile_move_buttons = moves
+        if area != GRID:
+            where = AREA_NAMES.get(area, "sidebar")
+            return [
                 _caption(
-                    "This component is shown in the sidebar of the dashboard rather than "
+                    f"This component is shown in the {where} of the dashboard rather than "
                     "as a tile.",
                     margin=(12, 0, 0, 0),
                 ),
-                sizing_mode="stretch_width",
-            )
+                pn.FlexBox(*moves, margin=0, gap="0px"),
+            ]
         layout = tile_entry(editor, instance_id)
         default = spec.default_size or {}
         show = pmui.Switch(
@@ -808,7 +849,7 @@ class Inspector(Viewer):
 
         for owner, names in ((editor.settings, ["tile_cards"]), (editor._tile_grid, ["objects"])):
             watcher = owner.param.watch(sync_frame, names)
-            self._releases.append(partial(owner.param.unwatch, watcher))
+            releases.append(partial(owner.param.unwatch, watcher))
         show.param.watch(lambda e: update_tile(editor, instance_id, visible=e.new), "value")
         frame.param.watch(set_frame, "value")
         width_select.param.watch(
@@ -833,7 +874,9 @@ class Inspector(Viewer):
         )
         arrange.on_click(lambda _event: setattr(editor, "mode", "dashboard"))
         objects.append(arrange)
-        return pn.Column(*objects, sizing_mode="stretch_width", margin=0)
+        if moves:
+            objects.append(pn.FlexBox(*moves, margin=0, gap="0px"))
+        return objects
 
     @staticmethod
     def _size_hints(spec: ComponentSpec) -> str:

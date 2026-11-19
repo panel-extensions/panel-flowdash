@@ -101,38 +101,99 @@ def compact_inputs(view):
                 break
 
 
-class ControlsBar(Viewer):
-    """The views of the components registered with ``sidebar=True``, beside the tiles.
+_HANDLE_CSS = """
+:host {
+  position: absolute;
+  left: -6px;
+  top: 50%;
+  transform: translateY(-50%);
+  z-index: 2;
+}
+.fd-control-handle {
+  font-family: "Material Icons";
+  font-size: 18px;
+  line-height: 24px;
+  width: 16px;
+  height: 24px;
+  overflow: hidden;
+  cursor: grab;
+  color: var(--mui-palette-text-secondary, #666);
+  opacity: 0.6;
+  user-select: none;
+  touch-action: none;
+}
+.fd-control-handle:hover {
+  opacity: 1;
+}
+"""
 
-    With ``position="top"`` they sit in one slim row above the tile grid that
-    wraps on narrow screens; with ``position="left"`` they are stacked in a
-    panel left of the grid that collapses to a narrow strip. Either way the
-    inputs use Material UI's small size and the controls take no room while
-    the dashboard has none (or the editor's ``controls_bar`` is off, except in
-    full screen, where nothing around the editor is visible).
-    :meth:`sync` re-reads the editor, which calls it whenever its components
-    change, and :meth:`layout` places the controls around the tile grid.
+
+# While tiles are arranged the top bar stays in view as the grid scrolls, so a
+# tile dragged down a long dashboard, which scrolls it, can still be dropped there.
+_STICKY = "fd-controls-sticky"
+_STICKY_CSS = """
+:host(.fd-controls-sticky) {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--mui-palette-background-default, #fff);
+}
+"""
+
+
+class ControlsBar(Viewer):
+    """The views of the components shown beside the tiles: a top bar and a sidebar.
+
+    Components in the top bar sit in one slim row above the tile grid that
+    wraps on narrow screens; those in the sidebar are stacked in a panel left
+    of the grid that collapses to a narrow strip. Controls (components
+    registered with ``sidebar=True``) go where the dashboard's
+    ``controls_position`` says unless they were moved, and controls, KPIs and
+    text can be moved between the grid and either area (see
+    :func:`panel_flowdash.ui.tile_layout.move_to_area`). Either way the
+    inputs use Material UI's small size and the areas take no room while they
+    are empty (or the editor's ``controls_bar`` is off, except in full screen,
+    where nothing around the editor is visible). :meth:`sync` re-reads the
+    editor, which calls it whenever its components change, and
+    :meth:`layout` places the areas around the tile grid.
     """
 
     editor = param.Parameter(doc="The FlowDash editor whose controls are shown.")
 
     position = param.Selector(
-        default="top", objects=list(POSITIONS), doc="Where the controls sit around the tiles."
+        default="top",
+        objects=list(POSITIONS),
+        doc="Where controls that were not moved go: the top bar or the sidebar.",
     )
 
-    collapsed = param.Boolean(default=False, doc="Whether the left panel is collapsed.")
+    collapsed = param.Boolean(default=False, doc="Whether the sidebar is collapsed.")
 
     beside_canvas = param.Boolean(
         default=False,
         doc="""
         Whether the grid is shown beside the canvas (the editor's Split tab).
-        The pane is too narrow for a panel there, so the controls sit in the
-        row above the grid whatever the position.""",
+        The pane is too narrow for a sidebar there, so its components sit in
+        the row above the grid too.""",
+    )
+
+    placed = param.Dict(
+        default={},
+        doc="The area of each component shown beside the grid, by instance id.",
+    )
+
+    editing = param.Boolean(
+        default=False,
+        doc="Whether the tiles are being arranged, which gives each component a drag handle.",
     )
 
     def __init__(self, **params):
         super().__init__(**params)
-        self._wrappers: dict[int, pn.Column] = {}
+        self._wrappers: dict[str, pn.Column] = {}
+        self._handles: dict[str, pn.pane.HTML] = {}
+        # The key each component's handle and wrapper carry on the page, by instance id.
+        self.keys: dict[str, str] = {}
+        self._uid = f"fd{id(self):x}"
+        self._key_count = 0
         self._controls = pn.FlexBox(
             # Inputs, switches and sliders differ in height, so they share a centre line.
             align_items="center",
@@ -149,22 +210,17 @@ class ControlsBar(Viewer):
             margin=(4, 16, 0, 0),
             sizing_mode="stretch_width",
             visible=False,
-            css_classes=["fd-controls-bar"],
+            css_classes=["fd-controls-bar", f"fd-area-top-{self._uid}"],
+            stylesheets=[_STICKY_CSS],
         )
         self._hide = pmui.IconButton(
-            icon="chevron_left", description="Hide controls", size="small", margin=0
+            icon="chevron_left", description="Hide sidebar", size="small", margin=0
         )
         self._hide.on_click(lambda _event: setattr(self, "collapsed", True))
         self._show = pmui.IconButton(
-            icon="tune", description="Show controls", size="small", margin=0
+            icon="tune", description="Show sidebar", size="small", margin=0
         )
         self._show.on_click(lambda _event: setattr(self, "collapsed", False))
-        self._heading = pmui.Typography(
-            "Controls",
-            variant="overline",
-            margin=0,
-            sx={"color": "text.secondary", "letterSpacing": "0.08em", "lineHeight": 2},
-        )
         panel_sx = {
             "borderRadius": 0,
             "borderRight": 1,
@@ -177,13 +233,14 @@ class ControlsBar(Viewer):
             "flexShrink": 0,
         }
         self._panel = pmui.Paper(
-            pn.Row(self._heading, pn.HSpacer(), self._hide, margin=0, align="center"),
+            # No heading: what the sidebar holds can be any control, KPI or text.
+            pn.Row(pn.HSpacer(), self._hide, margin=0, align="center"),
             margin=0,
             elevation=0,
             width=_PANEL_WIDTH,
             sizing_mode="stretch_height",
             visible=False,
-            css_classes=["fd-controls-panel"],
+            css_classes=["fd-controls-panel", f"fd-area-sidebar-{self._uid}"],
             sx=panel_sx,
         )
         # Collapsed, the panel gives way to a strip holding the button that reopens it.
@@ -194,80 +251,123 @@ class ControlsBar(Viewer):
             width=48,
             sizing_mode="stretch_height",
             visible=False,
-            css_classes=["fd-controls-strip"],
+            css_classes=["fd-controls-strip", f"fd-area-sidebar-{self._uid}"],
             sx={**panel_sx, "alignItems": "center"},
         )
         # Built once: a new Row on every layout would re-render the grid and all its tiles.
-        self._grid_slot = pn.Column(margin=0, sizing_mode="stretch_both")
+        # The grid scrolls beside the sidebar, which so stays in view.
+        self._grid_slot = pn.Column(margin=0, sizing_mode="stretch_both", scroll="y-auto")
         self._left_row = pn.Row(
             self._panel, self._strip, self._grid_slot, margin=0, sizing_mode="stretch_both"
         )
+        self._side = False
+        self._shown: list[pn.Column] = []
         self.editor.param.watch(lambda _event: self.sync(), ["controls_bar", "fullscreen"])
 
     @property
+    def uid(self) -> str:
+        """The suffix of the CSS classes that mark this bar's areas on the page."""
+        return self._uid
+
+    @property
     def controls(self) -> list:
-        """The component views currently shown as controls."""
-        return [wrapper[0] for wrapper in self._wrappers.values()]
+        """The component views currently shown beside the grid, top bar first."""
+        return [wrapper[-1] for wrapper in self._shown]
 
     @property
     def visible(self) -> bool:
         """Whether there are controls to show."""
-        return bool(self._wrappers)
-
-    def _wrap(self, view) -> pn.Column:
-        # Reusing the wrapper keeps a control from re-rendering when the bar is rebuilt.
-        wrapper = self._wrappers.get(id(view))
-        if wrapper is None or wrapper[0] is not view:
-            compact_inputs(view)
-            wrapper = pn.Column(
-                view,
-                margin=0,
-                styles={"max-width": "100%"},
-                stylesheets=[] if getattr(view, "height", None) else [_FIT_CONTENT],
-            )
-        return wrapper
+        return bool(self._shown)
 
     @property
-    def _left(self) -> bool:
-        return self.position == "left" and not self.beside_canvas
+    def side(self) -> bool:
+        """Whether the sidebar (open or collapsed) is shown, which :meth:`layout` places left of the grid."""
+        return self._side
+
+    def _handle(self, key: str) -> pn.pane.HTML:
+        handle = self._handles.get(key)
+        if handle is None:
+            handle = self._handles[key] = pn.pane.HTML(
+                f'<div class="fd-control-handle" data-fd-key="{key}" '
+                'title="Drag to move">drag_indicator</div>',
+                margin=0,
+                stylesheets=[_HANDLE_CSS],
+            )
+        return handle
+
+    def _wrap(self, instance_id: str, view) -> pn.Column:
+        # Reusing the wrapper keeps a control from re-rendering when the bar is rebuilt.
+        wrapper = self._wrappers.get(instance_id)
+        if wrapper is None or wrapper[-1] is not view:
+            self._handles.pop(self.keys.get(instance_id, ""), None)
+            compact_inputs(view)
+            self._key_count += 1
+            key = self.keys[instance_id] = f"{self._uid}-{self._key_count}"
+            wrapper = pn.Column(
+                self._handle(key),
+                view,
+                margin=0,
+                styles={"max-width": "100%", "position": "relative"},
+                stylesheets=[] if getattr(view, "height", None) else [_FIT_CONTENT],
+                css_classes=[f"fd-control-{self._uid}", f"fd-key-{key}"],
+            )
+        wrapper[0].visible = self.editing
+        return wrapper
 
     @pn.io.hold()
-    @param.depends("position", "collapsed", "beside_canvas", watch=True)
-    def sync(self):
-        """Re-read the editor's controls and lay them out for the position."""
+    @param.depends("collapsed", "beside_canvas", "editing", watch=True)
+    def sync(self) -> bool:
+        """Re-read the editor's areas and lay them out; return whether the sidebar came or went.
+
+        When it did, the caller places the areas around the grid again with :meth:`layout`.
+        """
+        from panel_flowdash.ui.tile_layout import SIDEBAR, TOP
+
         editor = self.editor
-        views = list(editor.sidebar) if editor.controls_bar or editor.fullscreen else []
-        wrappers = [self._wrap(view) for view in views]
-        self._wrappers = {id(w[0]): w for w in wrappers}
-        left = self._left
-        for wrapper in wrappers:
-            # In the panel a control takes its full width; in the row about a
-            # select's, or more where the control needs it.
-            wrapper.param.update(
-                width=None if left else _row_width(wrapper[0]),
-                sizing_mode="stretch_width" if left else "fixed",
-            )
-        top = [] if left else wrappers
+        shown = editor.controls_bar or editor.fullscreen
+        areas = getattr(editor, "_area_views", {}) if shown else {}
+        top_views, side_views = list(areas.get(TOP, ())), list(areas.get(SIDEBAR, ()))
+        if self.beside_canvas:
+            top_views, side_views = top_views + side_views, []
+        top = [self._wrap(iid, view) for iid, view in top_views]
+        side = [self._wrap(iid, view) for iid, view in side_views]
+        self._shown = top + side
+        live = {iid for iid, _ in top_views + side_views}
+        for iid in [iid for iid in self._wrappers if iid not in live]:
+            self._handles.pop(self.keys.pop(iid, ""), None)
+            del self._wrappers[iid]
+        self._wrappers.update(
+            {iid: w for (iid, _), w in zip(top_views + side_views, self._shown, strict=True)}
+        )
+        for wrapper in top:
+            # In the row a control takes about a select's width, or more where it needs it.
+            wrapper.param.update(width=_row_width(wrapper[-1]), sizing_mode="fixed")
+        for wrapper in side:
+            wrapper.param.update(width=None, sizing_mode="stretch_width")
         if list(self._controls) != top:
             self._controls[:] = top
         self._row.visible = bool(top)
-        body = wrappers if left and not self.collapsed else []
+        classes = [c for c in self._row.css_classes if c != _STICKY]
+        self._row.css_classes = [*classes, _STICKY] if self.editing else classes
+        body = side if not self.collapsed else []
         if list(self._panel)[1:] != body:
             self._panel[1:] = body
         self._panel.visible = bool(body)
-        self._strip.visible = left and bool(wrappers) and self.collapsed
+        self._strip.visible = bool(side) and self.collapsed
+        changed, self._side = self._side != bool(side), bool(side)
+        return changed
 
     def layout(self, grid) -> list:
-        """Return the workspace items placing the controls around *grid*."""
-        if self._left:
-            if list(self._grid_slot) != [grid]:
-                self._grid_slot[:] = [grid]
+        """Return the workspace items placing the areas around *grid*."""
+        if self._side:
+            if list(self._grid_slot) != [self._row, grid]:
+                self._grid_slot[:] = [self._row, grid]
             return [self._left_row]
         if len(self._grid_slot):
-            # The grid may only have one parent once it moves to the row's side.
+            # The grid and the row may only have one parent once they move out of the slot.
             self._grid_slot[:] = []
         return [self._row, grid]
 
     def __panel__(self):
-        """Render the row of controls (the panel is placed by :meth:`layout`)."""
+        """Render the row of controls (the sidebar is placed by :meth:`layout`)."""
         return self._row

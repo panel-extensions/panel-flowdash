@@ -26,10 +26,12 @@ from panel_flowdash.ui.tile_bands import (
 )
 from panel_flowdash.ui.tile_layout import (
     FRAME_DEFAULT,
+    GRID,
     GRID_COLUMNS,
     frame_choices,
     frame_value,
     grid_tiles,
+    move_buttons,
     off_grid,
     tile_entry,
     tile_title,
@@ -194,12 +196,14 @@ class LayoutPanel(Viewer):
         )
         self.size_hint = _caption("", margin=(0, 0, 4, 0))
         self.band_hint = _caption("", margin=(0, 0, 4, 0))
+        # Hide and the moves the selected tile allows, in one row that wraps.
+        self._tile_actions = pn.FlexBox(self.hide_button, margin=0, gap="0px 16px")
         self._tile_options = pn.Column(
             pn.Row(self.width_select, self.height_select, margin=0, sizing_mode="stretch_width"),
             self.size_hint,
             self.band_hint,
             self.frame_select,
-            self.hide_button,
+            self._tile_actions,
             margin=0,
             sizing_mode="stretch_width",
         )
@@ -260,6 +264,7 @@ class LayoutPanel(Viewer):
         self.editor._tile_grid.param.watch(self._on_layout, ["layout", "objects"])
         self.editor._tile_grid.param.watch(lambda _event: self.sync_bands(), "responsive_layouts")
         self.editor.settings.param.watch(self._on_layout, "tile_cards")
+        self.editor._view_controls.param.watch(self._on_layout, "placed")
         self.sync_bands()
 
     def _on_layout(self, _event):
@@ -391,6 +396,11 @@ class LayoutPanel(Viewer):
         self.frame_select.param.trigger("value")
         self.size_hint.object = self._size_hint(spec)
         self.size_hint.visible = bool(self.size_hint.object)
+        item = next(i for i in self.editor._tile_items if i["instance_id"] == self.selected)
+        self._tile_actions[:] = [
+            self.hide_button,
+            *move_buttons(self.editor, item, then=self.tile_select.focus, margin=(4, 0, 0, 0)),
+        ]
 
     def _spec(self, instance_id: str):
         item = next((i for i in self.editor._tile_items if i["instance_id"] == instance_id), None)
@@ -437,6 +447,13 @@ class LayoutPanel(Viewer):
             )
             show.on_click(lambda _event, iid=entry.instance_id: self.show_tile(iid))
             objects.append(show)
+        elif entry.area != GRID:
+            item = next(
+                i for i in self.editor._tile_items if i["instance_id"] == entry.instance_id
+            )
+            objects += move_buttons(
+                self.editor, item, areas=[GRID], then=self.tile_select.focus, margin=0
+            )
         return pmui.Paper(
             pn.Row(*objects, margin=0, sizing_mode="stretch_width", align="center"),
             variant="outlined",

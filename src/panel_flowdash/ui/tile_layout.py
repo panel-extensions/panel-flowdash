@@ -7,7 +7,10 @@ of a hidden grid until it is shown again.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+
+import panel_material_ui as pmui
 
 from panel_flowdash.ui.tile import resolve_framed
 
@@ -19,6 +22,18 @@ _ROLE_NAMES = {"source": "data source", "transform": "transform"}
 
 # The frame choice of a tile without a frame option of its own.
 FRAME_DEFAULT = "default"
+
+# Where a placed component is shown: as a tile on the grid, or beside it in the
+# controls row above the grid or the sidebar left of it.
+GRID, TOP, SIDEBAR = "grid", "top", "sidebar"
+AREAS = (GRID, TOP, SIDEBAR)
+AREA_NAMES = {GRID: "grid", TOP: "top bar", SIDEBAR: "sidebar"}
+_AREA_ICONS = {GRID: "dashboard", TOP: "vertical_align_top", SIDEBAR: "view_sidebar"}
+
+# The tile kinds that stay legible beside the grid, in a 240 px slot of the top
+# bar or the sidebar's column. Charts, tables and data previews need the room of
+# a tile, so they stay on the grid.
+COMPACT_KINDS = frozenset({"control", "kpi", "text"})
 
 
 def _layout(editor) -> list[dict]:
@@ -71,7 +86,12 @@ def update_tile(editor, instance_id: str, **patch):
 def move_tile(editor, instance_id: str, index: int):
     """Move a component's tile to position *index* among the tiles, 0 for the first."""
     layout = [dict(e) for e in _layout(editor)]
-    tiles = [item["instance_id"] for item in editor._tile_items if not _in_sidebar(editor, item)]
+    entries = _entries(editor)
+    tiles = [
+        item["instance_id"]
+        for item in editor._tile_items
+        if area_of(editor, item, entries) == GRID
+    ]
     ranked = {e["instance_id"]: e.get("index") for e in layout if "instance_id" in e}
     order = sorted(
         tiles, key=lambda iid: (ranked.get(iid) is None, ranked.get(iid) or 0, tiles.index(iid))
@@ -127,6 +147,7 @@ class OffGrid:
     title: str
     reason: str
     hidden: bool = False
+    area: str = GRID
 
     @property
     def restorable(self) -> bool:
@@ -143,32 +164,202 @@ def tile_title(editor, item: dict) -> str:
     return title or (spec.title if spec else item["component_id"])
 
 
-def _in_sidebar(editor, item: dict) -> bool:
+def _entries(editor) -> dict[str, dict]:
+    return {e["instance_id"]: e for e in _layout(editor) if "instance_id" in e}
+
+
+def default_area(editor, item: dict) -> str | None:
+    """Return where a component goes unless it was moved: controls beside the grid, the rest on it.
+
+    Controls are the components registered with ``sidebar=True``, and go where
+    the dashboard's ``controls_position`` setting says. None while the
+    component is not loaded yet, which is shown nowhere until it is.
+    """
+    if "placeholder" in item:
+        return GRID
     entry = editor._component_entries.get(item["component_id"])
-    return "placeholder" not in item and (entry is None or entry.metadata.sidebar)
+    if entry is None:
+        return None
+    if entry.metadata.sidebar:
+        return SIDEBAR if editor.settings.controls_position == "left" else TOP
+    return GRID
 
 
-def _sidebar_reason(editor) -> str:
-    return "in controls bar" if getattr(editor, "controls_bar", False) else "in sidebar"
+def fits_beside(editor, item: dict) -> bool:
+    """Whether a component may move off the grid: a control, a KPI or text, not a chart or table."""
+    if "placeholder" in item:
+        return False
+    entry = editor._component_entries.get(item["component_id"])
+    if entry is None:
+        return False
+    return entry.metadata.sidebar or editor._tile_box(item).kind in COMPACT_KINDS
+
+
+def refusal(editor, item: dict, area: str) -> str:
+    """Explain why a component that does not fit beside the grid cannot go to *area*."""
+    if "placeholder" in item:
+        return (
+            f"{tile_title(editor, item)} is not available to you, so it stays where it is "
+            "for those who can use it."
+        )
+    return (
+        f"{tile_title(editor, item)} needs the room of a tile; only controls, KPIs "
+        f"and text fit in the {AREA_NAMES[area]}."
+    )
+
+
+def area_of(editor, item: dict, entries: dict[str, dict] | None = None) -> str | None:
+    """Return the area a placed component is shown in, one of :data:`AREAS`, or None if nowhere yet."""
+    default = default_area(editor, item)
+    if default is None:
+        return None
+    entries = _entries(editor) if entries is None else entries
+    area = entries.get(item["instance_id"], {}).get("area")
+    if area == GRID or (area in AREAS and fits_beside(editor, item)):
+        return area
+    return default
+
+
+def _ordered(items: list[dict], entries: dict[str, dict]) -> list[dict]:
+    def key(pair):
+        position, item = pair
+        index = entries.get(item["instance_id"], {}).get("index")
+        return (index is None, index or 0, position)
+
+    return [item for _, item in sorted(enumerate(items), key=key)]
+
+
+def area_items(editor, area: str, entries: dict[str, dict] | None = None) -> list[dict]:
+    """Return the placed items shown in *area*, in their order there; hidden tiles included."""
+    entries = _entries(editor) if entries is None else entries
+    items = [item for item in editor._tile_items if area_of(editor, item, entries) == area]
+    return _ordered(items, entries)
+
+
+def move_to_area(
+    editor, instance_id: str, area: str, before: str | None = None, index: int | None = None
+):
+    """Show a component in *area*, in front of the component *before* there or else last.
+
+    *index*, the position among the others in *area* with 0 for the first, may
+    be given instead of *before*.
+
+    One edit, and so one version in the history. Moving within an area
+    reorders it. A tile keeps its size on the grid while it is beside it, and
+    a hidden tile moved anywhere is shown.
+
+    Raises
+    ------
+    ValueError
+        If the component is a chart, table or data preview and *area* is not
+        the grid, or *area* is unknown.
+    """
+    if area not in AREAS:
+        raise ValueError(f"area is one of {', '.join(AREAS)}, got {area!r}.")
+    item = next(i for i in editor._tile_items if i["instance_id"] == instance_id)
+    if area != GRID and not fits_beside(editor, item):
+        raise ValueError(refusal(editor, item, area))
+    layout = [dict(e) for e in _layout(editor)]
+    by_id = {e["instance_id"]: e for e in layout if "instance_id" in e}
+    order = [
+        i["instance_id"]
+        for i in area_items(editor, area, by_id)
+        if i["instance_id"] != instance_id
+    ]
+    if before is None and index is not None:
+        before = order[index] if 0 <= index < len(order) else None
+    order.insert(order.index(before) if before in order else len(order), instance_id)
+    current = [i["instance_id"] for i in area_items(editor, area, by_id)]
+    shown = by_id.get(instance_id, {}).get("visible") is not False
+    if area_of(editor, item, by_id) == area and order == current and shown:
+        return
+    entry = by_id.setdefault(instance_id, {"instance_id": instance_id})
+    if area == default_area(editor, item) == GRID:
+        entry.pop("area", None)
+    else:
+        entry["area"] = area
+    entry.pop("visible", None)
+    for position, iid in enumerate(order):
+        by_id.setdefault(iid, {"instance_id": iid})["index"] = position
+    editor._auto_tiles.clear()
+    editor._pending_tile_layout = [*by_id.values(), *(e for e in layout if "instance_id" not in e)]
+    editor._rebuild_tile_grid()
+    name = editor._node_name(instance_id)
+    editor._record_edit(
+        f"Moved {name} to the {AREA_NAMES[area]}", op="layout", args={"name": name, "area": area}
+    )
+
+
+def move_targets(editor, item: dict) -> list[str]:
+    """Return the areas a placed component can be moved to from where it is now."""
+    area = area_of(editor, item)
+    if area is None or (area == GRID and not fits_beside(editor, item)):
+        return []
+    return [a for a in AREAS if a != area]
+
+
+def move_buttons(
+    editor,
+    item: dict,
+    areas: Iterable[str] | None = None,
+    then: Callable[[], None] | None = None,
+    **params,
+) -> list[pmui.Button]:
+    """Return a "Move to ..." button for each area the component can be moved to, of *areas* if given.
+
+    They do what dragging the component there does, for keyboards and screen
+    readers. *then* is called after a move, e.g. to put the focus back on the
+    rebuilt panel, since the button pressed goes away with the move.
+    """
+    buttons = []
+    for area in move_targets(editor, item):
+        if areas is not None and area not in areas:
+            continue
+        button = pmui.Button(
+            label=f"Move to {AREA_NAMES[area]}",
+            description=f"Move {tile_title(editor, item)} to the {AREA_NAMES[area]}",
+            icon=_AREA_ICONS[area],
+            variant="text",
+            size="small",
+            sx={"textTransform": "none"},
+            **params,
+        )
+
+        def move(_event, area=area):
+            move_to_area(editor, item["instance_id"], area)
+            if then is not None:
+                then()
+
+        button.on_click(move)
+        buttons.append(button)
+    return buttons
 
 
 def grid_tiles(editor) -> list[dict]:
     """Return the placed items shown as tiles, in placement order."""
-    hidden = {e.get("instance_id") for e in _layout(editor) if e.get("visible") is False}
+    entries = _entries(editor)
     return [
         item
         for item in editor._tile_items
-        if not _in_sidebar(editor, item) and item["instance_id"] not in hidden
+        if area_of(editor, item, entries) == GRID
+        and entries.get(item["instance_id"], {}).get("visible") is not False
     ]
 
 
 def off_grid(editor) -> list[OffGrid]:
     """List the placed components that have no tile on the dashboard, with the reason."""
-    hidden = {e.get("instance_id") for e in _layout(editor) if e.get("visible") is False}
+    entries = _entries(editor)
+    hidden = {iid for iid, e in entries.items() if e.get("visible") is False}
     listed = []
     for item in editor._tile_items:
-        if _in_sidebar(editor, item):
-            reason = _sidebar_reason(editor)
+        area = area_of(editor, item, entries)
+        if area is None:
+            continue
+        if area != GRID:
+            # Without a controls bar, the host shows the components beside the grid itself.
+            reason = (
+                f"in {AREA_NAMES[area] if getattr(editor, 'controls_bar', False) else 'sidebar'}"
+            )
         elif item["instance_id"] in hidden:
             role = _ROLE_NAMES.get(editor._node_role(item["component_id"]))
             reason = f"{role} · {HIDDEN}" if role else HIDDEN
@@ -180,6 +371,7 @@ def off_grid(editor) -> list[OffGrid]:
                 tile_title(editor, item),
                 reason,
                 hidden=item["instance_id"] in hidden,
+                area=area,
             )
         )
     return listed

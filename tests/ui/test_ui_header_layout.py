@@ -179,9 +179,9 @@ def test_controls_on_the_left(page, header_layout, top):
     assert box["x"] + box["width"] <= stable_box(tile, page)["x"]
     assert _first_tile_top(page) <= top
 
-    page.get_by_role("button", name="Hide controls").click()
+    page.get_by_role("button", name="Hide sidebar").click()
     expect(panel).to_be_hidden()
-    page.get_by_role("button", name="Show controls").click()
+    page.get_by_role("button", name="Show sidebar").click()
     expect(panel.get_by_text("unit picker control")).to_be_visible()
 
 
