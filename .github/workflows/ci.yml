@@ -138,7 +138,7 @@ jobs:
   pytest:
     timeout-minutes: 30
     runs-on: ${{ matrix.os }}
-    needs: [pre_commit, setup, pixi_lock]
+    needs: [setup, pixi_lock]
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.setup.outputs.matrix) }}
