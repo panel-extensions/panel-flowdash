@@ -55,6 +55,7 @@ flowdash serve <directory> [options]
 | `--allow-websocket-origin` | all | Restrict allowed websocket origins. |
 | `--no-notifications` | off | Disable Panel notifications. |
 | `--static-dirs` | none | Serve extra static file directories, e.g. `--static-dirs assets=/path/to/assets`. Paths are resolved relative to the project directory. |
+| `--agent-model` | none | A model the assistant may use, `ID[=LABEL]`, e.g. `--agent-model "openai:<model>=Fast"`. Repeat it, or separate models with commas, to offer several; the first is the default. Overrides `agent_model`, `agent_models` and an `agent` model string from `__init__.py`. See [Let people pick the model](enable-the-agent.md#let-people-pick-the-model). |
 | `--component-library` | none | Offer the components of an installed library, e.g. `--component-library my_library`, or `module:attribute` for a mapping of component id to component. Repeatable, and added to `component_libraries` from `__init__.py`. See [Components from an installed library](register-components.md#components-from-an-installed-library). |
 | `--plugins` | none | Register extra Tornado routes from an importable module exposing a `ROUTES` list, e.g. `--plugins my_plugin` for `<project>/my_plugin.py`. With `--package`, pass the dotted name, e.g. `--plugins catalogue.my_plugin`. Repeatable. |
 

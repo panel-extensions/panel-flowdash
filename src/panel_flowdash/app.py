@@ -202,6 +202,23 @@ class FlowDashApp(Viewer):
         environment variable.""",
     )
 
+    agent_models = param.List(
+        default=[],
+        doc="""
+        Models the person using the assistant may pick from, in a small
+        select below the chat's input that shows when there are two or
+        more: pydantic-ai model strings such as ``"openai:<model>"``, dicts
+        with an ``id`` and optional ``label`` and ``description`` (e.g. a
+        cost hint), or ``panel_agents.ModelChoice`` objects. `agent_model`
+        is the default and is offered first if it is not listed; without
+        it the first model is the default. Defaults to the
+        ``FLOWDASH_AGENT_MODELS`` environment variable, a comma-separated
+        list of ``id`` or ``id=label``. Each id is offered once. A model
+        whose provider package or API key is missing is listed disabled
+        with the reason under its label. The pick applies from the next
+        request and the browser remembers it.""",
+    )
+
     agent_palette = param.Boolean(
         default=True,
         doc="""
@@ -900,10 +917,23 @@ class FlowDashApp(Viewer):
         editor.param.watch(self._on_editor_saved, "saved")
         return editor
 
+    @param.depends("agent_models", watch=True, on_init=True)
+    def _check_agent_models(self):
+        if self.agent_models:
+            from panel_flowdash.agent.models import validate_models
+
+            validate_models(self.agent_models)
+
     def _build_agent_session(self):
         """Connect this session to the configured agent, or return None when there is none."""
         if self.agent is False or (
-            self.agent is None and not (self.agent_model or os.environ.get("FLOWDASH_AGENT_MODEL"))
+            self.agent is None
+            and not (
+                self.agent_model
+                or self.agent_models
+                or os.environ.get("FLOWDASH_AGENT_MODEL")
+                or os.environ.get("FLOWDASH_AGENT_MODELS")
+            )
         ):
             return None
         if self.agent_authorize is not None:
@@ -919,8 +949,21 @@ class FlowDashApp(Viewer):
         except ImportError as exc:
             logger.error("%s (%s)", AGENT_EXTRA_MISSING, exc)
             return None
-        agent = resolve_agent(self.agent, self.agent_model)
-        return None if agent is None else AgentSession(self, agent)
+        from panel_flowdash.agent.models import configured_models
+
+        models, model = configured_models(self.agent_models, self.agent_model)
+        if isinstance(self.agent, str):
+            models, model = configured_models(self.agent_models, self.agent)
+        # With a choice the picker names every request's model, so an unusable default must not fail here.
+        agent = resolve_agent(
+            self.agent, model, **({"defer_model_check": True} if len(models) > 1 else {})
+        )
+        if agent is None:
+            return None
+        # With a single model there is nothing to pick, and an agent passed in keeps its own model.
+        if len(models) < 2:
+            models, model = [], None
+        return AgentSession(self, agent, models=models, model=model)
 
     def _on_editor_sidebar(self, *events):
         """Mirror the editor's sidebar views into the page sidebar, unless its controls bar shows them.

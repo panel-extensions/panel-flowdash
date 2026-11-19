@@ -6,7 +6,7 @@ Initial release of panel-flowdash.
 
 ### Upgrading from 0.1.0rc2
 
-Installation. panel-flowdash requires Python 3.12 or newer and Panel 1.11 or newer, which panel-material-ui 0.17 needs; Python 3.10 and 3.11 are no longer supported. It also requires panel-agents 0.1.0b9, panel-reactflow 0.6.0b6 and panel-tiles 0.6.0b2 or later. panel-agents is always installed, while the `agent` extra still adds pydantic-ai for the assistant.
+Installation. panel-flowdash requires Python 3.12 or newer and Panel 1.11 or newer, which panel-material-ui 0.17 needs; Python 3.10 and 3.11 are no longer supported. It also requires panel-agents 0.1.0b10, panel-reactflow 0.6.0b6 and panel-tiles 0.6.0b2 or later. panel-agents is always installed, while the `agent` extra still adds pydantic-ai for the assistant.
 
 Look and defaults. Dashboards saved with rc2 load unchanged, but several defaults changed and the editor was redesigned, so they look and behave differently:
 
@@ -98,6 +98,7 @@ Serving and API:
 - Every way of leaving a dashboard with unsaved changes asks first, including picking a dashboard in the switcher, creating a new one and reloading the tab, and the dialog lists what changed
 - An empty canvas shows a start card that adds a data source in one click
 - "How was this made?" on a tile the assistant made, and in the inspector, shows the request that made the node with its model and tool calls, and "Changed later by" for later edits. Other people's requests are redacted for viewers and for restricted nodes, and after a reload it shows the turn's question, time and summary. Requires panel-agents 0.1.0b9
+- The assistant can offer several models: `FlowDashApp.agent_models` (or `agent_models` in `__init__.py`), `FLOWDASH_AGENT_MODELS="id[=label],..."` or a repeated `flowdash serve --agent-model ID[=LABEL]`. A small picker below the chat input chooses the model of the next request, models with a missing provider key are listed disabled with the reason, and the browser remembers the pick. `agent_model`/`FLOWDASH_AGENT_MODEL` stays the default. Requires panel-agents 0.1.0b10
 - An input nothing is connected to gets a typed editor in the inspector, built from the component's Parameter or port type, so a filter value, a KPI reference or a year range needs no extra widget node. The value is stored under a node's `inputs`, next to `config`, and a connection always wins over it; a typed value reaches the component as soon as it is set. A refused value says what the input needs, e.g. "Needs two numbers, like (2010, 2020)."
 - Dropping a table output on a number input, such as a KPI's value, offers to connect it through a column and an aggregation, with a preview of the number the input would get; dropping a component from the palette there offers the same. Any other refused drop says why
 - SQL, Markdown and other code fields in the inspector use a code editor with highlighting and an expand dialog; Escape then Tab leaves it, and Save waits for a pending config check. The built-in Markdown component's text uses it

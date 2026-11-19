@@ -38,12 +38,13 @@ if t.TYPE_CHECKING:
     from panel_flowdash.app import FlowDashApp
 
 
-def resolve_agent(agent: t.Any, model: str | None) -> Agent | None:
+def resolve_agent(agent: t.Any, model: str | None, **kwargs: t.Any) -> Agent | None:
     """Return the agent a FlowDashApp's ``agent`` and ``agent_model`` options ask for, or None.
 
     ``False`` turns the agent off; ``None`` gives the default agent only when a
     model is configured; ``True`` requires one; a string is the default
     agent's model; anything else is a ready-made pydantic-ai ``Agent``.
+    *kwargs* are passed on to `create_agent`.
     """
     from .assistant import NO_MODEL, default_model
 
@@ -55,9 +56,9 @@ def resolve_agent(agent: t.Any, model: str | None) -> Agent | None:
             if agent is True:
                 raise ValueError(NO_MODEL)
             return None
-        return create_agent(model)
+        return create_agent(model, **kwargs)
     if isinstance(agent, str):
-        return create_agent(agent)
+        return create_agent(agent, **kwargs)
     return agent
 
 
@@ -79,7 +80,9 @@ class AgentSession:
     loads it into the editor as an import.
     """
 
-    def __init__(self, app: FlowDashApp, agent: Agent):
+    def __init__(
+        self, app: FlowDashApp, agent: Agent, models: list | None = None, model: str | None = None
+    ):
         self.app = app
         self.ops = LiveDashboardOps(app)
         deps = FlowDashDeps(self.ops)
@@ -116,6 +119,11 @@ class AgentSession:
             on_apply=self.apply_version,
             # Someone else's request is redacted for people who may not see what it touched.
             redact_runs=editor.run_redacted,
+            chat_params=(
+                {"models": list(models), "model_id": model, "remember_model": MODEL_KEY}
+                if models and len(models) > 1
+                else {}
+            ),
         )
         self.highlighter = ChangeHighlighter(self)
         self.chrome = SessionChrome(self)
@@ -389,6 +397,9 @@ def _collapse_notes(notes: list[str]) -> list[str]:
         previous = (first, name)
     return collapsed
 
+
+#: The localStorage key under which the browser remembers the model a person picked.
+MODEL_KEY = "flowdash-agent-model"
 
 #: Seconds the drawer waits for the config checks of a restored version before it gives up on them.
 RESTORE_CHECK_TIMEOUT = 15
