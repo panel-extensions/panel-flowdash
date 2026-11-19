@@ -690,7 +690,7 @@ class Inspector(Viewer):
             self._releases.append(partial(config_state.param.unwatch, watcher))
             edited = config_state
         holder = pn.Column(
-            self._param_form(edited, names, self._choices.get(instance_id, {})),
+            self._param_form(instance_id, edited, names, self._choices.get(instance_id, {})),
             margin=0,
             sizing_mode="stretch_width",
         )
@@ -745,8 +745,16 @@ class Inspector(Viewer):
             css_classes=["fd-config-rejected"],
         )
 
+    def _edit_code_field(self, instance_id: str, field_name: str, field: CodeField):
+        if not self.editor.open_code_panel(instance_id, field_name):
+            field.open_dialog()
+
     def _param_form(
-        self, state: param.Parameterized, names: list[str], choices: dict[str, Choices]
+        self,
+        instance_id: str,
+        state: param.Parameterized,
+        names: list[str],
+        choices: dict[str, Choices],
     ) -> pn.Param:
         widgets = form_widgets(state, names, choices)
         self._form_key = widgets_key(widgets)
@@ -760,6 +768,14 @@ class Inspector(Viewer):
             margin=0,
         )
         editor = weakref.ref(self.editor)
+        widget_names = {
+            widget: name
+            for name, widget in getattr(form, "_widgets", {}).items()
+            if name != "_title"
+        }
+        for field in form.select(CodeField):
+            field_name = widget_names.get(field, field.name)
+            field.on_edit = partial(self._edit_code_field, instance_id, field_name)
         for field in (*form.select(CodeField), *form.select(SpecEditor)):
             # Typed text is applied on blur, so Save is offered while some waits.
             field.param.watch(
@@ -816,7 +832,7 @@ class Inspector(Viewer):
         def show(owner, choices):
             owner._choices[instance_id] = choices
             if widgets_key(form_widgets(state, names, choices)) != owner._form_key:
-                holder[0] = owner._param_form(state, names, choices)
+                holder[0] = owner._param_form(instance_id, state, names, choices)
                 owner._sync_save()
             for name, widget in getattr(holder[0], "_widgets", {}).items():
                 if isinstance(widget, SpecEditor):

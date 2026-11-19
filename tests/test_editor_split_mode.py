@@ -78,7 +78,8 @@ class TestSplitTab:
         split = editor._workspace_area[0]
         assert isinstance(split, HSplit)
         left, right = split.objects
-        assert list(left) == [editor._flow, editor._split_view.events]
+        assert list(left) == [editor._canvas_stack, editor._split_view.events]
+        assert editor._canvas_stack[0] is editor._flow
         assert editor._tile_grid in list(right)
         assert editor._side_panel.visible
         assert editor._inspector.visible

@@ -6,7 +6,9 @@ A text param declares the editor with its FlowDash metadata::
 
 and a JSON-schema property with ``"x-flowdash": {"widget": "code", "language": "sql"}``.
 The inspector shows a few lines with highlighting for the language, and a
-button opening the same text in a large editor.
+button opening the same text in a large editor: the editor's code panel under
+the canvas when it has room for one, see :class:`~panel_flowdash.ui.code_panel.CodePanel`,
+or a dialog.
 """
 
 from __future__ import annotations
@@ -111,6 +113,188 @@ class AceOptions(JSComponent):
 ACE_OPTIONS = {"enableKeyboardAccessibility": True, "wrap": True}
 
 
+class AceTools(JSComponent):
+    """Adds diagnostics, completions and a Run key to the Ace editor with :attr:`target_class`.
+
+    Each diagnostic, ``{"row", "column", "end_column", "text", "suggestion"}``
+    with 0-based rows and columns, gets an error marker in the gutter, a
+    squiggle under its text and its message in a line under it, with a button
+    applying the suggestion if it has one. :attr:`completions`,
+    ``{"value", "meta"}`` each, are offered while typing. Ctrl+Enter
+    (Cmd+Enter on macOS) sends a ``run`` message with the editor's text.
+    The component itself shows the cursor position, e.g. ``Ln 5, Col 19``.
+    """
+
+    target_class = param.String(doc="The CSS class of the CodeEditor to extend.")
+
+    options = param.Dict(default={})
+
+    diagnostics = param.List(default=[])
+
+    completions = param.List(default=[])
+
+    focus = param.Integer(default=0)
+
+    _stylesheets: t.ClassVar[list[str]] = [
+        """
+        :host { color: var(--mui-palette-text-secondary); font-size: 12px; white-space: nowrap; }
+        """
+    ]
+
+    _esm = r"""
+    const STYLE = `
+    .fd-ace-error { position: absolute; border-bottom: 2px wavy var(--mui-palette-error-main, #d32f2f); }
+    .fd-ace-widget {
+      display: flex; align-items: flex-start; gap: 8px; margin: 2px 8px 4px 0;
+      padding: 6px 10px; border-left: 3px solid var(--mui-palette-error-main, #d32f2f);
+      background: rgba(211, 47, 47, 0.08); border-radius: 0 4px 4px 0;
+      font: 12px/1.45 var(--mui-typography-fontFamily, sans-serif); white-space: pre-wrap;
+      color: var(--mui-palette-text-primary, inherit);
+    }
+    .fd-ace-widget span { flex: 1; }
+    .fd-ace-widget button {
+      border: none; background: none; cursor: pointer; padding: 0; font: inherit;
+      color: var(--mui-palette-primary-main, #1976d2); white-space: nowrap;
+    }
+    `
+
+    function editorsUnder(root, found = []) {
+      for (const el of root.querySelectorAll("*")) {
+        if (el.classList.contains("ace_editor") && el.env && el.env.editor) {
+          found.push([root.host, el.env.editor, el])
+        }
+        if (el.shadowRoot) editorsUnder(el.shadowRoot, found)
+      }
+      return found
+    }
+
+    function find(model) {
+      return editorsUnder(document).find(
+        ([host]) => host && host.classList.contains(model.target_class)
+      )
+    }
+
+    export function render({ el, model }) {
+      let editor = null
+      let markers = []
+      let widgets = []
+
+      function position() {
+        const pos = editor.getCursorPosition()
+        el.textContent = `Ln ${pos.row + 1}, Col ${pos.column + 1}`
+      }
+
+      function clear() {
+        const session = editor.session
+        for (const id of markers) session.removeMarker(id)
+        if (session.widgetManager) {
+          for (const w of widgets) session.widgetManager.removeLineWidget(w)
+        }
+        markers = []
+        widgets = []
+      }
+
+      function diagnose() {
+        clear()
+        const session = editor.session
+        const Range = window.ace.require("ace/range").Range
+        if (!session.widgetManager) {
+          const LineWidgets = window.ace.require("ace/line_widgets").LineWidgets
+          session.widgetManager = new LineWidgets(session)
+          session.widgetManager.attach(editor)
+        }
+        const rows = session.getLength()
+        for (const d of model.diagnostics) {
+          const row = Math.min(Math.max(d.row || 0, 0), rows - 1)
+          const line = session.getLine(row)
+          if (d.column != null) {
+            const start = Math.min(d.column, line.length)
+            let end = d.end_column != null ? d.end_column : start + 1
+            if (end <= start) { end = start + 1 }
+            const range = new Range(row, start, row, Math.min(end, Math.max(line.length, start + 1)))
+            markers.push(session.addMarker(range, "fd-ace-error", "text", true))
+          }
+          const box = document.createElement("div")
+          box.className = "fd-ace-widget fd-code-diagnostic"
+          const text = document.createElement("span")
+          text.textContent = d.text
+          box.appendChild(text)
+          if (d.suggestion && d.column != null) {
+            const fix = document.createElement("button")
+            fix.className = "fd-code-fix"
+            fix.textContent = `Use ${d.suggestion}`
+            fix.addEventListener("click", () => {
+              const end = d.end_column != null ? d.end_column : d.column + 1
+              session.replace(new Range(row, d.column, row, end), d.suggestion)
+              editor.focus()
+            })
+            box.appendChild(fix)
+          }
+          const widget = {row, fixedWidth: true, coverGutter: false, el: box}
+          session.widgetManager.addLineWidget(widget)
+          widgets.push(widget)
+        }
+      }
+
+      function complete() {
+        const tools = window.ace.require("ace/ext/language_tools")
+        const words = {
+          identifierRegexps: [/[a-zA-Z_0-9$\u00A2-\u2000\u2070-\uFFFF]/],
+          getCompletions: (_ed, _session, _pos, _prefix, callback) => {
+            callback(null, model.completions.map(c => ({
+              caption: c.value, value: c.value, meta: c.meta || "", score: 1000
+            })))
+          }
+        }
+        editor.completers = [words, tools.keyWordCompleter, tools.textCompleter].filter(c => c)
+      }
+
+      function attach(tries = 0) {
+        const found = find(model)
+        if (!found) {
+          if (tries < 150) { setTimeout(() => attach(tries + 1), 100) }
+          return
+        }
+        editor = found[1]
+        const root = found[2].getRootNode()
+        if (root && !root.querySelector("style.fd-ace-tools")) {
+          const style = document.createElement("style")
+          style.className = "fd-ace-tools"
+          style.textContent = STYLE
+          ;(root.head || root).appendChild(style)
+        }
+        try { editor.setOptions({...model.options, enableLiveAutocompletion: true}) } catch (e) { console.warn(e) }
+        editor.commands.addCommand({
+          name: "flowdashRun",
+          bindKey: {win: "Ctrl-Enter", mac: "Command-Enter"},
+          exec: (ed) => { model.send_msg({type: "run", text: ed.getValue()}) },
+        })
+        editor.selection.on("changeCursor", position)
+        position()
+        complete()
+        diagnose()
+      }
+
+      el.textContent = ""
+      attach()
+      model.on("diagnostics", () => editor && diagnose())
+      model.on("completions", () => editor && complete())
+      model.on("options", () => editor && editor.setOptions(model.options))
+      model.on("focus", () => editor && (editor.focus(), editor.navigateFileEnd()))
+      model.on("remove", () => editor && clear())
+    }
+    """
+
+    def __init__(self, on_run: t.Callable[[str], None] | None = None, **params):
+        super().__init__(**params)
+        self.on_run = on_run
+
+    def _handle_msg(self, msg):
+        if isinstance(msg, dict) and msg.get("type") == "run" and self.on_run is not None:
+            text = msg.get("text")
+            self.on_run(text if isinstance(text, str) else None)
+
+
 class CodeField(CompositeWidget):
     """A labelled code editor a few lines high, with a button opening it in a dialog.
 
@@ -128,6 +312,13 @@ class CodeField(CompositeWidget):
         default=False,
         doc="""
         Whether text typed into the editor has not been applied yet.""",
+    )
+
+    on_edit = param.Callable(
+        default=None,
+        doc="""
+        Optional callback invoked as ``on_edit(field)`` when the expand button
+        is clicked, replacing the default dialog.""",
     )
 
     _composite_type: t.ClassVar[type] = Column
@@ -202,9 +393,18 @@ class CodeField(CompositeWidget):
         editor.param.watch(self._typing, "value_input")
         return editor
 
-    def _open(self):
+    def open_dialog(self):
+        """Open the large editor in a dialog and focus it."""
         self._dialog.open = True
         self._ace.focus += 1
+
+    def _open(self):
+        if self.disabled:
+            return
+        if self.on_edit is not None:
+            self.on_edit(self)
+        else:
+            self.open_dialog()
 
     def _value_set(self, event):
         # The editors hold text, so an unset optional field shows as empty.

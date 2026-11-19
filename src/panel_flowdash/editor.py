@@ -117,6 +117,7 @@ from panel_flowdash.turns import (
     summary_cut_short,
 )
 from panel_flowdash.ui import tile_layout
+from panel_flowdash.ui.code_panel import HEADER_HEIGHT, CodePanel, DockHandle
 from panel_flowdash.ui.controls_bar import ControlsBar
 from panel_flowdash.ui.dashboard_bar import DashboardBar
 from panel_flowdash.ui.fullscreen import (
@@ -376,8 +377,16 @@ _SIDE_PANEL_WIDTH = 250
 
 # Narrower windows show the Split tab with the inspector folded until something is selected.
 _SPLIT_FOLD_WIDTH = 1600
+_CANVAS_MIN_HEIGHT = 600
+# With the code panel under it, the canvas keeps this much and the panel starts this high.
+_CANVAS_MIN_HEIGHT_DOCKED = 160
+_CODE_PANEL_HEIGHT = 400
+# Narrower windows edit code fields in a dialog rather than the code panel under the canvas.
+_CODE_PANEL_MIN_WIDTH = 960
 
 _FLOW_STYLESHEET = """\
+/* The canvas shares its height with the code panel docked under it. */
+:host(.fd-docked) .react-flow { min-height: 0 !important; height: 100% !important; }
 .react-flow__node {
   padding: 0;
   border-radius: 10px;
@@ -1376,6 +1385,9 @@ class FlowDash(Viewer):
         component is disposed at most once however it leaves the editor.
         """
         self._release_wiring(instance_id)
+        panel = getattr(self, "_code_panel", None)
+        if panel is not None and panel.instance_id == instance_id:
+            self.close_code_panel()
         instance = self._component_instances.pop(instance_id, None)
         if instance is not None:
             release_links(instance)
@@ -1714,7 +1726,7 @@ class FlowDash(Viewer):
             show_minimap=False,
             min_zoom=_CANVAS_MIN_ZOOM,
             sizing_mode="stretch_both",
-            min_height=600,
+            min_height=_CANVAS_MIN_HEIGHT,
             stylesheets=[_FLOW_STYLESHEET],
             popup_trigger=self.popup_trigger,
             popup_hover_delay=self.popup_hover_delay,
@@ -3062,6 +3074,21 @@ class FlowDash(Viewer):
         self._flow.param.watch(self._sync_tile_selection, "selection")
         self._inspector.param.watch(self._on_inspector_toggled, "collapsed")
         self._split_view.events.param.watch(self._on_pane_resized, "pane_size")
+        self._split_view.storage.param.watch(self._on_window_resized, "window_width")
+        self._code_panel: CodePanel | None = None
+        self._code_dock_height = _CODE_PANEL_HEIGHT
+        self._code_dock = pn.Column(
+            margin=0,
+            sizing_mode="stretch_width",
+            visible=False,
+            css_classes=["fd-code-dock"],
+            # Collapsed to its header, not the smallest height of its editor and result.
+            stylesheets=[".fd-code-panel { min-height: 0 !important; }"],
+        )
+        # The canvas never moves between layouts for the panel, which would render it again.
+        self._canvas_stack = pn.Column(
+            self._flow, self._code_dock, margin=0, sizing_mode="stretch_both"
+        )
 
         # One slot: a row counts the width of hidden children, and only one of
         # the two panels is shown at a time. The slot is hidden with both,
@@ -3590,7 +3617,9 @@ class FlowDash(Viewer):
         if shared_dialog is not None:
             dialogs.append(shared_dialog)
         if split:
-            self._split_view.show([self._flow], self._view_controls.layout(self._tile_grid))
+            self._split_view.show(
+                [self._canvas_stack], self._view_controls.layout(self._tile_grid)
+            )
             self._workspace_area[:] = [self._split_view, *dialogs]
             self._rebuild_tile_grid()
         elif showing_grid:
@@ -3598,7 +3627,7 @@ class FlowDash(Viewer):
             self._rebuild_tile_grid()
         else:
             self._stash_tile_layout()
-            self._workspace_area[:] = [self._flow, *dialogs]
+            self._workspace_area[:] = [self._canvas_stack, *dialogs]
             self._rebuild_sidebar()
         if showing_canvas:
             self._fit_placed_nodes()
@@ -3639,6 +3668,98 @@ class FlowDash(Viewer):
         self._restore_split = False
         if self.mode != "split":
             self.mode = "split"
+
+    # ------------------------------------------------------------------
+    # The code panel docked under the canvas
+    # ------------------------------------------------------------------
+
+    @property
+    def code_panel(self) -> CodePanel:
+        """The :class:`~panel_flowdash.ui.code_panel.CodePanel` docked under the canvas, made on first use."""
+        if self._code_panel is None:
+            panel = self._code_panel = CodePanel(editor=self, on_close=self.close_code_panel)
+            self._code_handle = DockHandle(sizing_mode="stretch_width", height=7, margin=0)
+            self._code_handle.param.watch(self._on_code_dock_resized, "size")
+            panel.param.watch(self._sync_code_dock, ["collapsed", "instance_id"])
+            self._code_dock[:] = [self._code_handle, panel]
+        return self._code_panel
+
+    @property
+    def code_panel_open(self) -> bool:
+        """Whether the code panel is docked under the canvas."""
+        return self._code_panel is not None and self._code_panel.instance_id is not None
+
+    def _code_panel_allowed(self) -> bool:
+        width = self._split_view.storage.window_width
+        return (
+            self.editable
+            and not self.preview
+            and (width is None or width >= _CODE_PANEL_MIN_WIDTH)
+        )
+
+    def _code_panel_fits(self) -> bool:
+        showing_canvas = self.mode in ("wiring", "split") and not self.explore
+        return self._code_panel_allowed() and showing_canvas
+
+    def open_code_panel(self, instance_id: str, field: str) -> bool:
+        """Edit the code field *field* of the node *instance_id* in the panel under the canvas.
+
+        Returns False, leaving the panel as it was, where it cannot be shown:
+        to viewers, outside the Dataflow and Split tabs, in a narrow window, or
+        for a node or field that is not a code field. Callers then fall back to
+        the code field's own dialog.
+        """
+        if not self._code_panel_fits() or not self.code_panel.can_edit(instance_id, field):
+            return False
+        docking = not self.code_panel_open
+        self.code_panel.open(instance_id, field)
+        if docking and self._flow._models and (doc := pn.state.curdoc) is not None:
+            # Once the canvas has shrunk to make room, keep the node in view at the same zoom.
+            zoom = (self._flow.viewport or {}).get("zoom") or 1
+            doc.add_timeout_callback(
+                lambda: self._flow.fit_view(
+                    instance_id, min_zoom=zoom, max_zoom=zoom, duration=300
+                ),
+                200,
+            )
+        return True
+
+    def close_code_panel(self):
+        """Close the code panel, discarding a draft it holds."""
+        if self.code_panel_open:
+            self._code_panel.release()
+
+    @pn.io.hold()
+    def _sync_code_dock(self, *_events):
+        """Show the code panel under the canvas, at its size for the session or as its header."""
+        panel = self._code_panel
+        shown = self.code_panel_open
+        collapsed = shown and panel.collapsed
+        self._code_handle.visible = shown and not collapsed
+        height = HEADER_HEIGHT if collapsed else self._code_dock_height
+        # Set as a style: the layout would read a height param as a share of the room.
+        self._code_dock.param.update(
+            visible=shown, styles={"flex": "none", "height": f"{height}px", "min-height": "0"}
+        )
+        docked = [c for c in self._flow.css_classes if c != "fd-docked"]
+        self._flow.param.update(
+            min_height=_CANVAS_MIN_HEIGHT_DOCKED if shown else _CANVAS_MIN_HEIGHT,
+            css_classes=[*docked, "fd-docked"] if shown else docked,
+        )
+
+    def _on_code_dock_resized(self, event):
+        if event.new:
+            self._code_dock_height = int(event.new)
+            if self.code_panel_open and not self._code_panel.collapsed:
+                self._sync_code_dock()
+
+    @param.depends("editable", "preview", watch=True)
+    def _close_code_panel_if_hidden(self):
+        if self.code_panel_open and not self._code_panel_allowed():
+            self.close_code_panel()
+
+    def _on_window_resized(self, _event):
+        self._close_code_panel_if_hidden()
 
     def _fit_canvas(self):
         self._flow.fit_view()
