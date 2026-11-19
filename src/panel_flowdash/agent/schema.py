@@ -10,6 +10,7 @@ import param
 
 from panel_flowdash.component_spec import ComponentSpec
 from panel_flowdash.groups import GROUP_ID_PATTERN, MAX_LABEL_LENGTH
+from panel_flowdash.input_literals import literal_schema
 from panel_flowdash.parameters import NAME_PATTERN as PARAMETER_NAME, PARAMETER_TYPES
 from panel_flowdash.port_types import ANY, normalize_port_type
 from panel_flowdash.settings import DashboardSettings
@@ -92,6 +93,16 @@ def config_schema(spec: ComponentSpec) -> dict[str, t.Any]:
             if field.default is not None:
                 entry["default"] = copy.deepcopy(field.default)
             properties[field.name] = entry
+    return {"type": "object", "properties": properties, "additionalProperties": False}
+
+
+def inputs_schema(spec: ComponentSpec) -> dict[str, t.Any]:
+    """Return the JSON Schema of a node's ``inputs``: literal values of its unconnected inputs."""
+    properties = {}
+    for port in spec.inputs:
+        schema = literal_schema(port)
+        if schema is not None:
+            properties[port.name] = schema
     return {"type": "object", "properties": properties, "additionalProperties": False}
 
 
@@ -217,6 +228,7 @@ def dashboard_schema(
                 "origin": {"$ref": "#/$defs/turn_id"},
                 "group": {"$ref": "#/$defs/group_id"},
                 "config": config_schema(spec),
+                "inputs": inputs_schema(spec),
                 "position": {"$ref": "#/$defs/position"},
             },
             "patternProperties": _EXTENSIONS,

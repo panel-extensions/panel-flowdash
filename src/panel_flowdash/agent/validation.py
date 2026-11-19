@@ -12,6 +12,7 @@ import param
 
 from panel_flowdash.component_spec import ComponentSpec
 from panel_flowdash.dataflow_engine import _is_list_port
+from panel_flowdash.input_literals import check_literal
 from panel_flowdash.port_types import port_types_compatible
 from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transforms import parse_transform
@@ -115,11 +116,12 @@ class _Checker:
             path = f"nodes.{name}"
             component_id = node["component"]
             if component_id == RESTRICTED:
-                if node.get("config"):
-                    self.error(
-                        f"{path}.config",
-                        "A restricted node keeps its stored config; remove 'config'.",
-                    )
+                for key in ("config", "inputs"):
+                    if node.get(key):
+                        self.error(
+                            f"{path}.{key}",
+                            f"A restricted node keeps its stored {key}; remove '{key}'.",
+                        )
                 continue
             spec = self.spec_for(component_id)
             if spec is None:
@@ -132,6 +134,7 @@ class _Checker:
             if spec.component_id in self.singletons:
                 singletons[spec.component_id].append(name)
             self.check_config(path, spec, node.get("config") or {})
+            self.check_inputs(path, spec, node.get("inputs") or {})
         for component_id, names in singletons.items():
             if len(names) > 1:
                 for name in names[1:]:
@@ -162,6 +165,19 @@ class _Checker:
                 reason = _check_value(p, value)
                 if reason:
                     self.error(f"{path}.config.{key}", reason)
+
+    def check_inputs(self, path: str, spec: ComponentSpec, inputs: dict):
+        ports = {port.name: port for port in spec.inputs}
+        for key, value in inputs.items():
+            port = ports.get(spec.resolve_name(key))
+            if port is None:
+                message = f"'{spec.title}' has no input '{key}'." + (
+                    _suggest(key, ports) if ports else " It has no inputs."
+                )
+                self.error(f"{path}.inputs.{key}", message)
+                continue
+            if value is not None and (reason := check_literal(port, value)) is not None:
+                self.error(f"{path}.inputs.{key}", reason)
 
     def check_parameters(self, doc: dict):
         """Check each parameter names a config field of its node's component."""
@@ -355,11 +371,13 @@ class _Checker:
             spec = self.spec_for(component_id)
             if spec is None:
                 continue
+            literals = {spec.resolve_name(k) for k in (nodes[name].get("inputs") or {})}
             for port in spec.inputs:
                 if (
                     port.required
                     and (name, port.name) not in incoming
                     and (name, port.name) not in hidden
+                    and port.name not in literals
                 ):
                     self.warn(
                         f"nodes.{name}",

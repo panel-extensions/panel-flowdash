@@ -253,10 +253,11 @@ and the other gets a short hash of its id appended.
 | `origin` | no | The `id` of the turn that created the node. It must name a turn of the file. |
 | `group` | no | The name of the group the node is in. It must name a group of the file. |
 | `config` | no | Design-time configuration, keyed by the component's config fields. Omitted fields take the component's defaults. |
+| `inputs` | no | Values for inputs nothing is connected to, keyed by input name, e.g. `{reference: 1200}`. A connection to the input wins over its value, which applies again once the connection is removed. Only inputs whose values a file can hold take one: numbers, text, booleans, lists and mappings, not e.g. a DataFrame. |
 | `position` | no | `[x, y]` position on the Dataflow canvas. Nodes without one are laid out in columns following the dataflow, beside the nodes that have one; a node already on the canvas keeps its position. |
 
 A component the person exporting the file may not use is written as
-`component: flowdash:restricted` without its config. Loading the file back into the
+`component: flowdash:restricted` without its config and inputs. Loading the file back into the
 same dashboard keeps the stored component unchanged; anywhere else it is left out.
 Validated against the dashboard it is loaded into, a file must keep each restricted
 node as a stand-in with its connections: it cannot replace one with another component,

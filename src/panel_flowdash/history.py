@@ -1350,6 +1350,7 @@ _OP_COUNTS = {
     "remove_node": ("Removed", "component"),
     "disconnect": ("Removed", "connection"),
     "set_config": ("Configured", "component"),
+    "set_input": ("Configured", "component"),
     "set_transform": ("Changed", "transform"),
 }
 

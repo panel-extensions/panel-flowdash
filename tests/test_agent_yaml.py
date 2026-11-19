@@ -304,7 +304,7 @@ def _validate(text):
 class TestValidate:
     def test_structural_errors_name_the_key(self):
         assert _validate("flowdash: 1\nnodes:\n  a: {component: T/number, colour: red}\n") == [
-            "nodes.a: unknown key 'colour'; expected component, config, position."
+            "nodes.a: unknown key 'colour'; expected component, config, inputs, position."
         ]
         assert _validate("flowdash: 5\n") == [
             "flowdash: unsupported format version 5; this release reads 1, 2, 3 and 4. "

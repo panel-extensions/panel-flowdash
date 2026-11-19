@@ -548,16 +548,32 @@ def remove_node(ctx: RunContext[FlowDashDeps], name: str) -> t.Any:
     return _artifact(ops, f"Removed '{name}'.")
 
 
-async def set_config(ctx: RunContext[FlowDashDeps], name: str, config: dict[str, t.Any]) -> t.Any:
-    """Change some config fields of a node.
+async def set_config(
+    ctx: RunContext[FlowDashDeps],
+    name: str,
+    config: dict[str, t.Any] | None = None,
+    inputs: dict[str, t.Any] | None = None,
+) -> t.Any:
+    """Change some config fields of a node, or the values of its unconnected inputs.
 
     Args:
         name: The node's name in the dashboard YAML.
         config: The fields to change and their new values.
+        inputs: Values for inputs nothing is connected to, e.g. {"value": "TX"},
+            so a fixed value needs no extra node. A connection always wins over
+            such a value; null removes it.
     """
+    changed = " and ".join(
+        what for what, given in (("config", config), ("inputs", inputs)) if given
+    )
+    if not changed:
+        raise ModelRetry("Pass config, inputs or both.")
     ops = ctx.deps.ops
-    await ops.set_config_async(name, config)
-    return _artifact(ops, _checked(f"Updated the config of '{name}'.", name, ops.last_check))
+    if config:
+        await ops.set_config_async(name, config)
+    if inputs:
+        await ops.set_inputs_async(name, inputs)
+    return _artifact(ops, _checked(f"Updated the {changed} of '{name}'.", name, ops.last_check))
 
 
 async def connect(

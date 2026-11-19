@@ -36,6 +36,7 @@ from panel_flowdash.editor import (
     copy_context,
     export_model,
 )
+from panel_flowdash.input_literals import check_literal
 from panel_flowdash.parameters import ContractError, ParameterError
 from panel_flowdash.ui import tile_layout
 
@@ -1122,6 +1123,60 @@ class DashboardOps:
         self.editor._apply_config_patch(instance_id, patch)
         self.last_check = checked
         return copy.deepcopy(self._item(instance_id).get("config", {}))
+
+    def set_inputs(self, name: str, inputs: dict[str, t.Any]) -> CheckResult:
+        """Set literal values on inputs of a node, used while nothing is connected to them.
+
+        A connection always wins over a literal, which applies again once the
+        connection is removed. A value of None removes the input's literal.
+
+        Returns
+        -------
+        CheckResult
+            What the config check of the node's component found with the new
+            inputs, like :meth:`connect`.
+
+        Raises
+        ------
+        OperationError
+            If the node has no such input, the input cannot hold a literal,
+            e.g. a DataFrame, or it refuses the value; nothing is changed.
+        """
+        instance_id = self._set_inputs(name, inputs)
+        return self._rechecked(
+            check_node_sync(self.editor, instance_id, timeout=self.check_timeout)
+        )
+
+    async def set_inputs_async(self, name: str, inputs: dict[str, t.Any]) -> CheckResult:
+        """Like :meth:`set_inputs`, checking the node off the event loop."""
+        instance_id = self._set_inputs(name, inputs)
+        return self._rechecked(
+            await recheck_node(self.editor, instance_id, timeout=self.check_timeout)
+        )
+
+    def _set_inputs(self, name: str, inputs: dict[str, t.Any]) -> str:
+        self._require_edit()
+        if not isinstance(inputs, dict):
+            raise OperationError(
+                f"inputs must be a mapping of input names to values, not {inputs!r}."
+            )
+        instance_id, item = self._changeable(name)
+        spec = self.editor.component_specs[item["component_id"]]
+        ports = {p.name: p for p in spec.inputs}
+        resolved = {}
+        for key, value in inputs.items():
+            port = ports.get(spec.resolve_name(key))
+            if port is None:
+                raise OperationError(
+                    f"'{name}' ({spec.title}) has no input '{key}'."
+                    + (_suggest(key, list(ports)) if ports else " It has no inputs.")
+                )
+            if value is not None and (reason := check_literal(port, value)) is not None:
+                raise OperationError(f"Input '{key}' of '{name}': {reason}")
+            resolved[port.name] = value
+        for port, value in resolved.items():
+            self.editor.set_input_value(instance_id, port, value)
+        return instance_id
 
     def connect(
         self, source: str, target: str, transform: list[dict[str, t.Any]] | None = None

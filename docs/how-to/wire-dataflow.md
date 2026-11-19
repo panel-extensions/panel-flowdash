@@ -282,7 +282,24 @@ graph.remove_edge("filter_1", "filtered", "chart_1", "data")
 ```
 
 Removing an edge unsubscribes the watcher and resets the target port to its
-default value.
+default value, or to the literal value set on it.
+
+## Set a value on an unconnected input
+
+An input can hold a literal value instead of a connection, e.g. a fixed filter
+value or a KPI reference, so it needs no extra node. In the editor it is set in
+the inspector beside the input, or with `FlowDash.set_input_value`; dashboards
+store it under the node's `inputs`. On a graph:
+
+```python
+graph.set_literal("kpi_1", "reference", 1200)
+graph.clear_literal("kpi_1", "reference")
+```
+
+A connection always wins: the literal applies while the input is unwired and
+again once its edge is removed. Only values a dashboard file can hold are
+literals (numbers, text, booleans, lists and mappings, or a selector's
+options), checked against the input like a connected value.
 
 ```python
 graph.remove_node("filter_1")

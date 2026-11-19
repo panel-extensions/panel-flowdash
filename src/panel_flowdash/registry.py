@@ -212,7 +212,9 @@ def register(
     a list of values, a ``{label: value}`` dict or a
     :class:`~panel_flowdash.Choices`. The inspector offers them in a dropdown,
     or as suggestions with ``Choices(restrict=False)``, and asks again when
-    the node's inputs or config change. A config param may also declare that
+    the node's inputs or config change. Choices under the name of an input
+    are offered for the value that input takes while it is not connected. A
+    config param may also declare that
     it names a column of an input, with
     ``metadata={"flowdash": {"choices": "columns", "of": "<input>"}}``.
 

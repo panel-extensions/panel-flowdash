@@ -112,6 +112,7 @@ class DashboardItem:
     x, y store the ReactFlow node canvas position.
     Grid layout (widths, heights, visibility) lives in DashboardModel.tile_layout.
     origin is the id of the turn that created the item, see DashboardModel.turns.
+    inputs holds literal values of unconnected inputs, by port; a connection wins over them.
     """
 
     instance_id: str
@@ -120,6 +121,7 @@ class DashboardItem:
     y: float = 0
     config: dict[str, Any] = field(default_factory=dict)
     origin: str | None = None
+    inputs: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         data = {
@@ -131,11 +133,18 @@ class DashboardItem:
         }
         if self.origin is not None:
             data["origin"] = self.origin
+        if self.inputs:
+            data["inputs"] = copy.deepcopy(self.inputs)
         return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> DashboardItem:
         origin = data.get("origin")
+        inputs = data.get("inputs")
+        if inputs is not None and (
+            not isinstance(inputs, dict) or not all(isinstance(k, str) for k in inputs)
+        ):
+            raise TypeError(f"inputs must be a mapping, not {type(inputs).__name__}")
         return cls(
             instance_id=data["instance_id"],
             component_id=data["component_id"],
@@ -143,6 +152,7 @@ class DashboardItem:
             y=data.get("y", 0),
             config=data.get("config", {}),
             origin=origin if isinstance(origin, str) else None,
+            inputs=copy.deepcopy(inputs or {}),
         )
 
 

@@ -1060,6 +1060,21 @@ class TestTurns:
         assert "t_forged" not in ops.get_dashboard()
         assert all(t.id != "t_forged" for t in editor.turns)
 
+    async def test_set_config_sets_values_of_unconnected_inputs(self, ops):
+        editor = ops.editor
+        editor.add_component("T/doubler", instance_id="double")
+        runner = _runner(ops, ("set_config", {"name": "double", "inputs": {"value": 4}}))
+        output = await runner.run("Set")
+        assert "Updated the inputs of 'double'." in output
+        assert editor.input_values("double") == {"value": 4}
+        assert editor.graph.get_state("double").doubled == 8
+
+    async def test_set_config_needs_config_or_inputs(self, ops):
+        ops.editor.add_component("T/doubler", instance_id="double")
+        runner = _runner(ops, ("set_config", {"name": "double"}))
+        output = await runner.run("Set")
+        assert "Pass config, inputs or both." in output
+
     async def test_preview_and_validate_ignore_turns(self, ops):
         editor = ops.editor
         editor.add_component("T/number", instance_id="base")

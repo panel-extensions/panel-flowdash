@@ -41,7 +41,7 @@ TOP_LEVEL_KEYS = (
     "edges",
     "layout",
 )
-NODE_KEYS = ("component", "origin", "group", "config", "position")
+NODE_KEYS = ("component", "origin", "group", "config", "inputs", "position")
 GROUP_KEYS = ("label", "collapsed")
 TURN_KEYS = ("id", "actor", "at", "run", "question", "summary", "status")
 # Versions 1 to 3 had no parameters or groups, and version 1 neither turns nor node origins.
@@ -290,6 +290,8 @@ def dashboard_to_dict(
             node["group"] = membership[item["instance_id"]]
         if item.get("config"):
             node["config"] = copy.deepcopy(item["config"])
+        if item.get("inputs"):
+            node["inputs"] = copy.deepcopy(item["inputs"])
         node["position"] = _position(item)
         nodes[names[item["instance_id"]]] = node
     if nodes:
@@ -909,6 +911,8 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
             _fail(f"{path}.component", "is required and names a component, e.g. 'Views/kpi'.")
         config = _mapping(node.get("config"), f"{path}.config")
         _json_value(config, f"{path}.config")
+        inputs = _mapping(node.get("inputs"), f"{path}.inputs")
+        _json_value(inputs, f"{path}.inputs")
         position = node.get("position")
         if position is None:
             position = auto[name]
@@ -923,6 +927,8 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
             "y": y,
             "config": copy.deepcopy(config),
         }
+        if inputs:
+            item["inputs"] = copy.deepcopy(inputs)
         origin = node.get("origin")
         if origin is not None:
             if origin not in turn_ids:
