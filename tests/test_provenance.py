@@ -201,3 +201,12 @@ def test_a_request_that_changed_a_restricted_node_is_redacted():
     editor.authorize_component = lambda entry: entry.app_id != "T/secret"
     assert editor.run_redacted("run-c")
     editor.dispose()
+
+
+def test_a_closed_sheet_stays_closed_when_read_only_changes(viewing):
+    viewing.agent_state = RunState.from_events(_run())
+    viewing.show_how_made("double")
+    viewing._close_inspection_dialog()
+    viewing.read_only = True
+    assert not _sheet(viewing).open and _sheet(viewing).objects == []
+    assert viewing._span_view is None

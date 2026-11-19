@@ -2323,6 +2323,9 @@ class FlowDash(Viewer):
         redacted as :meth:`run_redacted` decides, and when the node's
         component is one the person may not use.
         """
+        self._render_how_made(instance_id, turn_id, open_sheet=True)
+
+    def _render_how_made(self, instance_id: str, turn_id: str | None, *, open_sheet: bool):
         if not self.made_by_agent(instance_id):
             return
         origin = self.origin_turn(instance_id)
@@ -2349,6 +2352,10 @@ class FlowDash(Viewer):
         objects = [sheet_header(title, self._close_inspection_dialog, caption=caption), *body]
         self._how_made_shown = (instance_id, turn_id)
         self._inspected_id = instance_id
+        if not open_sheet:
+            # Re-rendering for new rights never reopens a sheet the person closed.
+            self._inspect_dialog.objects = objects
+            return
         self._inspect_dialog.param.update(objects=objects, open=True)
         if not self.editable:
             reserve_space(self._workspace_area, True)
@@ -2357,7 +2364,7 @@ class FlowDash(Viewer):
     def _reshow_how_made(self):
         shown = self._how_made_shown
         if shown is not None and self._inspect_dialog.open and self._inspected_id == shown[0]:
-            self.show_how_made(*shown)
+            self._render_how_made(*shown, open_sheet=False)
 
     def _can_inspect_tile(self, spec: ComponentSpec | None) -> bool:
         return bool(self._can_inspect() and spec and spec.outputs)
