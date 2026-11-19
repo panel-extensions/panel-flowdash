@@ -373,6 +373,19 @@ class TurnLog:
                 return turn_id
 
 
+def changes_node(turn: DashboardTurn, name: str) -> bool:
+    """Whether *turn*'s summary says it changed the node called *name*, beyond adding it.
+
+    A summary names at most a few changes, so a turn that changed many nodes
+    may leave this one out.
+    """
+    pattern = re.compile(rf"(?<![\w-]){re.escape(name)}(?![\w-])")
+    return any(
+        pattern.search(label) and label != f"Added {name}"
+        for label in _summary_labels(turn.summary)
+    )
+
+
 def _node(ref: t.Any) -> str:
     # Summaries name only the nodes of an edge: a port may be hidden from people
     # who cannot use the node's component, and summaries are shown to everyone.
@@ -433,6 +446,7 @@ __all__ = [
     "DashboardTurn",
     "TurnError",
     "agent_edits",
+    "changes_node",
     "decode_turns",
     "strip_questions",
 ]

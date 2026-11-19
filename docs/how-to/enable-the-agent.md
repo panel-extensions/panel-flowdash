@@ -155,19 +155,25 @@ The agent cannot undo or redo through the command palette; those commands are th
 user's. With `editor_options={"history": False}` each tool call publishes a version
 instead, and applying one that predates the user's own edits asks first.
 
-A node the agent added offers **How was this made?**, in its tile's More menu and as a
-button in the inspector when the node is selected. It opens a side sheet with the request
-that created the node: the question, every model call (model, tokens, the share read
-from the cache, duration and failed attempts) and tool call with its arguments and
-result, and the versions of the dashboard it published. The same view opens from the
-**Details** link under each answer in the chat and from **How was this made?** on a
-request in the version history. A node knows its request through its `origin` turn,
-which names the agent's run. The model and tool calls are kept in memory for the
-session that made them; after a reload, or in another session, the sheet shows what the
-dashboard file records instead: the question, when it was asked and what it changed.
-People who may only view the dashboard see which tools and models ran, with tokens and
-timings, but not the question, arguments, results, messages or errors. Set
-`editor_options={"provenance": False}` to leave the action out.
+A node the agent added offers **How was this made?**, in its tile's More menu in view
+mode and as a button in the inspector when the node is selected on the Dataflow canvas.
+It shows the request that created the node, in a side sheet or in the inspector's place:
+the question, every model call (model, tokens, the share read from the cache, duration
+and failed attempts) and tool call with its arguments and result, and the versions of
+the dashboard it published. Below it, "Changed later by 2 requests" counts the later
+turns whose summary names the node, with a link to each request whose calls are still
+in the session. The same view opens from the **Details** link under each answer in the
+chat and from **How was this made?** on a request in the version history. A node knows
+its request through its `origin` turn, which names the agent's run.
+
+Model and tool calls are kept in memory for the session that made them. After a reload,
+or in another session, the view shows what the dashboard file records instead: the
+question, when it was asked and what it changed. Your own requests are always shown in
+full. Someone else's are shown without their content (which tools and models ran, with
+tokens and timings, but no question, summary, arguments, results, messages or errors)
+to people who may only view the dashboard, and to anyone who may not use the component
+of a node the request created. Set `editor_options={"provenance": False}` to leave the
+action out.
 
 Each request to the agent stays on the dashboard that was open when the user sent it:
 if the user opens another dashboard while the agent works, every further tool call

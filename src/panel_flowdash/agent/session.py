@@ -14,6 +14,7 @@ import panel as pn
 import panel_material_ui as pmui
 from panel_agents import AgentDrawer, RunState
 from panel_agents.adapters.pydantic_ai import ActionToolset, AgentRunner
+from panel_agents.events import RunStarted
 
 from panel_flowdash.ui.text import text_typography
 from panel_flowdash.util import confirm
@@ -104,6 +105,8 @@ class AgentSession:
             },
         )
         editor.agent_state = self.runner.state
+        # Runs applied live are this person's requests; a stored history is restored without notifying.
+        self.runner.state.subscribe(self._note_run)
         # Background checks of restored versions, kept so they are not collected while they run.
         self._checks: set[asyncio.Task] = set()
         self.drawer = AgentDrawer(
@@ -111,8 +114,8 @@ class AgentSession:
             title="Assistant",
             variant="persistent",
             on_apply=self.apply_version,
-            # People who may not edit the dashboard see a request's shape, not its content.
-            redact_runs=lambda _run_id: editor.read_only,
+            # Someone else's request is redacted for people who may not see what it touched.
+            redact_runs=editor.run_redacted,
         )
         self.highlighter = ChangeHighlighter(self)
         self.chrome = SessionChrome(self)
@@ -127,6 +130,10 @@ class AgentSession:
             editor.edit_history.on_load = self._on_history_loaded
             self.drawer.param.watch(self._on_drawer_open, "open")
             self._place_history_notice()
+
+    def _note_run(self, event):
+        if isinstance(event, RunStarted) and event.parent_run_id is None:
+            self.app._editor.note_own_run(event.run_id)
 
     def _place_history_notice(self):
         """Put the history notice above the drawer's body, or leave it out if the drawer has changed.
