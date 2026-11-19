@@ -260,3 +260,63 @@ def test_tiles_keep_their_sizes_after_a_top_bar_move_its_undo_and_a_reorder(
     assert {iid: after[iid] for iid in sizes if iid in after} == {
         iid: size for iid, size in sizes.items() if iid in after
     }
+
+
+# The on-screen rectangles of the visible tiles of the grid.
+_TILE_RECTS = """() => {
+  const out = []
+  const walk = (root) => root.querySelectorAll("*").forEach((el) => {
+    if (el.classList?.contains("muuri-grid-item")) {
+      const r = el.getBoundingClientRect()
+      if (r.width > 0 && r.height > 0 && getComputedStyle(el).display !== "none") {
+        out.push([r.left, r.top, r.right, r.bottom])
+      }
+    }
+    if (el.shadowRoot) walk(el.shadowRoot)
+  })
+  walk(document)
+  return out
+}"""
+
+
+def _tiles_overlap(page) -> bool:
+    rects = page.evaluate(_TILE_RECTS)
+    return any(
+        a[0] < b[2] - 1 and b[0] < a[2] - 1 and a[1] < b[3] - 1 and b[1] < a[3] - 1
+        for i, a in enumerate(rects)
+        for b in rects[i + 1 :]
+    )
+
+
+def test_moving_a_tile_from_the_middle_of_a_row_leaves_no_overlap(
+    page, serve_example, monkeypatch
+):
+    apps = []
+    init = FlowDashApp.__init__
+
+    def remember(self, *args, **kwargs):
+        init(self, *args, **kwargs)
+        apps.append(self)
+
+    monkeypatch.setattr(FlowDashApp, "__init__", remember)
+    page.set_viewport_size({"width": 1600, "height": 1000})
+    serve_example("wind-data-quality")
+    editor = apps[0]._editor
+    page.get_by_role("button", name="Edit", exact=True).click(timeout=EXAMPLE_LOAD_TIMEOUT)
+    wait_until(lambda: editor.editable, page, timeout=8000)
+    page.get_by_role("button", name="Layout").click()
+    wait_until(
+        lambda: editor.mode == "dashboard" and editor._tile_grid.editable, page, timeout=8000
+    )
+    wait_until(lambda: tile_sizes_match(page, editor), page, timeout=EXAMPLE_LOAD_TIMEOUT)
+    page.wait_for_timeout(1000)
+    assert not _tiles_overlap(page)
+
+    _tile_by_id(page, editor, "kpi_checked").click()
+    wait_until(lambda: editor._layout_panel.selected == "kpi_checked", page, timeout=8000)
+    page.wait_for_timeout(1500)
+    page.get_by_text("Move to top bar").first.click()
+    wait_until(lambda: "kpi_checked" not in editor._grid_ids, page, timeout=20000)
+    wait_until(lambda: tile_sizes_match(page, editor), page, timeout=20000)
+    page.wait_for_timeout(1500)
+    assert not _tiles_overlap(page)

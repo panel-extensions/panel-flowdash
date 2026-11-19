@@ -170,7 +170,8 @@ export function render({model}) {
 
   function hit(x, y) {
     const all = zones()
-    const zone = all.find(z => z.area !== "grid" && within(z.rect, x, y, SLACK)) ??
+    // An empty bar's strip lies over the grid, so it takes no slack from the tiles.
+    const zone = all.find(z => z.area !== "grid" && within(z.rect, x, y, z.empty ? 0 : SLACK)) ??
       all.find(z => z.area === "grid" && within(z.rect, x, y))
     return {all, zone: zone ?? null}
   }

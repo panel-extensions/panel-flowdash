@@ -96,13 +96,16 @@ def tile_sizes_match(page, editor):
         for iid, tile in editor._inspect_tiles.items()
         if iid in editor._grid_ids
     }
+    if editor._deferred_grid_layout is not None:
+        return False
     # What the grid was told to draw, one entry per tile in its order.
     entries = dict(zip(editor._grid_ids, editor._tile_grid.layout, strict=False))
     drawn = page.evaluate(_DRAWN_SIZES)
     shown = [
         k
         for k, iid in keys.items()
-        if entries.get(iid, {}).get("visible", True) and {"width", "height"} <= entries[iid].keys()
+        if entries.get(iid, {}).get("visible", True)
+        and {"width", "height"} <= entries.get(iid, {}).keys()
     ]
     if not shown or any(k not in drawn for k in shown):
         return False

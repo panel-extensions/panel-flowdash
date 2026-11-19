@@ -1569,7 +1569,9 @@ class TestTileLayoutKeys:
         editor.load_model(model)
         editor.mode = "dashboard"
 
-        assert editor._tile_grid.layout == [_spec(0, 40), {}, _spec(1, 60)]
+        # The grid holds its tiles in display order, so the tile without an entry comes last.
+        assert editor._grid_ids == ["k1", "k3", "k2"]
+        assert editor._tile_grid.layout == [_spec(0, 40), _spec(1, 60)]
 
     async def test_responsive_layouts_follow_the_tiles(self, editor):
         ids = [editor.add_component(SHOUTER) for _ in range(2)]

@@ -242,6 +242,12 @@ def _key_saved_layout(layout: list | None, legacy_ids: list[str]) -> list[dict]:
     return keyed
 
 
+def _display_rank(entries: dict[str, dict], item: dict, position: int) -> tuple:
+    """Order a placed item by its layout index, then those without one by placement."""
+    index = entries.get(item["instance_id"], {}).get("index")
+    return (index is None, index or 0, position)
+
+
 def _align_layout(keyed: list[dict], instance_ids: list[str]) -> list[dict]:
     """Build the positional TileGrid layout for tiles *instance_ids* from keyed entries.
 
@@ -3308,7 +3314,12 @@ class FlowDash(Viewer):
             config = self._grid_config()
         grid_views, grid_ids = [], []
         self._grid_areas, self._area_entries = {}, {}
-        for i, item in enumerate(self._tile_items):
+        # The grid's objects follow the tiles' display order. TileGrid sorts its
+        # tiles by object order when the objects change and only moves them to
+        # their layout index afterwards, so other orders leave tiles overlapping.
+        positions = range(len(self._tile_items))
+        for i in sorted(positions, key=lambda i: _display_rank(entries, self._tile_items[i], i)):
+            item = self._tile_items[i]
             instance_id = item["instance_id"]
             area = tile_layout.area_of(self, item, entries)
             if area != tile_layout.GRID:
@@ -3327,7 +3338,7 @@ class FlowDash(Viewer):
             grid_ids.append(item["instance_id"])
         # TileGrid keeps the selection on its tile while the objects change, but
         # the instance ids only follow afterwards.
-        removed = any(iid not in grid_ids for iid in self._grid_ids)
+        changed = grid_ids != self._grid_ids
         self._rebuilding_grid = True
         try:
             self._tile_grid[:] = grid_views
@@ -3340,12 +3351,12 @@ class FlowDash(Viewer):
         if config is not None:
             self._apply_grid_config(config)
             self._pending_grid_config = None
-        self._set_grid_layout(self._sized_layout(_align_layout(layout, grid_ids)), removed)
+        self._set_grid_layout(self._sized_layout(_align_layout(layout, grid_ids)), changed)
         self._pending_tile_layout = []
         self._sync_tile_selection()
 
-    def _set_grid_layout(self, layout: list[dict], removed: bool = False):
-        """Give the grid its positional *layout*, after its objects when tiles were *removed*.
+    def _set_grid_layout(self, layout: list[dict], changed: bool = False):
+        """Give the grid its positional *layout*, after its objects when they *changed*.
 
         TileGrid applies a layout that arrives with its objects to the tiles it
         showed before (its `objects` handler runs after its `layout` handler),
@@ -3355,8 +3366,8 @@ class FlowDash(Viewer):
         one meanwhile.
         """
         doc = pn.state.curdoc
-        # A rebuild in the same message as one that removed tiles waits as well.
-        removed = removed or self._deferred_grid_layout is not None
+        # A rebuild in the same message as one that changed the tiles waits as well.
+        removed = changed or self._deferred_grid_layout is not None
         if not (removed and doc is not None and self._tile_grid._models):
             self._deferred_grid_layout = None
             self._tile_grid.layout = layout
