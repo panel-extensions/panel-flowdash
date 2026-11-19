@@ -21,7 +21,7 @@ from panel_flowdash.component_spec import (
     build_component_spec,
     build_component_specs,
 )
-from panel_flowdash.config_check import CheckWarning
+from panel_flowdash.config_check import CheckDiagnostic, CheckWarning
 from panel_flowdash.config_choices import Choices, columns_of
 from panel_flowdash.dashboard_store import (
     BaseDashboardStore,
@@ -74,6 +74,7 @@ __all__: list[str] = [
     "SELECTION_TYPE",
     "AuthConfig",
     "BaseDashboardStore",
+    "CheckDiagnostic",
     "CheckWarning",
     "Choices",
     "ComponentSpec",
