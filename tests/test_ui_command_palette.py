@@ -14,6 +14,7 @@ from panel_flowdash.ui.command_palette import (
     CommandPalette,
     CommandPaletteController,
 )
+from panel_flowdash.ui.status_bar import select_on_canvas
 from tests.test_navigation import FakeLocation, _create_project
 
 SELECTOR = "Analytics/selector"
@@ -360,6 +361,16 @@ class TestShortcuts:
         _open(app, edit=True)
         app._command_palette.run("shortcut:view")
         assert not app._editor.editable
+
+    async def test_deselect_clears_the_canvas_selection_and_stays_in_edit_mode(self, app):
+        _open(app, edit=True)
+        editor = app._editor
+        node = editor.add_component(SELECTOR)
+        editor.dirty = False
+        select_on_canvas(editor._flow, node_id=node)
+        app._command_palette.run("shortcut:deselect")
+        assert editor.editable
+        assert editor._flow.selection == {"nodes": [], "edges": []}
 
     async def test_shortcuts_need_a_dashboard(self, app):
         app._show_edit_mode()

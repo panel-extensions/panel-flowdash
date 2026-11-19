@@ -10,6 +10,8 @@ import panel as pn
 import param
 from panel.custom import JSComponent
 
+from panel_flowdash.ui.status_bar import select_on_canvas
+
 if t.TYPE_CHECKING:
     from panel_flowdash.app import FlowDashApp
 
@@ -28,7 +30,7 @@ SHORTCUTS = [
     {"group": "Editing", "label": "Undo", "keys": ["Mod", "Z"]},
     {"group": "Editing", "label": "Redo", "keys": ["Mod", "Shift", "Z"]},
     {"group": "Editing", "label": "Dataflow and Layout side by side", "keys": ["S"]},
-    {"group": "Editing", "label": "Back to view mode", "keys": ["Esc"]},
+    {"group": "Editing", "label": "Clear the selection, then back to view mode", "keys": ["Esc"]},
 ]
 
 # Shortcuts the browser sends, each running the action of the same name.
@@ -474,7 +476,9 @@ class CommandPaletteController:
         from panel_flowdash.app import DASH_ROUTE_PREFIX
 
         kind, _, value = command.partition(":")
-        if kind == "shortcut":
+        if kind == "shortcut" and value == "deselect":
+            self._clear_canvas_selection()
+        elif kind == "shortcut":
             # A shortcut only does what the palette would offer in this state.
             if value in _SHORTCUT_ACTIONS and any(
                 item["id"] == f"action:{value}" for item in self._action_items()
@@ -494,6 +498,16 @@ class CommandPaletteController:
             self._run_action(value)
         elif kind == "ask" and self._ask is not None:
             self._ask(value)
+
+    def _clear_canvas_selection(self):
+        """Clear the selection on the wiring canvas.
+
+        Escape sends this rather than ``view`` while a node or connection is
+        selected on the canvas, so it deselects what was clicked last, as on
+        other canvases, instead of leaving edit mode.
+        """
+        if self._editor.editable:
+            select_on_canvas(self._editor._flow)
 
     def _navigate(self, path: str):
         self._app._on_nav_click({"path": path})

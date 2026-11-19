@@ -333,7 +333,7 @@ one. Outside text fields these shortcuts also work:
 | <kbd>R</kbd> | Refresh the dashboard |
 | <kbd>E</kbd> | Edit the dashboard, for users who may edit it |
 | <kbd>F</kbd> | Show the dashboard in full screen, or leave it |
-| <kbd>Esc</kbd> | Back to view mode while editing (asks first when there are unsaved changes) |
+| <kbd>Esc</kbd> | While editing, clear the selection on the dataflow canvas; with nothing selected, back to view mode (asks first when there are unsaved changes) |
 | <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd> | Save, in edit mode |
 | <kbd>S</kbd> | Show the Dataflow canvas and the Layout grid side by side, or back to one tab, in edit mode |
 | <kbd>?</kbd> | List the keyboard shortcuts |
