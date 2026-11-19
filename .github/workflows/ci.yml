@@ -156,13 +156,13 @@ jobs:
         env:
           ENV: ${{ matrix.environment }}
           FLOWDASH_REQUIRE_FAILURES: ${{ matrix.environment == 'test-param-dev' && '1' || '' }}
-        run: pixi run -e "${ENV}" test-coverage --color=no -s 2>&1 | grep -E "^TRACE|^ +[0-9]+\.[0-9]{3} |[0-9]+ passed|failed|^FAILED" || true
+        run: pixi run -e "${ENV}" test-coverage --color=no -s 2>&1 | grep -E "POSTMORTEM|[0-9]+ passed|failed|^FAILED" || true
       - name: Repeat the draft tests
         env:
           ENV: ${{ matrix.environment }}
           FLOWDASH_REQUIRE_FAILURES: ${{ matrix.environment == 'test-param-dev' && '1' || '' }}
         run: |
-          files=$(ls tests/test_*.py | awk '$0 <= "tests/test_config_check.py"' | tr '\n' ' '); for i in $(seq 1 4); do pixi run -e "${ENV}" pytest $files --cov=panel_flowdash -q -p no:cacheprovider -s 2>&1 | grep -E "TRACE|^ +[0-9]+\.[0-9]{3} |passed|failed|^FAILED" ; done
+          files=$(ls tests/test_*.py | awk '$0 <= "tests/test_config_check.py"' | tr '\n' ' '); for i in $(seq 1 4); do pixi run -e "${ENV}" pytest $files --cov=panel_flowdash -q -p no:cacheprovider -s 2>&1 | grep -E "POSTMORTEM|passed|failed|^FAILED" ; done
 
   pytest_ui:
     name: ui:${{ matrix.environment }}:${{ matrix.os }}

@@ -489,15 +489,6 @@ class TestAgentTools:
         assert "nodes.q.config: Only SELECT statements are allowed." in output
 
 
-def _pool_state():
-    from panel_flowdash import config_check as _cc
-
-    pool = _cc._POOL
-    if pool is None:
-        return None
-    return (len(pool._threads), pool._work_queue.qsize(), getattr(pool, "_idle_semaphore", None) and pool._idle_semaphore._value)
-
-
 async def _settle(seconds=0.3):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -549,51 +540,7 @@ class TestInspectorDraft:
             "error",
         )
 
-    async def test_a_failing_edit_is_held_back_and_shown(self, editor, monkeypatch):
-        import inspect as _inspect
-
-        from panel_flowdash import config_check as _cc
-        from panel_flowdash.ui import config_draft as _cd, inspector as _im
-
-        log = []
-        t0 = time.monotonic()
-
-        def wrap(owner, name):
-            orig = getattr(owner, name)
-            label = getattr(owner, "__name__", str(owner))
-            if _inspect.iscoroutinefunction(orig):
-                async def w(*a, **k):
-                    log.append((time.monotonic(), f"{label}.{name} start {a[1:]!r:.90}"))
-                    r = await orig(*a, **k)
-                    log.append((time.monotonic(), f"{label}.{name} end {r!r:.60}"))
-                    return r
-            else:
-                def w(*a, **k):
-                    log.append((time.monotonic(), f"{label}.{name} {a[1:]!r:.90}"))
-                    return orig(*a, **k)
-            monkeypatch.setattr(owner, name, w)
-
-        for n in ("propose", "check", "_show", "show_current", "rewired"):
-            wrap(_cd.ConfigDraft, n)
-        wrap(_im.Inspector, "refresh")
-        wrap(_cc, "check_node")
-        wrap(_cc, "_check_args")
-
-        def note(m):
-            log.append((time.monotonic(), m))
-
-        def dump():
-            print("\nTRACE\n" + "\n".join(f"{t - t0:8.3f} {m}" for t, m in log), flush=True)
-
-        try:
-            await self._held_back(editor, note)
-        except AssertionError:
-            dump()
-            raise
-        if any("after draft.settle" in m for _, m in log):
-            dump()
-
-    async def _held_back(self, editor, note):
+    async def test_a_failing_edit_is_held_back_and_shown(self, editor):
         query = editor.add_component(QUERY)
         form = self._form(editor, query)
         config_state = editor.graph.get_config_state(query)
@@ -608,13 +555,28 @@ class TestInspectorDraft:
             if "fd-config-check-alert" in getattr(a, "css_classes", [])
         ]
         assert len(alerts) == 1 and "Only SELECT statements are allowed." in alerts[0].object
-        note(f"set SELECT 2, draft busy={editor._inspector._draft.busy} pool={_pool_state()}")
+        draft0 = editor._inspector._draft
         form._widgets["sql"].value = "SELECT 2"
         await _settle()
-        note(f"after settle sql={config_state.sql} busy={editor._inspector._draft.busy} pool={_pool_state()}")
         if config_state.sql != "SELECT 2":
-            ok = await editor._inspector._draft.settle(10)
-            note(f"after draft.settle ok={ok} sql={config_state.sql}")
+            draft = editor._inspector._draft
+            from panel_flowdash import config_check as _cc
+
+            slots = dict(_cc._SLOTS.get(editor, {}))
+            print(
+                "\nPOSTMORTEM same_draft=%s busy=%s scheduled=%s checking=%s pending=%r "
+                "draft_sql=%r runs=%r slots=%r widget=%r pool=%r"
+                % (
+                    draft is draft0, draft.busy, draft._scheduled, draft._checking,
+                    draft._pending, draft.state.sql, editor._inspector._check_runs,
+                    {k: (v.running, v.queued, v.task) for k, v in slots.items()},
+                    form._widgets["sql"].value,
+                    _cc._POOL and (len(_cc._POOL._threads), _cc._POOL._work_queue.qsize()),
+                ),
+                flush=True,
+            )
+            ok = await draft.settle(10)
+            print(f"POSTMORTEM settled={ok} sql={config_state.sql}", flush=True)
         assert config_state.sql == "SELECT 2"
         assert editor._component_instances[query].sql == "SELECT 2"
         assert editor._tile_items[0]["config"] == {"sql": "SELECT 2"}
