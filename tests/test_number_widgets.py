@@ -160,7 +160,7 @@ class TestCheck:
         ]
         assert check_kpi({"format": ",d", "thresholds": [[1, "red"], [2, "danger"]]}, {}) == []
 
-    def test_a_kpi_saved_with_unreadable_values_stays_editable(self):
+    async def test_a_kpi_saved_with_unreadable_values_stays_editable(self):
         from panel_flowdash.agent import DashboardOps
         from panel_flowdash.dashboard_store import DashboardItem, DashboardModel
 
@@ -182,8 +182,9 @@ class TestCheck:
         saved = editor.to_model().items[0].config
         assert saved["format"] == "garbage" and saved["thresholds"] == [[50, "error"], [2]]
         editor.dispose()
+        await _settle(0.1)
 
-    def test_the_agent_is_refused_too(self):
+    async def test_the_agent_is_refused_too(self):
         from panel_flowdash.agent import DashboardOps, OperationError
 
         editor = FlowDash(notifications=False)
@@ -196,6 +197,7 @@ class TestCheck:
             ops.set_config(name, {"thresholds": [[1, "nope;}"]]})
         ops.set_config(name, {"format": ",.1f", "thresholds": [[1, "red"]]})
         editor.dispose()
+        await _settle(0.1)
 
 
 async def test_the_inspector_edits_a_placed_kpi():
@@ -214,3 +216,4 @@ async def test_the_inspector_edits_a_placed_kpi():
     assert config["format"] == ",.0f" and config["thresholds"] == [[100, "error"]]
     assert editor._component_instances[node].thresholds == [[100, "error"]]
     editor.dispose()
+    await _settle(0.1)
