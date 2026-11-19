@@ -1,6 +1,7 @@
 """Tests for the project configuration `flowdash serve` reads from `__init__.py`."""
 
 import argparse
+import re
 import sys
 import textwrap
 
@@ -264,3 +265,55 @@ def test_unusable_component_library_exits_with_an_error(project, monkeypatch, ca
 
     assert exc_info.value.code == 1
     assert "Cannot import component library 'cfg_missing_library'" in capsys.readouterr().err
+
+
+def test_agent_model_flags_set_the_models_and_the_default(project, monkeypatch):
+    _write_init(
+        project,
+        'agent_model = "openai:project"\nagent_models = ["openai:project", "openai:other"]\n',
+    )
+
+    kwargs = _serve(project, monkeypatch)["routes"]
+    assert kwargs["agent_model"] == "openai:project"
+    assert kwargs["agent_models"] == ["openai:project", "openai:other"]
+
+    kwargs = _serve(
+        project,
+        monkeypatch,
+        "--agent-model",
+        "openai:fast=Fast",
+        "--agent-model",
+        "anthropic:deep",
+    )["routes"]
+    assert kwargs["agent_model"] == "openai:fast"
+    assert kwargs["agent_models"] == [
+        {"id": "openai:fast", "label": "Fast"},
+        {"id": "anthropic:deep"},
+    ]
+
+
+def test_cli_models_split_on_commas_and_beat_a_project_agent_string(project, monkeypatch):
+    _write_init(project, 'agent = "openai:project"\n')
+    kwargs = _serve(project, monkeypatch, "--agent-model", "openai:a=A,openai:b")["routes"]
+    assert "agent" not in kwargs and kwargs["agent_model"] == "openai:a"
+    assert kwargs["agent_models"] == [{"id": "openai:a", "label": "A"}, {"id": "openai:b"}]
+
+
+@pytest.mark.parametrize(
+    ("init", "cli", "env", "message"),
+    [
+        ('agent_models = ["test", {"label": "x"}]\n', [], None, "agent_models\\[1\\]"),
+        ('agent_models = [{"id": "a", "price": 1}]\n', [], None, "unknown keys 'price'"),
+        ("", ["--agent-model", "=Fast"], None, "--agent-model: '=Fast' names no model"),
+        ("", [], "a,=B", "FLOWDASH_AGENT_MODELS: '=B' names no model"),
+    ],
+)
+def test_serve_refuses_invalid_models_at_startup(
+    project, monkeypatch, capsys, init, cli, env, message
+):
+    _write_init(project, init)
+    if env is not None:
+        monkeypatch.setenv("FLOWDASH_AGENT_MODELS", env)
+    with pytest.raises(SystemExit):
+        _serve(project, monkeypatch, *cli)
+    assert re.search(message, capsys.readouterr().err)

@@ -5,16 +5,13 @@ Needs the ``panel-flowdash[agent]`` extra.
 
 from __future__ import annotations
 
-import os
 import typing as t
 
 from pydantic_ai import Agent, RunContext
 
+from .models import MODEL_ENV, default_model
 from .ops import DashboardOps
 from .tools import FlowDashDeps, dashboard_toolset
-
-# Names the default agent's model, e.g. ``openai:gpt-5``.
-MODEL_ENV = "FLOWDASH_AGENT_MODEL"
 
 _GENERAL = """\
 You help people build and change FlowDash dashboards in the app they are using.
@@ -106,11 +103,6 @@ NO_MODEL = (
     "FlowDashApp(agent_model='<provider>:<model>'). The provider's API key must be "
     "set too, e.g. OPENAI_API_KEY or ANTHROPIC_API_KEY."
 )
-
-
-def default_model() -> str | None:
-    """Return the model the default agent uses, from ``FLOWDASH_AGENT_MODEL``, or None."""
-    return os.environ.get(MODEL_ENV) or None
 
 
 def _signature(component: dict[str, t.Any]) -> str:

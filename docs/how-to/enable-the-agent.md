@@ -44,6 +44,49 @@ with its traceback.
 
 ---
 
+## Let people pick the model
+
+Offer several models and a small picker below the assistant's input lets each person
+pick the one their next request runs with. List them in `FLOWDASH_AGENT_MODELS`,
+comma-separated, each optionally with a label after `=`:
+
+```bash
+export FLOWDASH_AGENT_MODELS="openai:<model>=Fast,anthropic:<model>=Thorough"
+flowdash serve my_project/
+```
+
+or repeat `--agent-model` on the command line (it also takes a comma-separated list),
+which overrides the project's `agent_model`, `agent_models` and an `agent` model string:
+
+```bash
+flowdash serve my_project/ --agent-model "openai:<model>=Fast" --agent-model anthropic:<model>
+```
+
+or set `agent_models` in the project's `__init__.py` (or on `FlowDashApp`), where a
+model can also carry a description, e.g. a cost hint:
+
+```python
+# my_project/__init__.py
+agent_model = "openai:<model>"
+agent_models = [
+    {"id": "openai:<model>", "label": "Fast", "description": "Cheap, good for small edits"},
+    {"id": "anthropic:<model>", "label": "Thorough"},
+]
+```
+
+The default is `agent_model` (or `FLOWDASH_AGENT_MODEL`), which is offered first if it
+is not in the list, and otherwise the first model listed. Each id is offered once, and
+the picker only shows when there are two or more models. `flowdash serve` refuses to
+start when an entry is not a model, naming the entry. A switch applies from the next request and never to one
+that is running, each person's pick is their own, and the browser remembers it for
+their next visit while that model is still offered. A model whose provider package or
+API key is missing is listed disabled, with the reason under its name, and a model's
+description shows under its name too; keys are never shown. People who do not get the
+assistant (see `agent_authorize`) see no picker. Each request records the model that answered, so the usage line under an
+answer and its Details show it.
+
+---
+
 ## Configure it in the project
 
 A project's `__init__.py` can set the same options as `FlowDashApp`:
@@ -56,6 +99,7 @@ agent_model = "anthropic:<model>"
 | Option | Meaning |
 | --- | --- |
 | `agent_model` | The model of the default agent. Defaults to `FLOWDASH_AGENT_MODEL`. |
+| `agent_models` | Models people may pick from, see [Let people pick the model](#let-people-pick-the-model). Defaults to `FLOWDASH_AGENT_MODELS`. |
 | `agent_model_settings` | pydantic-ai model settings for every request, merged over the agent's own, e.g. `{"temperature": 0}`. |
 | `agent` | `None` (default): the default agent when a model is configured. `True`: the default agent, and an error saying how to configure a model when none is. A string: the default agent with that model. `False`: no agent, even if a model is configured. A `pydantic_ai.Agent`: your own agent. |
 | `agent_authorize` | Called with the signed-in user's `Identity`; only sessions for which it returns True get the agent. |

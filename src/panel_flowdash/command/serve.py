@@ -38,6 +38,7 @@ PROJECT_OPTIONS = (
     "agent_authorize",
     "agent_model",
     "agent_model_settings",
+    "agent_models",
     "agent_sensitive_components",
     "breakpoints",
     "component_libraries",
@@ -222,6 +223,21 @@ class Serve(_PanelServe):
             ),
         ),
         (
+            "--agent-model",
+            Argument(
+                action="append",
+                metavar="ID[=LABEL]",
+                default=None,
+                help=(
+                    "A model the assistant may use, as pydantic-ai names it, e.g. "
+                    "openai:<model>, optionally with a label: openai:<model>=Fast. "
+                    "Repeat it, or separate models with commas, to let people pick "
+                    "between several; the first is the default. Overrides `agent_model`, "
+                    "`agent_models` and an `agent` model string in __init__.py."
+                ),
+            ),
+        ),
+        (
             "--title",
             Argument(
                 action="store",
@@ -287,6 +303,21 @@ class Serve(_PanelServe):
             value = getattr(args, name)
             if value is not None:
                 options[name] = value
+        from panel_flowdash.agent.models import configured_models, parse_models
+
+        try:
+            if args.agent_model:
+                models = parse_models(args.agent_model, "--agent-model")
+                if models:
+                    options["agent_model"] = models[0]["id"]
+                    options["agent_models"] = models
+                    # The flag names the default agent's model, also over a project's `agent = "<model>"`.
+                    if isinstance(options.get("agent"), str):
+                        del options["agent"]
+            configured_models(options.get("agent_models"), options.get("agent_model"))
+        except ValueError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)  # noqa: T201
+            raise SystemExit(1) from None
         if args.component_library:
             libraries = list(options.get("component_libraries", ()))
             libraries += [name for name in args.component_library if name not in libraries]
