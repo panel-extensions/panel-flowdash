@@ -160,7 +160,8 @@ class SpecSetting:
         Keys under a covered path are not reported as unknown.
     enabled
         ``enabled(spec)`` says whether the control can be used, e.g. a width
-        only while the size is fixed.
+        only while the size is fixed. Returning a sentence instead of False
+        disables it and shows the sentence under the form.
     restrict
         Whether a select or radio accepts only its options.
     """
@@ -177,7 +178,7 @@ class SpecSetting:
     get: t.Callable[[dict], t.Any] | None = field(default=None, compare=False)
     set: t.Callable[[dict, t.Any], None] | None = field(default=None, compare=False)
     covers: tuple[str | tuple[str, ...], ...] = ()
-    enabled: t.Callable[[dict], bool] | None = field(default=None, compare=False)
+    enabled: t.Callable[[dict], bool | str] | None = field(default=None, compare=False)
     restrict: bool = True
 
     def __post_init__(self):
@@ -264,8 +265,20 @@ class SpecSetting:
             return True
         return value is None or value == self.default or value in self.labelled().values()
 
+    def disabled_reason(self, spec: dict) -> str | None:
+        """Return why the control cannot be used for *spec*, or None if it can.
+
+        ``enabled`` may return a sentence saying why instead of False.
+        """
+        if self.enabled is None:
+            return None
+        enabled = self.enabled(spec)
+        if isinstance(enabled, str):
+            return enabled or None
+        return None if enabled else ""
+
     def is_enabled(self, spec: dict) -> bool:
-        return self.enabled is None or bool(self.enabled(spec))
+        return self.disabled_reason(spec) is None
 
 
 def as_setting(value: t.Any) -> SpecSetting:
@@ -333,6 +346,21 @@ def unknown_paths(spec: dict, settings: t.Iterable[SpecSetting]) -> list[Path]:
 def shown_in_spec(spec: dict, settings: t.Iterable[SpecSetting]) -> list[SpecSetting]:
     """Return the settings whose value in *spec* their control cannot show, kept as written."""
     return [s for s in settings if not s.fits(s.read(spec))]
+
+
+def unrepresented_paths(spec: dict, settings: t.Iterable[SpecSetting]) -> list[Path]:
+    """Return the paths of *spec* the form cannot show, which are kept as written.
+
+    Those are the paths no setting covers and those holding a value their
+    setting's control cannot show, e.g. a list of colours where a scheme is
+    picked.
+    """
+    settings = list(settings)
+    found = unknown_paths(spec, settings)
+    for setting in shown_in_spec(spec, settings):
+        if has_path(spec, setting.path) and setting.path not in found:
+            found.append(setting.path)
+    return found
 
 
 def problems(spec: dict, settings: t.Iterable[SpecSetting]) -> list[str]:

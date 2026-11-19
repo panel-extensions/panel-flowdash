@@ -274,7 +274,7 @@ class TestField:
         field = SpecEditor(value=SPEC, settings=SETTINGS)
         field.editor.value = json.dumps({**SPEC, "mark": "point", "title": "T"})
         assert field.value["mark"] == "point"
-        assert field._controls["mark.type"][1].value == "point"
+        assert field._controls["mark.type"][1].value == "Point"
         assert field._controls["title"][1].value == "T"
 
     def test_unknown_keys_are_flagged_and_kept(self):
@@ -310,7 +310,60 @@ class TestField:
     def test_a_value_outside_the_options_stays_selectable(self):
         field = SpecEditor(value={"mark": "area"}, settings=SETTINGS)
         control = field._controls["mark.type"][1]
-        assert control.value == "area" and "area" in control.options.values()
+        assert control.value == "area" and "area" in control.options
+        control.value = "Bar"
+        assert field.value == {"mark": "bar"}
+
+    def test_an_unset_select_says_so_and_can_be_unset_again(self):
+        field = SpecEditor(value={"mark": "bar"}, settings=SETTINGS)
+        x_type = field._controls["encoding.x.type"][1]
+        assert x_type.value == "Not set" and x_type.options[0] == "Not set"
+        x_type.value = "temporal"
+        assert field.value["encoding"] == {"x": {"type": "temporal"}}
+        x_type.value = "Not set"
+        assert field.value == {"mark": "bar"}
+
+    def test_an_unset_radio_selects_nothing_it_would_not_write(self):
+        field = SpecEditor(value={"layer": []}, settings=SETTINGS)
+        mark = field._controls["mark.type"][1]
+        assert mark.value == "Not set"
+        assert field.value == {"layer": []}
+
+    def test_a_none_option_has_a_label_and_can_be_picked(self):
+        settings = [
+            SpecSetting(
+                "scheme", widget="select", options={"Follow dashboard": None, "Set2": "set2"}
+            )
+        ]
+        field = SpecEditor(value={"scheme": "set2"}, settings=settings)
+        control = field._controls["scheme"][1]
+        assert control.options == ["Follow dashboard", "Set2"]
+        control.value = "Follow dashboard"
+        assert field.value == {}
+
+    def test_a_value_the_control_cannot_show_is_flagged_and_kept(self):
+        field = SpecEditor(value={"title": {"text": "T", "fontSize": 20}}, settings=SETTINGS)
+        assert field.unknown == ["title"]
+        assert "title" in field.banner[0].object
+
+    def test_a_disabled_control_says_why(self):
+        settings = [
+            SpecSetting(
+                "width",
+                widget="integer",
+                enabled=lambda s: "layer" not in s or "Set in the layers.",
+            ),
+        ]
+        field = SpecEditor(value={"layer": []}, settings=settings)
+        assert field._controls["width"][1].disabled
+        assert field._notes.visible and field._notes.object == "Set in the layers."
+        field.value = {}
+        assert not field._controls["width"][1].disabled and not field._notes.visible
+
+    def test_controls_carry_their_label_for_assistive_technology(self):
+        field = SpecEditor(value=SPEC, settings=SETTINGS)
+        assert field._controls["title"][1].label == "Title"
+        assert field._controls["encoding.x.field"][1].label == "X"
 
     def test_modes_show_the_form_the_text_or_both(self):
         field = SpecEditor(value=SPEC, settings=SETTINGS, mode="form")
@@ -380,8 +433,12 @@ class TestChoices:
         await _settle()
         field = _field(editor, node)
         x = field._controls["encoding.x.field"][1]
-        assert list(x.options.values()) == ["year", "capacity"]
-        assert x.value == "year"
+        assert field._labels["encoding.x.field"] == {
+            "Not set": None,
+            "year (integer)": "year",
+            "capacity (number)": "capacity",
+        }
+        assert x.value == "year (integer)"
 
 
 class TestInspector:
@@ -432,6 +489,15 @@ class TestInspector:
         assert spec["transform"] == SPEC["transform"]
         assert spec["encoding"]["x"]["axis"] == {"labelAngle": -45}
         assert spec["encoding"]["y"]["title"] == "Capacity (MW)"
+
+    async def test_a_change_made_elsewhere_reaches_the_open_form(self, editor):
+        node = editor.add_component("D/plain")
+        field = _field(editor, node)
+        editor._apply_config_patch(node, {"spec": {**SPEC, "title": "From the agent"}})
+        assert field.value["title"] == "From the agent"
+        assert field._controls["title"][1].value == "From the agent"
+        assert editor.undo()
+        assert "title" not in field.value and field._controls["title"][1].value == ""
 
     async def test_spec_text_typed_offers_save(self, editor):
         node = editor.add_component("D/plain")

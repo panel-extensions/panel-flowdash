@@ -37,7 +37,7 @@ from panel_flowdash.spec_settings import (
     parse_spec,
     path_text,
     shown_in_spec,
-    unknown_paths,
+    unrepresented_paths,
 )
 from panel_flowdash.ui.code_field import ACE_OPTIONS, AceOptions
 from panel_flowdash.ui.text import code_span
@@ -50,6 +50,31 @@ MODES = {"Form": "form", "Form + Spec": "both", "Spec": "spec"}
 _EDITOR_HEIGHT = 300
 
 _LABEL_WIDTH = 84
+
+#: The option that leaves a setting out of the spec.
+NOT_SET = "Not set"
+
+# Hides a control's own label from sight but not from assistive technology.
+_HIDDEN_LABEL_CSS = """
+.MuiInputLabel-root, .MuiFormLabel-root {
+  position: absolute !important;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+fieldset > legend { display: none !important; }
+"""
+
+_RADIO_SX = {
+    "& .MuiToggleButton-root, & .MuiButton-root": {
+        "textTransform": "none",
+        "whiteSpace": "nowrap",
+        "px": 0.75,
+        "minWidth": 0,
+    },
+}
 
 _CAPTION_SX = {"color": "text.secondary"}
 
@@ -179,7 +204,7 @@ class SpecEditor(CompositeWidget):
     unknown = param.List(
         default=[],
         doc="""
-        The dotted paths of the spec no setting covers, kept as written.""",
+        The dotted paths of the spec the form cannot show, kept as written.""",
     )
 
     _composite_type: t.ClassVar[type] = Column
@@ -232,6 +257,14 @@ class SpecEditor(CompositeWidget):
             variant="caption", margin=(4, 0, 0, 0), css_classes=["fd-spec-status"]
         )
         self._marks = SpecMarks()
+        self._labels: dict[str, dict[str, t.Any]] = {}
+        self._notes = pmui.Typography(
+            variant="caption",
+            sx=_CAPTION_SX,
+            margin=(6, 0, 0, 0),
+            visible=False,
+            css_classes=["fd-spec-notes"],
+        )
         self.header = pn.Row(
             self._label,
             pn.layout.HSpacer(),
@@ -290,62 +323,62 @@ class SpecEditor(CompositeWidget):
 
     # The form
 
-    def _options(self, setting: SpecSetting) -> dict[str, t.Any]:
+    def _options(self, setting: SpecSetting, value: t.Any = None) -> dict[str, t.Any]:
+        """Return the options of a select or radio holding *value*, by label.
+
+        A setting that may be left unset, one without a default, offers that
+        as "Not set" in a select, or in a radio while it is unset, and a
+        value outside the options is offered too.
+        """
         choices: Choices | None = self.choices.get(setting.key)
         options = choices.labelled() if choices is not None else setting.labelled()
+        values = list(options.values())
+        if value is not None and value not in values:
+            options = {str(value): value, **options}
+        if setting.default is None and None not in values:
+            if setting.widget == "select" or value is None:
+                options = {NOT_SET: None, **options}
         return options
 
     def _control(self, setting: SpecSetting) -> t.Any:
         # choice_widgets offers this field to the inspector's form, so it is imported late.
         from panel_flowdash.ui.choice_widgets import OptionalFloatInput, OptionalIntInput
 
+        # The label beside the control is drawn by the form; the control keeps
+        # its own, hidden, so it is named for assistive technology.
         common: dict[str, t.Any] = {
             "margin": 0,
+            "label": setting.title,
             "css_classes": ["fd-spec-setting", f"fd-spec-{_css_name(setting.key)}"],
         }
+        if setting.widget != "switch":
+            common["stylesheets"] = [_HIDDEN_LABEL_CSS]
         if setting.doc:
             common["description"] = setting.doc
         if setting.widget == "switch":
-            return pmui.Switch(label=setting.title, value=False, size="small", **common)
+            return pmui.Switch(value=False, size="small", **common)
         if setting.widget == "radio":
-            return pmui.RadioButtonGroup(
-                options=self._options(setting),
-                size="small",
-                sx={
-                    "& .MuiToggleButton-root, & .MuiButton-root": {
-                        "textTransform": "none",
-                        "px": 1,
-                        "minWidth": 0,
-                    }
-                },
-                **common,
-            )
+            return pmui.RadioButtonGroup(options=[], size="small", sx=_RADIO_SX, **common)
         if setting.widget == "select":
-            options = self._options(setting)
             return pmui.Select(
-                options=options,
-                searchable=len(options) > 8,
+                options=[],
                 size="small",
                 sizing_mode="stretch_width",
                 **common,
             )
         if setting.widget == "integer":
-            return OptionalIntInput(
-                value=None,
-                size="small",
-                placeholder="Not set",
-                sizing_mode="stretch_width",
-                **common,
-            )
-        if setting.widget == "number":
-            return OptionalFloatInput(
-                value=None,
-                size="small",
-                placeholder="Not set",
-                sizing_mode="stretch_width",
-                **common,
-            )
-        return pmui.TextInput(size="small", sizing_mode="stretch_width", **common)
+            widget = OptionalIntInput
+        elif setting.widget == "number":
+            widget = OptionalFloatInput
+        else:
+            return pmui.TextInput(size="small", sizing_mode="stretch_width", **common)
+        return widget(
+            value=None,
+            size="small",
+            placeholder=NOT_SET,
+            sizing_mode="stretch_width",
+            **common,
+        )
 
     def _row(self, setting: SpecSetting, control: t.Any) -> pn.Row:
         """Lay a control out beside its label, as one row of the form."""
@@ -362,6 +395,7 @@ class SpecEditor(CompositeWidget):
     def _rebuild_form(self, *_events):
         groups: dict[str | None, list] = {}
         self._controls = {}
+        self._labels = {}
         for setting in self.settings:
             control = self._control(setting)
             control.param.watch(partial(self._control_changed, setting), "value")
@@ -380,19 +414,28 @@ class SpecEditor(CompositeWidget):
                     )
                 )
             objects.extend(rows)
+        objects.append(self._notes)
         self.form[:] = objects
         self._sync_form()
         self._mode_set()
 
     def _sync_form(self):
-        """Show the spec's value of every setting, and disable the controls that cannot show theirs."""
+        """Show the spec's value of every setting, and disable the controls that cannot show theirs.
+
+        A select or radio holds the label of its value, so that every value,
+        None among them, is shown and can be picked.
+        """
         spec = self.value or {}
         beyond = {s.key for s in shown_in_spec(spec, self.settings)}
+        notes: list[str] = []
         self._syncing = True
         try:
             for key, (setting, control) in self._controls.items():
                 value = setting.read(spec)
-                editable = key not in beyond and setting.is_enabled(spec)
+                reason = setting.disabled_reason(spec)
+                if reason and reason not in notes:
+                    notes.append(reason)
+                editable = key not in beyond and reason is None
                 if key in beyond:
                     shown = {"switch": False, "text": ""}.get(setting.widget)
                 elif setting.widget == "switch":
@@ -402,11 +445,12 @@ class SpecEditor(CompositeWidget):
                 else:
                     shown = value
                 if setting.widget in ("select", "radio"):
-                    options = self._options(setting)
-                    if shown is not None and shown not in options.values():
-                        control.options = {str(shown): shown, **options}
-                    elif control.options != options:
-                        control.options = options
+                    options = self._options(setting, None if key in beyond else shown)
+                    self._labels[key] = options
+                    labels = list(options)
+                    if control.options != labels:
+                        control.options = labels
+                    shown = next((label for label, v in options.items() if v == shown), None)
                 control.param.update(
                     value=shown,
                     disabled=self.disabled or self.error is not None or not editable,
@@ -415,12 +459,17 @@ class SpecEditor(CompositeWidget):
                     control.placeholder = "Set in the spec" if key in beyond else ""
         finally:
             self._syncing = False
+        self._notes.object = " ".join(notes)
+        self._notes.visible = bool(notes)
 
     def _control_changed(self, setting: SpecSetting, event):
         if self._syncing or self.error is not None:
             return
+        value = event.new
+        if setting.widget in ("select", "radio"):
+            value = self._labels.get(setting.key, {}).get(value)
         try:
-            new = setting.write(self.value or {}, event.new)
+            new = setting.write(self.value or {}, value)
         except SpecPathError as exc:
             self.status.object = str(exc)
             self._sync_form()
@@ -449,7 +498,7 @@ class SpecEditor(CompositeWidget):
         self._mark(spec or {}, changed or [])
 
     def _mark(self, spec: dict, changed: list):
-        unknown = unknown_paths(spec, self.settings) if self.settings else []
+        unknown = unrepresented_paths(spec, self.settings) if self.settings else []
         self.unknown = [path_text(p) for p in unknown]
         only = sorted({row for p in unknown for row in _rows_of(self._spans.get(p))})
         rows = sorted({row for p in changed for row in _rows_of(self._spans.get(p), first=True)})
@@ -459,7 +508,7 @@ class SpecEditor(CompositeWidget):
                 "row": self._spans[p][0],
                 "column": 0,
                 "type": "warning",
-                "text": f"{path_text(p)} has no form control; it is kept as written.",
+                "text": f"The form cannot show {path_text(p)}; it is kept as written.",
             }
             for p in unknown
             if p in self._spans
@@ -477,7 +526,7 @@ class SpecEditor(CompositeWidget):
             ]
         else:
             self.banner[:] = []
-        self.status.object = "Valid JSON" if not self.unsent else ""
+        self.status.object = ""
 
     def _edited(self, event):
         if self._syncing:

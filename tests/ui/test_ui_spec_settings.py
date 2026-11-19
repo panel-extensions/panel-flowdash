@@ -128,7 +128,7 @@ def _spec_text(page):
 
 def test_a_title_set_in_the_form_updates_the_spec_and_the_chart(page):
     editor, chart = _open(page)
-    title = page.locator(".fd-spec-title input")
+    title = page.get_by_role("textbox", name="Title", exact=True)
     title.fill("Capacity by year")
     title.press("Enter")
     wait_until(
@@ -180,6 +180,12 @@ def test_a_key_without_a_control_is_flagged_and_kept(page):
     assert spec["transform"] == SPEC["transform"]
     assert spec["encoding"]["x"]["axis"] == {"labelAngle": -45}
     expect(banner).to_contain_text("transform")
+
+
+def test_controls_are_named_by_their_labels(page):
+    _open(page)
+    expect(page.get_by_role("combobox", name="X", exact=True)).to_contain_text("year")
+    expect(page.get_by_role("textbox", name="X title", exact=True)).to_have_value("")
 
 
 def test_invalid_text_disables_the_form_until_it_parses(page):
