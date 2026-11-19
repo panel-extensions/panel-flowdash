@@ -24,10 +24,12 @@ from panel_flowdash.parameters import DashboardParameter, ParameterError, check_
 from panel_flowdash.turns import DashboardTurn, TurnError, strip_questions
 from panel_flowdash.ui.node_card import CARD_WIDTH
 
-# The version of the format this release writes.
-FORMAT_VERSION = 4
+# The version of the format this release writes. Changes made before a release
+# that ships them do not bump it.
+FORMAT_VERSION = 1
 
-# The versions of the format this release reads.
+# The versions this release reads, all as the current format: pre-releases labelled
+# files 2 to 4, so the next version of the format must start at 5.
 READ_VERSIONS = (1, 2, 3, 4)
 
 TOP_LEVEL_KEYS = (
@@ -44,18 +46,12 @@ TOP_LEVEL_KEYS = (
 NODE_KEYS = ("component", "origin", "group", "config", "inputs", "position")
 GROUP_KEYS = ("label", "collapsed")
 TURN_KEYS = ("id", "actor", "at", "run", "question", "summary", "status")
-# Versions 1 to 3 had no parameters or groups, and version 1 neither turns nor node origins.
-_V3_TOP_LEVEL_KEYS = tuple(k for k in TOP_LEVEL_KEYS if k not in ("parameters", "groups"))
-_V1_TOP_LEVEL_KEYS = tuple(k for k in _V3_TOP_LEVEL_KEYS if k != "turns")
-_V3_NODE_KEYS = tuple(k for k in NODE_KEYS if k != "group")
-_V1_NODE_KEYS = tuple(k for k in _V3_NODE_KEYS if k != "origin")
 EDGE_KEYS = ("from", "to", "transform")
 LAYOUT_KEYS = ("tiles", "reference_width", "breakpoints", "responsive")
 TILE_KEYS = ("node", "width", "height", "visible", "framed", "area")
 # A tile's frame and area apply at every screen size, so a responsive layout
-# cannot set them, and version 2 had neither.
+# cannot set them.
 RESPONSIVE_TILE_KEYS = tuple(k for k in TILE_KEYS if k not in ("framed", "area"))
-_V2_TILE_KEYS = RESPONSIVE_TILE_KEYS
 # Where a node is shown: as a tile on the grid, in the top bar or in the sidebar.
 TILE_AREAS = ("grid", "top", "sidebar")
 # Keys starting with this are accepted, and ignored, in every mapping of the format
@@ -801,21 +797,14 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
     doc = _mapping(doc, "document")
     version = doc.get("flowdash")
     if type(version) is not int or version not in READ_VERSIONS:
-        newer = type(version) is int and version > FORMAT_VERSION
+        newer = type(version) is int and version > READ_VERSIONS[-1]
         _fail(
             "flowdash",
-            f"unsupported format version {version!r}; this release reads "
-            f"{', '.join(map(str, READ_VERSIONS[:-1]))} and {READ_VERSIONS[-1]}."
+            f"unsupported format version {version!r}; this release reads versions "
+            f"{READ_VERSIONS[0]} to {READ_VERSIONS[-1]}."
             + (" The file was written by a newer FlowDash." if newer else ""),
         )
-    allowed = (
-        TOP_LEVEL_KEYS
-        if version >= 4
-        else _V3_TOP_LEVEL_KEYS
-        if version >= 2
-        else _V1_TOP_LEVEL_KEYS
-    )
-    _unknown_keys(doc, allowed, "document")
+    _unknown_keys(doc, TOP_LEVEL_KEYS, "document")
     title = doc.get("title")
     if title is not None and not isinstance(title, str):
         _fail("title", f"must be a string, got {title!r}.")
@@ -901,11 +890,7 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
     for name, node in nodes.items():
         path = f"nodes.{name}"
         node = _mapping(node, path)
-        _unknown_keys(
-            node,
-            NODE_KEYS if version >= 4 else _V3_NODE_KEYS if version >= 2 else _V1_NODE_KEYS,
-            path,
-        )
+        _unknown_keys(node, NODE_KEYS, path)
         component = node.get("component")
         if not isinstance(component, str) or not component:
             _fail(f"{path}.component", "is required and names a component, e.g. 'Views/kpi'.")
@@ -959,9 +944,7 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
         "title": "Untitled" if title is None else title,
         "items": items,
         "edges": edges,
-        "tile_layout": _layout_entries(
-            layout.get("tiles"), "layout.tiles", ids, TILE_KEYS if version >= 3 else _V2_TILE_KEYS
-        ),
+        "tile_layout": _layout_entries(layout.get("tiles"), "layout.tiles", ids, TILE_KEYS),
         "breakpoints": list(breakpoints),
         "responsive_layouts": responsive,
         "reference_width": reference_width,

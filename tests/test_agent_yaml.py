@@ -11,6 +11,7 @@ import yaml
 
 from panel_flowdash import FlowDash, MemoryDashboardStore, register
 from panel_flowdash.agent import (
+    FORMAT_VERSION,
     DashboardYAMLError,
     component_schema,
     dashboard_from_yaml,
@@ -80,8 +81,11 @@ def test_seed_dashboard_round_trips(seed):
     assert dashboard_to_yaml(dashboard_from_yaml(text)) == text
 
 
+@pytest.mark.parametrize("version", [1, 2, 3, 4])
 @pytest.mark.parametrize("seed", SEEDS, ids=lambda p: p.stem)
-def test_seed_dashboard_round_trips_through_the_editor_and_validates(wind, seed):
+def test_seed_dashboard_round_trips_through_the_editor_and_validates(wind, seed, version):
+    # The seeds hold no key added after version 1, so they read the same under
+    # every header, including the 3 and 4 that development builds wrote.
     store = MemoryDashboardStore()
     wind.seed_dashboards(store, "demo")
     editor = FlowDash(
@@ -90,8 +94,11 @@ def test_seed_dashboard_round_trips_through_the_editor_and_validates(wind, seed)
     try:
         editor.load(seed.stem)
         exported = editor.export_dashboard()
-        text = dashboard_to_yaml(exported)
+        current = dashboard_to_yaml(exported)
+        text = current.replace(f"flowdash: {FORMAT_VERSION}\n", f"flowdash: {version}\n", 1)
+        assert text.startswith(f"flowdash: {version}\n")
         assert _errors(validate_dashboard(text, **_catalog(editor))) == []
+        assert dashboard_to_yaml(dashboard_from_yaml(text)) == current
         editor.import_dashboard(text)
         assert editor.export_dashboard() == exported
         assert editor.dirty
@@ -304,10 +311,10 @@ def _validate(text):
 class TestValidate:
     def test_structural_errors_name_the_key(self):
         assert _validate("flowdash: 1\nnodes:\n  a: {component: T/number, colour: red}\n") == [
-            "nodes.a: unknown key 'colour'; expected component, config, inputs, position."
+            "nodes.a: unknown key 'colour'; expected component, origin, group, config, inputs, position."
         ]
         assert _validate("flowdash: 5\n") == [
-            "flowdash: unsupported format version 5; this release reads 1, 2, 3 and 4. "
+            "flowdash: unsupported format version 5; this release reads versions 1 to 4. "
             "The file was written by a newer FlowDash."
         ]
         assert _validate("nodes: {}\n")[0].startswith("document:")
@@ -318,7 +325,9 @@ class TestValidate:
         assert _validate(
             "flowdash: 1\nnodes:\n  a: {component: T/number}\n"
             "layout:\n  tiles:\n    - {node: a, colour: red}\n"
-        ) == ["layout.tiles[0]: unknown key 'colour'; expected node, width, height, visible."]
+        ) == [
+            "layout.tiles[0]: unknown key 'colour'; expected node, width, height, visible, framed, area."
+        ]
 
     def test_unknown_component_suggests_a_close_match(self):
         (error,) = _validate("flowdash: 1\nnodes:\n  a: {component: T/numbers}\n")
@@ -403,6 +412,11 @@ class TestValidate:
 
 
 class TestSchema:
+    def test_schema_names_the_written_version(self):
+        schema = dashboard_schema({})
+        assert schema["properties"]["flowdash"] == {"const": FORMAT_VERSION}
+        assert schema["$id"].endswith(f"/dashboard-{FORMAT_VERSION}.json")
+
     def test_component_schema_lists_ports_and_config(self, wind):
         editor = FlowDash(str(WIND), notifications=False)
         schema = component_schema(editor.component_specs["Views/kpi"])

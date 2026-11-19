@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "title": "Fleet Overview",
   "items": [
     {
@@ -275,5 +275,8 @@
     "refresh_period": 900,
     "capacity_unit": "GW",
     "color_scheme": "teals"
-  }
+  },
+  "turns": [],
+  "parameters": {},
+  "groups": []
 }

@@ -4,6 +4,7 @@ import json
 import logging
 import sqlite3
 from contextlib import closing
+from pathlib import Path
 
 import pytest
 import yaml
@@ -49,7 +50,7 @@ edges:
 """
 
 V2 = """\
-flowdash: 2
+flowdash: 1
 title: New
 turns:
   - id: t1
@@ -112,39 +113,28 @@ def test_a_version_1_file_reads_without_turns_or_origins():
     assert data["version"] == MODEL_VERSION
     assert data["turns"] == []
     assert all("origin" not in item for item in data["items"])
-    assert yaml.safe_load(dashboard_to_yaml(data))["flowdash"] == 4
+    assert yaml.safe_load(dashboard_to_yaml(data))["flowdash"] == 1
 
 
-@pytest.mark.parametrize(
-    "extra, path",
-    [
-        ("turns: []\n", "document"),
-        ("", "nodes.base"),
-    ],
-)
-def test_version_1_refuses_the_keys_of_version_2(extra, path):
-    text = V1 + extra
-    if not extra:
-        text = text.replace("component: T/number\n", "component: T/number\n    origin: t1\n")
-    with pytest.raises(DashboardYAMLError) as info:
-        dashboard_from_yaml(text)
-    assert info.value.path == path
-
-
-def test_version_2_round_trips_turns_and_origins():
+def test_turns_and_origins_round_trip():
     data = dashboard_from_yaml(V2)
     assert [t["id"] for t in data["turns"]] == ["t1", "t2", "t3"]
     assert data["turns"][2] == {"id": "t3", "question": "Then triple it", "status": "pending"}
     assert {i["instance_id"]: i["origin"] for i in data["items"]} == {"base": "t1", "double": "t2"}
-    v4 = V2.replace("flowdash: 2", "flowdash: 4")
-    assert dashboard_to_dict(data) == yaml.safe_load(v4)
-    assert dashboard_to_yaml(data) == v4
+    assert dashboard_to_dict(data) == yaml.safe_load(V2)
+    assert dashboard_to_yaml(data) == V2
+
+
+@pytest.mark.parametrize("version", [2, 3, 4])
+def test_pre_release_files_are_written_back_as_version_1(version):
+    data = dashboard_from_yaml(V2.replace("flowdash: 1", f"flowdash: {version}"))
+    assert dashboard_to_yaml(data) == V2
 
 
 @pytest.mark.parametrize("version", [0, 5, "2", True])
 def test_unknown_versions_are_refused(version):
-    with pytest.raises(DashboardYAMLError, match="this release reads 1, 2, 3 and 4") as info:
-        dashboard_from_yaml(V2.replace("flowdash: 2", f"flowdash: {json.dumps(version)}"))
+    with pytest.raises(DashboardYAMLError, match="this release reads versions 1 to 4") as info:
+        dashboard_from_yaml(V2.replace("flowdash: 1", f"flowdash: {json.dumps(version)}"))
     assert info.value.path == "flowdash"
 
 
@@ -208,8 +198,25 @@ def test_the_model_migrates_older_versions():
     del data["turns"]
     data["version"] = 3
     loaded = DashboardModel.from_dict(data)
-    assert loaded.version == MODEL_VERSION == 5
+    assert loaded.version == MODEL_VERSION == 4
     assert loaded.turns == []
+
+
+def test_a_released_model_3_file_migrates_to_the_current_model():
+    # A wind_energy seed as rc2 and earlier wrote it.
+    data = json.loads((Path(__file__).parent / "data" / "wind-overview-model-3.json").read_text())
+    assert data["version"] == 3
+    model = DashboardModel.from_dict({**data, "dashboard_id": "wind-overview", "user_id": "demo"})
+    assert model.version == MODEL_VERSION
+    assert (model.turns, model.parameters, model.groups) == ([], {}, [])
+    seed = Path(__file__).parents[1] / "examples" / "wind_energy" / "_dashboards"
+    assert export_model(model) == json.loads((seed / "wind-overview.json").read_text())
+
+
+def test_a_development_model_5_loads_as_4():
+    data = _model().to_dict()
+    data["version"] = 5
+    assert DashboardModel.from_dict(data).version == MODEL_VERSION == 4
 
 
 def test_turns_round_trip_through_to_dict():

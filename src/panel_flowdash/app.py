@@ -1334,12 +1334,6 @@ class FlowDashApp(Viewer):
             return
 
         if pathname == COMPONENTS_ROUTE:
-            # On Panel 1.10 the page update below never reaches the browser when
-            # it is made in the same tick as the pathname change, so let that go
-            # out first.
-            await asyncio.sleep(0)
-            if not self._is_current_navigation(generation):
-                return
             self._leave_dashboard()
             # Arriving from a dashboard must not keep its components running.
             self._reset_canvas()

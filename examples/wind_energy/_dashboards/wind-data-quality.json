@@ -1,5 +1,5 @@
 {
-  "version": 3,
+  "version": 4,
   "title": "Data Quality",
   "items": [
     {
@@ -218,5 +218,8 @@
     "refresh_period": 0,
     "capacity_unit": "GW",
     "color_scheme": "greens"
-  }
+  },
+  "turns": [],
+  "parameters": {},
+  "groups": []
 }

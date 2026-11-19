@@ -260,7 +260,7 @@ class TestYAML:
     def test_round_trip(self):
         data = _model([{"instance_id": "r", "index": 0, "width": 50, "framed": True}]).to_dict()
         doc = dashboard_to_dict(data)
-        assert doc["flowdash"] == 4
+        assert doc["flowdash"] == 1
         assert doc["layout"]["tiles"] == [{"node": "r", "width": 50, "framed": True}]
         loaded = dashboard_from_yaml(dashboard_to_yaml(data))
         assert loaded["tile_layout"] == [
@@ -276,33 +276,30 @@ class TestYAML:
         doc = dashboard_to_dict(data)
         assert doc["layout"]["responsive"] == {"sm": [{"node": "r", "width": 100}]}
 
-        text = "flowdash: 3\nnodes:\n  r: {component: T/rule}\nlayout:\n  responsive:\n"
+        text = "flowdash: 1\nnodes:\n  r: {component: T/rule}\nlayout:\n  responsive:\n"
         with pytest.raises(DashboardYAMLError, match=r"layout\.responsive\.sm\[0\]: unknown key"):
             dashboard_from_yaml(text + "    sm:\n      - {node: r, framed: true}\n")
 
-    @pytest.mark.parametrize(
-        "version, tile, path",
-        [
-            (2, "{node: r, framed: true}", "layout.tiles[0]"),
-            (3, "{node: r, framed: 'yes'}", "layout.tiles[0].framed"),
-        ],
-    )
-    def test_invalid_option_is_refused(self, version, tile, path):
-        text = f"flowdash: {version}\nnodes:\n  r: {{component: T/rule}}\nlayout:\n  tiles:\n"
+    def test_invalid_option_is_refused(self):
+        text = "flowdash: 1\nnodes:\n  r: {component: T/rule}\nlayout:\n  tiles:\n"
         with pytest.raises(DashboardYAMLError) as info:
-            dashboard_from_yaml(text + f"    - {tile}\n")
-        assert info.value.path == path
+            dashboard_from_yaml(text + "    - {node: r, framed: 'yes'}\n")
+        assert info.value.path == "layout.tiles[0].framed"
 
     def test_null_means_default(self):
-        text = "flowdash: 3\nnodes:\n  r: {component: T/rule}\nlayout:\n  tiles:\n"
+        text = "flowdash: 1\nnodes:\n  r: {component: T/rule}\nlayout:\n  tiles:\n"
         data = dashboard_from_yaml(text + "    - {node: r, framed: null}\n")
         assert data["tile_layout"] == [{"instance_id": "r", "index": 0}]
 
-    def test_version_2_files_still_load(self):
+    def test_pre_release_files_load_as_the_current_format(self):
         text = (
-            "flowdash: 2\nnodes:\n  r: {component: T/rule}\nlayout:\n  tiles:\n    - {node: r}\n"
+            "flowdash: 3\nnodes:\n  r: {component: T/rule}\nlayout:\n  tiles:\n"
+            "    - {node: r, framed: false}\n"
         )
-        assert dashboard_from_yaml(text)["tile_layout"] == [{"instance_id": "r", "index": 0}]
+        data = dashboard_from_yaml(text)
+        assert data["tile_layout"] == [{"instance_id": "r", "index": 0, "framed": False}]
+        assert dashboard_to_dict(data)["flowdash"] == 1
+        assert dashboard_to_dict(data)["layout"]["tiles"] == [{"node": "r", "framed": False}]
 
     def test_schema_offers_the_option_on_base_tiles_only(self):
         layout = dashboard_schema({})["properties"]["layout"]["properties"]

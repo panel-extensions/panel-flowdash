@@ -586,7 +586,7 @@ def test_reading_another_dashboard_while_viewing_one(store):
     ops = DashboardOps(editor)
     ops.open_dashboard(theirs.dashboard_id)
     assert editor.read_only
-    assert "flowdash: 4" in ops.get_dashboard(mine.dashboard_id)
+    assert "flowdash: 1" in ops.get_dashboard(mine.dashboard_id)
 
 
 def test_stored_dashboards_mark_restricted_connections(store):
