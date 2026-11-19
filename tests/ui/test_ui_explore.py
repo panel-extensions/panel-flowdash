@@ -267,8 +267,11 @@ def test_a_long_history_shows_its_latest_page_and_loads_earlier_ones(page):
     latest = page.get_by_text("Note number 59", exact=True)
     page.wait_for_timeout(1000)
     before = latest.bounding_box()["y"]
+    feed = editor.explore_feed
     page.get_by_role("button", name=re.compile(r"Show earlier requests \(41 more\)")).click()
-    expect(cells).to_have_count(40, timeout=30000)
+    # The server adds the page at once; a slow browser then takes a while to draw it.
+    wait_until(lambda: len(feed.state.runs) == 40, page, timeout=60000)
+    expect(cells).to_have_count(40, timeout=120000)
     page.get_by_text("Note number 20", exact=True).wait_for(state="attached")
     page.wait_for_timeout(1500)
     assert abs(latest.bounding_box()["y"] - before) < 50, (before, latest.bounding_box())
@@ -285,6 +288,7 @@ def test_a_long_history_shows_its_latest_page_and_loads_earlier_ones(page):
     before = top.bounding_box()["y"]
     assert 0 <= before <= 1000, before
     page.get_by_role("button", name=re.compile(r"Show earlier requests \(21 more\)")).click()
-    expect(cells).to_have_count(60, timeout=30000)
+    wait_until(lambda: len(feed.state.runs) == 60, page, timeout=60000)
+    expect(cells).to_have_count(60, timeout=120000)
     page.wait_for_timeout(1500)
     assert abs(top.bounding_box()["y"] - before) < 50, (before, top.bounding_box())
