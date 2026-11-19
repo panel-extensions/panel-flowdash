@@ -84,6 +84,14 @@ def _drag_control(page, handle, end, **kwargs):
     _drag(page, center(stable_box(handle, page)), end, **kwargs)
 
 
+# The role of the element with the keyboard focus, across shadow roots.
+_FOCUSED_ROLE = """() => {
+  let el = document.activeElement
+  while (el?.shadowRoot?.activeElement) { el = el.shadowRoot.activeElement }
+  return el?.getAttribute("role") ?? el?.tagName
+}"""
+
+
 def _grid_box(page):
     return stable_box(page.locator(".muuri-grid").first, page)
 
@@ -221,5 +229,24 @@ def test_tiles_keep_their_sizes_when_one_moves_to_the_top_bar(page):
     editor._layout_panel.tile_select.value = "kpi"
     page.get_by_text("Move to top bar").first.click()
     wait_until(lambda: _areas(editor)[TOP] == ["region", "kpi"], page, timeout=8000)
+    page.wait_for_timeout(500)
+    wait_until(lambda: tile_sizes_match(page, editor), page, timeout=8000)
+    # The pressed button left with the tile, so the focus moves to the tile picker.
+    wait_until(lambda: page.evaluate(_FOCUSED_ROLE) == "combobox", page, timeout=8000)
+
+
+def test_tiles_keep_their_sizes_when_a_component_is_removed_in_the_split(page):
+    page.set_viewport_size({"width": 1600, "height": 900})
+    editor = _editor()
+    editor.add_component("Widgets/Select", instance_id="select")
+    serve_component(page, editor)
+    page.get_by_role("button", name="Split").click()
+    wait_until(lambda: editor.mode == "split", page, timeout=8000)
+    wait_until(lambda: tile_sizes_match(page, editor), page, timeout=8000)
+    # The KPI leads the grid, so removing it shifts every tile after it.
+    page.locator(".react-flow__node").filter(has_text="KPI").first.click()
+    wait_until(lambda: (editor._flow.selection or {}).get("nodes") == ["kpi"], page, timeout=8000)
+    page.keyboard.press("Delete")
+    wait_until(lambda: "kpi" not in editor._grid_ids, page, timeout=8000)
     page.wait_for_timeout(500)
     wait_until(lambda: tile_sizes_match(page, editor), page, timeout=8000)

@@ -195,7 +195,7 @@ def _tile_by_id(page, editor, instance_id):
     return page.locator(".muuri-grid-item").filter(has=page.locator(f".{key}"))
 
 
-def test_tiles_keep_their_sizes_after_a_move_to_the_top_bar_and_a_reorder(
+def test_tiles_keep_their_sizes_after_a_top_bar_move_its_undo_and_a_reorder(
     page, serve_example, monkeypatch
 ):
     apps = []
@@ -224,6 +224,17 @@ def test_tiles_keep_their_sizes_after_a_move_to_the_top_bar_and_a_reorder(
     _tile_by_id(page, editor, "kpi_capacity").click()
     wait_until(lambda: editor._layout_panel.selected == "kpi_capacity", page, timeout=8000)
     page.get_by_text("Move to top bar").first.click()
+    wait_until(lambda: "kpi_capacity" not in editor._grid_ids, page, timeout=8000)
+    page.wait_for_timeout(500)
+    wait_until(lambda: tile_sizes_match(page, editor), page, timeout=8000)
+
+    # Undo puts the tile back in the middle of the grid, and redo takes it out again.
+    page.evaluate("document.activeElement?.blur()")
+    page.keyboard.press("Control+z")
+    wait_until(lambda: "kpi_capacity" in editor._grid_ids, page, timeout=8000)
+    page.wait_for_timeout(500)
+    wait_until(lambda: tile_sizes_match(page, editor), page, timeout=8000)
+    page.keyboard.press("Control+Shift+z")
     wait_until(lambda: "kpi_capacity" not in editor._grid_ids, page, timeout=8000)
     page.wait_for_timeout(500)
     wait_until(lambda: tile_sizes_match(page, editor), page, timeout=8000)
