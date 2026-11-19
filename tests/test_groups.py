@@ -4,7 +4,6 @@ import json
 import sqlite3
 from contextlib import closing
 
-import panel_reactflow as pr
 import param
 import pytest
 import yaml
@@ -319,7 +318,6 @@ class TestEditor:
         assert {i["instance_id"] for i in editor._tile_items} == {"data", "first", "second", "out"}
         assert len(editor._dataflow_graph.edges) == 3
 
-    @pytest.mark.skipif("group_delete" not in pr.ReactFlow.param, reason="needs group_delete")
     def test_deleting_a_frame_on_the_canvas_ungroups_it_as_one_edit(self, editor):
         versions = len(editor.edit_history.versions)
         editor._flow.remove_node(group_node_id("picks"))

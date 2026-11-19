@@ -2,7 +2,6 @@
 
 import panel as pn
 import panel_material_ui as pmui
-import panel_reactflow as pr
 import pytest
 from panel.tests.util import wait_until
 
@@ -186,10 +185,6 @@ def test_undo_brings_back_the_expanded_group_and_its_label(page):
     expect(frame.locator(".rf-group-label")).to_have_text("Tables")
 
 
-@pytest.mark.skipif(
-    "group_delete" not in pr.ReactFlow.param,
-    reason="needs a panel-reactflow whose canvas can ungroup a deleted frame",
-)
 def test_delete_on_a_frame_ungroups_it_and_keeps_the_connections(page):
     editor, _src, first, second = _editor()
     edges = set(editor._edge_id_map.values())

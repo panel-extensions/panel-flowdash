@@ -1669,7 +1669,7 @@ class FlowDash(Viewer):
             popup_hover_delay=self.popup_hover_delay,
             drop_types=[_PALETTE_DRAG_TYPE, _FILES_DROP_TYPE],
             # Deleting a frame keeps its nodes, as grouping leaves the dataflow alone.
-            **({"group_delete": "ungroup"} if "group_delete" in pr.ReactFlow.param else {}),
+            group_delete="ungroup",
             connection_validation={
                 "direction": True,
                 "cycles": True,
