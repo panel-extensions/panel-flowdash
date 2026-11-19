@@ -36,9 +36,8 @@ def test_a_value_typed_for_an_unwired_input_reaches_the_component(page):
     field = row.get_by_role("textbox", name="Value", exact=True)
     field.fill("42")
     field.press("Enter")
-    # The component gets the value before the node's inputs record it.
-    wait_until(lambda: editor.input_values(show) == {"value": 42}, timeout=8000)
-    assert editor._component_instances[show].value == 42
+    wait_until(lambda: editor._component_instances[show].value == 42, timeout=8000)
+    assert editor.input_values(show) == {"value": 42}
     expect(row.get_by_text("Set here; a connection would replace it.")).to_be_visible()
 
     editor.connect(num, "value", show, "value")
