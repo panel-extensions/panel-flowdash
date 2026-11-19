@@ -495,6 +495,11 @@ async def _settle(seconds=0.3):
         await asyncio.sleep(0.01)
 
 
+async def _checked(editor):
+    """Wait until the check of the edits made in the inspector's form has finished."""
+    assert await editor._inspector._draft.settle(10)
+
+
 class TestInspectorDraft:
     def _form(self, editor, node_id):
         select_on_canvas(editor._flow, node_id=node_id)
@@ -504,15 +509,15 @@ class TestInspectorDraft:
     async def test_the_status_says_a_held_back_edit_was_not_applied(self, editor):
         query = editor.add_component(QUERY)
         form = self._form(editor, query)
-        await _settle()
+        await _checked(editor)
         chip = editor._inspector._status_chip
         assert chip.label != "Edit not applied"
         before = (chip.label, chip.color)
         form._widgets["sql"].value = "DROP t"
-        await _settle()
+        await _checked(editor)
         assert (chip.label, chip.color) == ("Edit not applied", "warning")
         form._widgets["sql"].value = "SELECT 2"
-        await _settle()
+        await _checked(editor)
         assert (chip.label, chip.color) == before
 
     async def test_a_check_finishing_after_another_node_is_selected_leaves_its_status(
@@ -546,7 +551,7 @@ class TestInspectorDraft:
         config_state = editor.graph.get_config_state(query)
         assert form.object is not config_state
         form._widgets["sql"].value = "DROP t"
-        await _settle()
+        await _checked(editor)
         assert config_state.sql == "SELECT 1"
         assert editor._component_instances[query].sql == "SELECT 1"
         alerts = [
@@ -556,7 +561,7 @@ class TestInspectorDraft:
         ]
         assert len(alerts) == 1 and "Only SELECT statements are allowed." in alerts[0].object
         form._widgets["sql"].value = "SELECT 2"
-        await _settle()
+        await _checked(editor)
         assert config_state.sql == "SELECT 2"
         assert editor._component_instances[query].sql == "SELECT 2"
         assert editor._tile_items[0]["config"] == {"sql": "SELECT 2"}
