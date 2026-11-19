@@ -1,5 +1,6 @@
 """UI tests for the Ctrl/Cmd+K command palette and the keyboard shortcuts."""
 
+import re
 import time
 from urllib.parse import urlparse
 
@@ -130,7 +131,9 @@ def test_field_opens_arrows_move_and_escape_closes(page):
     search = page.get_by_role("combobox", name=PLACEHOLDER)
     expect(search).to_be_focused()
     expect(page.get_by_role("option").filter(has_text="Refresh all tiles")).to_be_visible()
-    expect(page.get_by_label("Keyboard shortcuts")).to_contain_text("Back to view mode")
+    expect(page.get_by_label("Keyboard shortcuts")).to_contain_text(
+        "Clear the selection, then back to view mode"
+    )
 
     first = page.get_by_role("option").first
     expect(first).to_have_attribute("aria-selected", "true")
@@ -170,6 +173,27 @@ def test_shortcuts_switch_modes_and_are_ignored_while_typing(page):
     page.keyboard.press("Escape")
     wait_until(lambda: "edit=true" not in page.url, page, timeout=10000)
     page.get_by_role("button", name="Refresh").wait_for()
+    assert not apps[0]._editor.editable
+
+
+def test_escape_deselects_on_the_canvas_before_leaving_edit_mode(page):
+    store, (plant,) = _store_with("Plant")
+    apps = []
+    _serve_app(page, store, f"/dash/{plant}?edit=true", apps)
+    page.get_by_role("button", name="Done").wait_for()
+    page.get_by_role("button", name="Dataflow").click()
+    node = page.locator(".react-flow__node[data-id='n1']")
+    node.click()
+    wait_until(lambda: apps[0]._editor._flow.selection["nodes"] == ["n1"], page, timeout=10000)
+
+    page.keyboard.press("Escape")
+    wait_until(lambda: apps[0]._editor._flow.selection["nodes"] == [], page, timeout=10000)
+    expect(node).not_to_have_class(re.compile(r"\bselected\b"))
+    page.wait_for_timeout(500)
+    assert "edit=true" in page.url and apps[0]._editor.editable
+
+    page.keyboard.press("Escape")
+    wait_until(lambda: "edit=true" not in page.url, page, timeout=10000)
     assert not apps[0]._editor.editable
 
 

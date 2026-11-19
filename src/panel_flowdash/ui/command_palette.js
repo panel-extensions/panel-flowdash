@@ -168,6 +168,23 @@ function editing() {
   return new URLSearchParams(window.location.search).get("edit") === "true"
 }
 
+// Whether a node or connection is selected on a wiring canvas that is shown,
+// across shadow roots. The canvas clears its own selection on Escape and
+// re-renders before the document sees the key, so it is read while capturing.
+function canvasSelection(root = document) {
+  for (const el of root.querySelectorAll(".react-flow__node.selected, .react-flow__edge.selected")) {
+    if (el.getClientRects().length) {
+      return true
+    }
+  }
+  for (const el of root.querySelectorAll("*")) {
+    if (el.shadowRoot && canvasSelection(el.shadowRoot)) {
+      return true
+    }
+  }
+  return false
+}
+
 // Matches every whitespace-separated token as a substring of the title,
 // subtitle or keywords, or else as a subsequence of the title, and returns
 // a score plus the matched spans in the title and subtitle.
@@ -541,11 +558,19 @@ export function render({model, el: root}) {
     } else if (key === "s" && editing()) {
       model.send_msg({type: "shortcut", name: "split"})
     } else if (event.key === "Escape" && editing()) {
-      model.send_msg({type: "shortcut", name: "view"})
+      model.send_msg({type: "shortcut", name: selectedAtEscape ? "deselect" : "view"})
+    }
+  }
+
+  let selectedAtEscape = false
+  function onEscapeCapture(event) {
+    if (event.key === "Escape") {
+      selectedAtEscape = editing() && canvasSelection()
     }
   }
 
   field.addEventListener("click", () => open())
+  window.addEventListener("keydown", onEscapeCapture, true)
   document.addEventListener("keydown", onDocumentKey)
   model.on("items", () => {
     if (state && !state.help) {
@@ -558,6 +583,7 @@ export function render({model, el: root}) {
   })
 
   const cleanup = () => {
+    window.removeEventListener("keydown", onEscapeCapture, true)
     document.removeEventListener("keydown", onDocumentKey)
     host.remove()
     state = null
