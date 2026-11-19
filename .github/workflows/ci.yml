@@ -165,11 +165,10 @@ jobs:
           for i in $(seq 1 10); do pixi run -e "${ENV}" pytest tests/test_config_check.py --cov=panel_flowdash -q -p no:cacheprovider -s 2>&1 | grep -E "TRACE|^ +[0-9]+\.[0-9]{3} |passed|failed|^FAILED" ; done
 
   pytest_ui:
-    if: false
     name: ui:${{ matrix.environment }}:${{ matrix.os }}
     needs: [pre_commit, setup, pixi_lock]
     runs-on: ${{ matrix.os }}
-    if: needs.setup.outputs.code_change == 'true'
+    if: false
     strategy:
       fail-fast: false
       matrix:
