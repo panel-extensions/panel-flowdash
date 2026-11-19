@@ -447,11 +447,7 @@ class CommandPaletteController:
             target = editor.edit_history.step_value(action)
             if target is not None:
                 await editor.ensure_components_loaded_async(components_of(target))
-            # This coroutine runs without the Document lock. Applying the
-            # version here would hold the Document on the loop while a locked
-            # browser callback holds it on a worker thread, and Panel can then
-            # restore a hold that callback already released, so no later change
-            # reaches the browser. The import above stays unlocked.
+            # Applied locked to avoid the unlocked hold race fixed in holoviz/panel#9117.
             pn.state.execute(functools.partial(self._apply_step, action), schedule=True)
 
         pn.state.execute(step)
