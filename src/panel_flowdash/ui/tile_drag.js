@@ -1,7 +1,9 @@
 const TILE_KEY_PREFIX = "flowdash-tile-key-"
 // Pixels the pointer moves before a press on a handle counts as a drag.
 const THRESHOLD = 4
-// The drop targets shown for an empty area, at the edge of the grid.
+// The drop targets shown for an empty area: the top bar's above the grid, so a
+// tile sorted along the grid's top edge stays on the grid, the sidebar's along
+// the grid's left edge.
 const EMPTY_TOP = 44
 const EMPTY_SIDE = 88
 // Thinner while a component beside the grid is dragged, since the grid is a
@@ -121,7 +123,7 @@ export function render({model}) {
         zones.push({area, el, rect: el.getBoundingClientRect(), empty: false})
       } else if (gridRect) {
         const rect = area === "top"
-          ? {...gridRect, bottom: gridRect.top + (slim ? EMPTY_TOP_SLIM : EMPTY_TOP)}
+          ? {...gridRect, top: gridRect.top - (slim ? EMPTY_TOP_SLIM : EMPTY_TOP), bottom: gridRect.top - 1}
           : {...gridRect, right: gridRect.left + (slim ? EMPTY_SIDE_SLIM : EMPTY_SIDE)}
         zones.push({area, el: null, rect, empty: true})
       }
@@ -170,7 +172,7 @@ export function render({model}) {
 
   function hit(x, y) {
     const all = zones()
-    // An empty bar's strip lies over the grid, so it takes no slack from the tiles.
+    // An empty bar's strip borders or lies over the grid, so it takes no slack from the tiles.
     const zone = all.find(z => z.area !== "grid" && within(z.rect, x, y, z.empty ? 0 : SLACK)) ??
       all.find(z => z.area === "grid" && within(z.rect, x, y))
     return {all, zone: zone ?? null}
@@ -308,6 +310,9 @@ export function render({model}) {
       send()
       return
     }
+    // Ahead of the layout the grid sends when the drag ends, so the editor
+    // records that layout as part of the move rather than as an edit of its own.
+    model.send_msg({action: "release", id: current.id, area: target.area})
     // After the grid has sent the layout the drag ended with, so the move applies
     // to it: Muuri ends a drag a frame or more after the pointer is released.
     const until = performance.now() + 2000

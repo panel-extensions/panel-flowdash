@@ -238,7 +238,7 @@ def area_items(editor, area: str, entries: dict[str, dict] | None = None) -> lis
 
 def move_to_area(
     editor, instance_id: str, area: str, before: str | None = None, index: int | None = None
-):
+) -> bool:
     """Show a component in *area*, in front of the component *before* there or else last.
 
     *index*, the position among the others in *area* with 0 for the first, may
@@ -246,7 +246,7 @@ def move_to_area(
 
     One edit, and so one version in the history. Moving within an area
     reorders it. A tile keeps its size on the grid while it is beside it, and
-    a hidden tile moved anywhere is shown.
+    a hidden tile moved anywhere is shown. Returns whether anything moved.
 
     Raises
     ------
@@ -272,7 +272,7 @@ def move_to_area(
     current = [i["instance_id"] for i in area_items(editor, area, by_id)]
     shown = by_id.get(instance_id, {}).get("visible") is not False
     if area_of(editor, item, by_id) == area and order == current and shown:
-        return
+        return False
     entry = by_id.setdefault(instance_id, {"instance_id": instance_id})
     if area == default_area(editor, item) == GRID:
         entry.pop("area", None)
@@ -288,6 +288,7 @@ def move_to_area(
     editor._record_edit(
         f"Moved {name} to the {AREA_NAMES[area]}", op="layout", args={"name": name, "area": area}
     )
+    return True
 
 
 def move_targets(editor, item: dict) -> list[str]:

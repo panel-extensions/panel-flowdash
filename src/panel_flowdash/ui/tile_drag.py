@@ -28,7 +28,9 @@ class TileDrag(JSComponent):
     component may leave the grid. A drop calls ``on_move(instance_id, area,
     before)``, *before* being the instance id the component goes in front of
     or None for last; a drop refused because the component does not fit
-    calls ``on_refuse(instance_id, area)``.
+    calls ``on_refuse(instance_id, area)``. A tile dropped beside the grid
+    calls ``on_release(instance_id)`` first, as the pointer is released and
+    before the grid sends the layout the drag ended with.
     """
 
     enabled = param.Boolean(default=False, doc="Whether drags are watched.")
@@ -58,6 +60,7 @@ class TileDrag(JSComponent):
         self,
         on_move: Callable[[str, str, str | None], None] | None = None,
         on_refuse: Callable[[str, str], None] | None = None,
+        on_release: Callable[[str], None] | None = None,
         **params,
     ):
         params.setdefault("height", 0)
@@ -66,6 +69,7 @@ class TileDrag(JSComponent):
         super().__init__(**params)
         self._on_move = on_move
         self._on_refuse = on_refuse
+        self._on_release = on_release
 
     def _handle_msg(self, msg):
         if not isinstance(msg, dict) or not self.enabled:
@@ -78,3 +82,5 @@ class TileDrag(JSComponent):
             self._on_move(instance_id, area, before if isinstance(before, str) else None)
         elif msg.get("action") == "refuse" and self._on_refuse is not None:
             self._on_refuse(instance_id, area)
+        elif msg.get("action") == "release" and self._on_release is not None:
+            self._on_release(instance_id)
