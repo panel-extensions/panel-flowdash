@@ -299,6 +299,7 @@ class Markdown(Viewer):
         default="Write **Markdown** here.",
         label="Text",
         doc="The Markdown to show." + _TEMPLATE_DOC,
+        metadata={"flowdash": {"widget": "code", "language": "markdown"}},
     )
 
     value = param.Parameter(default=None, doc="The value filled into the text's placeholders.")

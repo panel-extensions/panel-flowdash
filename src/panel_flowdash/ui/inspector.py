@@ -26,6 +26,7 @@ from panel_flowdash.groups import component_nodes, group_id_of
 from panel_flowdash.input_literals import takes_literal
 from panel_flowdash.transforms import parse_transform, summarize_transform
 from panel_flowdash.ui.choice_widgets import form_widgets, widgets_key
+from panel_flowdash.ui.code_field import CodeField
 from panel_flowdash.ui.config_draft import ConfigDraft
 from panel_flowdash.ui.input_editor import LiteralEditor
 from panel_flowdash.ui.node_card import (
@@ -264,6 +265,7 @@ class Inspector(Viewer):
         else:
             objects = self._edge_view(self._shown[1])
         self._body[:] = objects
+        self._sync_save()
 
     def show_extra(
         self,
@@ -744,7 +746,7 @@ class Inspector(Viewer):
     ) -> pn.Param:
         widgets = form_widgets(state, names, choices)
         self._form_key = widgets_key(widgets)
-        return pn.Param(
+        form = pn.Param(
             state,
             parameters=names,
             widgets=widgets or None,
@@ -753,6 +755,27 @@ class Inspector(Viewer):
             sizing_mode="stretch_width",
             margin=0,
         )
+        editor = weakref.ref(self.editor)
+        for field in form.select(CodeField):
+            # Typed text is applied on blur, so Save is offered while some waits.
+            field.param.watch(
+                lambda _event: (e := editor()) is not None and e._sync_toolbar_state(), "unsent"
+            )
+        return form
+
+    def _sync_save(self):
+        """Offer Save while a code field shown holds unapplied text, and stop once it is gone."""
+        if getattr(self.editor, "_dashboard_bar", None) is not None:
+            self.editor._sync_toolbar_state()
+
+    def has_unsent_text(self) -> bool:
+        """Whether a code field shown holds typed text it has not applied yet."""
+        return any(field.unsent for field in pn.Column(*self._body).select(CodeField))
+
+    async def settle(self) -> None:
+        """Wait for the config check of an edit in the form shown, so a save includes it."""
+        if self._draft is not None:
+            await self._draft.settle()
 
     def _watch_choices(self, instance_id, spec, config_state, edited, names, holder):
         """Offer the node's config choices in *holder*'s form, asking again as its inputs or config change."""
@@ -789,6 +812,7 @@ class Inspector(Viewer):
             owner._choices[instance_id] = choices
             if widgets_key(form_widgets(state, names, choices)) != owner._form_key:
                 holder[0] = owner._param_form(state, names, choices)
+                owner._sync_save()
             owner._refresh_inputs()
 
         async def update():

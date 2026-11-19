@@ -1575,7 +1575,7 @@ class FlowDash(Viewer):
     # ------------------------------------------------------------------
 
     def _load_component_extensions(self):
-        """Load the Panel extensions every offered component declares.
+        """Load the Panel extensions every offered component declares, and the inspector's.
 
         Components are imported lazily, after the page has fetched its
         JavaScript, so an extension first loaded by a dropped component would
@@ -1587,6 +1587,8 @@ class FlowDash(Viewer):
                 for entry in self._component_entries.values()
                 for ext in entry.metadata.extensions
             }
+            # The inspector edits code fields in Panel's CodeEditor.
+            | {"codeeditor"}
         )
         if extensions:
             pn.extension(*extensions)
@@ -3001,7 +3003,7 @@ class FlowDash(Viewer):
         self._download_button = bar.download_button
         self._refresh_button = bar.refresh_button
         self._settings_button = bar.settings_button
-        self._save_button.on_click(lambda _event: self._on_save_clicked())
+        self._save_button.on_click(lambda _event: self._save_from_button())
         self._clear_dialog = self._build_clear_dialog()
         self._pending_import: DashboardModel | None = None
         self._import_message = markdown_pane()
@@ -6995,6 +6997,35 @@ class FlowDash(Viewer):
         title = self._component_entries[component_id].title
         detail = f": {reasons[0]}" if reasons else ""
         self._notify("warning", f"Added '{title}' but could not connect it{detail}", duration=5000)
+
+    def _has_unsent_edits(self) -> bool:
+        """Whether the inspector holds typed text not applied yet, which a save should include."""
+        inspector = getattr(self, "_inspector", None)
+        return inspector is not None and inspector.has_unsent_text()
+
+    def _save_from_button(self):
+        """Save, once an edit the click just applied, e.g. by leaving a code field, is checked.
+
+        Leaving the field sends its text before the click, but the config
+        check that applies it finishes later, so saving at once would store
+        the config without it.
+        """
+        inspector = getattr(self, "_inspector", None)
+        draft = inspector._draft if inspector is not None else None
+        if draft is None or not draft.busy:
+            self._on_save_clicked()
+            return
+
+        async def save_when_checked():
+            # The button shows it is busy while the check runs.
+            self._save_button.loading = True
+            try:
+                await inspector.settle()
+            finally:
+                self._save_button.loading = False
+            self._on_save_clicked()
+
+        param.parameterized.async_executor(save_when_checked)
 
     def _on_save_clicked(self) -> bool:
         try:

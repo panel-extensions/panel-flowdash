@@ -8,6 +8,7 @@ import panel_material_ui as pmui
 import param
 
 from panel_flowdash.component_spec import widget_hint
+from panel_flowdash.ui.code_field import CodeField, code_language
 from panel_flowdash.ui.number_widgets import (
     FORMAT_WIDGET,
     THRESHOLDS_WIDGET,
@@ -141,8 +142,9 @@ def plain_widget(parameter: param.Parameter, current: t.Any) -> dict[str, t.Any]
     keeping a value its objects no longer hold, marked as not available, and
     a dropdown offering an empty option if the selector allows None. An
     optional number shows None as empty rather than as 0 or its lower bound. A
-    number format or a list of thresholds gets its own editor, see
-    :mod:`panel_flowdash.ui.number_widgets`.
+    number format, a list of thresholds and a text field marked as code get
+    their own editors, see :mod:`panel_flowdash.ui.number_widgets` and
+    :mod:`panel_flowdash.ui.code_field`.
     """
     if isinstance(parameter, param.ListSelector):
         options = dict(parameter.get_range())
@@ -151,6 +153,8 @@ def plain_widget(parameter: param.Parameter, current: t.Any) -> dict[str, t.Any]
         return {"type": ChoiceMultiSelect, "options": options}
     if isinstance(parameter, param.Selector):
         return _select(parameter, dict(parameter.get_range()), current)
+    if (language := code_language(parameter)) is not None:
+        return {"type": CodeField, "language": language}
     hint = widget_hint(parameter)
     if hint == FORMAT_WIDGET and isinstance(parameter, param.String):
         return {"type": FormatInput}

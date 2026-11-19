@@ -333,8 +333,9 @@ def _config_from_mapping(
     Properties are typed from their JSON ``type`` (``string``, ``integer``,
     ``number``, ``boolean``, ``array``, ``object``), with ``enum`` giving a
     selector and ``minimum``/``maximum`` bounds; an untyped property accepts
-    any value. ``"x-flowdash": {"choices": "columns", "of": "<input>"}``
-    declares choices as a param's ``metadata`` does.
+    any value. ``"x-flowdash"`` is the param's FlowDash ``metadata``, e.g.
+    ``{"choices": "columns", "of": "<input>"}`` to declare choices or
+    ``{"widget": "code", "language": "sql"}`` for a code editor.
     """
     properties = schema.get("properties", schema)
     fields: list[ConfigField] = []
@@ -343,6 +344,8 @@ def _config_from_mapping(
         prop = prop if isinstance(prop, dict) else {}
         default = prop.get("default")
         p = _param_from_schema(prop, default)
+        if isinstance(prop.get("x-flowdash"), dict):
+            p.metadata = {**(p.metadata or {}), "flowdash": dict(prop["x-flowdash"])}
         params[name] = p
         kind, _ = _schema_type(prop)
         fields.append(

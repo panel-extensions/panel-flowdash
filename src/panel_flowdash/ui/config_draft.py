@@ -78,6 +78,9 @@ class ConfigDraft:
         self._runs = runs
         self._results = {} if results is None else results
         self._pending: dict[str, t.Any] = {}
+        # Checks proposed but not started, and started but not finished.
+        self._scheduled = 0
+        self._checking = 0
         self._syncing = False
         self._applying = False
         self.alert = pn.Column(margin=0, sizing_mode="stretch_width")
@@ -185,6 +188,7 @@ class ConfigDraft:
         self._pending.update(patch)
         run = self._runs.get(self.instance_id, 0) + 1
         self._runs[self.instance_id] = run
+        self._scheduled += 1
         # A rewire by the agent proposes too; the draft is the person's, so it
         # must not be applied inside the agent's tool call and turn.
         person_context().run(_schedule, partial(self.check, run, dict(self._pending)))
@@ -196,9 +200,31 @@ class ConfigDraft:
         :func:`~panel_flowdash.config_check.recheck_node`, so a burst of edits
         or rewiring runs one check at a time.
         """
+        self._scheduled = max(self._scheduled - 1, 0)
         editor = self._editor()
         if editor is None:
             return CheckResult()
+        self._checking += 1
+        try:
+            return await self._check(editor, run, pending)
+        finally:
+            self._checking -= 1
+
+    @property
+    def busy(self) -> bool:
+        """Whether a check of an edit has not finished, so the node's config may still change."""
+        return self._scheduled > 0 or self._checking > 0
+
+    async def settle(self, timeout: float = 30) -> bool:
+        """Wait until no edit waits for its check, and return whether that happened in time."""
+        deadline = asyncio.get_running_loop().time() + timeout
+        while self.busy:
+            if asyncio.get_running_loop().time() > deadline:
+                return False
+            await asyncio.sleep(0.02)
+        return True
+
+    async def _check(self, editor: FlowDash, run: int, pending: dict[str, t.Any]) -> CheckResult:
         wiring = self._current_wiring()
         result = await recheck_node(editor, self.instance_id, pending)
         if self._runs.get(self.instance_id) != run:

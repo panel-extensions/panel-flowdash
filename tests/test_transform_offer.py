@@ -247,8 +247,6 @@ class TestRefused:
                 "reason": "Type mismatch: no.",
             }
         )
-        if not notes:
-            pytest.skip("This panel-reactflow has no connection_refused event.")
         assert notes == [("warning", "Not connected: Type mismatch: no.")]
 
     def test_a_refusal_without_a_reason_still_says_so(self, editor, monkeypatch):
