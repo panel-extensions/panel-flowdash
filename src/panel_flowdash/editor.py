@@ -39,7 +39,11 @@ from panel_tiles import TileGrid
 from panel_flowdash import auto_layout
 from panel_flowdash.auth import Permission
 from panel_flowdash.component_library import normalize_components
-from panel_flowdash.component_spec import _flowdash_metadata, build_component_specs
+from panel_flowdash.component_spec import (
+    _flowdash_metadata,
+    build_component_specs,
+    config_json_schema,
+)
 from panel_flowdash.dashboard_store import (
     BaseDashboardStore,
     DashboardConflictError,
@@ -1475,7 +1479,7 @@ class FlowDash(Viewer):
             node_types[type_key] = pr.NodeType(
                 type=type_key,
                 label=spec.title,
-                schema=spec.config_state_class,
+                schema=config_json_schema(spec.config_state_class),
                 inputs=[
                     {
                         "id": port.name,

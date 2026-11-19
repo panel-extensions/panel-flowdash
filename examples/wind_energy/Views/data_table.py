@@ -40,7 +40,12 @@ class app(pn.viewable.Viewer):
 
     label = param.String(default="Table", doc="Heading shown above the table.")
 
-    columns = param.List(default=[], item_type=str, doc="Columns to show; empty shows all.")
+    columns = param.List(
+        default=[],
+        item_type=str,
+        doc="Columns to show; empty shows all.",
+        metadata={"flowdash": {"choices": "columns", "of": "table"}},
+    )
 
     page_size = param.Integer(default=10, bounds=(5, 100), doc="Rows per page.")
 

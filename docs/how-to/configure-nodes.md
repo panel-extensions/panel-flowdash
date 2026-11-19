@@ -68,9 +68,11 @@ def app(config, instance_config):
 **A JSON-Schema-like dict** - `properties` map to fields typed from their
 `type` (`string`, `integer`, `number`, `boolean`, `array`, `object`, or a
 `["integer", "null"]` pair for an optional one), so each gets the matching
-widget. An `enum` becomes a selector, `minimum` and `maximum` bound a number,
-and `default`, `title` and `description` are honored. A property without a
-type, or whose default does not fit its type, accepts any value:
+widget. An `enum` becomes a dropdown, with an empty option when it allows
+null, an array of an `enum` a multi-select, `minimum` and `maximum` bound a
+number, and `default`, `title` and `description` are honored. A property
+without a type, or whose default does not fit its type, accepts any value and
+is edited as a Python literal:
 
 ```python
 schema = {
@@ -90,8 +92,14 @@ def app(config, instance_config):
 ```
 
 **A Pydantic model** - its fields are typed from the model's JSON schema the
-same way as the dict form, with the fields' own defaults (a tuple default stays
-a tuple).
+same way as the dict form: `Literal` and `Enum` fields are dropdowns,
+`Optional` ones can be cleared, and `list[Literal[...]]` is a multi-select.
+Defaults are stored as JSON data, as a saved dashboard holds them: a nested
+model's default is a dict, an `Enum`'s its value and a tuple a list.
+
+Optional fields of any kind can be left empty in the inspector: an optional
+number shows empty rather than 0, and a dropdown for a field that allows None
+offers "Not set".
 
 ### 3. Supply a custom editor with `config_editor`
 
@@ -277,8 +285,11 @@ class TableView(Viewer):
 ```
 
 Each value is a list, a `{label: value}` dict or a `Choices(options, restrict=True,
-types=None)`. A restricted field shows a dropdown; `restrict=False` keeps a text
-field that suggests the values and accepts others. Choices from the callable
+types=None)`. A restricted field shows a dropdown, with a "Not set" option when
+the field may be empty (any text field, or a field that allows None);
+`restrict=False` keeps a text field that suggests the values and accepts
+others. Declared column choices show as soon as the input is wired, and a
+thin progress bar under the form shows while `config_choices` runs. Choices from the callable
 replace the declared ones of the same field. The inspector asks again when the
 node's inputs or config change, and offers nothing for a field while the
 callable fails, times out (10 seconds) or returns no choices for it, so the
@@ -288,7 +299,10 @@ showing the form never changes the config.
 
 Columns of a DataFrame are read directly. For another tabular value, such as a
 lazy query, register a `columns` reader with its port type, which the
-declaration then uses for inputs of that type and its subtypes:
+declaration then uses for inputs of that type and its subtypes. A
+`config_choices` callable can list columns the same way with
+`columns_of(value, port_type=None)`, which returns `(name, type)` pairs, or
+None for a value that is not tabular:
 
 ```python
 register_port_type("mylib.Query", columns=lambda query: query.schema)  # {name: type}

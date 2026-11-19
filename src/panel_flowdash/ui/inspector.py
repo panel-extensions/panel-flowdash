@@ -458,6 +458,15 @@ class Inspector(Viewer):
             sizing_mode="stretch_width",
         )
         if has_choices(spec):
+            holder.append(
+                pmui.LinearProgress(
+                    variant="indeterminate",
+                    visible=False,
+                    sizing_mode="stretch_width",
+                    margin=(4, 0, 0, 0),
+                    css_classes=["fd-choices-loading"],
+                )
+            )
             self._watch_choices(instance_id, spec, config_state, edited, names, holder)
         if draft is None:
             return holder
@@ -481,7 +490,7 @@ class Inspector(Viewer):
     def _watch_choices(self, instance_id, spec, config_state, edited, names, holder):
         """Offer the node's config choices in *holder*'s form, asking again as its inputs or config change."""
         self._choice_holder = holder
-        refresh = partial(self._update_choices, instance_id, edited, names, holder)
+        refresh = partial(self._update_choices, instance_id, spec, edited, names, holder)
         state = self.editor._dataflow_graph.get_state(instance_id)
         for owner, watched in (
             (config_state, names),
@@ -492,18 +501,27 @@ class Inspector(Viewer):
                 self._releases.append(partial(owner.param.unwatch, watcher))
         refresh()
 
-    def _update_choices(self, instance_id, state, names, holder):
+    def _update_choices(self, instance_id, spec, state, names, holder):
         """Ask for the node's choices and rebuild its form if they change its widgets.
 
-        One request runs at a time per form; changes meanwhile ask once more
-        after it, so a fast-changing input does not pile up calls of a slow
-        ``config_choices``.
+        The declared column choices are shown first, then the component's
+        ``config_choices`` is asked, with a progress bar under the form
+        meanwhile. One request runs at a time per form; changes meanwhile ask
+        once more after it, so a fast-changing input does not pile up calls
+        of a slow ``config_choices``.
         """
         if self._choices_busy is holder:
             self._choices_again = True
             return
         self._choices_busy, self._choices_again = holder, False
         inspector = weakref.ref(self)
+        declared_names = {f.name for f in spec.config if f.choices}
+        loading = holder[1]
+
+        def show(owner, choices):
+            owner._choices[instance_id] = choices
+            if widgets_key(form_widgets(state, names, choices)) != owner._form_key:
+                holder[0] = owner._param_form(state, names, choices)
 
         async def update():
             try:
@@ -513,12 +531,23 @@ class Inspector(Viewer):
                     if owner is None or owner._choice_holder is not holder:
                         return
                     owner._choices_again = False
-                    choices = await node_choices(owner.editor, instance_id)
+                    declared = await node_choices(owner.editor, instance_id, hook=False)
                     if owner._choice_holder is not holder:
                         return
-                    owner._choices[instance_id] = choices
-                    if widgets_key(form_widgets(state, names, choices)) != owner._form_key:
-                        holder[:] = [owner._param_form(state, names, choices)]
+                    earlier = owner._choices.get(instance_id, {})
+                    kept = {k: v for k, v in earlier.items() if k not in declared_names}
+                    show(owner, {**kept, **declared})
+                    if spec.config_choices is not None:
+                        loading.visible = True
+                        try:
+                            choices = await node_choices(
+                                owner.editor, instance_id, declared=declared
+                            )
+                        finally:
+                            loading.visible = False
+                        if owner._choice_holder is not holder:
+                            return
+                        show(owner, choices)
                     again = owner._choices_again
             finally:
                 owner = inspector()

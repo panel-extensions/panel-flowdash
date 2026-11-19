@@ -1,6 +1,7 @@
 """Tests for the choices config fields offer, from declared columns and the config_choices hook."""
 
 import asyncio
+import enum
 import time
 
 import pandas as pd
@@ -10,12 +11,19 @@ import param
 import pytest
 from panel.viewable import Viewer
 
-from panel_flowdash import Choices, columns_of, register, register_port_type
+from panel_flowdash import Choices, columns_of, port_types, register, register_port_type
 from panel_flowdash.component_spec import build_component_spec
 from panel_flowdash.config_choices import compute_choices, node_choices
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.registry import RegistryEntry
-from panel_flowdash.ui.choice_widgets import CHOOSE, ChoiceSelect, SuggestInput, choice_widget
+from panel_flowdash.ui.choice_widgets import (
+    EMPTY,
+    ChoiceMultiSelect,
+    ChoiceSelect,
+    SuggestInput,
+    choice_widget,
+    plain_widget,
+)
 from panel_flowdash.ui.status_bar import select_on_canvas
 
 
@@ -26,10 +34,21 @@ class LazyTable:
         self.schema = columns
 
 
-LAZY_TYPE = register_port_type(
-    "tests.LazyTable", columns=lambda value: dict(value.schema) if value is not None else None
-)
-SUB_TYPE = register_port_type("tests.SubTable", subtype_of=[LAZY_TYPE])
+@pytest.fixture
+def port_types_restored(monkeypatch):
+    """Let a test register port types without leaving them registered for other tests."""
+    for name in ("_ALIASES", "_SUPERTYPES", "_COLUMN_READERS"):
+        registered = getattr(port_types, name)
+        copied = {k: set(v) if isinstance(v, set) else v for k, v in registered.items()}
+        monkeypatch.setattr(port_types, name, copied)
+
+
+@pytest.fixture
+def lazy_types(port_types_restored):
+    lazy = register_port_type(
+        "tests.LazyTable", columns=lambda value: dict(value.schema) if value is not None else None
+    )
+    return lazy, register_port_type("tests.SubTable", subtype_of=[lazy])
 
 
 @register(
@@ -122,7 +141,29 @@ class Counted(Viewer):
         return self.column
 
 
+def slow_choices(config, inputs):
+    time.sleep(0.6)
+    return {"label": ["Slow"]}
+
+
+@register(
+    page=False,
+    component=True,
+    title="Slow pick",
+    config=["column", "label"],
+    config_choices=slow_choices,
+)
+class SlowPick(Viewer):
+    rows = param.DataFrame(default=None, allow_None=True)
+    column = param.String(default="", metadata={"flowdash": {"choices": "columns", "of": "rows"}})
+    label = param.String(default="")
+
+    def __panel__(self):
+        return self.column
+
+
 COMPONENTS = {
+    "Demo/slow_pick": SlowPick,
     "Demo/counted": Counted,
     "Demo/frame": FrameSource,
     "Demo/pick": Pick,
@@ -173,14 +214,14 @@ class TestColumns:
         assert columns_of(None) is None
         assert columns_of([1, 2]) is None
 
-    def test_a_registered_reader_lists_columns(self):
+    def test_a_registered_reader_lists_columns(self, lazy_types):
         table = LazyTable({"a": "integer", "b": None})
-        assert columns_of(table, LAZY_TYPE) == [("a", "integer"), ("b", None)]
+        assert columns_of(table, lazy_types[0]) == [("a", "integer"), ("b", None)]
 
-    def test_subtypes_inherit_the_reader(self):
-        assert columns_of(LazyTable({"a": "string"}), SUB_TYPE) == [("a", "string")]
+    def test_subtypes_inherit_the_reader(self, lazy_types):
+        assert columns_of(LazyTable({"a": "string"}), lazy_types[1]) == [("a", "string")]
 
-    def test_readers_may_return_names_or_pairs(self):
+    def test_readers_may_return_names_or_pairs(self, port_types_restored):
         names = register_port_type("tests.Names", columns=lambda value: ["x", "y"])
         pairs = register_port_type("tests.Pairs", columns=lambda value: [("x", "number")])
         assert columns_of(object(), names) == [("x", None), ("y", None)]
@@ -291,15 +332,25 @@ class TestChoiceWidget:
     def test_a_restricted_field_is_a_dropdown(self):
         spec = choice_widget(param.String(), Choices(["a", "b"], types={"a": "string"}), "a")
         assert issubclass(spec["type"], pmui.Select)
-        assert spec["options"] == {"a (string)": "a", "b": "b"}
+        assert spec["options"] == {EMPTY: "", "a (string)": "a", "b": "b"}
 
-    def test_an_empty_value_shows_a_prompt(self):
-        spec = choice_widget(param.String(), Choices(["a"]), "")
-        assert spec["options"] == {CHOOSE: "", "a": "a"}
+    def test_a_text_field_can_always_be_cleared(self):
+        assert choice_widget(param.String(), Choices(["a"]), "")["options"] == {
+            EMPTY: "",
+            "a": "a",
+        }
+        nullable = param.String(default=None, allow_None=True)
+        assert choice_widget(nullable, Choices(["a"]), None)["options"] == {EMPTY: None, "a": "a"}
+        assert choice_widget(nullable, Choices(["a"]), "a")["options"] == {EMPTY: "", "a": "a"}
+
+    def test_a_field_that_allows_none_can_be_cleared(self):
+        field = param.Integer(default=None, allow_None=True)
+        assert choice_widget(field, Choices([1, 2]), 1)["options"] == {EMPTY: None, "1": 1, "2": 2}
+        assert EMPTY not in choice_widget(param.Integer(default=1), Choices([1]), 1)["options"]
 
     def test_a_value_not_among_the_choices_stays(self):
         spec = choice_widget(param.String(), Choices(["a"]), "gone")
-        assert spec["options"] == {"gone (not available)": "gone", "a": "a"}
+        assert spec["options"] == {EMPTY: "", "gone (not available)": "gone", "a": "a"}
 
     def test_an_open_field_suggests(self):
         spec = choice_widget(param.String(), Choices(["a"], restrict=False), "x")
@@ -314,7 +365,7 @@ class TestChoiceWidget:
     @pytest.mark.parametrize(
         "spec",
         [
-            {"type": ChoiceSelect, "options": {CHOOSE: "", "a": "a"}},
+            {"type": ChoiceSelect, "options": {EMPTY: "", "a": "a"}},
             {"type": SuggestInput, "options": ["a"], "restrict": False},
         ],
     )
@@ -334,6 +385,38 @@ class TestChoiceWidget:
         assert not choice_widget(param.String(), Choices(["a"]), "a")["searchable"]
 
 
+class TestPlainWidget:
+    def test_a_list_selector_is_a_multi_choice(self):
+        spec = plain_widget(param.ListSelector(default=[], objects=["a", "b"]), ["b"])
+        assert spec["type"] is ChoiceMultiSelect
+        assert spec["options"] == {"a": "a", "b": "b"}
+
+    def test_a_selector_that_allows_none_has_an_empty_option(self):
+        spec = plain_widget(
+            param.Selector(default=None, objects=["x", "y"], allow_None=True), None
+        )
+        assert spec["type"] is ChoiceSelect
+        assert spec["options"] == {EMPTY: None, "x": "x", "y": "y"}
+
+    def test_a_selector_without_none_keeps_panels_widget(self):
+        assert plain_widget(param.Selector(default="x", objects=["x", "y"]), "x") is None
+
+    @pytest.mark.parametrize("cls", [param.Integer, param.Number])
+    def test_an_optional_number_shows_none_as_empty(self, cls):
+        class State(param.Parameterized):
+            n = cls(default=None, allow_None=True, bounds=(1, None))
+
+        state = State()
+        form = pn.Param(state, parameters=["n"], widgets={"n": plain_widget(State.param.n, None)})
+        assert form._widgets["n"].value is None
+        form._widgets["n"].value = 3
+        assert state.n == 3
+
+    def test_other_fields_keep_panels_widget(self):
+        assert plain_widget(param.String(), "") is None
+        assert plain_widget(param.Integer(default=1), 1) is None
+
+
 class TestInspectorChoices:
     async def test_declared_columns_become_a_dropdown_once_wired(self, editor):
         frame, pick = editor.add_component("Demo/frame"), editor.add_component("Demo/pick")
@@ -347,7 +430,7 @@ class TestInspectorChoices:
         column = form._widgets["column"]
         assert isinstance(column, pmui.Select)
         assert column.options == {
-            CHOOSE: "",
+            EMPTY: "",
             "state (string)": "state",
             "year (integer)": "year",
             "capacity (number)": "capacity",
@@ -363,7 +446,7 @@ class TestInspectorChoices:
         _form(editor)._widgets["column"].value = "year"
         assert editor._component_instances[pick].column == "year"
         await _settle()
-        assert CHOOSE not in _form(editor)._widgets["column"].options
+        assert _form(editor)._widgets["column"].options[EMPTY] == ""
 
     async def test_choices_follow_the_input(self, editor):
         frame, pick = editor.add_component("Demo/frame"), editor.add_component("Demo/pick")
@@ -391,7 +474,7 @@ class TestInspectorChoices:
         await _settle()
         form = _form(editor)
         assert form._widgets["table"].options == {
-            CHOOSE: "",
+            EMPTY: "",
             "population": "population",
             "turbines": "turbines",
         }
@@ -399,6 +482,24 @@ class TestInspectorChoices:
         assert isinstance(label, pmui.AutocompleteInput)
         label.value = "Anything"
         assert editor._component_instances[pick].label == "Anything"
+
+    async def test_declared_columns_do_not_wait_for_a_slow_hook(self, editor):
+        frame, pick = editor.add_component("Demo/frame"), editor.add_component("Demo/slow_pick")
+        editor.connect(frame, "rows", pick, "rows")
+        select_on_canvas(editor._flow, node_id=pick)
+        await _settle(0.2)
+        loading = next(
+            w
+            for w in pn.Column(*editor._inspector._body).select(pmui.LinearProgress)
+            if "fd-choices-loading" in w.css_classes
+        )
+        form = _form(editor)
+        assert isinstance(form._widgets["column"], pmui.Select)
+        assert not isinstance(form._widgets["label"], pmui.AutocompleteInput)
+        assert loading.visible
+        await _settle(0.8)
+        assert not loading.visible
+        assert isinstance(_form(editor)._widgets["label"], pmui.Select)
 
     async def test_a_config_set_elsewhere_keeps_its_value(self, editor):
         frame, pick = editor.add_component("Demo/frame"), editor.add_component("Demo/pick")
@@ -478,8 +579,9 @@ class TestSchemaTypes:
             scale: float | None = None
             show: bool = True
             mode: Literal["a", "b"] = "a"
+            maybe: Literal["a", "b"] | None = None
+            kinds: list[Literal["a", "b"]] = []
             tags: list[str] = []
-            window: tuple[int, int] = (1, 2)
             column: str = Field("", json_schema_extra={"x-flowdash": {"choices": "columns"}})
 
         spec, cls = self._state(Model)
@@ -489,9 +591,129 @@ class TestSchemaTypes:
         assert isinstance(p.scale, param.Number) and p.scale.allow_None
         assert isinstance(p.show, param.Boolean)
         assert isinstance(p.mode, param.Selector) and p.mode.objects == ["a", "b"]
+        assert isinstance(p.maybe, param.Selector) and p.maybe.allow_None
+        assert p.maybe.objects == ["a", "b"]
+        assert isinstance(p.kinds, param.ListSelector) and p.kinds.objects == ["a", "b"]
         assert isinstance(p.tags, param.List) and p.tags.item_type is str
-        assert isinstance(p.window, param.Tuple) and cls().window == (1, 2)
         assert next(f for f in spec.config if f.name == "column").choices == {"choices": "columns"}
+
+    def test_json_schema_enums_with_null_and_arrays_of_enums(self):
+        _, cls = self._state(
+            {
+                "properties": {
+                    "e": {"type": ["string", "null"], "enum": ["p", "q", None], "default": None},
+                    "t": {"type": "array", "items": {"enum": ["a", "b"]}, "default": ["a"]},
+                }
+            }
+        )
+        assert isinstance(cls.param.e, param.Selector) and cls.param.e.allow_None
+        assert cls.param.e.objects == ["p", "q"]
+        assert isinstance(cls.param.t, param.ListSelector) and cls().t == ["a"]
+
+
+class Color(enum.Enum):
+    red = "red"
+    blue = "blue"
+
+
+def _schema_components():
+    from typing import Literal
+
+    from pydantic import BaseModel
+
+    class Inner(BaseModel):
+        a: int = 1
+
+    class Model(BaseModel):
+        window: tuple[int, int] = (1, 2)
+        inner: Inner = Inner()
+        color: Color = Color.red
+        maybe_color: Color | None = None
+        anything: object = None
+        kinds: list[Literal["a", "b"]] = []
+        mode: Literal["x", "y"] | None = None
+        rows: int | None = None
+
+    class Params(param.Parameterized):
+        span = param.Tuple(default=(1, 2))
+        bounds = param.Range(default=(0, 1))
+        anything = param.Parameter(default=None)
+        day = param.Date(default=None)
+        limit = param.Integer(default=None, allow_None=True, bounds=(1, None))
+
+    schema = {
+        "properties": {
+            "free": {"default": [1, 2]},
+            "mismatch": {"type": "integer", "default": "many"},
+            "kinds": {"type": "array", "items": {"enum": ["a", "b"]}, "default": ["a"]},
+            "maybe": {"type": ["string", "null"], "enum": ["p", "q", None], "default": None},
+            "pair": {"type": "array", "default": (1, 2)},
+            "nested": {"type": "object", "default": {"a": [1]}},
+        }
+    }
+    return {"pydantic": Model, "param": Params, "json": schema}
+
+
+class TestPlacingSchemaComponents:
+    @pytest.mark.parametrize("kind", ["pydantic", "param", "json"])
+    async def test_every_kind_of_field_can_be_placed_and_shown(self, kind):
+        @register(
+            page=False, component=True, title="Schema", config_schema=_schema_components()[kind]
+        )
+        def app(config):
+            return "schema"
+
+        editor = FlowDash(
+            {"Demo/schema": app}, notifications=False, include_builtin_components=False
+        )
+        node = editor.add_component("Demo/schema")
+        state = editor.graph.get_config_state(node)
+        select_on_canvas(editor._flow, node_id=node)
+        form = _form(editor)
+        names = [n for n in state.param if n != "name"]
+        assert names and all(n in form._widgets for n in names)
+
+    async def test_pydantic_defaults_are_json_data(self):
+        @register(
+            page=False,
+            component=True,
+            title="Schema",
+            config_schema=_schema_components()["pydantic"],
+        )
+        def app(config):
+            return "schema"
+
+        editor = FlowDash(
+            {"Demo/schema": app}, notifications=False, include_builtin_components=False
+        )
+        state = editor.graph.get_config_state(editor.add_component("Demo/schema"))
+        assert (state.window, state.inner, state.color) == ([1, 2], {"a": 1}, "red")
+        assert isinstance(state.param.color, param.Selector)
+        assert state.param.color.objects == ["red", "blue"]
+
+    async def test_the_form_offers_multi_choice_and_clearable_selects(self):
+        @register(
+            page=False,
+            component=True,
+            title="Schema",
+            config_schema=_schema_components()["pydantic"],
+        )
+        def app(config):
+            return "schema"
+
+        editor = FlowDash(
+            {"Demo/schema": app}, notifications=False, include_builtin_components=False
+        )
+        node = editor.add_component("Demo/schema")
+        select_on_canvas(editor._flow, node_id=node)
+        widgets = _form(editor)._widgets
+        assert isinstance(widgets["kinds"], pmui.MultiChoice)
+        assert widgets["mode"].options == {EMPTY: None, "x": "x", "y": "y"}
+        assert widgets["maybe_color"].options == {EMPTY: None, "red": "red", "blue": "blue"}
+        assert widgets["rows"].value is None
+        widgets["mode"].value = "y"
+        widgets["mode"].value = None
+        assert editor.graph.get_config_state(node).mode is None
 
 
 class TestInspectorCoalescing:

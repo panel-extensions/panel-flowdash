@@ -29,15 +29,19 @@ def test_a_column_field_offers_the_columns_of_its_input(page):
     _node(page, pick).click()
     wait_until(lambda: editor._inspector._shown == ("node", pick), timeout=8000)
     column = page.get_by_role("combobox", name="Column", exact=True)
-    expect(column).to_have_text("Choose one", timeout=8000)
+    expect(column).to_have_text("Not set", timeout=8000)
     column.click()
     listbox = page.get_by_role("listbox")
-    for label in ("Choose one", "state (string)", "capacity (number)"):
+    for label in ("Not set", "state (string)", "capacity (number)"):
         expect(listbox.get_by_text(label, exact=True)).to_be_visible()
     listbox.get_by_text("year (integer)", exact=True).click()
     wait_until(lambda: editor._component_instances[pick].column == "year", timeout=8000)
     expect(page.get_by_role("combobox", name="Column", exact=True)).to_have_text("year (integer)")
     assert editor._tile_items[1]["config"]["column"] == "year"
+
+    page.get_by_role("combobox", name="Column", exact=True).click()
+    page.get_by_role("listbox").get_by_text("Not set", exact=True).click()
+    wait_until(lambda: editor._component_instances[pick].column == "", timeout=8000)
 
 
 def test_a_hook_suggests_values_while_accepting_others(page):
@@ -70,7 +74,7 @@ def test_a_value_set_elsewhere_is_kept_and_marked(page):
 
     _node(page, pick).click()
     column = page.get_by_role("combobox", name="Column", exact=True)
-    expect(column).to_have_text("Choose one", timeout=8000)
+    expect(column).to_have_text("Not set", timeout=8000)
     editor._apply_config_patch(pick, {"column": "missing"})
     expect(page.get_by_role("combobox", name="Column", exact=True)).to_have_text(
         "missing (not available)", timeout=8000

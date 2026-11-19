@@ -159,22 +159,30 @@ async def compute_choices(
     *,
     editor: FlowDash | None = None,
     timeout: float = CHECK_TIMEOUT,
+    hook: bool = True,
+    declared: t.Mapping[str, Choices] | None = None,
 ) -> dict[str, Choices]:
     """Return the choices of each config field of a node of *spec* with *config* and *inputs*.
 
-    A hook that fails, takes longer than *timeout* or returns something else
-    than a mapping is logged and offers nothing; the declared choices stay.
+    With *hook* off only the declared choices are returned, which needs no
+    call of the component's ``config_choices``. *declared* passes those
+    computed before, so they are not read again. A hook that fails, takes
+    longer than *timeout* or returns something else than a mapping is logged
+    and offers nothing; the declared choices stay.
     """
-    try:
-        result = declared_choices(spec, inputs)
-    except Exception:
-        logger.exception("Reading the columns of an input of %s failed", spec.component_id)
-        result = {}
-    hook = spec.config_choices
-    if hook is None:
+    if declared is not None:
+        result = dict(declared)
+    else:
+        try:
+            result = declared_choices(spec, inputs)
+        except Exception:
+            logger.exception("Reading the columns of an input of %s failed", spec.component_id)
+            result = {}
+    choices_hook = spec.config_choices if hook else None
+    if choices_hook is None:
         return result
     try:
-        computed = await run_hook(hook, config, inputs, editor=editor, timeout=timeout)
+        computed = await run_hook(choices_hook, config, inputs, editor=editor, timeout=timeout)
     except Exception:
         logger.exception("The config choices of %s failed", spec.component_id)
         return result
@@ -197,9 +205,17 @@ async def compute_choices(
 
 
 async def node_choices(
-    editor: FlowDash, instance_id: str, *, timeout: float = CHECK_TIMEOUT
+    editor: FlowDash,
+    instance_id: str,
+    *,
+    timeout: float = CHECK_TIMEOUT,
+    hook: bool = True,
+    declared: t.Mapping[str, Choices] | None = None,
 ) -> dict[str, Choices]:
-    """Return the choices of each config field of a placed node, from its config and live inputs."""
+    """Return the choices of each config field of a placed node, from its config and live inputs.
+
+    *hook* and *declared* are passed on to :func:`compute_choices`.
+    """
     item = next((i for i in editor._tile_items if i["instance_id"] == instance_id), None)
     if item is None or "placeholder" in item:
         return {}
@@ -212,4 +228,6 @@ async def node_choices(
         node_inputs(editor, instance_id, spec),
         editor=editor,
         timeout=timeout,
+        hook=hook,
+        declared=declared,
     )
