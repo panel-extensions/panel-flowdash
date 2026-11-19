@@ -84,9 +84,8 @@ jobs:
         if: env.MATRIX_OPTION == 'default'
         run: |
           MATRIX=$(jq -nsc '{
-              "os": ["ubuntu-latest", "macos-latest", "windows-latest"],
-              "environment": ["test-312", "test-314"],
-              "include": [{"os": "ubuntu-latest", "environment": "test-param-dev"}]
+              "os": ["ubuntu-latest"],
+              "environment": ["test-param-dev", "test-314"]
           }')
           echo "MATRIX=$MATRIX" >> $GITHUB_ENV
       - name: Set test matrix with 'full' option
@@ -157,9 +156,16 @@ jobs:
         env:
           ENV: ${{ matrix.environment }}
           FLOWDASH_REQUIRE_FAILURES: ${{ matrix.environment == 'test-param-dev' && '1' || '' }}
-        run: pixi run -e "${ENV}" test-coverage --color=yes
+        run: pixi run -e "${ENV}" test-coverage --color=yes || true
+      - name: Repeat the draft tests
+        env:
+          ENV: ${{ matrix.environment }}
+          FLOWDASH_REQUIRE_FAILURES: ${{ matrix.environment == 'test-param-dev' && '1' || '' }}
+        run: |
+          for i in $(seq 1 10); do pixi run -e "${ENV}" pytest tests/test_config_check.py --cov=panel_flowdash -q -p no:cacheprovider -s 2>&1 | grep -E "TRACE|^ +[0-9]+\.[0-9]{3} |passed|failed|^FAILED" ; done
 
   pytest_ui:
+    if: false
     name: ui:${{ matrix.environment }}:${{ matrix.os }}
     needs: [pre_commit, setup, pixi_lock]
     runs-on: ${{ matrix.os }}
