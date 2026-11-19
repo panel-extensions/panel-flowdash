@@ -56,7 +56,7 @@ from panel_flowdash.dataflow_engine import (
     failure_text,
 )
 from panel_flowdash.failure_overlay import FailureMessage, FailureOverlay, with_failure_overlay
-from panel_flowdash.history import BURST_SECONDS, EditHistory, label_for
+from panel_flowdash.history import BURST_SECONDS, HISTORY_MAX_BYTES, EditHistory, label_for
 from panel_flowdash.parameters import (
     ContractError,
     ContractProblem,
@@ -857,6 +857,16 @@ class FlowDash(Viewer):
         doc="""
         How many days the store keeps a version of a dashboard's history.
         None keeps versions however old they are.""",
+    )
+
+    history_max_bytes = param.Integer(
+        default=HISTORY_MAX_BYTES,
+        bounds=(0, None),
+        allow_None=True,
+        doc="""
+        About how many bytes of dashboard YAML a dashboard's stored history
+        keeps; the oldest versions are dropped past it, the latest is always
+        kept. None keeps versions however large they are.""",
     )
 
     mode = param.Selector(

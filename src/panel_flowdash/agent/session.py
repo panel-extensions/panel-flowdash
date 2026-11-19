@@ -11,9 +11,11 @@ import re
 import typing as t
 
 import panel as pn
+import panel_material_ui as pmui
 from panel_agents import AgentDrawer, RunState
 from panel_agents.adapters.pydantic_ai import ActionToolset, AgentRunner
 
+from panel_flowdash.ui.text import text_typography
 from panel_flowdash.util import confirm
 
 logger = logging.getLogger(__name__)
@@ -108,6 +110,45 @@ class AgentSession:
         )
         self.highlighter = ChangeHighlighter(self)
         self.chrome = SessionChrome(self)
+        self.history_notice = pmui.Alert(
+            text_typography("", variant="body2", margin=0),
+            severity="warning",
+            variant="outlined",
+            visible=False,
+            margin=(8, 12, 0, 12),
+        )
+        if editor.history:
+            editor.edit_history.on_load = self._on_history_loaded
+            self.drawer.param.watch(self._on_drawer_open, "open")
+            self._place_history_notice()
+
+    def _place_history_notice(self):
+        """Put the history notice above the drawer's body, or leave it out if the drawer has changed.
+
+        AgentDrawer has no slot for a host's notices yet, so this reaches into its layout.
+        """
+        content = getattr(self.drawer, "_content", None)
+        if not isinstance(content, pn.layout.ListLike):
+            return
+        body = getattr(self.drawer, "_body", None)
+        index = next((i for i, obj in enumerate(content.objects) if obj is body), None)
+        if index is None:
+            content.append(self.history_notice)
+        else:
+            content.insert(index, self.history_notice)
+
+    def _on_drawer_open(self, event=None):
+        """Load the dashboard's stored history while the drawer is open, so it lists its versions."""
+        history = self.app._editor.edit_history
+        history.shown = self.drawer.open
+        if history.shown:
+            history.load()
+
+    def _on_history_loaded(self):
+        refused = self.app._editor.edit_history.refused
+        if refused:
+            self.history_notice.objects[0].object = refused
+        self.history_notice.visible = bool(refused)
 
     def publish_user_edits(self):
         """Publish the open dashboard as a version if it changed since the agent last saw it.

@@ -624,8 +624,8 @@ def test_applied_records_name_their_version_by_id(any_store):
     _two_nodes(editor)
     editor.undo()
     records = any_store.load_history(model.dashboard_id)
-    applied = [r for r in records if r["type"] == "ARTIFACT_APPLIED"]
-    ids = [r["metadata"]["version_id"] for r in records if r["type"] == "ARTIFACT_PUBLISHED"]
+    applied = [r for r in records if r.get("type") == "ARTIFACT_APPLIED"]
+    ids = [r["metadata"]["version_id"] for r in records if r.get("type") == "ARTIFACT_PUBLISHED"]
     assert [r["version_id"] for r in applied] == [ids[1]] and applied[0]["action"] == "undo"
 
 
@@ -769,7 +769,7 @@ def test_a_model_v4_database_gains_a_history(tmp_path):
 
 
 def _published(store, dashboard_id):
-    return [r for r in store.load_history(dashboard_id) if r["type"] == "ARTIFACT_PUBLISHED"]
+    return [r for r in store.load_history(dashboard_id) if r.get("type") == "ARTIFACT_PUBLISHED"]
 
 
 def test_opening_a_dashboard_keeps_only_the_newest_versions(any_store):
@@ -796,7 +796,8 @@ def test_old_versions_are_dropped_after_max_days(any_store):
     editor.add_component("T/number", instance_id="new")
     editor.save()
     records = any_store.load_history(model.dashboard_id)
-    for record in records[:2]:
+    assert records[0] == {"flowdash_history": 1}
+    for record in records[1:3]:
         record["timestamp"] = time.time() - 100 * 86400
     any_store.replace_history(model.dashboard_id, records)
     reopened = _editor(any_store, history_max_days=30)
@@ -838,7 +839,7 @@ def test_compact_keeps_the_runs_and_applied_records_of_kept_versions():
     ]
     assert compact(records, 5, None) is records
     kept = compact(records, 1, None)
-    assert [(r["type"], r.get("run_id"), r.get("version_id")) for r in kept] == [
+    assert [(r.get("type"), r.get("run_id"), r.get("version_id")) for r in kept] == [
         ("RUN_STARTED", "r2", None),
         ("RUN_STARTED", "r3", None),
         ("ARTIFACT_PUBLISHED", "r3", None),
@@ -1073,7 +1074,7 @@ async def test_an_artifact_view_stays_in_step_with_a_long_session():
     applied = [
         r
         for r in store.load_history(editor.dashboard.dashboard_id)
-        if r["type"] == "ARTIFACT_APPLIED"
+        if r.get("type") == "ARTIFACT_APPLIED"
     ]
     assert (
         applied
@@ -1286,3 +1287,246 @@ async def test_reverting_to_before_a_split_request_works_and_inside_it_is_refuse
     assert await view.apply_version(2) and _names(editor) == ["before"]
     assert await view.apply_version(5)
     assert await view.apply_version(1) and editor._tile_items == []
+
+
+# --------------------------------------------------------------------------
+# Showing the stored history, its format and size
+# --------------------------------------------------------------------------
+
+
+def test_load_shows_the_stored_history_before_any_edit(any_store):
+    first = _editor(any_store)
+    model = first.new_dashboard("Mine")
+    _two_nodes(first)
+    first.save()
+    first.dispose()
+
+    second = _editor(any_store)
+    second.load(model.dashboard_id)
+    history = second.edit_history
+    assert history.artifact is None
+    history.load()
+    assert [v.metadata["op"] for v in history.artifact.versions] == [
+        "open",
+        "add_node",
+        "add_node",
+    ]
+    assert history.artifact.applied == 3
+    # Nothing was written by looking.
+    assert len(_published(any_store, model.dashboard_id)) == 3
+
+
+def test_a_shown_history_loads_each_dashboard_as_it_is_opened(any_store):
+    first = _editor(any_store)
+    one, two = first.new_dashboard("One"), None
+    first.add_component("T/number", instance_id="a")
+    first.save()
+    two = first.new_dashboard("Two")
+    first.add_component("T/number", instance_id="b")
+    first.add_component("T/number", instance_id="c")
+    first.save()
+
+    second = _editor(any_store)
+    history = second.edit_history
+    history.shown = True
+    second.load(one.dashboard_id)
+    assert len(history.artifact.versions) == 2
+    second.load(two.dashboard_id)
+    assert len(history.artifact.versions) == 3
+
+
+def _changed_outside(store):
+    first = _editor(store)
+    model = first.new_dashboard("Mine")
+    _two_nodes(first)
+    first.save()
+    stored = store.load_dashboard(model.user_id, model.dashboard_id)
+    stored.items = [item for item in stored.items if item.instance_id == "base"]
+    stored.edges = []
+    store.save_dashboard(stored)
+    return model
+
+
+def test_a_dashboard_changed_outside_the_editor_becomes_a_version_at_the_first_undo(any_store):
+    model = _changed_outside(any_store)
+    second = _editor(any_store)
+    second.load(model.dashboard_id)
+    assert _names(second) == ["base"]
+    history = second.edit_history
+    history.load()
+    assert len(history.artifact.versions) == 3
+    assert len(_published(any_store, model.dashboard_id)) == 3
+    assert second.undo() and _names(second) == ["base", "double"]
+    opened = history.artifact.versions[3]
+    assert (opened.metadata["op"], opened.metadata["label"]) == ("open", "Opened the dashboard")
+    assert len(_published(any_store, model.dashboard_id)) == 4
+
+
+def test_viewing_a_dashboard_never_writes_to_its_history(any_store):
+    model = _changed_outside(any_store)
+    before = any_store.load_history(model.dashboard_id)
+    viewer = _editor(any_store, history_limit=1, history_max_bytes=10)
+    viewer.load(model.dashboard_id)
+    viewer.editable = False
+    viewer.edit_history.shown = True
+    viewer.edit_history.load()
+    viewer.load(model.dashboard_id)
+    assert len(viewer.edit_history.versions) == 1
+    viewer.edit_history.close()
+    assert any_store.load_history(model.dashboard_id) == before
+
+
+def test_the_stored_history_starts_with_its_format(any_store):
+    editor = _editor(any_store)
+    model = editor.new_dashboard("Mine")
+    editor.add_component("T/number", instance_id="a")
+    records = any_store.load_history(model.dashboard_id)
+    assert records[0] == {"flowdash_history": 1}
+    assert sum("flowdash_history" in r for r in records) == 1
+    kept = compact(records, 1, None)
+    assert kept[0] == {"flowdash_history": 1}
+
+
+def test_a_history_without_a_header_gets_none(any_store):
+    editor = _editor(any_store)
+    model = editor.new_dashboard("Mine")
+    editor.add_component("T/number", instance_id="a")
+    editor.save()
+    records = any_store.load_history(model.dashboard_id)[1:]
+    any_store.replace_history(model.dashboard_id, records)
+
+    reopened = _editor(any_store)
+    reopened.load(model.dashboard_id)
+    reopened.add_component("T/number", instance_id="b")
+    stored = any_store.load_history(model.dashboard_id)
+    assert not any("flowdash_history" in r for r in stored)
+    assert len(reopened.edit_history.versions) == 3
+
+
+def test_a_history_of_a_newer_format_is_neither_shown_nor_extended(any_store, caplog):
+    editor = _editor(any_store)
+    model = editor.new_dashboard("Mine")
+    editor.add_component("T/number", instance_id="a")
+    editor.save()
+    records = any_store.load_history(model.dashboard_id)
+    records[0] = {"flowdash_history": 2}
+    any_store.replace_history(model.dashboard_id, records)
+
+    reopened = _editor(any_store, history_limit=1)
+    reopened.load(model.dashboard_id)
+    reopened.edit_history.load()
+    assert reopened.edit_history.artifact is None
+    assert "newer FlowDash" in reopened.edit_history.refused
+    assert "format version 2" in caplog.text
+    reopened.add_component("T/number", instance_id="b")
+    assert any_store.load_history(model.dashboard_id) == records
+
+
+def _version(n, size):
+    return {
+        "type": "ARTIFACT_PUBLISHED",
+        "artifact_id": "a",
+        "value": "x" * size,
+        "metadata": {"version_id": f"v{n}"},
+    }
+
+
+def test_compact_keeps_the_newest_versions_that_fit_in_max_bytes():
+    records = [{"flowdash_history": 1}, *(_version(n, 1000) for n in range(10))]
+    assert compact(records, None, None, max_bytes=None) is records
+    kept = compact(records, None, None, max_bytes=3 * 1600)
+    assert kept[0] == {"flowdash_history": 1}
+    assert [r["metadata"]["version_id"] for r in kept[1:]] == ["v7", "v8", "v9"]
+    # The latest version is kept however large it is.
+    kept = compact(records, None, None, max_bytes=10)
+    assert [r["metadata"]["version_id"] for r in kept[1:]] == ["v9"]
+
+
+def test_a_long_session_keeps_the_stored_history_within_max_bytes(any_store):
+    editor = _editor(any_store, history_coalesce=0, history_max_bytes=12000)
+    model = editor.new_dashboard("Mine")
+    for i in range(30):
+        editor.add_component("T/number", instance_id=f"n{i}")
+    published = _published(any_store, model.dashboard_id)
+    size = sum(len(r["value"]) + 512 for r in published)
+    assert len(published) < 30
+    assert size <= 12000 * 1.1
+
+
+def test_a_node_a_batch_removed_again_shows_no_ports_to_whom_may_not_use_it(finance_store):
+    store, dashboard_id = finance_store
+    banker = _editor(store, finance=True, history_coalesce=600)
+    banker.load(dashboard_id)
+    banker.add_component("T/secret", {"query": "SELECT salary"}, instance_id="secret")
+    banker.connect("secret", "value", "double", "value")
+    banker._apply_config_patch("secret", {"query": "SELECT bonus"})
+    banker.remove_component("secret")
+    banker.save()
+    batch = banker.edit_history.versions[-1]
+    assert "secret.value" in json.dumps(batch.metadata)
+
+    alice = _editor(store)
+    alice.load(dashboard_id)
+    for version in alice.edit_history.versions:
+        stored = json.dumps(version.metadata)
+        assert "secret.value" not in stored and "query" not in stored
+        assert "SELECT" not in version.value
+
+    # Someone who may use every component still sees the edits in full.
+    other = _editor(store, finance=True)
+    other.load(dashboard_id)
+    assert "secret.value" in json.dumps(other.edit_history.versions[-1].metadata)
+
+
+def test_max_bytes_keeps_the_version_the_latest_save_holds():
+    records = [{"flowdash_history": 1}, *(_version(n, 1000) for n in range(10))]
+    records.insert(4, {"type": "FLOWDASH_SAVED", "version_id": "v2", "revision": 1})
+    kept = compact(records, None, None, max_bytes=3 * 1600)
+    assert [
+        r.get("metadata", {}).get("version_id")
+        for r in kept
+        if r.get("type") == "ARTIFACT_PUBLISHED"
+    ] == [
+        "v2",
+        "v8",
+        "v9",
+    ]
+    assert {"type": "FLOWDASH_SAVED", "version_id": "v2", "revision": 1} in kept
+
+
+def test_reopening_after_a_large_unsaved_session_finds_the_saved_dashboard(any_store):
+    editor = _editor(any_store, history_coalesce=0)
+    model = editor.new_dashboard("Mine")
+    editor.add_component("T/number", instance_id="saved")
+    editor.save()
+    for i in range(20):
+        editor.add_component("T/number", instance_id=f"unsaved{i}")
+    editor.dispose()
+
+    reopened = _editor(any_store, history_max_bytes=4000)
+    reopened.load(model.dashboard_id)
+    assert _names(reopened) == ["saved"]
+    versions = reopened.edit_history.versions
+    assert versions[-1].metadata["args"].get("name") == "saved"
+    assert not any("unsaved" in v.value for v in versions)
+
+
+def test_a_failed_load_adds_no_header_to_the_stored_history(any_store, monkeypatch):
+    import panel_flowdash.history as history_module
+
+    editor = _editor(any_store)
+    model = editor.new_dashboard("Mine")
+    editor.add_component("T/number", instance_id="a")
+    editor.save()
+    before = len(any_store.load_history(model.dashboard_id))
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("unreadable")
+
+    monkeypatch.setattr(history_module, "decode", fail)
+    reopened = _editor(any_store)
+    reopened.load(model.dashboard_id)
+    reopened.add_component("T/number", instance_id="b")
+    records = any_store.load_history(model.dashboard_id)
+    assert len(records) > before
+    assert sum("flowdash_history" in r for r in records) == 1

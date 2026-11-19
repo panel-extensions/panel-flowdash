@@ -63,6 +63,61 @@ def test_reverting_from_the_drawer_restores_the_canvas(page):
     assert errors == []
 
 
+def test_the_history_is_there_after_a_reload_and_reverts(page):
+    store, (dash,) = _store_with("Plant")
+    agent = Agent(
+        scripted(("add_node", {"component": "Test/note"})),
+        deps_type=FlowDashDeps,
+        toolsets=[dashboard_toolset()],
+    )
+    apps = []
+    errors = []
+    page.on("pageerror", lambda exc: errors.append(str(exc)))
+    _serve_app(page, store, f"/dash/{dash}?edit=true", apps, agent=agent)
+
+    page.get_by_role("button", name="Done").wait_for()
+    page.get_by_role("button", name="Assistant", exact=True).click()
+    chat = page.get_by_placeholder(re.compile("^Ask the agent"))
+    chat.fill("Add another note")
+    chat.press("Enter")
+    editor = apps[0]._editor
+    wait_until(lambda: len(editor._tile_items) == 2, page, timeout=20000)
+    wait_until(lambda: not editor.edit_history.busy, page, timeout=20000)
+    page.get_by_role("button", name="Save", exact=True).click()
+    wait_until(lambda: not editor.dirty, page, timeout=10000)
+
+    page.reload()
+    page.get_by_role("button", name="Done").wait_for()
+    wait_until(lambda: len(apps) == 2, page, timeout=10000)
+    editor = apps[1]._editor
+    assert len(editor._tile_items) == 2
+    page.get_by_role("button", name="Assistant", exact=True).click()
+    page.get_by_role("button", name="Artifacts").click()
+    expect(page.locator(".MuiListItemText-primary", has_text="Add another note")).to_be_visible(
+        timeout=10000
+    )
+    page.get_by_text(re.compile(r" edited$")).click()
+    _opened_row(page).click()
+    revert = page.get_by_role("button", name="Revert to v1")
+    revert.click()
+    wait_until(lambda: len(editor._tile_items) == 1, page, timeout=20000)
+    expect(page.get_by_text(re.compile(r"^v1\b.*\bapplied\b"))).to_be_visible(timeout=10000)
+    expect(page.locator(".MuiButton-loading")).to_have_count(0)
+    assert errors == []
+
+
+def test_a_history_of_a_newer_format_is_named_in_the_drawer(page):
+    store, (dash,) = _store_with("Plant")
+    store.append_history(dash, {"flowdash_history": 99})
+    agent = Agent(scripted(), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()])
+    _serve_app(page, store, f"/dash/{dash}?edit=true", agent=agent)
+    page.get_by_role("button", name="Done").wait_for()
+    page.get_by_role("button", name="Assistant", exact=True).click()
+    expect(page.get_by_text("History was written by a newer FlowDash")).to_be_visible(
+        timeout=10000
+    )
+
+
 def test_a_refused_revert_says_why_and_stops_spinning(page, monkeypatch):
     from panel_flowdash.history import EditHistory
 
