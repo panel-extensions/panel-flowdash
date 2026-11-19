@@ -312,18 +312,11 @@ class TestEditor:
         assert editor.groups["picks"].collapsed is False
         assert editor.dirty
 
-    def test_delete_on_the_frame_ungroups_and_keeps_the_nodes(self, editor):
-        # The page lists the nested nodes with the frame it deletes.
-        frame = group_node_id("picks")
-        editor._flow._process_msg({"type": "node_deleted", "node_ids": [frame, "first", "second"]})
+    def test_a_frame_the_page_ungroups_is_forgotten(self, editor):
+        editor._flow.ungroup(group_node_id("picks"))
         assert editor.groups == {}
         assert {i["instance_id"] for i in editor._tile_items} == {"data", "first", "second", "out"}
-        assert "parentId" not in _canvas(editor, "first")
-
-    def test_delete_on_a_frame_and_another_node_deletes_only_the_node(self, editor):
-        frame = group_node_id("picks")
-        editor._flow._process_msg({"type": "node_deleted", "node_ids": [frame, "first", "out"]})
-        assert {i["instance_id"] for i in editor._tile_items} == {"data", "first", "second"}
+        assert len(editor._dataflow_graph.edges) == 3
 
     def test_delete_group_deletes_its_nodes(self, editor):
         assert editor.delete_group("picks") == ["first", "second"]
@@ -378,6 +371,47 @@ class TestEditor:
         }
         editor._on_handle_clicked(payload, editor._flow)
         assert shown == [(("handle", "first:picked"), "picked (output · str)", "a")]
+
+    def test_moving_nodes_patches_members_relative_to_the_frame_it_keeps(
+        self, editor, monkeypatch
+    ):
+        def refuse(*args, **kwargs):
+            raise AssertionError("moving nodes must not take frames off or put them back")
+
+        monkeypatch.setattr(editor._flow, "ungroup", refuse)
+        monkeypatch.setattr(editor._flow, "group_nodes", refuse)
+        patches = []
+        patch = editor._flow.patch_node_props
+        monkeypatch.setattr(
+            editor._flow, "patch_node_props", lambda i, p: (patches.append((i, p)), patch(i, p))
+        )
+        editor._move_nodes({"first": (500, 100), "second": (560, 300)})
+        frame = group_node_id("picks")
+        assert any(n["id"] == frame for n in editor._flow.nodes)
+        assert (frame, {"position": {"x": 500 - 24, "y": 100 - 24 - 32}}) in patches
+        # A member is only patched when its place in the frame changes.
+        assert ("second", {"position": {"x": 84, "y": 256}}) in patches
+        assert all(i != "first" for i, _ in patches)
+        assert _canvas(editor, "first")["position"] == {"x": 24, "y": 56}
+        assert editor._absolute_positions()["second"] == {"x": 560, "y": 300}
+
+    def test_arranging_lays_a_group_out_as_one_block_with_others_outside_it(self, editor):
+        editor.expand_group("picks")
+        before = editor._absolute_positions()
+        offset = (
+            before["second"]["x"] - before["first"]["x"],
+            before["second"]["y"] - before["first"]["y"],
+        )
+        editor.arrange_canvas()
+        after = editor._absolute_positions()
+        assert (
+            after["second"]["x"] - after["first"]["x"],
+            after["second"]["y"] - after["first"]["y"],
+        ) == offset
+        x0, y0, x1, y1 = editor._group_box(editor._groups["picks"], after)
+        for node in ("data", "out"):
+            p = after[node]
+            assert not (x0 <= p["x"] <= x1 and y0 <= p["y"] <= y1), node
 
     def test_arranging_keeps_groups(self, editor):
         editor.arrange_canvas()

@@ -62,6 +62,8 @@ from panel_flowdash.dataflow_engine import (
 )
 from panel_flowdash.failure_overlay import FailureMessage, FailureOverlay, with_failure_overlay
 from panel_flowdash.groups import (
+    GROUP_HEADER_HEIGHT,
+    GROUP_PORT_ROW_HEIGHT,
     MAX_LABEL_LENGTH,
     DashboardGroup,
     check_group_id,
@@ -433,7 +435,7 @@ _FLOW_STYLESHEET = """\
 }/* A collapsed group shows each port's label and type beside its handle, as
    node cards do, rather than only in the handle's tooltip. */
 .rf-group--collapsed {
-  min-width: 240px;
+  min-width: 260px;
 }
 .fd-group-rows-1 > .rf-group--collapsed { min-height: 66px !important; }
 .fd-group-rows-2 > .rf-group--collapsed { min-height: 88px !important; }
@@ -453,7 +455,7 @@ _FLOW_STYLESHEET = """\
   padding: 0;
   color: var(--mui-palette-text-secondary, var(--panel-on-background-color));
   font-size: 12px;
-  max-width: 104px;
+  max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
@@ -487,6 +489,8 @@ RESTRICTED_COMPONENT_ID = "flowdash:restricted"
 
 # Space between a group's nodes and its frame, in px.
 _GROUP_PADDING = 24
+# The width of a collapsed group's card, as the canvas stylesheet sets it.
+_COLLAPSED_GROUP_WIDTH = 260
 
 _MISSING = object()
 
@@ -1664,6 +1668,8 @@ class FlowDash(Viewer):
             popup_trigger=self.popup_trigger,
             popup_hover_delay=self.popup_hover_delay,
             drop_types=[_PALETTE_DRAG_TYPE, _FILES_DROP_TYPE],
+            # Deleting a frame keeps its nodes, as grouping leaves the dataflow alone.
+            **({"group_delete": "ungroup"} if "group_delete" in pr.ReactFlow.param else {}),
             connection_validation={
                 "direction": True,
                 "cycles": True,
@@ -1759,7 +1765,7 @@ class FlowDash(Viewer):
         flow.on("node_data_changed", _on_node_data_changed)
         flow.on("node_deleted", _on_node_deleted)
         flow.on("group_toggled", self._on_group_toggled)
-        flow._process_msg = partial(self._process_canvas_msg, flow._process_msg)
+        flow.on("nodes_ungrouped", self._on_nodes_ungrouped)
         flow.param.watch(self._sync_group_ports, "edges")
         flow.on("handle_clicked", self._on_handle_clicked)
         flow.on("edge_clicked", self._on_edge_clicked)
@@ -3924,31 +3930,16 @@ class FlowDash(Viewer):
                 if not group.nodes:
                     self._erase_group(group.id)
 
-    def _process_canvas_msg(self, process, msg: dict):
-        """Handle a message from the page, ungrouping the frames it deletes instead of their nodes.
-
-        Deleting a node on the canvas deletes the nodes nested in it, and the
-        page lists them too. A frame only frames its nodes, so deleting it
-        ungroups them; :meth:`delete_group` deletes a group with its nodes.
-        """
-        if msg.get("type") != "node_deleted" or self._muted or not self.editable:
-            return process(msg)
-        ids = list(msg.get("node_ids") or [])
-        if msg.get("node_id") and msg["node_id"] not in ids:
-            ids.append(msg["node_id"])
-        frames = [i for i in ids if group_id_of(i) in self._groups]
-        if not frames:
-            return process(msg)
-        kept = {n for f in frames for n in self._groups[group_id_of(f)].nodes}
-        with pn.io.hold():
-            for frame in frames:
-                self.ungroup(group_id_of(frame))
-            rest = [i for i in ids if i not in frames and i not in kept]
-            if rest:
-                process({**msg, "node_ids": rest, "node_id": None})
-            else:
-                # The page took the nodes away with the frame; send them back.
-                self._flow.param.trigger("nodes")
+    def _on_nodes_ungrouped(self, event):
+        """Forget a group the page ungrouped, e.g. when its frame is deleted."""
+        if self._muted:
+            return
+        group_id = group_id_of(event.get("group_id", "") if isinstance(event, dict) else "")
+        group = self._groups.pop(group_id, None) if group_id else None
+        if group is None:
+            return
+        self._pushed.pop(group_id, None)
+        self._record_edit(f"Ungrouped {group.title}", op="ungroup", args={"name": group_id})
 
     def delete_group(self, group_id: str) -> list[str]:
         """Remove a group and its nodes from the dashboard; returns the removed instance ids."""
@@ -4823,6 +4814,68 @@ class FlowDash(Viewer):
             return "other"
         return component_role(entry, spec.inputs, spec.outputs)
 
+    def _layout(self) -> tuple[list[auto_layout.NodeBox], list[tuple[str, str]], dict, dict]:
+        """Return the boxes and edges to lay out, each group as one box of its frame.
+
+        Also returns the canvas positions of the nodes and groups, by box id,
+        and the offset of each group member from its group's box.
+        """
+        positions = self._absolute_positions()
+        edges = self._node_edges()
+        box_of: dict[str, str] = {}
+        offsets: dict[str, dict[str, tuple[float, float]]] = {}
+        frames: dict[str, auto_layout.NodeBox] = {}
+        origins: dict[str, tuple[float, float]] = {}
+        for group in self._groups.values():
+            members = [n for n in group.nodes if n in positions]
+            if not members:
+                continue
+            frame = group_node_id(group.id)
+            x0, y0, x1, y1 = self._group_box(group, positions)
+            if group.collapsed:
+                inputs, outputs = self._group_ports(group)
+                rows = max(len(inputs), len(outputs), 1)
+                width, height = (
+                    _COLLAPSED_GROUP_WIDTH,
+                    GROUP_HEADER_HEIGHT + 12 + GROUP_PORT_ROW_HEIGHT * rows,
+                )
+            else:
+                width, height = x1 - x0, y1 - y0
+            frames[frame] = auto_layout.NodeBox(frame, width, height, "other")
+            origins[frame] = (x0, y0)
+            offsets[frame] = {n: (positions[n]["x"] - x0, positions[n]["y"] - y0) for n in members}
+            box_of.update(dict.fromkeys(members, frame))
+        # A group takes the place of its first member in the order.
+        placed = set()
+        ordered = []
+        for box in self._node_boxes():
+            target = frames.get(box_of.get(box.id)) if box.id in box_of else box
+            if target is not None and target.id not in placed:
+                placed.add(target.id)
+                ordered.append(target)
+        edges = [
+            (box_of.get(a, a), box_of.get(b, b))
+            for a, b in edges
+            if box_of.get(a, a) != box_of.get(b, b)
+        ]
+        where = {k: (v["x"], v["y"]) for k, v in positions.items() if k not in box_of}
+        where.update(origins)
+        return ordered, list(dict.fromkeys(edges)), where, offsets
+
+    @staticmethod
+    def _unfold(
+        placed: dict[str, tuple[float, float]], offsets: dict
+    ) -> dict[str, tuple[float, float]]:
+        """Return node positions from a layout of boxes, placing group members by their offsets."""
+        positions = {}
+        for box_id, (x, y) in placed.items():
+            if box_id in offsets:
+                for node_id, (dx, dy) in offsets[box_id].items():
+                    positions[node_id] = (x + dx, y + dy)
+            else:
+                positions[box_id] = (x, y)
+        return positions
+
     def _node_boxes(self) -> list[auto_layout.NodeBox]:
         """Return the nodes on the canvas with their cards' sizes and roles, in placement order."""
         components = {item["instance_id"]: item for item in self._tile_items}
@@ -4890,13 +4943,12 @@ class FlowDash(Viewer):
         """Lay the nodes the editor placed out again, around the nodes placed by hand or a file."""
         if not self._floating_nodes or self._hydrating or self._canvas_batch is not None:
             return
-        boxes = self._node_boxes()
-        fixed = {
-            node_id: (position["x"], position["y"])
-            for node_id, position in self._absolute_positions().items()
-            if node_id not in self._floating_nodes
-        }
-        self._move_nodes(auto_layout.place_nodes(boxes, self._node_edges(), fixed))
+        boxes, edges, where, offsets = self._layout()
+        fixed = {box_id: xy for box_id, xy in where.items() if box_id not in self._floating_nodes}
+        placed = auto_layout.place_nodes(boxes, edges, fixed)
+        self._move_nodes(
+            self._unfold({k: v for k, v in placed.items() if k not in fixed}, offsets)
+        )
 
     def arrange_canvas(self):
         """Lay out every node on the canvas by its dataflow, as one edit.
@@ -4905,12 +4957,12 @@ class FlowDash(Viewer):
         depth in the dataflow, ordered to reduce crossing edges. Positions
         set by hand are replaced too; that is what the request is for.
         """
-        positions = self._absolute_positions()
-        if not positions:
+        boxes, edges, where, offsets = self._layout()
+        if not boxes:
             return
-        initial = {node_id: position["y"] for node_id, position in positions.items()}
+        initial = {box_id: y for box_id, (_x, y) in where.items()}
         self._move_nodes(
-            auto_layout.arrange_graph(self._node_boxes(), self._node_edges(), initial=initial)
+            self._unfold(auto_layout.arrange_graph(boxes, edges, initial=initial), offsets)
         )
         self._floating_nodes.clear()
         self._record_edit("Arranged the dataflow", op="arrange_canvas")

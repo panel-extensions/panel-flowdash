@@ -2,6 +2,7 @@
 
 import panel as pn
 import panel_material_ui as pmui
+import panel_reactflow as pr
 import pytest
 from panel.tests.util import wait_until
 
@@ -123,71 +124,10 @@ def test_ungroup_from_the_inspector_keeps_the_nodes(page):
 
 
 def _serve(page, editor):
-    """Serve *editor* with buttons to arrange its canvas and undo, which a bare editor lacks."""
-    arrange = pmui.Button(label="Arrange for test")
-
-    def arrange_held(_event):
-        # As the command palette does, inside one held document change.
-        with pn.io.hold():
-            editor.arrange_canvas()
-
-    arrange.on_click(arrange_held)
+    """Serve *editor* with a button to undo, which a bare editor lacks."""
     undo = pmui.Button(label="Undo for test")
     undo.on_click(lambda _event: editor.undo(whole_runs=False))
-    serve_component(page, pn.Column(pn.Row(arrange, undo), editor, sizing_mode="stretch_both"))
-
-
-def _flow_position(page, node_id):
-    """Return where the page draws a node, in canvas coordinates."""
-    matrix = page.locator(".react-flow__viewport").evaluate("el => getComputedStyle(el).transform")
-    zoom, _, _, _, tx, ty = (float(v) for v in matrix[matrix.index("(") + 1 : -1].split(","))
-    pane = page.locator(".react-flow").first.bounding_box()
-    box = _node(page, node_id).bounding_box()
-    return (box["x"] - pane["x"] - tx) / zoom, (box["y"] - pane["y"] - ty) / zoom, zoom
-
-
-def _assert_page_matches(page, editor, node_ids):
-    positions = editor._absolute_positions()
-    for node_id in node_ids:
-        x, y, _ = _flow_position(page, node_id)
-        expected = positions[node_id]
-        assert abs(x - expected["x"]) < 3 and abs(y - expected["y"]) < 3, (
-            node_id,
-            (x, y),
-            expected,
-        )
-
-
-def test_arranging_with_a_group_draws_its_nodes_where_python_has_them(page):
-    editor, src, first, second = _editor()
-    loose = editor.add_component(TABLE, position=(900, 700))
-    group_id = editor.group_nodes([first, second], "Tables")
-    _serve(page, editor)
-    expect(_node(page, loose)).to_be_visible()
-    before = editor._absolute_positions()
-
-    page.get_by_role("button", name="Arrange for test").click()
-    wait_until(lambda: editor._absolute_positions() != before, timeout=8000)
-    page.wait_for_timeout(1000)
-    _assert_page_matches(page, editor, [src, first, second, loose])
-    frame = _node(page, group_node_id(group_id)).bounding_box()
-    box = _node(page, loose).bounding_box()
-    assert not (
-        frame["x"] < box["x"] < frame["x"] + frame["width"]
-        and frame["y"] < box["y"] < frame["y"] + frame["height"]
-    )
-
-    # Dragging a member afterwards writes its true position back.
-    start = _node(page, first).bounding_box()
-    page.mouse.move(start["x"] + 40, start["y"] + 12)
-    page.mouse.down()
-    page.mouse.move(start["x"] + 100, start["y"] + 52, steps=8)
-    page.mouse.up()
-    page.wait_for_timeout(1000)
-    _assert_page_matches(page, editor, [first, second])
-    saved = {item.instance_id: (item.x, item.y) for item in editor.to_model().items}
-    x, y, _ = _flow_position(page, first)
-    assert abs(saved[first][0] - x) < 3 and abs(saved[first][1] - y) < 3
+    serve_component(page, pn.Column(undo, editor, sizing_mode="stretch_both"))
 
 
 def test_connecting_to_a_collapsed_port_wires_the_inner_port(page):
@@ -246,8 +186,13 @@ def test_undo_brings_back_the_expanded_group_and_its_label(page):
     expect(frame.locator(".rf-group-label")).to_have_text("Tables")
 
 
-def test_delete_on_a_frame_ungroups_it(page):
+@pytest.mark.skipif(
+    "group_delete" not in pr.ReactFlow.param,
+    reason="needs a panel-reactflow whose canvas can ungroup a deleted frame",
+)
+def test_delete_on_a_frame_ungroups_it_and_keeps_the_connections(page):
     editor, _src, first, second = _editor()
+    edges = set(editor._edge_id_map.values())
     group_id = editor.group_nodes([first, second], "Tables")
     serve_component(page, editor)
     frame = _node(page, group_node_id(group_id))
@@ -260,3 +205,20 @@ def test_delete_on_a_frame_ungroups_it(page):
     expect(_node(page, first)).to_be_visible()
     expect(_node(page, second)).to_be_visible()
     assert len(editor._tile_items) == 3
+    assert set(editor._edge_id_map.values()) == edges
+    expect(page.locator(".react-flow__edge")).to_have_count(len(edges))
+
+
+def test_the_inspector_deletes_a_group_with_its_components(page):
+    editor, src, first, second = _editor()
+    group_id = editor.group_nodes([first, second], "Tables")
+    serve_component(page, editor)
+    frame = _node(page, group_node_id(group_id))
+    frame.locator(".rf-group-header").click()
+    wait_until(lambda: editor._inspector._shown == ("group", group_id), timeout=8000)
+    page.get_by_role("button", name="Delete group and its 2 components").click()
+    wait_until(lambda: editor.groups == {}, timeout=8000)
+    expect(frame).to_have_count(0)
+    expect(_node(page, first)).to_have_count(0)
+    expect(_node(page, src)).to_be_visible()
+    assert [i["instance_id"] for i in editor._tile_items] == [src]
