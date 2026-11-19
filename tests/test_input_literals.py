@@ -270,6 +270,16 @@ class TestEngine:
 
 
 class TestEditor:
+    def test_the_node_records_a_value_before_the_component_sees_it(self, editor):
+        _, show = _placed(editor)
+        seen = []
+        editor._component_instances[show].param.watch(
+            lambda event: seen.append(editor.input_values(show)), "value"
+        )
+        editor.set_input_value(show, "value", 42)
+        editor.set_input_value(show, "value", None)
+        assert seen == [{"value": 42}, {}]
+
     def test_a_literal_reaches_the_component_and_the_edge_wins(self, editor):
         num, show = _placed(editor)
         component = editor._component_instances[show]
