@@ -6462,18 +6462,23 @@ class FlowDash(Viewer):
                 if port not in inputs:
                     continue
                 del inputs[port]
-                self._dataflow_graph.clear_literal(instance_id, port)
             else:
                 stored = stored_literal(value)
                 if inputs.get(port, _MISSING) == stored:
                     continue
-                self._dataflow_graph.set_literal(instance_id, port, value)
                 inputs[port] = stored
             changed[port] = port_label(ports[port])
+        # Recorded before the graph is changed, so whatever reacts to the new
+        # value, e.g. the component, finds the node's inputs already up to date.
         if inputs:
             item["inputs"] = inputs
         else:
             item.pop("inputs", None)
+        for port in changed:
+            if resolved[port] is None:
+                self._dataflow_graph.clear_literal(instance_id, port)
+            else:
+                self._dataflow_graph.set_literal(instance_id, port, resolved[port])
         if changed:
             self._refresh_inspector_inputs()
         return changed
