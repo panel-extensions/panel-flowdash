@@ -119,7 +119,6 @@ class Inspector(Viewer):
         self._releases: list[t.Callable[[], None]] = []
         self._shown: tuple[str, str] | None = None
         self._status_chip: pmui.Chip | None = None
-        # The shown component's dataflow status, and what its config check says if that refused it.
         self._node_status: tuple[str, str] | None = None
         self._config_status: tuple[str, str] | None = None
         self._data_column: pn.Column | None = None
@@ -333,13 +332,16 @@ class Inspector(Viewer):
         self._node_status = (status, detail)
         self._show_status()
 
-    def _set_config_status(self, result: CheckResult, pending: dict):
+    def _set_config_status(self, draft: ConfigDraft, result: CheckResult, pending: dict):
         """Show in the status that the config check refused the config or held an edit back.
 
         The outputs are still up to date with the config applied last, but a
         status saying so beside a refused edit reads as if the edit went
-        through.
+        through. A check that finishes after another node was selected is
+        ignored, since the chip now shows that node.
         """
+        if draft is not self._draft:
+            return
         if not result:
             self._config_status = None
         elif pending:
@@ -349,7 +351,9 @@ class Inspector(Viewer):
         self._show_status()
 
     def _show_status(self):
-        status, detail = self._config_status or self._node_status or ("ok", "")
+        node_status = self._node_status or ("ok", "")
+        failed = node_status[0] == "failed"
+        status, detail = node_status if failed else self._config_status or node_status
         if self._status_chip is not None:
             self._status_chip.param.update(
                 label=detail or STATUS_TEXT[status], color=_STATUS_COLOR[status]
@@ -437,7 +441,7 @@ class Inspector(Viewer):
         draft = None
         if spec.check_config is not None:
             draft = ConfigDraft(editor, instance_id, self._check_runs, self._check_results)
-            draft.on_result = self._set_config_status
+            draft.on_result = partial(self._set_config_status, draft)
             self._draft = draft
             # A node placed from the palette or gallery has not been checked yet.
             draft.show_current()

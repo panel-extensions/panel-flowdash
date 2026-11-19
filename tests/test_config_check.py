@@ -515,6 +515,31 @@ class TestInspectorDraft:
         await _settle()
         assert (chip.label, chip.color) == before
 
+    async def test_a_check_finishing_after_another_node_is_selected_leaves_its_status(
+        self, editor
+    ):
+        query, limit = editor.add_component(QUERY), editor.add_component(LIMIT)
+        form = self._form(editor, query)
+        await _settle()
+        form._widgets["sql"].value = "DROP SLOW"
+        await asyncio.sleep(0.05)
+        select_on_canvas(editor._flow, node_id=limit)
+        await _settle(0.8)
+        chip = editor._inspector._status_chip
+        assert (chip.label, chip.color) == ("Up to date", "success")
+
+    async def test_a_failed_node_shows_failed_over_a_held_edit(self, editor):
+        query = editor.add_component(QUERY)
+        self._form(editor, query)
+        inspector = editor._inspector
+        inspector._set_config_status(inspector._draft, CheckResult(["bad"]), {"sql": "x"})
+        assert inspector._status_chip.label == "Edit not applied"
+        inspector._set_status("failed", "Data failed")
+        assert (inspector._status_chip.label, inspector._status_chip.color) == (
+            "Data failed",
+            "error",
+        )
+
     async def test_a_failing_edit_is_held_back_and_shown(self, editor):
         query = editor.add_component(QUERY)
         form = self._form(editor, query)
