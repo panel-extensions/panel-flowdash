@@ -1289,7 +1289,7 @@ class DashboardOps:
     def group_nodes(
         self, nodes: list[str], label: str | None = None, name: str | None = None
     ) -> dict[str, t.Any]:
-        """Frame nodes together on the canvas as one group, collapsed into one node.
+        """Frame nodes together on the canvas as one group, which can be collapsed into one node.
 
         Returns the group's name and its ports: one input per outside output
         feeding the group, with the inner ports it connects to, and one output

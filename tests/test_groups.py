@@ -144,8 +144,8 @@ class TestPorts:
         group = DashboardGroup("g", nodes=["first", "second"])
         edges = [("data", "table", "first", "table"), ("first", "table", "out", "picked")]
         data = group_node_data(group, *group_ports(group.nodes, edges))
-        assert data["inputs"] == [{"id": "in:table", "label": "table"}]
-        assert data["outputs"] == [{"id": "out:table", "label": "table"}]
+        assert data["inputs"] == [{"id": "in:table", "label": "table", "top": 47.0}]
+        assert data["outputs"] == [{"id": "out:table", "label": "table", "top": 47.0}]
         assert data["handle_map"] == [
             {"node": "first", "handle": "table", "group_handle": "in:table", "direction": "input"},
             {
@@ -281,17 +281,27 @@ class TestEditor:
         assert editor.groups == {}
         assert not any(n["type"] == "group" for n in editor._flow.nodes)
 
-    def test_expanding_pushes_neighbours_aside_and_collapsing_moves_them_back(self, editor):
-        before = dict(_canvas(editor, "out")["position"])
+    def test_expanding_pushes_overlapping_neighbours_just_clear_and_collapsing_moves_them_back(
+        self, editor
+    ):
+        editor._flow.patch_node_props("out", {"position": {"x": 540, "y": 0}})
         editor.expand_group("picks")
         assert editor.groups["picks"].collapsed is False
-        pushed = _canvas(editor, "out")["position"]
-        assert pushed["x"] > before["x"]
+        _x0, _y0, x1, _y1 = editor._group_box(
+            editor._groups["picks"], editor._absolute_positions()
+        )
+        assert _canvas(editor, "out")["position"] == {"x": x1 + 24, "y": 0}
         assert _canvas(editor, "data")["position"] == {"x": 0, "y": 0}
         editor.collapse_group("picks")
+        assert _canvas(editor, "out")["position"] == {"x": 540, "y": 0}
+
+    def test_expanding_leaves_nodes_it_does_not_overlap(self, editor):
+        before = dict(_canvas(editor, "out")["position"])
+        editor.expand_group("picks")
         assert _canvas(editor, "out")["position"] == before
 
     def test_a_node_moved_after_the_push_stays(self, editor):
+        editor._flow.patch_node_props("out", {"position": {"x": 540, "y": 0}})
         editor.expand_group("picks")
         editor._flow.patch_node_props("out", {"position": {"x": 2000, "y": 0}})
         editor.collapse_group("picks")
@@ -302,10 +312,72 @@ class TestEditor:
         assert editor.groups["picks"].collapsed is False
         assert editor.dirty
 
-    def test_deleting_the_frame_on_the_canvas_deletes_the_group_and_its_nodes(self, editor):
-        editor._flow.remove_node(group_node_id("picks"))
+    def test_delete_on_the_frame_ungroups_and_keeps_the_nodes(self, editor):
+        # The page lists the nested nodes with the frame it deletes.
+        frame = group_node_id("picks")
+        editor._flow._process_msg({"type": "node_deleted", "node_ids": [frame, "first", "second"]})
+        assert editor.groups == {}
+        assert {i["instance_id"] for i in editor._tile_items} == {"data", "first", "second", "out"}
+        assert "parentId" not in _canvas(editor, "first")
+
+    def test_delete_on_a_frame_and_another_node_deletes_only_the_node(self, editor):
+        frame = group_node_id("picks")
+        editor._flow._process_msg({"type": "node_deleted", "node_ids": [frame, "first", "out"]})
+        assert {i["instance_id"] for i in editor._tile_items} == {"data", "first", "second"}
+
+    def test_delete_group_deletes_its_nodes(self, editor):
+        assert editor.delete_group("picks") == ["first", "second"]
         assert editor.groups == {}
         assert {i["instance_id"] for i in editor._tile_items} == {"data", "out"}
+
+    def test_a_new_group_gets_a_numbered_label(self, editor):
+        editor.ungroup("picks")
+        assert editor.group_nodes(["first"]) == "Group_1"
+        assert editor.group_nodes(["second"]) == "Group_2"
+        assert editor.groups["Group_2"].label == "Group 2"
+        assert (
+            editor.edit_history.versions[-1].metadata["label"] == "Grouped 1 component as Group 2"
+        )
+
+    def test_moving_nodes_keeps_children_relative_to_a_refitted_frame(self, editor):
+        editor.expand_group("picks")
+        editor._move_nodes({"first": (1000, 500), "data": (0, 40)})
+        frame = _canvas(editor, group_node_id("picks"))["position"]
+        positions = editor._absolute_positions()
+        assert positions["first"] == {"x": 1000, "y": 500}
+        assert positions["second"] == {"x": 300, "y": 200}
+        assert positions["data"] == {"x": 0, "y": 40}
+        assert frame == {"x": 300 - 24, "y": 200 - 24 - 32}
+        assert _canvas(editor, "first")["position"] == {
+            "x": 1000 - frame["x"],
+            "y": 500 - frame["y"],
+        }
+        model = {i.instance_id: (i.x, i.y) for i in editor.to_model().items}
+        assert model["first"] == (1000, 500)
+
+    def test_pushed_nodes_are_remembered_across_redraws(self, editor):
+        editor._flow.patch_node_props("out", {"position": {"x": 540, "y": 0}})
+        editor.expand_group("picks")
+        editor._erase_canvas_groups()
+        editor._draw_groups(list(editor._groups.values()))
+        editor.collapse_group("picks")
+        assert _canvas(editor, "out")["position"] == {"x": 540, "y": 0}
+
+    def test_a_collapsed_port_shows_the_inner_ports_value(self, editor, monkeypatch):
+        shown = []
+        monkeypatch.setattr(
+            editor,
+            "_show_inspection",
+            lambda key, title, value, *a, **k: shown.append((key, title, value)),
+        )
+        payload = {
+            "node_id": group_node_id("picks"),
+            "handle_id": "out:picked",
+            "direction": "output",
+            "position": {"x": 0, "y": 0},
+        }
+        editor._on_handle_clicked(payload, editor._flow)
+        assert shown == [(("handle", "first:picked"), "picked (output · str)", "a")]
 
     def test_arranging_keeps_groups(self, editor):
         editor.arrange_canvas()

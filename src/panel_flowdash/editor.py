@@ -66,6 +66,7 @@ from panel_flowdash.groups import (
     DashboardGroup,
     check_group_id,
     copy_groups,
+    group_class,
     group_id_of,
     group_node_data,
     group_node_id,
@@ -138,6 +139,7 @@ from panel_flowdash.ui.node_card import (
     card_height,
     node_card,
     placeholder_card,
+    port_label,
     port_tops,
 )
 from panel_flowdash.ui.palette import ComponentPalette, palette_entry, palette_items
@@ -428,7 +430,42 @@ _FLOW_STYLESHEET = """\
 }
 .react-flow__edge:has(.react-flow__edge-path[style*="danger"]) .react-flow__edge-text {
   fill: var(--mui-palette-error-contrastText, #fff);
-}"""
+}/* A collapsed group shows each port's label and type beside its handle, as
+   node cards do, rather than only in the handle's tooltip. */
+.rf-group--collapsed {
+  min-width: 240px;
+}
+.fd-group-rows-1 > .rf-group--collapsed { min-height: 66px !important; }
+.fd-group-rows-2 > .rf-group--collapsed { min-height: 88px !important; }
+.fd-group-rows-3 > .rf-group--collapsed { min-height: 110px !important; }
+.fd-group-rows-4 > .rf-group--collapsed { min-height: 132px !important; }
+.fd-group-rows-5 > .rf-group--collapsed { min-height: 154px !important; }
+.fd-group-rows-6 > .rf-group--collapsed { min-height: 176px !important; }
+.fd-group-rows-7 > .rf-group--collapsed { min-height: 198px !important; }
+.fd-group-rows-8 > .rf-group--collapsed { min-height: 220px !important; }
+.fd-group-rows-9 > .rf-group--collapsed { min-height: 242px !important; }
+.fd-group-rows-10 > .rf-group--collapsed { min-height: 264px !important; }
+.fd-group-rows-11 > .rf-group--collapsed { min-height: 286px !important; }
+.fd-group-rows-12 > .rf-group--collapsed { min-height: 308px !important; }
+.rf-group--collapsed > .react-flow__handle[data-tooltip]::after {
+  opacity: 1;
+  background: none;
+  padding: 0;
+  color: var(--mui-palette-text-secondary, var(--panel-on-background-color));
+  font-size: 12px;
+  max-width: 104px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rf-group--collapsed > .react-flow__handle-left[data-tooltip]::after {
+  left: calc(100% + 6px);
+  right: auto;
+}
+.rf-group--collapsed > .react-flow__handle-right[data-tooltip]::after {
+  right: calc(100% + 6px);
+  left: auto;
+}
+"""
 
 # A transformed edge is dashed in the accent color, so it reads as derived at a glance.
 _TRANSFORMED_EDGE_STYLE = {
@@ -1722,6 +1759,7 @@ class FlowDash(Viewer):
         flow.on("node_data_changed", _on_node_data_changed)
         flow.on("node_deleted", _on_node_deleted)
         flow.on("group_toggled", self._on_group_toggled)
+        flow._process_msg = partial(self._process_canvas_msg, flow._process_msg)
         flow.param.watch(self._sync_group_ports, "edges")
         flow.on("handle_clicked", self._on_handle_clicked)
         flow.on("edge_clicked", self._on_edge_clicked)
@@ -2320,6 +2358,21 @@ class FlowDash(Viewer):
         position = payload.get("position") if isinstance(payload, dict) else None
         if not node_id or not handle_id or position is None:
             return
+        if group_id := group_id_of(node_id):
+            # A collapsed group's port shows the value of the first inner port it stands for.
+            group = self._groups.get(group_id)
+            ends = (
+                []
+                if group is None
+                else [
+                    port.ends[0]
+                    for port in itertools.chain(*self._group_ports(group))
+                    if port.handle == handle_id
+                ]
+            )
+            if not ends:
+                return
+            node_id, handle_id = ends[0]
         port = self._port_spec(node_id, handle_id, output=direction == "output")
         label = (port.label if port else None) or handle_id
         subtitle = f"{direction} · {port.type}" if port and port.type else direction
@@ -3684,13 +3737,13 @@ class FlowDash(Viewer):
                     f"{self._node_name(instance_id)!r} is already in group {current!r}; "
                     "ungroup it first."
                 )
+        label = (label or "").strip()[:MAX_LABEL_LENGTH] or self._next_group_label()
         if group_id is None:
-            group_id = unique_group_id(label or "group", self._groups)
+            group_id = unique_group_id(label, self._groups)
         else:
             check_group_id(group_id)
             if group_id in self._groups:
                 raise ValueError(f"A group named {group_id!r} already exists.")
-        label = (label or "").strip()[:MAX_LABEL_LENGTH] or None
         group = DashboardGroup(id=group_id, label=label, nodes=ids, collapsed=collapsed)
         self._groups[group_id] = group
         self._draw_group(group)
@@ -3725,6 +3778,7 @@ class FlowDash(Viewer):
             op="rename_group",
             args={"name": group_id},
         )
+        self._refresh_group_inspector(group_id)
 
     def collapse_group(self, group_id: str, collapsed: bool = True):
         """Draw a group as one node with its ports, or expand it again, as one edit.
@@ -3747,6 +3801,13 @@ class FlowDash(Viewer):
     @staticmethod
     def _group_node_id(group_id: str) -> str:
         return group_node_id(group_id)
+
+    def _next_group_label(self) -> str:
+        titles = {group.title for group in self._groups.values()}
+        n = 1
+        while f"Group {n}" in titles:
+            n += 1
+        return f"Group {n}"
 
     def _require_group(self, group_id: str) -> DashboardGroup:
         group = self._groups.get(group_id)
@@ -3773,6 +3834,12 @@ class FlowDash(Viewer):
             op="collapse_group",
             args={"name": group.id, "collapsed": collapsed},
         )
+        self._refresh_group_inspector(group.id)
+
+    def _refresh_group_inspector(self, group_id: str):
+        inspector = getattr(self, "_inspector", None)
+        if inspector is not None and inspector._shown == ("group", group_id):
+            inspector.refresh(force=True)
 
     def _group_ports(self, group: DashboardGroup):
         edges = [
@@ -3788,21 +3855,20 @@ class FlowDash(Viewer):
         match = next((p for p in ports if p.name == port), None)
         if match is None:
             return port, None
-        return match.label or match.name, match.type
-
-    def _group_data(self, group: DashboardGroup) -> dict[str, t.Any]:
-        return group_node_data(group, *self._group_ports(group))
+        return port_label(match), match.type
 
     def _draw_group(self, group: DashboardGroup):
         """Put *group*'s frame on the canvas around its nodes."""
+        ports = self._group_ports(group)
         with self._muted_canvas():
-            self._flow.group_nodes(
+            node_id = self._flow.group_nodes(
                 group.nodes,
                 group_id=group_node_id(group.id),
                 label=group.title,
                 padding=_GROUP_PADDING,
-                data=self._group_data(group),
+                data=group_node_data(group, *ports),
             )
+            self._flow.patch_node_props(node_id, {"className": group_class(*ports)})
 
     def _erase_group(self, group_id: str):
         """Take *group_id*'s frame off the canvas and forget it, keeping its nodes."""
@@ -3824,7 +3890,6 @@ class FlowDash(Viewer):
         """Make *groups* the canvas's groups, leaving out nodes that are not placed."""
         placed = {item["instance_id"] for item in self._tile_items}
         self._groups = {}
-        self._pushed = {}
         for group in groups:
             group = copy.deepcopy(group)
             group.nodes = [n for n in group.nodes if n in placed and self.group_of(n) is None]
@@ -3832,20 +3897,24 @@ class FlowDash(Viewer):
                 continue
             self._groups[group.id] = group
             self._draw_group(group)
+        self._pushed = {g: pushed for g, pushed in self._pushed.items() if g in self._groups}
 
     def _sync_group_ports(self, *_events):
         """Give each group the ports of the connections that now cross its border."""
         for group in self._groups.values():
-            data = self._group_data(group)
+            ports = self._group_ports(group)
+            data = group_node_data(group, *ports)
             node_id = group_node_id(group.id)
             node = next((n for n in self._flow.nodes if n["id"] == node_id), None)
             if node is None:
                 continue
             current = node.get("data") or {}
             patch = {k: v for k, v in data.items() if k != "collapsed" and current.get(k) != v}
-            if patch:
-                with self._muted_canvas():
+            with self._muted_canvas():
+                if patch:
                     self._flow.patch_node_data(node_id, patch)
+                if node.get("className") != (name := group_class(*ports)):
+                    self._flow.patch_node_props(node_id, {"className": name})
 
     def _drop_from_groups(self, instance_id: str):
         """Take a removed node out of its group, removing a group left empty."""
@@ -3854,6 +3923,38 @@ class FlowDash(Viewer):
                 group.nodes.remove(instance_id)
                 if not group.nodes:
                     self._erase_group(group.id)
+
+    def _process_canvas_msg(self, process, msg: dict):
+        """Handle a message from the page, ungrouping the frames it deletes instead of their nodes.
+
+        Deleting a node on the canvas deletes the nodes nested in it, and the
+        page lists them too. A frame only frames its nodes, so deleting it
+        ungroups them; :meth:`delete_group` deletes a group with its nodes.
+        """
+        if msg.get("type") != "node_deleted" or self._muted or not self.editable:
+            return process(msg)
+        ids = list(msg.get("node_ids") or [])
+        if msg.get("node_id") and msg["node_id"] not in ids:
+            ids.append(msg["node_id"])
+        frames = [i for i in ids if group_id_of(i) in self._groups]
+        if not frames:
+            return process(msg)
+        kept = {n for f in frames for n in self._groups[group_id_of(f)].nodes}
+        with pn.io.hold():
+            for frame in frames:
+                self.ungroup(group_id_of(frame))
+            rest = [i for i in ids if i not in frames and i not in kept]
+            if rest:
+                process({**msg, "node_ids": rest, "node_id": None})
+            else:
+                # The page took the nodes away with the frame; send them back.
+                self._flow.param.trigger("nodes")
+
+    def delete_group(self, group_id: str) -> list[str]:
+        """Remove a group and its nodes from the dashboard; returns the removed instance ids."""
+        nodes = list(self._require_group(group_id).nodes)
+        self._flow.remove_node(group_node_id(group_id))
+        return nodes
 
     def _on_group_frame_deleted(self, group_id: str):
         """Forget a group whose frame was deleted on the canvas, which deletes its nodes too."""
@@ -3911,7 +4012,6 @@ class FlowDash(Viewer):
         x0, y0, x1, y1 = self._group_box(group, positions)
         inputs, outputs = self._group_ports(group)
         collapsed_h = card_height(len(inputs), len(outputs)) + pr.base.GROUP_HEADER_HEIGHT
-        dx, dy = (x1 - x0) - CARD_WIDTH, (y1 - y0) - collapsed_h
         members = set(group.nodes)
         frames = {group_node_id(g.id): g for g in self._groups.values() if g.id != group.id}
         candidates = []
@@ -3931,13 +4031,33 @@ class FlowDash(Viewer):
                 w, h = self._node_size(node["id"])
                 box = (position.get("x", 0), position.get("y", 0), w, h)
             candidates.append((node["id"], box))
+        # The nodes beside the group move right together, and the ones below
+        # it move down together, by just enough to clear the expanded frame.
+        gap = _GROUP_PADDING
+        beside = [
+            (node_id, box)
+            for node_id, box in candidates
+            if box[0] >= x0 + CARD_WIDTH and box[1] < y1 and box[1] + box[3] > y0
+        ]
+        below = [
+            (node_id, box)
+            for node_id, box in candidates
+            if (node_id, box) not in beside
+            and box[1] >= y0 + collapsed_h
+            and box[0] < x1
+            and box[0] + box[2] > x0
+        ]
+        dx = max([x1 + gap - box[0] for _, box in beside] + [0])
+        dy = max([y1 + gap - box[1] for _, box in below] + [0])
         pushed: dict[str, tuple[tuple[float, float], tuple[float, float]]] = {}
-        for node_id, (x, y, w, h) in candidates:
-            right = dx > 0 and x >= x0 + CARD_WIDTH and y < y1 and y + h > y0
-            below = not right and dy > 0 and y >= y0 + collapsed_h and x < x1 and x + w > x0
-            if right or below:
-                moved = (round(x + (dx if right else 0), 1), round(y + (dy if below else 0), 1))
-                pushed[node_id] = (moved, (round(x, 1), round(y, 1)))
+        for nodes, (sx, sy) in ((beside, (dx, 0)), (below, (0, dy))):
+            if not (sx or sy):
+                continue
+            for node_id, (x, y, _w, _h) in nodes:
+                pushed[node_id] = (
+                    (round(x + sx, 1), round(y + sy, 1)),
+                    (round(x, 1), round(y, 1)),
+                )
         if not pushed:
             return
         with self._muted_canvas():
@@ -4724,18 +4844,47 @@ class FlowDash(Viewer):
         return edges + [(u.edge.source, u.edge.target) for u in self._unresolved_edges]
 
     def _move_nodes(self, positions: dict[str, tuple[float, float]]):
-        """Move nodes to canvas *positions*, refitting the frames of the groups they are in."""
-        if self._groups:
-            self._erase_canvas_groups()
-        current = {node["id"]: node.get("position") or {} for node in self._flow.nodes}
+        """Move nodes to canvas *positions*, refitting the frames of the groups they are in.
+
+        A node in a group is positioned relative to its frame on the canvas, so
+        each frame is moved to fit its nodes first and its nodes are placed
+        relative to it.
+        """
+        absolute = {
+            node_id: (position["x"], position["y"])
+            for node_id, position in self._absolute_positions().items()
+        }
+        absolute.update({k: (round(x, 1), round(y, 1)) for k, (x, y) in positions.items()})
+        origins = {}
+        for group in self._groups.values():
+            members = [absolute[n] for n in group.nodes if n in absolute]
+            if members:
+                origins[group_node_id(group.id)] = (
+                    round(min(x for x, _ in members) - _GROUP_PADDING, 1),
+                    round(
+                        min(y for _, y in members) - _GROUP_PADDING - pr.base.GROUP_HEADER_HEIGHT,
+                        1,
+                    ),
+                )
+        targets = dict(origins)
+        for node in self._flow.nodes:
+            node_id = node["id"]
+            if node_id not in absolute or (
+                node_id not in positions and node.get("parentId") not in origins
+            ):
+                continue
+            x, y = absolute[node_id]
+            ox, oy = origins.get(node.get("parentId"), (0, 0))
+            targets[node_id] = (round(x - ox, 1), round(y - oy, 1))
         with self._muted_canvas():
-            for node_id, (x, y) in positions.items():
-                position = {"x": round(x, 1), "y": round(y, 1)}
-                if node_id in current and current[node_id] != position:
-                    self._flow.patch_node_props(node_id, {"position": position})
+            for node in self._flow.nodes:
+                if node["id"] not in targets:
+                    continue
+                x, y = targets[node["id"]]
+                position = {"x": x, "y": y}
+                if (node.get("position") or {}) != position:
+                    self._flow.patch_node_props(node["id"], {"position": position})
                     self._fit_pending = True
-        if self._groups:
-            self._draw_groups(list(self._groups.values()))
 
     def _settle_nodes(self):
         """Lay the nodes the editor placed out again, around the nodes placed by hand or a file."""

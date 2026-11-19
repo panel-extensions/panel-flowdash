@@ -38,6 +38,12 @@ GROUP_NODE_PREFIX = "group:"
 # The canvas node type panel-reactflow draws groups with.
 GROUP_NODE_TYPE = "group"
 
+# A collapsed group lists its ports in rows below its header, like a node card.
+GROUP_HEADER_HEIGHT = 32
+GROUP_PORT_ROW_HEIGHT = 22
+# The most port rows the canvas stylesheet sizes a collapsed group for.
+MAX_GROUP_PORT_ROWS = 12
+
 # Prefixes of a collapsed group's handle ids, so an input and an output of the
 # same name never share one.
 INPUT_HANDLE_PREFIX = "in:"
@@ -259,16 +265,17 @@ def group_node_data(
     connection made to it reaches every inner port it maps.
     """
 
-    def handle(port: GroupPort) -> dict[str, t.Any]:
-        spec: dict[str, t.Any] = {"id": port.handle, "label": port.label}
+    def handle(port: GroupPort, row: int) -> dict[str, t.Any]:
+        top = GROUP_HEADER_HEIGHT + 4 + GROUP_PORT_ROW_HEIGHT * row + GROUP_PORT_ROW_HEIGHT / 2
+        spec: dict[str, t.Any] = {"id": port.handle, "label": port.label, "top": top}
         if port.type:
             spec["type"] = port.type
         return spec
 
     return {
         "collapsed": group.collapsed,
-        "inputs": [handle(port) for port in inputs],
-        "outputs": [handle(port) for port in outputs],
+        "inputs": [handle(port, row) for row, port in enumerate(inputs)],
+        "outputs": [handle(port, row) for row, port in enumerate(outputs)],
         "handle_map": [
             {
                 "node": node,
@@ -280,6 +287,11 @@ def group_node_data(
             for node, port_name in port.ends
         ],
     }
+
+
+def group_class(inputs: list[GroupPort], outputs: list[GroupPort]) -> str:
+    """Return the CSS class that sizes a collapsed group's frame for its port rows."""
+    return f"fd-group-rows-{min(max(len(inputs), len(outputs), 1), MAX_GROUP_PORT_ROWS)}"
 
 
 def copy_groups(groups: Mapping[str, DashboardGroup]) -> dict[str, DashboardGroup]:

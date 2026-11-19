@@ -503,7 +503,17 @@ class Inspector(Viewer):
             sx={"textTransform": "none"},
         )
         ungroup.on_click(lambda _event: editor.ungroup(group_id))
-        objects.append(ungroup)
+        count = len(group.nodes)
+        delete = pmui.Button(
+            label=f"Delete group and its {count} component{'' if count == 1 else 's'}",
+            icon="delete_outline",
+            color="error",
+            variant="text",
+            margin=(4, 0, 0, 0),
+            sx={"textTransform": "none"},
+        )
+        delete.on_click(lambda _event: editor.delete_group(group_id))
+        objects.extend([ungroup, delete])
         return objects
 
     def _remove_button(self, instance_id: str) -> pmui.Button:
