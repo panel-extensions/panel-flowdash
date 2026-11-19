@@ -1239,6 +1239,14 @@ class DashboardOps:
         target_id, target_port = self._port(target, "target")
         result = self.editor.connect(*source_ref, target_id, target_port, transform)
         if result is not True:
+            if not transform and (
+                kind := self.editor._bridge(*source_ref, target_id, target_port)
+            ):
+                column = '{"op": "column", "column": "<name>"}, ' if kind == "column" else ""
+                result += (
+                    f" Connect it with a transform reducing it to one value, e.g. "
+                    f'[{column}{{"op": "aggregate", "how": "sum"}}].'
+                )
             raise OperationError(result)
         return target_id
 

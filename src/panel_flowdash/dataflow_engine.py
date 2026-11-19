@@ -694,8 +694,15 @@ class DataflowGraph:
         target_id: str,
         target_port: str,
         transform: list[dict[str, Any]] | None = None,
+        *,
+        types: bool = True,
     ) -> str | None:
-        """Return a rejection reason without changing graph state, or None if allowed."""
+        """Return a rejection reason without changing graph state, or None if allowed.
+
+        With *types* False the ports' types and the value the edge would carry
+        are not checked, only the wiring rules: ports that exist, a free
+        input, no duplicate and no cycle.
+        """
         source_spec = self._node_specs.get(source_id)
         target_spec = self._node_specs.get(target_id)
         if source_id not in self._nodes or target_id not in self._nodes:
@@ -717,7 +724,7 @@ class DataflowGraph:
         steps, error = self._parse(transform)
         if error:
             return error
-        if is_list:
+        if is_list or not types:
             return None
         # A transform changes what the edge carries, so the declared output type
         # no longer applies and only the transformed value can be checked.
