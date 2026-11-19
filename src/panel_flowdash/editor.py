@@ -1308,6 +1308,7 @@ class FlowDash(Viewer):
             ["popup_trigger", "popup_hover_delay"],
         )
         self._view = self._build_component_view()
+        self._sync_min_width()
 
         # Components handed over as live objects need no import, so their specs
         # can be built eagerly and the editor is usable the moment it is
@@ -3104,6 +3105,7 @@ class FlowDash(Viewer):
     def _show_explore(self):
         """Show the Explore view or the canvas and tile grid; never both, as they share the tiles' views."""
         view = self._view
+        self._sync_min_width()
         if self.explore:
             self.fullscreen = False
             feed = self.explore_feed
@@ -3116,6 +3118,11 @@ class FlowDash(Viewer):
             view[1] = self._editor_row
             self._status_bar.visible = self.editable
             self._sync_tile_drag()
+
+    @param.depends("editable", watch=True)
+    def _sync_min_width(self):
+        """Let the feed and the dashboard narrow to the window; only the canvas and its panels need the room."""
+        self._view.min_width = None if self.editable and not self.explore else 0
 
     @param.depends("edited", watch=True)
     def _sync_explore(self):

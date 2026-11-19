@@ -30,7 +30,7 @@ from panel_agents.components.approval import ApprovalCard
 
 from panel_flowdash.port_types import port_types_compatible
 from panel_flowdash.ui import tile_layout
-from panel_flowdash.ui.text import text_typography
+from panel_flowdash.ui.text import escape_markdown, text_typography
 
 if t.TYPE_CHECKING:
     from panel_agents import Artifact
@@ -54,6 +54,14 @@ EARLIER_KIND = "outputs"
 
 EARLIER_TITLE = "Before the recorded requests"
 
+#: The title of a card whose node uses a component the person may not use.
+RESTRICTED_TITLE = "Restricted output"
+
+# The width of the shell's navigation rail, and the window width below which the
+# shell hides it (``panel_flowdash.ui.shell.NARROW_BREAKPOINT``, which imports the app).
+RAIL_WIDTH = 80
+NARROW_BREAKPOINT = 600
+
 #: The height of a card showing a component's view, when its size hints give none.
 CARD_HEIGHT = 320
 
@@ -65,11 +73,32 @@ _ARTIFACT_EVENTS = (ev.ArtifactPublished, ev.ArtifactApplied, ev.ArtifactVersion
 _COALESCE_MS = 50
 
 
+def _narrow_css() -> str:
+    """Let the feed take the window's width on a narrow window.
+
+    The page's containers keep the minimum width of the editor's canvas and
+    its panels, so the feed is limited to the window, less the navigation
+    rail, which the shell hides below its narrow breakpoint.
+    """
+    return f"""
+@media (max-width: {NARROW_BREAKPOINT - 0.05}px) {{ :host {{ max-width: 100vw; }} }}
+@media (min-width: {NARROW_BREAKPOINT}px) and (max-width: 799.95px) {{
+  :host {{ max-width: calc(100vw - {RAIL_WIDTH}px); }}
+}}
+"""
+
+
 def _turn_time(turn: DashboardTurn) -> float:
     try:
         return datetime.fromisoformat((turn.at or "").replace("Z", "+00:00")).timestamp()
     except ValueError:
         return 0.0
+
+
+def _change_list(summary: str) -> str:
+    """Return a turn's summary as a Markdown list, one change per item, read literally."""
+    labels = [label.strip() for label in summary.rstrip(".").split(". ") if label.strip()]
+    return "\n".join(f"- {escape_markdown(label)}" for label in labels)
 
 
 def _message(run_id: str, key: str, role: str, text: str, at: float) -> list[ev.Event]:
@@ -109,6 +138,10 @@ class ExploreFeed(Viewer):
         # The dashboard open when each recorded run started; a run shows in that dashboard's feed only.
         self._run_dashboards: dict[str, str | None] = {}
         self._applied: list[ev.Event] = []
+        # The projected change lists, which may grow while their turn is open.
+        self._summaries: set[str] = set()
+        # The watchers of the data cards' values, by node.
+        self._value_watchers: dict[str, tuple[t.Any, str, t.Callable, t.Any]] = {}
         self._published: dict[str, ev.ArtifactPublished] = {}
         self._notes: dict[str, pmui.Typography] = {}
         self._unsubscribe = None
@@ -123,7 +156,10 @@ class ExploreFeed(Viewer):
             css_classes=["explore-empty"],
         )
         self._layout = pn.Column(
-            sizing_mode="stretch_both", margin=0, css_classes=["flowdash-explore"]
+            sizing_mode="stretch_both",
+            margin=0,
+            css_classes=["flowdash-explore"],
+            stylesheets=[_narrow_css()],
         )
         editor.param.watch(self._schedule, "dashboard")
 
@@ -192,6 +228,12 @@ class ExploreFeed(Viewer):
 
     @param.depends("shown", watch=True)
     def _on_shown(self):
+        # Hidden cards stop following their nodes' values and catch up when shown again.
+        for instance_id in list(self._value_watchers):
+            if self.shown:
+                self._watch_value(instance_id)
+            else:
+                self._unwatch_value(instance_id, forget=False)
         if self.shown:
             self.chat  # noqa: B018
             self.sync()
@@ -243,11 +285,20 @@ class ExploreFeed(Viewer):
 
         return node_names(self.editor._tile_items)
 
+    def _shown_names(self) -> dict[str, str]:
+        """Return the node names cards show, leaving unnamed the nodes the person may not use."""
+        editor = self.editor
+        return {
+            instance_id: RESTRICTED_TITLE if editor._node_restricted(instance_id) else name
+            for instance_id, name in self._names().items()
+        }
+
     def project(self) -> tuple[list[ev.Event], dict[str, ev.ArtifactPublished]]:
         """Return the feed's runs as events, oldest first, and its cards by artifact id."""
         editor = self.editor
         turns = [turn for turn in editor.turns if turn.status != "pending"]
-        names = self._names()
+        self._summaries = set()
+        names = self._shown_names()
         items = self._items()
         made: dict[str, list[str]] = {}
         earlier = []
@@ -266,7 +317,7 @@ class ExploreFeed(Viewer):
                 artifact_id=f"{_EARLIER_RUN}:nodes",
                 value={"nodes": earlier},
                 kind=EARLIER_KIND,
-                title=EARLIER_TITLE,
+                title=f"{len(earlier)} output{'s' * (len(earlier) != 1)}",
                 run_id=_EARLIER_RUN,
                 timestamp=0.0,
             )
@@ -288,13 +339,7 @@ class ExploreFeed(Viewer):
                 entries.append((_turn_time(turn), self._projected_run(turn, run_id)))
             for instance_id in made.get(turn.id, ()):
                 item = items[instance_id]
-                role = editor._node_role(item["component_id"])
-                if role in ("view", "widget"):
-                    kind = NODE_KINDS[role]
-                elif self._shows_view(item):
-                    kind = NODE_KINDS["view"]
-                else:
-                    kind = NODE_KINDS.get(role, NODE_KINDS["other"])
+                kind = self._kind(item)
                 cells[f"node:{instance_id}"] = ev.ArtifactPublished(
                     artifact_id=f"node:{instance_id}",
                     value={"node": instance_id},
@@ -332,10 +377,14 @@ class ExploreFeed(Viewer):
             events.append(ev.RunStarted(run_id=run_id, agent_name="Assistant", timestamp=at))
             if turn.question and not redacted:
                 events += _message(run_id, "q", "user", turn.question, at)
-            answer = turn.summary if turn.summary and not redacted else "Changed the dashboard."
         else:
             events.append(ev.RunStarted(run_id=run_id, agent_name="Edited by hand", timestamp=at))
-            answer = turn.summary if turn.summary and not redacted else "Changed the dashboard."
+        answer = (
+            _change_list(turn.summary)
+            if turn.summary and not redacted
+            else "Changed the dashboard."
+        )
+        self._summaries.add(f"{run_id}-a")
         events += _message(run_id, "a", "assistant", answer, at)
         events.append(ev.RunFinished(run_id=run_id, timestamp=at))
         return events
@@ -343,23 +392,31 @@ class ExploreFeed(Viewer):
     def sync(self):
         """Bring the feed up to date with the dashboard's turns and the agent's runs.
 
-        New runs and cards are added; when what was shown changed instead, e.g.
-        after an undo or because a turn's summary grew, the feed is rebuilt.
+        New runs and cards are appended, a turn's change list that grew is
+        updated in place, and a card whose node changed kind gets a new
+        version. Only when what was shown no longer holds, e.g. after an undo
+        removed turns or nodes, is the feed rebuilt.
         """
         if not self.shown:
             return
         timeline, cells = self.project()
         applied = self._applied
-        if timeline[: len(applied)] != applied or any(
-            cells.get(aid) != event for aid, event in self._published.items()
+        prefix = timeline[: len(applied)]
+        if [self._key(e) for e in prefix] != [self._key(e) for e in applied] or any(
+            aid not in cells for aid in self._published
         ):
             self._rebuild(timeline, cells)
         else:
+            for i, (old, new) in enumerate(zip(applied, prefix, strict=True)):
+                if old != new:
+                    # A projected change list grew; its message is ours, so it is changed in place.
+                    self.state.messages[new.message_id].content = new.delta
+                    applied[i] = new
             tail = timeline[len(applied) :]
             self.state.apply_many(tail)
             applied.extend(tail)
             for aid, event in cells.items():
-                if aid not in self._published:
+                if self._published.get(aid) != event:
                     self.state.apply(event)
                     self._published[aid] = event
         shown = self.chat if (timeline or self._chat_key[0]) else self._empty
@@ -367,8 +424,15 @@ class ExploreFeed(Viewer):
             self._layout.objects = [shown]
         self.refresh()
 
+    def _key(self, event: ev.Event):
+        """Return what must match for an applied event to stand; a projected change list may grow."""
+        if isinstance(event, ev.TextMessageContent) and event.message_id in self._summaries:
+            return ("summary", event.message_id)
+        return event
+
     def _rebuild(self, timeline: list[ev.Event], cells: dict[str, ev.ArtifactPublished]):
         self._notes.clear()
+        self._release_values()
         self.state.reset()
         self.state.apply_many(timeline)
         self.state.apply_many(cells.values())
@@ -415,7 +479,7 @@ class ExploreFeed(Viewer):
         return pn.Column(note, self._output(instance_id), sizing_mode="stretch_width", margin=0)
 
     def _render_earlier(self, nodes: list[str]) -> Viewable:
-        names = self._names()
+        names = self._shown_names()
         rows = []
         for instance_id in nodes:
             body = pn.Column(sizing_mode="stretch_width", margin=0, visible=False)
@@ -459,11 +523,28 @@ class ExploreFeed(Viewer):
         view = editor._tile_objects[index] if index < len(editor._tile_objects) else None
         if view is None:
             return self._caption("This output has nothing to show yet.")
+        if editor._node_role(item["component_id"]) == "widget":
+            # A control takes the height of its widgets.
+            return pn.Column(view, sizing_mode="stretch_width", margin=(4, 8))
         size = (spec.default_size if spec is not None else None) or {}
-        height = tile_layout.tile_entry(editor, instance_id).get("height") or size.get("height")
-        return pn.Column(
-            view, height=int(height or CARD_HEIGHT), sizing_mode="stretch_width", margin=(4, 8)
-        )
+        entry = tile_layout.tile_entry(editor, instance_id).get("height")
+        height = max(int(entry or 0), int(size.get("height") or 0), CARD_HEIGHT)
+        return pn.Column(view, height=height, sizing_mode="stretch_width", margin=(4, 8))
+
+    def _kind(self, item: dict) -> str:
+        """Return the kind a node's card is labelled with, the same whether it shows the view or the value."""
+        editor = self.editor
+        role = editor._node_role(item["component_id"])
+        if role in ("view", "widget"):
+            return NODE_KINDS[role]
+        spec = editor._component_specs.get(item["component_id"])
+        if (
+            spec is not None
+            and spec.outputs
+            and port_types_compatible(spec.outputs[0].type, "DataFrame")
+        ):
+            return NODE_KINDS["source"]
+        return NODE_KINDS["other"]
 
     def _shows_view(self, item: dict) -> bool:
         """Whether a node's card shows its view rather than its first output's value.
@@ -501,9 +582,42 @@ class ExploreFeed(Viewer):
                 body.objects = [self._caption("This output could not be shown.")]
 
         update()
+        self._unwatch_value(instance_id)
         if state is not None and port in state.param:
-            state.param.watch(update, port)
+            self._value_watchers[instance_id] = (state, port, update, None)
+            if self.shown:
+                self._watch_value(instance_id)
         return body
+
+    def _watch_value(self, instance_id: str):
+        state, port, update, watcher = self._value_watchers[instance_id]
+        if watcher is None:
+            self._value_watchers[instance_id] = (
+                state,
+                port,
+                update,
+                state.param.watch(update, port),
+            )
+            update()
+
+    def _unwatch_value(self, instance_id: str, forget: bool = True):
+        entry = (
+            self._value_watchers.pop(instance_id, None)
+            if forget
+            else self._value_watchers.get(instance_id)
+        )
+        if entry is None:
+            return
+        state, port, update, watcher = entry
+        if watcher is not None:
+            state.param.unwatch(watcher)
+        if not forget:
+            self._value_watchers[instance_id] = (state, port, update, None)
+
+    def _release_values(self):
+        """Stop following the values of the data cards, e.g. when they are rendered anew."""
+        for instance_id in list(self._value_watchers):
+            self._unwatch_value(instance_id)
 
     def _caption(self, text: str) -> Viewable:
         return text_typography(
@@ -549,7 +663,7 @@ class ExploreFeed(Viewer):
 
     def _add_to_dashboard(self, name: str) -> str:
         """Show a node's output as a tile on the dashboard."""
-        self._ops().place_tile(name, visible=True, area="grid")
+        self._ops().place_tile(name, visible=True)
         self.refresh()
         return f"Added {name} to the dashboard."
 

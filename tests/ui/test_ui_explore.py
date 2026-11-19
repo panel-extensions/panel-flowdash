@@ -47,7 +47,7 @@ def test_a_question_asked_in_explore_shows_its_answer_and_output(page):
     page.get_by_text("note tile").first.wait_for()
 
     page.get_by_role("button", name="Explore", exact=True).click()
-    expect(page.get_by_text("Before the recorded requests")).to_be_visible()
+    expect(page.get_by_text("made before its requests were recorded")).to_be_visible()
     # Idle, the composer offers Send, not Stop.
     expect(page.get_by_role("button", name="Stop")).to_have_count(0)
 
@@ -170,19 +170,43 @@ def test_charts_and_selection_links_survive_moving_between_explore_and_the_grid(
     assert errors == []
 
 
-def test_cards_stack_on_a_narrow_window(page):
+@pytest.mark.parametrize("width", [390, 640])
+def test_cards_stack_within_a_narrow_window(page, width):
     store, (dash,) = _store_with("Plant")
     apps = []
+    page.set_viewport_size({"width": width, "height": 900})
     _serve_app(page, store, f"/dash/{dash}", apps)
     page.get_by_text("note tile").first.wait_for()
     editor = apps[0]._editor
     with agent_edits(run="run-1", question="Two notes"):
         editor.add_component("Test/note", instance_id="a")
         editor.add_component("Test/note", instance_id="b")
-    page.set_viewport_size({"width": 768, "height": 900})
     page.get_by_role("button", name="Explore", exact=True).click()
     cards = page.locator(".artifact-cell").filter(has=page.get_by_text("note tile"))
     expect(cards).to_have_count(2)
     first, second = cards.first.bounding_box(), cards.last.bounding_box()
     assert second["y"] >= first["y"] + first["height"]
-    assert first["x"] + first["width"] <= 768
+    assert first["x"] >= 0 and first["x"] + first["width"] <= width
+
+
+def test_a_manual_edit_while_exploring_keeps_the_feed_in_place(page):
+    store, (dash,) = _store_with("Plant")
+    apps, errors = [], []
+    page.on("pageerror", lambda exc: errors.append(str(exc)))
+    _serve_app(page, store, f"/dash/{dash}?edit=true", apps)
+    page.get_by_role("button", name="Explore", exact=True).click()
+    editor = apps[0]._editor
+    with agent_edits(run="run-1", question="A note"):
+        editor.add_component("Test/note", instance_id="memo")
+    tile_layout.update_tile(editor, "memo", visible=False)
+    card = page.locator(".artifact-cell", has_text="memo")
+    expect(card.get_by_role("button", name="Add to dashboard")).to_be_visible(timeout=15000)
+    resets = []
+    editor.explore_feed.state.param.watch(
+        lambda e: resets.append(e) if not e.new else None, "runs"
+    )
+    card.get_by_role("button", name="Add to dashboard").click()
+    expect(card.locator(".artifact-cell-done")).to_have_text(re.compile("On dashboard"))
+    page.get_by_text("Changed the tile layout").first.wait_for(timeout=10000)
+    assert resets == []
+    assert errors == []

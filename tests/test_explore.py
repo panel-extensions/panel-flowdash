@@ -72,10 +72,10 @@ def test_each_turn_is_a_run_with_its_question_summary_and_cards(editor):
     mine, double = _turn(editor, "mine"), _turn(editor, "double")
     assert list(feed.state.runs) == [f"turn-{mine}", f"turn-{double}"]
     assert feed.state.runs[f"turn-{mine}"].agent_name == "Edited by hand"
-    assert _messages(feed, f"turn-{mine}") == [("assistant", "Added mine.")]
+    assert _messages(feed, f"turn-{mine}") == [("assistant", "- Added mine")]
     assert _messages(feed, f"turn-{double}") == [
         ("user", "Double it"),
-        ("assistant", "Added double."),
+        ("assistant", "- Added double"),
     ]
     cells = _cells(feed)
     assert cells["node:mine"].value == {"node": "mine"}
@@ -179,7 +179,7 @@ def test_a_data_cards_value_is_live(editor):
 
     tile_layout.update_tile(editor, "mine", visible=False)
     feed = _feed(editor)
-    assert _cells(feed)["node:mine"].kind == "data"
+    assert _cells(feed)["node:mine"].kind == "output"
     body = feed._render(_cells(feed)["node:mine"])
     note, value = body.objects
     assert not note.visible
@@ -192,10 +192,14 @@ def test_a_number_on_the_dashboard_shows_its_tile_and_a_hidden_one_its_value(edi
     from panel_flowdash.ui import tile_layout
 
     feed = _feed(editor)
-    assert _cells(feed)["node:mine"].kind == "view"
+    cell = _cells(feed)["node:mine"]
+    assert cell.kind == "output"
+    view = feed._render(cell).objects[1]
+    assert view.objects[0] is editor._tile_objects[0]
     tile_layout.update_tile(editor, "mine", visible=False)
     feed.sync()
-    assert _cells(feed)["node:mine"].kind == "data"
+    assert _cells(feed)["node:mine"] is cell
+    assert "21" in str(feed._render(cell).objects[1].objects[0].object)
 
 
 def test_a_view_card_shows_the_tiles_view(editor):
@@ -289,3 +293,69 @@ def test_the_switchers_show_explore(editor):
     assert not editor.explore and editor.mode == "dashboard"
     editor.read_only = True
     assert list(bar.mode_toggle.options.values()) == ["explore", "view"]
+
+
+def test_a_manual_edit_while_shown_updates_the_feed_in_place(editor):
+    feed = _feed(editor)
+    editor.end_turn()
+    editor.add_component("T/number", instance_id="second")
+    feed.sync()
+    run_id = f"turn-{_turn(editor, 'second')}"
+    message = next(m for m in feed.state.items if getattr(m, "run_id", None) == run_id)
+    cells = _cells(feed)
+    resets = []
+    feed.state.param.watch(lambda e: resets.append(e), "runs")
+    editor.add_component("T/number", instance_id="third")
+    feed.sync()
+    assert message.content == "- Added second\n- Added third"
+    assert _cells(feed)["node:second"] is cells["node:second"]
+    assert "node:third" in _cells(feed)
+    assert all(len(e.new) >= len(e.old) for e in resets)
+
+
+def test_add_to_dashboard_is_not_a_later_change_of_the_card(editor):
+    from panel_flowdash.ui import tile_layout
+
+    tile_layout.update_tile(editor, "mine", visible=False)
+    feed = _feed(editor)
+    asyncio.run(feed.actions.invoke("add_to_dashboard", {"name": "mine"}))
+    assert editor.later_turns("mine") == []
+
+
+def test_value_watchers_are_released_when_rendered_anew_and_when_hidden(editor):
+    from panel_flowdash.ui import tile_layout
+
+    tile_layout.update_tile(editor, "mine", visible=False)
+    feed = _feed(editor)
+    state = editor._dataflow_graph.get_state("mine")
+    cell = _cells(feed)["node:mine"]
+
+    def watchers():
+        return sum(len(w) for w in state.param.watchers.get("value", {}).values())
+
+    before = watchers()
+    first = feed._render(cell).objects[1]
+    second = feed._render(cell).objects[1]
+    assert watchers() == before
+    feed.shown = False
+    assert watchers() == before - 1
+    state.value = 3
+    feed.shown = True
+    assert watchers() == before
+    assert "3" in str(second.objects[0].object)
+    assert "21" in str(first.objects[0].object)
+
+
+def test_viewers_do_not_see_the_names_of_restricted_nodes(editor):
+    editor._node_restricted = lambda instance_id: instance_id == "double"
+    feed = _feed(editor)
+    assert _cells(feed)["node:double"].title == "Restricted output"
+    assert _cells(feed)["node:mine"].title == "mine"
+
+
+def test_the_narrow_breakpoint_matches_the_shells():
+    import panel_flowdash.app  # noqa: F401
+    from panel_flowdash.explore import NARROW_BREAKPOINT
+    from panel_flowdash.ui.shell import NARROW_BREAKPOINT as SHELL
+
+    assert NARROW_BREAKPOINT == SHELL
