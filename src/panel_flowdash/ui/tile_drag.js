@@ -4,6 +4,10 @@ const THRESHOLD = 4
 // The drop targets shown for an empty area, at the edge of the grid.
 const EMPTY_TOP = 44
 const EMPTY_SIDE = 88
+// Thinner while a component beside the grid is dragged, since the grid is a
+// target then too and a drop near a tile's edge should land on the grid.
+const EMPTY_TOP_SLIM = 20
+const EMPTY_SIDE_SLIM = 24
 
 function collect(root, test, found = []) {
   for (const el of root.querySelectorAll("*")) {
@@ -110,14 +114,15 @@ export function render({model}) {
     const found = drag.found
     const gridEl = found.grid
     const gridRect = gridEl ? visibleRect(gridEl.getBoundingClientRect(), found.clips) : null
+    const slim = drag.kind === "control"
     for (const area of model.areas) {
       const el = found.areas[area].find(shown)
       if (el) {
         zones.push({area, el, rect: el.getBoundingClientRect(), empty: false})
       } else if (gridRect) {
         const rect = area === "top"
-          ? {...gridRect, bottom: gridRect.top + EMPTY_TOP}
-          : {...gridRect, right: gridRect.left + EMPTY_SIDE}
+          ? {...gridRect, bottom: gridRect.top + (slim ? EMPTY_TOP_SLIM : EMPTY_TOP)}
+          : {...gridRect, right: gridRect.left + (slim ? EMPTY_SIDE_SLIM : EMPTY_SIDE)}
         zones.push({area, el: null, rect, empty: true})
       }
     }
@@ -194,7 +199,7 @@ export function render({model}) {
       el.dataset.area = z.area
       el.dataset.over = over ? "true" : "false"
       el.dataset.refused = refused ? "true" : "false"
-      if (z.empty) { el.textContent = model.labels[z.area] ?? z.area }
+      if (z.empty && drag.kind !== "control") { el.textContent = model.labels[z.area] ?? z.area }
       parts.push(el)
     }
     let target = null

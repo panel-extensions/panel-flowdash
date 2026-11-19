@@ -3355,6 +3355,8 @@ class FlowDash(Viewer):
         one meanwhile.
         """
         doc = pn.state.curdoc
+        # A rebuild in the same message as one that removed tiles waits as well.
+        removed = removed or self._deferred_grid_layout is not None
         if not (removed and doc is not None and self._tile_grid._models):
             self._deferred_grid_layout = None
             self._tile_grid.layout = layout
