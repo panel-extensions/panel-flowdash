@@ -674,6 +674,40 @@ def arrange_canvas(ctx: RunContext[FlowDashDeps]) -> t.Any:
     return _artifact(ops, "Arranged the canvas.")
 
 
+def group_nodes(
+    ctx: RunContext[FlowDashDeps],
+    nodes: list[str],
+    label: str | None = None,
+    name: str | None = None,
+) -> t.Any:
+    """Frame nodes together on the canvas as one group, which can be collapsed into one node.
+
+    Grouping changes nothing about the dataflow, the config or the tiles. Group
+    nodes only when the user asks to. A node can be in one group at a time.
+
+    Args:
+        nodes: Names of the nodes to group.
+        label: Shown in the group's header, e.g. "Revenue by region".
+        name: The group's name in the YAML; made from the label when left out.
+
+    Returns the group's name and its ports: the connections that cross its border.
+    """
+    ops = ctx.deps.ops
+    group = ops.group_nodes(nodes, label=label, name=name)
+    return _artifact(ops, f"Grouped as '{group['group']}': {_text(group)}")
+
+
+def ungroup(ctx: RunContext[FlowDashDeps], name: str) -> t.Any:
+    """Remove a group's frame from the canvas, keeping its nodes as they are.
+
+    Args:
+        name: The group's name, a key of `groups` in the dashboard YAML.
+    """
+    ops = ctx.deps.ops
+    nodes = ops.ungroup(name)
+    return _artifact(ops, f"Ungrouped '{name}': {', '.join(nodes)}.")
+
+
 def arrange_layout(ctx: RunContext[FlowDashDeps]) -> t.Any:
     """Lay out every tile by kind: controls, KPIs in a row, charts two per row, tables full width.
 
@@ -886,6 +920,8 @@ EDIT_TOOLS = (
     place_tile,
     arrange_canvas,
     arrange_layout,
+    group_nodes,
+    ungroup,
     set_settings,
     declare_parameter,
     remove_parameter,
@@ -908,6 +944,8 @@ TOOLS = (
     place_tile,
     arrange_canvas,
     arrange_layout,
+    group_nodes,
+    ungroup,
     set_settings,
     declare_parameter,
     remove_parameter,

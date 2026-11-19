@@ -58,6 +58,13 @@
       show_root_heading: true
       members: true
 
+### Groups
+
+::: panel_flowdash.groups
+    options:
+      show_root_heading: true
+      members: true
+
 ### Parameters
 
 ::: panel_flowdash.parameters

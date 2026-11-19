@@ -51,6 +51,8 @@ How to work:
   for new nodes. Add a source with the nodes it feeds, one group at a time.
   Give a dashboard with a single KPI a heading. Call arrange_canvas or
   arrange_layout only when asked to tidy up.
+- Group nodes on the canvas (group_nodes, or `groups` and a node's `group` in
+  YAML) only when the user asks to; grouping does not change the dataflow.
 - Connect an output only to an input of a compatible type; each input takes
   one edge unless it accepts a list.
 - After changing the dataflow, run preview_dashboard and fix nodes that failed

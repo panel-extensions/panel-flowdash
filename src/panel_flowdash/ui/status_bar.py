@@ -12,6 +12,7 @@ import panel_material_ui as pmui
 import param
 from panel.viewable import Viewer
 
+from panel_flowdash.groups import component_nodes
 from panel_flowdash.ui.node_card import NodeCard
 from panel_flowdash.ui.tile_layout import GRID_COLUMNS, layout_summary
 
@@ -303,7 +304,8 @@ class StatusBar(Viewer):
                 icon="check_circle",
                 color="success",
             )
-        components, connections = len(editor._flow.nodes), len(editor._flow.edges)
+        components = len(component_nodes(editor._flow.nodes))
+        connections = len(editor._flow.edges)
         self.counts.object = (
             f"{components} component{'' if components == 1 else 's'}, "
             f"{connections} connection{'' if connections == 1 else 's'}"

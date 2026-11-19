@@ -9,6 +9,7 @@ from collections import defaultdict
 import param
 
 from panel_flowdash.component_spec import ComponentSpec
+from panel_flowdash.groups import GROUP_ID_PATTERN, MAX_LABEL_LENGTH
 from panel_flowdash.parameters import NAME_PATTERN as PARAMETER_NAME, PARAMETER_TYPES
 from panel_flowdash.port_types import ANY, normalize_port_type
 from panel_flowdash.settings import DashboardSettings
@@ -214,6 +215,7 @@ def dashboard_schema(
             "properties": {
                 "component": {"enum": [component_id, *sorted(former[component_id])]},
                 "origin": {"$ref": "#/$defs/turn_id"},
+                "group": {"$ref": "#/$defs/group_id"},
                 "config": config_schema(spec),
                 "position": {"$ref": "#/$defs/position"},
             },
@@ -230,6 +232,7 @@ def dashboard_schema(
             "properties": {
                 "component": {"const": "flowdash:restricted"},
                 "origin": {"$ref": "#/$defs/turn_id"},
+                "group": {"$ref": "#/$defs/group_id"},
                 "position": {"$ref": "#/$defs/position"},
             },
             "patternProperties": _EXTENSIONS,
@@ -257,6 +260,20 @@ def dashboard_schema(
                 "additionalProperties": {"$ref": "#/$defs/parameter"},
             },
             "turns": {"type": "array", "items": {"$ref": "#/$defs/turn"}},
+            "groups": {
+                "type": "object",
+                "description": "Nodes framed together on the canvas, by name; each node names its group.",
+                "propertyNames": {"$ref": "#/$defs/group_id"},
+                "additionalProperties": {
+                    "type": "object",
+                    "patternProperties": _EXTENSIONS,
+                    "additionalProperties": False,
+                    "properties": {
+                        "label": {"type": "string", "maxLength": MAX_LABEL_LENGTH},
+                        "collapsed": {"type": "boolean"},
+                    },
+                },
+            },
             "nodes": {
                 "type": "object",
                 "propertyNames": names,
@@ -303,6 +320,7 @@ def dashboard_schema(
                     "expects": {"type": "object"},
                 },
             },
+            "group_id": {"type": "string", "pattern": GROUP_ID_PATTERN.pattern},
             "turn": {
                 "type": "object",
                 "required": ["id"],

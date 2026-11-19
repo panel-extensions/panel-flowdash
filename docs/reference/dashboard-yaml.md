@@ -89,6 +89,7 @@ layout:
 | `settings` | no | Dashboard-wide settings, keyed by the parameter names of the app's `DashboardSettings` class, e.g. `description`, `refresh_period`, `tile_cards`. |
 | `parameters` | no | The config fields the dashboard can be run with, a mapping from parameter name to parameter. |
 | `turns` | no | Who changed the dashboard and why, a list, oldest first. |
+| `groups` | no | Nodes framed together on the canvas, a mapping from group name to group. |
 | `nodes` | no | The placed components, a mapping from node name to node. |
 | `edges` | no | The connections between ports, a list. |
 | `layout` | no | How the tiles are arranged on the dashboard. |
@@ -200,6 +201,32 @@ changes nothing opens no turn. Importing a file
 dashboard) takes the file's turns and origins as they are, and the import itself is
 a turn of the person who made it, which becomes the origin of nodes the file gives none.
 
+## Groups
+
+A group frames nodes together on the Dataflow canvas, and can be collapsed into one
+node that shows the ports of the connections crossing its border. It changes nothing
+else: the nodes keep their config, connections and tiles. Each node names its group
+with `group`; a node is in at most one group, groups do not nest, and every group
+has at least one node.
+
+```yaml
+groups:
+  revenue: {label: Paid revenue by region, collapsed: true}
+nodes:
+  revenue_sql: {component: Lumen/sql, group: revenue, config: {...}}
+  revenue_chart: {component: Lumen/view, group: revenue, config: {...}}
+```
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `label` | no | Shown in the group's header; the group's name is shown without one. |
+| `collapsed` | no | `true` draws the group as one node. |
+
+Group names follow the rules of node names. Node positions stay positions on the
+canvas, whether or not the node is in a group; the frame fits its nodes. A collapsed
+group shows one input per output outside it that feeds it, connected to every inner
+port that output feeds, and one output per inner output read from outside it.
+
 ## Nodes
 
 A node name is unique within the file, starts with a letter or underscore and
@@ -224,6 +251,7 @@ and the other gets a short hash of its id appended.
 | --- | --- | --- |
 | `component` | yes | The id of a registered component, e.g. `Views/kpi`. A former id the component declares in `aliases` also works. |
 | `origin` | no | The `id` of the turn that created the node. It must name a turn of the file. |
+| `group` | no | The name of the group the node is in. It must name a group of the file. |
 | `config` | no | Design-time configuration, keyed by the component's config fields. Omitted fields take the component's defaults. |
 | `position` | no | `[x, y]` position on the Dataflow canvas. Nodes without one are laid out in columns following the dataflow, beside the nodes that have one; a node already on the canvas keeps its position. |
 
@@ -280,14 +308,14 @@ listed tiles.
 
 ## Earlier versions
 
-Version 3 files start with `flowdash: 3` and may not hold `parameters`. They load
+Version 3 files start with `flowdash: 3` and may not hold `parameters`, `groups` or a node `group`. They load
 unchanged, and exporting them again writes version 4.
 
-Version 2 files start with `flowdash: 2` and may not hold a tile's `framed` or `area`, or
-`parameters`. They load unchanged, and exporting them again writes version 4.
+Version 2 files start with `flowdash: 2` and may not hold a tile's `framed` or `area`,
+`parameters` or groups. They load unchanged, and exporting them again writes version 4.
 
 Version 1 files start with `flowdash: 1` and may not hold `turns`, a node `origin`,
-a tile's `framed` or `area`, or `parameters`. They load as a dashboard without turns whose nodes
+a tile's `framed` or `area`, `parameters` or groups. They load as a dashboard without turns whose nodes
 have no origin, and exporting it again writes version 4.
 
 ## Not in version 4
