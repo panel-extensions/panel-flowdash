@@ -28,8 +28,10 @@ from dataclasses import dataclass
 import pandas as pd
 import panel as pn
 import param
+from panel.viewable import Viewer
 
 from panel_flowdash.port_types import register_port_type
+from panel_flowdash.registry import register
 
 SELECTION_TYPE = register_port_type("Selection")
 
@@ -818,3 +820,65 @@ def _set(ref, name, value):
     owner = ref()
     if owner is not None:
         setattr(owner, name, value)
+
+
+# ---------------------------------------------------------------------------
+# Filtering
+# ---------------------------------------------------------------------------
+
+
+@register(
+    page=False,
+    component=True,
+    title="Filter by selection",
+    icon="filter_alt",
+    description=(
+        "Keeps the rows of a DataFrame that match a chart's selection, wired from the chart's "
+        "selection output: within each brushed range and among the clicked values. An empty "
+        "selection keeps every row. Feed the chart itself the unfiltered data, so it keeps "
+        "showing everything with its selection highlighted."
+    ),
+    tags=["transform"],
+    requires=[
+        {"key": "data", "type": "DataFrame", "required": True},
+        {"key": "selection", "type": SELECTION_TYPE, "required": False, "blocking": False},
+    ],
+    provides=[{"key": "filtered", "type": "DataFrame"}],
+    default_size={"width": 280, "height": 90},
+    min_size={"width": 160, "height": 60},
+)
+class SelectionFilter(Viewer):
+    """The rows of a DataFrame that match a selection."""
+
+    data = param.DataFrame(default=None, allow_None=True, doc="The rows to filter.")
+
+    selection = param.ClassSelector(
+        class_=Selection, default=None, allow_None=True, doc="The selection rows must match."
+    )
+
+    @param.output(param.DataFrame)
+    @param.depends("data", "selection")
+    def filtered(self):
+        """Return the rows of ``data`` matching ``selection``, all of them without one."""
+        if self.data is None or self.selection is None:
+            return self.data
+        return self.selection.filter(self.data)
+
+    def _summary(self):
+        if self.data is None:
+            return "Waiting for data"
+        total = len(self.data)
+        if self.selection is None or self.selection.empty:
+            return f"All {total:,} rows"
+        try:
+            kept = len(self.selection.filter(self.data))
+        except ValueError as exc:
+            return str(exc)
+        return f"{kept:,} of {total:,} rows: {self.selection}"
+
+    def __panel__(self):
+        """Return a line saying how many rows the selection keeps."""
+        from panel_flowdash.ui.text import text_typography
+
+        summary = param.rx(param.bind(lambda data, selection: self._summary(), self.param.data, self.param.selection))
+        return text_typography(summary, sizing_mode="stretch_width", margin=(5, 10))

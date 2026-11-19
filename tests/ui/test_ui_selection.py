@@ -281,3 +281,55 @@ def test_local_time_units_are_cut_in_the_browsers_timezone(browser):
         assert (end.day, end.hour) in ((1, 4), (1, 5)), end
     finally:
         context.close()
+
+
+ROWS = "UITest/SelectionRows"
+
+
+@register(
+    component=True, page=False, title="Rows", provides=[{"key": "data", "type": "DataFrame"}]
+)
+class SelectionRows(Viewer):
+    data = param.DataFrame(default=FRAME)
+
+    def __panel__(self):
+        return pn.pane.Str("rows")
+
+
+def test_brushing_filters_a_kpi_and_clearing_restores_it(page):
+    editor = FlowDash(
+        {CHART: SelectionChart, ROWS: SelectionRows},
+        notifications=False,
+        editable=False,
+    )
+    chart_id = editor.add_component(CHART)
+    rows_id = editor.add_component(ROWS)
+    filter_id = editor.add_component("Data/FilterBySelection")
+    kpi_id = editor.add_component("Widgets/KPI", config={"label": "Revenue"})
+    assert editor.connect(rows_id, "data", filter_id, "data") is True
+    assert editor.connect(chart_id, "selection", filter_id, "selection") is True
+    steps = [{"op": "column", "column": "price"}, {"op": "aggregate", "how": "sum"}]
+    assert editor.connect(filter_id, "filtered", kpi_id, "value", steps) is True
+    kpi = editor._component_instances[kpi_id]
+    chart = editor._component_instances[chart_id]
+    assert kpi.value == FRAME.price.sum()
+
+    page.set_viewport_size({"width": 1400, "height": 900})
+    serve_component(page, editor)
+    canvas = page.locator(".vega-embed canvas, .vega-embed svg").first
+    canvas.wait_for(state="visible", timeout=15000)
+    page.wait_for_timeout(500)
+    plot = canvas.bounding_box()
+
+    left, y = _drag(page, plot, 0.05, 0.45)
+    wait_until(lambda: not chart.selection.empty, page, timeout=8000)
+    selected = FRAME[FRAME.category.isin(chart.selection.predicates[0].values)]
+    assert 0 < len(selected) < len(FRAME)
+    wait_until(lambda: kpi.value == selected.price.sum(), page, timeout=8000)
+    page.get_by_text(f"{int(selected.price.sum()):,}").first.wait_for(timeout=8000)
+    page.get_by_text(f"{len(selected)} of {len(FRAME)} rows").wait_for(timeout=8000)
+    assert len(chart.pane.object["data"]["values"]) == len(FRAME)
+
+    page.mouse.click(left + 300 * 0.9, y)
+    wait_until(lambda: kpi.value == FRAME.price.sum(), page, timeout=8000)
+    page.get_by_text(f"All {len(FRAME)} rows").wait_for(timeout=8000)
