@@ -252,8 +252,8 @@ class TestText:
 
     def test_invalid_text_says_where(self):
         with pytest.raises(SpecTextError) as info:
-            parse_spec('{\n  "a": 1,\n}')
-        assert (info.value.line, info.value.column) == (3, 1)
+            parse_spec('{\n  "a": 1\n  "b": 2\n}')
+        assert (info.value.line, info.value.column) == (3, 3)
         with pytest.raises(SpecTextError, match="JSON object"):
             parse_spec("[1]")
         assert parse_spec("  ") == {}
