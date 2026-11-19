@@ -17,7 +17,7 @@ dynamic = ["version"]
 description = 'Extends Panel with a dataflow and draggable grid based dashboard editor.'
 readme = "README.md"
 license = { text = "BSD" }
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 authors = [{ name = "Philipp Rudiger", email = "philipp.jfr@gmail.com" }]
 maintainers = [
     { name = "Philipp Rudiger", email = "philipp.jfr@gmail.com" },
@@ -26,7 +26,6 @@ classifiers = [
     "License :: OSI Approved :: BSD License",
     "Development Status :: 5 - Production/Stable",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
@@ -39,11 +38,16 @@ classifiers = [
 ]
 
 dependencies = [
+    # Built-in text components render Markdown with it.
+    "markdown-it-py",
+    # Selections compare and convert bounds with it.
+    "numpy",
     "packaging",
     # Imported directly, as panel stops depending on it in 1.11; the
     # copy_on_write option read by transforms arrived in 1.5.
     "pandas >=1.5",
-    "panel >=1.9.3",
+    # panel-material-ui 0.17 needs Panel 1.11, as 1.10 pins it below 0.17.
+    "panel >=1.11.0rc0",
     # RunState undo and redo and drop_artifact_versions, which the edit history builds on;
     # 0.1.0b8 shows a version's metadata["detail"] as the history row's tooltip; 0.1.0b9 has SpanView.
     "panel-agents >=0.1.0b9",
@@ -154,7 +158,7 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 
 [tool.mypy]
-python_version = '3.11'
+python_version = '3.12'
 no_implicit_optional = true
 check_untyped_defs = true
 

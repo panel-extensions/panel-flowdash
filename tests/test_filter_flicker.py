@@ -2,12 +2,11 @@
 
 import importlib.util
 import sys
-import threading
 from pathlib import Path
 
 import pytest
 from bokeh.document import Document
-from panel.io.state import set_curdoc, state
+from panel.io.state import set_curdoc
 
 from panel_flowdash import FlowDash, MemoryDashboardStore
 
@@ -48,11 +47,6 @@ def render(editor, dashboard_id):
     """Render the tiles of *dashboard_id* into a document and collect the changes it receives."""
     editor.load(dashboard_id)
     doc = Document()
-    # Mark the document as loaded by a client on this thread, as in a served
-    # session. Panel 1.9 otherwise drops, or defers to a tick that never runs,
-    # the changes a hold collected.
-    state._thread_id_[doc] = threading.get_ident()
-    state._connected[doc] = True
     for view in editor._tile_objects:
         doc.add_root(view.get_root(doc))
     events = []

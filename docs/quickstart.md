@@ -9,6 +9,8 @@ dashboard. By the end of this page you will have a working dataflow app.
 pip install panel-flowdash
 ```
 
+panel-flowdash needs Python 3.12 or newer and Panel 1.11 or newer.
+
 ## Create a project
 
 FlowDash expects a directory with section folders containing Python modules.

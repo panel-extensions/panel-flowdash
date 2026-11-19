@@ -324,9 +324,6 @@ class TestBuiltinWidgets:
         editor.graph.get_config_state(instance_id).min_widget_width = 320
         assert widget.min_width == 320 - margins
 
-    # panel-reactflow's form passes both `name` and `label` to its widgets, which
-    # Panel 1.9 warns about; warnings-as-errors would force the JSON fallback.
-    @pytest.mark.filterwarnings("ignore:Both 'name' and 'label':PendingDeprecationWarning")
     @pytest.mark.parametrize(
         "component_id", [c for c in BUILTIN_COMPONENTS if c not in BUILTIN_TRANSFORMS]
     )

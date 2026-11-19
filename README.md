@@ -23,6 +23,8 @@ A dataflow-driven dashboard builder for [Panel](https://panel.holoviz.org). Defi
 pip install panel-flowdash
 ```
 
+panel-flowdash needs Python 3.12 or newer and Panel 1.11 or newer.
+
 ## Quickstart
 
 Create a project directory with component modules:

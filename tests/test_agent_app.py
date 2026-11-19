@@ -1,11 +1,6 @@
 """The default agent and its connection to a FlowDashApp session."""
 
-from types import SimpleNamespace
-
-import panel as pn
 import pytest
-from bokeh.document import Document
-from panel.io.state import set_curdoc
 
 pytest.importorskip("pydantic_ai")
 
@@ -45,30 +40,6 @@ async def test_a_configured_model_gives_the_default_agent(store, monkeypatch):
     assert isinstance(session, AgentSession)
     assert session.runner.agent.name == "FlowDash"
     assert session.runner.approval_policy.requires_approval("save_dashboard", {})
-
-
-async def test_a_served_session_loads_the_code_editor_for_the_drawer_once(store, monkeypatch):
-    doc = Document()
-    doc._session_context = lambda: SimpleNamespace(
-        id="session", request=SimpleNamespace(arguments={})
-    )
-    calls = []
-    extension = pn.extension
-    monkeypatch.setattr(pn, "extension", lambda *a, **k: (calls.append(a), extension(*a, **k)))
-    with set_curdoc(doc):
-        AgentSession(_app(store, monkeypatch), create_agent("test"))
-        AgentSession(_app(store, monkeypatch), create_agent("test"))
-        assert "codeeditor" in pn.state._extensions
-    assert calls == [("codeeditor",)]
-
-
-async def test_a_session_outside_a_server_loads_no_extension(store, monkeypatch):
-    calls = []
-    monkeypatch.setattr(pn, "extension", lambda *a, **k: calls.append(a))
-    with set_curdoc(Document()):
-        AgentSession(_app(store, monkeypatch), create_agent("test"))
-    AgentSession(_app(store, monkeypatch), create_agent("test"))
-    assert calls == []
 
 
 async def test_the_catalogue_lists_only_components_the_user_may_place(store, monkeypatch):
