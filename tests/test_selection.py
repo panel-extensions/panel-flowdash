@@ -589,3 +589,76 @@ def test_link_selection_takes_an_explicit_source():
 
 def test_current_node_id_outside_creation_is_none():
     assert current_node_id() is None
+
+
+def test_selection_dict_is_json_safe():
+    import json
+
+    import numpy as np
+
+    selection = Selection(
+        (
+            Predicate(
+                "date",
+                "range",
+                (dt.datetime(2025, 2, 1), pd.Timestamp("2025-05-01")),
+                closed="left",
+            ),
+            Predicate("day", "in", (dt.date(2025, 1, 1),)),
+            Predicate("price", "range", (np.float64(1.5), np.int64(3))),
+        ),
+        source="chart",
+    )
+    restored = Selection.from_dict(json.loads(json.dumps(selection.to_dict())))
+    assert restored == selection
+    assert restored.predicates[0].values == (dt.datetime(2025, 2, 1), dt.datetime(2025, 5, 1))
+    assert restored.predicates[1].values == (dt.date(2025, 1, 1),)
+
+
+class _Overlay:
+    def __init__(self, *layers):
+        self._layers = layers
+
+    def values(self):
+        return list(self._layers)
+
+
+def test_holoviews_overlay_uses_its_layer_when_the_layers_agree():
+    points = _Element(FRAME, ["price", "date"], ["category"])
+    overlay = type("Overlay", (_Overlay,), {})(points, points)
+    selection = from_holoviews(_stream("BoundsXY", bounds=(1, 2, 3, 4)), overlay)
+    assert selection.fields == ["price", "date"]
+
+
+def test_holoviews_overlay_of_different_layers_is_unsupported():
+    overlay = type("Overlay", (_Overlay,), {})(
+        _Element(FRAME, ["price", "date"], []), _Element(FRAME, ["category"], ["price"])
+    )
+    selection = from_holoviews(_stream("BoundsXY", bounds=(1, 2, 3, 4)), overlay)
+    with pytest.raises(ValueError, match="pass that layer as the element"):
+        selection.check_filterable()
+
+
+def test_holoviews_bounds_y_across_bar_heights_is_unsupported():
+    frame = pd.DataFrame({"x": [1.0, 2.0], "count": [3, 4]})
+    bars = type("Bars", (_Element,), {})(frame, ["x"], ["count"])
+    selection = from_holoviews(_stream("BoundsY", boundsy=(0, 3)), bars)
+    with pytest.raises(ValueError, match="heights"):
+        selection.check_filterable()
+
+
+def test_holoviews_box_on_a_histogram_keeps_only_its_x_range():
+    frame = pd.DataFrame({"x": [1.0, 2.0], "count": [3, 4]})
+    histogram = type("Histogram", (_Element,), {})(frame, ["x"], ["count"])
+    selection = from_holoviews(_stream("BoundsXY", bounds=(1, 0, 2, 3)), histogram)
+    assert selection.predicates == (Predicate("x", "range", (1, 2)),)
+
+
+def test_holoviews_overlay_stream():
+    hv = pytest.importorskip("holoviews")
+    points = hv.Points(FRAME, ["price", "date"], ["category"])
+    overlay = points * points
+    bounds = hv.streams.BoundsXY(source=overlay)
+    link = SelectionLink().link_stream(bounds, overlay)
+    bounds.event(bounds=(10, 0, 30, 1))
+    assert link.value.fields == ["price", "date"]

@@ -47,6 +47,32 @@ COALESCE = 10
 COALESCE_MAX = 200
 
 
+def _temporal_kind(value: t.Any) -> str | None:
+    if isinstance(value, (dt.datetime, pd.Timestamp)):
+        return "datetime"
+    if isinstance(value, dt.date):
+        return "date"
+    return None
+
+
+def _as_datetime(value: t.Any) -> t.Any:
+    return value.to_pydatetime() if isinstance(value, pd.Timestamp) else value
+
+
+def _plain(value: t.Any) -> t.Any:
+    """Return a numpy scalar as the Python value JSON can hold."""
+    item = getattr(value, "item", None)
+    return item() if callable(item) and getattr(value, "ndim", None) == 0 else value
+
+
+def _parse_temporal(value: t.Any, kind: str | None) -> t.Any:
+    if kind == "datetime" and isinstance(value, str):
+        return dt.datetime.fromisoformat(value)
+    if kind == "date" and isinstance(value, str):
+        return dt.date.fromisoformat(value)
+    return value
+
+
 @dataclass(frozen=True)
 class Predicate:
     """Rows whose ``field`` lies in a range or is one of a set of values.
@@ -88,18 +114,29 @@ class Predicate:
         return keep
 
     def to_dict(self) -> dict[str, t.Any]:
-        """Return the predicate as a dict of its fields."""
-        return {
-            "field": self.field,
-            "op": self.op,
-            "values": list(self.values),
-            "closed": self.closed,
-        }
+        """Return the predicate as a dict JSON can hold.
+
+        Dates and datetimes are written in ISO format, and ``types`` names
+        the kind of each value that was one, e.g. ``[None, "datetime"]``.
+        """
+        values, types = [], []
+        for value in self.values:
+            kind = _temporal_kind(value)
+            types.append(kind)
+            values.append(_plain(value) if kind is None else _as_datetime(value).isoformat())
+        data = {"field": self.field, "op": self.op, "values": values, "closed": self.closed}
+        if any(types):
+            data["types"] = types
+        return data
 
     @classmethod
     def from_dict(cls, data: t.Mapping[str, t.Any]) -> Predicate:
         """Return the predicate :meth:`to_dict` described."""
-        return cls(data["field"], data["op"], tuple(data["values"]), data.get("closed", "both"))
+        types = data.get("types") or [None] * len(data["values"])
+        values = tuple(
+            _parse_temporal(value, kind) for value, kind in zip(data["values"], types, strict=True)
+        )
+        return cls(data["field"], data["op"], values, data.get("closed", "both"))
 
     def __str__(self) -> str:
         """Describe the predicate, e.g. ``category in [A, B]`` or ``10 <= price < 20``."""
@@ -485,10 +522,29 @@ def from_vega(
 
 
 def _element(element):
-    """Return the element a DynamicMap shows last, or *element* itself."""
+    """Return the element a selection is made on, or why it cannot be told.
+
+    A DynamicMap gives the element it shows last. An Overlay gives its only
+    layer, or its first when every layer has the same dimensions; layers that
+    differ are ambiguous and give a reason instead.
+    """
     if type(element).__name__ == "DynamicMap":
-        return element.last
+        element = element.last
+    if type(element).__name__ in ("Overlay", "NdOverlay"):
+        layers = list(element.values())
+        if not layers:
+            return "The overlay has no layers to read the selection from."
+        if len({tuple(_dims(layer)) for layer in layers}) > 1:
+            return (
+                "The overlay's layers have different dimensions, so it is unclear which one the "
+                "selection is made on; pass that layer as the element."
+            )
+        element = layers[0]
     return element
+
+
+# Elements whose y axis shows a measure per group, e.g. the height of a bar, not row values.
+_AGGREGATING_ELEMENTS = ("Bars", "Histogram")
 
 
 def _dims(element) -> list[str]:
@@ -518,10 +574,15 @@ def from_holoviews(stream, element=None, *, key: str | None = None, source: str 
     categorical and its values are unique, such as the categories of
     ``Bars``, and the rows' positions otherwise, which filters refuse. A
     ``Lasso`` stream's polygon cannot be a filter and is unsupported. For a
-    ``DynamicMap``, the element it shows last is used.
+    ``DynamicMap``, the element it shows last is used, and for an
+    ``Overlay`` its layer, if the layers agree on their dimensions. On
+    ``Bars`` and ``Histogram`` the y axis is a measure per group, so a
+    ``BoundsXY`` box keeps only its x range and ``BoundsY`` is unsupported.
     """
     name = type(stream).__name__
     element = _element(element)
+    if isinstance(element, str):
+        return Selection(source=source, unsupported=element)
     if name == "Lasso":
         return Selection(
             source=source,
@@ -543,9 +604,21 @@ def from_holoviews(stream, element=None, *, key: str | None = None, source: str 
         if bounds is None:
             return Selection(source=source)
         dims = _dims(element)
+        aggregating = type(element).__name__ in _AGGREGATING_ELEMENTS
+        if name == "BoundsY" and aggregating:
+            return Selection(
+                source=source,
+                unsupported=(
+                    f"A box across the {type(element).__name__} heights selects a range of "
+                    f"{dims[1]!r} per group, not of the rows' values, so it cannot filter them. "
+                    "Select along the x axis instead."
+                ),
+            )
         if name == "BoundsXY":
             x0, y0, x1, y1 = bounds
-            pairs = [(dims[0], x0, x1), (dims[1], y0, y1)]
+            pairs = [(dims[0], x0, x1)]
+            if not aggregating:
+                pairs.append((dims[1], y0, y1))
         else:
             pairs = [(dims[0] if name == "BoundsX" else dims[1], *bounds)]
         frame = element.dframe()
@@ -880,5 +953,9 @@ class SelectionFilter(Viewer):
         """Return a line saying how many rows the selection keeps."""
         from panel_flowdash.ui.text import text_typography
 
-        summary = param.rx(param.bind(lambda data, selection: self._summary(), self.param.data, self.param.selection))
+        summary = param.rx(
+            param.bind(
+                lambda data, selection: self._summary(), self.param.data, self.param.selection
+            )
+        )
         return text_typography(summary, sizing_mode="stretch_width", margin=(5, 10))

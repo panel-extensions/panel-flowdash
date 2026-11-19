@@ -62,7 +62,7 @@ def test_selection_keeps_the_matching_rows():
         (Predicate("category", "in", ("A",)), Predicate("price", "range", (0, 30)))
     )
     assert filtered(ops).price.tolist() == [5.0]
-    assert node(ops, "brushed")._summary() == "1 of 4 rows: category in [A]; price in [0, 30]"
+    assert node(ops, "brushed")._summary() == "1 of 4 rows: category in [A]; 0 <= price <= 30"
 
     node(ops, "chart").selection = Selection(source="chart")
     pd.testing.assert_frame_equal(filtered(ops), FRAME)
