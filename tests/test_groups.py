@@ -501,3 +501,48 @@ def test_the_schema_accepts_groups(editor):
     doc["groups"]["picks"]["size"] = 3
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(doc, schema)
+
+
+AREAS_DOC = DOC.replace(
+    "edges:",
+    """layout:
+  tiles:
+    - {node: data, area: top}
+    - {node: first, area: sidebar}
+    - {node: second}
+    - {node: out}
+edges:""",
+)
+
+
+class TestTileAreas:
+    def test_a_version_4_file_keeps_groups_and_tile_areas(self):
+        data = dashboard_from_yaml(AREAS_DOC)
+        assert data["groups"][0]["nodes"] == ["first", "second"]
+        areas = {e["instance_id"]: e.get("area") for e in data["tile_layout"]}
+        assert areas == {"data": "top", "first": "sidebar", "second": None, "out": None}
+
+    def test_grouping_and_collapsing_never_move_tiles(self):
+        editor = _editor()
+        try:
+            editor.new_dashboard("Picks")
+            editor.import_dashboard(AREAS_DOC)
+
+            def tiles():
+                model = editor.to_model()
+                return model.tile_layout, model.responsive_layouts
+
+            before = tiles()
+            editor.expand_group("picks")
+            editor.collapse_group("picks")
+            editor.ungroup("picks")
+            editor.group_nodes(["data", "first", "out"], "Mixed")
+            editor.collapse_group("Mixed")
+            editor.arrange_canvas()
+            assert tiles() == before
+            areas = {
+                e["node"]: e.get("area") for e in dashboard_to_dict(editor)["layout"]["tiles"]
+            }
+            assert areas["data"] == "top" and areas["first"] == "sidebar"
+        finally:
+            editor.dispose()
