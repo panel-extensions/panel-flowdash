@@ -40,16 +40,17 @@ FORMAT_PRESETS = {
 }
 _CUSTOM = "custom"
 
-#: The theme colors a threshold offers, by label; "danger" is an alias of "error".
+#: The theme colors a threshold offers, by label.
 THEME_COLORS = {
     "Primary": "primary",
     "Secondary": "secondary",
     "Success": "success",
     "Warning": "warning",
     "Error": "error",
-    "Danger": "danger",
     "Info": "info",
 }
+# Theme color names the KPI reads as another one; a stored alias is shown as that one.
+_ALIASES = {"danger": "error"}
 _CUSTOM_LABEL = "Custom"
 _HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
 # The colors "Add threshold" cycles through.
@@ -90,7 +91,7 @@ def color_problem(color: t.Any) -> str | None:
     """Return why *color* is no threshold color, or None if the KPI can show it."""
     if isinstance(color, str):
         name = color.strip()
-        if name.lower() in THEME_COLORS.values() or _CSS_COLOR.match(name):
+        if name.lower() in {*THEME_COLORS.values(), *_ALIASES} or _CSS_COLOR.match(name):
             return None
     return (
         f"{color!r} is not a color; use a theme color (primary, secondary, success, "
@@ -189,7 +190,7 @@ class FormatInput(CompositeWidget):
         )
         self._composite[:] = [self._preset, self._custom, self._note]
         # Lined up with the right edge of the text fields of the form.
-        self._composite.margin = (5, 22, 5, 10)
+        self._composite.margin = (5, 17, 5, 10)
         self._show()
 
     def _show(self):
@@ -305,12 +306,51 @@ class ThresholdsInput(CompositeWidget):
         entries = self._entries()
         self._rows = [
             self._row(index, pair[0], pair[1])
-            for index, pair in enumerate(entries)
             if self._readable(pair)
+            else self._unreadable(index, pair)
+            for index, pair in enumerate(entries)
         ]
         self._hint.visible = bool(self._rows)
         cells = [cell for row in self._rows for cell in row]
         self._composite[:] = [self._label, *cells, self._add, self._hint]
+
+    def _remove_button(self, index: int) -> pmui.IconButton:
+        remove = pmui.IconButton(
+            icon="close",
+            description="Remove this threshold",
+            size="small",
+            margin=0,
+            align="center",
+            css_classes=["fd-threshold-remove"],
+        )
+
+        def removed(_event):
+            entries = self._entries()
+            if index < len(entries):
+                del entries[index]
+                self.value = entries
+
+        remove.on_click(removed)
+        return remove
+
+    def _unreadable(self, index: int, entry: t.Any) -> tuple[pn.Row]:
+        """Show a stored entry that is no ``[limit, color]`` pair, so it can be removed."""
+        note = pmui.Typography(
+            f"Can't read {entry!r}; the KPI ignores it.",
+            variant="caption",
+            sx=_LABEL_SX,
+            margin=(0, 8, 0, 0),
+            sizing_mode="stretch_width",
+        )
+        return (
+            pn.Row(
+                note,
+                self._remove_button(index),
+                margin=(0, 0, 8, 0),
+                sizing_mode="stretch_width",
+                css_classes=["fd-threshold-row", "fd-threshold-unreadable"],
+            ),
+        )
 
     def _set(self, index: int, pair: list):
         entries = self._entries()
@@ -327,12 +367,20 @@ class ThresholdsInput(CompositeWidget):
         number = pmui.FloatInput(
             label="Up to",
             value=float(limit),
+            # Whole numbers without decimals, e.g. 90 rather than 90.0.
+            format="0[.][00000]",
             width=120,
             margin=(0, 8, 0, 0),
             css_classes=["fd-threshold-limit"],
         )
         options = dict(THEME_COLORS)
-        if color not in options.values():
+        alias = _ALIASES.get(color) if isinstance(color, str) else None
+        if alias is not None:
+            # Shown as the color it names, and stored as it is until changed.
+            options = {
+                label: color if value == alias else value for label, value in options.items()
+            }
+        elif color not in options.values():
             # A color the dropdown does not offer stays as it is until changed.
             options = {str(color): color, **options}
         options[_CUSTOM_LABEL] = _CUSTOM
@@ -352,14 +400,7 @@ class ThresholdsInput(CompositeWidget):
             visible=False,
             css_classes=["fd-threshold-picker"],
         )
-        remove = pmui.IconButton(
-            icon="close",
-            description="Remove this threshold",
-            size="small",
-            margin=0,
-            align="center",
-            css_classes=["fd-threshold-remove"],
-        )
+        remove = self._remove_button(index)
         current = {"color": color}
 
         def limit_changed(event):
@@ -377,16 +418,9 @@ class ThresholdsInput(CompositeWidget):
             current["color"] = event.new
             self._set(index, [_number(number.value), event.new])
 
-        def removed(_event):
-            entries = self._entries()
-            if index < len(entries):
-                del entries[index]
-                self.value = entries
-
         number.param.watch(limit_changed, "value")
         select.param.watch(color_picked, "value")
         picker.param.watch(custom_picked, "value")
-        remove.on_click(removed)
         return (
             pn.Row(
                 number,

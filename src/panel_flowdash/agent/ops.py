@@ -23,6 +23,7 @@ from panel_flowdash.config_check import (
     check_node,
     check_node_sync,
     effective_config,
+    node_config,
     node_inputs,
     recheck_node,
     run_check,
@@ -620,16 +621,16 @@ class DashboardOps:
             for i in issues
         ]
         if checks:
-            for path, spec, config, inputs in self._doc_checks(doc, issues, standalone):
+            for path, spec, config, inputs, stored in self._doc_checks(doc, issues, standalone):
                 problems = run_check_sync(
-                    spec, config, inputs, editor=editor, timeout=self.check_timeout
+                    spec, config, inputs, editor=editor, timeout=self.check_timeout, stored=stored
                 )
                 issues += _check_issues(path, problems)
         return issues
 
     def _doc_checks(
         self, doc: dict, issues: list[Issue], standalone: bool
-    ) -> list[tuple[str, t.Any, dict, dict]]:
+    ) -> list[tuple[str, t.Any, dict, dict, dict | None]]:
         """Return what to check for each node of *doc* whose component has a config check.
 
         A node that already has an error is left out. A node gets the live
@@ -649,17 +650,19 @@ class DashboardOps:
             spec = specs.get(editor._resolve_component_id(str(node.get("component"))))
             if spec is None or spec.check_config is None:
                 continue
-            inputs = {}
+            inputs, stored = {}, None
             item = live.get(ids.get(name, ""))
-            if (
+            same = (
                 item is not None
                 and "placeholder" not in item
                 and editor._resolve_component_id(item["component_id"]) == spec.component_id
-                and _incoming(doc.get("edges"), name) == _incoming(canvas_edges, name)
-            ):
+            )
+            if same:
+                stored = node_config(editor, item["instance_id"], spec)
+            if same and _incoming(doc.get("edges"), name) == _incoming(canvas_edges, name):
                 inputs = node_inputs(editor, item["instance_id"], spec)
             config = effective_config(spec, node.get("config"))
-            checks.append((f"nodes.{name}.config", spec, config, inputs))
+            checks.append((f"nodes.{name}.config", spec, config, inputs, stored))
         return checks
 
     def _canvas_issues(self, problems: dict[str, CheckResult]) -> list[Issue]:

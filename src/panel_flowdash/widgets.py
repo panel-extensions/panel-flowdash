@@ -11,6 +11,7 @@ import panel_material_ui as pmui
 import param
 from panel.viewable import Viewer
 
+from panel_flowdash.config_check import CheckWarning, stored_config
 from panel_flowdash.registry import register
 from panel_flowdash.selection import SelectionFilter
 from panel_flowdash.text_components import TEXT_COMPONENTS
@@ -996,10 +997,25 @@ _KPI_CSS = """
 
 
 def check_kpi(config, inputs):
-    """Refuse a format or thresholds the KPI cannot use, as its inspector fields do."""
-    problems = thresholds_problems(config.get("thresholds") or [])
+    """Refuse a format or thresholds the KPI cannot use, as its inspector fields do.
+
+    A value the dashboard already holds only warns, so a KPI saved with one
+    stays editable and loads and saves it unchanged; a change that brings in
+    a new one is refused.
+    """
+    stored = stored_config() or {}
+    problems = []
     if (problem := format_problem(config.get("format") or "")) is not None:
-        problems.insert(0, problem)
+        new = (config.get("format") or "") != (stored.get("format") or "")
+        problems.append(problem if new else CheckWarning(problem))
+    thresholds = config.get("thresholds") or []
+    kept = stored.get("thresholds") or []
+    if not isinstance(thresholds, (list, tuple)):
+        return [*problems, *thresholds_problems(thresholds)]
+    for index, pair in enumerate(thresholds, start=1):
+        for problem in thresholds_problems([pair]):
+            problem = problem.replace("Threshold 1", f"Threshold {index}", 1)
+            problems.append(CheckWarning(problem) if pair in kept else problem)
     return problems
 
 

@@ -107,12 +107,30 @@ class TestThresholds:
         assert kpi.thresholds[1] == [85, "rgb(0, 128, 0)"]
         assert kpi.thresholds[0] == [50, "red"]
 
-    def test_pairs_it_cannot_read_are_kept(self):
+    def test_pairs_it_cannot_read_are_kept_and_can_be_removed(self):
         kpi = KPI(thresholds=[[50, "error"], [2], "junk", [80, "success"]])
         _, editor = _widgets(kpi)
-        assert len(editor._rows) == 2
-        editor._rows[1][0][0].value = 90.0
+        assert len(editor._rows) == 4
+        (unreadable,) = editor._rows[1]
+        assert unreadable[0].object == "Can't read [2]; the KPI ignores it."
+        editor._rows[3][0][0].value = 90.0
         assert kpi.thresholds == [[50, "error"], [2], "junk", [90, "success"]]
+        unreadable[1].clicks += 1
+        assert kpi.thresholds == [[50, "error"], "junk", [90, "success"]]
+
+    def test_danger_shows_as_error_and_stays_stored(self):
+        kpi = KPI(thresholds=[[50, "danger"]])
+        _, editor = _widgets(kpi)
+        (limit, color, _), _picker = editor._rows[0]
+        assert color.value == "danger"
+        assert {v: k for k, v in color.options.items()}["danger"] == "Error"
+        assert "Danger" not in color.options
+        limit.value = 60.0
+        assert kpi.thresholds == [[60, "danger"]]
+
+    def test_whole_limits_show_without_decimals(self):
+        _, editor = _widgets(KPI(thresholds=[[90, "error"]]))
+        assert editor._rows[0][0][0].format == "0[.][00000]"
 
     def test_a_value_set_elsewhere_redraws_the_rows(self):
         kpi = KPI()
@@ -141,6 +159,29 @@ class TestCheck:
             "Threshold 4 has no number as its limit: 'a'.",
         ]
         assert check_kpi({"format": ",d", "thresholds": [[1, "red"], [2, "danger"]]}, {}) == []
+
+    def test_a_kpi_saved_with_unreadable_values_stays_editable(self):
+        from panel_flowdash.agent import DashboardOps
+        from panel_flowdash.dashboard_store import DashboardItem, DashboardModel
+
+        model = DashboardModel("d", "local", "Old")
+        model.items = [
+            DashboardItem(
+                "kpi",
+                "Widgets/KPI",
+                config={"format": "garbage", "thresholds": [[50, "error"], [2]]},
+            )
+        ]
+        editor = FlowDash(notifications=False)
+        editor.load_model(model)
+        ops = DashboardOps(editor)
+        config = ops.set_config(ops._names()["kpi"], {"label": "Revenue"})
+        assert config["label"] == "Revenue"
+        assert config["format"] == "garbage" and config["thresholds"] == [[50, "error"], [2]]
+        assert any("not a number format" in w for w in ops.last_check.warnings)
+        saved = editor.to_model().items[0].config
+        assert saved["format"] == "garbage" and saved["thresholds"] == [[50, "error"], [2]]
+        editor.dispose()
 
     def test_the_agent_is_refused_too(self):
         from panel_flowdash.agent import DashboardOps, OperationError
