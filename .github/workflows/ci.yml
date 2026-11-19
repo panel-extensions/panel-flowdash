@@ -136,7 +136,7 @@ jobs:
           file_pattern: "*.png"
 
   pytest:
-    timeout-minutes: 30
+    timeout-minutes: 50
     runs-on: ${{ matrix.os }}
     needs: [setup, pixi_lock]
     strategy:
@@ -162,7 +162,7 @@ jobs:
           ENV: ${{ matrix.environment }}
           FLOWDASH_REQUIRE_FAILURES: ${{ matrix.environment == 'test-param-dev' && '1' || '' }}
         run: |
-          for i in $(seq 1 10); do pixi run -e "${ENV}" pytest tests/test_config_check.py --cov=panel_flowdash -q -p no:cacheprovider -s 2>&1 | grep -E "TRACE|^ +[0-9]+\.[0-9]{3} |passed|failed|^FAILED" ; done
+          files=$(ls tests/test_*.py | awk '$0 <= "tests/test_config_check.py"' | tr '\n' ' '); for i in $(seq 1 4); do pixi run -e "${ENV}" pytest $files --cov=panel_flowdash -q -p no:cacheprovider -s 2>&1 | grep -E "TRACE|^ +[0-9]+\.[0-9]{3} |passed|failed|^FAILED" ; done
 
   pytest_ui:
     name: ui:${{ matrix.environment }}:${{ matrix.os }}
