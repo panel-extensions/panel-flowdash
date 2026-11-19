@@ -1,6 +1,7 @@
 """UI tests of "How was this made?": a node the agent added shows the request that made it."""
 
 import re
+import sys
 
 import pytest
 from panel.tests.util import wait_until
@@ -24,6 +25,25 @@ from .util import serve_component
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
 
+def _report(apps):
+    """Print what the agent session did, for a run that never answered."""
+    import threading
+    import traceback
+
+    for app in apps:
+        session = app._agent_session
+        runner = session.runner if session is not None else None
+        print("session", session, "running", getattr(runner, "running", None))
+        if runner is not None:
+            for event in runner.state.events[-15:]:
+                print("event", type(event).__name__, getattr(event, "run_id", None))
+            print("task", getattr(runner, "_task", None))
+    for thread in threading.enumerate():
+        print("thread", thread.name)
+    for tid, frame in sys._current_frames().items():
+        print("stack", tid, "".join(traceback.format_stack(frame)[-6:]))
+
+
 def _ask_for_a_note(page):
     store, (dash,) = _store_with("Plant")
     agent = Agent(
@@ -38,7 +58,13 @@ def _ask_for_a_note(page):
     chat = page.get_by_placeholder(re.compile("^Ask the agent"))
     chat.fill("Add another note")
     chat.press("Enter")
-    page.get_by_text(re.compile(r"Done: Added node 'note_[0-9a-f]{6}'\.")).wait_for(timeout=20000)
+    try:
+        page.get_by_text(re.compile(r"Done: Added node 'note_[0-9a-f]{6}'\.")).wait_for(
+            timeout=20000
+        )
+    except Exception:
+        _report(apps)
+        raise
     editor = apps[0]._editor
     wait_until(lambda: len(editor._tile_items) == 2, page, timeout=20000)
     added = next(
