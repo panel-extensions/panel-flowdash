@@ -1,6 +1,7 @@
 """Literal values for unconnected inputs: engine, editor, file formats, agent and inspector."""
 
 import dataclasses
+import time
 
 import panel_material_ui as pmui
 import param
@@ -22,7 +23,12 @@ from panel_flowdash.agent.validation import validate_dashboard
 from panel_flowdash.agent.yaml_format import dashboard_from_yaml, dashboard_to_yaml
 from panel_flowdash.dashboard_store import DashboardItem, DashboardModel
 from panel_flowdash.editor import export_model
-from panel_flowdash.input_literals import check_literal, literal_parameter, takes_literal
+from panel_flowdash.input_literals import (
+    check_literal,
+    explain,
+    literal_parameter,
+    takes_literal,
+)
 from panel_flowdash.ui.choice_widgets import ChoiceSelect
 from panel_flowdash.ui.input_editor import LiteralEditor
 from panel_flowdash.ui.status_bar import select_on_canvas
@@ -160,7 +166,7 @@ class TestLiteralTypes:
         assert check_literal(ports["value"], 50) is None
         assert "at most 100" in check_literal(ports["value"], 500)
         assert check_literal(ports["span"], [2, 3]) is None
-        assert "Number parameter" in check_literal(InputPort("v", type="number"), "x")
+        assert check_literal(InputPort("v", type="number"), "x") == "Needs a number."
         assert "cannot hold a value" in check_literal(InputPort("v", type="DataFrame"), 1)
         assert "not object" in check_literal(InputPort("v"), object())
         assert "takes a list" in check_literal(InputPort("v", type="tuple"), 3)
@@ -220,7 +226,7 @@ class TestEngine:
     def test_a_refused_literal_changes_nothing(self):
         with pytest.raises(ValueError, match="has no input"):
             self.graph.set_literal("b", "nope", 1)
-        with pytest.raises(ValueError, match="Integer"):
+        with pytest.raises(ValueError, match="Needs a whole number"):
             self.graph.set_literal("b", "value", "x")
         assert self.graph.literals("b") == {}
         assert self.dst.value == 1
@@ -351,7 +357,7 @@ class TestDeclaredInputs:
         years = editor.add_component("D/years", instance_id="years")
         port = next(p for p in editor.component_specs["D/years"].inputs if p.name == "span")
         assert port.parameter is Years.param.span
-        with pytest.raises(ValueError, match="Range"):
+        with pytest.raises(ValueError, match=r"Needs two numbers, like \(2010, 2020\)\."):
             editor.set_input_value(years, "span", [2015, 2010, 3])
         editor.set_input_value(years, "span", [2010, 2015])
         assert editor._component_instances[years].span == (2010, 2015)
@@ -362,6 +368,41 @@ class TestDeclaredInputs:
         literal = _literal_editor(inspector, "span")
         assert literal._holder.value == (2000, 2020)
         assert isinstance(literal._parameter, param.Range)
+
+
+class TestExplain:
+    @pytest.mark.parametrize(
+        ("parameter", "value", "words"),
+        [
+            (param.Range(bounds=(0, 100)), (1, 2, 3), "Needs two numbers, like (2010, 2020)."),
+            (
+                param.Range(bounds=(0, 100)),
+                (1, 200),
+                "The upper end must be between 0 and 100, not 200.",
+            ),
+            (param.Integer(bounds=(0, 5)), 9, "Must be at most 5, not 9."),
+            (param.Integer(), 2.5, "Needs a whole number."),
+            (param.Number(), "x", "Needs a number."),
+            (param.Boolean(), "x", "Needs true or false."),
+            (param.Tuple(default=(1, 2, 3)), (1,), "Needs 3 values, like (1, 2, 3)."),
+            (param.Selector(objects=["a", "b"]), "z", "Needs one of: a, b."),
+            (param.List(), 3, "Needs a list, like [1, 2]."),
+        ],
+    )
+    def test_refusals_are_in_words(self, parameter, value, words):
+        class Holder(param.Parameterized):
+            p = parameter
+
+        with pytest.raises(ValueError) as info:
+            Holder.param.p._validate(value)
+        assert explain(Holder.param.p, info.value) == words
+
+    def test_clearing_a_declared_input_restores_the_components_default(self, editor):
+        years = editor.add_component("D/years", instance_id="years")
+        editor.set_input_value(years, "span", [2010, 2015])
+        assert editor.undo()
+        assert editor._component_instances[years].span == (2000, 2020)
+        assert editor.graph.get_state(years).span == (2000, 2020)
 
 
 class TestOps:
@@ -387,7 +428,7 @@ class TestOps:
 
     def test_config_and_inputs_are_checked_first_and_applied_together(self, ops):
         ops.editor.add_component("D/years", instance_id="years")
-        with pytest.raises(OperationError, match="Range"):
+        with pytest.raises(OperationError, match="Needs two numbers"):
             ops.set_config("years", {"label": "Years"}, inputs={"span": [1, 2, 3]})
         assert ops.node_config("years") == {}
         before = len(ops.editor.edit_history.versions)
@@ -408,8 +449,13 @@ class TestOps:
 async def _inspect(editor, node_id):
     """Select a node and let the inspector ask for its choices, which runs off the loop."""
     select_on_canvas(editor._flow, node_id=node_id)
-    await _settle(0.5)
-    return editor._inspector
+    inspector = editor._inspector
+    # Choices arriving later rebuild the input rows, so wait for them under load.
+    deadline = time.monotonic() + 10
+    await _settle(0.2)
+    while inspector._choices_busy is not None and time.monotonic() < deadline:
+        await _settle(0.05)
+    return inspector
 
 
 def _literal_editor(inspector, port):
@@ -468,7 +514,10 @@ class TestInspector:
         assert literal._error.visible
         assert literal._error.object == "'(2,' is not a value. Write it like (2010, 2020)."
         literal._text.value = "(1, 2, 3)"
-        assert "length" in literal._error.object or "2" in literal._error.object
+        assert literal._error.object == "Needs two numbers, like (2010, 2020)."
+        literal._text.value = ""
+        assert not literal._error.visible and literal._text.value == "(2, 3)"
+        literal._text.value = "(1, 2, 3)"
         assert editor.input_values(show) == {"span": [2, 3]}
         literal._text.value = "(4, 5)"
         assert editor.input_values(show) == {"span": [4, 5]} and not literal._error.visible
@@ -480,7 +529,7 @@ class TestInspector:
         literal = _literal_editor(inspector, "value")
         literal._holder.value = None
         assert editor.input_values(show) == {"value": 30}
-        assert literal._holder.value == 30 and literal._error.visible
+        assert literal._holder.value == 30 and not literal._error.visible
 
     async def test_undo_updates_the_field(self, editor):
         _, show = _placed(editor)

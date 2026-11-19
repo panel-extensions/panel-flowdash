@@ -10,7 +10,7 @@ import panel_material_ui as pmui
 import param
 from panel.viewable import Viewer
 
-from panel_flowdash.input_literals import literal_parameter, port_literal
+from panel_flowdash.input_literals import explain, literal_parameter, port_literal
 from panel_flowdash.ui.choice_widgets import form_widgets, widgets_key
 
 if t.TYPE_CHECKING:
@@ -169,6 +169,7 @@ class LiteralEditor(Viewer):
         text = event.new.strip()
         if not text:
             self._show(self._current if self._current is not None else self._holder.value)
+            self._error.visible = False
             return
         try:
             value = ast.literal_eval(text)
@@ -181,16 +182,16 @@ class LiteralEditor(Viewer):
         try:
             self._holder.value = port_literal(self.port, value)
         except ValueError as exc:
-            self._refuse(str(exc))
+            self._refuse(explain(self._parameter, exc))
 
     def _edited(self, event):
         if self._syncing:
             return
         if event.new is None:
-            # An emptied field, or text a number field cannot read, keeps the value.
+            # An emptied field, or text a number field cannot read, keeps the value;
+            # the button beside the input's name removes it.
             self._show(self._current if self._current is not None else event.old)
-            if self._current is not None:
-                self._refuse("Enter a value, or remove it with the button beside the name.")
+            self._error.visible = False
             return
         try:
             self._on_change(event.new)

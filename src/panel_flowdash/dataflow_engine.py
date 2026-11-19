@@ -902,7 +902,11 @@ class DataflowGraph:
             self._unbind_to_literal(instance_id, port)
 
     def clear_literal(self, instance_id: str, port: str):
-        """Remove the literal value of an input; an unwired input goes back to its default."""
+        """Remove the literal value of an input; an unwired input goes back to its default.
+
+        That is the port's default, or for a port without one the default of
+        the component's Parameter, the value the component had before.
+        """
         literals = self._literals.get(instance_id, {})
         if literals.pop(port, _NO_LITERAL) is _NO_LITERAL:
             return
@@ -914,8 +918,13 @@ class DataflowGraph:
             self._bind_input(instance_id, port)
             return
         input_port = self._input_port(instance_id, port)
-        default = copy.deepcopy(input_port.default) if input_port is not None else None
-        _unbind(self._nodes[instance_id], port, default)
+        default = None
+        if input_port is not None:
+            # A declared input without a fallback goes back to its component's default.
+            default = input_port.default
+            if default is None and input_port.parameter is not None:
+                default = input_port.parameter.default
+        _unbind(self._nodes[instance_id], port, copy.deepcopy(default))
 
     def get_state(self, instance_id: str) -> param.Parameterized | None:
         """Get the state instance for a node."""

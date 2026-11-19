@@ -15,6 +15,7 @@ from __future__ import annotations
 import inspect
 import json
 import math
+import re
 import typing as t
 
 import param
@@ -156,16 +157,67 @@ def check_literal(port: InputPort, value: t.Any) -> str | None:
     except (TypeError, ValueError) as exc:
         return f"Input '{label}' cannot hold {value!r}: {exc}"
     converted = port_literal(port, value)
-    try:
-        parameter._validate(converted)
-    except Exception as exc:
-        return str(exc)
-    if (reason := port.check_value(converted)) is not None:
-        return reason
+    for check in (parameter, port.parameter):
+        if check is None:
+            continue
+        try:
+            check._validate(converted)
+        except Exception as exc:
+            return explain(check, exc)
     canonical = normalize_port_type(port.type)
     if port.parameter is None and canonical == "tuple" and not isinstance(converted, tuple):
         return f"Input '{label}' takes a list of values, not {type(value).__name__}."
     return None
+
+
+_BOUNDS = (
+    (
+        re.compile(r"(upper|lower) bound must be in range \[(.+), (.+)\], not (.+?)\.?$"),
+        lambda m: f"The {m[1]} end must be between {m[2]} and {m[3]}, not {m[4]}.",
+    ),
+    (
+        re.compile(r"must be in range \[(.+), (.+)\], not (.+?)\.?$"),
+        lambda m: f"Must be between {m[1]} and {m[2]}, not {m[3]}.",
+    ),
+    (
+        re.compile(r"must be at (most|least) (.+), not (.+?)\.?$"),
+        lambda m: f"Must be at {m[1]} {m[2]}, not {m[3]}.",
+    ),
+)
+_PARAMETER_NAME = re.compile(r"^(Attribute '\w+' of )?\w+ parameter( '[^']*')? ")
+
+
+def explain(parameter: param.Parameter, exc: Exception) -> str:
+    """Say in words why *parameter* refuses a value, without param's internal names.
+
+    E.g. "Needs two numbers, like (2010, 2020)." for a range given three.
+    """
+    message = str(exc)
+    for pattern, words in _BOUNDS:
+        if match := pattern.search(message):
+            return words(match)
+    if isinstance(parameter, param.Range):
+        return "Needs two numbers, like (2010, 2020)."
+    if isinstance(parameter, param.Tuple):
+        length = parameter.length or 2
+        example = ", ".join(str(i + 1) for i in range(length))
+        return f"Needs {length} values, like ({example})."
+    if isinstance(parameter, param.ListSelector):
+        return f"Needs some of: {', '.join(map(str, parameter.get_range()))}."
+    if isinstance(parameter, param.Selector):
+        return f"Needs one of: {', '.join(map(str, parameter.get_range()))}."
+    for cls, words in (
+        (param.Boolean, "Needs true or false."),
+        (param.Integer, "Needs a whole number."),
+        (param.Number, "Needs a number."),
+        (param.String, "Needs text."),
+        (param.List, "Needs a list, like [1, 2]."),
+        (param.Dict, 'Needs a mapping, like {"name": 1}.'),
+    ):
+        if isinstance(parameter, cls):
+            return words
+    stripped = _PARAMETER_NAME.sub("", message)
+    return stripped[:1].upper() + stripped[1:]
 
 
 def literal_schema(port: InputPort) -> dict[str, t.Any] | None:
@@ -198,6 +250,7 @@ def literal_schema(port: InputPort) -> dict[str, t.Any] | None:
 
 __all__ = [
     "check_literal",
+    "explain",
     "literal_parameter",
     "literal_schema",
     "port_literal",
