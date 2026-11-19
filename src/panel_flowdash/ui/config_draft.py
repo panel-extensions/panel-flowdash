@@ -65,6 +65,7 @@ class ConfigDraft:
         self._syncing = False
         self._applying = False
         self.alert = pn.Column(margin=0, sizing_mode="stretch_width")
+        self.on_result: t.Callable[[CheckResult, dict[str, t.Any]], None] | None = None
         self.state: param.Parameterized | None = None
         self._wiring = self._current_wiring()
 
@@ -160,6 +161,8 @@ class ConfigDraft:
                 )
             )
         self.alert[:] = alerts
+        if self.on_result is not None:
+            self.on_result(result, pending)
 
     def propose(self, patch: dict[str, t.Any]):
         """Add *patch* to the draft and check it, applying the draft if the check passes."""

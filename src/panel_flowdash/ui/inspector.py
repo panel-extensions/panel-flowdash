@@ -58,6 +58,8 @@ _STATUS_COLOR = {
     "waiting": "warning",
     "failed": "error",
     "unavailable": "default",
+    "held": "warning",
+    "refused": "error",
 }
 
 _WIDTHS = {"Full width": 100.0, "Half": 50.0, "Third": 33.33, "Quarter": 25.0}
@@ -117,6 +119,8 @@ class Inspector(Viewer):
         self._releases: list[t.Callable[[], None]] = []
         self._shown: tuple[str, str] | None = None
         self._status_chip: pmui.Chip | None = None
+        self._node_status: tuple[str, str] | None = None
+        self._config_status: tuple[str, str] | None = None
         self._data_column: pn.Column | None = None
         self._inputs_column: pn.Column | None = None
         self._refresh_inputs: t.Callable[[], None] = lambda: None
@@ -232,6 +236,7 @@ class Inspector(Viewer):
         self._releases = []
         self._draft = None
         self._status_chip = None
+        self._node_status = self._config_status = None
         self._data_column = None
         self._inputs_column = None
 
@@ -324,6 +329,31 @@ class Inspector(Viewer):
         )
 
     def _set_status(self, status: str, detail: str):
+        self._node_status = (status, detail)
+        self._show_status()
+
+    def _set_config_status(self, draft: ConfigDraft, result: CheckResult, pending: dict):
+        """Show in the status that the config check refused the config or held an edit back.
+
+        The outputs are still up to date with the config applied last, but a
+        status saying so beside a refused edit reads as if the edit went
+        through. A check that finishes after another node was selected is
+        ignored, since the chip now shows that node.
+        """
+        if draft is not self._draft:
+            return
+        if not result:
+            self._config_status = None
+        elif pending:
+            self._config_status = ("held", "Edit not applied")
+        else:
+            self._config_status = ("refused", "Config refused")
+        self._show_status()
+
+    def _show_status(self):
+        node_status = self._node_status or ("ok", "")
+        failed = node_status[0] == "failed"
+        status, detail = node_status if failed else self._config_status or node_status
         if self._status_chip is not None:
             self._status_chip.param.update(
                 label=detail or STATUS_TEXT[status], color=_STATUS_COLOR[status]
@@ -411,6 +441,7 @@ class Inspector(Viewer):
         draft = None
         if spec.check_config is not None:
             draft = ConfigDraft(editor, instance_id, self._check_runs, self._check_results)
+            draft.on_result = partial(self._set_config_status, draft)
             self._draft = draft
             # A node placed from the palette or gallery has not been checked yet.
             draft.show_current()
