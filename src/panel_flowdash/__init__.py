@@ -61,6 +61,7 @@ from panel_flowdash.selection import (
 )
 from panel_flowdash.session_state import build_session_state_class, check_requirements
 from panel_flowdash.settings import DashboardSettings
+from panel_flowdash.spec_settings import SpecSetting
 from panel_flowdash.transforms import Transform
 from panel_flowdash.turns import DashboardTurn, agent_edits
 
@@ -106,6 +107,7 @@ __all__: list[str] = [
     "RegistryEntry",
     "Selection",
     "SelectionLink",
+    "SpecSetting",
     "Transform",
     "__version__",
     "agent_edits",
