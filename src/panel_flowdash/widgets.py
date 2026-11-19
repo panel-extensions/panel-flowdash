@@ -1029,8 +1029,9 @@ class KPI(Viewer):
     format = param.String(
         default="",
         doc="""
-        Python format spec of the number, e.g. ',.0f', '.1%' or '.3s'. Empty
+        Python format spec of the number, e.g. ',.0f', '.1%' or '.2e'. Empty
         shows whole numbers with thousands separators and others with two decimals.""",
+        metadata={"flowdash": {"widget": "format"}},
     )
     prefix = param.String(default="", doc="Text before the number, e.g. '$'.")
     suffix = param.String(default="", doc="Text after the number, e.g. ' kWh'.")
@@ -1052,6 +1053,7 @@ class KPI(Viewer):
         of the first pair whose limit it does not exceed, e.g. [[50, "error"],
         [80, "warning"], [100, "success"]]. Colors are theme names (primary,
         secondary, success, warning, error, info) or CSS colors.""",
+        metadata={"flowdash": {"widget": "thresholds"}},
     )
     value = param.Number(default=None, allow_None=True)
     reference = param.Number(default=None, allow_None=True)

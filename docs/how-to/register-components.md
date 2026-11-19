@@ -113,7 +113,12 @@ dashboard is opened (`last_7_days`, `last_30_days`, `last_90_days`,
 `last_365_days`, `month_to_date`, `year_to_date`), `all` for the span between
 its bounds, or `custom` for `custom_start` and `custom_end`. The KPI's `format`
 is a Python format spec such as `,.0f` or `.1%`, and `thresholds` is a list of
-ascending `[limit, color]` pairs.
+ascending `[limit, color]` pairs. The inspector edits the format with a list of
+named formats (whole number, one decimal, percent, ...) plus a checked custom
+spec, and the thresholds as rows of a limit and a theme or custom color. Your own
+components get the same editors by marking a param with
+`metadata={"flowdash": {"widget": "format"}}` (a text param) or
+`{"widget": "thresholds"}` (a list param).
 
 ---
 

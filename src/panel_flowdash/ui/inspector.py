@@ -167,7 +167,9 @@ class Inspector(Viewer):
         )
         self.collapse_button.on_click(lambda _event: setattr(self, "collapsed", True))
         self.expand_button.on_click(lambda _event: setattr(self, "collapsed", False))
-        self._body = pn.Column(sizing_mode="stretch_width", margin=(0, 16, 16, 16))
+        # A Material UI column follows its contents' height as a form grows, e.g. by
+        # a row of thresholds, so what follows the tabs moves down with it.
+        self._body = pmui.Column(sizing_mode="stretch_width", margin=(0, 16, 16, 16))
         self._panel = pmui.Column(
             self.collapse_button,
             self._body,
