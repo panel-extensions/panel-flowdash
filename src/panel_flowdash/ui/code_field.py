@@ -78,8 +78,9 @@ class AceOptions(JSComponent):
       for (const [, editor] of found) {
         try { editor.setOptions(model.options) } catch (e) { console.warn(e) }
       }
-      if (!found.length && tries < 40) {
-        setTimeout(() => apply(el, model, tries + 1), 100)
+      // Ace renders after this component when the page is slow, so keep looking.
+      if (!found.length && tries < 150) {
+        setTimeout(() => apply(el, model, tries + 1), 200)
       }
     }
 
@@ -90,9 +91,10 @@ class AceOptions(JSComponent):
       )
       if (target) {
         try { target[1].setOptions(model.options) } catch (e) { console.warn(e) }
+        target[1].navigateFileEnd()
         target[1].focus()
-      } else if (tries < 40) {
-        setTimeout(() => focus(model, tries + 1), 50)
+      } else if (tries < 150) {
+        setTimeout(() => focus(model, tries + 1), 100)
       }
     }
 
@@ -184,6 +186,7 @@ class CodeField(CompositeWidget):
     def _make_editor(self, height: int, css_classes: list[str]) -> CodeEditor:
         editor = CodeEditor(
             value=self.value or "",
+            value_input=self.value or "",
             language=self.language,
             height=height,
             on_keyup=False,

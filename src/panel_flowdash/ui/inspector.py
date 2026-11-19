@@ -265,6 +265,7 @@ class Inspector(Viewer):
         else:
             objects = self._edge_view(self._shown[1])
         self._body[:] = objects
+        self._sync_save()
 
     def refresh_summary(self):
         """Rebuild the dashboard summary if it is shown, e.g. after the issues changed."""
@@ -715,6 +716,11 @@ class Inspector(Viewer):
             )
         return form
 
+    def _sync_save(self):
+        """Offer Save while a code field shown holds unapplied text, and stop once it is gone."""
+        if getattr(self.editor, "_dashboard_bar", None) is not None:
+            self.editor._sync_toolbar_state()
+
     def has_unsent_text(self) -> bool:
         """Whether a code field shown holds typed text it has not applied yet."""
         return any(field.unsent for field in pn.Column(*self._body).select(CodeField))
@@ -759,6 +765,7 @@ class Inspector(Viewer):
             owner._choices[instance_id] = choices
             if widgets_key(form_widgets(state, names, choices)) != owner._form_key:
                 holder[0] = owner._param_form(state, names, choices)
+                owner._sync_save()
             owner._refresh_inputs()
 
         async def update():

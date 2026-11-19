@@ -127,4 +127,27 @@ def test_the_large_editor_closes_on_escape(page):
     page.keyboard.press("Escape")
     page.keyboard.press("Escape")
     expect(large).to_have_count(0, timeout=8000)
-    wait_until(lambda: editor._component_instances[node].sql.startswith("-- note"), timeout=8000)
+    # The cursor starts at the end of the text.
+    wait_until(
+        lambda: editor._component_instances[node].sql.startswith("SELECT 1-- note"),
+        timeout=8000,
+    )
+
+
+def test_typing_then_deleting_leaves_save_disabled(page):
+    editor = _saved_editor()
+    node = editor.add_component("D/query", position=(0, 0))
+    editor.save()
+    serve_component(page, editor)
+
+    page.locator(f".react-flow__node[data-id='{node}']").click()
+    field = page.locator(".fd-code-field").first
+    expect(field.locator(".ace_content")).to_contain_text("SELECT 1", timeout=8000)
+    field.locator(".ace_content").click()
+    page.keyboard.press("End")
+    page.keyboard.type("x")
+    save = page.get_by_role("button", name="Save", exact=True)
+    expect(save).to_be_enabled(timeout=8000)
+    page.keyboard.press("Backspace")
+    page.locator(".react-flow__pane").click(position={"x": 5, "y": 5})
+    expect(save).to_be_disabled(timeout=8000)

@@ -6834,7 +6834,12 @@ class FlowDash(Viewer):
             return
 
         async def save_when_checked():
-            await inspector.settle()
+            # The button shows it is busy while the check runs.
+            self._save_button.loading = True
+            try:
+                await inspector.settle()
+            finally:
+                self._save_button.loading = False
             self._on_save_clicked()
 
         param.parameterized.async_executor(save_when_checked)

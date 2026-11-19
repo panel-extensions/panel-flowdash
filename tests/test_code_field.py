@@ -1,5 +1,7 @@
 """Config fields marked as code are edited in a compact code editor."""
 
+import time
+
 import panel as pn
 import param
 import pytest
@@ -29,6 +31,8 @@ class Query(Viewer):
 
 
 def checked(config, inputs):
+    if "SLOW" in config["sql"]:
+        time.sleep(0.3)
     return ["SQL must start with SELECT"] if not config["sql"].startswith("SELECT") else []
 
 
@@ -156,16 +160,40 @@ class TestInspector:
         field._editor.value = "SELECT 2"
         assert not field.unsent
 
+    async def test_typing_then_reverting_no_longer_offers_save(self, editor):
+        node = editor.add_component("D/query")
+        editor.save()
+        field = _field(editor, node, "Sql")
+        for editor_ in (field._editor, field._large):
+            assert editor_.value_input == "SELECT 1"
+        field._editor.value_input = "SELECT 1x"
+        assert not editor._dashboard_bar.save_button.disabled
+        field._editor.value_input = "SELECT 1"
+        assert not field.unsent and editor._dashboard_bar.save_button.disabled
+
+    async def test_leaving_a_field_with_unsent_text_stops_offering_save(self, editor):
+        node = editor.add_component("D/query")
+        other = editor.add_component("D/schema")
+        editor.save()
+        field = _field(editor, node, "Sql")
+        field._editor.value_input = "SELECT 9"
+        assert not editor._dashboard_bar.save_button.disabled
+        select_on_canvas(editor._flow, node_id=other)
+        assert editor._dashboard_bar.save_button.disabled
+
     async def test_save_waits_for_the_check_of_an_edit(self, editor):
         node = editor.add_component("D/checked")
         editor.save()
         field = _field(editor, node, "Sql")
         await _settle()
-        field._editor.value = "SELECT 42"
+        field._editor.value = "SELECT 42 -- SLOW"
         editor._save_from_button()
-        await _settle(0.5)
+        await _settle(0.1)
+        assert editor._save_button.loading, "Save shows it waits for the check"
+        await _settle(0.8)
+        assert not editor._save_button.loading
         stored = editor.store.load_dashboard(editor.user, editor.dashboard.dashboard_id)
-        assert stored.items[0].config["sql"] == "SELECT 42"
+        assert stored.items[0].config["sql"] == "SELECT 42 -- SLOW"
         assert not editor.dirty
 
     async def test_the_builtin_markdown_text_is_edited_as_markdown(self):
