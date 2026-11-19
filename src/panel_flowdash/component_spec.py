@@ -90,6 +90,7 @@ class ComponentSpec:
     # see panel_flowdash.parameters.ParameterContract.
     contract: Any = None
     config_choices: Callable | None = None
+    config_completions: Callable | None = None
     # Former port and config names mapped to current ones.
     port_aliases: dict[str, str] = field(default_factory=dict)
 
@@ -716,6 +717,7 @@ def build_component_spec(entry: RegistryEntry) -> ComponentSpec:
         check_config=metadata.check_config,
         contract=metadata.contract,
         config_choices=metadata.config_choices,
+        config_completions=metadata.config_completions,
         port_aliases=port_aliases,
     )
     entry.spec = spec

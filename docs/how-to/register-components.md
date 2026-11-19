@@ -48,6 +48,8 @@ def app(config):
 | `config` | `list[str]` | `[]` | For Viewer components, names the params that are design-time configuration rather than input ports. See [Configure nodes](configure-nodes.md). |
 | `config_editor` | `callable` | `None` | Custom editor callable for the node's configuration form. See [Configure nodes](configure-nodes.md). |
 | `check_config` | `callable` | `None` | Checks a node's config, with its live inputs, before it is applied and again when the node is rewired. Returns problems that refuse the config, or a `CheckWarning(message)` for one it could not verify, which is applied and shown with the warning. See [Configure nodes](configure-nodes.md#4-check-a-config-with-check_config). |
+| `config_choices` | `callable` | `None` | Returns the values each config field may take, `{field: choices}`, offered in a dropdown. See [Configure nodes](configure-nodes.md#5-offer-choices-for-a-field). |
+| `config_completions` | `callable` | `None` | Returns the words each code field completes while typing, `{field: words}`. Without it a code field completes the columns of the node's tabular inputs. See [Configure nodes](configure-nodes.md#6-edit-code-sql-or-markdown-in-a-code-editor). |
 | `aliases` | `list[str]` | `[]` | Ids the component was registered under before. See [Renaming components and ports](#renaming-components-and-ports). |
 | `port_aliases` | `dict[str, str]` | `{}` | Former port or config names mapped to the current ones. See [Renaming components and ports](#renaming-components-and-ports). |
 

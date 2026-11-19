@@ -82,6 +82,7 @@ class PanelAppMetadata:
     check_config: Callable | None = None
     contract: Any = None
     config_choices: Callable | None = None
+    config_completions: Callable | None = None
     handles_failures: list[str] = field(default_factory=list)
     # Former component ids and former port names, so dashboards saved before a
     # rename still resolve.
@@ -163,6 +164,7 @@ def register(
     check_config: Callable | None = None,
     contract: Any = None,
     config_choices: Callable | None = None,
+    config_completions: Callable | None = None,
     handles_failures: list[str] | None = None,
     aliases: list[str] | None = None,
     port_aliases: dict[str, str] | None = None,
@@ -217,6 +219,14 @@ def register(
     config param may also declare that
     it names a column of an input, with
     ``metadata={"flowdash": {"choices": "columns", "of": "<input>"}}``.
+
+    The ``config_completions`` argument takes a callable, sync or async,
+    called like ``config_choices``, that returns the words the code editor
+    of a code field completes while typing: ``{field: words}``, where words
+    are a list, a ``{label: word}`` dict or a
+    :class:`~panel_flowdash.Choices` whose ``types`` are shown beside each
+    word, e.g. the columns of the tables a query reads. Without it a code
+    field completes the column names of the node's tabular inputs.
 
     The ``placeholder`` argument sets the message a dashboard tile shows while a
     blocking input of the component is unset, in place of the default
@@ -276,6 +286,7 @@ def register(
         check_config=check_config,
         contract=contract,
         config_choices=config_choices,
+        config_completions=config_completions,
         handles_failures=list(handles_failures or []),
         aliases=_name_list(aliases),
         port_aliases=_port_aliases(port_aliases),

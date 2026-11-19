@@ -179,6 +179,33 @@ found in `last_check`, a list of the problems with the warnings in its
 `warnings`. `CheckWarning` is a `str`, so a list mixing problems and warnings
 is still a list of strings.
 
+A problem in a code field can say where it is, so the code editor marks the
+line, underlines the text and shows the message under it. Return a
+`CheckDiagnostic` in place of the string, or raise `ValueError` with one:
+
+```python
+from panel_flowdash import CheckDiagnostic
+
+
+def check(config, inputs):
+    try:
+        parse_sql(config["query"])
+    except ParseError as exc:
+        return CheckDiagnostic(
+            f"The query does not parse: {exc.message}",
+            field="query",
+            line=exc.line,  # 1-based
+            column=exc.column,  # 1-based
+            end_column=exc.column + len(exc.token),  # just past the problem
+        )
+```
+
+`field`, `line`, `column`, `end_column` and `suggestion` are all optional.
+`CheckDiagnostic` is a `str`, so everything that reads problems as strings
+reads it as its message. Any `str` subclass with these attributes is read the
+same way, and `CheckResult.diagnostics(field)` lists the problems that carry
+them.
+
 The check may be a plain function or an `async` function. A plain one runs in
 a worker thread, so it may block, for example on a database, but it must not
 change the editor: `current_dashboard()` returns the editor while the check
@@ -325,6 +352,27 @@ language Panel's `CodeEditor` knows, e.g. `sql`, `python`, `markdown` or
 editor. The text is applied when the editor loses focus, not on every key, so a
 `check_config` runs once per edit. In a JSON schema the same declaration is
 `"x-flowdash": {"widget": "code", "language": "sql"}` on the property.
+
+While typing, the code editor completes the column names of the node's
+tabular inputs. Pass `config_completions` to complete other words, e.g. the
+columns of the tables a query can read from a database source. It is called
+like `config_choices`, sync or async, and returns `{field: words}`, where the
+words are a list, a `{label: word}` dict or a `Choices` whose `types` show
+beside each word:
+
+```python
+def completions(config, inputs):
+    source = inputs.get("source")
+    if source is None:
+        return None
+    columns = {name: kind for table in source.tables for name, kind in source.schema(table).items()}
+    return {"query": Choices(list(columns), types=columns)}
+
+
+@register(component=True, config=["query"], check_config=check, config_completions=completions)
+class Query(pn.viewable.Viewer):
+    ...
+```
 
 ## How configuration reaches your component
 

@@ -7,8 +7,10 @@ holds the node's live input values that are set and not failed. It returns
 ``None``, a string or an iterable of strings, each non-empty string a problem;
 it may also raise ``ValueError`` with the problem as its message. A
 :class:`CheckWarning` in place of a string, alone or in the list, is a warning
-instead: the change is applied, and the warning shown with it. Any other
-result or exception is logged and counts as a failed check.
+instead: the change is applied, and the warning shown with it. A
+:class:`CheckDiagnostic` is a problem that also says which field and where in
+its text it lies, so a code editor can mark the line. Any other result or
+exception is logged and counts as a failed check.
 
 A sync check runs in a worker thread of this module's own pool, so a check
 that hangs past its timeout cannot use up the event loop's default executor.
@@ -132,16 +134,114 @@ class CheckWarning(str):
         return f"CheckWarning({str.__repr__(self)})"
 
 
+class CheckDiagnostic(str):
+    """A problem a config check returns with the field and the place in its text it concerns.
+
+    It is a ``str``, the message, so a list of diagnostics is still a list of
+    problems. Lines and columns count from 1, and *end_column* is the column
+    just past the problem, so ``column=5, end_column=9`` covers four
+    characters. *suggestion* is a replacement for that text, if the check
+    knows one.
+
+    Parameters
+    ----------
+    message
+        What is wrong.
+    field
+        The config field the problem is in, e.g. ``"sql"``.
+    line, column, end_column
+        Where in the field's text the problem is.
+    suggestion
+        Text that would fix it.
+    """
+
+    def __new__(
+        cls,
+        message: str,
+        *,
+        field: str | None = None,
+        line: int | None = None,
+        column: int | None = None,
+        end_column: int | None = None,
+        suggestion: str | None = None,
+    ) -> CheckDiagnostic:
+        """Make the message carry its position."""
+        diagnostic = super().__new__(cls, message)
+        diagnostic.field = field
+        diagnostic.line = line
+        diagnostic.column = column
+        diagnostic.end_column = end_column
+        diagnostic.suggestion = suggestion
+        return diagnostic
+
+    def __repr__(self) -> str:
+        """Show the position too."""
+        extra = "".join(
+            f", {name}={getattr(self, name)!r}"
+            for name in ("field", "line", "column", "end_column", "suggestion")
+            if getattr(self, name) is not None
+        )
+        return f"CheckDiagnostic({str.__repr__(self)}{extra})"
+
+
+def _positive(value: t.Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value > 0 else None
+
+
+def diagnostic(problem: str) -> CheckDiagnostic | None:
+    """Return *problem* as a :class:`CheckDiagnostic` if it names a field or a line, else None.
+
+    Any ``str`` with ``field``, ``line``, ``column``, ``end_column`` or
+    ``suggestion`` attributes counts, so a component library may return its
+    own diagnostic type. Positions that are not positive integers are dropped.
+    """
+    if isinstance(problem, CheckDiagnostic):
+        return problem
+    field = getattr(problem, "field", None)
+    line = _positive(getattr(problem, "line", None))
+    if not isinstance(field, str) and line is None:
+        return None
+    suggestion = getattr(problem, "suggestion", None)
+    return CheckDiagnostic(
+        str(problem),
+        field=field if isinstance(field, str) else None,
+        line=line,
+        column=_positive(getattr(problem, "column", None)) if line else None,
+        end_column=_positive(getattr(problem, "end_column", None)) if line else None,
+        suggestion=suggestion if isinstance(suggestion, str) and suggestion else None,
+    )
+
+
+def _kept(problem: t.Any) -> str:
+    """Return a check's problem as a str, keeping the field and position of a diagnostic."""
+    if isinstance(problem, str):
+        return diagnostic(problem) or str(problem)
+    return str(problem)
+
+
 class CheckResult(list):
     """The problems a config check found, a list of strings, empty when it passes.
 
     Its :attr:`warnings` are the :class:`CheckWarning` messages the check
-    returned, which do not refuse the config.
+    returned, which do not refuse the config. Problems that say where they
+    are, see :class:`CheckDiagnostic`, are kept as diagnostics; see
+    :meth:`diagnostics`.
     """
 
     def __init__(self, problems: Iterable[str] = (), warnings: Iterable[str] = ()):
-        super().__init__(str(p) for p in problems)
+        super().__init__(_kept(p) for p in problems)
         self.warnings: list[str] = [str(w) for w in warnings]
+
+    def diagnostics(self, field: str | None = None) -> list[CheckDiagnostic]:
+        """Return the problems that name a field or a line, those of *field* only if given.
+
+        A problem with a line but no field is taken to be about *field*, the
+        component having a single text field the check reads.
+        """
+        found = [p for p in self if isinstance(p, CheckDiagnostic)]
+        if field is None:
+            return found
+        return [p for p in found if p.field == field or (p.field is None and p.line)]
 
     def __repr__(self) -> str:
         """Show the warnings too, which list equality ignores."""
@@ -202,6 +302,9 @@ def _failure(spec: ComponentSpec, exc: BaseException) -> list[str]:
         )
         return [f"The config check of '{spec.title}' failed (it returned a {exc})."]
     if isinstance(exc, ValueError):
+        message = exc.args[0] if len(exc.args) == 1 and isinstance(exc.args[0], str) else None
+        if message and (found := diagnostic(message)) is not None:
+            return [found]
         return [str(exc) or f"'{spec.title}' refused the config."]
     logger.error("The config check of %s failed", spec.component_id, exc_info=exc)
     return [f"The config check of '{spec.title}' failed ({type(exc).__name__})."]
@@ -542,10 +645,12 @@ async def recheck_node(
 
 __all__ = [
     "CHECK_TIMEOUT",
+    "CheckDiagnostic",
     "CheckResult",
     "CheckWarning",
     "check_node",
     "check_node_sync",
+    "diagnostic",
     "effective_config",
     "node_inputs",
     "node_wiring",

@@ -16,6 +16,11 @@ of an input are offered for the literal value it takes while unconnected.
 Columns are read from DataFrames directly, and from other values through the
 ``columns`` reader of their port type, see
 :func:`~panel_flowdash.register_port_type`.
+
+Code fields, see :mod:`panel_flowdash.ui.code_field`, are completed the same
+way while typing: a ``@register(config_completions=hook)`` hook returns
+``{field: words}``, and without one a code field completes the column names
+of the node's tabular inputs.
 """
 
 from __future__ import annotations
@@ -232,4 +237,102 @@ async def node_choices(
         timeout=timeout,
         hook=hook,
         declared=declared,
+    )
+
+
+def code_fields(spec: ComponentSpec) -> list[str]:
+    """Return the names of the config fields of *spec* edited as code."""
+    from panel_flowdash.ui.code_field import code_language
+
+    cls = spec.config_state_class
+    if cls is None:
+        return []
+    return [
+        name
+        for name, parameter in cls.param.objects("existing").items()
+        if name != "name" and code_language(parameter) is not None
+    ]
+
+
+def input_columns(spec: ComponentSpec, inputs: t.Mapping[str, t.Any]) -> Choices:
+    """Return the columns of the tabular inputs of a node of *spec*, each once, as Choices."""
+    names: list[str] = []
+    types: dict[str, str] = {}
+    for port in spec.inputs:
+        try:
+            columns = columns_of(inputs.get(port.name), port.type)
+        except Exception:
+            logger.exception(
+                "Reading the columns of input %s of %s failed", port.name, spec.component_id
+            )
+            continue
+        for name, kind in columns or []:
+            if name not in types and name not in names:
+                names.append(name)
+                if kind:
+                    types[name] = kind
+    return Choices(names, restrict=False, types=types)
+
+
+async def compute_completions(
+    spec: ComponentSpec,
+    config: t.Mapping[str, t.Any],
+    inputs: t.Mapping[str, t.Any],
+    *,
+    editor: FlowDash | None = None,
+    timeout: float = CHECK_TIMEOUT,
+) -> dict[str, Choices]:
+    """Return the words each code field of a node of *spec* completes while typing.
+
+    The component's ``config_completions`` hook is asked when it has one; its
+    words replace the default, the columns of the node's tabular inputs, for
+    the fields it names. A hook that fails, takes longer than *timeout* or
+    returns something else than a mapping is logged and the default stays.
+    """
+    fields = code_fields(spec)
+    if not fields:
+        return {}
+    columns = input_columns(spec, inputs)
+    result = {name: columns for name in fields} if columns.options else {}
+    hook = spec.config_completions
+    if hook is None:
+        return result
+    try:
+        computed = await run_hook(hook, config, inputs, editor=editor, timeout=timeout)
+    except Exception:
+        logger.exception("The config completions of %s failed", spec.component_id)
+        return result
+    if computed is None:
+        return result
+    if not isinstance(computed, t.Mapping):
+        logger.error(
+            "The config completions of %s returned a %s; it must return a dict of words per field",
+            spec.component_id,
+            type(computed).__name__,
+        )
+        return result
+    for name, value in computed.items():
+        name = spec.resolve_name(name)
+        words = as_choices(value)
+        if name in fields and words is not None:
+            result[name] = words
+    return result
+
+
+async def node_completions(
+    editor: FlowDash, instance_id: str, *, timeout: float = CHECK_TIMEOUT
+) -> dict[str, Choices]:
+    """Return the words each code field of a placed node completes, from its config and live inputs."""
+    item = next((i for i in editor._tile_items if i["instance_id"] == instance_id), None)
+    if item is None or "placeholder" in item:
+        return {}
+    spec = editor._component_specs.get(item["component_id"])
+    if spec is None:
+        return {}
+    return await compute_completions(
+        spec,
+        node_config(editor, instance_id, spec),
+        node_inputs(editor, instance_id, spec),
+        editor=editor,
+        timeout=timeout,
     )
