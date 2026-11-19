@@ -281,18 +281,21 @@ class Inspector(Viewer):
         self._release()
         if release is not None:
             self._releases.append(release)
-        back = pmui.IconButton(
-            icon="arrow_back", description="Back", size="small", margin=0, align="start"
+        # Back sits on a row of its own, so the caption and title start at
+        # the content's left edge, as in the side sheet.
+        back = pmui.Button(
+            label="Back",
+            icon="arrow_back",
+            variant="text",
+            size="small",
+            margin=(0, 0, 4, 0),
+            sx={"minWidth": 0, "px": 0, "textTransform": "none"},
         )
         back.on_click(lambda _event: self.refresh(force=True))
-        header = pn.Row(
+        header = pn.Column(
             back,
-            pn.Column(
-                _caption(caption),
-                text_typography(title, variant="subtitle1", margin=0, sx={"fontWeight": 500}),
-                margin=0,
-                sizing_mode="stretch_width",
-            ),
+            _caption(caption, margin=0),
+            text_typography(title, variant="subtitle1", margin=0, sx={"fontWeight": 500}),
             margin=(0, 0, 8, 0),
             sizing_mode="stretch_width",
             css_classes=["flowdash-inspector-extra"],

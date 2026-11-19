@@ -154,3 +154,45 @@ def test_someone_elses_request_is_redacted_for_viewers_and_for_restricted_nodes(
     expect(sheet.get_by_text("Made by the assistant", exact=False)).to_be_visible()
     expect(sheet.get_by_text("Show salaries")).to_have_count(0)
     expect(sheet.get_by_text("Added secret")).to_have_count(0)
+
+
+def _left_edges_match(*locators):
+    lefts = [locator.bounding_box()["x"] for locator in locators]
+    return max(lefts) - min(lefts) <= 1
+
+
+@pytest.mark.parametrize("width", [1280, 900])
+def test_the_title_lines_up_with_the_request_in_the_inspector(page, width):
+    editor, added = _ask_for_a_note(page)
+    page.get_by_role("button", name="Assistant", exact=True).click()
+    page.locator(f".react-flow__node[data-id='{added}']").click()
+    page.get_by_role("button", name="How was this made?").click()
+    page.set_viewport_size({"width": width, "height": 900})
+
+    header = page.locator(".flowdash-inspector-extra")
+    title = header.get_by_text(editor._instance_title(added), exact=True)
+    caption = header.get_by_text("How this was made", exact=True)
+    content = page.locator(".span-view .sv-question")
+    expect(content).to_be_visible()
+    wait_until(lambda: _left_edges_match(caption, title, content), page, timeout=5000)
+
+
+@pytest.mark.parametrize("width", [1280, 420])
+def test_the_title_lines_up_with_the_request_in_the_side_sheet(page, width):
+    editor, added = _ask_for_a_note(page)
+    page.get_by_role("button", name="Assistant", exact=True).click()
+    page.get_by_role("button", name="Done").click()
+    page.get_by_role("button", name="Save and leave").click()
+    wait_until(lambda: not editor.editable, page, timeout=8000)
+    page.set_viewport_size({"width": width, "height": 900})
+
+    page.locator(".flowdash-tile").last.hover()
+    page.locator(".flowdash-tile").last.get_by_role("button", name=re.compile("^More for")).click()
+    page.get_by_role("menuitem", name="How was this made?").click()
+    sheet = page.locator(".flowdash-inspect-sheet")
+    header = sheet.locator(".flowdash-inspect-header")
+    title = header.get_by_text(editor._instance_title(added), exact=True)
+    caption = header.get_by_text("How this was made", exact=True)
+    content = sheet.locator(".span-view .sv-question")
+    expect(content).to_be_visible()
+    wait_until(lambda: _left_edges_match(caption, title, content), page, timeout=5000)
