@@ -20,7 +20,7 @@ def test_a_kpi_is_formatted_and_colored_from_the_inspector(page):
     page.locator(f".react-flow__node[data-id='{node}']").click()
     page.get_by_role("combobox", name="Format", exact=True).click(timeout=8000)
     page.get_by_role("listbox").get_by_text("Percent, one decimal (12.3%)", exact=True).click()
-    wait_until(lambda: editor._component_instances[node].format == ".1%", timeout=8000)
+    wait_until(lambda: editor._component_instances[node].format == ",.1%", timeout=8000)
 
     page.locator(".fd-thresholds-add").click()
     wait_until(

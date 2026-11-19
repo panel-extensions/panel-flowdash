@@ -7,12 +7,12 @@ import typing as t
 import panel_material_ui as pmui
 import param
 
+from panel_flowdash.component_spec import widget_hint
 from panel_flowdash.ui.number_widgets import (
     FORMAT_WIDGET,
     THRESHOLDS_WIDGET,
     FormatInput,
     ThresholdsInput,
-    widget_hint,
 )
 
 if t.TYPE_CHECKING:

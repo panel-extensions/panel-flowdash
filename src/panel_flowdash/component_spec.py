@@ -495,6 +495,16 @@ def _type_from_parameter(viewer_cls: type, port: OutputPort) -> OutputPort:
     return replace(port, type=type(p).__name__)
 
 
+def widget_hint(p: param.Parameter) -> str | None:
+    """Return the ``widget`` a param's FlowDash metadata asks the inspector for, or None.
+
+    E.g. ``"code"``, ``"format"`` or ``"thresholds"`` from
+    ``metadata={"flowdash": {"widget": "format"}}``.
+    """
+    hint = _flowdash_metadata(p).get("widget")
+    return hint if isinstance(hint, str) else None
+
+
 def _flowdash_metadata(p: param.Parameter) -> dict[str, Any]:
     """Return the ``"flowdash"`` namespace of a Parameter's metadata, or an empty dict."""
     namespace = (p.metadata or {}).get("flowdash")

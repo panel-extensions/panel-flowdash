@@ -14,6 +14,7 @@ from panel.viewable import Viewer
 from panel_flowdash.registry import register
 from panel_flowdash.selection import SelectionFilter
 from panel_flowdash.text_components import TEXT_COMPONENTS
+from panel_flowdash.ui.number_widgets import format_problem, thresholds_problems
 
 _COMMON_CONFIG = ["label", "description", "min_widget_width"]
 _SLIDER_FORMAT = pmui.FloatSlider.param.format.default
@@ -994,11 +995,20 @@ _KPI_CSS = """
 """
 
 
+def check_kpi(config, inputs):
+    """Refuse a format or thresholds the KPI cannot use, as its inspector fields do."""
+    problems = thresholds_problems(config.get("thresholds") or [])
+    if (problem := format_problem(config.get("format") or "")) is not None:
+        problems.insert(0, problem)
+    return problems
+
+
 @register(
     page=False,
     component=True,
     title="KPI",
     icon="speed",
+    check_config=check_kpi,
     description=(
         "Card showing one headline number under a short label. Wire a Number to the value "
         "input; wire a second Number to reference to show the change from it, e.g. last "
