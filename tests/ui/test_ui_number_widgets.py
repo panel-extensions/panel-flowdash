@@ -28,9 +28,7 @@ def test_a_kpi_is_formatted_and_colored_from_the_inspector(page):
     )
     row = page.locator(".fd-threshold-row").first
     limit = row.get_by_role("textbox", name="Up to", exact=True)
-    limit.click()
-    page.keyboard.press("Control+A")
-    page.keyboard.type("0.5")
+    limit.fill("0.5")
     limit.press("Enter")
     wait_until(
         lambda: editor._component_instances[node].thresholds == [[0.5, "error"]], timeout=8000
