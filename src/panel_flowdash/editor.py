@@ -226,6 +226,8 @@ _EMPTY_GRID_CONFIG = {"breakpoints": [], "responsive_layouts": {}, "reference_wi
 
 # Set on the tile grid while it previews a band without TileGrid's frame around it.
 _UNFRAMED_BAND = "fd-unframed-band"
+# Set on the tile grid in the Split tab, which shows the dashboard at the pane's width.
+_SPLIT_PREVIEW = "fd-split-preview"
 
 
 # TileGrid aligns its layout entries with its objects by position. The editor
@@ -3103,21 +3105,19 @@ class FlowDash(Viewer):
     def _preview_band(self) -> str | None:
         """Return the band the grid is laid out and edited for, or None to follow its width.
 
-        Beside the canvas the pane is narrower than the dashboard's breakpoints,
-        so a grid following its width would show, and let the user edit, a
-        narrow-screen layout. The Split tab therefore always arranges the base
-        band, i.e. ``layout`` itself, and the Layout tab the band picked in
-        its layout panel.
+        The Layout tab arranges the band picked in its layout panel, so its
+        edits land in that band however narrow the grid is. The Split tab
+        follows the pane's width and shows the dashboard as it would look at
+        that width; its tiles can't be dragged or resized there, since an
+        edit would otherwise go to whichever band the pane happens to fall in.
         """
-        if not self.editable or self.preview or self.mode == "wiring":
+        if not self.editable or self.preview or self.mode != "dashboard":
             return None
         grid = self._tile_grid
-        base = base_band(grid.breakpoints, grid.reference_width)
-        if self.mode == "dashboard":
-            band = self._layout_panel.band
-            if band is not None and band in grid.param.preview_band.objects:
-                return band
-        return base
+        band = self._layout_panel.band
+        if band is not None and band in grid.param.preview_band.objects:
+            return band
+        return base_band(grid.breakpoints, grid.reference_width)
 
     def _sync_preview_band(self, *_events):
         layout_panel = getattr(self, "_layout_panel", None)
@@ -3126,12 +3126,14 @@ class FlowDash(Viewer):
         grid = self._tile_grid
         band = self._preview_band()
         # The frame TileGrid draws around a previewed band marks a screen width;
-        # the widest band and the Split tab's base band are not one.
+        # the widest band is not one.
         labels = [label for label in grid.param.preview_band.objects if label is not None]
-        framed = band is not None and self.mode == "dashboard" and band != labels[-1]
-        classes = [c for c in grid.css_classes if c != _UNFRAMED_BAND]
+        framed = band is not None and band != labels[-1]
+        classes = [c for c in grid.css_classes if c not in (_UNFRAMED_BAND, _SPLIT_PREVIEW)]
         if band is not None and not framed:
             classes.append(_UNFRAMED_BAND)
+        if self.editable and self.mode == "split":
+            classes.append(_SPLIT_PREVIEW)
         grid.param.update(preview_band=band, css_classes=classes)
         layout_panel.sync_bands()
 

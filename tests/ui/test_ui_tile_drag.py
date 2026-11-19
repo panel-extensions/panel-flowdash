@@ -270,10 +270,14 @@ def test_tiles_keep_their_sizes_when_one_moves_to_the_top_bar(page):
 
 
 def test_tiles_keep_their_sizes_when_a_component_is_removed_in_the_split(page):
-    page.set_viewport_size({"width": 1600, "height": 900})
+    page.set_viewport_size({"width": 2000, "height": 900})
     editor = _editor()
     editor.add_component("Widgets/Select", instance_id="select")
     serve_component(page, editor)
+    # The Split tab shows the layout for the pane's width, so a pane as wide as
+    # Desktop shows the tiles at their own sizes.
+    editor._split_view.preferences.sizes = (20.0, 80.0)
+    editor._split_view.restore()
     page.get_by_role("button", name="Split").click()
     wait_until(lambda: editor.mode == "split", page, timeout=8000)
     wait_until(lambda: tile_sizes_match(page, editor), page, timeout=8000)

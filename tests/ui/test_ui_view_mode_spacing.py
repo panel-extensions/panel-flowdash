@@ -119,8 +119,15 @@ def test_tiles_lose_their_edit_decorations_when_editing_is_done(page, tab):
 
     page.get_by_role("button", name="Edit").click()
     page.get_by_role("button", name=tab).click()
+    # The Split tab shows the dashboard at the pane's width, without handles.
     wait_until(
-        lambda: (page.evaluate(_GRID_STATE) or {}).get("shownHandles", 0) > 0, page, timeout=10000
+        lambda: (
+            apps[0]._editor.mode == ("dashboard" if tab == "Layout" else "split")
+            and ((page.evaluate(_GRID_STATE) or {}).get("shownHandles", 0) > 0)
+            == (tab == "Layout")
+        ),
+        page,
+        timeout=10000,
     )
     page.locator(".muuri-grid-item").first.click(position={"x": 30, "y": 60})
     wait_until(lambda: apps[0]._editor._tile_grid.selected is not None, page, timeout=10000)

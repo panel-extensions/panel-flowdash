@@ -108,13 +108,15 @@ class TestSwitcher:
         assert editor._tile_grid.preview_band == "xs"
         assert not editor.dirty
 
-    async def test_split_keeps_the_base_band_and_layout_tab_its_own(self, editor):
+    async def test_split_follows_the_width_and_layout_tab_keeps_its_band(self, editor):
         _layout_tab(editor)
         editor._layout_panel.band_select.value = "sm"
         editor.mode = "split"
-        assert editor._tile_grid.preview_band == "md"
+        assert editor._tile_grid.preview_band is None
+        assert "fd-split-preview" in editor._tile_grid.css_classes
         editor.mode = "dashboard"
         assert editor._tile_grid.preview_band == "sm"
+        assert "fd-split-preview" not in editor._tile_grid.css_classes
         assert editor._layout_panel.band_select.value == "sm"
 
     async def test_base_band_follows_the_reference_width(self, editor):
@@ -159,8 +161,10 @@ class TestSwitcher:
         assert "fd-unframed-band" in editor._tile_grid.css_classes
         editor._layout_panel.band_select.value = "sm"
         assert "fd-unframed-band" not in editor._tile_grid.css_classes
+        # The Split tab previews no band, so TileGrid draws no frame there.
         editor.mode = "split"
-        assert "fd-unframed-band" in editor._tile_grid.css_classes
+        assert editor._tile_grid.preview_band is None
+        assert "fd-unframed-band" not in editor._tile_grid.css_classes
 
 
 class TestCustomArrangements:

@@ -1,8 +1,8 @@
-"""UI tests for arranging tiles in the Split tab, which edits the dashboard's own layout.
+"""UI tests for the tile grid in the Split tab, which shows the dashboard at the pane's width.
 
-The grid pane is narrower than the 1200 px the layout is assumed to be arranged
-at, so these tests also check that the narrow pane does not turn edits into a
-tablet layout.
+The pane is narrower than the 1200 px the layout is assumed to be arranged at,
+so the grid shows the layout generated for that width. Tiles are arranged in
+the Layout tab; in the Split tab only the inspector's tile options edit them.
 """
 
 import pytest
@@ -12,7 +12,7 @@ from panel_flowdash.editor import FlowDash
 from panel_flowdash.ui.tile_layout import tile_entry, update_tile
 from tests.test_ui_layout_tab import CHART, MAP, ChartView, MapView
 
-from .util import center, serve_component, stable_box
+from .util import serve_component, stable_box
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect
@@ -42,7 +42,6 @@ def _open_split(page, editor, sizes=None):
     page.get_by_role("button", name="Split").click()
     wait_until(lambda: editor.mode == "split", page, timeout=8000)
     expect(page.locator(".muuri-grid-item")).to_have_count(2)
-    expect(page.locator(".muuri-handle.drag").first).to_be_visible()
 
 
 def _open_layout(page, editor):
@@ -83,109 +82,54 @@ def _fraction(page, editor, instance_id):
     return next(t for t in _tiles(page) if t["key"] == key)
 
 
-def _span(page, editor, instance_id):
-    """The share of the grid's width a tile takes up, with its 20 px of margins."""
-    width = page.locator(".muuri-grid").evaluate("el => el.getBoundingClientRect().width")
-    return _fraction(page, editor, instance_id)["width"] + 20 / width
-
-
-def _order(page, editor):
-    keys = {_key(editor, i): i for i in editor._grid_ids}
-    return [keys[t["key"]] for t in sorted(_tiles(page), key=lambda t: t["left"])]
-
-
-def _layout_order(editor):
-    return [e["instance_id"] for e in sorted(editor.layout, key=lambda e: e.get("index", 0))]
-
-
-def _assert_main_layout(editor, reference_width=1200):
+def _assert_main_layout(editor):
+    """No band got a layout of its own and the Desktop layout kept its reference width."""
     grid = editor._tile_grid
     assert grid.responsive_layouts == {}
-    assert grid.reference_width == reference_width
+    assert grid.reference_width is None
 
 
-def test_split_grid_fits_the_pane_and_shows_the_main_layout(page):
+def test_split_grid_shows_the_dashboard_at_the_pane_width(page):
     editor, ids = _editor()
-    _open_split(page, editor)
+    _open_split(page, editor, sizes=(45.0, 55.0))
 
     grid = page.locator(".muuri-grid")
-    wait_until(lambda: _fraction(page, editor, ids[1])["left"] > 0.4, page, timeout=8000)
+    # Two half-width tiles are narrower than half their Desktop width here, so they wrap.
+    wait_until(
+        lambda: all(_fraction(page, editor, i)["width"] > 0.95 for i in ids), page, timeout=8000
+    )
     width, scroll_width = grid.evaluate("el => [el.clientWidth, el.scrollWidth]")
     assert width < 1000
     assert scroll_width <= width
-    # Both half-width tiles share a row, as in the main layout, not stacked as on a narrow screen.
-    assert [round(_fraction(page, editor, i)["width"], 1) for i in ids] == [0.5, 0.5]
-    assert editor._tile_grid.preview_band == "md"
+    assert editor._tile_grid.preview_band is None
     expect(page.locator(".muuri-breakpoint-toolbar")).to_be_hidden()
+    assert [tile_entry(editor, i)["width"] for i in ids] == [50.0, 50.0]
 
 
-def test_dragging_a_tile_in_the_split_reorders_the_main_layout(page):
+def test_split_grid_has_no_handles_and_leaves_the_layout_alone(page):
     editor, ids = _editor()
     _open_split(page, editor, sizes=(45.0, 55.0))
-    wait_until(lambda: _fraction(page, editor, ids[1])["left"] > 0.4, page, timeout=8000)
-    assert _order(page, editor) == ids
-    first, second = (_tile(page, editor, i) for i in ids)
-
-    x, y = center(stable_box(first.locator(".muuri-handle.drag"), page))
-    target = stable_box(second, page)
-    # Level with the handle, so the dragged tile stays inside the grid, which Muuri needs to sort it.
-    tx, ty = target["x"] + target["width"] * 0.75, y
-    page.mouse.move(x, y)
-    page.mouse.down()
-    for step in range(1, 21):
-        page.mouse.move(x + (tx - x) * step / 20, y + (ty - y) * step / 20)
-    page.mouse.up()
-
-    swapped = list(reversed(ids))
-    wait_until(lambda: _layout_order(editor) == swapped, page, timeout=8000)
-    wait_until(lambda: _order(page, editor) == swapped, page, timeout=8000)
-    assert editor.dirty
-    _assert_main_layout(editor)
-
-    _open_layout(page, editor)
-    wait_until(lambda: _order(page, editor) == swapped, page, timeout=8000)
-    assert _layout_order(editor) == swapped
-    _assert_main_layout(editor)
-
-
-def test_resizing_a_tile_in_the_split_changes_its_main_layout_width(page):
-    editor, (map_id, _chart_id) = _editor()
-    _open_split(page, editor, sizes=(45.0, 55.0))
-    tile = _tile(page, editor, map_id)
-    start = tile_entry(editor, map_id).get("width")
-
-    x, y = center(stable_box(tile.locator(".muuri-handle.resize"), page))
-    page.mouse.move(x, y)
-    page.mouse.down()
-    for step in range(1, 11):
-        page.mouse.move(x - 24 * step, y)
-    page.mouse.up()
-
-    wait_until(lambda: tile_entry(editor, map_id).get("width") != start, page, timeout=8000)
-    width = tile_entry(editor, map_id)["width"]
-    assert width < start
-    _assert_main_layout(editor)
-    wait_until(lambda: abs(_span(page, editor, map_id) - width / 100) < 0.02, page, timeout=8000)
-
-    _open_layout(page, editor)
-    wait_until(lambda: abs(_span(page, editor, map_id) - width / 100) < 0.02, page, timeout=8000)
-    assert tile_entry(editor, map_id)["width"] == width
-    _assert_main_layout(editor)
-
-
-def test_hiding_a_tile_in_the_split_hides_it_in_the_main_layout(page):
-    editor, (_map_id, chart_id) = _editor()
-    _open_split(page, editor, sizes=(45.0, 55.0))
-    tile = _tile(page, editor, chart_id)
+    tile = _tile(page, editor, ids[0])
+    wait_until(lambda: _fraction(page, editor, ids[0])["width"] > 0.95, page, timeout=8000)
 
     tile.hover()
-    tile.locator(".muuri-handle.close").click()
-    wait_until(lambda: tile_entry(editor, chart_id).get("visible") is False, page, timeout=8000)
+    for handle in ("drag", "resize", "close"):
+        expect(tile.locator(f".muuri-handle.{handle}")).to_be_hidden()
+    box = stable_box(tile, page)
+    page.mouse.move(box["x"] + box["width"] - 4, box["y"] + box["height"] - 4)
+    page.mouse.down()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] + 80, steps=10)
+    page.mouse.up()
+    page.wait_for_timeout(300)
+
+    assert not editor.dirty
+    assert [tile_entry(editor, i)["width"] for i in ids] == [50.0, 50.0]
     _assert_main_layout(editor)
 
+    # The Layout tab arranges Desktop with its handles.
     _open_layout(page, editor)
-    expect(page.get_by_text("hidden", exact=True)).to_be_visible()
-    expect(_tile(page, editor, chart_id)).to_be_hidden()
+    expect(_tile(page, editor, ids[0]).locator(".muuri-handle.drag")).to_be_visible()
+    assert editor._tile_grid.preview_band == "md"
 
 
 def test_tile_options_in_the_split_inspector_edit_the_main_layout(page):
@@ -201,7 +145,7 @@ def test_tile_options_in_the_split_inspector_edit_the_main_layout(page):
     page.get_by_role("switch", name="Show on dashboard").click()
     wait_until(lambda: tile_entry(editor, chart_id).get("visible") is False, page, timeout=8000)
     expect(_tile(page, editor, chart_id)).to_be_hidden()
-    _assert_main_layout(editor, reference_width=None)
+    _assert_main_layout(editor)
 
     _open_layout(page, editor)
     expect(page.get_by_text("hidden", exact=True)).to_be_visible()
