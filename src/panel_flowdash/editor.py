@@ -3944,7 +3944,10 @@ class FlowDash(Viewer):
     def delete_group(self, group_id: str) -> list[str]:
         """Remove a group and its nodes from the dashboard; returns the removed instance ids."""
         nodes = list(self._require_group(group_id).nodes)
-        self._flow.remove_node(group_node_id(group_id))
+        # Forgotten first, so removing the frame is not taken for ungrouping it.
+        self._groups.pop(group_id)
+        self._pushed.pop(group_id, None)
+        self._flow.remove_node([group_node_id(group_id), *nodes])
         return nodes
 
     def _on_group_frame_deleted(self, group_id: str):
