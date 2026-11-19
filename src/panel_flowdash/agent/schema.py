@@ -9,6 +9,7 @@ from collections import defaultdict
 import param
 
 from panel_flowdash.component_spec import ComponentSpec
+from panel_flowdash.parameters import NAME_PATTERN as PARAMETER_NAME, PARAMETER_TYPES
 from panel_flowdash.port_types import ANY, normalize_port_type
 from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transforms import TRANSFORMS
@@ -173,6 +174,10 @@ def _transform_schema() -> dict[str, t.Any]:
     return {"type": "array", "items": {"oneOf": steps}}
 
 
+# A parameter's field: config field names and list indexes joined by dots, starting with a name.
+FIELD_PATTERN = r"^[A-Za-z_][A-Za-z0-9_-]*(?:\.(?:[A-Za-z_][A-Za-z0-9_-]*|[0-9]+))*$"
+
+
 def dashboard_schema(
     specs: t.Mapping[str, ComponentSpec],
     settings_class: type[DashboardSettings] = DashboardSettings,
@@ -245,6 +250,11 @@ def dashboard_schema(
             "flowdash": {"const": FORMAT_VERSION},
             "title": {"type": "string"},
             "settings": {"type": "object", "properties": settings},
+            "parameters": {
+                "type": "object",
+                "propertyNames": {"type": "string", "pattern": PARAMETER_NAME.pattern},
+                "additionalProperties": {"$ref": "#/$defs/parameter"},
+            },
             "turns": {"type": "array", "items": {"$ref": "#/$defs/turn"}},
             "nodes": {
                 "type": "object",
@@ -279,6 +289,19 @@ def dashboard_schema(
             },
             "node": {"oneOf": node_variants},
             "turn_id": {"type": "string", "pattern": TURN_ID_PATTERN.pattern},
+            "parameter": {
+                "type": "object",
+                "required": ["node", "field"],
+                "patternProperties": _EXTENSIONS,
+                "additionalProperties": False,
+                "properties": {
+                    "node": names,
+                    "field": {"type": "string", "pattern": FIELD_PATTERN},
+                    "type": {"enum": list(PARAMETER_TYPES)},
+                    "description": {"type": "string"},
+                    "expects": {"type": "object"},
+                },
+            },
             "turn": {
                 "type": "object",
                 "required": ["id"],

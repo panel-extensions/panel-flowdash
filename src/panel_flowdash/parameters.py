@@ -14,17 +14,16 @@ parameter. Its ``check`` runs whenever the parameter is rebound and refuses
 values that break the record, naming the nodes that would fail, before
 anything is applied or computed.
 
-In the dashboard YAML parameters are a top-level mapping by name::
+In the dashboard YAML they form a top-level ``parameters`` mapping by name,
+whose entries look like this::
 
-Parameters
-----------
-      orders:
-        node: warehouse
-        field: ref
-        type: source
-        description: Order lines, one row per order
-        expects: {...}         # written by the component's contract
-      since: {node: since, field: value, type: date}
+    orders:
+      node: warehouse
+      field: ref
+      type: source
+      description: Order lines, one row per order
+      expects: {...}         # written by the component's contract
+    since: {node: since, field: value, type: date}
 """
 
 from __future__ import annotations
@@ -61,6 +60,9 @@ PARAMETER_TYPES = (
 TEXT_TYPES = ("string", "source", "table", "file", "uri")
 
 PARAMETER_KEYS = ("node", "field", "type", "description", "expects")
+
+# The component a dashboard file names for a node its user may not use.
+RESTRICTED_COMPONENT = "flowdash:restricted"
 
 NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_-]{0,63}$")
 _SEGMENT = re.compile(r"^(?:[A-Za-z_][A-Za-z0-9_-]*|[0-9]+)$")
@@ -528,9 +530,18 @@ def compute_expects(
         except Exception:
             logger.warning("The contract of parameter %r failed", name, exc_info=True)
             continue
-        if expects is not None:
-            _check_json(expects)
-            found[name] = copy.deepcopy(dict(expects))
+        if expects is None:
+            continue
+        try:
+            if not isinstance(expects, Mapping):
+                raise ParameterError(
+                    "expects", f"must be a mapping, got {type(expects).__name__}."
+                )
+            _check_json(dict(expects))
+        except ParameterError as exc:
+            logger.warning("The contract of parameter %r returned unusable data: %s", name, exc)
+            continue
+        found[name] = copy.deepcopy(dict(expects))
     return found
 
 
@@ -545,7 +556,7 @@ def failures(problems: Mapping[str, list[ContractProblem]]) -> dict[str, list[Co
 # --------------------------------------------------------------------------
 
 
-def _suggest(name: str, names: Iterable[str]) -> str:
+def suggest_name(name: str, names: Iterable[str]) -> str:
     import difflib
 
     names = sorted(names)
@@ -577,7 +588,7 @@ def bind_document(doc: Mapping[str, t.Any], values: Mapping[str, t.Any]) -> dict
     for name, value in values.items():
         if name not in parameters:
             raise ParameterError(
-                f"parameters.{name}", "is not a parameter." + _suggest(name, parameters)
+                f"parameters.{name}", "is not a parameter." + suggest_name(name, parameters)
             )
         key = f"parameters.{name}"
         try:
@@ -585,6 +596,8 @@ def bind_document(doc: Mapping[str, t.Any], values: Mapping[str, t.Any]) -> dict
             node = nodes.get(parameter.node)
             if not isinstance(node, dict):
                 raise ParameterError("node", f"names no node: {parameter.node!r}.")
+            if node.get("component") == RESTRICTED_COMPONENT:
+                raise ParameterError("node", f"{parameter.node!r} is a node you may not change.")
             node["config"] = set_field(
                 node.get("config") or {}, parameter.field, coerce(parameter.type, value)
             )

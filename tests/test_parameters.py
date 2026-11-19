@@ -82,7 +82,7 @@ def table(config, instance_config):
 
 class PickConfig(param.Parameterized):
     column = param.String(default="a")
-    limit = param.Integer(default=1)
+    limit = param.Integer(default=1, bounds=(1, None))
 
 
 @register(
@@ -105,7 +105,20 @@ def pick(config, instance_config):
     return "pick"
 
 
-COMPONENTS = {"T/table": table, "T/pick": pick}
+@register(
+    page=False,
+    component=True,
+    title="Secret",
+    allow_groups=["finance"],
+    config_schema=PickConfig,
+    provides=[{"key": "picked", "type": "str"}],
+)
+def secret(config, instance_config):
+    config.picked = instance_config.column
+    return "secret"
+
+
+COMPONENTS = {"T/table": table, "T/pick": pick, "T/secret": secret}
 
 DOC = """\
 flowdash: 4
@@ -137,13 +150,14 @@ edges:
 """
 
 
-def _editor(**params):
+def _editor(finance=True, **params):
     return FlowDash(
         components=COMPONENTS,
         include_builtin_components=False,
         notifications=False,
         user="alice",
         history_coalesce=0,
+        authorize_component=lambda entry: finance or entry.app_id != "T/secret",
         **params,
     )
 
@@ -382,9 +396,11 @@ class TestOps:
             ops.remove_parameter("x")
 
     def test_ops_bind_runs_the_config_check(self, editor, monkeypatch):
-        from panel_flowdash.agent import ops as ops_module
+        from panel_flowdash import config_check
 
-        monkeypatch.setattr(ops_module, "check_node_sync", lambda *a, **k: ["no"])
+        monkeypatch.setattr(
+            config_check, "check_node_sync", lambda *a, **k: config_check.CheckResult(["no"])
+        )
         ops = DashboardOps(editor)
         with pytest.raises(OperationError, match="no"):
             ops.bind_parameters({"which": "b"})
@@ -462,3 +478,214 @@ class TestValidation:
             ("parameters.which.field", "error")
         ]
         assert "Did you mean 'column'" in str(issues[0])
+
+
+SECRET_DOC = DOC.replace(
+    "nodes:\n",
+    "nodes:\n  vault:\n    component: T/secret\n    config: {column: SELECT salary}\n    position: [0, 400]\n",
+).replace(
+    "parameters:\n",
+    "parameters:\n  query: {node: vault, field: column, type: string}\n",
+)
+
+
+class TestRestricted:
+    """A parameter on a node the user may not use is invisible to them and cannot be bound."""
+
+    @pytest.fixture
+    def store(self):
+        store = MemoryDashboardStore()
+        owner = _editor(store=store, finance=True)
+        try:
+            owner.new_dashboard("Payroll")
+            owner.import_dashboard(SECRET_DOC)
+            owner.save()
+            self.dashboard_id = owner.dashboard.dashboard_id
+        finally:
+            owner.dispose()
+        return store
+
+    @pytest.fixture
+    def editor(self, store):
+        editor = _editor(store=store, finance=False)
+        editor.load(self.dashboard_id)
+        yield editor
+        editor.dispose()
+
+    def _secret(self, editor):
+        item = next(i for i in editor._tile_items if i["instance_id"] == "vault")
+        return item.get("config")
+
+    def test_it_is_not_listed(self, editor):
+        assert "query" not in editor.parameters
+        ops = DashboardOps(editor)
+        assert "query" not in ops.parameters()
+        assert "query" not in ops.get_dashboard()
+        assert "query" not in editor.parameters_schema()["properties"]
+
+    def test_the_editor_cannot_bind_or_remove_it(self, editor):
+        with pytest.raises(ParameterError, match="is not a parameter"):
+            editor.bind_parameters({"query": "a"})
+        assert not editor.remove_parameter("query")
+        with pytest.raises(ParameterError, match="taken"):
+            editor.declare_parameter("query", "first", "column")
+        with pytest.raises(ParameterError, match="names no node"):
+            editor.declare_parameter("other", "vault", "column")
+
+    def test_ops_cannot_bind_declare_or_remove_it(self, editor):
+        ops = DashboardOps(editor)
+        with pytest.raises(OperationError, match="is not a parameter"):
+            ops.bind_parameters({"query": "a"})
+        with pytest.raises(OperationError, match="is not a parameter"):
+            ops.remove_parameter("query")
+        with pytest.raises((OperationError, PermissionError)):
+            ops.declare_parameter("other", "vault", "column")
+
+    def test_it_survives_their_edits_and_saves(self, editor, store):
+        editor.bind_parameters({"which": "b"})
+        ops = DashboardOps(editor)
+        doc = yaml.safe_load(ops.get_dashboard().split("\n", 1)[1])
+        ops.replace_yaml(yaml.safe_dump(doc), revision=ops.revision())
+        editor.save()
+        model = store._load_any(self.dashboard_id)
+        assert model.parameters["query"].node == "vault"
+        assert next(i for i in model.items if i.instance_id == "vault").config == {
+            "column": "SELECT salary"
+        }
+
+    def test_yaml_cannot_take_its_name(self, editor):
+        ops = DashboardOps(editor)
+        doc = yaml.safe_load(ops.get_dashboard().split("\n", 1)[1])
+        doc["parameters"]["query"] = {"node": "first", "field": "column", "type": "string"}
+        ops.replace_yaml(yaml.safe_dump(doc), revision=ops.revision())
+        assert editor._parameters["query"].node == "vault"
+
+    def test_yaml_cannot_add_one(self, editor):
+        ops = DashboardOps(editor)
+        doc = yaml.safe_load(ops.get_dashboard().split("\n", 1)[1])
+        doc["parameters"]["mine"] = {"node": "vault", "field": "column"}
+        issues = ops.validate(yaml.safe_dump(doc))
+        assert any(i.path == "parameters.mine.node" and i.severity == "error" for i in issues)
+
+    def test_bind_document_refuses_a_restricted_node(self, editor):
+        doc = dashboard_to_dict(editor)
+        doc["parameters"]["query"] = {"node": "vault", "field": "column", "type": "string"}
+        with pytest.raises(ParameterError, match="may not change"):
+            bind_document(doc, {"query": "a"})
+
+    async def test_agent_tools_cannot_touch_it(self, editor):
+        pytest.importorskip("pydantic_ai")
+        from .test_agent_tools import _runner
+
+        ops = DashboardOps(editor)
+        runner = _runner(
+            ops,
+            ("declare_parameter", {"name": "other", "node": "vault", "field": "column"}),
+            ("remove_parameter", {"name": "query"}),
+        )
+        await runner.run("Expose the salary query")
+        assert "other" not in editor.parameters
+        assert editor._parameters["query"].node == "vault"
+
+
+class TestReviewCases:
+    def test_a_file_cannot_forge_what_a_contract_expects(self, editor):
+        doc = yaml.safe_load(DOC)
+        doc["parameters"]["cols"]["expects"] = {"columns": []}
+        editor.import_dashboard(yaml.safe_dump(doc))
+        assert editor.parameters["cols"].expects == {"columns": ["a", "c"]}
+        with pytest.raises(ContractError):
+            editor.bind_parameters({"cols": ["a"]})
+
+    def test_a_value_the_field_refuses_refuses_the_whole_binding(self, editor):
+        editor.declare_parameter("any_limit", "first", "limit", "value")
+        for bind in (editor.bind_parameters, DashboardOps(editor).bind_parameters):
+            with pytest.raises((ParameterError, OperationError), match=r"any_limit.*first\.limit"):
+                bind({"which": "b", "any_limit": -5})
+            assert DashboardOps(editor).node_config("first") == {"column": "a"}
+
+    def test_the_editor_runs_the_config_check(self, editor, monkeypatch):
+        from panel_flowdash import config_check
+
+        monkeypatch.setattr(
+            config_check, "check_node_sync", lambda *a, **k: config_check.CheckResult(["no"])
+        )
+        with pytest.raises(ParameterError, match="refused: no"):
+            editor.bind_parameters({"which": "b"})
+        assert DashboardOps(editor).node_config("first")["column"] == "a"
+
+    def test_a_node_added_under_a_removed_nodes_name_has_no_parameter(self, editor):
+        ops = DashboardOps(editor)
+        ops.remove_node("first")
+        ops.add_node("T/table", name="first")
+        assert set(editor.parameters) == {"cols"}
+        assert "which" not in dashboard_to_dict(editor).get("parameters", {})
+
+    def test_a_parameter_on_a_field_its_component_lacks_is_dropped(self, editor):
+        doc = yaml.safe_load(DOC)
+        doc["nodes"]["first"] = {"component": "T/table", "config": {"columns": ["x"]}}
+        doc["edges"] = [e for e in doc["edges"] if e["to"] != "first.table"]
+        editor.import_dashboard(yaml.safe_dump(doc))
+        assert set(editor.parameters) == {"cols"}
+
+    def test_undo_brings_a_removed_nodes_parameter_back(self, editor):
+        DashboardOps(editor).remove_node("first")
+        assert "which" not in editor.parameters
+        assert editor.undo()
+        assert editor.parameters["which"].node == "first"
+
+    def test_empty_and_unchanged_bindings_record_nothing(self, editor):
+        versions = len(editor._history.versions)
+        assert editor.bind_parameters({}) == {}
+        editor.bind_parameters({"which": "a"})
+        assert len(editor._history.versions) == versions
+
+    def test_a_contract_returning_non_json_does_not_break_save(self, editor, monkeypatch):
+        monkeypatch.setattr(Columns, "expects", lambda self, context: {"columns": {1, 2}})
+        editor.save()
+        assert editor.parameters["cols"].expects == {"columns": ["a", "c"]}
+
+    def test_a_failing_contract_leaves_a_declared_parameter_and_its_edit(
+        self, editor, monkeypatch
+    ):
+        def broken(self, context):
+            raise RuntimeError("down")
+
+        monkeypatch.setattr(Columns, "expects", broken)
+        versions = len(editor._history.versions)
+        editor.declare_parameter("cols2", "data", "columns")
+        assert editor.parameters["cols2"].expects is None
+        assert len(editor._history.versions) == versions + 1
+
+    def test_the_schema_defaults_to_the_fields_values(self, editor):
+        schema = editor.parameters_schema()["properties"]
+        assert schema["limit"]["default"] == 1
+        assert schema["which"]["default"] == "a"
+        assert schema["cols"]["default"] == ["a", "b", "c"]
+
+    def test_the_json_schema_accepts_parameters(self, editor):
+        jsonschema = pytest.importorskip("jsonschema")
+        from panel_flowdash.agent import dashboard_schema
+
+        schema = dashboard_schema(editor.component_specs)
+        jsonschema.Draft202012Validator(schema).validate(dashboard_to_dict(editor))
+        doc = dashboard_to_dict(editor)
+        doc["parameters"]["cols"]["field"] = "0.a"
+        assert list(jsonschema.Draft202012Validator(schema).iter_errors(doc))
+
+    async def test_agent_tools_declare_and_remove(self, editor):
+        pytest.importorskip("pydantic_ai")
+        from .test_agent_tools import _runner
+
+        ops = DashboardOps(editor)
+        runner = _runner(
+            ops,
+            (
+                "declare_parameter",
+                {"name": "lim2", "node": "second", "field": "limit", "type": "integer"},
+            ),
+            ("remove_parameter", {"name": "which"}),
+        )
+        await runner.run("Let me change the second limit")
+        assert editor.parameters["lim2"].type == "integer"
+        assert "which" not in editor.parameters

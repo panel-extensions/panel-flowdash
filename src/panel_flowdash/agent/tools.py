@@ -688,6 +688,43 @@ def set_settings(ctx: RunContext[FlowDashDeps], settings: dict[str, t.Any]) -> t
     return _artifact(ops, "Updated the settings.")
 
 
+def declare_parameter(
+    ctx: RunContext[FlowDashDeps],
+    name: str,
+    node: str,
+    field: str,
+    type: str = "value",
+    description: str | None = None,
+) -> t.Any:
+    """Declare a parameter: a config field the dashboard can be run again with another value of.
+
+    Use it for what a person would change between runs, e.g. a data source
+    or a starting date, not for every field.
+
+    Args:
+        name: The parameter's name, in snake_case.
+        node: The node whose config field it is.
+        field: The config field, or a dotted path into one, e.g. "spec.tables.orders".
+        type: string, number, integer, boolean, date, datetime, value (any JSON)
+            or source, table, file or uri for data.
+        description: What the parameter is, for whoever runs the dashboard.
+    """
+    ops = ctx.deps.ops
+    parameter = ops.declare_parameter(name, node, field, type=type, description=description)
+    return _artifact(ops, f"Declared parameter {name}: {_text(parameter)}")
+
+
+def remove_parameter(ctx: RunContext[FlowDashDeps], name: str) -> t.Any:
+    """Remove a parameter; its node keeps the value the field holds.
+
+    Args:
+        name: The parameter's name.
+    """
+    ops = ctx.deps.ops
+    ops.remove_parameter(name)
+    return _artifact(ops, f"Removed parameter {name}.")
+
+
 async def replace_dashboard(ctx: RunContext[FlowDashDeps], dashboard_yaml: str) -> t.Any:
     """Replace the whole open dashboard with YAML; use it for large changes.
 
@@ -842,6 +879,8 @@ EDIT_TOOLS = (
     arrange_canvas,
     arrange_layout,
     set_settings,
+    declare_parameter,
+    remove_parameter,
     replace_dashboard,
 )
 
@@ -862,6 +901,8 @@ TOOLS = (
     arrange_canvas,
     arrange_layout,
     set_settings,
+    declare_parameter,
+    remove_parameter,
     replace_dashboard,
     save_dashboard,
     delete_dashboard,

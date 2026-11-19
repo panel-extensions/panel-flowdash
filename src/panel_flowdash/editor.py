@@ -68,6 +68,9 @@ from panel_flowdash.parameters import (
     compute_expects,
     failures,
     field_path,
+    get_field,
+    parameters_schema,
+    suggest_name,
 )
 from panel_flowdash.placeholders import (
     PLACEHOLDER_NODE_TYPE,
@@ -1083,6 +1086,8 @@ class FlowDash(Viewer):
         self._origins: dict[str, str] = {}
         # The dashboard's parameters by name, each naming its node by instance id.
         self._parameters: dict[str, DashboardParameter] = {}
+        # The component each parameter's node had when it was declared or loaded.
+        self._parameter_components: dict[str, str] = {}
         # Nodes whose canvas position and tiles whose layout the editor chose
         # rather than a person, so the editor may move them again, see
         # `_settle_nodes` and `_place_new_tiles`.
@@ -3323,14 +3328,28 @@ class FlowDash(Viewer):
     def parameters(self) -> dict[str, DashboardParameter]:
         """The parameters of the open dashboard by name, as copies, nodes by instance id.
 
-        See :mod:`panel_flowdash.parameters`.
+        Parameters on nodes the user may not use are left out. See
+        :mod:`panel_flowdash.parameters`.
         """
+        hidden = self._private_ids()
         placed = {item["instance_id"] for item in self._tile_items}
         return {
             name: copy.deepcopy(parameter)
             for name, parameter in self._parameters.items()
-            if parameter.node in placed
+            if parameter.node in placed and parameter.node not in hidden
         }
+
+    def _private_ids(self) -> set[str]:
+        return {iid for iid, placeholder in self._placeholders().items() if placeholder.private}
+
+    def _visible_parameter(self, name: str) -> DashboardParameter:
+        """Return the parameter *name*, or raise ParameterError if the user cannot see it."""
+        visible = self.parameters
+        if name not in visible:
+            raise ParameterError(
+                f"parameters.{name}", "is not a parameter." + suggest_name(name, visible)
+            )
+        return self._parameters[name]
 
     def declare_parameter(
         self,
@@ -3361,16 +3380,26 @@ class FlowDash(Viewer):
         Raises
         ------
         ParameterError
-            If the name, field or type is malformed, the node does not exist
-            or the field is not one of its component's config fields.
+            If the name, field or type is malformed, the node does not exist,
+            is one the user may not use, or the field is not one of its
+            component's config fields, or the name is taken by a parameter
+            the user may not see.
         """
         check_name(name)
+        if name in self._parameters and name not in self.parameters:
+            raise ParameterError("name", f"{name!r} is taken; choose another name.")
         parameter = DashboardParameter.from_dict(
             {"node": node, "field": field, "type": type, "description": description}
         )
-        parameter.field = self._parameter_field(node, field)
+        component_id, parameter.field = self._parameter_field(node, field)
+        before = self._parameters.get(name), self._parameter_components.get(name)
         self._parameters[name] = parameter
-        self._compute_expects([name])
+        self._parameter_components[name] = component_id
+        try:
+            self._compute_expects([name])
+        except BaseException:
+            self._restore_parameter(name, *before)
+            raise
         self._record_edit(
             f"Declared parameter {name} on {self._node_name(node)}",
             op="declare_parameter",
@@ -3378,13 +3407,22 @@ class FlowDash(Viewer):
         )
         return copy.deepcopy(self._parameters[name])
 
-    def _parameter_field(self, instance_id: str, field: str) -> str:
+    def _restore_parameter(self, name: str, parameter, component_id):
+        if parameter is None:
+            self._parameters.pop(name, None)
+            self._parameter_components.pop(name, None)
+        else:
+            self._parameters[name] = parameter
+            self._parameter_components[name] = component_id
+
+    def _parameter_field(self, instance_id: str, field: str) -> tuple[str, str]:
+        """Return the component of a node a parameter may point at, and the field with its current name."""
         item = next((i for i in self._tile_items if i["instance_id"] == instance_id), None)
         if item is None or "placeholder" in item:
             raise ParameterError("node", f"names no node on the canvas: {instance_id!r}.")
         spec = self._component_specs.get(item["component_id"])
-        if spec is None:
-            raise ParameterError("node", f"{instance_id!r} is not a component this editor offers.")
+        if spec is None or not self._component_authorized(item["component_id"]):
+            raise ParameterError("node", f"{instance_id!r} is not a component you may use.")
         keys = field_path(field)
         first = spec.resolve_name(str(keys[0]))
         names = [f.name for f in spec.config]
@@ -3394,14 +3432,46 @@ class FlowDash(Viewer):
                 f"{spec.title} has no config field {keys[0]!r}."
                 + (f" Its config fields are: {', '.join(names)}." if names else ""),
             )
-        return ".".join([first, *map(str, keys[1:])])
+        return item["component_id"], ".".join([first, *map(str, keys[1:])])
 
     def remove_parameter(self, name: str) -> bool:
-        """Remove a parameter; the node keeps the value its field holds. Returns whether it existed."""
-        if self._parameters.pop(name, None) is None:
+        """Remove a parameter; the node keeps the value its field holds.
+
+        Returns whether it existed; a parameter the user may not see counts as missing.
+        """
+        if name not in self.parameters:
             return False
+        del self._parameters[name]
+        self._parameter_components.pop(name, None)
         self._record_edit(f"Removed parameter {name}", op="remove_parameter", args={"name": name})
         return True
+
+    def _note_parameter_nodes(self):
+        """Record the component each parameter's node has now, so a replaced node drops it."""
+        components = {item["instance_id"]: item["component_id"] for item in self._tile_items}
+        self._parameter_components = {
+            name: components[parameter.node]
+            for name, parameter in self._parameters.items()
+            if parameter.node in components
+        }
+        self._prune_parameters()
+
+    def _prune_parameters(self):
+        """Drop the parameters whose node was removed or replaced, or whose field no longer exists."""
+        items = {item["instance_id"]: item for item in self._tile_items}
+        for name, parameter in list(self._parameters.items()):
+            item = items.get(parameter.node)
+            if item is not None and "placeholder" in item:
+                continue
+            spec = self._component_specs.get(item["component_id"]) if item is not None else None
+            if (
+                item is None
+                or spec is None
+                or self._parameter_components.get(name) != item["component_id"]
+                or str(field_path(parameter.field)[0]) not in {f.name for f in spec.config}
+            ):
+                del self._parameters[name]
+                self._parameter_components.pop(name, None)
 
     def _contract(self, component_id: t.Any) -> t.Any:
         if not isinstance(component_id, str):
@@ -3418,7 +3488,7 @@ class FlowDash(Viewer):
         """
         from panel_flowdash.agent.yaml_format import dashboard_to_dict
 
-        names = list(self.parameters if names is None else names)
+        names = list(self._parameters if names is None else names)
         if missing_only:
             names = [n for n in names if self._parameters[n].expects is None]
         if not names:
@@ -3427,6 +3497,23 @@ class FlowDash(Viewer):
         names = [n for n in names if n in (doc.get("parameters") or {})]
         for name, expects in compute_expects(doc, names, self._contract, self.context).items():
             self._parameters[name].expects = expects
+
+    def parameters_schema(self) -> dict[str, t.Any]:
+        """Return the JSON Schema of a form binding the parameters, each defaulting to its field's value.
+
+        See :func:`~panel_flowdash.parameters.parameters_schema`.
+        """
+        from panel_flowdash.config_check import node_config
+
+        values = {}
+        for name, parameter in self.parameters.items():
+            item = next(i for i in self._tile_items if i["instance_id"] == parameter.node)
+            spec = self._component_specs[item["component_id"]]
+            try:
+                values[name] = get_field(node_config(self, parameter.node, spec), parameter.field)
+            except ParameterError:
+                continue
+        return parameters_schema(self.parameters, values)
 
     def check_parameters(self, values: t.Mapping[str, t.Any]) -> dict[str, list[ContractProblem]]:
         """Return what the contracts find wrong with binding *values*, without binding them.
@@ -3446,52 +3533,109 @@ class FlowDash(Viewer):
     ) -> tuple[dict, dict[str, list[ContractProblem]]]:
         from panel_flowdash.agent.yaml_format import dashboard_to_dict
 
+        for name in values:
+            self._visible_parameter(name)
         doc = dashboard_to_dict(export_model(self.to_model()))
         bound = bind_document(doc, values)
         return bound, check_contracts(bound, list(values), self._contract, self.context)
 
-    def bind_parameters(self, values: t.Mapping[str, t.Any]) -> dict[str, list[ContractProblem]]:
-        """Write values into their parameters' fields, as one edit, after checking their contracts.
+    def bind_parameters(
+        self, values: t.Mapping[str, t.Any], *, timeout: float | None = None
+    ) -> dict[str, list[ContractProblem]]:
+        """Write values into their parameters' fields, as one edit, after checking them.
 
         Each value is read as its parameter's type, so text such as ``"10"``
-        for a number parameter is accepted. The contract of each parameter's
-        component checks the value against what the parameter recorded
-        before anything changes. Returns the warnings the contracts gave.
+        for a number parameter is accepted. Before anything changes, the
+        contract of each parameter's component checks the value against what
+        the parameter recorded, the node's config takes the value, and the
+        component's config check (``register(check_config=...)``) passes the
+        result. Values that change nothing record no edit. Returns the
+        warnings of the contracts.
 
         Raises
         ------
         ParameterError
-            If a name is not a parameter or a value is not of its type.
+            If a name is not a parameter the user can see, a value is not of
+            its type or not one the field takes, or a config check refuses it;
+            nothing is changed.
         ContractError
             If a contract refuses a value; nothing is changed. Its problems
             name the nodes that would fail.
         """
-        patches, problems = self._binding(values)
+        patches, problems, _ = self._binding(values, timeout=timeout)
         self._apply_binding(values, patches)
         return problems
 
     def _binding(
-        self, values: t.Mapping[str, t.Any]
-    ) -> tuple[dict[str, dict[str, t.Any]], dict[str, list[ContractProblem]]]:
-        """Return the config patch binding *values* makes to each node, and the contracts' warnings."""
-        from panel_flowdash.agent.yaml_format import node_names
+        self, values: t.Mapping[str, t.Any], *, timeout: float | None = None
+    ) -> tuple[dict[str, dict[str, t.Any]], dict[str, list[ContractProblem]], list[str]]:
+        """Return the config patch binding *values* makes to each node, the contracts' and checks' warnings.
 
+        Raises as :meth:`bind_parameters` does.
+        """
+        from panel_flowdash.agent.validation import _check_value
+        from panel_flowdash.agent.yaml_format import node_names
+        from panel_flowdash.config_check import CHECK_TIMEOUT, check_node_sync, node_config
+
+        if not values:
+            return {}, {}, []
         bound, problems = self._bound(values)
         if refused := failures(problems):
             raise ContractError(refused)
         names = node_names(self._tile_items)
         bound_nodes = bound.get("nodes") or {}
         patches: dict[str, dict[str, t.Any]] = {}
+        owners: dict[tuple[str, str], str] = {}
         for name in values:
             parameter = self._parameters[name]
             key = str(field_path(parameter.field)[0])
             config = bound_nodes[names[parameter.node]]["config"]
+            item = next(i for i in self._tile_items if i["instance_id"] == parameter.node)
+            spec = self._component_specs[item["component_id"]]
+            if node_config(self, parameter.node, spec).get(key) == config[key]:
+                continue
+            state = self._dataflow_graph.get_config_state(parameter.node)
+            p = state.param.objects("existing").get(key) if state is not None else None
+            if p is not None and (reason := _check_value(p, config[key])):
+                raise ParameterError(
+                    f"parameters.{name}", f"{names[parameter.node]}.{parameter.field}: {reason}"
+                )
             patches.setdefault(parameter.node, {})[key] = copy.deepcopy(config[key])
-        return patches, problems
+            owners[(parameter.node, key)] = name
+        warnings: list[str] = []
+        for instance_id, patch in patches.items():
+            result = check_node_sync(
+                self, instance_id, patch, timeout=CHECK_TIMEOUT if timeout is None else timeout
+            )
+            if result:
+                name = owners[(instance_id, next(iter(patch)))]
+                raise ParameterError(
+                    f"parameters.{name}",
+                    f"The config of '{names[instance_id]}' was refused: " + "; ".join(result),
+                )
+            warnings.extend(result.warnings)
+        return patches, problems, warnings
 
     def _apply_binding(self, values: t.Mapping[str, t.Any], patches: dict[str, dict[str, t.Any]]):
+        if not patches:
+            return
+        from panel_flowdash.config_check import node_config
+
+        before = {}
         for instance_id, patch in patches.items():
-            self._set_config_state(instance_id, patch)
+            item = next(i for i in self._tile_items if i["instance_id"] == instance_id)
+            spec = self._component_specs[item["component_id"]]
+            config = node_config(self, instance_id, spec)
+            before[instance_id] = {key: copy.deepcopy(config.get(key)) for key in patch}
+        applied = []
+        for instance_id, patch in patches.items():
+            if set(self._set_config_state(instance_id, patch)) != set(patch):
+                for done in [*applied, instance_id]:
+                    self._set_config_state(done, before[done])
+                raise ParameterError(
+                    "value", f"The config of '{self._node_name(instance_id)}' refused the values."
+                )
+            applied.append(instance_id)
         self._record_edit(
             f"Bound {', '.join(values)}",
             op="bind_parameters",
@@ -3505,7 +3649,8 @@ class FlowDash(Viewer):
 
         A change cannot set what a contract expects; a parameter that points
         where it pointed before keeps what it recorded, any other is computed
-        again once loaded. Parameters of nodes the user may not see stay.
+        again once loaded. Parameters of nodes the user may not see stay as
+        they are, whatever the change says under their names.
         """
         kept = {}
         for name, parameter in parameters.items():
@@ -3517,9 +3662,9 @@ class FlowDash(Viewer):
             )
             parameter.expects = copy.deepcopy(current.expects) if same else None
             kept[name] = parameter
-        private = {iid for iid, p in self._placeholders().items() if p.private}
+        private = self._private_ids()
         for name, parameter in self._parameters.items():
-            if parameter.node in private and name not in kept:
+            if parameter.node in private:
                 kept[name] = copy.deepcopy(parameter)
         return kept
 
@@ -3601,6 +3746,8 @@ class FlowDash(Viewer):
         the nodes in *created*. Returns the turn. While a dashboard is being
         loaded nothing is noted, and None is returned.
         """
+        if not self._hydrating:
+            self._prune_parameters()
         turn = None if self._hydrating else self._note_turn(*labels)
         if turn is not None:
             for instance_id in created:
@@ -4427,6 +4574,7 @@ class FlowDash(Viewer):
             self._hydrate(model, keep_open_turns)
         finally:
             self._hydrating = False
+        self._note_parameter_nodes()
         if not self._history_quiet:
             self._note_restricted()
             self._history.opened()
@@ -5178,7 +5326,7 @@ class FlowDash(Viewer):
             with self._quiet_history():
                 self.load_model(model)
                 self._apply_automatic_layout(*automatic)
-                self._compute_expects(missing_only=True)
+                self._compute_expects()
             self._fit_placed_nodes()
             self._record_import(model, before, present)
             return model

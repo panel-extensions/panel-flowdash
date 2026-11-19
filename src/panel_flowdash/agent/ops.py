@@ -1354,7 +1354,8 @@ class DashboardOps:
 
         Values given as text are read as their parameter's type. The
         contract of each parameter checks its value first, then each changed
-        node's config check runs; nothing changes unless all pass.
+        node's config check runs; nothing changes unless all pass. Parameters
+        on nodes the user may not use are not found.
 
         Raises
         ------
@@ -1366,19 +1367,11 @@ class DashboardOps:
         self._require_edit()
         editor = self.editor
         try:
-            patches, problems = editor._binding(values)
-        except ParameterError as exc:
+            patches, problems, warnings = editor._binding(values, timeout=self.check_timeout)
+            editor._apply_binding(values, patches)
+        except (ParameterError, ContractError) as exc:
             raise OperationError(str(exc)) from None
-        except ContractError as exc:
-            raise OperationError(str(exc)) from None
-        names = self._names()
-        checked = CheckResult()
-        for instance_id, patch in patches.items():
-            result = check_node_sync(editor, instance_id, patch, timeout=self.check_timeout)
-            _refuse_config(f"The config of '{names[instance_id]}' was not changed", result)
-            checked.warnings.extend(result.warnings)
-        editor._apply_binding(values, patches)
-        self.last_check = checked
+        self.last_check = CheckResult(warnings=warnings)
         return [
             Issue(f"parameters.{name}", str(problem), "warning")
             for name, items in problems.items()
