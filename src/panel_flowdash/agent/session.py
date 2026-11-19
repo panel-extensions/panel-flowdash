@@ -112,6 +112,11 @@ class AgentSession:
         self.runner.state.subscribe(self._note_run)
         # Background checks of restored versions, kept so they are not collected while they run.
         self._checks: set[asyncio.Task] = set()
+        chat_params = (
+            {"models": list(models), "model_id": model, "remember_model": MODEL_KEY}
+            if models and len(models) > 1
+            else {}
+        )
         self.drawer = AgentDrawer(
             self.runner,
             title="Assistant",
@@ -119,14 +124,13 @@ class AgentSession:
             on_apply=self.apply_version,
             # Someone else's request is redacted for people who may not see what it touched.
             redact_runs=editor.run_redacted,
-            chat_params=(
-                {"models": list(models), "model_id": model, "remember_model": MODEL_KEY}
-                if models and len(models) > 1
-                else {}
-            ),
+            chat_params=chat_params,
         )
-        # The Explore view's composer asks this runner, so the drawer's chat is not needed beside it.
-        editor.explore_feed.attach(self.runner)
+        # The Explore view's composer asks this runner, so the drawer's chat is not needed
+        # beside it; it offers the same models and follows the drawer's pick.
+        editor.explore_feed.attach(
+            self.runner, chat_params=chat_params, model_chat=self.drawer.chat
+        )
         editor.param.watch(self._on_explore, "explore")
         self._on_explore()
         self.highlighter = ChangeHighlighter(self)

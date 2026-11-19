@@ -133,3 +133,27 @@ def test_a_viewer_without_the_assistant_sees_no_picker(page):
     page.get_by_text("note tile").first.wait_for()
     expect(page.get_by_role("button", name="Assistant", exact=True)).to_have_count(0)
     expect(page.get_by_role("button", name=re.compile("^Model:"))).to_have_count(0)
+
+
+def test_explore_offers_the_same_models_and_shares_the_pick(page):
+    store, (dash,) = _store_with("Plant")
+    apps = []
+    agent = Agent(answering("fast-model"), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()])
+    _serve_app(page, store, f"/dash/{dash}", apps, agent=agent, agent_models=MODELS)
+    page.get_by_text("note tile").first.wait_for()
+    page.get_by_role("button", name="Explore", exact=True).click()
+    explore = page.locator(".flowdash-explore")
+    explore.get_by_role("button", name="Model: Fast").click()
+    page.get_by_role("listbox", name="Model").get_by_role(
+        "option", name=re.compile("^Deep")
+    ).click()
+    expect(explore.get_by_role("button", name="Model: Deep")).to_be_visible()
+    composer = page.get_by_placeholder("Ask a question about this dashboard…")
+    composer.fill("Hello")
+    composer.press("Enter")
+    expect(explore.get_by_text("Answered by deep-model.")).to_be_visible(timeout=20000)
+    session = apps[0]._agent_session
+    assert session.drawer.chat.model_id == "deep-model"
+    page.get_by_role("button", name="View", exact=True).click()
+    page.get_by_role("button", name="Assistant", exact=True).click()
+    expect(page.get_by_role("button", name="Model: Deep")).to_be_visible()

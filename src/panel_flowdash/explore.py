@@ -162,6 +162,9 @@ class ExploreFeed(Viewer):
         self._unsubscribe = None
         self._pending = False
         self._chat: AgentChat | None = None
+        self._chat_params: dict = {}
+        self._model_chat: AgentChat | None = None
+        self._model_watchers: list = []
         self._chat_key: tuple | None = None
         self._empty = pmui.Typography(
             "Ask a question about this dashboard to start. Each answer and the outputs it adds show here.",
@@ -250,10 +253,11 @@ class ExploreFeed(Viewer):
                 runner=self.runner,
                 approval_factory=self._approval,
                 placeholder="Ask a question about this dashboard…",
+                **self._chat_params,
             )
         from panel_flowdash.agent.chrome import TOOL_LABELS
 
-        return AgentChat(
+        chat = AgentChat(
             self.state,
             layout="document",
             readonly=not composer,
@@ -280,6 +284,29 @@ class ExploreFeed(Viewer):
             ],
             **params,
         )
+        if composer:
+            self._follow_model(chat)
+        return chat
+
+    def _follow_model(self, chat: AgentChat):
+        """Keep the composer's picked model and the other chat's the same, as they ask the same runner."""
+        for obj, watcher in self._model_watchers:
+            obj.param.unwatch(watcher)
+        self._model_watchers = []
+        other = self._model_chat
+        if other is None or "model_id" not in chat.param:
+            return
+        if other.model_id is not None:
+            chat.model_id = other.model_id
+
+        def follow(source, target):
+            def sync(event):
+                if target.model_id != event.new:
+                    target.model_id = event.new
+
+            return source, source.param.watch(sync, "model_id")
+
+        self._model_watchers = [follow(chat, other), follow(other, chat)]
 
     def _approval(self, request, state):
         """Decide a forwarded approval on the agent session's own request, so its runner hears of it."""
@@ -288,10 +315,17 @@ class ExploreFeed(Viewer):
             return ApprovalCard(request=source.approvals[request.tool_call_id], state=source)
         return ApprovalCard(request=request, state=state)
 
-    def attach(self, runner):
-        """Follow the runs of an agent *runner* (a panel-agents ``AgentRunner``) from now on."""
+    def attach(self, runner, chat_params: dict | None = None, model_chat: AgentChat | None = None):
+        """Follow the runs of an agent *runner* (a panel-agents ``AgentRunner``) from now on.
+
+        *chat_params* are passed to the composer's chat, e.g. the models a
+        person may pick from, and *model_chat* is another chat on the same
+        runner, such as the drawer's, whose picked model the composer follows.
+        """
         if self._unsubscribe is not None:
             self._unsubscribe()
+        self._chat_params = dict(chat_params or {})
+        self._model_chat = model_chat
         self.runner = runner
         self._unsubscribe = runner.state.subscribe(self._on_event)
         if self.shown:

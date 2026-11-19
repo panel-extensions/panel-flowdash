@@ -231,7 +231,7 @@ turn changed says so ("Changed later by 1 manual edit"), and a batch of manual e
 an entry of its own listing what changed. Nodes made before the dashboard recorded turns
 are listed, collapsed, in a first entry, and open one at a time.
 
-The question box at the bottom asks the assistant, as the drawer's chat does; while
+The question box at the bottom asks the assistant, as the drawer's chat does, with the same model picker when several models are offered (a model picked in one is picked in the other); while
 Explore is shown the drawer stays closed, and an approval the agent asks for there is
 answered in the feed. Leaving Explore with an approval pending opens the drawer on it.
 Requests made in this session show every step; after a reload, or for requests made
