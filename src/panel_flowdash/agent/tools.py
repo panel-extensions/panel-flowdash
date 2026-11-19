@@ -570,8 +570,8 @@ async def set_config(
         raise ModelRetry("Pass config, inputs or both.")
     ops = ctx.deps.ops
     if config:
-        await ops.set_config_async(name, config)
-    if inputs:
+        await ops.set_config_async(name, config, inputs)
+    else:
         await ops.set_inputs_async(name, inputs)
     return _artifact(ops, _checked(f"Updated the {changed} of '{name}'.", name, ops.last_check))
 

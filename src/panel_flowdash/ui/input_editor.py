@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import typing as t
 
 import panel as pn
@@ -18,17 +19,42 @@ if t.TYPE_CHECKING:
 
 VALUE_LABEL = "Value"
 
+_EXAMPLES = (
+    (param.Range, "(2010, 2020)"),
+    (param.Tuple, "(1, 2)"),
+    (param.List, "[1, 2]"),
+    (param.Dict, '{"name": 1}'),
+)
+
+
+def _typed_as_text(parameter: param.Parameter) -> bool:
+    """Whether a value of *parameter* is typed as text, as a Python literal.
+
+    A range with bounds gets a slider and a selector a dropdown; lists,
+    tuples, mappings and untyped values are written out.
+    """
+    if isinstance(parameter, param.Selector):
+        return False
+    if isinstance(parameter, param.Range):
+        return None in (parameter.bounds or (None, None))
+    return isinstance(parameter, (param.List, param.Tuple, param.Dict)) or (
+        type(parameter) is param.Parameter
+    )
+
+
+def _as_text(value: t.Any) -> str:
+    return "" if value is None else repr(value)
+
 
 class LiteralEditor(Viewer):
     """A typed field editing the literal value of one input, and a button removing it.
 
-    The button is laid out by the caller, beside the input's name.
-
-    The field follows the input's Parameter, or its port type, and offers the
-    choices the component computes for the input, like a config field. Each
-    edit calls *on_change* with the new value, or None once it is cleared;
-    *on_change* raises ValueError to refuse a value, which is shown under the
-    field.
+    The button is laid out by the caller, beside the input's name. The field
+    follows the input's Parameter, or its port type, and offers the choices
+    the component computes for the input, like a config field. Each edit calls
+    *on_change* with the new value; *on_change* raises ValueError to refuse
+    it, and the reason is shown under the field. Emptying the field keeps the
+    value; the button removes it, calling *on_change* with None.
     """
 
     def __init__(
@@ -47,14 +73,31 @@ class LiteralEditor(Viewer):
         if parameter is None:
             raise ValueError(f"Input '{port.name}' cannot hold a literal value.")
         parameter.label = VALUE_LABEL
+        self._parameter = parameter
+        self._current = port_literal(port, value) if is_set else None
         self._holder = type(f"Literal_{port.name}", (param.Parameterized,), {"value": parameter})(
-            value=port_literal(port, value) if is_set else _initial(port, parameter)
+            value=self._current if is_set else _initial(port, parameter)
         )
+        self._text = None
+        if _typed_as_text(parameter):
+            self._text = pmui.TextInput(
+                label=VALUE_LABEL,
+                value=_as_text(self._holder.value),
+                sizing_mode="stretch_width",
+                margin=(5, 10),
+                css_classes=["fd-literal-text"],
+            )
+            self._text.param.watch(self._typed, "value")
         self.choices_key = ()
         self._form = pn.Column(margin=0, sizing_mode="stretch_width")
         self.set_choices(choices)
         self._error = pmui.Typography(
-            "", variant="caption", color="error", visible=False, margin=(2, 0, 0, 0)
+            "",
+            variant="caption",
+            color="error",
+            visible=False,
+            margin=(2, 10, 0, 10),
+            css_classes=["fd-literal-error"],
         )
         self.clear_button = pmui.IconButton(
             icon="backspace",
@@ -78,6 +121,10 @@ class LiteralEditor(Viewer):
         """Offer *choices* in the field, rebuilding it only if its widget changes."""
         mapping = {"value": choices} if choices is not None else {}
         widgets = form_widgets(self._holder, ["value"], mapping)
+        if self._text is not None and not widgets:
+            if not self._form.objects:
+                self._form[:] = [self._text]
+            return
         key = widgets_key(widgets)
         if key == self.choices_key and self._form.objects:
             return
@@ -97,29 +144,64 @@ class LiteralEditor(Viewer):
     def sync(self, value: t.Any, is_set: bool):
         """Show *value*, set elsewhere, e.g. by undo or the agent, without calling *on_change*."""
         self.clear_button.visible = is_set
-        if not is_set:
-            value = _initial(self.port, self._holder.param.value)
-        else:
-            value = port_literal(self.port, value)
-        if self._holder.value != value:
-            self._syncing = True
-            try:
-                self._holder.value = value
-            finally:
-                self._syncing = False
+        self._current = port_literal(self.port, value) if is_set else None
+        shown = self._current if is_set else _initial(self.port, self._parameter)
+        self._show(shown)
         self._error.visible = False
+
+    def _show(self, value: t.Any):
+        self._syncing = True
+        try:
+            if self._holder.value != value:
+                self._holder.value = value
+            if self._text is not None and self._text.value != _as_text(value):
+                self._text.value = _as_text(value)
+        finally:
+            self._syncing = False
+
+    def _refuse(self, reason: str):
+        self._error.object = reason
+        self._error.visible = True
+
+    def _typed(self, event):
+        if self._syncing:
+            return
+        text = event.new.strip()
+        if not text:
+            self._show(self._current if self._current is not None else self._holder.value)
+            return
+        try:
+            value = ast.literal_eval(text)
+        except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+            example = next(
+                (e for cls, e in _EXAMPLES if isinstance(self._parameter, cls)), '42 or "text"'
+            )
+            self._refuse(f"{text!r} is not a value. Write it like {example}.")
+            return
+        try:
+            self._holder.value = port_literal(self.port, value)
+        except ValueError as exc:
+            self._refuse(str(exc))
 
     def _edited(self, event):
         if self._syncing:
             return
+        if event.new is None:
+            # An emptied field, or text a number field cannot read, keeps the value.
+            self._show(self._current if self._current is not None else event.old)
+            if self._current is not None:
+                self._refuse("Enter a value, or remove it with the button beside the name.")
+            return
         try:
             self._on_change(event.new)
         except ValueError as exc:
-            self._error.object = str(exc)
-            self._error.visible = True
+            self._refuse(str(exc))
             return
+        self._current = event.new
         self._error.visible = False
-        self.clear_button.visible = event.new is not None
+        self.clear_button.visible = True
+        if self._text is not None:
+            self._show(event.new)
 
     def _clear(self, _event):
         self._on_change(None)
@@ -131,12 +213,16 @@ class LiteralEditor(Viewer):
 
 
 def _initial(port: InputPort, parameter: param.Parameter) -> t.Any:
-    """Return the value an input shows while nothing is set: its default, if the field takes it."""
-    default = port.default
-    if default is None:
-        return None
-    try:
-        parameter._validate(default)
-    except Exception:
-        return None
-    return default
+    """Return the value an input shows while nothing is set: its default or its component's."""
+    for default in (
+        port.default,
+        port.parameter.default if port.parameter is not None else None,
+    ):
+        if default is None:
+            continue
+        try:
+            parameter._validate(default)
+        except Exception:
+            continue
+        return default
+    return None

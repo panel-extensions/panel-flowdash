@@ -135,20 +135,26 @@ def port_literal(port: InputPort, value: t.Any) -> t.Any:
     return value
 
 
+def _label(port: InputPort) -> str:
+    parameter = port.parameter
+    return port.label or (parameter.label if parameter is not None else None) or port.name
+
+
 def check_literal(port: InputPort, value: t.Any) -> str | None:
     """Return why *value* cannot be the literal of *port*, or None if it can."""
     parameter = literal_parameter(port)
+    label = _label(port)
     if parameter is None:
-        return f"Input '{port.name}' ({port.type}) cannot hold a value; connect it instead."
+        return f"Input '{label}' ({port.type}) cannot hold a value; connect it instead."
     if not _is_data(value):
         return (
-            f"Input '{port.name}' takes numbers, text, booleans, lists or mappings of these, "
+            f"Input '{label}' takes numbers, text, booleans, lists or mappings of these, "
             f"not {type(value).__name__}."
         )
     try:
         json.dumps(stored_literal(value))
     except (TypeError, ValueError) as exc:
-        return f"Input '{port.name}' cannot hold {value!r}: {exc}"
+        return f"Input '{label}' cannot hold {value!r}: {exc}"
     converted = port_literal(port, value)
     try:
         parameter._validate(converted)
@@ -158,7 +164,7 @@ def check_literal(port: InputPort, value: t.Any) -> str | None:
         return reason
     canonical = normalize_port_type(port.type)
     if port.parameter is None and canonical == "tuple" and not isinstance(converted, tuple):
-        return f"Input '{port.name}' takes a list of values, not {type(value).__name__}."
+        return f"Input '{label}' takes a list of values, not {type(value).__name__}."
     return None
 
 

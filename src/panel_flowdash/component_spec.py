@@ -666,7 +666,16 @@ def build_component_spec(entry: RegistryEntry) -> ComponentSpec:
             output_names = {port.name for port in outputs}
             inputs = [port for port in inputs if port.name not in output_names]
         if dec_inputs:
-            inputs = [p for p in dec_inputs if p.name not in config_names]
+            # The component's own Parameter checks the values a declared input
+            # takes, connected or set as a literal, as for an introspected one.
+            params = app.param.objects("existing")
+            inputs = [
+                replace(p, parameter=params[p.name])
+                if p.parameter is None and p.name in params
+                else p
+                for p in dec_inputs
+                if p.name not in config_names
+            ]
     else:
         outputs, inputs = _ports_from_metadata(metadata)
         inputs = [p for p in inputs if p.name not in config_names]

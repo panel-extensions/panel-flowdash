@@ -77,7 +77,7 @@ from panel_flowdash.groups import (
     unique_group_id,
 )
 from panel_flowdash.history import BURST_SECONDS, HISTORY_MAX_BYTES, EditHistory, label_for
-from panel_flowdash.input_literals import stored_literal
+from panel_flowdash.input_literals import check_literal, stored_literal
 from panel_flowdash.parameters import (
     ContractError,
     ContractProblem,
@@ -2450,16 +2450,28 @@ class FlowDash(Viewer):
     # Config state
     # ------------------------------------------------------------------
 
-    def _apply_config_patch(self, node_id, patch):
-        """Apply an editor patch to a node's config state and persist it."""
-        applied = self._set_config_state(node_id, patch)
-        if not applied:
+    def _apply_config_patch(self, node_id, patch, inputs=None):
+        """Apply an editor patch to a node's config state, and *inputs* literals, as one edit.
+
+        The *inputs* are checked first, so a refused one changes nothing.
+        """
+        changed = self._set_input_values(node_id, inputs) if inputs else {}
+        applied = self._set_config_state(node_id, patch) if patch else {}
+        if not applied and not changed:
             return
         name = self._node_name(node_id)
+        if not applied:
+            labels = ", ".join(changed.values())
+            label = f"Set {labels} of {name}"
+        else:
+            label = f"Changed the config of {name}"
         self._record_edit(
-            f"Changed the config of {name}",
-            op="set_config",
-            args={"name": name, "keys": sorted(applied)},
+            label,
+            op="set_config" if applied else "set_input",
+            args={
+                "name": name,
+                "keys": sorted(applied) + [f"inputs.{p}" for p in sorted(changed)],
+            },
         )
 
     def _set_config_state(self, node_id, patch) -> dict:
@@ -6166,40 +6178,69 @@ class FlowDash(Viewer):
             If the component has no such input, the input cannot hold a
             literal, e.g. a DataFrame, or it refuses *value*.
         """
+        self.set_input_values(instance_id, {port: value})
+
+    def set_input_values(self, instance_id: str, values: t.Mapping[str, t.Any]):
+        """Set or remove (with None) the literal values of several inputs, as one edit.
+
+        Every value is checked before any is set, so a refused one changes
+        nothing; see :meth:`set_input_value`.
+        """
+        changed = self._set_input_values(instance_id, values)
+        if not changed:
+            return
+        name = self._node_name(instance_id)
+        labels = ", ".join(changed.values())
+        cleared = all(values.get(port) is None for port in changed)
+        self._record_edit(
+            f"{'Cleared' if cleared else 'Set'} {labels} of {name}",
+            op="set_input",
+            args={"name": name, "keys": sorted(changed)},
+        )
+
+    def _set_input_values(self, instance_id: str, values: t.Mapping[str, t.Any]) -> dict[str, str]:
+        """Apply literal values to a node's inputs without recording an edit.
+
+        Returns the label of each input that changed, by port. Raises like
+        :meth:`set_input_value`, before changing anything.
+        """
         item = next((i for i in self._tile_items if i["instance_id"] == instance_id), None)
         if item is None:
             raise KeyError(f"No component '{instance_id}' is placed.")
         if "placeholder" in item:
             raise ValueError(f"'{instance_id}' could not be loaded, so its inputs cannot change.")
         spec = self._component_specs[item["component_id"]]
-        port = spec.resolve_name(port)
-        input_port = next((p for p in spec.inputs if p.name == port), None)
-        if input_port is None:
-            raise ValueError(f"'{spec.title}' has no input '{port}'.")
+        ports = {p.name: p for p in spec.inputs}
+        resolved: dict[str, t.Any] = {}
+        for key, value in values.items():
+            port = ports.get(spec.resolve_name(key))
+            if port is None:
+                raise ValueError(f"'{spec.title}' has no input '{key}'.")
+            if value is not None and (reason := check_literal(port, value)) is not None:
+                raise ValueError(reason)
+            resolved[port.name] = value
         inputs = dict(item.get("inputs") or {})
-        if value is None:
-            if port not in inputs:
-                return
-            del inputs[port]
-            self._dataflow_graph.clear_literal(instance_id, port)
-        else:
-            stored = stored_literal(value)
-            if inputs.get(port, _MISSING) == stored:
-                return
-            self._dataflow_graph.set_literal(instance_id, port, value)
-            inputs[port] = stored
+        changed = {}
+        for port, value in resolved.items():
+            if value is None:
+                if port not in inputs:
+                    continue
+                del inputs[port]
+                self._dataflow_graph.clear_literal(instance_id, port)
+            else:
+                stored = stored_literal(value)
+                if inputs.get(port, _MISSING) == stored:
+                    continue
+                self._dataflow_graph.set_literal(instance_id, port, value)
+                inputs[port] = stored
+            changed[port] = port_label(ports[port])
         if inputs:
             item["inputs"] = inputs
         else:
             item.pop("inputs", None)
-        self._refresh_inspector_inputs()
-        name = self._node_name(instance_id)
-        label = port_label(input_port)
-        self._record_edit(
-            f"Set {label} of {name}" if value is not None else f"Cleared {label} of {name}",
-            op="set_input",
-            args={"name": name, "keys": [port]},
-        )
+        if changed:
+            self._refresh_inspector_inputs()
+        return changed
 
     def _restore_refusal(self, text: str) -> str | None:
         """Return why restoring a version of the history is refused, or None if it is allowed."""

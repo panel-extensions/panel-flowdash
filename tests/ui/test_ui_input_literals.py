@@ -87,3 +87,21 @@ def test_an_input_with_choices_offers_them(page):
     select.click(timeout=8000)
     page.get_by_role("listbox").get_by_text("CA", exact=True).click()
     wait_until(lambda: editor._component_instances[show].state == "CA", timeout=8000)
+
+
+def test_text_that_is_no_value_is_explained(page):
+    editor = _editor()
+    show = editor.add_component("D/show", instance_id="show", position=(0, 0))
+    editor.set_input_value(show, "span", (2, 3))
+    serve_component(page, editor)
+
+    _node(page, show).click()
+    field = _row(page, "span").get_by_role("textbox", name="Value", exact=True)
+    expect(field).to_have_value("(2, 3)", timeout=8000)
+    field.fill("(2,")
+    field.press("Enter")
+    expect(
+        _row(page, "span").get_by_text("'(2,' is not a value. Write it like (2010, 2020).")
+    ).to_be_visible(timeout=8000)
+    expect(_row(page, "span").get_by_text("(invalid)")).to_have_count(0)
+    assert editor.input_values(show) == {"span": [2, 3]}

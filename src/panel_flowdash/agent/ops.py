@@ -1084,8 +1084,13 @@ class DashboardOps:
             resolved[name] = value
         return resolved
 
-    def set_config(self, name: str, config: dict[str, t.Any]) -> dict[str, t.Any]:
+    def set_config(
+        self, name: str, config: dict[str, t.Any], inputs: dict[str, t.Any] | None = None
+    ) -> dict[str, t.Any]:
         """Change some config fields of a node and return its whole config.
+
+        *inputs* sets literal values of its unconnected inputs in the same
+        edit, as :meth:`set_inputs` does.
 
         Raises
         ------
@@ -1095,13 +1100,17 @@ class DashboardOps:
             Warnings of the config check do not refuse it; they are left in
             :attr:`last_check`.
         """
+        literals = self._inputs_patch(name, inputs) if inputs else {}
         instance_id, patch = self._config_patch(name, config)
         problems = check_node_sync(self.editor, instance_id, patch, timeout=self.check_timeout)
         _refuse_config(f"The config of '{name}' was not changed", problems)
-        return self._apply_config(instance_id, patch, problems)
+        return self._apply_config(instance_id, patch, problems, literals)
 
-    async def set_config_async(self, name: str, config: dict[str, t.Any]) -> dict[str, t.Any]:
+    async def set_config_async(
+        self, name: str, config: dict[str, t.Any], inputs: dict[str, t.Any] | None = None
+    ) -> dict[str, t.Any]:
         """Like :meth:`set_config`, running the component's config check off the event loop."""
+        literals = self._inputs_patch(name, inputs) if inputs else {}
         instance_id, patch = self._config_patch(name, config)
         dashboard_id = self._dashboard_id()
         problems = await check_node(self.editor, instance_id, patch, timeout=self.check_timeout)
@@ -1109,7 +1118,7 @@ class DashboardOps:
         _refuse_config(f"The config of '{name}' was not changed", problems)
         if self._config_patch(name, config)[0] != instance_id:
             raise OperationError(f"'{name}' was replaced while its config was being checked.")
-        return self._apply_config(instance_id, patch, problems)
+        return self._apply_config(instance_id, patch, problems, literals)
 
     def _config_patch(self, name: str, config: dict[str, t.Any]) -> tuple[str, dict[str, t.Any]]:
         self._require_edit()
@@ -1118,9 +1127,13 @@ class DashboardOps:
         return instance_id, self._check_config(spec, config)
 
     def _apply_config(
-        self, instance_id: str, patch: dict[str, t.Any], checked: CheckResult
+        self,
+        instance_id: str,
+        patch: dict[str, t.Any],
+        checked: CheckResult,
+        inputs: dict[str, t.Any] | None = None,
     ) -> dict[str, t.Any]:
-        self.editor._apply_config_patch(instance_id, patch)
+        self.editor._apply_config_patch(instance_id, patch, inputs)
         self.last_check = checked
         return copy.deepcopy(self._item(instance_id).get("config", {}))
 
@@ -1155,12 +1168,19 @@ class DashboardOps:
         )
 
     def _set_inputs(self, name: str, inputs: dict[str, t.Any]) -> str:
+        resolved = self._inputs_patch(name, inputs)
+        instance_id = self._changeable(name)[0]
+        self.editor._apply_config_patch(instance_id, {}, resolved)
+        return instance_id
+
+    def _inputs_patch(self, name: str, inputs: dict[str, t.Any]) -> dict[str, t.Any]:
+        """Return *inputs* by current port name, refusing any the node's inputs would."""
         self._require_edit()
         if not isinstance(inputs, dict):
             raise OperationError(
                 f"inputs must be a mapping of input names to values, not {inputs!r}."
             )
-        instance_id, item = self._changeable(name)
+        _, item = self._changeable(name)
         spec = self.editor.component_specs[item["component_id"]]
         ports = {p.name: p for p in spec.inputs}
         resolved = {}
@@ -1174,9 +1194,7 @@ class DashboardOps:
             if value is not None and (reason := check_literal(port, value)) is not None:
                 raise OperationError(f"Input '{key}' of '{name}': {reason}")
             resolved[port.name] = value
-        for port, value in resolved.items():
-            self.editor.set_input_value(instance_id, port, value)
-        return instance_id
+        return resolved
 
     def connect(
         self, source: str, target: str, transform: list[dict[str, t.Any]] | None = None

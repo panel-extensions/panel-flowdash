@@ -27,6 +27,8 @@ from panel_flowdash.ui.choice_widgets import ChoiceSelect
 from panel_flowdash.ui.input_editor import LiteralEditor
 from panel_flowdash.ui.status_bar import select_on_canvas
 
+from .test_config_choices import _settle
+
 
 @register(page=False, component=True, title="Num", provides=[{"key": "value", "type": "Number"}])
 class Num(Viewer):
@@ -70,7 +72,22 @@ def count(config):
     return "count"
 
 
-COMPONENTS = {"D/num": Num, "D/show": Show, "D/count": count}
+@register(
+    page=False,
+    component=True,
+    title="Years",
+    config=["label"],
+    requires=[{"key": "span", "type": "tuple", "required": False}],
+)
+class Years(Viewer):
+    span = param.Range(default=(2000, 2020))
+    label = param.String(default="")
+
+    def __panel__(self):
+        return "years"
+
+
+COMPONENTS = {"D/num": Num, "D/show": Show, "D/count": count, "D/years": Years}
 
 
 def _editor(**params):
@@ -79,11 +96,14 @@ def _editor(**params):
 
 
 @pytest.fixture
-def editor():
+async def editor():
+    # Async, so the editor is disposed while the test's event loop still runs:
+    # disposing it may schedule work on the loop.
     editor = _editor(store=MemoryDashboardStore())
     editor.new_dashboard("Mine")
     yield editor
     editor.dispose()
+    await _settle(0.1)
 
 
 def _placed(editor):
@@ -326,6 +346,24 @@ class TestFile:
         assert any("inputs" in variant["properties"] for variant in node)
 
 
+class TestDeclaredInputs:
+    def test_a_declared_input_is_checked_against_the_components_parameter(self, editor):
+        years = editor.add_component("D/years", instance_id="years")
+        port = next(p for p in editor.component_specs["D/years"].inputs if p.name == "span")
+        assert port.parameter is Years.param.span
+        with pytest.raises(ValueError, match="Range"):
+            editor.set_input_value(years, "span", [2015, 2010, 3])
+        editor.set_input_value(years, "span", [2010, 2015])
+        assert editor._component_instances[years].span == (2010, 2015)
+
+    async def test_its_editor_starts_from_the_components_default(self, editor):
+        years = editor.add_component("D/years", instance_id="years")
+        inspector = await _inspect(editor, years)
+        literal = _literal_editor(inspector, "span")
+        assert literal._holder.value == (2000, 2020)
+        assert isinstance(literal._parameter, param.Range)
+
+
 class TestOps:
     @pytest.fixture
     def ops(self, editor):
@@ -339,6 +377,25 @@ class TestOps:
         ops.set_inputs("show", {"value": None})
         assert ops.editor.input_values("show") == {"span": [1, 2]}
 
+    def test_several_inputs_are_one_version(self, ops):
+        ops.editor.add_component("D/show", instance_id="show")
+        before = len(ops.editor.edit_history.versions)
+        ops.set_inputs("show", {"value": 12, "span": [1, 2]})
+        versions = ops.editor.edit_history.versions
+        assert len(versions) == before + 1
+        assert versions[-1].metadata["label"] == "Set Value, Span of show"
+
+    def test_config_and_inputs_are_checked_first_and_applied_together(self, ops):
+        ops.editor.add_component("D/years", instance_id="years")
+        with pytest.raises(OperationError, match="Range"):
+            ops.set_config("years", {"label": "Years"}, inputs={"span": [1, 2, 3]})
+        assert ops.node_config("years") == {}
+        before = len(ops.editor.edit_history.versions)
+        ops.set_config("years", {"label": "Years"}, inputs={"span": [1, 2]})
+        assert ops.node_config("years") == {"label": "Years"}
+        assert ops.editor.input_values("years") == {"span": [1, 2]}
+        assert len(ops.editor.edit_history.versions) == before + 1
+
     def test_a_refused_value_changes_nothing(self, ops):
         ops.editor.add_component("D/show", instance_id="show")
         with pytest.raises(OperationError, match="at most 100"):
@@ -348,8 +405,10 @@ class TestOps:
         assert ops.editor.input_values("show") == {}
 
 
-def _inspect(editor, node_id):
+async def _inspect(editor, node_id):
+    """Select a node and let the inspector ask for its choices, which runs off the loop."""
     select_on_canvas(editor._flow, node_id=node_id)
+    await _settle(0.5)
     return editor._inspector
 
 
@@ -358,9 +417,9 @@ def _literal_editor(inspector, port):
 
 
 class TestInspector:
-    def test_an_unwired_input_gets_a_typed_editor(self, editor):
+    async def test_an_unwired_input_gets_a_typed_editor(self, editor):
         _, show = _placed(editor)
-        inspector = _inspect(editor, show)
+        inspector = await _inspect(editor, show)
         literal = _literal_editor(inspector, "value")
         assert isinstance(literal, LiteralEditor)
         assert "rows" not in inspector._literal_editors
@@ -370,17 +429,17 @@ class TestInspector:
         assert literal.clear_button.visible
         assert inspector._literal_captions["value"].object.startswith("Set here")
 
-    def test_typing_a_value_does_not_rebuild_the_row(self, editor):
+    async def test_typing_a_value_does_not_rebuild_the_row(self, editor):
         _, show = _placed(editor)
-        inspector = _inspect(editor, show)
+        inspector = await _inspect(editor, show)
         literal = _literal_editor(inspector, "value")
         literal._holder.value = 30
         literal._holder.value = 31
         assert _literal_editor(inspector, "value") is literal
 
-    def test_a_refused_value_is_shown_under_the_field(self, editor):
+    async def test_a_refused_value_is_shown_under_the_field(self, editor):
         _, show = _placed(editor)
-        inspector = _inspect(editor, show)
+        inspector = await _inspect(editor, show)
         literal = _literal_editor(inspector, "state")
 
         def refuse(value):
@@ -390,9 +449,9 @@ class TestInspector:
         literal._holder.value = "XX"
         assert literal._error.visible and literal._error.object == "No such state"
 
-    def test_clearing_goes_back_to_the_default(self, editor):
+    async def test_clearing_goes_back_to_the_default(self, editor):
         _, show = _placed(editor)
-        inspector = _inspect(editor, show)
+        inspector = await _inspect(editor, show)
         literal = _literal_editor(inspector, "span")
         literal._holder.value = (3, 4)
         literal.clear_button.clicks += 1
@@ -400,9 +459,32 @@ class TestInspector:
         assert literal._holder.value == (0, 1)
         assert not literal.clear_button.visible
 
-    def test_undo_updates_the_field(self, editor):
+    async def test_text_that_is_no_value_is_explained_and_changes_nothing(self, editor):
         _, show = _placed(editor)
-        inspector = _inspect(editor, show)
+        editor.set_input_value(show, "span", (2, 3))
+        inspector = await _inspect(editor, show)
+        literal = _literal_editor(inspector, "span")
+        literal._text.value = "(2, "
+        assert literal._error.visible
+        assert literal._error.object == "'(2,' is not a value. Write it like (2010, 2020)."
+        literal._text.value = "(1, 2, 3)"
+        assert "length" in literal._error.object or "2" in literal._error.object
+        assert editor.input_values(show) == {"span": [2, 3]}
+        literal._text.value = "(4, 5)"
+        assert editor.input_values(show) == {"span": [4, 5]} and not literal._error.visible
+
+    async def test_an_emptied_number_keeps_the_value(self, editor):
+        _, show = _placed(editor)
+        editor.set_input_value(show, "value", 30)
+        inspector = await _inspect(editor, show)
+        literal = _literal_editor(inspector, "value")
+        literal._holder.value = None
+        assert editor.input_values(show) == {"value": 30}
+        assert literal._holder.value == 30 and literal._error.visible
+
+    async def test_undo_updates_the_field(self, editor):
+        _, show = _placed(editor)
+        inspector = await _inspect(editor, show)
         literal = _literal_editor(inspector, "value")
         literal._holder.value = 30
         editor.undo()
@@ -410,11 +492,11 @@ class TestInspector:
         assert literal._holder.value is None
         assert not literal.clear_button.visible
 
-    def test_a_wired_input_says_its_literal_waits(self, editor):
+    async def test_a_wired_input_says_its_literal_waits(self, editor):
         num, show = _placed(editor)
         editor.set_input_value(show, "value", 30)
         editor.connect(num, "value", show, "value")
-        inspector = _inspect(editor, show)
+        inspector = await _inspect(editor, show)
         assert "value" not in inspector._literal_editors
         texts = [
             str(c.object)
@@ -425,10 +507,7 @@ class TestInspector:
 
     async def test_choices_for_an_input_fill_its_dropdown(self, editor):
         _, show = _placed(editor)
-        inspector = _inspect(editor, show)
-        from .test_config_choices import _settle
-
-        await _settle(0.5)
+        inspector = await _inspect(editor, show)
         literal = _literal_editor(inspector, "state")
         widgets = list(literal._form.select(ChoiceSelect))
         assert widgets and set(widgets[0].options.values()) >= {"TX", "CA"}
