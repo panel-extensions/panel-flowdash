@@ -21,7 +21,9 @@ import param
 from panel.viewable import Viewer
 
 from panel_flowdash.config_check import CheckResult
+from panel_flowdash.config_choices import Choices, has_choices, node_choices
 from panel_flowdash.transforms import parse_transform, summarize_transform
+from panel_flowdash.ui.choice_widgets import form_widgets, widgets_key
 from panel_flowdash.ui.config_draft import ConfigDraft
 from panel_flowdash.ui.node_card import (
     STATUS_TEXT,
@@ -124,6 +126,13 @@ class Inspector(Viewer):
         self._check_runs: dict[str, int] = {}
         self._check_results: dict[str, tuple[dict, tuple, CheckResult]] = {}
         self._draft: ConfigDraft | None = None
+        # The choices last offered per node, so a form shown again starts with them.
+        self._choices: dict[str, dict[str, Choices]] = {}
+        self._choice_holder: pn.Column | None = None
+        # The form whose choices are being asked for, and whether to ask again after.
+        self._choices_busy: pn.Column | None = None
+        self._choices_again = False
+        self._form_key: tuple = ()
 
         self.collapse_button = pmui.IconButton(
             icon="keyboard_double_arrow_right",
@@ -231,6 +240,7 @@ class Inspector(Viewer):
             release()
         self._releases = []
         self._draft = None
+        self._choice_holder = None
         self._status_chip = None
         self._data_column = None
         self._inputs_column = None
@@ -442,17 +452,80 @@ class Inspector(Viewer):
             watcher = config_state.param.watch(record, names)
             self._releases.append(partial(config_state.param.unwatch, watcher))
             edited = config_state
-        form = pn.Param(
-            edited,
+        holder = pn.Column(
+            self._param_form(edited, names, self._choices.get(instance_id, {})),
+            margin=0,
+            sizing_mode="stretch_width",
+        )
+        if has_choices(spec):
+            self._watch_choices(instance_id, spec, config_state, edited, names, holder)
+        if draft is None:
+            return holder
+        return pn.Column(holder, draft.alert, margin=0, sizing_mode="stretch_width")
+
+    def _param_form(
+        self, state: param.Parameterized, names: list[str], choices: dict[str, Choices]
+    ) -> pn.Param:
+        widgets = form_widgets(state, names, choices)
+        self._form_key = widgets_key(widgets)
+        return pn.Param(
+            state,
             parameters=names,
+            widgets=widgets or None,
             show_name=False,
             expand_button=False,
             sizing_mode="stretch_width",
             margin=0,
         )
-        if draft is None:
-            return form
-        return pn.Column(form, draft.alert, margin=0, sizing_mode="stretch_width")
+
+    def _watch_choices(self, instance_id, spec, config_state, edited, names, holder):
+        """Offer the node's config choices in *holder*'s form, asking again as its inputs or config change."""
+        self._choice_holder = holder
+        refresh = partial(self._update_choices, instance_id, edited, names, holder)
+        state = self.editor._dataflow_graph.get_state(instance_id)
+        for owner, watched in (
+            (config_state, names),
+            (state, [p.name for p in spec.inputs if state is not None and p.name in state.param]),
+        ):
+            if owner is not None and watched:
+                watcher = owner.param.watch(lambda *_events: refresh(), watched)
+                self._releases.append(partial(owner.param.unwatch, watcher))
+        refresh()
+
+    def _update_choices(self, instance_id, state, names, holder):
+        """Ask for the node's choices and rebuild its form if they change its widgets.
+
+        One request runs at a time per form; changes meanwhile ask once more
+        after it, so a fast-changing input does not pile up calls of a slow
+        ``config_choices``.
+        """
+        if self._choices_busy is holder:
+            self._choices_again = True
+            return
+        self._choices_busy, self._choices_again = holder, False
+        inspector = weakref.ref(self)
+
+        async def update():
+            try:
+                again = True
+                while again:
+                    owner = inspector()
+                    if owner is None or owner._choice_holder is not holder:
+                        return
+                    owner._choices_again = False
+                    choices = await node_choices(owner.editor, instance_id)
+                    if owner._choice_holder is not holder:
+                        return
+                    owner._choices[instance_id] = choices
+                    if widgets_key(form_widgets(state, names, choices)) != owner._form_key:
+                        holder[:] = [owner._param_form(state, names, choices)]
+                    again = owner._choices_again
+            finally:
+                owner = inspector()
+                if owner is not None and owner._choices_busy is holder:
+                    owner._choices_busy = None
+
+        param.parameterized.async_executor(update)
 
     def _fill_inputs(self, instance_id: str, spec: ComponentSpec):
         if self._inputs_column is not None and spec.inputs:

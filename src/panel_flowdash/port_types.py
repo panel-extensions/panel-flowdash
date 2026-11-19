@@ -14,7 +14,7 @@ Parameter still validates every value it receives at runtime.
 from __future__ import annotations
 
 import threading
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 ANY = "any"
 
@@ -23,6 +23,8 @@ _LOCK = threading.Lock()
 _ALIASES: dict[str, str] = {}
 # Canonical name -> canonical names it is a direct subtype of.
 _SUPERTYPES: dict[str, set[str]] = {}
+# Canonical name -> what lists the columns of a value of that type.
+_COLUMN_READERS: dict[str, Callable] = {}
 
 
 def _key(name: str) -> str:
@@ -34,6 +36,7 @@ def register_port_type(
     *,
     aliases: Iterable[str] = (),
     subtype_of: Iterable[str] = (),
+    columns: Callable | None = None,
 ) -> str:
     """Register a port type, its alternative spellings and the types it can feed.
 
@@ -50,6 +53,13 @@ def register_port_type(
     subtype_of
         Types an output of this type may connect to, e.g. ``["Person"]``.
         Subtyping is transitive.
+    columns
+        For a tabular type that is not a DataFrame, e.g. a lazy query, a
+        callable that lists the columns of a value without fetching rows:
+        ``columns(value)`` returns column names, ``(name, type)`` pairs or a
+        ``{name: type}`` dict. Config fields that offer the columns of an
+        input of this type use it, see :class:`~panel_flowdash.Choices`.
+        Subtypes inherit it.
 
     Returns
     -------
@@ -79,7 +89,21 @@ def register_port_type(
             parent_key = _ALIASES.setdefault(_key(parent), _key(parent))
             if parent_key != canonical:
                 supers.add(parent_key)
+        if columns is not None:
+            _COLUMN_READERS[canonical] = columns
     return canonical
+
+
+def column_reader(name: str | None) -> Callable | None:
+    """Return the ``columns`` callable registered for a port type or the nearest supertype."""
+    canonical = normalize_port_type(name)
+    if canonical is None:
+        return None
+    with _LOCK:
+        if canonical in _COLUMN_READERS:
+            return _COLUMN_READERS[canonical]
+        supers = sorted(_supertypes(canonical) - {canonical})
+        return next((_COLUMN_READERS[s] for s in supers if s in _COLUMN_READERS), None)
 
 
 def normalize_port_type(name: str | None) -> str | None:

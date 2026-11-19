@@ -81,6 +81,7 @@ class PanelAppMetadata:
     config_editor: Callable | None = None
     check_config: Callable | None = None
     contract: Any = None
+    config_choices: Callable | None = None
     handles_failures: list[str] = field(default_factory=list)
     # Former component ids and former port names, so dashboards saved before a
     # rename still resolve.
@@ -161,6 +162,7 @@ def register(
     config_editor: Callable | None = None,
     check_config: Callable | None = None,
     contract: Any = None,
+    config_choices: Callable | None = None,
     handles_failures: list[str] | None = None,
     aliases: list[str] | None = None,
     port_aliases: dict[str, str] | None = None,
@@ -203,6 +205,16 @@ def register(
     ``expects(context)`` writes the parameter's ``expects`` and its
     ``check(context, expects)`` runs whenever the parameter is rebound,
     see :mod:`panel_flowdash.parameters`.
+
+    The ``config_choices`` argument takes a callable, sync or async, called
+    like ``check_config`` as ``choices(config, inputs)``, that returns the
+    values each config field may take: ``{field: choices}``, where choices are
+    a list of values, a ``{label: value}`` dict or a
+    :class:`~panel_flowdash.Choices`. The inspector offers them in a dropdown,
+    or as suggestions with ``Choices(restrict=False)``, and asks again when
+    the node's inputs or config change. A config param may also declare that
+    it names a column of an input, with
+    ``metadata={"flowdash": {"choices": "columns", "of": "<input>"}}``.
 
     The ``placeholder`` argument sets the message a dashboard tile shows while a
     blocking input of the component is unset, in place of the default
@@ -261,6 +273,7 @@ def register(
         config_editor=config_editor,
         check_config=check_config,
         contract=contract,
+        config_choices=config_choices,
         handles_failures=list(handles_failures or []),
         aliases=_name_list(aliases),
         port_aliases=_port_aliases(port_aliases),

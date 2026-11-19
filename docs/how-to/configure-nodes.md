@@ -65,8 +65,12 @@ def app(config, instance_config):
     ...
 ```
 
-**A JSON-Schema-like dict** - `properties` map to fields; an `enum` becomes a
-selector, `default` and `title` are honored:
+**A JSON-Schema-like dict** - `properties` map to fields typed from their
+`type` (`string`, `integer`, `number`, `boolean`, `array`, `object`, or a
+`["integer", "null"]` pair for an optional one), so each gets the matching
+widget. An `enum` becomes a selector, `minimum` and `maximum` bound a number,
+and `default`, `title` and `description` are honored. A property without a
+type, or whose default does not fit its type, accepts any value:
 
 ```python
 schema = {
@@ -85,8 +89,9 @@ def app(config, instance_config):
     ...
 ```
 
-**A Pydantic model** - its fields and defaults are read the same way as the dict
-form.
+**A Pydantic model** - its fields are typed from the model's JSON schema the
+same way as the dict form, with the fields' own defaults (a tuple default stays
+a tuple).
 
 ### 3. Supply a custom editor with `config_editor`
 
@@ -228,6 +233,66 @@ A check does not run when a new value arrives over an existing connection,
 when an upstream node is removed or when an edge's transform changes (the
 inspector does check the selected node again on the latter). Only `preview`
 and `validate` check against the inputs as they are at that moment.
+
+### 5. Offer choices for a field
+
+A field that names a column, a table or another value the node's inputs
+determine is easier to fill from a list than from memory. A param can declare
+that it names a column of one of the node's inputs:
+
+```python
+@register(component=True, config=["column"])
+class Histogram(Viewer):
+    data = param.DataFrame(default=None, allow_None=True)
+    column = param.String(default="", metadata={"flowdash": {"choices": "columns", "of": "data"}})
+```
+
+Once `data` is wired the inspector shows `column` as a dropdown of the
+DataFrame's columns, each with its type (`year (integer)`). A list field gets a
+multi-select. In a JSON schema the same declaration is
+`"x-flowdash": {"choices": "columns", "of": "data"}` on the property, and in a
+Pydantic model `Field(json_schema_extra={"x-flowdash": {...}})`.
+
+For anything else, pass `config_choices`, a callable that is called like
+`check_config`, as `choices(config, inputs)`, sync or async, and returns the
+values per field:
+
+```python
+from panel_flowdash import Choices
+
+def choices(config, inputs):
+    source = inputs.get("source")
+    if source is None:
+        return {}
+    return {
+        "table": source.list_tables(),
+        "title": Choices(["Totals", "Counts"], restrict=False),
+    }
+
+@register(component=True, config=["table", "title"], config_choices=choices)
+class TableView(Viewer):
+    source = param.Parameter()
+    table = param.String(default="")
+    title = param.String(default="")
+```
+
+Each value is a list, a `{label: value}` dict or a `Choices(options, restrict=True,
+types=None)`. A restricted field shows a dropdown; `restrict=False` keeps a text
+field that suggests the values and accepts others. Choices from the callable
+replace the declared ones of the same field. The inspector asks again when the
+node's inputs or config change, and offers nothing for a field while the
+callable fails, times out (10 seconds) or returns no choices for it, so the
+plain field is always there. A value that is not among the choices, for
+example one set by the assistant, stays and is marked "(not available)";
+showing the form never changes the config.
+
+Columns of a DataFrame are read directly. For another tabular value, such as a
+lazy query, register a `columns` reader with its port type, which the
+declaration then uses for inputs of that type and its subtypes:
+
+```python
+register_port_type("mylib.Query", columns=lambda query: query.schema)  # {name: type}
+```
 
 ---
 
