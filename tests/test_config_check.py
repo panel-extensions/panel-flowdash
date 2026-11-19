@@ -501,6 +501,20 @@ class TestInspectorDraft:
         body = pn.Column(*editor._inspector._body)
         return next(iter(body.select(pn.Param)))
 
+    async def test_the_status_says_a_held_back_edit_was_not_applied(self, editor):
+        query = editor.add_component(QUERY)
+        form = self._form(editor, query)
+        await _settle()
+        chip = editor._inspector._status_chip
+        assert chip.label != "Edit not applied"
+        before = (chip.label, chip.color)
+        form._widgets["sql"].value = "DROP t"
+        await _settle()
+        assert (chip.label, chip.color) == ("Edit not applied", "warning")
+        form._widgets["sql"].value = "SELECT 2"
+        await _settle()
+        assert (chip.label, chip.color) == before
+
     async def test_a_failing_edit_is_held_back_and_shown(self, editor):
         query = editor.add_component(QUERY)
         form = self._form(editor, query)
@@ -766,6 +780,8 @@ class TestPlacement:
         ]
         assert len(alerts) == 1 and "Only SELECT statements are allowed." in alerts[0].object
         assert alerts[0].title == "Config refused"
+        chip = editor._inspector._status_chip
+        assert (chip.label, chip.color) == ("Config refused", "error")
 
     async def test_run_command_checks_the_defaults_of_a_component(self, monkeypatch):
         pytest.importorskip("pydantic_ai")
