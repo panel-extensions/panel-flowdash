@@ -359,3 +359,34 @@ def test_the_narrow_breakpoint_matches_the_shells():
     from panel_flowdash.ui.shell import NARROW_BREAKPOINT as SHELL
 
     assert NARROW_BREAKPOINT == SHELL
+
+
+def test_the_feed_shows_the_latest_page_and_earlier_pages_on_request(editor):
+    for i in range(5):
+        editor.end_turn()
+        with agent_edits(run=f"run-p{i}", question=f"Note {i}"):
+            editor.add_component("T/number", instance_id=f"n{i}")
+    feed = editor.explore_feed
+    feed.page_size = 3
+    feed.shown = True
+    runs = list(feed.state.runs)
+    assert len(runs) == 3 and runs[-1] == f"turn-{_turn(editor, 'n4')}"
+    assert set(_cells(feed)) == {"node:n2", "node:n3", "node:n4"}
+    assert feed._earlier.visible and feed._earlier.label == "Show earlier requests (4 more)"
+    editor.end_turn()
+    with agent_edits(run="run-p5", question="Note 5"):
+        editor.add_component("T/number", instance_id="n5")
+    feed.sync()
+    assert len(feed.state.runs) == 4 and feed._earlier.label == "Show earlier requests (4 more)"
+    before = list(feed.chat.feed.objects)
+    feed.show_earlier()
+    assert len(feed.state.runs) == 7 and feed._earlier.label == "Show earlier requests (1 more)"
+    after = list(feed.chat.feed.objects)
+    # The entries shown stay, after the older ones.
+    assert after[len(after) - len(before) :] == before
+    assert feed.state.items[0].content == "Double it"
+    assert {"node:n0", "node:n1"} <= set(_cells(feed))
+    feed.show_earlier()
+    assert len(feed.state.runs) == 8 and not feed._earlier.visible
+    editor.new_dashboard("Other")
+    assert not feed._earlier.visible

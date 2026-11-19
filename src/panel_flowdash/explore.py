@@ -65,7 +65,7 @@ RESTRICTED_TITLE = "Restricted output"
 RAIL_WIDTH = 80
 NARROW_BREAKPOINT = 600
 
-#: How many entries around the visible ones the feed renders; enough for any feed.
+#: How many entries around the visible ones the chat feed renders; more than the pages shown hold.
 FEED_LOAD_BUFFER = 100_000
 
 #: The height of a card showing a component's view, when its size hints give none.
@@ -133,6 +133,15 @@ class ExploreFeed(Viewer):
         agent's events, and catches up when shown.""",
     )
 
+    page_size = param.Integer(
+        default=20,
+        bounds=(1, None),
+        doc="""
+        How many of the latest entries the feed shows at first, and how many
+        older ones each "Show earlier requests" adds. Bounding the feed keeps
+        switching to Explore quick on a dashboard with a long history.""",
+    )
+
     def __init__(self, editor: FlowDash, **params):
         super().__init__(editor=editor, **params)
         self.state = RunState(flush_interval=0)
@@ -167,7 +176,58 @@ class ExploreFeed(Viewer):
             css_classes=["flowdash-explore"],
             stylesheets=[_narrow_css()],
         )
-        editor.param.watch(self._schedule, "dashboard")
+        # The index of the first entry shown; None shows the latest page at the next sync.
+        self._first: int | None = None
+        self._hidden = 0
+        self._earlier = pmui.Button(
+            label="Show earlier requests",
+            icon="expand_less",
+            variant="text",
+            size="small",
+            visible=False,
+            margin=(4, 10),
+            sx={"textTransform": "none", "alignSelf": "center"},
+            css_classes=["explore-earlier-requests"],
+        )
+        self._earlier.on_click(lambda _event: self.show_earlier())
+        editor.param.watch(self._on_dashboard, "dashboard")
+
+    def _on_dashboard(self, *_events):
+        self._first = None
+        self._schedule()
+
+    def show_earlier(self):
+        """Add the next page of older entries above those shown.
+
+        The entries shown stay as they are and the older ones go in before
+        them, so the feed keeps the reader at the same entry.
+        """
+        if not self._first or not self.shown:
+            return
+        self._first = max(0, self._first - self.page_size)
+        timeline, cells = self.project()
+        applied = self._applied
+        added = len(timeline) - len(applied)
+        if added < 0 or [self._key(e) for e in timeline[added:]] != [
+            self._key(e) for e in applied
+        ]:
+            self.sync()
+            return
+        state = self.state
+        shown = list(state.items)
+        # The older runs are applied without telling the chat, then put in front of
+        # the shown ones, so the chat inserts them rather than appending them.
+        with param.parameterized.discard_events(state):
+            state.apply_many(timeline[:added])
+        known = {id(item) for item in shown}
+        state.items = [*(i for i in state.items if id(i) not in known), *shown]
+        state.param.trigger("runs")
+        self._applied = list(timeline)
+        for aid, event in cells.items():
+            if aid not in self._published:
+                state.apply(event)
+                self._published[aid] = event
+        self.sync()
 
     def __panel__(self):
         """Render the feed."""
@@ -199,8 +259,9 @@ class ExploreFeed(Viewer):
             readonly=not composer,
             user="You",
             tool_labels=TOOL_LABELS,
-            # The feed renders every entry: a window of rendered entries that shifts
-            # as one is added re-renders the feed and loses the reader's place.
+            # The feed renders every entry it holds, at most a few pages: a window of
+            # rendered entries that shifts as one is added re-renders the feed and
+            # loses the reader's place.
             feed_params={"load_buffer": FEED_LOAD_BUFFER},
             **({"avatars": {EARLIER_AGENT: "📊"}} if "avatars" in AgentChat.param else {}),
             inline_artifacts=lambda artifact: (
@@ -363,6 +424,19 @@ class ExploreFeed(Viewer):
             if run_id not in placed:
                 entries.append((events[0].timestamp, list(events)))
         entries.sort(key=lambda entry: entry[0])
+        # Only the latest page and the pages asked for since are shown.
+        if self._first is None:
+            self._first = max(0, len(entries) - self.page_size)
+        self._first = min(self._first, max(0, len(entries) - 1))
+        self._hidden = self._first
+        entries = entries[self._first :]
+        shown = {
+            event.run_id
+            for _, events in entries
+            for event in events
+            if isinstance(event, ev.RunStarted)
+        }
+        cells = {aid: event for aid, event in cells.items() if event.run_id in shown}
         return [event for _, events in entries for event in events], cells
 
     def _earlier_run(self, earlier: list[str], names: dict[str, str]) -> list[ev.Event]:
@@ -429,9 +503,14 @@ class ExploreFeed(Viewer):
                 if self._published.get(aid) != event:
                     self.state.apply(event)
                     self._published[aid] = event
-        shown = self.chat if (timeline or self._chat_key[0]) else self._empty
-        if list(self._layout.objects) != [shown]:
-            self._layout.objects = [shown]
+        hidden = self._hidden
+        self._earlier.param.update(
+            visible=bool(hidden),
+            label=f"Show earlier requests ({hidden} more)" if hidden else "Show earlier requests",
+        )
+        content = [self._earlier, self.chat] if (timeline or self._chat_key[0]) else [self._empty]
+        if list(self._layout.objects) != content:
+            self._layout.objects = content
         self.refresh()
 
     def _key(self, event: ev.Event):

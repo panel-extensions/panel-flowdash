@@ -222,3 +222,68 @@ def test_a_manual_edit_while_exploring_keeps_the_feed_in_place(page):
     assert abs(after - before) < 200, (before, after)
     assert resets == []
     assert errors == []
+
+
+_DEEP_COUNT = """() => {
+  const roots = [document]
+  let n = 0
+  for (let i = 0; i < roots.length; i++) {
+    for (const el of roots[i].querySelectorAll("*")) {
+      n++
+      if (el.shadowRoot) roots.push(el.shadowRoot)
+    }
+  }
+  return n
+}"""
+
+
+def test_a_long_history_shows_its_latest_page_and_loads_earlier_ones(page):
+    import time
+
+    store, (dash,) = _store_with("Plant")
+    apps = []
+    page.set_viewport_size({"width": 1400, "height": 1000})
+    _serve_app(page, store, f"/dash/{dash}", apps)
+    page.get_by_role("button", name="Explore", exact=True).wait_for()
+    editor = apps[0]._editor
+    for i in range(60):
+        editor.end_turn()
+        with agent_edits(run=f"run-{i}", question=f"Note number {i}"):
+            editor.add_component("Test/note", instance_id=f"memo{i}")
+    page.wait_for_timeout(1000)
+    before = page.evaluate(_DEEP_COUNT)
+    start = time.monotonic()
+    page.get_by_role("button", name="Explore", exact=True).click()
+    page.locator(".artifact-cell", has_text="memo59").wait_for(timeout=60000)
+    switched = time.monotonic() - start
+    cells = page.locator(".artifact-cell")
+    expect(cells).to_have_count(20)
+    # The feed holds one page, so the page grows by a bounded amount whatever the history.
+    assert page.evaluate(_DEEP_COUNT) - before < 20000, page.evaluate(_DEEP_COUNT) - before
+    assert switched < 30, switched
+
+    # The entry on screen stays where it is while older ones go in above it.
+    latest = page.get_by_text("Note number 59", exact=True)
+    page.wait_for_timeout(1000)
+    before = latest.bounding_box()["y"]
+    page.get_by_role("button", name=re.compile(r"Show earlier requests \(41 more\)")).click()
+    expect(cells).to_have_count(40, timeout=30000)
+    page.get_by_text("Note number 20", exact=True).wait_for(state="attached")
+    page.wait_for_timeout(1500)
+    assert abs(latest.bounding_box()["y"] - before) < 50, (before, latest.bounding_box())
+    expect(
+        page.get_by_role("button", name=re.compile(r"Show earlier requests \(21 more\)"))
+    ).to_be_visible()
+
+    # A reader at the top of the feed stays at the entry they were reading.
+    page.mouse.move(700, 500)
+    for _ in range(40):
+        page.mouse.wheel(0, -2000)
+    page.wait_for_timeout(1000)
+    top = page.get_by_text("Note number 20", exact=True)
+    before = top.bounding_box()["y"]
+    assert 0 <= before <= 1000, before
+    page.get_by_role("button", name=re.compile(r"Show earlier requests \(21 more\)")).click()
+    expect(cells).to_have_count(60, timeout=30000)
+    page.wait_for_timeout(1500)
+    assert abs(top.bounding_box()["y"] - before) < 50, (before, top.bounding_box())
