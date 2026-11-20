@@ -574,3 +574,17 @@ class TestOutputs:
         node = types.SimpleNamespace(pipeline=object(), data=TURBINES)
         assert CodePanel._default_output(None, node, ["pipeline", "data"]) == "data"
         assert CodePanel._default_output(None, node, ["pipeline"]) == "pipeline"
+
+
+def test_code_drafts_follows_held_drafts():
+    editor, query = make_editor()
+    assert not editor.code_drafts
+    editor.open_code_panel(query, "expr")
+    editor.code_panel.code.value_input = "p_year == 2016"
+    assert editor.code_drafts
+    editor.close_code_panel()
+    assert editor.code_drafts
+    editor.drop_code_drafts()
+    assert not editor.code_drafts
+    editor.open_code_panel(query, "expr")
+    assert editor.code_panel.code.value_input == "p_year > 2014"

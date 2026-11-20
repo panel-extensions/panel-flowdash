@@ -904,6 +904,13 @@ class FlowDash(Viewer):
         DashboardModel or, when a store is configured, a dashboard id or title.""",
     )
 
+    code_drafts = param.Boolean(
+        default=False,
+        doc="""
+        Whether the code panel holds edits that have not been run. Managed by
+        the editor; like ``dirty``, watch it to prompt before discarding work.""",
+    )
+
     dirty = param.Boolean(
         default=False,
         doc="""
@@ -3707,7 +3714,7 @@ class FlowDash(Viewer):
             self._code_handle = DockHandle(sizing_mode="stretch_width", height=7, margin=0)
             self._code_handle.param.watch(self._on_code_dock_resized, "size")
             panel.param.watch(self._sync_code_dock, ["collapsed", "instance_id"])
-            panel.param.watch(lambda _event: self._sync_toolbar_state(), "dirty")
+            panel.param.watch(self._on_code_drafts, "dirty")
             self._code_dock[:] = [self._code_handle, panel]
         return self._code_panel
 
@@ -7226,6 +7233,16 @@ class FlowDash(Viewer):
         if inspector is not None and inspector.has_unsent_text():
             return True
         return self._has_code_drafts()
+
+    def _on_code_drafts(self, *_events):
+        self.code_drafts = self._has_code_drafts()
+        self._sync_toolbar_state()
+
+    def drop_code_drafts(self):
+        """Forget the edits the code panel holds without running them, e.g. when leaving the dashboard."""
+        panel = getattr(self, "_code_panel", None)
+        if panel is not None:
+            panel.drop_all_drafts()
 
     def _has_code_drafts(self) -> bool:
         """Whether the code panel holds an edit that has not been run."""

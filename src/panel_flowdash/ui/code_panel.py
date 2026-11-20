@@ -29,6 +29,7 @@ from panel.widgets import CodeEditor
 from panel_flowdash.config_check import CheckResult
 from panel_flowdash.config_choices import code_fields, node_completions
 from panel_flowdash.dataflow_engine import failure_text
+from panel_flowdash.spec_settings import declared_settings
 from panel_flowdash.ui.choice_widgets import form_widgets
 from panel_flowdash.ui.code_field import ACE_OPTIONS, AceTools, code_language
 from panel_flowdash.ui.config_draft import ConfigDraft
@@ -573,6 +574,13 @@ class CodePanel(Viewer):
         """Whether an edit typed in the panel has not been run, shown or held for later."""
         return self.dirty or bool(self._held)
 
+    def drop_all_drafts(self):
+        """Forget every draft, the one shown included."""
+        self._held.clear()
+        if self.instance_id is not None:
+            self.discard()
+        self.param.trigger("dirty")
+
     def drop_drafts(self, instance_id: str):
         """Forget the drafts held for the node *instance_id*, e.g. once it is removed."""
         for key in [k for k in self._held if k[0] == instance_id]:
@@ -614,7 +622,12 @@ class CodePanel(Viewer):
     def _build_fields(self, state: param.Parameterized, spec: ComponentSpec):
         """Show the node's other config fields in the header, as a draft applied on Run."""
         codes = set(code_fields(spec))
-        names = [n for n in state.param if n != "name" and n not in codes]
+        # Spec settings get an editor of their own, too large for the header.
+        names = [
+            n
+            for n in state.param
+            if n != "name" and n not in codes and declared_settings(state.param[n]) is None
+        ]
         self._others = names
         if not names:
             self._fields_state = None

@@ -31,7 +31,7 @@ def _open(page, editor, query):
 
 def _type_at_end(page, code, text):
     code.locator(".ace_content").click()
-    page.keyboard.press("Control+End")
+    page.keyboard.press("ControlOrMeta+End")
     page.keyboard.type(text, delay=60)
 
 
@@ -126,7 +126,7 @@ def test_ctrl_enter_runs(page):
     editor, query = make_editor()
     _panel, code = _open(page, editor, query)
     _type_at_end(page, code, "5")
-    page.keyboard.press("Control+Enter")
+    page.keyboard.press("ControlOrMeta+Enter")
     wait_until(lambda: editor._component_instances[query].expr == "p_year > 20145", timeout=8000)
     expect(page.locator(".fd-code-panel-result")).to_contain_text("0 rows", timeout=8000)
 
@@ -135,7 +135,7 @@ def test_a_check_error_shows_under_its_line_and_keeps_the_result(page):
     editor, query = make_editor()
     _panel, code = _open(page, editor, query)
     _type_at_end(page, code, "\nand p_yaer < 2016")
-    page.keyboard.press("Control+Enter")
+    page.keyboard.press("ControlOrMeta+Enter")
     message = code.locator(".fd-code-diagnostic")
     expect(message).to_contain_text("There is no column p_yaer.", timeout=8000)
     expect(code.locator(".fd-ace-error")).to_have_count(1)
@@ -156,7 +156,7 @@ def test_a_check_error_shows_under_its_line_and_keeps_the_result(page):
     assert editor._component_instances[query].expr == "p_year > 2014"
     _shot(page, "error")
     code.locator(".fd-code-fix").click()
-    page.keyboard.press("Control+Enter")
+    page.keyboard.press("ControlOrMeta+Enter")
     wait_until(
         lambda: editor._component_instances[query].expr == "p_year > 2014\nand p_year < 2016",
         timeout=8000,
@@ -168,7 +168,7 @@ def test_a_failing_run_keeps_the_last_good_result(page):
     editor, query = make_editor()
     _panel, code = _open(page, editor, query)
     _type_at_end(page, code, " >")
-    page.keyboard.press("Control+Enter")
+    page.keyboard.press("ControlOrMeta+Enter")
     result = page.locator(".fd-code-panel-result")
     expect(result.locator(".fd-code-run-error")).to_contain_text("SyntaxError", timeout=8000)
     expect(result.locator(".fd-code-table")).to_contain_text("2016")
@@ -184,7 +184,7 @@ def test_columns_are_completed(page):
     expect(popup).to_contain_text("number")
     _shot(page, "completion")
     page.keyboard.press("Enter")
-    page.keyboard.press("Control+Enter")
+    page.keyboard.press("ControlOrMeta+Enter")
     wait_until(
         lambda: editor._component_instances[query].expr == "p_year > 2014 and p_cap", timeout=8000
     )
@@ -250,11 +250,11 @@ def test_screenshots(page, scheme):
     code = page.locator(".fd-code-panel-editor")
     expect(code.locator(".ace_content")).to_contain_text("p_year > 2014", timeout=8000)
     _type_at_end(page, code, "\nand p_yaer < 2016")
-    page.keyboard.press("Control+Enter")
+    page.keyboard.press("ControlOrMeta+Enter")
     expect(code.locator(".fd-code-diagnostic")).to_have_count(1, timeout=8000)
     page.wait_for_timeout(500)
     _shot(page, f"error-{scheme}")
-    page.keyboard.press("Control+End")
+    page.keyboard.press("ControlOrMeta+End")
     for _ in range(len("p_yaer < 2016")):
         page.keyboard.press("Backspace")
     page.keyboard.type("p_c", delay=60)
@@ -287,10 +287,10 @@ def test_every_control_is_reachable_with_the_inspector_open(page, width):
         )
     assert page.evaluate(_SIDEWAYS) == []
     _type_at_end(page, code, "\nand p_yaer < 2016")
-    page.keyboard.press("Control+Enter")
+    page.keyboard.press("ControlOrMeta+Enter")
     expect(code.locator(".fd-code-diagnostic")).to_have_count(1, timeout=8000)
     code.locator(".fd-code-fix").click()
-    page.keyboard.press("Control+Enter")
+    page.keyboard.press("ControlOrMeta+Enter")
     expect(code.locator(".fd-code-diagnostic")).to_have_count(0, timeout=8000)
     page.wait_for_timeout(300)
     assert page.evaluate(_SIDEWAYS) == []
@@ -337,3 +337,64 @@ def test_the_collapse_button_flips(page):
     expect(page.locator(".fd-code-collapse")).to_be_hidden()
     page.locator(".fd-code-expand-panel").click()
     expect(page.locator(".fd-code-collapse")).to_be_visible(timeout=8000)
+
+
+@pytest.mark.parametrize("answer", ["Keep editing", "Leave without saving"])
+def test_leaving_the_dashboard_asks_about_a_held_draft(page, answer):
+    from panel_flowdash import DashboardItem, MemoryDashboardStore
+    from panel_flowdash.app import FlowDashApp
+    from panel_flowdash.auth import resolve_identity
+    from panel_flowdash.component_library import normalize_components
+    from tests.test_code_panel import COMPONENTS
+
+    store = MemoryDashboardStore()
+    model = store.create_dashboard(resolve_identity().user, "Notes")
+    model.items = [DashboardItem(instance_id="n1", component_id="D/note", x=0, y=0)]
+    store.save_dashboard(model)
+    apps = []
+
+    def factory():
+        app = FlowDashApp(
+            registry=normalize_components(COMPONENTS), store=store, notifications=False
+        )
+        apps.append(app)
+        return app
+
+    page.set_viewport_size(VIEWPORT)
+    routes = {"/": factory, "/dash/[^/]+": factory}
+    serve_component(page, routes, suffix=f"/dash/{model.dashboard_id}?edit=true")
+    page.get_by_role("button", name="Done").wait_for()
+    editor = apps[0]._editor
+    page.locator(".react-flow__node[data-id='n1']").click()
+    page.locator(".fd-code-expand").first.click(timeout=8000)
+    code = page.locator(".fd-code-panel-editor")
+    expect(code.locator(".ace_content")).to_contain_text("# Hi", timeout=8000)
+    _type_at_end(page, code, " there")
+    wait_until(lambda: editor.code_drafts, timeout=8000)
+    assert not editor.dirty
+    expect(page.get_by_text("Edits not run")).to_be_visible(timeout=8000)
+
+    page.get_by_role("button", name="Dashboards", exact=True).last.click()
+    dialog = page.get_by_role("dialog").filter(has_text="Save changes before leaving?")
+    expect(dialog).to_be_visible(timeout=8000)
+    expect(dialog.get_by_text("Edits in the code panel that were not run")).to_be_visible()
+    dialog.get_by_role("button", name=answer).click()
+    if answer == "Keep editing":
+        expect(page.get_by_role("dialog")).to_have_count(0)
+        assert editor.code_drafts
+        expect(code.locator(".ace_content")).to_contain_text("# Hi there")
+    else:
+        wait_until(lambda: not editor.code_drafts, timeout=8000)
+        expect(page.get_by_role("dialog")).to_have_count(0, timeout=8000)
+        expect(page.get_by_text("Edits not run")).to_have_count(0)
+
+
+def test_view_mode_says_a_draft_is_held(page):
+    editor, query = make_editor()
+    editor.dirty = False
+    _panel, code = _open(page, editor, query)
+    _type_at_end(page, code, " and p_cap > 2")
+    wait_until(lambda: editor.code_drafts, timeout=8000)
+    page.get_by_role("button", name="Done").click()
+    wait_until(lambda: not editor.editable, timeout=8000)
+    expect(page.get_by_text("Edits not run")).to_be_visible(timeout=8000)

@@ -579,6 +579,9 @@ class DashboardBar(Viewer):
         """
         full = self.layout == "full"
         items = []
+        if self.editor._has_code_drafts() and not self.editor.read_only:
+            # Held while viewing, until the code panel runs or discards them.
+            items.append(self.save_state)
         if self._about.object:
             items.append(self.description if full else self.info)
         if self.health.tiles:
