@@ -737,6 +737,8 @@ class DashboardBar(Viewer):
             return ("Read-only" if editor.dashboard is not None else ""), False
         if editor.dirty:
             return "Unsaved changes", True
+        if editor._has_code_drafts():
+            return "Edits not run", True
         if self._saved_at is not None:
             return f"Saved {self._saved_at}", False
         if editor.dashboard is not None:

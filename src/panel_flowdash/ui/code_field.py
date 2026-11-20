@@ -135,6 +135,8 @@ class AceTools(JSComponent):
 
     focus = param.Integer(default=0)
 
+    closing = param.Integer(default=0, doc="Bumped to close the completion popup.")
+
     _stylesheets: t.ClassVar[list[str]] = [
         """
         :host { color: var(--mui-palette-text-secondary); font-size: 12px; white-space: nowrap; }
@@ -246,7 +248,8 @@ class AceTools(JSComponent):
             })))
           }
         }
-        editor.completers = [words, tools.keyWordCompleter, tools.textCompleter].filter(c => c)
+        // Not the text completer, which offers every number and word typed so far.
+        editor.completers = [words, tools.keyWordCompleter].filter(c => c)
       }
 
       function attach(tries = 0) {
@@ -267,7 +270,10 @@ class AceTools(JSComponent):
         editor.commands.addCommand({
           name: "flowdashRun",
           bindKey: {win: "Ctrl-Enter", mac: "Command-Enter"},
-          exec: (ed) => { model.send_msg({type: "run", text: ed.getValue()}) },
+          exec: (ed) => {
+            if (ed.completer) { ed.completer.detach() }
+            model.send_msg({type: "run", text: ed.getValue()})
+          },
         })
         editor.selection.on("changeCursor", position)
         position()
@@ -281,6 +287,7 @@ class AceTools(JSComponent):
       model.on("completions", () => editor && complete())
       model.on("options", () => editor && editor.setOptions(model.options))
       model.on("focus", () => editor && (editor.focus(), editor.navigateFileEnd()))
+      model.on("closing", () => editor && editor.completer && editor.completer.detach())
       model.on("remove", () => editor && clear())
     }
     """

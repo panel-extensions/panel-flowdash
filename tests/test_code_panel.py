@@ -3,6 +3,7 @@
 import asyncio
 import re
 import time
+import types
 
 import pandas as pd
 import panel as pn
@@ -137,14 +138,14 @@ class TestOpening:
         assert panel.code.value == "p_year > 2014"
         assert panel.code.language == "python"
 
-    def test_the_canvas_sits_above_the_panel(self, setup):
+    def test_the_panel_spans_the_editor_under_the_canvas(self, setup):
         editor, query = setup
-        stack = editor._workspace_area[0]
-        assert stack is editor._canvas_stack
+        view = editor._view
         assert not editor._code_dock.visible
         editor.open_code_panel(query, "expr")
-        assert editor._workspace_area[0] is stack
-        assert list(stack) == [editor._flow, editor._code_dock]
+        index = list(view).index(editor._code_dock)
+        assert view[index - 1] is editor._editor_row
+        assert editor._workspace_area[0] is editor._flow
         assert editor._code_dock.visible
         assert editor._code_dock.styles["height"] == "400px"
         assert editor._flow.min_height == 160
@@ -176,11 +177,20 @@ class TestOpening:
         editor.open_code_panel(query, "expr")
         assert editor._code_dock.styles["height"] == "520px"
 
-    def test_split_tab_docks_under_the_canvas_pane(self, setup):
+    def test_split_tab_keeps_it(self, setup):
         editor, query = setup
         editor.mode = "split"
         editor.open_code_panel(query, "expr")
-        assert editor._split_view.left[0] is editor._canvas_stack
+        assert editor._split_view.left[0] is editor._flow
+        assert editor._code_dock.visible
+
+    def test_hidden_in_the_layout_tab_and_back_after(self, setup):
+        editor, query = setup
+        editor.open_code_panel(query, "expr")
+        editor.mode = "dashboard"
+        assert editor.code_panel_open
+        assert not editor._code_dock.visible
+        editor.mode = "wiring"
         assert editor._code_dock.visible
 
     @pytest.mark.parametrize(
@@ -414,3 +424,153 @@ class TestInspector:
         field._open()
         assert not editor.code_panel_open
         assert field._dialog.open
+
+
+class TestDrafts:
+    async def test_a_draft_is_held_when_another_field_opens(self, setup):
+        editor, query = setup
+        note = editor.add_component("D/note", position=(0, 300))
+        editor.open_code_panel(query, "expr")
+        panel = editor.code_panel
+        panel.code.value_input = "p_year == 2016"
+        panel._fields_state.limit = 3
+        editor.open_code_panel(note, "text")
+        assert panel.code.value_input == "# Hi"
+        assert panel.has_drafts
+        assert editor._has_unsent_edits()
+        editor.open_code_panel(query, "expr")
+        assert panel.code.value_input == "p_year == 2016"
+        assert panel._fields_state.limit == 3
+        assert panel.dirty
+        assert editor._component_instances[query].expr == "p_year > 2014"
+
+    @pytest.mark.parametrize(
+        "leave",
+        [
+            lambda editor: editor.close_code_panel(),
+            lambda editor: setattr(editor, "editable", False),
+            lambda editor: setattr(editor._split_view.storage, "window_width", 800),
+        ],
+        ids=["close", "done", "narrow"],
+    )
+    async def test_a_draft_survives_the_panel_closing(self, setup, leave):
+        editor, query = setup
+        editor.open_code_panel(query, "expr")
+        editor.code_panel.code.value_input = "p_year == 2016"
+        editor.dirty = False
+        leave(editor)
+        assert not editor.code_panel_open
+        assert editor._has_unsent_edits()
+        assert editor._dashboard_bar._save_state_text() == ("Edits not run", True)
+        editor.param.update(editable=True)
+        editor._split_view.storage.window_width = 1440
+        editor.open_code_panel(query, "expr")
+        assert editor.code_panel.code.value_input == "p_year == 2016"
+
+    async def test_discard_puts_the_config_back(self, setup):
+        editor, query = setup
+        editor.open_code_panel(query, "expr")
+        panel = editor.code_panel
+        panel.code.value_input = "p_year == 2016"
+        panel._fields_state.limit = 3
+        assert panel.discard_button.visible
+        panel.discard()
+        assert panel.code.value_input == "p_year > 2014"
+        assert panel._fields_state.limit == 100
+        assert not panel.dirty
+        assert not editor._has_unsent_edits()
+        assert not panel.discard_button.visible
+
+    async def test_running_clears_the_held_draft(self, setup):
+        editor, query = setup
+        editor.open_code_panel(query, "expr")
+        panel = editor.code_panel
+        panel.run("p_year == 2016")
+        await settle(panel)
+        editor.close_code_panel()
+        assert not editor._has_unsent_edits()
+
+    def test_removing_the_node_drops_its_drafts(self, setup):
+        editor, query = setup
+        editor.open_code_panel(query, "expr")
+        editor.code_panel.code.value_input = "p_year == 2016"
+        editor.close_code_panel()
+        editor.remove_component(query)
+        assert not editor.code_panel.has_drafts
+
+    async def test_undo_after_run_restores_the_config(self, setup):
+        editor, query = setup
+        editor.open_code_panel(query, "expr")
+        panel = editor.code_panel
+        await settle(panel)
+        editor.edit_history.flush()
+        panel._fields_state.limit = 2
+        panel.run("p_year > 2015")
+        await settle(panel)
+        assert editor._component_instances[query].expr == "p_year > 2015"
+        editor.edit_history.flush()
+        assert editor.undo()
+        instance = editor._component_instances[query]
+        assert (instance.expr, instance.limit) == ("p_year > 2014", 100)
+        assert panel.code.value_input == "p_year > 2014"
+        assert not panel.dirty
+
+
+class TestRunGuards:
+    async def test_header_fields_wait_for_a_pause_too(self, setup, monkeypatch):
+        monkeypatch.setattr("panel_flowdash.ui.code_panel.RUN_DELAY", 0.1)
+        editor, query = setup
+        editor.open_code_panel(query, "expr")
+        panel = editor.code_panel
+        panel.run_on_change = True
+        panel._fields_state.limit = 4
+        panel._fields_state.limit = 3
+        assert editor._component_instances[query].limit == 100
+        await asyncio.sleep(0.3)
+        await settle(panel)
+        assert editor._component_instances[query].limit == 3
+
+    async def test_no_auto_run_while_one_is_in_flight(self, setup, monkeypatch):
+        monkeypatch.setattr("panel_flowdash.ui.code_panel.RUN_DELAY", 0.05)
+        editor, query = setup
+        editor.open_code_panel(query, "expr")
+        panel = editor.code_panel
+        panel.run_on_change = True
+        calls = []
+        monkeypatch.setattr(panel, "run", lambda *a: calls.append(a))
+        panel._running = True
+        panel.code.value_input = "p_year == 2016"
+        await asyncio.sleep(0.2)
+        assert calls == []
+        assert panel._run_again
+
+    async def test_sql_and_limit_refresh_the_node_once(self, setup):
+        editor, query = setup
+        editor.open_code_panel(query, "expr")
+        panel = editor.code_panel
+        await settle(panel)
+        instance = editor._component_instances[query]
+        seen = []
+        instance.param.watch(
+            lambda *events: seen.append(sorted(e.name for e in events)), ["expr", "limit"]
+        )
+        panel._fields_state.limit = 2
+        panel.run("p_year > 2015")
+        await settle(panel)
+        assert seen == [["expr", "limit"]]
+
+
+def test_columns_count_utf16_units():
+    from panel_flowdash.ui.code_panel import _utf16
+
+    assert _utf16("a😀b", 2) == 3
+    assert _utf16("abc", 2) == 2
+
+
+class TestOutputs:
+    def test_a_table_output_is_shown_before_others(self):
+        from panel_flowdash.ui.code_panel import CodePanel
+
+        node = types.SimpleNamespace(pipeline=object(), data=TURBINES)
+        assert CodePanel._default_output(None, node, ["pipeline", "data"]) == "data"
+        assert CodePanel._default_output(None, node, ["pipeline"]) == "pipeline"

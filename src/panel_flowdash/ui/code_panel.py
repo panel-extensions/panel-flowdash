@@ -49,7 +49,9 @@ _EDITOR_CLASS = "fd-code-panel-editor"
 
 _HEADER_CSS = """
 :host { min-width: 0; }
-.fd-cp-title { display: flex; align-items: center; gap: 8px; height: 100%; white-space: nowrap; }
+.fd-cp-title { display: flex; align-items: center; gap: 8px; height: 100%; white-space: nowrap;
+  overflow: hidden; }
+.fd-cp-name { overflow: hidden; text-overflow: ellipsis; }
 .fd-cp-icon { font-family: "Material Icons"; font-size: 18px; line-height: 1;
   font-feature-settings: "liga"; color: var(--mui-palette-text-secondary); }
 .fd-cp-name { font-family: var(--fd-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
@@ -82,6 +84,12 @@ _STRIP_CSS = """
 :host { flex: none !important; }
 :host(.fd-code-panel-header) { height: 48px !important; min-height: 48px;
   border-top: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.12)); }
+/* The controls on the right keep their size; the title and the fields give way. */
+:host(.fd-code-panel-header) > * { flex: none; }
+:host(.fd-code-panel-header) > .bk-Spacer { flex: 1 1 0; min-width: 0; width: auto !important; }
+:host(.fd-code-panel-header) > .fd-cp-title-pane { flex: 0 1 auto; min-width: 60px; overflow: hidden; }
+:host(.fd-code-panel-header) > .fd-code-panel-fields { flex: 0 1 auto; min-width: 0;
+  overflow-x: clip; overflow-y: visible; }
 :host(.fd-cp-footer) { border-bottom: none; padding: 0 12px;
   border-top: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.12)); }
 :host(.fd-cp-subheader) { padding: 0 12px; }
@@ -117,6 +125,11 @@ def _rows(frame: t.Any) -> int | None:
         return len(frame)
     except Exception:
         return None
+
+
+def _utf16(line: str, column: int) -> int:
+    """Return the 0-based *column* of *line*, counted in code points, in UTF-16 units as Ace counts."""
+    return len(line[:column].encode("utf-16-le")) // 2
 
 
 def _is_frame(value: t.Any) -> bool:
@@ -243,6 +256,10 @@ class CodePanel(Viewer):
         # The last output value that was not a failure, per output, shown dimmed after a failed run.
         self._good: dict[str, t.Any] = {}
         self._syncing = False
+        # Drafts not run yet, per node and field, kept when the panel shows another field or closes.
+        self._held: dict[tuple[str, str], dict[str, t.Any]] = {}
+        self._running = False
+        self._run_again = False
 
         self._title = pn.pane.HTML(
             "",
@@ -276,6 +293,16 @@ class CodePanel(Viewer):
             sx={"textTransform": "none"},
         )
         self.run_button.on_click(lambda _event: self.run())
+        self.discard_button = pmui.IconButton(
+            icon="undo",
+            description="Discard the draft",
+            size="small",
+            margin=(0, 2),
+            align="center",
+            visible=False,
+            css_classes=["fd-code-discard"],
+        )
+        self.discard_button.on_click(lambda _event: self.discard())
         self.collapse_button = pmui.IconButton(
             icon="expand_more",
             description="Collapse the code panel",
@@ -284,9 +311,17 @@ class CodePanel(Viewer):
             align="center",
             css_classes=["fd-code-collapse"],
         )
-        self.collapse_button.on_click(
-            lambda _event: self.param.update(collapsed=not self.collapsed)
+        self.collapse_button.on_click(lambda _event: setattr(self, "collapsed", True))
+        self.expand_button = pmui.IconButton(
+            icon="expand_less",
+            description="Expand the code panel",
+            size="small",
+            margin=(0, 2),
+            align="center",
+            visible=False,
+            css_classes=["fd-code-expand-panel"],
         )
+        self.expand_button.on_click(lambda _event: setattr(self, "collapsed", False))
         self.close_button = pmui.IconButton(
             icon="close",
             description="Close the code panel",
@@ -300,9 +335,11 @@ class CodePanel(Viewer):
             self._title,
             self._fields,
             pn.layout.HSpacer(),
+            self.discard_button,
             self.run_switch,
             self.run_button,
             self.collapse_button,
+            self.expand_button,
             self.close_button,
             height=HEADER_HEIGHT,
             margin=0,
@@ -358,7 +395,11 @@ class CodePanel(Viewer):
             code_footer,
             margin=0,
             sizing_mode="stretch_both",
-            styles={"border-right": "1px solid var(--mui-palette-divider)"},
+            styles={
+                "border-right": "1px solid var(--mui-palette-divider)",
+                "min-width": "0",
+                "overflow": "hidden",
+            },
             css_classes=["fd-code-panel-code"],
         )
 
@@ -398,6 +439,7 @@ class CodePanel(Viewer):
             result_footer,
             margin=0,
             sizing_mode="stretch_both",
+            styles={"min-width": "0", "overflow": "hidden"},
             css_classes=["fd-code-panel-result"],
         )
         self._body = pn.Row(
@@ -475,6 +517,9 @@ class CodePanel(Viewer):
         self._language.object = _bar(html.escape(language.upper()))
         self._code_header.object = self._code_header_html(spec, parameter)
         self._build_fields(state, spec)
+        held = self._held.pop((instance_id, field), None)
+        if held:
+            self._restore(held)
         watcher = state.param.watch(self._config_changed, [field, *self._others])
         self._releases.append(lambda: state.param.unwatch(watcher))
         node = editor._dataflow_graph.get_state(instance_id)
@@ -486,7 +531,7 @@ class CodePanel(Viewer):
         if node is not None and inputs:
             in_watcher = node.param.watch(lambda *_e: self._complete(), inputs)
             self._releases.append(lambda: node.param.unwatch(in_watcher))
-        self.outputs.param.update(options=outputs, value=outputs[0] if outputs else None)
+        self.outputs.param.update(options=outputs, value=self._default_output(node, outputs))
         self.outputs.visible = len(outputs) > 1
         self._title.object = self._title_html(spec)
         if spec.check_config is not None:
@@ -503,8 +548,57 @@ class CodePanel(Viewer):
         self._complete()
         self.tools.focus += 1
 
+    def _default_output(self, node: param.Parameterized | None, outputs: list[str]) -> str | None:
+        """Return the output to show first: a table before a lazy value, e.g. a query's pipeline."""
+        for name in outputs:
+            if _is_frame(getattr(node, name, None)):
+                return name
+        return outputs[0] if outputs else None
+
+    def _restore(self, held: dict[str, t.Any]):
+        self._syncing = True
+        try:
+            if self.field in held:
+                text = held[self.field]
+                self.code.param.update(value=text, value_input=text)
+            if self._fields_state is not None:
+                self._fields_state.param.update(
+                    {k: v for k, v in held.items() if k in self._others}
+                )
+        finally:
+            self._syncing = False
+
+    @property
+    def has_drafts(self) -> bool:
+        """Whether an edit typed in the panel has not been run, shown or held for later."""
+        return self.dirty or bool(self._held)
+
+    def drop_drafts(self, instance_id: str):
+        """Forget the drafts held for the node *instance_id*, e.g. once it is removed."""
+        for key in [k for k in self._held if k[0] == instance_id]:
+            del self._held[key]
+        self.param.trigger("dirty")
+
+    def discard(self):
+        """Put the node's config back in the editor and the header, dropping the draft."""
+        editor = self._flowdash
+        if editor is None or self.instance_id is None:
+            return
+        state = editor._dataflow_graph.get_config_state(self.instance_id)
+        self._restore(
+            {self.field: getattr(state, self.field) or ""}
+            | {n: getattr(state, n) for n in self._others}
+        )
+        self._typing += 1
+        self._sync_dirty()
+
     def release(self):
-        """Stop following the node shown, e.g. before closing the panel."""
+        """Stop following the node shown, e.g. before closing the panel, holding an unrun draft."""
+        if self.instance_id is not None and self.field is not None:
+            patch = self._patch()
+            if patch:
+                self._held[(self.instance_id, self.field)] = patch
+        self._typing += 1
         for release in self._releases:
             release()
         self._releases = []
@@ -513,6 +607,7 @@ class CodePanel(Viewer):
         self._draft = None
         self._runs += 1
         self.param.update(instance_id=None, field=None, dirty=False)
+        self.param.trigger("dirty")
         self.tools.param.update(diagnostics=[], completions=[])
         self.code.annotations = []
 
@@ -540,7 +635,7 @@ class CodePanel(Viewer):
         )
         for widget in getattr(form, "_widgets", {}).values():
             update = {
-                "width": 180,
+                "width": 150,
                 "sizing_mode": "fixed",
                 "margin": (0, 8, 0, 0),
                 "align": "center",
@@ -586,15 +681,14 @@ class CodePanel(Viewer):
 
     def _sync_collapsed(self, *_events):
         self._body.visible = not self.collapsed
-        self.collapse_button.param.update(
-            icon="expand_less" if self.collapsed else "expand_more",
-            description="Expand the code panel" if self.collapsed else "Collapse the code panel",
-        )
+        self.collapse_button.visible = not self.collapsed
+        self.expand_button.visible = self.collapsed
 
     def _sync_run_button(self, *_events):
         self.run_button.variant = (
             "contained" if self.dirty or not self.run_on_change else "outlined"
         )
+        self.discard_button.visible = self.dirty
 
     # ------------------------------------------------------------------
     # The draft
@@ -631,21 +725,31 @@ class CodePanel(Viewer):
         if self._syncing or self.instance_id is None:
             return
         self._sync_dirty()
-        if self.run_on_change and self.dirty:
-            self._typing += 1
-            typing = self._typing
-
-            async def later():
-                await asyncio.sleep(RUN_DELAY)
-                if typing == self._typing:
-                    self.run()
-
-            param.parameterized.async_executor(later)
+        self._run_later()
 
     def _field_edited(self, *_events):
+        if self._syncing:
+            return
         self._sync_dirty()
-        if self.run_on_change and self.dirty:
-            self.run()
+        self._run_later()
+
+    def _run_later(self):
+        """With "Run on change", run the draft once typing pauses, or after a run in flight."""
+        if not (self.run_on_change and self.dirty):
+            return
+        self._typing += 1
+        typing = self._typing
+
+        async def later():
+            await asyncio.sleep(RUN_DELAY)
+            if typing != self._typing:
+                return
+            if self._running:
+                self._run_again = True
+            else:
+                self.run()
+
+        param.parameterized.async_executor(later)
 
     def _config_changed(self, *events):
         """Follow a change of the node's config made elsewhere, unless the draft holds an edit of it."""
@@ -685,16 +789,36 @@ class CodePanel(Viewer):
             finally:
                 self._syncing = False
         self._typing += 1
+        self._close_completions()
         patch = self._patch()
         self._runs += 1
+        self._running = True
+        self._run_again = False
         self._started = time.perf_counter()
         self._show_result_footer(running=True)
         if self._draft is not None:
             self._draft.propose(patch)
-        else:
-            if patch:
-                editor._apply_config_patch(self.instance_id, patch)
+            return
+        instance_id = self.instance_id
+
+        async def apply():
+            # A turn of the loop first, so "Running…" reaches the page before a slow refresh.
+            await asyncio.sleep(0)
+            if patch and self.instance_id == instance_id:
+                editor._apply_config_patch(instance_id, patch)
             self._ran(CheckResult())
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            if patch:
+                editor._apply_config_patch(instance_id, patch)
+            self._ran(CheckResult())
+            return
+        param.parameterized.async_executor(apply)
+
+    def _close_completions(self):
+        self.tools.closing += 1
 
     def _checked(self, result: CheckResult, pending: dict[str, t.Any]):
         """Show what the check of the draft, or of the node's config on opening, found."""
@@ -714,6 +838,7 @@ class CodePanel(Viewer):
     def _ran(self, result: CheckResult):
         took = time.perf_counter() - self._started if self._started is not None else None
         self._started = None
+        self._running = False
         self._result = result
         if not result:
             self._ran_at = dt.datetime.now()
@@ -721,6 +846,9 @@ class CodePanel(Viewer):
         self._sync_dirty()
         self._show_status()
         self._show_result()
+        if self._run_again:
+            self._run_again = False
+            self._run_later()
 
     # ------------------------------------------------------------------
     # Problems and completions
@@ -729,18 +857,22 @@ class CodePanel(Viewer):
     def _show_status(self):
         result = self._result
         positioned = result.diagnostics(self.field) if self.field else []
-        lines = self.code.value_input.count("\n") + 1
-        diagnostics = [
-            {
-                "row": min(d.line, lines) - 1,
-                "column": d.column - 1 if d.column else None,
-                "end_column": d.end_column - 1 if d.end_column else None,
-                "text": str(d),
-                "suggestion": d.suggestion,
-            }
-            for d in positioned
-            if d.line
-        ]
+        text_lines = self.code.value_input.splitlines() or [""]
+        diagnostics = []
+        for d in positioned:
+            if not d.line:
+                continue
+            row = min(d.line, len(text_lines)) - 1
+            line = text_lines[row]
+            diagnostics.append(
+                {
+                    "row": row,
+                    "column": _utf16(line, d.column - 1) if d.column else None,
+                    "end_column": _utf16(line, d.end_column - 1) if d.end_column else None,
+                    "text": str(d),
+                    "suggestion": d.suggestion,
+                }
+            )
         self.tools.diagnostics = diagnostics
         self.code.annotations = [
             {"row": d["row"], "column": d["column"] or 0, "text": d["text"], "type": "error"}

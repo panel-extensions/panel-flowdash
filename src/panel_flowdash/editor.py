@@ -1386,8 +1386,10 @@ class FlowDash(Viewer):
         """
         self._release_wiring(instance_id)
         panel = getattr(self, "_code_panel", None)
-        if panel is not None and panel.instance_id == instance_id:
-            self.close_code_panel()
+        if panel is not None:
+            if panel.instance_id == instance_id:
+                self.close_code_panel()
+            panel.drop_drafts(instance_id)
         instance = self._component_instances.pop(instance_id, None)
         if instance is not None:
             release_links(instance)
@@ -2734,17 +2736,31 @@ class FlowDash(Viewer):
         """Apply a patch to a node's config state and item, and return what was applied."""
         config_state = self._dataflow_graph.get_config_state(node_id)
         applied = {}
+        values = {}
         for key, value in patch.items():
             if config_state is not None and hasattr(config_state.param, key):
                 rejected = self._rejected_config.get(node_id, {}).pop(key, _MISSING)
                 try:
-                    setattr(config_state, key, config_value(config_state.param[key], value))
+                    converted = config_value(config_state.param[key], value)
+                    config_state.param[key]._validate(converted)
                 except Exception as exc:
                     logger.warning("Config '%s' rejected on %s: %s", key, node_id, exc)
                     if rejected is not _MISSING:
                         self._rejected_config[node_id][key] = rejected
                     continue
+                values[key] = converted
             applied[key] = value
+        if values:
+            # Set together, so the node and its component see one change, not one per field.
+            try:
+                config_state.param.update(values)
+            except Exception:
+                for key, value in values.items():
+                    try:
+                        setattr(config_state, key, value)
+                    except Exception as exc:
+                        logger.warning("Config '%s' rejected on %s: %s", key, node_id, exc)
+                        applied.pop(key, None)
         if applied:
             for item in self._tile_items:
                 if item["instance_id"] == node_id:
@@ -2773,6 +2789,7 @@ class FlowDash(Viewer):
         metadata is synced back too, so a value the component edits itself, such
         as text typed into its tile, is saved with the dashboard.
         """
+        names = []
         for name in config_state.param:
             if name == "name" or not hasattr(instance.param, name):
                 continue
@@ -2781,15 +2798,28 @@ class FlowDash(Viewer):
             except Exception as exc:
                 logger.warning("Config '%s' could not be set: %s", name, exc)
                 continue
+            names.append(name)
 
-            def _propagate(event, _name=name):
+        def _propagate(*events):
+            # One update for a patch of several fields, so the component refreshes once.
+            values = {event.name: event.new for event in events}
+            try:
+                instance.param.update(values)
+                return
+            except Exception:
+                if len(values) == 1:
+                    logger.warning("Config '%s' update failed", events[0].name, exc_info=True)
+                    return
+            for name, value in values.items():
                 try:
-                    setattr(instance, _name, event.new)
+                    setattr(instance, name, value)
                 except Exception as exc:
-                    logger.warning("Config '%s' update failed: %s", _name, exc)
+                    logger.warning("Config '%s' update failed: %s", name, exc)
 
-            watcher = config_state.param.watch(_propagate, name)
+        if names:
+            watcher = config_state.param.watch(_propagate, names)
             wiring.append(partial(config_state.param.unwatch, watcher))
+        for name in names:
             if _flowdash_metadata(instance.param[name]).get("two_way"):
                 watcher = instance.param.watch(
                     partial(self._config_edited_by_component, weakref.ref(self), node_id),
@@ -3085,10 +3115,6 @@ class FlowDash(Viewer):
             # Collapsed to its header, not the smallest height of its editor and result.
             stylesheets=[".fd-code-panel { min-height: 0 !important; }"],
         )
-        # The canvas never moves between layouts for the panel, which would render it again.
-        self._canvas_stack = pn.Column(
-            self._flow, self._code_dock, margin=0, sizing_mode="stretch_both"
-        )
 
         # One slot: a row counts the width of hidden children, and only one of
         # the two panels is shown at a time. The slot is hidden with both,
@@ -3109,6 +3135,8 @@ class FlowDash(Viewer):
         return pn.Column(
             bar,
             self._editor_row,
+            # Under the palette, the canvas and the inspector, so it has the window's width.
+            self._code_dock,
             self._status_bar,
             self._fullscreen_overlay,
             self._fullscreen_controller,
@@ -3617,9 +3645,7 @@ class FlowDash(Viewer):
         if shared_dialog is not None:
             dialogs.append(shared_dialog)
         if split:
-            self._split_view.show(
-                [self._canvas_stack], self._view_controls.layout(self._tile_grid)
-            )
+            self._split_view.show([self._flow], self._view_controls.layout(self._tile_grid))
             self._workspace_area[:] = [self._split_view, *dialogs]
             self._rebuild_tile_grid()
         elif showing_grid:
@@ -3627,7 +3653,7 @@ class FlowDash(Viewer):
             self._rebuild_tile_grid()
         else:
             self._stash_tile_layout()
-            self._workspace_area[:] = [self._canvas_stack, *dialogs]
+            self._workspace_area[:] = [self._flow, *dialogs]
             self._rebuild_sidebar()
         if showing_canvas:
             self._fit_placed_nodes()
@@ -3681,6 +3707,7 @@ class FlowDash(Viewer):
             self._code_handle = DockHandle(sizing_mode="stretch_width", height=7, margin=0)
             self._code_handle.param.watch(self._on_code_dock_resized, "size")
             panel.param.watch(self._sync_code_dock, ["collapsed", "instance_id"])
+            panel.param.watch(lambda _event: self._sync_toolbar_state(), "dirty")
             self._code_dock[:] = [self._code_handle, panel]
         return self._code_panel
 
@@ -3725,7 +3752,7 @@ class FlowDash(Viewer):
         return True
 
     def close_code_panel(self):
-        """Close the code panel, discarding a draft it holds."""
+        """Close the code panel, holding a draft it shows until the field is opened again."""
         if self.code_panel_open:
             self._code_panel.release()
 
@@ -3733,7 +3760,9 @@ class FlowDash(Viewer):
     def _sync_code_dock(self, *_events):
         """Show the code panel under the canvas, at its size for the session or as its header."""
         panel = self._code_panel
-        shown = self.code_panel_open
+        if panel is None:
+            return
+        shown = self.code_panel_open and self._code_panel_fits()
         collapsed = shown and panel.collapsed
         self._code_handle.visible = shown and not collapsed
         height = HEADER_HEIGHT if collapsed else self._code_dock_height
@@ -3741,6 +3770,19 @@ class FlowDash(Viewer):
         self._code_dock.param.update(
             visible=shown, styles={"flex": "none", "height": f"{height}px", "min-height": "0"}
         )
+        # Their minimum heights were worked out from the canvas's own while it had the window.
+        for layout in (
+            self._view,
+            self._editor_row,
+            self._workspace_area,
+            self._split_view.left,
+            self._split_view.split,
+        ):
+            styles = {k: v for k, v in (layout.styles or {}).items() if k != "min-height"}
+            if shown:
+                styles["min-height"] = "0"
+            if styles != (layout.styles or {}):
+                layout.styles = styles
         docked = [c for c in self._flow.css_classes if c != "fd-docked"]
         self._flow.param.update(
             min_height=_CANVAS_MIN_HEIGHT_DOCKED if shown else _CANVAS_MIN_HEIGHT,
@@ -3752,6 +3794,11 @@ class FlowDash(Viewer):
             self._code_dock_height = int(event.new)
             if self.code_panel_open and not self._code_panel.collapsed:
                 self._sync_code_dock()
+
+    @param.depends("mode", "explore", watch=True)
+    def _on_code_dock_tab(self):
+        """Hide the code panel outside the Dataflow and Split tabs, and show it again there."""
+        self._sync_code_dock()
 
     @param.depends("editable", "preview", watch=True)
     def _close_code_panel_if_hidden(self):
@@ -7176,7 +7223,14 @@ class FlowDash(Viewer):
     def _has_unsent_edits(self) -> bool:
         """Whether the inspector holds typed text not applied yet, which a save should include."""
         inspector = getattr(self, "_inspector", None)
-        return inspector is not None and inspector.has_unsent_text()
+        if inspector is not None and inspector.has_unsent_text():
+            return True
+        return self._has_code_drafts()
+
+    def _has_code_drafts(self) -> bool:
+        """Whether the code panel holds an edit that has not been run."""
+        panel = getattr(self, "_code_panel", None)
+        return panel is not None and panel.has_drafts
 
     def _save_from_button(self):
         """Save, once an edit the click just applied, e.g. by leaving a code field, is checked.

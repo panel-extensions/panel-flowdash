@@ -1672,8 +1672,7 @@ class TestDisplayModes:
     async def test_wiring_mode_shows_the_canvas_under_the_bar(self, editor):
         assert editor.mode == "wiring"
         assert editor._view.objects[0] is editor._dashboard_bar.__panel__()
-        assert editor._workspace_area.objects[0] is editor._canvas_stack
-        assert editor._canvas_stack[0] is editor._flow
+        assert editor._workspace_area.objects[0] is editor._flow
         assert editor._flow.top_panel == []
         assert editor._side_panel.visible
 
@@ -1689,8 +1688,7 @@ class TestDisplayModes:
     async def test_canvas_returns_after_the_grid(self, editor):
         editor.mode = "dashboard"
         editor.mode = "wiring"
-        assert editor._workspace_area.objects[0] is editor._canvas_stack
-        assert editor._canvas_stack[0] is editor._flow
+        assert editor._workspace_area.objects[0] is editor._flow
         assert editor._tile_grid not in editor._workspace_area.objects
 
     async def test_dialogs_stay_mounted_in_both_modes(self, editor):

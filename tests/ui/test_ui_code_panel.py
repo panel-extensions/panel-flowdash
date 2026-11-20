@@ -35,6 +35,54 @@ def _type_at_end(page, code, text):
     page.keyboard.type(text, delay=60)
 
 
+_SIDEWAYS = """() => {
+  const found = []
+  function walk(root) {
+    for (const el of root.querySelectorAll('*')) {
+      const style = getComputedStyle(el)
+      const scrolls = ['auto', 'scroll'].includes(style.overflowX)
+      const inside = el.closest('.fd-code-result, .ace_editor, .ace_autocomplete')
+      if (scrolls && !inside && el.scrollWidth > el.clientWidth + 1) {
+        found.push(`${el.tagName}.${String(el.className).slice(0, 60)} ${el.scrollWidth}>${el.clientWidth}`)
+      }
+      if (el.scrollLeft > 0 && !inside) found.push(`scrolled ${el.tagName}.${String(el.className).slice(0, 60)}`)
+      if (el.shadowRoot) walk(el.shadowRoot)
+    }
+  }
+  walk(document)
+  const doc = document.scrollingElement
+  if (doc.scrollWidth > doc.clientWidth + 1) found.push('page')
+  return found
+}"""
+
+_REACHABLE = """(selector) => {
+  function find(root) {
+    const el = root.querySelector(selector)
+    if (el) return el
+    for (const child of root.querySelectorAll('*')) {
+      if (child.shadowRoot) { const hit = find(child.shadowRoot); if (hit) return hit }
+    }
+    return null
+  }
+  const el = find(document)
+  if (!el) return 'missing'
+  const box = el.getBoundingClientRect()
+  if (!box.width || box.right > window.innerWidth || box.bottom > window.innerHeight) return 'outside'
+  let hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)
+  while (hit && hit.shadowRoot) {
+    const inner = hit.shadowRoot.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)
+    if (!inner || inner === hit) break
+    hit = inner
+  }
+  let node = hit
+  while (node) {
+    if (node === el) return 'ok'
+    node = node.parentNode || node.host
+  }
+  return 'covered'
+}"""
+
+
 def _shot(page, name):
     if SHOTS:
         page.screenshot(path=os.path.join(SHOTS, f"{name}.png"))
@@ -47,7 +95,8 @@ def test_opened_from_the_inspector_under_the_canvas(page):
     canvas = page.locator(".react-flow").first.bounding_box()
     box = panel.bounding_box()
     assert box["y"] >= canvas["y"] + canvas["height"] - 1
-    assert abs(box["x"] - canvas["x"]) <= 1 and abs(box["width"] - canvas["width"]) <= 1
+    assert box["x"] < canvas["x"] and box["x"] + box["width"] > canvas["x"] + canvas["width"]
+    assert box["x"] + box["width"] <= page.viewport_size["width"] + 1
     assert box["y"] + box["height"] <= page.viewport_size["height"]
     wait_until(lambda: editor._flow.selection["nodes"] == [query], timeout=8000)
     expect(page.locator(".flowdash-inspector, .fd-code-expand").first).to_be_visible()
@@ -91,8 +140,15 @@ def test_a_check_error_shows_under_its_line_and_keeps_the_result(page):
     expect(message).to_contain_text("There is no column p_yaer.", timeout=8000)
     expect(code.locator(".fd-ace-error")).to_have_count(1)
     expect(code.locator(".ace_gutter-cell.ace_error")).to_have_count(1)
-    line = code.locator(".ace_line").nth(1).bounding_box()
-    assert message.bounding_box()["y"] >= line["y"] + line["height"] - 1
+    wait_until(
+        lambda: (
+            message.bounding_box()["y"]
+            >= code.locator(".ace_line").nth(1).bounding_box()["y"]
+            + code.locator(".ace_line").nth(1).bounding_box()["height"]
+            - 1
+        ),
+        timeout=8000,
+    )
     result = page.locator(".fd-code-panel-result")
     expect(result).to_contain_text("Not run, the check failed")
     expect(result.locator(".fd-code-result-stale")).to_have_count(1)
@@ -154,7 +210,7 @@ def test_resize_collapse_and_close(page):
     wait_until(lambda: panel.bounding_box()["height"] < 60, timeout=8000)
     canvas = page.locator(".react-flow").first.bounding_box()
     assert canvas["y"] + canvas["height"] <= panel.bounding_box()["y"] + 1
-    page.locator(".fd-code-collapse").click()
+    page.locator(".fd-code-expand-panel").click()
     wait_until(lambda: panel.bounding_box()["height"] > before + 50, timeout=8000)
     page.locator(".fd-code-close").click()
     expect(page.locator(".fd-code-panel")).to_be_hidden(timeout=8000)
@@ -205,3 +261,79 @@ def test_screenshots(page, scheme):
     expect(page.locator(".ace_autocomplete")).to_contain_text("p_cap", timeout=8000)
     page.wait_for_timeout(300)
     _shot(page, f"completion-{scheme}")
+
+
+@pytest.mark.parametrize("width", [1280, 1440])
+def test_every_control_is_reachable_with_the_inspector_open(page, width):
+    editor, query = make_editor()
+    page.set_viewport_size({"width": width, "height": 900})
+    serve_component(page, editor)
+    page.locator(f".react-flow__node[data-id='{query}']").click()
+    page.locator(".fd-code-expand").first.click(timeout=8000)
+    code = page.locator(".fd-code-panel-editor")
+    expect(code.locator(".ace_content")).to_contain_text("p_year > 2014", timeout=8000)
+    assert not editor._inspector.collapsed
+    panel = page.locator(".fd-code-panel").bounding_box()
+    assert panel["x"] + panel["width"] <= width + 1
+    for selector in (
+        ".fd-code-run-on-change",
+        ".fd-code-run",
+        ".fd-code-collapse",
+        ".fd-code-close",
+        ".fd-code-panel-fields",
+    ):
+        wait_until(
+            lambda selector=selector: page.evaluate(_REACHABLE, selector) == "ok", timeout=8000
+        )
+    assert page.evaluate(_SIDEWAYS) == []
+    _type_at_end(page, code, "\nand p_yaer < 2016")
+    page.keyboard.press("Control+Enter")
+    expect(code.locator(".fd-code-diagnostic")).to_have_count(1, timeout=8000)
+    code.locator(".fd-code-fix").click()
+    page.keyboard.press("Control+Enter")
+    expect(code.locator(".fd-code-diagnostic")).to_have_count(0, timeout=8000)
+    page.wait_for_timeout(300)
+    assert page.evaluate(_SIDEWAYS) == []
+    _shot(page, f"inspector-open-{width}")
+
+
+def test_split_tab_keeps_the_header_in_the_window(page):
+    editor, query = make_editor()
+    editor.mode = "split"
+    page.set_viewport_size({"width": 1440, "height": 900})
+    serve_component(page, editor)
+    page.locator(f".react-flow__node[data-id='{query}']").click()
+    page.locator(".fd-code-expand").first.click(timeout=8000)
+    expect(page.locator(".fd-code-panel")).to_be_visible(timeout=8000)
+    for selector in (".fd-code-run", ".fd-code-close"):
+        wait_until(
+            lambda selector=selector: page.evaluate(_REACHABLE, selector) == "ok", timeout=8000
+        )
+    assert page.evaluate(_SIDEWAYS) == []
+    _shot(page, "split-1440")
+
+
+def test_a_held_draft_comes_back_after_closing(page):
+    editor, query = make_editor()
+    editor.dirty = False
+    _panel, code = _open(page, editor, query)
+    _type_at_end(page, code, " and p_cap > 2")
+    expect(page.locator(".fd-code-discard")).to_be_visible(timeout=8000)
+    page.locator(".fd-code-close").click()
+    expect(page.locator(".fd-code-panel")).to_be_hidden(timeout=8000)
+    expect(page.get_by_text("Edits not run")).to_be_visible(timeout=8000)
+    page.locator(".fd-code-expand").first.click()
+    expect(code.locator(".ace_content")).to_contain_text("p_cap > 2", timeout=8000)
+    page.locator(".fd-code-discard").click()
+    expect(code.locator(".ace_content")).not_to_contain_text("p_cap", timeout=8000)
+    assert not editor._has_unsent_edits()
+
+
+def test_the_collapse_button_flips(page):
+    editor, query = make_editor()
+    _open(page, editor, query)
+    page.locator(".fd-code-collapse").click()
+    expect(page.locator(".fd-code-expand-panel")).to_be_visible(timeout=8000)
+    expect(page.locator(".fd-code-collapse")).to_be_hidden()
+    page.locator(".fd-code-expand-panel").click()
+    expect(page.locator(".fd-code-collapse")).to_be_visible(timeout=8000)
