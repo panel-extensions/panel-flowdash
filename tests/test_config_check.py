@@ -510,15 +510,15 @@ class TestInspectorDraft:
         query = editor.add_component(QUERY)
         form = self._form(editor, query)
         await _checked(editor)
-        chip = editor._inspector._status_chip
-        assert chip.label != "Edit not applied"
-        before = (chip.label, chip.color)
+        inspector = editor._inspector
+        assert inspector._status_dot.title != "Edit not applied"
+        before = inspector._status_info
         form._widgets["sql"].value = "DROP t"
         await _checked(editor)
-        assert (chip.label, chip.color) == ("Edit not applied", "warning")
+        assert inspector._status_info == ("Edit not applied", "warning")
         form._widgets["sql"].value = "SELECT 2"
         await _checked(editor)
-        assert (chip.label, chip.color) == before
+        assert inspector._status_info == before
 
     async def test_a_check_finishing_after_another_node_is_selected_leaves_its_status(
         self, editor
@@ -530,20 +530,16 @@ class TestInspectorDraft:
         await asyncio.sleep(0.05)
         select_on_canvas(editor._flow, node_id=limit)
         await _settle(0.8)
-        chip = editor._inspector._status_chip
-        assert (chip.label, chip.color) == ("Up to date", "success")
+        assert editor._inspector._status_info == ("Up to date", "success")
 
     async def test_a_failed_node_shows_failed_over_a_held_edit(self, editor):
         query = editor.add_component(QUERY)
         self._form(editor, query)
         inspector = editor._inspector
         inspector._set_config_status(inspector._draft, CheckResult(["bad"]), {"sql": "x"})
-        assert inspector._status_chip.label == "Edit not applied"
+        assert inspector._status_dot.title == "Edit not applied"
         inspector._set_status("failed", "Data failed")
-        assert (inspector._status_chip.label, inspector._status_chip.color) == (
-            "Data failed",
-            "error",
-        )
+        assert inspector._status_info == ("Data failed", "error")
 
     async def test_a_failing_edit_is_held_back_and_shown(self, editor):
         query = editor.add_component(QUERY)
@@ -810,8 +806,7 @@ class TestPlacement:
         ]
         assert len(alerts) == 1 and "Only SELECT statements are allowed." in alerts[0].object
         assert alerts[0].title == "Config refused"
-        chip = editor._inspector._status_chip
-        assert (chip.label, chip.color) == ("Config refused", "error")
+        assert editor._inspector._status_info == ("Config refused", "error")
 
     async def test_run_command_checks_the_defaults_of_a_component(self, monkeypatch):
         pytest.importorskip("pydantic_ai")

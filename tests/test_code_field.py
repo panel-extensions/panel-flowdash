@@ -59,7 +59,33 @@ def schema_query(config):
     return "schema"
 
 
-COMPONENTS = {"D/query": Query, "D/checked": CheckedQuery, "D/schema": schema_query}
+def custom_form(values, schema, *, id, type, on_patch):
+    field = CodeField(label="Sql", language="sql", value=values["sql"])
+    field.param.watch(lambda event: on_patch({"sql": event.new}), "value")
+    return pn.Column(field)
+
+
+@register(
+    page=False,
+    component=True,
+    title="Custom form query",
+    config=["sql"],
+    config_editor=custom_form,
+    check_config=checked,
+)
+class CustomFormQuery(Viewer):
+    sql = param.String(default="SELECT 1", metadata=SQL)
+
+    def __panel__(self):
+        return self.sql
+
+
+COMPONENTS = {
+    "D/query": Query,
+    "D/checked": CheckedQuery,
+    "D/schema": schema_query,
+    "D/custom_form": CustomFormQuery,
+}
 
 
 @pytest.fixture
@@ -78,7 +104,11 @@ async def editor():
 
 def _field(editor, node_id, name):
     select_on_canvas(editor._flow, node_id=node_id)
-    fields = [w for w in pn.Column(*editor._inspector._body).select(CodeField) if w.name == name]
+    fields = [
+        w
+        for w in pn.Column(*editor._inspector._body).select(CodeField)
+        if name in (w.name, w.label)
+    ]
     assert len(fields) == 1
     return fields[0]
 
@@ -105,11 +135,13 @@ class TestInspector:
     async def test_editing_the_code_applies_the_config(self, editor):
         node = editor.add_component("D/query")
         field = _field(editor, node, "Sql")
-        assert field._editor.language == "sql" and field._editor.value == "SELECT 1"
-        assert not field._editor.on_keyup, "applied once editing ends, not per key"
-        field._editor.value = "SELECT 2\nFROM t"
+        assert field._large.language == "sql" and field._large.value == "SELECT 1"
+        assert "SELECT" in field._snippet.object and "1 line" in field._status_html.object
+        assert not field._large.on_keyup, "applied once editing ends, not per key"
+        field._large.value = "SELECT 2\nFROM t"
         assert editor._component_instances[node].sql == "SELECT 2\nFROM t"
         assert editor._tile_items[0]["config"]["sql"] == "SELECT 2\nFROM t"
+        assert "2 lines" in field._status_html.object
 
     async def test_the_large_editor_edits_the_same_text(self, editor):
         node = editor.add_component("D/query")
@@ -117,58 +149,103 @@ class TestInspector:
         field.open_dialog()
         assert field._dialog.open and field._dialog.title == "Sql"
         field._large.value = "SELECT 3"
-        assert field._editor.value == "SELECT 3"
+        assert "SELECT" in field._snippet.object and "3" in field._snippet.object
         assert editor._component_instances[node].sql == "SELECT 3"
+
+    @pytest.mark.parametrize("panel_opens", [True, False])
+    async def test_edit_opens_the_code_panel_or_else_the_dialog(self, editor, panel_opens):
+        node = editor.add_component("D/query")
+        calls = []
+
+        def open_code_panel(instance_id, field_name):
+            calls.append((instance_id, field_name))
+            return panel_opens
+
+        editor.open_code_panel = open_code_panel
+        field = _field(editor, node, "Sql")
+        field.edit_button.clicks += 1
+        assert calls == [(node, "sql")]
+        assert field._dialog.open is not panel_opens
+
+    async def test_code_fields_of_a_custom_form_open_the_code_panel(self, editor):
+        node = editor.add_component("D/custom_form")
+        calls = []
+        editor.open_code_panel = lambda *args: calls.append(args) or False
+        field = _field(editor, node, "Sql")
+        await _settle()
+        assert field.check_status == ("ok", "Check passed")
+        field.edit_button.clicks += 1
+        assert calls == [(node, "sql")] and field._dialog.open
+
+    async def test_snippet_caps_at_five_lines_and_shows_total(self, editor):
+        field = CodeField(
+            label="Sql",
+            language="sql",
+            value="\n".join(f"SELECT {i}" for i in range(1, 8)),
+        )
+        assert field._snippet.object.count("fd-snip-ln") == 5
+        assert "7 lines" in field._status_html.object
 
     async def test_a_checked_field_applies_once_the_check_passes(self, editor):
         node = editor.add_component("D/checked")
         field = _field(editor, node, "Sql")
         await _settle()
-        field._editor.value = "DROP TABLE t"
+        assert field.check_status == ("ok", "Check passed")
+        assert "Check passed" in field._status_html.object
+        field._large.value = "DROP TABLE t"
         await _settle()
         assert editor._component_instances[node].sql == "SELECT 1"
-        assert editor._inspector._status_chip.label == "Edit not applied"
-        field._editor.value = "SELECT 2"
+        assert editor._inspector._status_dot.title == "Edit not applied"
+        assert field.check_status == ("error", "1 problem")
+        assert "1 problem" in field._status_html.object
+        field._large.value = "SELECT 2"
         await _settle()
         assert editor._component_instances[node].sql == "SELECT 2"
+        assert field.check_status == ("ok", "Check passed")
 
     async def test_an_unset_optional_field_shows_empty_and_undo_unsets_it(self, editor):
         node = editor.add_component("D/query")
         field = _field(editor, node, "Notes")
-        assert field._editor.value == "" and field.value is None
-        field._editor.value = "remember"
+        assert field._large.value == "" and field.value is None
+        assert "Empty" in field._snippet.object and "Empty" in field._status_html.object
+        field._large.value = "remember"
         assert editor._component_instances[node].notes == "remember"
         assert editor.undo()
         field = _field(editor, node, "Notes")
         assert editor._component_instances[node].notes is None
-        assert field._editor.value == "" and field._large.value == ""
+        assert field._large.value == "" and "Empty" in field._snippet.object
 
-    async def test_a_disabled_field_is_read_only(self, editor):
-        field = CodeField(label="Sql", value="SELECT 1", disabled=True)
-        assert field._editor.readonly and field._large.readonly
-        assert field.expand_button.disabled
-        field.disabled = False
-        assert not field._editor.readonly
+    async def test_a_disabled_field_opens_read_only(self, editor):
+        edits = []
+        field = CodeField(label="Sql", value="SELECT 1", disabled=True, on_edit=edits.append)
+        assert field._large.readonly
+        assert field.edit_button.label == "View" and not field.edit_button.disabled
+        field.edit_button.clicks += 1
+        assert field._dialog.open and edits == []
+        field.param.update(disabled=False)
+        field._dialog.open = False
+        assert not field._large.readonly and field.edit_button.label == "Edit"
+        field.edit_button.clicks += 1
+        assert edits == [field] and not field._dialog.open
 
     async def test_typed_text_offers_save_until_it_is_applied(self, editor):
         node = editor.add_component("D/query")
         editor.save()
         field = _field(editor, node, "Sql")
         assert editor._dashboard_bar.save_button.disabled
-        field._editor.value_input = "SELECT 2"
+        field._large.value_input = "SELECT 2"
         assert field.unsent and not editor._dashboard_bar.save_button.disabled
-        field._editor.value = "SELECT 2"
+        field._large.value = "SELECT 2"
         assert not field.unsent
 
     async def test_typing_then_reverting_no_longer_offers_save(self, editor):
         node = editor.add_component("D/query")
         editor.save()
         field = _field(editor, node, "Sql")
-        for editor_ in (field._editor, field._large):
-            assert editor_.value_input == "SELECT 1"
-        field._editor.value_input = "SELECT 1x"
+        assert field._large.value_input == "SELECT 1"
+        field._large.value_input = "SELECT 1x"
         assert not editor._dashboard_bar.save_button.disabled
-        field._editor.value_input = "SELECT 1"
+        field._large.value_input = "SELECT 1"
         assert not field.unsent and editor._dashboard_bar.save_button.disabled
 
     async def test_leaving_a_field_with_unsent_text_stops_offering_save(self, editor):
@@ -176,7 +253,7 @@ class TestInspector:
         other = editor.add_component("D/schema")
         editor.save()
         field = _field(editor, node, "Sql")
-        field._editor.value_input = "SELECT 9"
+        field._large.value_input = "SELECT 9"
         assert not editor._dashboard_bar.save_button.disabled
         select_on_canvas(editor._flow, node_id=other)
         assert editor._dashboard_bar.save_button.disabled
@@ -186,7 +263,7 @@ class TestInspector:
         editor.save()
         field = _field(editor, node, "Sql")
         await _settle()
-        field._editor.value = "SELECT 42 -- SLOW"
+        field._large.value = "SELECT 42 -- SLOW"
         editor._save_from_button()
         await _settle(0.1)
         assert editor._save_button.loading, "Save shows it waits for the check"
@@ -200,10 +277,10 @@ class TestInspector:
         editor = FlowDash(notifications=False)
         node = editor.add_component("Text/Markdown")
         field = _field(editor, node, "Text")
-        assert field._editor.language == "markdown"
+        assert field._large.language == "markdown"
         editor.dispose()
 
     async def test_a_schema_field_gets_the_editor(self, editor):
         node = editor.add_component("D/schema")
         field = _field(editor, node, "Sql")
-        assert field._editor.language == "sql"
+        assert field._large.language == "sql"

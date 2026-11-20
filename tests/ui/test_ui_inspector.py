@@ -1,8 +1,11 @@
 """UI tests for the compact node cards, the inspector and the status bar of the wiring canvas."""
 
+import param
 import pytest
 from panel.tests.util import wait_until
+from panel.viewable import Viewer
 
+from panel_flowdash import register
 from panel_flowdash.editor import FlowDash
 from tests.test_ui_inspector import ROWS, TABLE, TABLE_COMPONENTS
 from tests.ui.util import center, serve_component, stable_box
@@ -77,8 +80,21 @@ def test_selecting_a_node_shows_its_config_and_editing_it_updates_the_component(
     expect(page.get_by_text("Issues (1)")).to_be_visible()
     _node(page, table).click()
     wait_until(lambda: editor._inspector._shown == ("node", table), timeout=8000)
-    expect(page.get_by_text("Shows rows.")).to_be_visible()
-    expect(page.get_by_text("Needs Rows").first).to_be_visible()
+    expect(page.locator(".fd-inspector-header")).to_be_visible()
+    expect(page.get_by_text("Configuration", exact=True)).to_have_count(0)
+    # The description and the status show on hover, are named for keyboard and
+    # screen reader users, and a status other than up to date is also spelled out.
+    page.locator(".fd-inspector-info").hover()
+    expect(page.get_by_role("tooltip", name="Shows rows.")).to_be_visible()
+    page.locator(".fd-inspector-status").hover()
+    expect(page.get_by_role("tooltip", name="Needs Rows")).to_be_visible()
+    info = page.get_by_role("img", name="Shows rows.")
+    info.focus()
+    expect(info).to_be_focused()
+    dot = page.get_by_role("img", name="Status: Needs Rows")
+    dot.focus()
+    expect(dot).to_be_focused()
+    expect(page.get_by_role("status").filter(has_text="Needs Rows")).to_be_visible()
 
     title = page.get_by_role("textbox", name="Title")
     expect(title).to_have_value("Turbines")
@@ -89,15 +105,99 @@ def test_selecting_a_node_shows_its_config_and_editing_it_updates_the_component(
     assert editor.dirty
 
 
+@register(page=False, component=True, title="Query", config=["table", "limit"])
+class _Query(Viewer):
+    table = param.String(default="turbines")
+    limit = param.Integer(default=None, allow_None=True)
+
+    def __panel__(self):
+        return self.table
+
+
+def test_fields_are_compact_and_a_number_shares_a_row(page):
+    editor = FlowDash(
+        {"Demo/query": _Query}, notifications=False, include_builtin_components=False
+    )
+    node = editor.add_component("Demo/query", position=(0, 0))
+    serve_component(page, editor)
+
+    _node(page, node).click()
+    fields = page.locator(".fd-field-pair .MuiInputBase-root")
+    expect(fields).to_have_count(2, timeout=8000)
+    expect(fields.first.locator("input")).to_have_value("turbines")
+    title_box, size_box = stable_box(fields.first), stable_box(fields.last)
+    assert abs(title_box["y"] - size_box["y"]) < 1
+    assert title_box["x"] + title_box["width"] < size_box["x"]
+    for box in (title_box, size_box):
+        assert 34 <= box["height"] <= 38
+
+    page.get_by_role("tab", name="Tile").click()
+    for name in ("Width", "Height", "Frame"):
+        select = page.get_by_role("combobox", name=name)
+        assert 34 <= stable_box(select)["height"] <= 38, name
+
+
+@pytest.mark.parametrize("width", [1024, 900])
+def test_the_header_actions_stay_on_screen_in_a_narrow_window(page, width):
+    from panel_flowdash import DashboardItem, MemoryDashboardStore
+    from panel_flowdash.app import FlowDashApp
+    from panel_flowdash.auth import resolve_identity
+    from panel_flowdash.component_library import normalize_components
+
+    store = MemoryDashboardStore()
+    model = store.create_dashboard(resolve_identity().user, "Rows")
+    model.items = [DashboardItem(instance_id="table", component_id=TABLE, x=0, y=0)]
+    store.save_dashboard(model)
+
+    def factory():
+        return FlowDashApp(
+            registry=normalize_components(TABLE_COMPONENTS), store=store, notifications=False
+        )
+
+    page.set_viewport_size({"width": width, "height": 800})
+    serve_component(
+        page,
+        {"/": factory, "/dash/[^/]+": factory},
+        suffix=f"/dash/{model.dashboard_id}?edit=true",
+    )
+    page.get_by_role("button", name="Done").wait_for()
+    _node(page, "table").click()
+    close = page.get_by_role("button", name="Hide inspector")
+    expect(close).to_be_visible()
+    for part in (page.locator(".fd-status-dot"), page.locator(".fd-inspector-menu button"), close):
+        box = stable_box(part)
+        assert box["x"] + box["width"] <= width, (width, box)
+    assert page.evaluate("document.documentElement.scrollWidth") <= width
+    page.locator(".fd-inspector-menu button").click()
+    expect(page.get_by_role("menuitem", name="Remove from dashboard")).to_be_visible()
+
+
 def test_remove_from_dashboard(page):
     editor, _src, table = _editor()
     serve_component(page, editor)
 
     _node(page, table).click()
-    page.get_by_role("button", name="Remove from dashboard").click()
+    wait_until(lambda: editor._inspector._shown == ("node", table), timeout=8000)
+    # Remove lives only in the overflow menu, not as a separate button.
+    expect(page.get_by_role("button", name="Remove from dashboard")).to_have_count(0)
+    page.locator(".fd-inspector-menu button, button.fd-inspector-menu").first.click()
+    page.get_by_role("menuitem", name="Remove from dashboard").click()
     wait_until(lambda: [i["instance_id"] for i in editor._tile_items] == [_src], timeout=8000)
     expect(_node(page, table)).to_have_count(0)
     expect(page.get_by_text("1 component, 0 connections").first).to_be_visible()
+
+
+def test_wired_input_shows_live_data_summary(page):
+    editor, src, table = _editor()
+    editor.connect(src, "rows", table, "rows")
+    serve_component(page, editor)
+
+    _node(page, table).click()
+    wait_until(lambda: editor._inspector._shown == ("node", table), timeout=8000)
+    summary = page.locator(".fd-input-rows .fd-input-summary")
+    expect(summary).to_contain_text("3 rows \u00d7 2")
+    expect(summary).to_contain_text("a")
+    expect(summary).to_contain_text("b")
 
 
 def test_status_bar_counts_issues_and_selects_the_first(page):

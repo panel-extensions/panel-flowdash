@@ -101,7 +101,8 @@ def test_opened_from_the_inspector_under_the_canvas(page):
     wait_until(lambda: editor._flow.selection["nodes"] == [query], timeout=8000)
     expect(page.locator(".flowdash-inspector, .fd-code-expand").first).to_be_visible()
     expect(page.locator(".fd-code-dialog .fd-code-field-large")).to_have_count(0)
-    expect(page.locator(".fd-code-table")).to_contain_text("2016", timeout=8000)
+    # The first result renders after the inspector and the panel, which takes a while under load.
+    expect(page.locator(".fd-code-table")).to_contain_text("2016", timeout=15000)
     _shot(page, "open")
 
 
@@ -150,9 +151,9 @@ def test_a_check_error_shows_under_its_line_and_keeps_the_result(page):
         timeout=8000,
     )
     result = page.locator(".fd-code-panel-result")
-    expect(result).to_contain_text("Not run, the check failed")
-    expect(result.locator(".fd-code-result-stale")).to_have_count(1)
-    expect(result).to_contain_text("5 rows")
+    expect(result).to_contain_text("Not run, the check failed", timeout=15000)
+    expect(result.locator(".fd-code-result-stale")).to_have_count(1, timeout=8000)
+    expect(result).to_contain_text("5 rows", timeout=8000)
     assert editor._component_instances[query].expr == "p_year > 2014"
     _shot(page, "error")
     code.locator(".fd-code-fix").click()

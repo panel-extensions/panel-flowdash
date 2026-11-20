@@ -482,7 +482,7 @@ class TestInspector:
         field.editor.value = json.dumps(bad)
         await _settle()
         assert editor._component_instances[node].spec == SPEC
-        assert editor._inspector._status_chip.label == "Edit not applied"
+        assert editor._inspector._status_info == ("Edit not applied", "warning")
         assert field.value == bad, "the draft keeps the text for fixing"
 
     async def test_unknown_keys_survive_form_edits_and_saving(self, editor):
