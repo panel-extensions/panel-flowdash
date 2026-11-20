@@ -137,7 +137,7 @@ jobs:
           file_pattern: "*.png"
 
   pytest:
-    timeout-minutes: 30
+    timeout-minutes: 40
     runs-on: ${{ matrix.os }}
     needs: [pre_commit, setup, pixi_lock]
     strategy:

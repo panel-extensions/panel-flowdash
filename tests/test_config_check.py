@@ -1321,12 +1321,20 @@ class TestCoalescing:
         form = TestInspectorDraft()._form(editor, query)
         await _settle()
         CALLS.clear()
-        for i in range(10):
-            form._widgets["sql"].value = f"SELECT PAUSE {i}"
+        form._widgets["sql"].value = "SELECT HANG 0"
+        deadline = time.monotonic() + 5
+        while not CALLS and time.monotonic() < deadline:
             await asyncio.sleep(0.01)
-        await _settle(1.2)
+        assert len(CALLS) == 1
+        # The first check is held until the whole burst has been made, so
+        # every later edit is queued behind it however slow the runner is.
+        for i in range(1, 10):
+            form._widgets["sql"].value = f"SELECT HANG {i}"
+            await asyncio.sleep(0.01)
+        HANG.set()
+        await _checked(editor)
         assert len(CALLS) == 2
-        assert editor.graph.get_config_state(query).sql == "SELECT PAUSE 9"
+        assert editor.graph.get_config_state(query).sql == "SELECT HANG 9"
 
 
 class TestInspectorRewire:
