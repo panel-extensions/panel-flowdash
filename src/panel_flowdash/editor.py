@@ -142,12 +142,21 @@ from panel_flowdash.ui.inspector import Inspector
 from panel_flowdash.ui.layout_panel import GRID_EDIT_CSS, LayoutPanel
 from panel_flowdash.ui.node_card import (
     CARD_WIDTH,
+    CardBridge,
     NodeCard,
     card_height,
     node_card,
+    node_preview_value,
     placeholder_card,
     port_label,
     port_tops,
+)
+from panel_flowdash.ui.node_preview import (
+    PREVIEW_KIND_KEY,
+    _is_table,
+    run_off_loop,
+    sanitize_svg,
+    summarize_value,
 )
 from panel_flowdash.ui.palette import ComponentPalette, palette_entry, palette_items
 from panel_flowdash.ui.provenance import provenance_objects
@@ -417,11 +426,32 @@ _FLOW_STYLESHEET = """\
 .react-flow__handle {
   width: 10px;
   height: 10px;
-  border: 2px solid var(--mui-palette-primary-main, var(--panel-primary-color));
+  border: 2px solid var(--fd-hc, var(--mui-palette-primary-main, var(--panel-primary-color)));
   background: var(--mui-palette-background-paper, var(--panel-background-color));
 }
+.react-flow.dark .react-flow__handle {
+  border-color: var(--fd-hc-dark, var(--fd-hc, var(--mui-palette-primary-main, var(--panel-primary-color))));
+}
 .react-flow__handle-right {
-  background: var(--mui-palette-primary-main, var(--panel-primary-color));
+  background: var(--fd-hc, var(--mui-palette-primary-main, var(--panel-primary-color)));
+}
+.react-flow.dark .react-flow__handle-right {
+  background: var(--fd-hc-dark, var(--fd-hc, var(--mui-palette-primary-main, var(--panel-primary-color))));
+}
+.react-flow__handle.fd-handle-optional {
+  border-style: dashed;
+}
+.react-flow__handle.fd-handle-missing {
+  border-color: var(--mui-palette-error-main, #d32f2f) !important;
+  box-shadow: 0 0 0 3px rgba(211, 47, 47, 0.22);
+}
+.react-flow.dark .react-flow__handle.fd-handle-missing {
+  border-color: var(--mui-palette-error-main, #ef5350) !important;
+  box-shadow: 0 0 0 3px rgba(239, 83, 80, 0.28);
+}
+.react-flow__handle.fd-handle-hidden {
+  opacity: 0;
+  pointer-events: none;
 }
 /* The popups stay on the canvas, never over the panels beside it. */
 :host {
@@ -729,6 +759,58 @@ def _dispose_on_session_end(editor_ref: weakref.ref[FlowDash], session_context):
     if editor is not None:
         editor._stop_refresh_timer()
         editor._dispose_components()
+
+
+class _EditorCall:
+    """Call a method of an editor without keeping the editor alive.
+
+    Cards and other views that live as long as the node state hold these
+    instead of bound methods, so a closed session's editor can be freed.
+    """
+
+    __slots__ = ("_args", "_method", "_ref")
+
+    def __init__(self, editor: FlowDash, method: str, *args: t.Any):
+        self._ref = weakref.ref(editor)
+        self._method = method
+        self._args = args
+
+    def __call__(self, *args: t.Any) -> t.Any:
+        editor = self._ref()
+        return None if editor is None else getattr(editor, self._method)(*self._args, *args)
+
+    def __repr__(self) -> str:
+        return f"_EditorCall({self._method!r})"
+
+
+def _plain_integer_formatters(df) -> dict[str, dict[str, str]]:
+    """Show integer columns below 10,000 without thousands separators, as cards do (years, ids)."""
+    formatters = {}
+    for column in df.columns:
+        values = df[column]
+        if getattr(values.dtype, "kind", None) in "iu" and len(values):
+            if values.abs().max() < 10_000:
+                formatters[str(column)] = {"type": "plaintext"}
+    return formatters
+
+
+def _popout_chart(payload: t.Mapping) -> Viewable:
+    """Render a chart preview payload in full, from its Vega-Lite spec and rows."""
+    raw_spec = payload.get("spec")
+    if isinstance(raw_spec, t.Mapping):
+        spec = {"$schema": "https://vega.github.io/schema/vega-lite/v5.json"}
+        spec.update(copy.deepcopy(dict(raw_spec)))
+        data = payload.get("data")
+        if data is not None and _is_table(data):
+            spec["data"] = {"values": data.head(500).to_dict(orient="records")}
+        elif isinstance(data, list):
+            spec["data"] = {"values": data[:500]}
+        return pn.pane.Vega(spec, sizing_mode="stretch_width", height=340, margin=0)
+    if payload.get("svg"):
+        return pn.pane.HTML(
+            sanitize_svg(str(payload["svg"])), sizing_mode="stretch_width", height=320, margin=0
+        )
+    return markdown_pane("*No chart data*", margin=0)
 
 
 class _Outlet(param.Parameterized):
@@ -1208,6 +1290,9 @@ class FlowDash(Viewer):
         self._grid_populated = False
         self._edge_count = 0
         self._edge_id_map: dict[str, tuple[str, str, str, str]] = {}
+        # Outlines other code draws on nodes, e.g. the assistant's changes.
+        self._node_outlines: dict[str, dict[str, str]] = {}
+        self._popout_request: object | None = None
         self._tile_items: list[dict] = []
         self._tile_objects: list[Viewable] = []
         # Saved config values a node's config refused on load, by node, kept to tell the person.
@@ -1620,8 +1705,8 @@ class FlowDash(Viewer):
                 for entry in self._component_entries.values()
                 for ext in entry.metadata.extensions
             }
-            # The inspector edits code fields in Panel's CodeEditor.
-            | {"codeeditor"}
+            # The inspector edits code fields in Panel's CodeEditor and card pop-outs use Tabulator.
+            | {"codeeditor", "tabulator"}
         )
         if extensions:
             pn.extension(*extensions)
@@ -1676,7 +1761,7 @@ class FlowDash(Viewer):
                         "id": port.name,
                         "label": port.label or port.name,
                         "type": port.type,
-                        "top": round(top, 2),
+                        "top": f"var(--fd-port-in-{idx}, {round(top, 2)}px)",
                         **(
                             {"maxConnections": 1}
                             if port.multiple is False
@@ -1684,16 +1769,16 @@ class FlowDash(Viewer):
                             else {}
                         ),
                     }
-                    for port, top in zip(spec.inputs, tops_in, strict=True)
+                    for idx, (port, top) in enumerate(zip(spec.inputs, tops_in, strict=True))
                 ],
                 outputs=[
                     {
                         "id": port.name,
                         "label": port.label or port.name,
                         "type": port.type,
-                        "top": round(top, 2),
+                        "top": f"var(--fd-port-out-{idx}, {round(top, 2)}px)",
                     }
-                    for port, top in zip(spec.outputs, tops_out, strict=True)
+                    for idx, (port, top) in enumerate(zip(spec.outputs, tops_out, strict=True))
                 ],
             )
         node_types[PLACEHOLDER_NODE_TYPE] = pr.NodeType(
@@ -1736,6 +1821,7 @@ class FlowDash(Viewer):
             min_zoom=_CANVAS_MIN_ZOOM,
             sizing_mode="stretch_both",
             min_height=_CANVAS_MIN_HEIGHT,
+            css_classes=[f"fd-canvas-{id(self)}"],
             stylesheets=[_FLOW_STYLESHEET],
             popup_trigger=self.popup_trigger,
             popup_hover_delay=self.popup_hover_delay,
@@ -1780,6 +1866,7 @@ class FlowDash(Viewer):
                     self._edge_id_map[edge_id] = mapping
                     if self._edge_failed(mapping):
                         flow.patch_edge_props(edge_id, self._edge_chip(mapping))
+                self._sync_card_connections(tgt_id)
                 self._record_edit(
                     self._connect_label("Connected", src_id, src_handle, tgt_id, tgt_handle),
                     op="connect",
@@ -1813,6 +1900,7 @@ class FlowDash(Viewer):
             self._drop_edge_editor(edge_id)
             if mapping:
                 self._dataflow_graph.remove_edge(*mapping)
+                self._sync_card_connections(mapping[2])
                 self._record_edit(
                     self._connect_label("Disconnected", *mapping),
                     op="disconnect",
@@ -1989,6 +2077,7 @@ class FlowDash(Viewer):
             with self._muted_canvas():
                 _add_all(flow.add_nodes, flow.add_node, nodes)
                 _add_all(flow.add_edges, flow.add_edge, edges)
+            self._sync_card_bridge()
 
     def _forget_node(self, node_id: str):
         """Drop a node from the graph, the tile bookkeeping and the edge map.
@@ -1997,6 +2086,7 @@ class FlowDash(Viewer):
         starts with a fresh tile rather than the removed one's.
         """
         self._dataflow_graph.remove_node(node_id)
+        self._node_outlines.pop(node_id, None)
         self._forget_layout(node_id)
         self._drop_from_groups(node_id)
         self._floating_nodes.discard(node_id)
@@ -2012,10 +2102,15 @@ class FlowDash(Viewer):
         if idx is not None:
             self._tile_items.pop(idx)
             self._tile_objects.pop(idx)
+        affected_targets: set[str] = set()
         for edge_id, mapping in list(self._edge_id_map.items()):
             if node_id in (mapping[0], mapping[2]):
                 del self._edge_id_map[edge_id]
                 self._drop_edge_editor(edge_id)
+                if mapping[2] != node_id:
+                    affected_targets.add(mapping[2])
+        for target_id in affected_targets:
+            self._sync_card_connections(target_id)
         self._unresolved_edges = [
             u for u in self._unresolved_edges if node_id not in (u.edge.source, u.edge.target)
         ]
@@ -2062,12 +2157,171 @@ class FlowDash(Viewer):
 
     def _sync_failure_marks(self, instance_id: str, event):
         """Outline a node and its failed edges in red while its inputs hold a failure."""
-        self._patch_canvas_props(
-            "node", instance_id, {"style": _FAILED_NODE_STYLE if event.new else None}
-        )
+        self._sync_node_style(instance_id, failed=bool(event.new))
         for edge_id, mapping in self._edge_id_map.items():
             if mapping[2] == instance_id:
                 self._patch_canvas_props("edge", edge_id, self._edge_chip(mapping))
+
+    def _canvas_node(self, instance_id: str) -> dict | None:
+        """Return a node of the canvas, also while it is still waiting in a batched update."""
+        if self._canvas_batch is not None:
+            for node in self._canvas_batch[0]:
+                if node["id"] == instance_id:
+                    return node
+        for node in self._flow.nodes:
+            if node["id"] == instance_id:
+                return node
+        return None
+
+    def _find_node_card(self, instance_id: str) -> NodeCard | None:
+        node = self._canvas_node(instance_id)
+        card = node.get("view") if node is not None else None
+        return card if isinstance(card, NodeCard) else None
+
+    def _node_cards(self) -> dict[str, NodeCard]:
+        return {
+            node["id"]: card
+            for node in self._flow.nodes
+            if isinstance(card := node.get("view"), NodeCard)
+        }
+
+    def _sync_node_style(self, instance_id: str, *, failed: bool | None = None):
+        """Set a node's style from its card's handle positions, its failure and an agent outline.
+
+        Each of them owns some keys of the one style, so a change to one of
+        them keeps the others. The node is only patched when its style changes.
+        """
+        node = self._canvas_node(instance_id)
+        if node is None:
+            return
+        style: dict[str, t.Any] = {}
+        if isinstance(card := node.get("view"), NodeCard):
+            style.update(card.handle_layout()[1])
+        if failed is None:
+            failures = (
+                self._dataflow_graph.get_failures(instance_id) if self.propagate_failures else None
+            )
+            failed = bool(failures.failed) if failures is not None else False
+        if failed:
+            style.update(_FAILED_NODE_STYLE)
+        style.update(self._node_outlines.get(instance_id) or {})
+        if (node.get("style") or None) != (style or None):
+            self._patch_canvas_props("node", instance_id, {"style": style or None})
+
+    def _set_node_outline(self, instance_id: str, style: dict[str, str] | None):
+        """Outline a node, e.g. one the assistant changed, or remove its outline with None."""
+        if style:
+            self._node_outlines[instance_id] = dict(style)
+        elif self._node_outlines.pop(instance_id, None) is None:
+            return
+        self._sync_node_style(instance_id)
+
+    def _sync_card_connections(self, instance_id: str):
+        """Update a card's inputs: what they are connected to and whether a required one is missing."""
+        card = self._find_node_card(instance_id)
+        if card is None or not card.inputs:
+            return
+        incoming: dict[str, list[str]] = {}
+        for edge in self._dataflow_graph.edges:
+            if edge["target"] == instance_id:
+                incoming.setdefault(edge["target_port"], []).append(
+                    f"{self._node_name(edge['source'])}.{edge['source_port']}"
+                )
+        item = next((i for i in self._tile_items if i["instance_id"] == instance_id), None)
+        literals = (item.get("inputs") or {}) if item is not None else {}
+        state = self._dataflow_graph.get_state(instance_id)
+        updated = []
+        for port in card.inputs:
+            name = port["name"]
+            sources = incoming.get(name, [])
+            missing = bool(
+                port.get("required") and state is not None and getattr(state, name, None) is None
+            )
+            updated.append(
+                {
+                    **port,
+                    "connected": bool(sources) or name in literals,
+                    "source": ", ".join(sources),
+                    "missing": missing,
+                }
+            )
+        if updated != card.inputs:
+            card.inputs = updated
+        self._sync_node_style(instance_id)
+
+    def _on_card_layout(self, instance_id: str):
+        """Follow a card whose handles moved or changed style."""
+        self._sync_node_style(instance_id)
+        self._sync_card_bridge()
+
+    def _on_card_bridge_action(self, data: dict):
+        """Act on a click on one of the actions drawn inside a card."""
+        node_id = data.get("node_id")
+        card = self._find_node_card(node_id) if node_id else None
+        if card is None:
+            return
+        action = data.get("action")
+        if action == "toggle_collapse":
+            self._set_card_view(node_id, collapsed=not card.collapsed)
+        elif action == "select_output":
+            port = data.get("port")
+            if any(p["name"] == port for p in card.outputs):
+                self._set_card_view(node_id, preview_output=port)
+        elif action == "toggle_optional":
+            card.show_optional = not card.show_optional
+        elif action == "popout":
+            self._open_card_popout(node_id)
+
+    def _set_card_view(self, instance_id: str, **changes: t.Any):
+        """Collapse or expand a card or pick the output it previews, as one undoable edit."""
+        card = self._find_node_card(instance_id)
+        if card is None:
+            return
+        changes = {k: v for k, v in changes.items() if getattr(card, k) != v}
+        if not changes:
+            return
+        with pn.io.hold():
+            card.param.update(**changes)
+            if (status_bar := getattr(self, "_status_bar", None)) is not None:
+                status_bar.sync_collapse_toggle()
+        if self.read_only:
+            return
+        name = self._node_name(instance_id)
+        if "collapsed" in changes:
+            verb = "Collapsed" if changes["collapsed"] else "Expanded"
+            self._record_edit(
+                f"{verb} {name}", op="collapse", args={"node": name, "collapsed": card.collapsed}
+            )
+        else:
+            output = changes["preview_output"]
+            self._record_edit(
+                f"Previewed {name}.{output}",
+                op="preview_output",
+                args={"node": name, "output": output},
+            )
+
+    def _sync_card_bridge(self):
+        bridge = getattr(self, "_card_bridge", None)
+        if bridge is None or self._canvas_batch is not None:
+            return
+        handles = {iid: card.handle_layout()[0] for iid, card in self._node_cards().items()}
+        if bridge.handles != handles:
+            bridge.handles = handles
+
+    def _collapse_all_nodes(self, collapsed: bool):
+        """Collapse or expand every card on the canvas, as one undoable edit."""
+        cards = {iid: c for iid, c in self._node_cards().items() if c.collapsed != collapsed}
+        if not cards:
+            return
+        with pn.io.hold():
+            for card in cards.values():
+                card.collapsed = collapsed
+        if not self.read_only:
+            self._record_edit(
+                "Collapsed all cards" if collapsed else "Expanded all cards",
+                op="collapse_all",
+                args={"collapsed": collapsed},
+            )
 
     def _patch_canvas_props(self, kind: str, item_id: str, patch: dict[str, t.Any]):
         """Patch a node or edge, also while it is still waiting in a batched canvas update."""
@@ -3139,6 +3393,12 @@ class FlowDash(Viewer):
             self._panel_slot,
             sizing_mode="stretch_both",
         )
+        self._card_bridge = CardBridge(
+            canvas_class=f"fd-canvas-{id(self)}",
+            on_action=_EditorCall(self, "_on_card_bridge_action"),
+            margin=0,
+            height=0,
+        )
         return pn.Column(
             bar,
             self._editor_row,
@@ -3149,6 +3409,7 @@ class FlowDash(Viewer):
             self._fullscreen_controller,
             self._tile_drag,
             self._split_view.storage,
+            self._card_bridge,
             sizing_mode="stretch_both",
             stylesheets=[PRESENTATION_CSS],
         )
@@ -5182,7 +5443,103 @@ class FlowDash(Viewer):
             if instance_id not in taken and name not in taken:
                 return instance_id
 
-    def _place(self, component_id, instance_id, config, position=None) -> str:
+    def _open_card_popout(self, instance_id: str):
+        """Show a card's previewed output in full in the page dialog: up to 100 rows, all columns.
+
+        The value comes from the component's preview hook, which may query a
+        database, so in a session it is fetched on a worker thread while the
+        dialog says it is loading.
+        """
+        component_id = self._component_id_for_instance(instance_id)
+        spec = self._component_specs.get(component_id) if component_id else None
+        state = self._dataflow_graph.get_state(instance_id)
+        if spec is None or state is None:
+            return
+        card = self._find_node_card(instance_id)
+        fetch = partial(
+            node_preview_value,
+            spec,
+            state,
+            self._component_instances.get(instance_id),
+            output=card.preview_output if card is not None else None,
+        )
+        show = partial(self._show_card_popout, instance_id, spec)
+        doc = pn.state.curdoc
+        if doc is None or doc.session_context is None:
+            show(fetch())
+            return
+        self._popout_request = request = object()
+        open_dialog(
+            self._node_name(instance_id),
+            pmui.LinearProgress(variant="indeterminate", sizing_mode="stretch_width"),
+            width="lg",
+        )
+
+        def deliver(result):
+            if self._popout_request is request:
+                show(result)
+
+        run_off_loop(fetch, deliver, doc)
+
+    def _show_card_popout(self, instance_id: str, spec, result: tuple[str | None, t.Any]):
+        port_name, value = result
+        name = self._node_name(instance_id)
+        title = f"{name}.{port_name}" if port_name else name
+        caption = ""
+        body: Viewable
+        if value is None:
+            body = markdown_pane("*No value yet*", margin=0)
+        elif _is_table(value):
+            rows, cols = value.shape
+            head = value.head(100)
+            caption = f"{rows:,} rows \u00d7 {cols:,}" + (
+                f", first {len(head):,} shown" if rows > len(head) else ""
+            )
+            body = pn.widgets.Tabulator(
+                head,
+                disabled=True,
+                selectable=False,
+                show_index=False,
+                formatters=_plain_integer_formatters(head),
+                sizing_mode="stretch_width",
+                height=min(440, 40 + 32 * max(len(head), 1)),
+                margin=0,
+            )
+        elif isinstance(value, t.Mapping) and value.get(PREVIEW_KIND_KEY) == "chart":
+            caption = str(value.get("caption") or "")
+            body = _popout_chart(value)
+        elif isinstance(value, t.Mapping) and value.get(PREVIEW_KIND_KEY) == "kpi":
+            caption = str(value.get("caption") or "")
+            parts = [
+                f"## {escape_markdown(str(value.get('value', '')))} "
+                f"{escape_markdown(str(value.get('unit') or ''))}".strip()
+            ]
+            for key in ("label", "delta"):
+                if value.get(key):
+                    parts.append(escape_markdown(str(value[key])))
+            body = markdown_pane("\n\n".join(parts), margin=(8, 0))
+        else:
+            caption = summarize_value(value)
+            body = self._value_preview(value)
+        header = pmui.Typography(
+            caption, variant="caption", margin=(0, 0, 8, 0), sx={"color": "text.secondary"}
+        )
+        open_dialog(
+            title,
+            pn.Column(*([header] if caption else []), body, sizing_mode="stretch_width", margin=0),
+            width="lg",
+        )
+
+    def _place(
+        self,
+        component_id,
+        instance_id,
+        config,
+        position=None,
+        *,
+        preview_output: str | None = None,
+        collapsed: bool = False,
+    ) -> str:
         """Instantiate a component and add it to the graph, canvas and tile list.
 
         A component already placed under *instance_id* is removed first, so
@@ -5242,15 +5599,24 @@ class FlowDash(Viewer):
             data=config_data,
         )
         node_dict = node.to_dict()
-        node_dict["view"] = node_card(
+        card = node_card(
             spec,
             node_state,
             failures,
             self._component_wiring.setdefault(instance_id, []),
             instance=self._component_instances.get(instance_id),
             show_preview=getattr(self, "_node_previews_shown", self.settings.node_previews),
+            instance_id=instance_id,
+            preview_output=preview_output,
+            collapsed=collapsed,
+            on_layout=_EditorCall(self, "_on_card_layout", instance_id),
         )
+        node_dict["view"] = card
+        _, css_vars = card.handle_layout()
+        if css_vars:
+            node_dict["style"] = css_vars
         self._add_canvas_node(node_dict)
+        self._sync_card_bridge()
 
         self._tile_items.append(
             {
@@ -5678,6 +6044,7 @@ class FlowDash(Viewer):
                 **(self._edge_chip(mapping) if transform or self._edge_failed(mapping) else {}),
             }
         )
+        self._sync_card_connections(target_id)
         self._settle_nodes()
         self._record_edit(
             self._connect_label("Connected", *mapping),
@@ -5796,6 +6163,7 @@ class FlowDash(Viewer):
                 self._drop_edge_editor(edge_id)
                 with self._muted_canvas():
                     self._flow.remove_edge(edge_id)
+        self._sync_card_connections(target_id)
         self._settle_nodes()
         self._record_edit(
             self._connect_label("Disconnected", *mapping),
@@ -5876,6 +6244,11 @@ class FlowDash(Viewer):
             **{k: v for k, v in stored.items() if k not in self._settings_names},
             **self._settings_values(),
         }
+        cards = {
+            node["id"]: card
+            for node in self._flow.nodes
+            if isinstance(card := node.get("view"), NodeCard)
+        }
         model.items = [
             DashboardItem(
                 instance_id=item["instance_id"],
@@ -5885,6 +6258,16 @@ class FlowDash(Viewer):
                 config=item.get("config", {}),
                 origin=self._origins.get(item["instance_id"]),
                 inputs=copy.deepcopy(item.get("inputs") or {}),
+                preview_output=(
+                    cards[item["instance_id"]].preview_output
+                    if item["instance_id"] in cards and "placeholder" not in item
+                    else item.get("preview_output")
+                ),
+                collapsed=(
+                    cards[item["instance_id"]].collapsed
+                    if item["instance_id"] in cards and "placeholder" not in item
+                    else bool(item.get("collapsed", False))
+                ),
             )
             for item in self._tile_items
         ]
@@ -6008,8 +6391,11 @@ class FlowDash(Viewer):
                             item.instance_id,
                             {spec.resolve_name(key): value for key, value in item.config.items()},
                             {"x": item.x, "y": item.y},
+                            preview_output=item.preview_output,
+                            collapsed=item.collapsed,
                         )
                         self._set_inputs(item.instance_id, item.inputs)
+                        self._sync_card_connections(item.instance_id)
                         continue
                     except Exception:
                         logger.exception(
@@ -6124,6 +6510,8 @@ class FlowDash(Viewer):
                 "component_id": item.component_id,
                 "config": copy.deepcopy(item.config),
                 "inputs": copy.deepcopy(item.inputs),
+                "preview_output": item.preview_output,
+                "collapsed": item.collapsed,
                 "placeholder": placeholder,
             }
         )
@@ -6469,12 +6857,23 @@ class FlowDash(Viewer):
                     iid,
                     {spec.resolve_name(k): v for k, v in item.config.items()},
                     {"x": item.x, "y": item.y},
+                    preview_output=item.preview_output,
+                    collapsed=item.collapsed,
                 )
                 self._set_inputs(iid, item.inputs)
             for iid in kept:
-                if iid not in placeholders:
+                if iid in placeholders:
+                    tile = next(i for i in self._tile_items if i["instance_id"] == iid)
+                    tile["preview_output"] = after[iid].preview_output
+                    tile["collapsed"] = after[iid].collapsed
+                else:
                     self._set_config(iid, after[iid].config)
                     self._set_inputs(iid, after[iid].inputs)
+                    if (card := self._find_node_card(iid)) is not None:
+                        card.param.update(
+                            preview_output=after[iid].preview_output,
+                            collapsed=after[iid].collapsed,
+                        )
             fresh = set(replaced) | set(added)
             for key, edge in new_edges.items():
                 old = old_edges.get(key)
@@ -6489,6 +6888,8 @@ class FlowDash(Viewer):
                     logger.warning("Restoring a version could not wire %s: %s", key, result)
                     self._unresolved_edges.append(UnresolvedEdge(edge, result))
         self._match_order(model)
+        self._sync_card_bridge()
+        self._status_bar.sync_collapse_toggle()
         moved = {
             iid: (after[iid].x, after[iid].y)
             for iid in kept

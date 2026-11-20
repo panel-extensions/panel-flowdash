@@ -10,6 +10,7 @@ from functools import partial
 import panel as pn
 import panel_material_ui as pmui
 import param
+from panel.custom import JSComponent
 from panel.viewable import Viewer
 
 from panel_flowdash.groups import component_nodes
@@ -22,6 +23,47 @@ _KEYS_CSS = """
 kbd { font: inherit; font-size: 11px; padding: 0 5px; margin-right: 4px; border-radius: 4px;
   border: 1px solid var(--mui-palette-divider, rgba(127, 127, 127, 0.4)); }
 """
+
+
+class CanvasShortcuts(JSComponent):
+    """Listens for single-key canvas shortcuts (P for previews, C for collapse all)."""
+
+    active = param.Boolean(default=True)
+
+    def __init__(self, *, on_key: t.Callable[[str], None] | None = None, **params):
+        self._on_key = on_key
+        super().__init__(**params)
+
+    _esm = """
+    function isEditable(el) {
+      if (!el) return false;
+      const tag = (el.tagName || "").toUpperCase();
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+      if (el.isContentEditable) return true;
+      if (el.closest && el.closest(".ace_editor")) return true;
+      return false;
+    }
+
+    export function render({ el, model }) {
+      el.style.display = "none";
+      const onKeyDown = (ev) => {
+        if (!model.active || ev.ctrlKey || ev.metaKey || ev.altKey) return;
+        const path = ev.composedPath ? ev.composedPath() : [ev.target];
+        if (path.some(isEditable)) return;
+        const key = (ev.key || "").toLowerCase();
+        if (key === "p" || key === "c") {
+          ev.preventDefault();
+          model.send_msg({ key });
+        }
+      };
+      window.addEventListener("keydown", onKeyDown);
+      return () => window.removeEventListener("keydown", onKeyDown);
+    }
+    """
+
+    def _handle_msg(self, data: t.Any) -> None:
+        if callable(self._on_key) and isinstance(data, dict) and data.get("key"):
+            self._on_key(data["key"])
 
 
 _NOWRAP = {"color": "text.secondary", "whiteSpace": "nowrap"}
@@ -226,6 +268,18 @@ class StatusBar(Viewer):
             lambda event: self.editor._show_node_previews(event.new), "value"
         )
         settings.param.watch(self._follow_preview_setting, "node_previews")
+        self._syncing_collapse = False
+        self.collapse_toggle = pmui.ToggleIcon(
+            icon="unfold_less",
+            active_icon="unfold_more",
+            value=False,
+            description="Collapse all cards",
+            size="small",
+            margin=(0, 0, 0, 4),
+            styles={"flex": "none"},
+        )
+        self.collapse_toggle.param.watch(self._on_collapse_toggled, "value")
+        self._shortcuts = CanvasShortcuts(active=self.visible, on_key=self._on_shortcut)
         self._bar = pn.FlexBox(
             self.grid_label,
             self.issues_button,
@@ -234,7 +288,9 @@ class StatusBar(Viewer):
             self.keys,
             self.zoom,
             self.preview_toggle,
+            self.collapse_toggle,
             self.minimap_toggle,
+            self._shortcuts,
             align_items="center",
             flex_wrap="nowrap",
             margin=0,
@@ -263,6 +319,34 @@ class StatusBar(Viewer):
     def _follow_preview_setting(self, event):
         self.preview_toggle.value = event.new
 
+    def _on_collapse_toggled(self, event):
+        if self._syncing_collapse:
+            return
+        self.editor._collapse_all_nodes(event.new)
+
+    def sync_collapse_toggle(self):
+        """Reflect whether every card on the canvas is collapsed, without toggling them."""
+        cards = [
+            card
+            for node in self.editor._flow.nodes
+            if isinstance(card := node.get("view"), NodeCard)
+        ]
+        all_collapsed = bool(cards) and all(card.collapsed for card in cards)
+        if self.collapse_toggle.value != all_collapsed:
+            self._syncing_collapse = True
+            try:
+                self.collapse_toggle.value = all_collapsed
+            finally:
+                self._syncing_collapse = False
+
+    def _on_shortcut(self, key: str):
+        if not self.visible or self.editor.mode == "dashboard":
+            return
+        if key == "p":
+            self.preview_toggle.value = not self.preview_toggle.value
+        elif key == "c":
+            self.collapse_toggle.value = not self.collapse_toggle.value
+
     def _follow_theme(self, event):
         self.editor._flow.color_mode = "dark" if event.new else "light"
 
@@ -275,21 +359,25 @@ class StatusBar(Viewer):
     def sync(self):
         """Recount the components, connections and issues."""
         if not self.visible:
+            self._shortcuts.active = False
             return
         editor = self.editor
         layout = editor.mode == "dashboard"
+        self._shortcuts.active = not layout
         self.grid_label.visible = layout
         for item in (
             self.issues_button,
             self.keys,
             self.zoom,
             self.preview_toggle,
+            self.collapse_toggle,
             self.minimap_toggle,
         ):
             item.visible = not layout
         if layout:
             self.counts.object = layout_summary(editor)
             return
+        self.sync_collapse_toggle()
         issues = canvas_issues(editor)
         if issues:
             label = f"1 issue: {issues[0].title}" if len(issues) == 1 else f"{len(issues)} issues"

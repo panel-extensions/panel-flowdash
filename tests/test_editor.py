@@ -3213,7 +3213,8 @@ class TestFailurePropagation:
         editor.graph.get_state(src).value = 1
         assert _edge_style(editor, edge_id) is None
         node = next(n for n in editor._flow.nodes if n["id"] == dst)
-        assert not node.get("style")
+        # Only the card's handle positions are left.
+        assert all(key.startswith("--fd-port-") for key in node.get("style") or {})
 
     async def test_edge_wired_while_failed_is_marked_at_once(self, editor):
         src = editor.add_component("Demo/inverse")

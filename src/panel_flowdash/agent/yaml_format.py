@@ -43,7 +43,16 @@ TOP_LEVEL_KEYS = (
     "edges",
     "layout",
 )
-NODE_KEYS = ("component", "origin", "group", "config", "inputs", "position")
+NODE_KEYS = (
+    "component",
+    "origin",
+    "group",
+    "config",
+    "inputs",
+    "position",
+    "preview_output",
+    "collapsed",
+)
 GROUP_KEYS = ("label", "collapsed")
 TURN_KEYS = ("id", "actor", "at", "run", "question", "summary", "status")
 EDGE_KEYS = ("from", "to", "transform")
@@ -107,7 +116,7 @@ def _hash(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:6]
 
 
-def _own_name(instance_id: str) -> str:
+def own_name(instance_id: str) -> str:
     """Return the name an instance id gives its node, before names are made unique."""
     generated = _GENERATED_ID.match(instance_id)
     if generated:
@@ -134,7 +143,7 @@ def node_names(items: t.Iterable[dict]) -> dict[str, str]:
     name, the one that sorts later gets a hash of its id appended.
     """
     ids = sorted({item["instance_id"] for item in items})
-    wanted = {iid: _own_name(iid) for iid in ids}
+    wanted = {iid: own_name(iid) for iid in ids}
     # Ids that are their own name keep it, whatever sorts first.
     names = {iid: name for iid, name in wanted.items() if name == iid}
     taken = set(names.values())
@@ -288,6 +297,10 @@ def dashboard_to_dict(
             node["config"] = copy.deepcopy(item["config"])
         if item.get("inputs"):
             node["inputs"] = copy.deepcopy(item["inputs"])
+        if item.get("preview_output"):
+            node["preview_output"] = item["preview_output"]
+        if item.get("collapsed"):
+            node["collapsed"] = True
         node["position"] = _position(item)
         nodes[names[item["instance_id"]]] = node
     if nodes:
@@ -914,6 +927,20 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
         }
         if inputs:
             item["inputs"] = copy.deepcopy(inputs)
+        preview_output = node.get("preview_output")
+        if preview_output is not None:
+            if not isinstance(preview_output, str) or not preview_output:
+                _fail(
+                    f"{path}.preview_output",
+                    f"must be a non-empty string, got {preview_output!r}.",
+                )
+            item["preview_output"] = preview_output
+        collapsed = node.get("collapsed")
+        if collapsed is not None:
+            if not isinstance(collapsed, bool):
+                _fail(f"{path}.collapsed", f"must be true or false, got {collapsed!r}.")
+            if collapsed:
+                item["collapsed"] = True
         origin = node.get("origin")
         if origin is not None:
             if origin not in turn_ids:

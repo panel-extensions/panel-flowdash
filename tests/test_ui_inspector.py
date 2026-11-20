@@ -113,23 +113,32 @@ class TestNodeCard:
 
     @pytest.mark.parametrize("ports", [(0, 0), (1, 0), (1, 1), (2, 1), (3, 5)])
     async def test_rows_clear_header_and_summary(self, ports):
+        from panel_flowdash.ui.node_card import port_tops
+
         height = card_height(*ports)
-        for count in ports:
-            offsets = [height * p / 100 for p in port_offsets(count)]
-            assert all(34 + 12 <= o <= height - 30 - 12 for o in offsets)
-            assert all(b - a >= 24 for a, b in itertools.pairwise(offsets))
+        tops_in, tops_out = port_tops(*ports)
+        all_tops = [*tops_in, *tops_out]
+        assert all(44 + 11 <= o <= height - 34 - 11 for o in all_tops)
+        assert all(b - a == 22 for a, b in itertools.pairwise(all_tops))
 
     async def test_labels_types_and_required_marker(self, editor):
         table = editor.add_component(TABLE)
         card = _card(editor, table)
-        html = card.__panel__().object
+        markup = card.__panel__().object
         assert card.title == "Table"
-        assert card.inputs == [
-            {"name": "rows", "label": "Rows", "type": "DataFrame", "required": True}
-        ]
-        assert 'data-port="rows"' in html and "DataFrame" in html
-        assert 'class="fd-required"' in html
-        assert f"top: {card_height(1, 0) / 2:.2f}px" in html
+        assert len(card.inputs) == 1
+        assert card.inputs[0]["name"] == "rows"
+        assert card.inputs[0]["label"] == "Rows"
+        assert card.inputs[0]["type"] == "DataFrame"
+        assert card.inputs[0]["required"] is True
+        assert card.inputs[0]["missing"] is True
+        # Names only on rows; type is in tooltip and handle color, missing required is a handle ring.
+        assert 'data-port="rows"' in markup
+        assert "DataFrame" in markup  # inside tooltip title attribute
+        assert 'class="fd-required"' not in markup
+        assert 'class="fd-type"' not in markup
+        handles, _ = card.handle_layout()
+        assert handles["in:rows"]["missing"] is True
         assert card.__panel__().width == CARD_WIDTH
         assert card.__panel__().height == card_height(1, 0)
 

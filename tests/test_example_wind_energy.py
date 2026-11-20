@@ -158,3 +158,17 @@ def test_quality_gate_failure_propagates_and_recovers(editor):
     picker.state = "TX"
     assert not editor.graph.get_failures("timeline").failed
     assert len(editor.graph.get_state("status").checked) > 100
+
+
+@pytest.mark.parametrize("dashboard_id", SEEDS)
+def test_seeded_cards_do_not_overlap_with_previews(editor, dashboard_id):
+    editor.load(dashboard_id)
+    editor._show_node_previews(True)
+    boxes = [
+        (node["position"]["x"], node["position"]["y"], node["view"].height)
+        for node in editor._flow.nodes
+    ]
+    for i, (x, y, height) in enumerate(boxes):
+        for other_x, other_y, other_height in boxes[i + 1 :]:
+            if x == other_x:
+                assert y + height <= other_y or other_y + other_height <= y
