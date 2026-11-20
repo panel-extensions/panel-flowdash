@@ -114,7 +114,7 @@ class TestInspector:
     async def test_the_large_editor_edits_the_same_text(self, editor):
         node = editor.add_component("D/query")
         field = _field(editor, node, "Sql")
-        field.expand_button.clicks += 1
+        field.open_dialog()
         assert field._dialog.open and field._dialog.title == "Sql"
         field._large.value = "SELECT 3"
         assert field._editor.value == "SELECT 3"

@@ -494,7 +494,9 @@ class FlowDashApp(Viewer):
         self._page_dialogs = [] if shared_dialog is None else [shared_dialog]
         self._page_dialogs.append(self._build_downloader())
         self._leave_page_guard = LeavePageGuard()
-        self._editor.param.watch(self._sync_leave_page_guard, ["dashboard", "dirty"])
+        self._editor.param.watch(
+            self._sync_leave_page_guard, ["dashboard", "dirty", "code_drafts"]
+        )
         self._page_dialogs.append(self._leave_page_guard)
         page_kwargs = {
             "title": self.title,
@@ -1053,7 +1055,8 @@ class FlowDashApp(Viewer):
         self._editor.dirty = value
 
     def _has_unsaved_changes(self) -> bool:
-        return self._dirty and self._current_dashboard is not None
+        unsaved = self._dirty or self._editor.code_drafts
+        return unsaved and self._current_dashboard is not None
 
     def _sync_leave_page_guard(self, *_events):
         self._leave_page_guard.active = self._has_unsaved_changes()
@@ -1991,6 +1994,7 @@ class FlowDashApp(Viewer):
 
         def _on_leave():
             self._dirty = False
+            self._editor.drop_code_drafts()
             pending = _take_pending()
             if pending:
                 pending()
@@ -1999,6 +2003,8 @@ class FlowDashApp(Viewer):
             if not self._save_current_dashboard():
                 _take_pending()
                 return
+            # Saving stores what was run; the drafts held in the code panel go with the page.
+            self._editor.drop_code_drafts()
             pending = _take_pending()
             if pending:
                 pending()
@@ -2022,7 +2028,10 @@ class FlowDashApp(Viewer):
             stored = {name: getattr(defaults, name) for name in editor._settings_names}
             saved = dataclasses.replace(saved, settings={**stored, **saved.settings})
         titles = {cid: entry.title for cid, entry in self._component_entries.items()}
-        return describe_changes(saved, editor.to_model(), titles)
+        changes = describe_changes(saved, editor.to_model(), titles)
+        if editor.code_drafts:
+            changes.append(("code", "Edits in the code panel that were not run"))
+        return changes
 
     def _navigate_to(self, path: str, search: str = ""):
         if pn.state.location is None:
