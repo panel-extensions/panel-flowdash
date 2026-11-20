@@ -91,6 +91,6 @@ def server_cleanup():
 def cache_cleanup():
     """Clean up cache."""
     state.clear_caches()
-    # Panel 1.11.0rc1 moved the cache from _resolve_modifiers to _resolve_modifiers_cached.
-    getattr(Design, '_resolve_modifiers_cached', Design._resolve_modifiers).cache_clear()
+    # Panel 1.11.0rc1 moved the lru_cache to _resolve_modifiers_cached; rc0 keeps it on _resolve_modifiers.
+    getattr(Design, "_resolve_modifiers_cached", Design._resolve_modifiers).cache_clear()
     Design._cache.clear()
