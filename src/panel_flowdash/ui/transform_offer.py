@@ -139,8 +139,7 @@ class TransformOffer(Viewer):
             ],
             title="Connect with a transform",
             open=False,
-            # On the paper: as a layout min_width it keeps the canvas holding it this wide.
-            sx={"& .MuiDialog-paper": {"minWidth": "min(420px, 100%)"}},
+            min_width=420,
             css_classes=["fd-transform-offer"],
         )
         self.dialog.param.watch(self._closed, "open")

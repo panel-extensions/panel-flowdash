@@ -387,6 +387,7 @@ _SIDE_PANEL_WIDTH = 250
 # Narrower windows show the Split tab with the inspector folded until something is selected.
 _SPLIT_FOLD_WIDTH = 1600
 _CANVAS_MIN_HEIGHT = 600
+_CANVAS_MIN_WIDTH = 160
 # With the code panel under it, the canvas keeps this much and the panel starts this high.
 _CANVAS_MIN_HEIGHT_DOCKED = 160
 _CODE_PANEL_HEIGHT = 400
@@ -3343,7 +3344,13 @@ class FlowDash(Viewer):
         )
         self._start_card = StartCard(editor=self)
         self._empty_hint = self._start_card.__panel__()
-        self._workspace_area = pn.Column(sizing_mode="stretch_both", scroll="y-auto")
+        # Its own minimum, or the closed dialogs it holds (Clear canvas, a tile's full
+        # screen view) would keep the canvas their width and push the inspector off screen.
+        self._workspace_area = pn.Column(
+            sizing_mode="stretch_both",
+            scroll="y-auto",
+            stylesheets=[f":host {{ min-width: {_CANVAS_MIN_WIDTH}px !important; }}"],
+        )
         self._inspector = Inspector(editor=self)
         self._layout_panel = LayoutPanel(editor=self)
         self._status_bar = StatusBar(editor=self)
@@ -3522,8 +3529,7 @@ class FlowDash(Viewer):
             ],
             title="Clear canvas",
             open=False,
-            # On the paper: as a layout min_width it keeps the canvas holding it this wide.
-            sx={"& .MuiDialog-paper": {"minWidth": "min(400px, 100%)"}},
+            min_width=400,
         )
 
     def _build_import_dialog(self):
@@ -3549,8 +3555,7 @@ class FlowDash(Viewer):
             ],
             title="Load dashboard file",
             open=False,
-            # On the paper: as a layout min_width it keeps the canvas holding it this wide.
-            sx={"& .MuiDialog-paper": {"minWidth": "min(400px, 100%)"}},
+            min_width=400,
         )
 
     def _build_settings_dialog(self):

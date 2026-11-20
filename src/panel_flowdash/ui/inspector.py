@@ -482,9 +482,14 @@ def summarize_input_html(value: t.Any, port_type: str | None = None) -> str:
     )
 
 
-def _dense(widget: Viewable) -> None:
-    """Make a form field about 36px high and as wide as the panel."""
-    params: dict[str, t.Any] = {"width": None, "sizing_mode": "stretch_width"}
+def _dense(widget: Viewable, stretch: bool = True) -> None:
+    """Make a form field about 36px high and, with *stretch*, as wide as the panel."""
+    if isinstance(widget, pn.widgets.CompositeWidget):
+        # e.g. a number format's preset and custom fields.
+        for part in widget._composite.select(pn.widgets.Widget):
+            if part is not widget and isinstance(part, _LINE_FIELDS):
+                _dense(part, stretch=False)
+    params: dict[str, t.Any] = {"width": None, "sizing_mode": "stretch_width"} if stretch else {}
     size = widget.param["size"] if "size" in widget.param else None
     if isinstance(size, param.Selector) and "small" in (size.objects or []):
         params["size"] = "small"
@@ -1955,6 +1960,8 @@ class Inspector(Viewer):
             sizing_mode="stretch_width",
             margin=(12, 0, 8, 0),
         )
+        for select in (width_select, height, frame):
+            _dense(select)
         syncing = False
 
         def set_frame(event):

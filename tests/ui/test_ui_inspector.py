@@ -131,20 +131,45 @@ def test_fields_are_compact_and_a_number_shares_a_row(page):
     for box in (title_box, size_box):
         assert 34 <= box["height"] <= 38
 
+    page.get_by_role("tab", name="Tile").click()
+    for name in ("Width", "Height", "Frame"):
+        select = page.get_by_role("combobox", name=name)
+        assert 34 <= stable_box(select)["height"] <= 38, name
+
 
 @pytest.mark.parametrize("width", [1024, 900])
 def test_the_header_actions_stay_on_screen_in_a_narrow_window(page, width):
-    editor, _src, table = _editor()
-    page.set_viewport_size({"width": width, "height": 800})
-    serve_component(page, editor)
+    from panel_flowdash import DashboardItem, MemoryDashboardStore
+    from panel_flowdash.app import FlowDashApp
+    from panel_flowdash.auth import resolve_identity
+    from panel_flowdash.component_library import normalize_components
 
-    _node(page, table).click()
+    store = MemoryDashboardStore()
+    model = store.create_dashboard(resolve_identity().user, "Rows")
+    model.items = [DashboardItem(instance_id="table", component_id=TABLE, x=0, y=0)]
+    store.save_dashboard(model)
+
+    def factory():
+        return FlowDashApp(
+            registry=normalize_components(TABLE_COMPONENTS), store=store, notifications=False
+        )
+
+    page.set_viewport_size({"width": width, "height": 800})
+    serve_component(
+        page,
+        {"/": factory, "/dash/[^/]+": factory},
+        suffix=f"/dash/{model.dashboard_id}?edit=true",
+    )
+    page.get_by_role("button", name="Done").wait_for()
+    _node(page, "table").click()
     close = page.get_by_role("button", name="Hide inspector")
     expect(close).to_be_visible()
-    for button in (page.locator(".fd-inspector-menu button"), close):
-        box = stable_box(button)
+    for part in (page.locator(".fd-status-dot"), page.locator(".fd-inspector-menu button"), close):
+        box = stable_box(part)
         assert box["x"] + box["width"] <= width, (width, box)
     assert page.evaluate("document.documentElement.scrollWidth") <= width
+    page.locator(".fd-inspector-menu button").click()
+    expect(page.get_by_role("menuitem", name="Remove from dashboard")).to_be_visible()
 
 
 def test_remove_from_dashboard(page):
