@@ -274,7 +274,7 @@ class TestInspector:
             for obj in pn.Column(*body).select(pn.viewable.Viewable)
             if "fd-inspector-info" in getattr(obj, "css_classes", [])
         ]
-        assert len(info_tips) == 1 and info_tips[0].title == "Shows rows."
+        assert len(info_tips) == 1 and info_tips[0].description == "Shows rows."
         form = next(iter(pn.Column(*body).select(pn.Param)))
         assert form.object is editor.graph.get_config_state(table)
         assert [n for n in form._widgets if n != "_title"] == ["title", "page_size"]

@@ -35,6 +35,24 @@ _ORDERED = re.compile(r"^([ \t]*\d+)([.)])", re.MULTILINE)
 _INDENT = re.compile(r"^[ \t]+", re.MULTILINE)
 
 
+ACRONYMS = frozenset(
+    {"api", "csv", "html", "id", "json", "kpi", "sql", "ui", "uri", "url", "utc", "xml"}
+)
+
+
+def field_label(parameter: param.Parameter) -> str:
+    """Return the label a config field is shown under, with acronyms in capitals.
+
+    Param derives ``Sql`` from ``sql``, so a label the parameter does not set
+    itself is derived again from its name.
+    """
+    if parameter._label is not None:
+        return parameter._label
+    words = (parameter.name or "").replace("_", " ").split()
+    words = [w.upper() if w.lower() in ACRONYMS else w for w in words]
+    return " ".join(words)[:1].upper() + " ".join(words)[1:]
+
+
 def _math_char(match: re.Match) -> str:
     return f"<span>&#{ord(match.group(0))};</span>"
 
