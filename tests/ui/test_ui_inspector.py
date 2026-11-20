@@ -115,7 +115,9 @@ class _Query(Viewer):
 
 
 def test_fields_are_compact_and_a_number_shares_a_row(page):
-    editor = FlowDash({"Demo/query": _Query}, notifications=False, include_builtin_components=False)
+    editor = FlowDash(
+        {"Demo/query": _Query}, notifications=False, include_builtin_components=False
+    )
     node = editor.add_component("Demo/query", position=(0, 0))
     serve_component(page, editor)
 
