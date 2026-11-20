@@ -13,6 +13,11 @@ are a list of values, a ``{label: value}`` dict or a :class:`Choices`. Its
 choices replace the declared ones of the same field. Choices under the name
 of an input are offered for the literal value it takes while unconnected.
 
+A config field edited as a spec (see :mod:`panel_flowdash.spec_settings`)
+offers choices per setting, under the field's name and the setting's path,
+e.g. ``"spec.encoding.x.field"``, declared on the setting or returned by the
+hook.
+
 Columns are read from DataFrames directly, and from other values through the
 ``columns`` reader of their port type, see
 :func:`~panel_flowdash.register_port_type`.
@@ -32,6 +37,7 @@ from dataclasses import dataclass, field
 from panel_flowdash.config_check import CHECK_TIMEOUT, node_config, node_inputs, run_hook
 from panel_flowdash.input_literals import takes_literal
 from panel_flowdash.port_types import column_reader
+from panel_flowdash.spec_settings import declared_settings
 
 if t.TYPE_CHECKING:
     from panel_flowdash.component_spec import ComponentSpec
@@ -135,28 +141,58 @@ def column_choices(value: t.Any, port_type: str | None = None) -> Choices | None
     return Choices([name for name, _ in columns], types={n: k for n, k in columns if k})
 
 
+def _spec_settings(spec: ComponentSpec) -> dict[str, list]:
+    """Return the settings of each config field of *spec* edited as a spec, by field."""
+    state = spec.config_state_class
+    if state is None:
+        return {}
+    found = {}
+    for config_field in spec.config:
+        if config_field.name in state.param:
+            settings = declared_settings(state.param[config_field.name])
+            if settings:
+                found[config_field.name] = settings
+    return found
+
+
 def declared_choices(spec: ComponentSpec, inputs: t.Mapping[str, t.Any]) -> dict[str, Choices]:
-    """Return the choices the config fields of *spec* declare, for a node with *inputs*."""
+    """Return the choices the config fields of *spec* declare, for a node with *inputs*.
+
+    The choices of a setting of a spec field are keyed by the field and the
+    setting's path, e.g. ``"spec.encoding.x.field"``.
+    """
     ports = {port.name: port for port in spec.inputs}
+
+    def columns(of: str | None) -> Choices | None:
+        names = [of] if of else [p for p in ports if p in inputs]
+        for port_name in names:
+            port = ports.get(port_name)
+            choices = column_choices(inputs.get(port_name), port.type if port else None)
+            if choices is not None:
+                return choices
+        return None
+
     result: dict[str, Choices] = {}
     for config_field in spec.config:
         declared = config_field.choices
         if not declared or declared.get("choices") != "columns":
             continue
-        name = declared.get("of")
-        names = [name] if name else [p for p in ports if p in inputs]
-        for port_name in names:
-            port = ports.get(port_name)
-            choices = column_choices(inputs.get(port_name), port.type if port else None)
-            if choices is not None:
-                result[config_field.name] = choices
-                break
+        if (choices := columns(declared.get("of"))) is not None:
+            result[config_field.name] = choices
+    for name, settings in _spec_settings(spec).items():
+        for setting in settings:
+            if setting.choices == "columns" and (choices := columns(setting.of)) is not None:
+                result[f"{name}.{setting.key}"] = choices
     return result
 
 
 def has_choices(spec: ComponentSpec) -> bool:
     """Whether nodes of *spec* may offer choices for their config."""
-    return spec.config_choices is not None or any(f.choices for f in spec.config)
+    return (
+        spec.config_choices is not None
+        or any(f.choices for f in spec.config)
+        or any(s.choices for settings in _spec_settings(spec).values() for s in settings)
+    )
 
 
 async def compute_choices(
@@ -203,7 +239,13 @@ async def compute_choices(
         )
         return result
     fields = {f.name for f in spec.config} | {p.name for p in spec.inputs if takes_literal(p)}
+    spec_fields = _spec_settings(spec)
     for name, value in computed.items():
+        field_name, _, path = name.partition(".")
+        if path and field_name in spec_fields:
+            if (choices := as_choices(value)) is not None:
+                result[name] = choices
+            continue
         name = spec.resolve_name(name)
         choices = as_choices(value)
         if name in fields and choices is not None:

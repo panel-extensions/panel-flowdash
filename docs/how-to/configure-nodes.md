@@ -374,6 +374,35 @@ class Query(pn.viewable.Viewer):
     ...
 ```
 
+### 7. Edit a spec through a form of its settings
+
+A dict field holding a spec, such as a Vega-Lite chart, can list the settings
+worth a form control, each a path into the spec:
+
+```python
+from panel_flowdash import SpecSetting
+
+SETTINGS = [
+    SpecSetting("mark", label="Mark", widget="radio", options=["bar", "line", "point"], group="Chart"),
+    SpecSetting("encoding.x.field", label="X", widget="select", choices="columns", of="data"),
+    SpecSetting("title", label="Title", group="Labels"),
+]
+
+spec = param.Dict(default={}, metadata={"flowdash": {"widget": "spec", "settings": SETTINGS}})
+```
+
+The inspector shows the form beside the spec's JSON and keeps them in sync:
+changing a control writes its path into the spec and highlights the changed
+line, and editing the JSON (applied on blur or Ctrl+Enter) reads every path
+back into the form. Keys no setting covers are kept exactly as written, marked
+in the editor's gutter and listed above the form. Setting a control to its
+`default` removes its path, so the spec says no more than it has to. A setting
+that is not a single path, e.g. Vega-Lite's `mark` given as `"bar"` or as
+`{"type": "bar"}`, takes `get` and `set` functions, and `enabled` can grey a
+control out depending on the spec. Each edit goes through `check_config` like
+any other, and `panel_flowdash.spec_settings.problems(spec, SETTINGS)` lists
+values outside a restricted select's options for a check to report.
+
 ## How configuration reaches your component
 
 The way config is delivered depends on the component style.

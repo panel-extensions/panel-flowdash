@@ -8,6 +8,7 @@ import panel_material_ui as pmui
 import param
 
 from panel_flowdash.component_spec import widget_hint
+from panel_flowdash.spec_settings import declared_settings
 from panel_flowdash.ui.code_field import CodeField, code_language
 from panel_flowdash.ui.number_widgets import (
     FORMAT_WIDGET,
@@ -15,6 +16,7 @@ from panel_flowdash.ui.number_widgets import (
     FormatInput,
     ThresholdsInput,
 )
+from panel_flowdash.ui.spec_field import SpecEditor
 
 if t.TYPE_CHECKING:
     from panel_flowdash.config_choices import Choices
@@ -142,9 +144,10 @@ def plain_widget(parameter: param.Parameter, current: t.Any) -> dict[str, t.Any]
     keeping a value its objects no longer hold, marked as not available, and
     a dropdown offering an empty option if the selector allows None. An
     optional number shows None as empty rather than as 0 or its lower bound. A
-    number format, a list of thresholds and a text field marked as code get
-    their own editors, see :mod:`panel_flowdash.ui.number_widgets` and
-    :mod:`panel_flowdash.ui.code_field`.
+    number format, a list of thresholds, a text field marked as code and a
+    spec with settings get their own editors, see
+    :mod:`panel_flowdash.ui.number_widgets`, :mod:`panel_flowdash.ui.code_field`
+    and :mod:`panel_flowdash.ui.spec_field`.
     """
     if isinstance(parameter, param.ListSelector):
         options = dict(parameter.get_range())
@@ -153,6 +156,8 @@ def plain_widget(parameter: param.Parameter, current: t.Any) -> dict[str, t.Any]
         return {"type": ChoiceMultiSelect, "options": options}
     if isinstance(parameter, param.Selector):
         return _select(parameter, dict(parameter.get_range()), current)
+    if (settings := declared_settings(parameter)) is not None:
+        return {"type": SpecEditor, "settings": settings}
     if (language := code_language(parameter)) is not None:
         return {"type": CodeField, "language": language}
     hint = widget_hint(parameter)
@@ -177,15 +182,36 @@ def form_widgets(
     widgets = {}
     for name in names:
         parameter, current = state.param[name], getattr(state, name)
-        if name in choices:
+        if (settings := declared_settings(parameter)) is not None:
+            widgets[name] = {
+                "type": SpecEditor,
+                "settings": settings,
+                "choices": setting_choices(choices, name),
+            }
+        elif name in choices:
             widgets[name] = choice_widget(parameter, choices[name], current)
         elif (spec := plain_widget(parameter, current)) is not None:
             widgets[name] = spec
     return widgets
 
 
+def setting_choices(choices: t.Mapping[str, Choices], name: str) -> dict[str, Choices]:
+    """Return the choices of the settings of the spec field *name*, by setting path."""
+    prefix = f"{name}."
+    return {key[len(prefix) :]: value for key, value in choices.items() if key.startswith(prefix)}
+
+
 def widgets_key(widgets: t.Mapping[str, dict[str, t.Any]]) -> tuple:
-    """Return a comparable summary of widget specs, to tell whether a form must be rebuilt."""
+    """Return a comparable summary of widget specs, to tell whether a form must be rebuilt.
+
+    A spec field takes new choices in place, so they are left out.
+    """
+    widgets = {
+        name: {k: v for k, v in spec.items() if k != "choices"}
+        if spec.get("type") is SpecEditor
+        else spec
+        for name, spec in widgets.items()
+    }
 
     def freeze(value):
         if isinstance(value, dict):
