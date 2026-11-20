@@ -53,7 +53,7 @@ dependencies = [
     # 0.1.0b10 has AgentChat's document layout with inline artifact cells.
     "panel-agents >=0.1.0b10",
     # Page.rail and Page.header_color arrived in 0.17.0b3.
-    "panel-material-ui >=0.17.0b3",
+    "panel-material-ui >=0.17.0rc1",
     # ReactFlow.fit_view, add_nodes/add_edges, graph validation and handle `top` arrived in
     # 0.6.0b1; 0.6.0b2 shows node views that arrive after their node; 0.6.0b6 reports a
     # connection dropped onto a handle that refuses it. A pre-release floor,
