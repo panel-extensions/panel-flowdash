@@ -413,6 +413,17 @@ class AceOptions(JSComponent):
     """
 
 
+#: Ace's GitHub themes highlight the cursor line in a saturated blue; follow the page's palette.
+ACE_THEME_CSS = """
+.ace_editor .ace_marker-layer .ace_active-line,
+.ace_editor .ace_gutter-active-line {
+  background: var(--mui-palette-action-hover, rgba(0, 0, 0, 0.04)) !important;
+}
+.ace_editor .ace_marker-layer .ace_selection {
+  background: rgba(var(--mui-palette-primary-mainChannel, 0 114 181) / 0.3) !important;
+}
+"""
+
 #: The Ace options every code field uses, see :class:`AceOptions`.
 ACE_OPTIONS = {"enableKeyboardAccessibility": True, "wrap": True}
 
@@ -741,6 +752,7 @@ class CodeField(CompositeWidget):
             sizing_mode="stretch_width",
             margin=0,
             css_classes=css_classes,
+            stylesheets=[ACE_THEME_CSS],
             styles={
                 "border": "1px solid var(--mui-palette-divider, #ccc)",
                 "border-radius": "4px",

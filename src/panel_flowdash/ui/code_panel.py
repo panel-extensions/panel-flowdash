@@ -31,7 +31,7 @@ from panel_flowdash.config_choices import code_fields, node_completions
 from panel_flowdash.dataflow_engine import failure_text
 from panel_flowdash.spec_settings import declared_settings
 from panel_flowdash.ui.choice_widgets import form_widgets
-from panel_flowdash.ui.code_field import ACE_OPTIONS, AceTools, code_language
+from panel_flowdash.ui.code_field import ACE_OPTIONS, ACE_THEME_CSS, AceTools, code_language
 from panel_flowdash.ui.config_draft import ConfigDraft
 from panel_flowdash.ui.node_preview import summarize_value
 from panel_flowdash.ui.text import text_alert
@@ -358,6 +358,7 @@ class CodePanel(Viewer):
             min_height=80,
             margin=0,
             css_classes=[_EDITOR_CLASS],
+            stylesheets=[ACE_THEME_CSS],
         )
         self.code.param.watch(self._typed, "value_input")
         self.tools = AceTools(

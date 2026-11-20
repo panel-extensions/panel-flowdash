@@ -397,6 +397,19 @@ _CODE_PANEL_MIN_WIDTH = 960
 _FLOW_STYLESHEET = """\
 /* The canvas shares its height with the code panel docked under it. */
 :host(.fd-docked) .react-flow { min-height: 0 !important; height: 100% !important; }
+/* React Flow's own dark palette draws edges at #3e3e3e on #141414, close to invisible. */
+.react-flow.dark {
+  --xy-edge-stroke: var(--mui-palette-text-disabled, #8a8a8a);
+  --xy-edge-stroke-selected: var(--mui-palette-text-secondary, #b1b1b1);
+  --xy-connectionline-stroke: var(--mui-palette-text-secondary, #b1b1b1);
+}
+.react-flow.dark .react-flow__attribution {
+  background: var(--mui-palette-background-paper, var(--panel-background-color));
+  border-top-left-radius: 4px;
+}
+.react-flow.dark .react-flow__attribution a {
+  color: var(--mui-palette-text-secondary, #999);
+}
 .react-flow__node {
   padding: 0;
   border-radius: 10px;
