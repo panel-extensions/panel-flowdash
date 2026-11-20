@@ -588,7 +588,7 @@ class TestCards:
         assert card(editor, ids["waiting"]).status == "waiting"
         assert "Showing 5 rows, 4 columns" in card(editor, ids["table"]).preview.html
 
-    async def test_card_grows_by_the_preview_and_fits_its_rows(self):
+    async def test_card_grows_by_the_preview_and_keeps_its_height(self):
         editor, ids = demo_editor()
         filtered = card(editor, ids["filter"])
         pane = filtered.__panel__()
@@ -597,7 +597,23 @@ class TestCards:
         assert pane.height == base - 34 + HEIGHTS["table"]
         editor._component_instances[ids["slider"]].value = 2.2
         assert "2 rows, 4 columns" in pane.object
-        assert pane.height == base - 34 + HEIGHTS["table"] - 2 * 19
+        assert pane.height == base - 34 + HEIGHTS["table"]
+
+    async def test_short_table_card_fits_its_rows_then_only_grows(self):
+        editor, ids = demo_editor()
+        editor._show_node_previews(False)
+        editor._component_instances[ids["slider"]].value = 2.9
+        editor._show_node_previews(True)
+        filtered = card(editor, ids["filter"])
+        pane = filtered.__panel__()
+        short = pane.height
+        assert short < card_height(2, 1) - 34 + HEIGHTS["table"]
+        editor._component_instances[ids["slider"]].value = 2.2
+        grown = pane.height
+        assert grown > short
+        editor._component_instances[ids["slider"]].value = 2.9
+        assert "1 row, 4 columns" in pane.object
+        assert pane.height == grown
 
     async def test_previews_are_off_by_default(self):
         editor = FlowDash(DEMO, notifications=False)

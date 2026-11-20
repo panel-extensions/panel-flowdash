@@ -856,15 +856,29 @@ class NodeCard(Viewer):
             if wanted and doc is not None:
                 run_off_loop(self._build_preview, partial(self._show_preview, generation), doc)
                 return
-            self._preview = self._build_preview() if wanted else None
+            self._preview = self._settle(self._build_preview()) if wanted else None
             self._render_now()
 
     def _show_preview(self, generation: int, preview: Preview | None):
         with self._render_lock:
             if generation != self._generation or not self._wants_preview():
                 return
-            self._preview = preview
+            self._preview = self._settle(preview)
             self._render_now()
+
+    def _settle(self, preview: Preview | None) -> Preview | None:
+        """Keep the card's height while its value stays the same kind, growing but never shrinking.
+
+        Resizing a card moves its edges and can push its neighbours, so a
+        filter that keeps changing a short table's row count must not resize it
+        each time.
+        """
+        old = self._preview
+        if preview is None or old is None or old.kind != preview.kind:
+            return preview
+        if preview.height >= old.height:
+            return preview
+        return preview.with_height(old.height)
 
     def _render_now(self):
         preview = self._preview

@@ -376,6 +376,12 @@ class Preview:
         """The height the card reserves for this preview."""
         return self.size if self.size is not None else HEIGHTS[self.kind]
 
+    def with_height(self, height: int) -> Preview:
+        """Return this preview drawn in a block *height* px tall."""
+        old = f'class="fd-preview fd-preview-{self.kind}" style="height: {self.height}px"'
+        new = f'class="fd-preview fd-preview-{self.kind}" style="height: {height}px"'
+        return Preview(self.kind, self.html.replace(old, new, 1), height)
+
 
 def _esc(text: str) -> str:
     return html.escape(text, quote=True)
