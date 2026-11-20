@@ -134,7 +134,7 @@ class TestLanguage:
 class TestInspector:
     async def test_editing_the_code_applies_the_config(self, editor):
         node = editor.add_component("D/query")
-        field = _field(editor, node, "Sql")
+        field = _field(editor, node, "SQL")
         assert field._large.language == "sql" and field._large.value == "SELECT 1"
         assert "SELECT" in field._snippet.object and "1 line" in field._status_html.object
         assert not field._large.on_keyup, "applied once editing ends, not per key"
@@ -145,9 +145,9 @@ class TestInspector:
 
     async def test_the_large_editor_edits_the_same_text(self, editor):
         node = editor.add_component("D/query")
-        field = _field(editor, node, "Sql")
+        field = _field(editor, node, "SQL")
         field.open_dialog()
-        assert field._dialog.open and field._dialog.title == "Sql"
+        assert field._dialog.open and field._dialog.title == "SQL"
         field._large.value = "SELECT 3"
         assert "SELECT" in field._snippet.object and "3" in field._snippet.object
         assert editor._component_instances[node].sql == "SELECT 3"
@@ -162,7 +162,7 @@ class TestInspector:
             return panel_opens
 
         editor.open_code_panel = open_code_panel
-        field = _field(editor, node, "Sql")
+        field = _field(editor, node, "SQL")
         field.edit_button.clicks += 1
         assert calls == [(node, "sql")]
         assert field._dialog.open is not panel_opens
@@ -188,7 +188,7 @@ class TestInspector:
 
     async def test_a_checked_field_applies_once_the_check_passes(self, editor):
         node = editor.add_component("D/checked")
-        field = _field(editor, node, "Sql")
+        field = _field(editor, node, "SQL")
         await _settle()
         assert field.check_status == ("ok", "Check passed")
         assert "Check passed" in field._status_html.object
@@ -231,7 +231,7 @@ class TestInspector:
     async def test_typed_text_offers_save_until_it_is_applied(self, editor):
         node = editor.add_component("D/query")
         editor.save()
-        field = _field(editor, node, "Sql")
+        field = _field(editor, node, "SQL")
         assert editor._dashboard_bar.save_button.disabled
         field._large.value_input = "SELECT 2"
         assert field.unsent and not editor._dashboard_bar.save_button.disabled
@@ -241,7 +241,7 @@ class TestInspector:
     async def test_typing_then_reverting_no_longer_offers_save(self, editor):
         node = editor.add_component("D/query")
         editor.save()
-        field = _field(editor, node, "Sql")
+        field = _field(editor, node, "SQL")
         assert field._large.value_input == "SELECT 1"
         field._large.value_input = "SELECT 1x"
         assert not editor._dashboard_bar.save_button.disabled
@@ -252,7 +252,7 @@ class TestInspector:
         node = editor.add_component("D/query")
         other = editor.add_component("D/schema")
         editor.save()
-        field = _field(editor, node, "Sql")
+        field = _field(editor, node, "SQL")
         field._large.value_input = "SELECT 9"
         assert not editor._dashboard_bar.save_button.disabled
         select_on_canvas(editor._flow, node_id=other)
@@ -261,7 +261,7 @@ class TestInspector:
     async def test_save_waits_for_the_check_of_an_edit(self, editor):
         node = editor.add_component("D/checked")
         editor.save()
-        field = _field(editor, node, "Sql")
+        field = _field(editor, node, "SQL")
         await _settle()
         field._large.value = "SELECT 42 -- SLOW"
         editor._save_from_button()
@@ -282,5 +282,5 @@ class TestInspector:
 
     async def test_a_schema_field_gets_the_editor(self, editor):
         node = editor.add_component("D/schema")
-        field = _field(editor, node, "Sql")
+        field = _field(editor, node, "SQL")
         assert field._large.language == "sql"

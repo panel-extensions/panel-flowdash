@@ -34,7 +34,7 @@ from panel_flowdash.ui.choice_widgets import form_widgets
 from panel_flowdash.ui.code_field import ACE_OPTIONS, AceTools, code_language
 from panel_flowdash.ui.config_draft import ConfigDraft
 from panel_flowdash.ui.node_preview import summarize_value
-from panel_flowdash.ui.text import text_alert
+from panel_flowdash.ui.text import field_label, text_alert
 from panel_flowdash.util import is_failure
 
 if t.TYPE_CHECKING:
@@ -674,7 +674,7 @@ class CodePanel(Viewer):
         for edge in editor._dataflow_graph.edges if editor else []:
             if edge["target"] == self.instance_id:
                 sources.append(f"{editor._node_name(edge['source'])}.{edge['source_port']}")
-        label = parameter.label or self.field
+        label = field_label(parameter) or self.field
         origin = f"from {', '.join(sources)}" if sources else ""
         return _bar(f"<b>{html.escape(label)}</b>", html.escape(origin))
 

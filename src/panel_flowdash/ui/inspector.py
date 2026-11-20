@@ -44,7 +44,7 @@ from panel_flowdash.ui.status_bar import (
     connection_title,
     select_on_canvas,
 )
-from panel_flowdash.ui.text import text_alert, text_typography
+from panel_flowdash.ui.text import field_label, text_alert, text_typography
 from panel_flowdash.ui.tile_layout import (
     AREA_NAMES,
     FRAME_DEFAULT,
@@ -113,19 +113,6 @@ _HEADER_CSS = """
   line-height: 1;
   font-feature-settings: "liga";
 }
-.fd-info-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  font-family: "Material Icons";
-  font-size: 15px;
-  line-height: 1;
-  color: var(--mui-palette-text-disabled, #9e9e9e);
-  cursor: default;
-  font-feature-settings: "liga";
-}
 .fd-status-wrap {
   display: flex;
   align-items: center;
@@ -143,7 +130,7 @@ _HEADER_CSS = """
 .fd-status-warning { background: var(--mui-palette-warning-main, #ed6c02); }
 .fd-status-error { background: var(--mui-palette-error-main, #d32f2f); }
 .fd-status-default { background: var(--mui-palette-text-disabled, #9e9e9e); }
-.fd-status-dot:focus-visible, .fd-info-icon:focus-visible {
+.fd-status-dot:focus-visible {
   outline: 2px solid var(--mui-palette-primary-main, #0072b5);
   outline-offset: 2px;
 }
@@ -873,21 +860,20 @@ class Inspector(Viewer):
                 )
             )
         if description:
-            info_pane = pn.pane.HTML(
-                f'<span class="fd-info-icon" tabindex="0" role="img" aria-label="{_esc(description)}">'
-                "info_outline</span>",
-                width=16,
-                height=16,
-                margin=0,
-                stylesheets=[_HEADER_CSS],
-            )
+            # A button, so keyboard focus opens its tooltip like hover does.
             sub_parts.append(
-                pmui.Tooltip(
-                    object=info_pane,
-                    title=description,
-                    arrow=True,
+                pmui.IconButton(
+                    icon="info_outline",
+                    icon_size="15px",
+                    description=description,
+                    size="small",
+                    width=16,
+                    height=16,
                     margin=0,
+                    sx={"p": 0, "color": "text.disabled", "cursor": "default"},
                     css_classes=["fd-inspector-info"],
+                    # The tooltip renders inside the 16px button, which would wrap it.
+                    stylesheets=[".MuiTooltip-tooltip { width: max-content; max-width: 280px; }"],
                 )
             )
         if sub_parts:
@@ -907,7 +893,8 @@ class Inspector(Viewer):
             margin=0,
             align="center",
             sizing_mode="stretch_width",
-            styles={"min-width": "0", "flex": "1 1 0%", "overflow": "hidden"},
+            # Not clipped, so the description's tooltip can reach past it.
+            styles={"min-width": "0", "flex": "1 1 0%"},
         )
         self._status_dot_pane = pn.pane.HTML(
             _status_dot_html(STATUS_TEXT["ok"], "success"),
@@ -1394,7 +1381,7 @@ class Inspector(Viewer):
         if not rejected:
             return None
         lines = [
-            f"{config_state.param[key].label or key}: {value!r} is not available, "
+            f"{field_label(config_state.param[key]) or key}: {value!r} is not available, "
             f"using {getattr(config_state, key)!r}."
             for key, value in rejected.items()
             if key in config_state.param
@@ -1423,6 +1410,10 @@ class Inspector(Viewer):
     ) -> pn.Param:
         widgets = form_widgets(state, names, choices)
         self._form_key = widgets_key(widgets)
+        for name in names:
+            label = field_label(state.param[name])
+            if label != state.param[name].label:
+                widgets[name] = {**widgets.get(name, {}), "label": label}
         form = pn.Param(
             state,
             parameters=names,
@@ -1787,20 +1778,6 @@ class Inspector(Viewer):
         )
         edit.on_click(lambda _event: select_on_canvas(self._flow, edge_id=edge_id))
         top_items: list[Viewable] = [title]
-        if not port.required:
-            top_items.append(
-                text_typography(
-                    "optional ·",
-                    variant="caption",
-                    margin=0,
-                    sx={
-                        "color": "text.secondary",
-                        "fontSize": "0.75rem",
-                        "whiteSpace": "nowrap",
-                        "flexShrink": 0,
-                    },
-                )
-            )
         top_items.extend([origin, edit])
         lines = [
             pmui.Row(

@@ -471,7 +471,9 @@ class DashboardBar(Viewer):
             size="small",
             margin=(0, 4),
             description="Done",
-            stylesheets=[_ICON_ONLY_WHEN_NARROW],
+            # Its eye icon alone does not say it ends editing, so it keeps its
+            # label as long as the view actions keep theirs.
+            stylesheets=[ICON_ONLY_WHEN_COMPACT],
         )
         self.done_button.on_click(lambda _event: self.request_mode("view"))
 

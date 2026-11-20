@@ -88,9 +88,13 @@ def test_selecting_a_node_shows_its_config_and_editing_it_updates_the_component(
     expect(page.get_by_role("tooltip", name="Shows rows.")).to_be_visible()
     page.locator(".fd-inspector-status").hover()
     expect(page.get_by_role("tooltip", name="Needs Rows")).to_be_visible()
-    info = page.get_by_role("img", name="Shows rows.")
-    info.focus()
+    page.mouse.move(1, 1)
+    expect(page.get_by_role("tooltip")).to_have_count(0)
+    info = page.locator(".fd-inspector-info button")
+    page.locator(".fd-inspector-title").click()
+    page.keyboard.press("Tab")
     expect(info).to_be_focused()
+    expect(page.get_by_role("tooltip", name="Shows rows.")).to_be_visible()
     dot = page.get_by_role("img", name="Status: Needs Rows")
     dot.focus()
     expect(dot).to_be_focused()
@@ -160,7 +164,11 @@ def test_the_header_actions_stay_on_screen_in_a_narrow_window(page, width):
         {"/": factory, "/dash/[^/]+": factory},
         suffix=f"/dash/{model.dashboard_id}?edit=true",
     )
-    page.get_by_role("button", name="Done").wait_for()
+    done = page.get_by_role("button", name="Done")
+    done.wait_for()
+    # At 1024 the eye icon keeps its label; below, its tooltip names it.
+    labelled = done.evaluate("b => getComputedStyle(b).fontSize") != "0px"
+    assert labelled == (width >= 1024)
     _node(page, "table").click()
     close = page.get_by_role("button", name="Hide inspector")
     expect(close).to_be_visible()

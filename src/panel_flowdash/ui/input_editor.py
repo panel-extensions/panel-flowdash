@@ -43,8 +43,28 @@ def _typed_as_text(parameter: param.Parameter) -> bool:
     )
 
 
+_NOT_A_LITERAL = object()
+
+
+def _reads_as(text: str) -> t.Any:
+    try:
+        return ast.literal_eval(text)
+    except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+        return _NOT_A_LITERAL
+
+
+def _bare_text(text: str) -> bool:
+    """Whether *text* reads as itself: no literal and nothing starting one, like ``TX``."""
+    return bool(text) and text[0] not in "([{'\"" and _reads_as(text) is _NOT_A_LITERAL
+
+
 def _as_text(value: t.Any) -> str:
-    return "" if value is None else repr(value)
+    """Write *value* as it is typed, a string without quotes if it reads back as itself."""
+    if value is None:
+        return ""
+    if isinstance(value, str) and value == value.strip() and _bare_text(value):
+        return value
+    return repr(value)
 
 
 class LiteralEditor(Viewer):
@@ -197,9 +217,10 @@ class LiteralEditor(Viewer):
             self._show(self._current if self._current is not None else self._holder.value)
             self._error.visible = False
             return
-        try:
-            value = ast.literal_eval(text)
-        except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+        value = _reads_as(text)
+        if type(self._parameter) is param.Parameter and _bare_text(text):
+            value = text
+        if value is _NOT_A_LITERAL:
             example = next(
                 (e for cls, e in _EXAMPLES if isinstance(self._parameter, cls)), '42 or "text"'
             )
