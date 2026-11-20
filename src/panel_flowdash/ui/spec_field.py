@@ -39,7 +39,7 @@ from panel_flowdash.spec_settings import (
     shown_in_spec,
     unrepresented_paths,
 )
-from panel_flowdash.ui.code_field import ACE_OPTIONS, AceOptions
+from panel_flowdash.ui.code_field import ACE_OPTIONS, ACE_THEME_CSS, AceOptions
 from panel_flowdash.ui.text import code_span
 
 if t.TYPE_CHECKING:
@@ -250,7 +250,7 @@ class SpecEditor(CompositeWidget):
             sizing_mode="stretch_width",
             margin=0,
             css_classes=["fd-spec-editor"],
-            stylesheets=[_EDITOR_CSS],
+            stylesheets=[ACE_THEME_CSS, _EDITOR_CSS],
             styles={
                 "border": "1px solid var(--mui-palette-divider, #ccc)",
                 "border-radius": "4px",
