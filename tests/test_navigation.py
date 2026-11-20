@@ -479,7 +479,7 @@ class TestNavigateTo:
         app._load_page_layout = load
         doc = Document()
         doc._session_context = lambda: SimpleNamespace(
-            id="session", request=SimpleNamespace(arguments={})
+            id="session", request=SimpleNamespace(arguments={}), server_context=None
         )
         with set_curdoc(doc):
             app._navigate_to("/Analytics/page")

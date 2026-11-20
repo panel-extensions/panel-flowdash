@@ -1254,7 +1254,9 @@ def _placed_ids(editor):
 
 def _session_doc():
     doc = Document()
-    session_context = SimpleNamespace(id="session", request=SimpleNamespace(arguments={}))
+    session_context = SimpleNamespace(
+        id="session", request=SimpleNamespace(arguments={}), server_context=None
+    )
     doc._session_context = lambda: session_context
     return doc, session_context
 
