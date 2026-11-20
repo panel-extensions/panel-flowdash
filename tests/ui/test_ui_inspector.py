@@ -1,8 +1,11 @@
 """UI tests for the compact node cards, the inspector and the status bar of the wiring canvas."""
 
+import param
 import pytest
 from panel.tests.util import wait_until
+from panel.viewable import Viewer
 
+from panel_flowdash import register
 from panel_flowdash.editor import FlowDash
 from tests.test_ui_inspector import ROWS, TABLE, TABLE_COMPONENTS
 from tests.ui.util import center, serve_component, stable_box
@@ -79,11 +82,19 @@ def test_selecting_a_node_shows_its_config_and_editing_it_updates_the_component(
     wait_until(lambda: editor._inspector._shown == ("node", table), timeout=8000)
     expect(page.locator(".fd-inspector-header")).to_be_visible()
     expect(page.get_by_text("Configuration", exact=True)).to_have_count(0)
-    # Description sits in the inline info tooltip, status in the status dot tooltip.
+    # The description and the status show on hover, are named for keyboard and
+    # screen reader users, and a status other than up to date is also spelled out.
     page.locator(".fd-inspector-info").hover()
     expect(page.get_by_role("tooltip", name="Shows rows.")).to_be_visible()
     page.locator(".fd-inspector-status").hover()
     expect(page.get_by_role("tooltip", name="Needs Rows")).to_be_visible()
+    info = page.get_by_role("img", name="Shows rows.")
+    info.focus()
+    expect(info).to_be_focused()
+    dot = page.get_by_role("img", name="Status: Needs Rows")
+    dot.focus()
+    expect(dot).to_be_focused()
+    expect(page.get_by_role("status").filter(has_text="Needs Rows")).to_be_visible()
 
     title = page.get_by_role("textbox", name="Title")
     expect(title).to_have_value("Turbines")
@@ -92,6 +103,46 @@ def test_selecting_a_node_shows_its_config_and_editing_it_updates_the_component(
     wait_until(lambda: editor._component_instances[table].title == "Capacity", timeout=8000)
     assert editor._tile_items[1]["config"] == {"title": "Capacity"}
     assert editor.dirty
+
+
+@register(page=False, component=True, title="Query", config=["table", "limit"])
+class _Query(Viewer):
+    table = param.String(default="turbines")
+    limit = param.Integer(default=None, allow_None=True)
+
+    def __panel__(self):
+        return self.table
+
+
+def test_fields_are_compact_and_a_number_shares_a_row(page):
+    editor = FlowDash({"Demo/query": _Query}, notifications=False, include_builtin_components=False)
+    node = editor.add_component("Demo/query", position=(0, 0))
+    serve_component(page, editor)
+
+    _node(page, node).click()
+    fields = page.locator(".fd-field-pair .MuiInputBase-root")
+    expect(fields).to_have_count(2, timeout=8000)
+    expect(fields.first.locator("input")).to_have_value("turbines")
+    title_box, size_box = stable_box(fields.first), stable_box(fields.last)
+    assert abs(title_box["y"] - size_box["y"]) < 1
+    assert title_box["x"] + title_box["width"] < size_box["x"]
+    for box in (title_box, size_box):
+        assert 34 <= box["height"] <= 38
+
+
+@pytest.mark.parametrize("width", [1024, 900])
+def test_the_header_actions_stay_on_screen_in_a_narrow_window(page, width):
+    editor, _src, table = _editor()
+    page.set_viewport_size({"width": width, "height": 800})
+    serve_component(page, editor)
+
+    _node(page, table).click()
+    close = page.get_by_role("button", name="Hide inspector")
+    expect(close).to_be_visible()
+    for button in (page.locator(".fd-inspector-menu button"), close):
+        box = stable_box(button)
+        assert box["x"] + box["width"] <= width, (width, box)
+    assert page.evaluate("document.documentElement.scrollWidth") <= width
 
 
 def test_remove_from_dashboard(page):

@@ -3522,7 +3522,8 @@ class FlowDash(Viewer):
             ],
             title="Clear canvas",
             open=False,
-            min_width=400,
+            # On the paper: as a layout min_width it keeps the canvas holding it this wide.
+            sx={"& .MuiDialog-paper": {"minWidth": "min(400px, 100%)"}},
         )
 
     def _build_import_dialog(self):
@@ -3548,7 +3549,8 @@ class FlowDash(Viewer):
             ],
             title="Load dashboard file",
             open=False,
-            min_width=400,
+            # On the paper: as a layout min_width it keeps the canvas holding it this wide.
+            sx={"& .MuiDialog-paper": {"minWidth": "min(400px, 100%)"}},
         )
 
     def _build_settings_dialog(self):

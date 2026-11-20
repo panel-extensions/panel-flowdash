@@ -757,8 +757,9 @@ class CodeField(CompositeWidget):
 
     def _open(self):
         if self.disabled:
-            return
-        if self.on_edit is not None:
+            # A constant field opens read-only, so its whole text can be read.
+            self.open_dialog()
+        elif self.on_edit is not None:
             self.on_edit(self)
         else:
             self.open_dialog()
@@ -804,7 +805,10 @@ class CodeField(CompositeWidget):
 
     def _disabled_set(self, *_events):
         self._large.readonly = self.disabled
-        self.edit_button.disabled = self.disabled
+        self.edit_button.param.update(
+            label="View" if self.disabled else "Edit",
+            icon="visibility" if self.disabled else "edit",
+        )
 
     def _sync_label(self, event):
         label = event.new or ""

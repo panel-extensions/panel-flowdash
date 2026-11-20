@@ -16,6 +16,8 @@ pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference alrea
 def test_sql_is_edited_over_several_lines_and_applied_on_blur(page):
     editor = FlowDash(COMPONENTS, notifications=False, include_builtin_components=False)
     node = editor.add_component("D/query", position=(0, 0))
+    # Wider windows open the code panel under the canvas instead of the dialog.
+    page.set_viewport_size({"width": 900, "height": 800})
     serve_component(page, editor)
 
     page.locator(f".react-flow__node[data-id='{node}']").click()
@@ -76,6 +78,8 @@ def test_save_while_typing_stores_the_checked_text(page):
     editor = _saved_editor()
     node = editor.add_component("D/checked", position=(0, 0))
     editor.save()
+    # Wider windows open the code panel under the canvas instead of the dialog.
+    page.set_viewport_size({"width": 900, "height": 800})
     serve_component(page, editor)
 
     page.locator(f".react-flow__node[data-id='{node}']").click()
@@ -105,6 +109,8 @@ def test_save_while_typing_stores_the_checked_text(page):
 def test_escape_then_tab_leaves_the_editor(page):
     editor = FlowDash(COMPONENTS, notifications=False, include_builtin_components=False)
     node = editor.add_component("D/query", position=(0, 0))
+    # Wider windows open the code panel under the canvas instead of the dialog.
+    page.set_viewport_size({"width": 900, "height": 800})
     serve_component(page, editor)
 
     page.locator(f".react-flow__node[data-id='{node}']").click()
@@ -153,6 +159,8 @@ def test_typing_then_deleting_leaves_save_disabled(page):
     editor = _saved_editor()
     node = editor.add_component("D/query", position=(0, 0))
     editor.save()
+    # Wider windows open the code panel under the canvas instead of the dialog.
+    page.set_viewport_size({"width": 900, "height": 800})
     serve_component(page, editor)
 
     page.locator(f".react-flow__node[data-id='{node}']").click()
@@ -162,7 +170,9 @@ def test_typing_then_deleting_leaves_save_disabled(page):
     large.locator(".ace_content").click()
     page.keyboard.press("End")
     page.keyboard.type("x")
+    save = page.get_by_role("button", name="Save", exact=True)
+    # The dialog hides the page from role queries, so Save is checked on the editor.
+    wait_until(lambda: not editor._dashboard_bar.save_button.disabled, page, timeout=8000)
     page.keyboard.press("Backspace")
     page.get_by_role("dialog").get_by_role("button", name="Done", exact=True).click()
-    save = page.get_by_role("button", name="Save", exact=True)
     expect(save).to_be_disabled(timeout=8000)

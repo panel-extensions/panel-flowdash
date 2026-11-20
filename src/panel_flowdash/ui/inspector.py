@@ -36,7 +36,7 @@ from panel_flowdash.ui.node_card import (
     port_label,
     summarize_value,
 )
-from panel_flowdash.ui.node_preview import PREVIEW_HOOK, describe_object, format_value
+from panel_flowdash.ui.node_preview import describe_object, format_value
 from panel_flowdash.ui.spec_field import SpecEditor
 from panel_flowdash.ui.status_bar import (
     CanvasWatcher,
@@ -143,6 +143,22 @@ _HEADER_CSS = """
 .fd-status-warning { background: var(--mui-palette-warning-main, #ed6c02); }
 .fd-status-error { background: var(--mui-palette-error-main, #d32f2f); }
 .fd-status-default { background: var(--mui-palette-text-disabled, #9e9e9e); }
+.fd-status-dot:focus-visible, .fd-info-icon:focus-visible {
+  outline: 2px solid var(--mui-palette-primary-main, #0072b5);
+  outline-offset: 2px;
+}
+.fd-status-text {
+  padding: 0 14px 8px 40px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--mui-palette-text-secondary, #666);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 96px;
+  overflow-y: auto;
+}
+.fd-status-text-error { color: var(--mui-palette-error-main, #d32f2f); }
+.fd-status-text-warning { color: var(--mui-palette-warning-dark, #b35c00); }
 """
 
 _INPUT_DATA_CSS = """
@@ -232,18 +248,37 @@ li.MuiMenuItem-root:last-of-type:not(:first-of-type) {
 }
 """
 
-_SECTION_SX = {
-    "color": "text.secondary",
-    "fontWeight": 500,
+_SECTION_SX = {"color": "text.secondary", "fontWeight": 500}
+
+# The section headings of a component's settings, as small capitals.
+_CAPS_SX = {
+    **_SECTION_SX,
     "fontSize": "0.6875rem",
     "letterSpacing": "0.5px",
     "textTransform": "uppercase",
 }
 
+_DENSE_SX = {
+    "& .MuiInputBase-input": {
+        "py": "8px",
+        "fontSize": "0.875rem",
+        "lineHeight": "20px",
+        "height": "20px",
+    },
+    "& .MuiSelect-select": {"minHeight": "20px"},
+    "& .MuiInputLabel-root:not(.MuiInputLabel-shrink)": {
+        "fontSize": "0.875rem",
+        "transform": "translate(14px, 8px) scale(1)",
+    },
+}
+
+_NUMBER_FIELDS = (pmui.IntInput, pmui.FloatInput)
+_LINE_FIELDS = (pmui.TextInput, pmui.Select, pmui.AutocompleteInput, *_NUMBER_FIELDS)
+
 _TABS_SX = {
     "& .MuiTabs-root": {
         "minHeight": "36px",
-        "px": "6px",
+        "px": "12px",
         "borderBottom": 1,
         "borderColor": "divider",
     },
@@ -252,7 +287,9 @@ _TABS_SX = {
         "minWidth": 0,
         "minHeight": "36px",
         "py": "6px",
-        "px": "10px",
+        # The text lines up with the content below, the indicator just outside it.
+        "px": "2px",
+        "mr": "14px",
         "fontSize": "0.8125rem",
     },
 }
@@ -269,8 +306,9 @@ def _caption(text: str, sx: dict | None = None, **kwargs) -> pmui.Typography:
     return text_typography(text, variant="caption", sx=style, **kwargs)
 
 
-def _heading(text: str, margin=(16, 0, 4, 0)) -> pmui.Typography:
-    return text_typography(text, variant="subtitle2", margin=margin, sx=_SECTION_SX)
+def _heading(text: str, margin=(16, 0, 4, 0), caps: bool = False) -> pmui.Typography:
+    sx = _CAPS_SX if caps else _SECTION_SX
+    return text_typography(text, variant="subtitle2", margin=margin, sx=sx)
 
 
 def _avatar(icon: str) -> pn.pane.HTML:
@@ -292,6 +330,15 @@ def _header_icon(icon: str) -> pn.pane.HTML:
         align="center",
         stylesheets=[_HEADER_CSS],
         styles={"flex": "0 0 auto"},
+    )
+
+
+def _status_dot_html(label: str, color: str) -> str:
+    # Focusable and named, so the status is not only in a hover tooltip.
+    return (
+        '<div class="fd-status-wrap">'
+        f'<span class="fd-status-dot fd-status-{_esc(color)}" tabindex="0" role="img" '
+        f'aria-label="Status: {_esc(label)}"></span></div>'
     )
 
 
@@ -317,16 +364,7 @@ def _is_raw_repr(text: str) -> bool:
 
 
 def _source_tables(value: t.Any) -> list[str] | None:
-    getter = getattr(value, "get_tables", None)
-    if callable(getter):
-        try:
-            tables = getter()
-            if isinstance(tables, (list, tuple, set)):
-                return [str(t_) for t_ in tables]
-            if isinstance(tables, dict):
-                return [str(k) for k in tables]
-        except Exception:
-            return None
+    # Only a ``tables`` attribute already held: ``get_tables()`` may query the source.
     tables = getattr(value, "tables", None)
     if isinstance(tables, dict) and tables:
         return [str(k) for k in tables]
@@ -371,12 +409,13 @@ def _chips_summary_html(items: t.Sequence[t.Any]) -> str:
     )
 
 
-def summarize_input_html(
-    value: t.Any,
-    port_type: str | None = None,
-    source_instance: t.Any = None,
-) -> str:
-    """Return a compact escaped HTML summary line for a connected input value."""
+def summarize_input_html(value: t.Any, port_type: str | None = None) -> str:
+    """Return a one-line escaped HTML summary of an input value: its shape, columns or items.
+
+    It only reads what the value already holds (a frame's shape, the columns
+    its port type lists, a source's table names) and never calls a node's
+    preview hook, so showing a node's inputs does not run queries.
+    """
     if value is None:
         return '<div class="fd-inp-data"><span class="fd-inp-text">No value yet</span></div>'
     if is_failure(value):
@@ -434,45 +473,50 @@ def summarize_input_html(
     if described is not None:
         return f'<div class="fd-inp-data"><span class="fd-inp-text">{_esc(described)}</span></div>'
 
-    preview_hook = getattr(value, PREVIEW_HOOK, None)
-    if callable(preview_hook):
-        try:
-            preview_val = preview_hook()
-        except Exception:
-            preview_val = None
-        if preview_val is not None and preview_val is not value:
-            if isinstance(preview_val, str) and preview_val.strip():
-                return (
-                    '<div class="fd-inp-data">'
-                    f'<span class="fd-inp-text">{_esc(preview_val.strip())}</span></div>'
-                )
-            if _is_table(preview_val):
-                cols = [str(c) for c in preview_val.columns]
-                return _table_summary_html(None, cols)
-
     text = summarize_value(value)
-    if _is_raw_repr(text) and source_instance is not None:
-        src_hook = getattr(source_instance, PREVIEW_HOOK, None)
-        if callable(src_hook):
-            try:
-                src_preview = src_hook()
-            except Exception:
-                src_preview = None
-            if isinstance(src_preview, str) and src_preview.strip():
-                return (
-                    '<div class="fd-inp-data">'
-                    f'<span class="fd-inp-text">{_esc(src_preview.strip())}</span></div>'
-                )
-            if _is_table(src_preview):
-                cols = [str(c) for c in src_preview.columns]
-                return _table_summary_html(None, cols)
     if _is_raw_repr(text):
         text = type(value).__name__
-
     return (
         '<div class="fd-inp-data">'
         f'<span class="fd-inp-text" title="{_esc(text)}">{_esc(text)}</span></div>'
     )
+
+
+def _dense(widget: Viewable) -> None:
+    """Make a form field about 36px high and as wide as the panel."""
+    params: dict[str, t.Any] = {"width": None, "sizing_mode": "stretch_width"}
+    size = widget.param["size"] if "size" in widget.param else None
+    if isinstance(size, param.Selector) and "small" in (size.objects or []):
+        params["size"] = "small"
+    if "sx" in widget.param:
+        params["sx"] = {**(widget.sx or {}), **_DENSE_SX}
+    widget.param.update(**params)
+
+
+def _pair_fields(layout: pn.Column) -> None:
+    """Put a number field on one row with the one-line field before it, e.g. Table and Limit."""
+    objects, pairs = list(layout.objects), []
+    i = 0
+    while i < len(objects):
+        first = objects[i]
+        second = objects[i + 1] if i + 1 < len(objects) else None
+        if isinstance(first, _LINE_FIELDS) and isinstance(second, _NUMBER_FIELDS):
+            first.margin, second.margin = (6, 4, 6, 0), (6, 0, 6, 4)
+            pairs.append(
+                pn.Row(
+                    first,
+                    second,
+                    margin=0,
+                    sizing_mode="stretch_width",
+                    css_classes=["fd-field-pair"],
+                )
+            )
+            i += 2
+        else:
+            pairs.append(first)
+            i += 1
+    if len(pairs) != len(objects):
+        layout[:] = pairs
 
 
 class Inspector(Viewer):
@@ -484,13 +528,6 @@ class Inspector(Viewer):
 
     visible = param.Boolean(default=True, doc="Whether the panel is shown.")
 
-    on_edit_code = param.Callable(
-        default=None,
-        doc="""
-        Optional callback invoked as ``on_edit_code(instance_id, field_name, field)``
-        when Edit is clicked on a code field in the inspector.""",
-    )
-
     def __init__(self, **params):
         super().__init__(**params)
         self._flow = self.editor._flow
@@ -499,12 +536,14 @@ class Inspector(Viewer):
         self._shown: tuple[str, str] | None = None
         self._status_dot: pmui.Tooltip | None = None
         self._status_dot_pane: pn.pane.HTML | None = None
+        self._status_line: pn.pane.HTML | None = None
         self._status_info: tuple[str, str] = ("Up to date", "success")
         self._node_status: tuple[str, str] | None = None
         self._config_status: tuple[str, str] | None = None
         self._last_check_status: tuple[str, str] | None = None
         self._code_fields: list[CodeField] = []
         self._has_inline_close = False
+        self._no_settings = False
         self._data_column: pn.Column | None = None
         self._inputs_column: pn.Column | None = None
         # What the shown input rows depend on, and their parts updated in place.
@@ -696,6 +735,7 @@ class Inspector(Viewer):
         self._choice_holder = None
         self._status_dot = None
         self._status_dot_pane = None
+        self._status_line = None
         self._node_status = self._config_status = None
         self._last_check_status = None
         self._code_fields = []
@@ -803,6 +843,7 @@ class Inspector(Viewer):
                 "overflow": "hidden",
                 "textOverflow": "ellipsis",
                 "whiteSpace": "nowrap",
+                "& > p": {"marginBlock": "0 !important"},
             },
             css_classes=["fd-inspector-title"],
         )
@@ -821,13 +862,14 @@ class Inspector(Viewer):
                         "overflow": "hidden",
                         "textOverflow": "ellipsis",
                         "whiteSpace": "nowrap",
+                        "& > p": {"marginBlock": "0 !important"},
                     },
                     css_classes=["fd-inspector-subtitle"],
                 )
             )
         if description:
             info_pane = pn.pane.HTML(
-                '<span class="fd-info-icon" role="img" aria-label="Component description">'
+                f'<span class="fd-info-icon" tabindex="0" role="img" aria-label="{_esc(description)}">'
                 "info_outline</span>",
                 width=16,
                 height=16,
@@ -863,9 +905,7 @@ class Inspector(Viewer):
             styles={"min-width": "0", "flex": "1 1 0%", "overflow": "hidden"},
         )
         self._status_dot_pane = pn.pane.HTML(
-            '<div class="fd-status-wrap">'
-            '<span class="fd-status-dot fd-status-success" role="status" '
-            'aria-label="Up to date"></span></div>',
+            _status_dot_html(STATUS_TEXT["ok"], "success"),
             width=18,
             height=18,
             margin=0,
@@ -912,7 +952,7 @@ class Inspector(Viewer):
             )
             close_btn.on_click(lambda _event: setattr(self, "collapsed", True))
             row_items.append(close_btn)
-        return pmui.Row(
+        row = pmui.Row(
             *row_items,
             sizing_mode="stretch_width",
             margin=0,
@@ -926,6 +966,15 @@ class Inspector(Viewer):
             },
             css_classes=["fd-inspector-header"],
         )
+        self._status_line = pn.pane.HTML(
+            "",
+            visible=False,
+            margin=0,
+            sizing_mode="stretch_width",
+            stylesheets=[_HEADER_CSS],
+            css_classes=["fd-inspector-status-text"],
+        )
+        return pn.Column(row, self._status_line, margin=0, sizing_mode="stretch_width")
 
     def _set_status(self, status: str, detail: str):
         self._node_status = (status, detail)
@@ -961,8 +1010,6 @@ class Inspector(Viewer):
                 self._config_status = ("held", "Edit not applied")
             else:
                 self._config_status = ("refused", "Config refused")
-        for field in self._code_fields:
-            field.check_status = self._last_check_status
         self._show_status()
 
     def _show_status(self):
@@ -975,13 +1022,18 @@ class Inspector(Viewer):
         if self._status_dot is not None:
             self._status_dot.title = label
         if self._status_dot_pane is not None:
-            self._status_dot_pane.object = (
-                '<div class="fd-status-wrap">'
-                f'<span class="fd-status-dot fd-status-{_esc(color)}" role="status" '
-                f'aria-label="{_esc(label)}"></span></div>'
+            self._status_dot_pane.object = _status_dot_html(label, color)
+        if self._status_line is not None:
+            # Anything but up to date is also spelled out, so it is not only behind a hover.
+            self._status_line.param.update(
+                object=f'<div class="fd-status-text fd-status-text-{_esc(color)}" role="status">'
+                f"{_esc(label)}</div>",
+                visible=status != "ok",
             )
+        self._sync_code_status()
 
     def _duplicate_component(self, instance_id: str):
+        """Place a copy of a component with its config, input values and tile size."""
         editor = self.editor
         item = self._item(instance_id)
         if item is None or "placeholder" in item:
@@ -992,16 +1044,35 @@ class Inspector(Viewer):
         new_pos = {"x": pos["x"] + 32, "y": pos["y"] + 32} if isinstance(pos, dict) else None
         try:
             new_id = editor.add_component(
-                item["component_id"], config=config or None, position=new_pos
+                item["component_id"],
+                config=config or None,
+                position=new_pos,
+                instance_id=self._copy_name(instance_id),
             )
         except PermissionError:
             return
         for port_name, val in editor.input_values(instance_id).items():
-            try:
-                editor.set_input_value(new_id, port_name, copy.deepcopy(val))
-            except Exception:
-                pass
+            editor.set_input_value(new_id, port_name, copy.deepcopy(val))
+        size = {
+            k: v for k, v in tile_entry(editor, instance_id).items() if k in ("width", "height")
+        }
+        if size:
+            update_tile(editor, new_id, **size)
         select_on_canvas(self._flow, node_id=new_id)
+
+    def _copy_name(self, instance_id: str) -> str | None:
+        """Name a copy after the original, e.g. ``by_state_copy``, or None for a generated id."""
+        from panel_flowdash.agent.yaml_format import NAME_PATTERN
+        from panel_flowdash.editor import MAX_NAME_LENGTH
+
+        stem = f"{self.editor._node_name(instance_id)[: MAX_NAME_LENGTH - 8]}_copy"
+        if "__" in stem or not NAME_PATTERN.match(stem):
+            return None
+        _, taken = self.editor._taken_names()
+        name, n = stem, 2
+        while name in taken:
+            name, n = f"{stem}_{n}", n + 1
+        return name
 
     def _on_node_menu(self, instance_id: str, event):
         item = getattr(event, "new", event)
@@ -1137,8 +1208,7 @@ class Inspector(Viewer):
             header = self._header(
                 "extension_off",
                 placeholder.title,
-                placeholder.message,
-                subtitle="Unavailable",
+                None,
                 menu_items=menu_items,
                 on_menu=partial(self._on_node_menu, instance_id),
             )
@@ -1167,6 +1237,10 @@ class Inspector(Viewer):
         self._data_column = pn.Column(margin=(12, 14, 16, 14), sizing_mode="stretch_width")
         self._inputs_column = pn.Column(margin=0, sizing_mode="stretch_width")
         self._refresh_inputs = partial(self._fill_inputs, instance_id, spec)
+        config_state = graph.get_config_state(instance_id)
+        self._no_settings = not any(
+            n != "name" for n in (config_state.param if config_state else [])
+        )
 
         inspector = weakref.ref(self)
 
@@ -1220,7 +1294,7 @@ class Inspector(Viewer):
             caption = (
                 _caption("This component has no settings.")
                 if not spec.inputs
-                else pn.Column(margin=0)
+                else pn.Column(margin=0, visible=False)
             )
             if not has_choices(spec) or not any(takes_literal(p) for p in spec.inputs):
                 return caption
@@ -1249,6 +1323,17 @@ class Inspector(Viewer):
                 else draft.propose,
             )
             form = custom.__panel__() if hasattr(custom, "__panel__") else pn.panel(custom)
+            labels = {(config_state.param[n].label or n): n for n in names}
+            self._wire_code_fields(
+                instance_id,
+                form,
+                {
+                    field: field.name
+                    if field.name in names
+                    else labels.get(field.label, field.name)
+                    for field in form.select(CodeField)
+                },
+            )
             if draft is None:
                 return form
             return pn.Column(form, draft.alert, margin=0, sizing_mode="stretch_width")
@@ -1342,31 +1427,50 @@ class Inspector(Viewer):
             sizing_mode="stretch_width",
             margin=0,
         )
-        editor = weakref.ref(self.editor)
         widget_names = {
             widget: name
             for name, widget in getattr(form, "_widgets", {}).items()
             if name != "_title"
         }
         for widget in widget_names:
-            if not isinstance(widget, (CodeField, SpecEditor)):
-                widget.margin = (6, 0)
-                if not isinstance(widget, (pmui.Checkbox, pmui.Switch)):
-                    widget.param.update(width=None, sizing_mode="stretch_width")
-        code_fields: list = []
-        for field in form.select(CodeField):
-            field_name = widget_names.get(field, field.name)
+            if isinstance(widget, (CodeField, SpecEditor)):
+                continue
+            widget.margin = (6, 0)
+            if not isinstance(widget, (pmui.Checkbox, pmui.Switch)):
+                _dense(widget)
+        _pair_fields(form.layout)
+        self._wire_code_fields(instance_id, form, widget_names)
+        return form
+
+    def _wire_code_fields(
+        self, instance_id: str, form: Viewable, field_names: dict | None = None
+    ) -> None:
+        """Open the code fields of *form* in the code panel and show the check status on them.
+
+        *field_names* maps the fields to the params they edit.
+        """
+        editor = weakref.ref(self.editor)
+        field_names = field_names or {}
+        code_fields = [*form.select(CodeField)]
+        for field in code_fields:
+            field_name = field_names.get(field, field.name)
             field.on_edit = partial(self._edit_code_field, instance_id, field_name)
-            if self._last_check_status is not None:
-                field.check_status = self._last_check_status
-        for field in (*form.select(CodeField), *form.select(SpecEditor)):
+        for field in (*code_fields, *form.select(SpecEditor)):
             # Typed text is applied on blur, so Save is offered while some waits.
             field.param.watch(
                 lambda _event: (e := editor()) is not None and e._sync_toolbar_state(), "unsent"
             )
-            code_fields.append(field)
         self._code_fields = code_fields
-        return form
+        self._sync_code_status()
+
+    def _sync_code_status(self):
+        """Show the config check's result under each code field, or that the node failed."""
+        status = self._last_check_status
+        failed = (self._node_status or ("ok", ""))[0] == "failed"
+        if failed and (status is None or status[0] != "error"):
+            status = ("error", "Run failed")
+        for field in self._code_fields:
+            field.check_status = status
 
     def _sync_save(self):
         """Offer Save while a code field shown holds unapplied text, and stop once it is gone."""
@@ -1500,7 +1604,6 @@ class Inspector(Viewer):
         for port in spec.inputs:
             wired = incoming.get(port.name)
             if wired is not None:
-                source_id = wired[1][0]
                 key = (
                     "wired",
                     wired[0],
@@ -1508,13 +1611,10 @@ class Inspector(Viewer):
                     repr(literals.get(port.name)),
                 )
 
-                def update(name=port.name, port_type=port.type, src_id=source_id):
+                def update(name=port.name, port_type=port.type):
                     pane = self._value_panes.get(name)
                     if pane is not None:
-                        src_inst = editor._component_instances.get(src_id)
-                        pane.object = summarize_input_html(
-                            getattr(state, name, None), port_type, src_inst
-                        )
+                        pane.object = summarize_input_html(getattr(state, name, None), port_type)
 
             else:
                 key = ("free", takes_literal(port))
@@ -1549,12 +1649,13 @@ class Inspector(Viewer):
         )
         objects: list[Viewable] = [
             pn.FlexBox(
-                _heading("Inputs", margin=0),
+                _heading("Inputs", margin=0, caps=True),
                 self._connected_caption,
                 align_items="center",
                 justify_content="space-between",
                 flex_wrap="nowrap",
-                margin=(16, 0, 8, 0),
+                # Right under the tabs when there are no settings above.
+                margin=(0 if self._no_settings else 16, 0, 8, 0),
                 sizing_mode="stretch_width",
             )
         ]
@@ -1603,6 +1704,7 @@ class Inspector(Viewer):
                     port.name in literals,
                     partial(self.editor.set_input_value, instance_id, port.name),
                     choices=self._choices.get(instance_id, {}).get(port.name),
+                    style=_dense,
                 )
                 self._literal_editors[port.name] = literal
                 caption = _caption("")
@@ -1646,9 +1748,8 @@ class Inspector(Viewer):
             )
 
         edge_id, mapping = wired
-        source_instance = self.editor._component_instances.get(mapping[0])
         value_pane = pn.pane.HTML(
-            summarize_input_html(getattr(state, port.name, None), port.type, source_instance),
+            summarize_input_html(getattr(state, port.name, None), port.type),
             margin=(3, 0, 0, 0),
             sizing_mode="stretch_width",
             stylesheets=[_INPUT_DATA_CSS],

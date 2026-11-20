@@ -65,10 +65,12 @@ class LiteralEditor(Viewer):
         is_set: bool,
         on_change: t.Callable[[t.Any], None],
         choices: Choices | None = None,
+        style: t.Callable[[pn.viewable.Viewable], None] | None = None,
     ):
         super().__init__()
         self.port = port
         self._on_change = on_change
+        self._style = style
         self._syncing = False
         parameter = literal_parameter(port)
         if parameter is None:
@@ -89,6 +91,8 @@ class LiteralEditor(Viewer):
                 css_classes=["fd-literal-text"],
             )
             self._text.param.watch(self._typed, "value")
+            if style is not None:
+                style(self._text)
         self.choices_key = ()
         self._form = pn.Column(margin=0, sizing_mode="stretch_width")
         self.set_choices(choices)
@@ -139,17 +143,20 @@ class LiteralEditor(Viewer):
             self.choices_key = key
             return
         self.choices_key = key
-        self._form[:] = [
-            pn.Param(
-                self._holder,
-                parameters=["value"],
-                widgets=widgets or None,
-                show_name=False,
-                expand_button=False,
-                sizing_mode="stretch_width",
-                margin=0,
-            )
-        ]
+        form = pn.Param(
+            self._holder,
+            parameters=["value"],
+            widgets=widgets or None,
+            show_name=False,
+            expand_button=False,
+            sizing_mode="stretch_width",
+            margin=0,
+        )
+        if self._style is not None:
+            for name, widget in form._widgets.items():
+                if name != "_title":
+                    self._style(widget)
+        self._form[:] = [form]
 
     def sync(self, value: t.Any, is_set: bool):
         """Show *value*, set elsewhere, e.g. by undo or the agent, without calling *on_change*."""

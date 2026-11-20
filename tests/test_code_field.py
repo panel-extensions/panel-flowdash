@@ -59,7 +59,33 @@ def schema_query(config):
     return "schema"
 
 
-COMPONENTS = {"D/query": Query, "D/checked": CheckedQuery, "D/schema": schema_query}
+def custom_form(values, schema, *, id, type, on_patch):
+    field = CodeField(label="Sql", language="sql", value=values["sql"])
+    field.param.watch(lambda event: on_patch({"sql": event.new}), "value")
+    return pn.Column(field)
+
+
+@register(
+    page=False,
+    component=True,
+    title="Custom form query",
+    config=["sql"],
+    config_editor=custom_form,
+    check_config=checked,
+)
+class CustomFormQuery(Viewer):
+    sql = param.String(default="SELECT 1", metadata=SQL)
+
+    def __panel__(self):
+        return self.sql
+
+
+COMPONENTS = {
+    "D/query": Query,
+    "D/checked": CheckedQuery,
+    "D/schema": schema_query,
+    "D/custom_form": CustomFormQuery,
+}
 
 
 @pytest.fixture
@@ -78,7 +104,11 @@ async def editor():
 
 def _field(editor, node_id, name):
     select_on_canvas(editor._flow, node_id=node_id)
-    fields = [w for w in pn.Column(*editor._inspector._body).select(CodeField) if w.name == name]
+    fields = [
+        w
+        for w in pn.Column(*editor._inspector._body).select(CodeField)
+        if name in (w.name, w.label)
+    ]
     assert len(fields) == 1
     return fields[0]
 
@@ -122,14 +152,30 @@ class TestInspector:
         assert "SELECT" in field._snippet.object and "3" in field._snippet.object
         assert editor._component_instances[node].sql == "SELECT 3"
 
-    async def test_on_edit_callback_intercepts_edit_click(self, editor):
+    @pytest.mark.parametrize("panel_opens", [True, False])
+    async def test_edit_opens_the_code_panel_or_else_the_dialog(self, editor, panel_opens):
         node = editor.add_component("D/query")
-        opened = []
-        editor._inspector.on_edit_code = lambda nid, name, fld: opened.append((nid, name, fld))
+        calls = []
+
+        def open_code_panel(instance_id, field_name):
+            calls.append((instance_id, field_name))
+            return panel_opens
+
+        editor.open_code_panel = open_code_panel
         field = _field(editor, node, "Sql")
         field.edit_button.clicks += 1
-        assert not field._dialog.open
-        assert opened == [(node, "sql", field)]
+        assert calls == [(node, "sql")]
+        assert field._dialog.open is not panel_opens
+
+    async def test_code_fields_of_a_custom_form_open_the_code_panel(self, editor):
+        node = editor.add_component("D/custom_form")
+        calls = []
+        editor.open_code_panel = lambda *args: calls.append(args) or False
+        field = _field(editor, node, "Sql")
+        await _settle()
+        assert field.check_status == ("ok", "Check passed")
+        field.edit_button.clicks += 1
+        assert calls == [(node, "sql")] and field._dialog.open
 
     async def test_snippet_caps_at_five_lines_and_shows_total(self, editor):
         field = CodeField(
@@ -169,13 +215,18 @@ class TestInspector:
         assert editor._component_instances[node].notes is None
         assert field._large.value == "" and "Empty" in field._snippet.object
 
-    async def test_a_disabled_field_is_read_only(self, editor):
-        field = CodeField(label="Sql", value="SELECT 1", disabled=True)
+    async def test_a_disabled_field_opens_read_only(self, editor):
+        edits = []
+        field = CodeField(label="Sql", value="SELECT 1", disabled=True, on_edit=edits.append)
         assert field._large.readonly
-        assert field.expand_button.disabled
-        field.disabled = False
-        assert not field._large.readonly
-        assert not field.expand_button.disabled
+        assert field.edit_button.label == "View" and not field.edit_button.disabled
+        field.edit_button.clicks += 1
+        assert field._dialog.open and edits == []
+        field.param.update(disabled=False)
+        field._dialog.open = False
+        assert not field._large.readonly and field.edit_button.label == "Edit"
+        field.edit_button.clicks += 1
+        assert edits == [field] and not field._dialog.open
 
     async def test_typed_text_offers_save_until_it_is_applied(self, editor):
         node = editor.add_component("D/query")

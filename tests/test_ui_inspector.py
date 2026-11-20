@@ -358,6 +358,18 @@ class TestInspector:
         assert editor._component_instances[copy_id].title == "Original"
         assert editor._flow.selection == {"nodes": [copy_id], "edges": []}
 
+    async def test_a_copy_is_named_after_the_original_and_keeps_its_tile_size(self, editor):
+        from panel_flowdash.ui.tile_layout import tile_entry, update_tile
+
+        table = editor.add_component(TABLE, instance_id="by_state")
+        update_tile(editor, table, width=50.0, height=400)
+        editor._inspector._duplicate_component(table)
+        editor._inspector._duplicate_component(table)
+        ids = [i["instance_id"] for i in editor._tile_items]
+        assert ids == ["by_state", "by_state_copy", "by_state_copy_2"]
+        entry = tile_entry(editor, "by_state_copy")
+        assert (entry["width"], entry["height"]) == (50.0, 400)
+
     async def test_how_was_this_made_only_in_menu_when_agent_made(self, editor):
         from panel_flowdash.turns import agent_edits
 
@@ -381,9 +393,16 @@ class TestInspector:
             "Remove from dashboard",
         ]
 
-    async def test_summarize_input_html_for_rich_types(self):
+    async def test_summarize_input_html_for_rich_types(self, monkeypatch):
+        from panel_flowdash import port_types
         from panel_flowdash.port_types import register_port_type
         from panel_flowdash.ui.inspector import summarize_input_html
+
+        monkeypatch.setattr(port_types, "_COLUMN_READERS", dict(port_types._COLUMN_READERS))
+        monkeypatch.setattr(port_types, "_ALIASES", dict(port_types._ALIASES))
+        monkeypatch.setattr(
+            port_types, "_SUPERTYPES", {k: set(v) for k, v in port_types._SUPERTYPES.items()}
+        )
 
         class LazyPipe:
             def __init__(self, cols):
@@ -393,19 +412,18 @@ class TestInspector:
                 return "<LazyPipe object at 0x1234>"
 
         class DuckSource:
+            def __init__(self):
+                self.tables = {"turbines": "SELECT 1", "state_population": "SELECT 2"}
+
             def get_tables(self):
-                return ["turbines", "state_population"]
-
-        class PreviewVal:
-            def __repr__(self):
-                return "<PreviewVal object at 0x9999>"
-
-            def __flowdash_preview__(self):
-                return pd.DataFrame({"x": [1], "y": [2]})
+                raise AssertionError("listing the tables may query the source")
 
         class OpaqueVal:
             def __repr__(self):
                 return "<OpaqueVal object at 0xdead>"
+
+            def __flowdash_preview__(self):
+                raise AssertionError("the inspector never calls a preview hook")
 
         register_port_type("test.lazy_pipe", columns=lambda v: v._cols)
 
@@ -421,19 +439,28 @@ class TestInspector:
         assert "<code>turbines</code>" in src_html
         assert "<code>state_population</code>" in src_html
 
+        frame_html = summarize_input_html(pd.DataFrame({"x": [1, 2], "y": [3, 4]}))
+        assert "2 rows \u00d7 2" in frame_html and "<code>x</code>" in frame_html
+
         chips_html = summarize_input_html(["TX", "IA", "OK"])
         assert chips_html.count('class="fd-inp-chip"') == 3
         assert ">TX<" in chips_html and ">IA<" in chips_html and ">OK<" in chips_html
-
-        preview_html = summarize_input_html(PreviewVal())
-        assert "2 columns" in preview_html and "<code>x</code>" in preview_html
-        assert "<PreviewVal" not in preview_html
 
         opaque_html = summarize_input_html(OpaqueVal())
         assert "OpaqueVal" in opaque_html and "0xdead" not in opaque_html
 
         xss_html = summarize_input_html(["<img src=x onerror=alert(1)>"])
         assert "<img" not in xss_html and "&lt;img" in xss_html
+
+    async def test_the_input_summary_follows_the_upstream_value(self, editor):
+        src = editor.add_component(ROWS)
+        table = editor.add_component(TABLE)
+        editor.connect(src, "rows", table, "rows")
+        select_on_canvas(editor._flow, node_id=table)
+        pane = editor._inspector._value_panes["rows"]
+        assert "3 rows" in pane.object
+        editor._component_instances[src].size = 5
+        assert "5 rows \u00d7 2" in editor._inspector._value_panes["rows"].object
 
     async def test_tile_settings_change_the_saved_layout(self, editor):
         table = editor.add_component(TABLE)
