@@ -365,7 +365,7 @@ class TestCardBehavior:
         shown = []
         monkeypatch.setattr(
             "panel_flowdash.editor.open_dialog",
-            lambda title, content, width="sm": shown.append((title, content, width)),
+            lambda title, content, width="sm", **_: shown.append((title, content, width)),
         )
         editor = FlowDash(COMPONENTS, notifications=False, node_previews=True)
         src = editor.add_component("Demo/src", instance_id="turbines")
@@ -439,39 +439,99 @@ def _style(editor, instance_id) -> dict:
     return node.get("style") or {}
 
 
+class TestPreviewSizing:
+    def test_bar_thumbnail_draws_every_bar_inside_the_plot(self):
+        import re
+
+        years = list(range(1982, 2021))
+        spec = {
+            "mark": "bar",
+            "encoding": {
+                "x": {"field": "year", "type": "ordinal"},
+                "y": {"field": "mw", "type": "quantitative"},
+            },
+        }
+        svg, caption = render_vega_lite_svg(
+            spec, pd.DataFrame({"year": years, "mw": [1.25**i for i in range(len(years))]})
+        )
+        bars = re.findall(r'<rect class="fd-ch-br" x="([\d.]+)" y="[\d.]+" width="([\d.]+)"', svg)
+        assert len(bars) == len(years)
+        assert caption == "bar · 39 bars"
+        assert float(bars[-1][0]) + float(bars[-1][1]) <= 240 - 10 + 0.1
+        assert "2020" in svg
+
+    def test_short_table_preview_fits_its_rows(self):
+        one = build_preview(pd.DataFrame({"a": [1], "b": ["x"]}), "table")
+        full = build_preview(pd.DataFrame({"a": range(10)}), "table")
+        assert one.height < full.height == HEIGHTS["table"]
+        assert f"height: {one.height}px" in one.html
+
+    def test_popout_chart_fills_the_dialog_in_the_thumbnail_colour(self):
+        from panel_flowdash.editor import _popout_chart
+        from panel_flowdash.ui.node_preview import CHART_COLOR
+
+        pane = _popout_chart(
+            {"spec": {"mark": "bar"}, "data": pd.DataFrame({"a": [1, 2], "b": [3, 4]})}
+        )
+        assert pane.object["width"] == "container"
+        assert pane.object["autosize"]["type"] == "fit"
+        assert pane.object["config"]["mark"]["color"] == CHART_COLOR
+
+    def test_port_rows_carry_no_dead_tooltips(self):
+        editor = FlowDash(COMPONENTS, notifications=False)
+        src = editor.add_component("Demo/src", instance_id="turbines")
+        assert "fd-port fd-out" in _card(editor, src)._ports_html()
+        assert 'title="' not in _card(editor, src)._ports_html()
+
+
 class TestCardViewEdits:
-    async def test_switching_the_output_and_collapsing_are_undoable(self):
+    async def test_switching_the_output_is_undoable(self):
         editor = FlowDash(COMPONENTS, notifications=False, node_previews=True, history_coalesce=0)
         src = editor.add_component("Demo/src", instance_id="turbines")
         sql = editor.add_component("Demo/sql", instance_id="turbines_by_year")
         editor.connect(src, "table", sql, "source")
-        connected = _style(editor, sql)
 
         _click(editor, sql, "select_output", "pipeline")
-        _click(editor, sql, "toggle_collapse")
-        assert _card(editor, sql).collapsed
-        assert _style(editor, sql) != connected
-
-        assert editor.undo()
-        card = _card(editor, sql)
-        assert not card.collapsed and card.preview_output == "pipeline"
-        assert _style(editor, sql) == connected
         assert editor.undo()
         assert _card(editor, sql).preview_output is None
         assert _card(editor, sql).active_output == "data"
-        assert editor.redo() and editor.redo()
-        assert _card(editor, sql).collapsed
+        assert editor.redo()
         assert _card(editor, sql).preview_output == "pipeline"
 
-    async def test_collapse_all_is_one_edit(self):
-        editor = FlowDash(COMPONENTS, notifications=False, history_coalesce=0)
+    async def test_collapsing_is_no_edit(self):
+        editor = FlowDash(
+            COMPONENTS, notifications=False, history_coalesce=0, store=MemoryDashboardStore()
+        )
         src = editor.add_component("Demo/src", instance_id="turbines")
-        kpi = editor.add_component("Demo/kpi", instance_id="total_capacity")
-        editor.connect(src, "table", kpi, "data")
+        sql = editor.add_component("Demo/sql", instance_id="turbines_by_year")
+        editor.connect(src, "table", sql, "source")
+        editor.save()
+        assert not editor.dirty
+        connected = _style(editor, sql)
+
+        _click(editor, sql, "toggle_collapse")
+        assert _card(editor, sql).collapsed
+        assert _style(editor, sql) != connected
+        assert not editor.dirty
         editor._collapse_all_nodes(True)
-        assert _card(editor, src).collapsed and _card(editor, kpi).collapsed
+        assert _card(editor, src).collapsed
+        assert not editor.dirty
+
+        # The last edit is still the connection, and undoing it leaves the cards as they are.
         assert editor.undo()
-        assert not _card(editor, src).collapsed and not _card(editor, kpi).collapsed
+        assert not editor._dataflow_graph.edges
+        assert _card(editor, src).collapsed and _card(editor, sql).collapsed
+
+    async def test_collapse_toggle_names_what_it_does(self):
+        editor = FlowDash(COMPONENTS, notifications=False)
+        src = editor.add_component("Demo/src", instance_id="turbines")
+        toggle = editor._status_bar.collapse_toggle
+        assert toggle.description == "Collapse all cards"
+        _click(editor, src, "toggle_collapse")
+        assert toggle.value and toggle.description == "Expand all cards"
+        toggle.value = False
+        assert not _card(editor, src).collapsed
+        assert toggle.description == "Collapse all cards"
 
     async def test_outlines_and_handle_positions_keep_each_other(self):
         editor = FlowDash(COMPONENTS, notifications=False)

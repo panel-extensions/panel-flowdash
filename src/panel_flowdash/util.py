@@ -373,7 +373,9 @@ def _session_dialog(title: str) -> pmui.Dialog | None:
     return dialog
 
 
-def open_dialog(title: str, content: t.Any, *, width: str | bool = "sm") -> None:
+def open_dialog(
+    title: str, content: t.Any, *, width: str | bool = "sm", full_width: bool = False
+) -> None:
     """Show *content* in the session's page dialog, replacing whatever it shows.
 
     The user can dismiss the dialog with its close button, the Escape key or a
@@ -391,6 +393,8 @@ def open_dialog(title: str, content: t.Any, *, width: str | bool = "sm") -> None
     width
         Maximum width of the dialog, one of ``"xs"``, ``"sm"``, ``"md"``,
         ``"lg"``, ``"xl"``, or ``False`` for no limit.
+    full_width
+        Whether the dialog takes its whole maximum width rather than its content's.
     """
     dialog = _session_dialog(title)
     if dialog is None:
@@ -402,6 +406,7 @@ def open_dialog(title: str, content: t.Any, *, width: str | bool = "sm") -> None
         close_on_click=True,
         show_close_button=True,
         width_option=width,
+        sizing_mode="stretch_width" if full_width else None,
     )
 
 

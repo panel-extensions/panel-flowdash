@@ -279,6 +279,7 @@ class StatusBar(Viewer):
             styles={"flex": "none"},
         )
         self.collapse_toggle.param.watch(self._on_collapse_toggled, "value")
+        self.collapse_toggle.param.watch(lambda _e: self.sync_collapse_toggle(), "value")
         self._shortcuts = CanvasShortcuts(active=self.visible, on_key=self._on_shortcut)
         self._bar = pn.FlexBox(
             self.grid_label,
@@ -338,6 +339,9 @@ class StatusBar(Viewer):
                 self.collapse_toggle.value = all_collapsed
             finally:
                 self._syncing_collapse = False
+        self.collapse_toggle.description = (
+            "Expand all cards" if all_collapsed else "Collapse all cards"
+        )
 
     def _on_shortcut(self, key: str):
         if not self.visible or self.editor.mode == "dashboard":
