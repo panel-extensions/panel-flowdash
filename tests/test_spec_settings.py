@@ -341,6 +341,13 @@ class TestField:
         control.value = "Follow dashboard"
         assert field.value == {}
 
+    def test_a_select_whose_value_it_cannot_show_says_so(self):
+        settings = [SpecSetting("scheme", widget="select", options={"Follow dashboard": None})]
+        field = SpecEditor(value={"scheme": ["#f00", "#0f0"]}, settings=settings)
+        control = field._controls["scheme"][1]
+        assert control.disabled and control.value == "Set in the spec"
+        assert field.value == {"scheme": ["#f00", "#0f0"]}
+
     def test_a_value_the_control_cannot_show_is_flagged_and_kept(self):
         field = SpecEditor(value={"title": {"text": "T", "fontSize": 20}}, settings=SETTINGS)
         assert field.unknown == ["title"]

@@ -54,6 +54,9 @@ _LABEL_WIDTH = 84
 #: The option that leaves a setting out of the spec.
 NOT_SET = "Not set"
 
+#: What a control shows for a value in the spec it cannot show.
+SET_IN_SPEC = "Set in the spec"
+
 # Hides a control's own label from sight but not from assistive technology.
 _HIDDEN_LABEL_CSS = """
 .MuiInputLabel-root, .MuiFormLabel-root {
@@ -445,18 +448,21 @@ class SpecEditor(CompositeWidget):
                 else:
                     shown = value
                 if setting.widget in ("select", "radio"):
-                    options = self._options(setting, None if key in beyond else shown)
+                    if key in beyond:
+                        options = {SET_IN_SPEC: value}
+                    else:
+                        options = self._options(setting, shown)
                     self._labels[key] = options
                     labels = list(options)
                     if control.options != labels:
                         control.options = labels
-                    shown = next((label for label, v in options.items() if v == shown), None)
+                    shown = next((label for label, v in options.items() if v == value), None)
                 control.param.update(
                     value=shown,
                     disabled=self.disabled or self.error is not None or not editable,
                 )
                 if setting.widget == "text":
-                    control.placeholder = "Set in the spec" if key in beyond else ""
+                    control.placeholder = SET_IN_SPEC if key in beyond else ""
         finally:
             self._syncing = False
         self._notes.object = " ".join(notes)
