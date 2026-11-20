@@ -136,7 +136,7 @@ def test_clicking_a_tile_selects_its_node_and_inspects_it(page):
         re.compile(r"\bselected\b")
     )
     expect(_item(page, editor, map_id)).to_have_class(re.compile("muuri-selected"))
-    expect(page.get_by_role("button", name="Remove from dashboard")).to_be_visible()
+    expect(page.locator(".fd-inspector-header")).to_be_visible()
     assert editor._inspector._shown == ("node", map_id)
 
     _tile(page, editor, chart_id).click()
@@ -161,7 +161,8 @@ def test_adding_and_removing_shows_on_both_sides(page):
     expect(page.locator(".muuri-grid-item")).to_have_count(2)
 
     _tile(page, editor, map_id).click()
-    page.get_by_role("button", name="Remove from dashboard").click()
+    page.locator(".fd-inspector-menu button, button.fd-inspector-menu").first.click()
+    page.get_by_role("menuitem", name="Remove from dashboard").click()
     wait_until(lambda: len(editor._tile_items) == 1, page, timeout=8000)
     expect(page.locator(".muuri-grid-item")).to_have_count(1)
     expect(page.locator(".react-flow__node")).to_have_count(1)

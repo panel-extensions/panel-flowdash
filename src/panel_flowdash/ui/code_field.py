@@ -1,18 +1,20 @@
-"""A compact code editor for config fields holding code, SQL or Markdown.
+"""A compact code field for config parameters holding code, SQL, JSON or Markdown.
 
-A text param declares the editor with its FlowDash metadata::
+A text param declares the field with its FlowDash metadata::
 
     sql = param.String(metadata={"flowdash": {"widget": "code", "language": "sql"}})
 
 and a JSON-schema property with ``"x-flowdash": {"widget": "code", "language": "sql"}``.
-The inspector shows a few lines with highlighting for the language, and a
-button opening the same text in a large editor: the editor's code panel under
-the canvas when it has room for one, see :class:`~panel_flowdash.ui.code_panel.CodePanel`,
-or a dialog.
+The inspector shows a read-only snippet of the first few lines with its line
+count, check status and an Edit button opening the full text in the editor's
+code panel under the canvas when it has room for one, see
+:class:`~panel_flowdash.ui.code_panel.CodePanel`, or in a dialog.
 """
 
 from __future__ import annotations
 
+import html
+import re
 import typing as t
 
 import panel as pn
@@ -28,10 +30,312 @@ from panel_flowdash.component_spec import widget_hint
 #: The ``widget`` metadata value that asks for a code editor.
 CODE_WIDGET = "code"
 
-_COMPACT_HEIGHT = 140
+_SNIPPET_LINES = 5
 _EXPANDED_HEIGHT = 480
 
-_LABEL_SX = {"color": "text.secondary"}
+_SQL_KEYWORDS = frozenset(
+    {
+        "SELECT",
+        "FROM",
+        "WHERE",
+        "GROUP",
+        "BY",
+        "ORDER",
+        "HAVING",
+        "JOIN",
+        "LEFT",
+        "RIGHT",
+        "INNER",
+        "OUTER",
+        "FULL",
+        "CROSS",
+        "ON",
+        "AS",
+        "AND",
+        "OR",
+        "NOT",
+        "IS",
+        "NULL",
+        "IN",
+        "LIMIT",
+        "OFFSET",
+        "DISTINCT",
+        "UNION",
+        "ALL",
+        "WITH",
+        "CASE",
+        "WHEN",
+        "THEN",
+        "ELSE",
+        "END",
+        "ASC",
+        "DESC",
+        "LIKE",
+        "ILIKE",
+        "BETWEEN",
+        "CAST",
+        "OVER",
+        "PARTITION",
+        "CREATE",
+        "DROP",
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "TABLE",
+        "VIEW",
+        "TRUE",
+        "FALSE",
+    }
+)
+
+_PY_KEYWORDS = frozenset(
+    {
+        "def",
+        "class",
+        "return",
+        "if",
+        "elif",
+        "else",
+        "for",
+        "while",
+        "in",
+        "not",
+        "and",
+        "or",
+        "is",
+        "None",
+        "True",
+        "False",
+        "import",
+        "from",
+        "as",
+        "with",
+        "try",
+        "except",
+        "finally",
+        "raise",
+        "yield",
+        "lambda",
+        "pass",
+        "break",
+        "continue",
+        "async",
+        "await",
+    }
+)
+
+_SQL_TOKEN = re.compile(
+    r"(?P<comment>--.*$)"
+    r"|(?P<string>'(?:''|[^'])*')"
+    r"|(?P<number>\b\d+(?:\.\d+)?\b)"
+    r"|(?P<word>\b[A-Za-z_][A-Za-z0-9_]*\b)"
+)
+
+_JSON_TOKEN = re.compile(
+    r'(?P<key>"(?:\\.|[^"\\])*"(?=\s*:))'
+    r'|(?P<string>"(?:\\.|[^"\\])*")'
+    r"|(?P<number>-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b)"
+    r"|(?P<literal>\b(?:true|false|null)\b)"
+)
+
+_PY_TOKEN = re.compile(
+    r"(?P<comment>#.*$)"
+    r"|(?P<string>'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\")"
+    r"|(?P<number>\b\d+(?:\.\d+)?\b)"
+    r"|(?P<word>\b[A-Za-z_][A-Za-z0-9_]*\b)"
+)
+
+_YAML_TOKEN = re.compile(
+    r"(?P<comment>#.*$)"
+    r"|(?P<key>^[ \t]*[A-Za-z0-9_.-]+(?=\s*:))"
+    r"|(?P<string>'(?:''|[^'])*'|\"(?:\\.|[^\"\\])*\")"
+    r"|(?P<number>\b\d+(?:\.\d+)?\b)"
+    r"|(?P<literal>\b(?:true|false|null)\b)"
+)
+
+_SNIPPET_CSS = """
+.fd-snip-wrap {
+  padding: 6px 0 6px;
+  overflow: hidden;
+}
+.fd-snip-label {
+  font-family: Roboto, sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 14px;
+  color: var(--mui-palette-text-secondary, #666);
+  padding: 0 10px 4px;
+}
+.fd-snip-lines {
+  font-family: "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 19px;
+  overflow: hidden;
+  user-select: text;
+}
+.fd-snip-ln {
+  display: flex;
+  min-height: 19px;
+}
+.fd-snip-no {
+  width: 30px;
+  flex: none;
+  text-align: right;
+  padding-right: 10px;
+  color: var(--mui-palette-text-disabled, #9e9e9e);
+  user-select: none;
+}
+.fd-snip-tx {
+  white-space: pre;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+  padding-right: 10px;
+  color: var(--mui-palette-text-primary, inherit);
+}
+.fd-snip-empty {
+  color: var(--mui-palette-text-disabled, #9e9e9e);
+  font-style: italic;
+}
+.fd-hk { color: var(--mui-palette-primary-main, #0072b5); font-weight: 500; }
+.fd-hn { color: var(--mui-palette-warning-main, #b35c00); }
+.fd-hs { color: var(--mui-palette-success-main, #2e7d32); }
+.fd-hc { color: var(--mui-palette-text-disabled, #9e9e9e); font-style: italic; }
+"""
+
+_FOOTER_CSS = """
+.fd-code-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--mui-palette-text-secondary, #666);
+  white-space: nowrap;
+  overflow: hidden;
+}
+.fd-code-st {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 500;
+}
+.fd-st-ok { color: var(--mui-palette-success-main, #2e7d32); }
+.fd-st-err { color: var(--mui-palette-error-main, #d32f2f); }
+.fd-st-warn { color: var(--mui-palette-warning-main, #ed6c02); }
+.fd-mi {
+  font-family: "Material Icons";
+  font-size: 15px;
+  line-height: 1;
+  font-feature-settings: "liga";
+}
+.fd-code-unsent {
+  color: var(--mui-palette-warning-main, #ed6c02);
+  font-weight: 500;
+}
+"""
+
+
+def _esc(text: str) -> str:
+    return html.escape(text, quote=True)
+
+
+def _highlight_line(line: str, language: str) -> str:
+    lang = (language or "text").lower()
+    if lang == "sql":
+        pattern = _SQL_TOKEN
+    elif lang == "json":
+        pattern = _JSON_TOKEN
+    elif lang in ("python", "py"):
+        pattern = _PY_TOKEN
+    elif lang in ("yaml", "yml"):
+        pattern = _YAML_TOKEN
+    else:
+        return _esc(line)
+
+    out: list[str] = []
+    pos = 0
+    for match in pattern.finditer(line):
+        start, end = match.span()
+        if start > pos:
+            out.append(_esc(line[pos:start]))
+        kind = match.lastgroup
+        token = match.group(0)
+        escaped = _esc(token)
+        if kind == "comment":
+            out.append(f'<span class="fd-hc">{escaped}</span>')
+        elif kind == "string":
+            out.append(f'<span class="fd-hs">{escaped}</span>')
+        elif kind in ("number", "literal"):
+            out.append(f'<span class="fd-hn">{escaped}</span>')
+        elif kind == "key":
+            out.append(f'<span class="fd-hk">{escaped}</span>')
+        elif kind == "word":
+            if (lang == "sql" and token.upper() in _SQL_KEYWORDS) or (
+                lang in ("python", "py") and token in _PY_KEYWORDS
+            ):
+                out.append(f'<span class="fd-hk">{escaped}</span>')
+            else:
+                out.append(escaped)
+        else:
+            out.append(escaped)
+        pos = end
+    if pos < len(line):
+        out.append(_esc(line[pos:]))
+    return "".join(out)
+
+
+def _render_snippet(value: str | None, language: str, label: str = "") -> str:
+    text = value or ""
+    head = f'<div class="fd-snip-label">{_esc(label)}</div>' if label else ""
+    if not text:
+        body = (
+            '<div class="fd-snip-ln"><span class="fd-snip-no">1</span>'
+            '<span class="fd-snip-tx fd-snip-empty">Empty</span></div>'
+        )
+    else:
+        lines = text.splitlines()[:_SNIPPET_LINES]
+        body = "".join(
+            f'<div class="fd-snip-ln"><span class="fd-snip-no">{idx}</span>'
+            f'<span class="fd-snip-tx">{_highlight_line(line, language)}</span></div>'
+            for idx, line in enumerate(lines, start=1)
+        )
+    return (
+        f'<div class="fd-snip-wrap">{head}'
+        f'<div class="fd-snip-lines" data-language="{_esc(language)}">{body}</div></div>'
+    )
+
+
+def _line_count_text(value: str | None) -> str:
+    text = value or ""
+    if not text:
+        return "Empty"
+    count = len(text.splitlines())
+    return f"{count} line" if count == 1 else f"{count} lines"
+
+
+def _render_footer_status(
+    value: str | None,
+    check_status: tuple[str, str] | None,
+    unsent: bool,
+) -> str:
+    parts: list[str] = []
+    if check_status is not None:
+        kind, label = check_status
+        cls, icon = {
+            "ok": ("fd-st-ok", "check_circle"),
+            "error": ("fd-st-err", "error"),
+            "warning": ("fd-st-warn", "warning"),
+        }.get(kind, ("fd-st-ok", "check_circle"))
+        parts.append(
+            f'<span class="fd-code-st {cls}">'
+            f'<span class="fd-mi" aria-hidden="true">{icon}</span>{_esc(label)}</span>'
+        )
+    parts.append(f"<span>{_esc(_line_count_text(value))}</span>")
+    if unsent:
+        parts.append('<span class="fd-code-unsent">Unsaved</span>')
+    return f'<div class="fd-code-meta">{"".join(parts)}</div>'
 
 
 def code_language(parameter: param.Parameter) -> str | None:
@@ -303,12 +607,11 @@ class AceTools(JSComponent):
 
 
 class CodeField(CompositeWidget):
-    """A labelled code editor a few lines high, with a button opening it in a dialog.
+    """A read-only code snippet with line count, check status and an Edit button.
 
-    The text is applied when the editor loses focus, not on every key, so a
-    config check runs once per edit rather than per character. :attr:`unsent`
-    is True while the editor holds text it has not applied yet. Tab moves to
-    the next field after Escape; lines wrap.
+    Clicking Edit calls :attr:`on_edit` when set, otherwise opens a large Ace
+    dialog where edits are applied when the editor loses focus. :attr:`unsent`
+    is True while the editor holds text it has not applied yet.
     """
 
     value = param.String(default="", allow_None=True)
@@ -321,11 +624,18 @@ class CodeField(CompositeWidget):
         Whether text typed into the editor has not been applied yet.""",
     )
 
+    check_status = param.Parameter(
+        default=None,
+        doc="""
+        Optional ``(kind, label)`` pair shown in the snippet footer, where
+        *kind* is ``"ok"``, ``"error"`` or ``"warning"``.""",
+    )
+
     on_edit = param.Callable(
         default=None,
         doc="""
-        Optional callback invoked as ``on_edit(field)`` when the expand button
-        is clicked, replacing the default dialog.""",
+        Optional callback invoked as ``on_edit(field)`` when Edit is clicked,
+        replacing the default dialog.""",
     )
 
     _composite_type: t.ClassVar[type] = Column
@@ -333,17 +643,38 @@ class CodeField(CompositeWidget):
     def __init__(self, **params):
         super().__init__(**params)
         self._syncing = False
-        self._label = pmui.Typography(
-            self.label or "", variant="caption", sx=_LABEL_SX, margin=(0, 0, 2, 0)
+        self._snippet = pn.pane.HTML(
+            _render_snippet(self.value, self.language, self.label or ""),
+            sizing_mode="stretch_width",
+            margin=0,
+            stylesheets=[_SNIPPET_CSS],
+            css_classes=["fd-code-field", "fd-code-snippet"],
         )
-        self.expand_button = pmui.IconButton(
-            icon="open_in_full",
-            description="Edit in a larger editor",
+        self._status_html = pn.pane.HTML(
+            _render_footer_status(self.value, self.check_status, self.unsent),
+            sizing_mode="stretch_width",
+            margin=0,
+            stylesheets=[_FOOTER_CSS],
+            css_classes=["fd-code-status"],
+        )
+        self.edit_button = pmui.Button(
+            label="Edit",
+            icon="edit",
+            variant="text",
             size="small",
             margin=0,
-            css_classes=["fd-code-expand"],
+            sx={
+                "minWidth": 0,
+                "textTransform": "none",
+                "py": "2px",
+                "px": "8px",
+                "fontSize": "0.75rem",
+                "flexShrink": 0,
+            },
+            css_classes=["fd-code-expand", "fd-code-edit"],
         )
-        self._editor = self._make_editor(_COMPACT_HEIGHT, ["fd-code-field"])
+        # Alias kept for existing callers and tests.
+        self.expand_button = self.edit_button
         self._large = self._make_editor(_EXPANDED_HEIGHT, ["fd-code-field-large"])
         self._ace = AceOptions(options=ACE_OPTIONS, focus_class="fd-code-field-large")
         done = pmui.Button(label="Done", variant="text")
@@ -359,27 +690,46 @@ class CodeField(CompositeWidget):
             width_option="lg",
             css_classes=["fd-code-dialog"],
         )
-        self.expand_button.on_click(lambda _event: self._open())
+        footer = pmui.Row(
+            self._status_html,
+            self.edit_button,
+            sizing_mode="stretch_width",
+            margin=0,
+            sx={
+                "alignItems": "center",
+                "borderTop": 1,
+                "borderColor": "divider",
+                "pl": "10px",
+                "pr": "4px",
+                "minHeight": "32px",
+                "gap": "6px",
+            },
+            css_classes=["fd-code-footer"],
+        )
+        self._card = pmui.Column(
+            self._snippet,
+            footer,
+            sizing_mode="stretch_width",
+            margin=0,
+            sx={
+                "border": 1,
+                "borderColor": "divider",
+                "borderRadius": "4px",
+                "bgcolor": "background.paper",
+                "overflow": "hidden",
+            },
+            css_classes=["fd-code-card"],
+        )
+        self.edit_button.on_click(lambda _event: self._open())
         done.on_click(lambda _event: self._dialog.param.update(open=False))
         self.param.watch(self._sync_label, "label")
         self.param.watch(self._value_set, "value")
         self.param.watch(self._language_set, "language")
         self.param.watch(self._disabled_set, "disabled")
+        self.param.watch(self._status_set, ["check_status", "unsent"])
         self._disabled_set()
-        self._composite[:] = [
-            pn.Row(
-                self._label,
-                pn.layout.HSpacer(),
-                self.expand_button,
-                margin=0,
-                sizing_mode="stretch_width",
-            ),
-            self._editor,
-            self._dialog,
-            self._ace,
-        ]
-        # Lined up with the right edge of the text fields of the form.
-        self._composite.margin = (5, 22, 5, 10)
+        self._composite[:] = [self._card, self._dialog, self._ace]
+        self._composite.margin = (8, 0, 6, 0)
 
     def _make_editor(self, height: int, css_classes: list[str]) -> CodeEditor:
         editor = CodeEditor(
@@ -401,7 +751,7 @@ class CodeField(CompositeWidget):
         return editor
 
     def open_dialog(self):
-        """Open the large editor in a dialog and focus it."""
+        """Open the full-size code dialog and focus its editor."""
         self._dialog.open = True
         self._ace.focus += 1
 
@@ -413,16 +763,21 @@ class CodeField(CompositeWidget):
         else:
             self.open_dialog()
 
+    def _refresh_snippet(self):
+        self._snippet.object = _render_snippet(self.value, self.language, self.label or "")
+        self._status_html.object = _render_footer_status(
+            self.value, self.check_status, self.unsent
+        )
+
     def _value_set(self, event):
-        # The editors hold text, so an unset optional field shows as empty.
         text = event.new or ""
         self._syncing = True
         try:
-            for editor in (self._editor, self._large):
-                editor.param.update(value=text, value_input=text)
+            self._large.param.update(value=text, value_input=text)
         finally:
             self._syncing = False
         self._typing()
+        self._refresh_snippet()
 
     def _edited(self, event):
         if self._syncing:
@@ -434,19 +789,24 @@ class CodeField(CompositeWidget):
 
     def _typing(self, *_events):
         text = self.value or ""
-        unsent = any(editor.value_input != text for editor in (self._editor, self._large))
+        unsent = self._large.value_input != text
         if unsent != self.unsent:
             self.unsent = unsent
 
     def _language_set(self, event):
-        for editor in (self._editor, self._large):
-            editor.language = event.new
+        self._large.language = event.new
+        self._refresh_snippet()
+
+    def _status_set(self, *_events):
+        self._status_html.object = _render_footer_status(
+            self.value, self.check_status, self.unsent
+        )
 
     def _disabled_set(self, *_events):
-        for editor in (self._editor, self._large):
-            editor.readonly = self.disabled
-        self.expand_button.disabled = self.disabled
+        self._large.readonly = self.disabled
+        self.edit_button.disabled = self.disabled
 
     def _sync_label(self, event):
-        self._label.object = event.new or ""
-        self._dialog.title = event.new or ""
+        label = event.new or ""
+        self._dialog.title = label
+        self._refresh_snippet()

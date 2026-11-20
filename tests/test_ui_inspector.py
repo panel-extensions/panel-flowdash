@@ -265,7 +265,16 @@ class TestInspector:
         select_on_canvas(editor._flow, node_id=table)
         body = editor._inspector._body
         texts = _texts(body)
-        assert "Table" in texts and "Shows rows." in texts
+        assert "Table" in texts
+        # Description lives in the inline info icon tooltip, not a body paragraph.
+        assert "Shows rows." not in texts
+        assert "Configuration" not in texts
+        info_tips = [
+            obj
+            for obj in pn.Column(*body).select(pn.viewable.Viewable)
+            if "fd-inspector-info" in getattr(obj, "css_classes", [])
+        ]
+        assert len(info_tips) == 1 and info_tips[0].title == "Shows rows."
         form = next(iter(pn.Column(*body).select(pn.Param)))
         assert form.object is editor.graph.get_config_state(table)
         assert [n for n in form._widgets if n != "_title"] == ["title", "page_size"]
@@ -293,9 +302,11 @@ class TestInspector:
     async def test_status_and_data_follow_the_component(self, editor):
         src, table = editor.add_component(ROWS), editor.add_component(TABLE)
         select_on_canvas(editor._flow, node_id=table)
-        assert editor._inspector._status_chip.label == "Needs Rows"
+        assert editor._inspector._status_dot.title == "Needs Rows"
+        assert editor._inspector._status_info == ("Needs Rows", "warning")
         editor.connect(src, "rows", table, "rows")
-        assert editor._inspector._status_chip.label == "Up to date"
+        assert editor._inspector._status_dot.title == "Up to date"
+        assert editor._inspector._status_info == ("Up to date", "success")
         assert "3 rows, 2 columns" in _texts(editor._inspector._data_column)
 
     async def test_wired_inputs_list_source_and_transform(self, editor):
@@ -305,21 +316,124 @@ class TestInspector:
         texts = _texts(editor._inspector._inputs_column)
         assert "1 of 1 connected" in texts
         assert any(t.startswith("from Rows, rows, with transform") for t in texts)
-        assert "2 rows, 2 columns" in texts
+        assert any(
+            "2 rows \u00d7 2" in t and "<code>a</code>" in t and "<code>b</code>" in t
+            for t in texts
+        )
 
     async def test_remove_from_dashboard(self, editor):
         table = editor.add_component(TABLE)
         select_on_canvas(editor._flow, node_id=table)
-        remove = next(
+        body = pn.Column(*editor._inspector._body)
+        # Remove lives only in the overflow menu, never as a separate button.
+        assert not [
             b
-            for b in pn.Column(*editor._inspector._body).select(pn.viewable.Viewable)
+            for b in body.select(pn.viewable.Viewable)
             if getattr(b, "label", None) == "Remove from dashboard"
+        ]
+        menu = next(
+            b
+            for b in body.select(pn.viewable.Viewable)
+            if "fd-inspector-menu" in getattr(b, "css_classes", [])
         )
-        assert remove.color == "error"
-        remove.clicks += 1
+        labels = [item["label"] for item in menu.items]
+        assert labels == ["Duplicate", "Remove from dashboard"]
+        editor._inspector._on_node_menu(table, menu.items[-1])
         assert editor._tile_items == []
         assert editor._flow.nodes == []
         assert "0 components, 0 connections" in _texts(editor._inspector._body)
+
+    async def test_duplicate_from_menu(self, editor):
+        table = editor.add_component(TABLE, config={"title": "Original"})
+        select_on_canvas(editor._flow, node_id=table)
+        menu = next(
+            b
+            for b in pn.Column(*editor._inspector._body).select(pn.viewable.Viewable)
+            if "fd-inspector-menu" in getattr(b, "css_classes", [])
+        )
+        dup_item = next(item for item in menu.items if item["action"] == "duplicate")
+        editor._inspector._on_node_menu(table, dup_item)
+        assert len(editor._tile_items) == 2
+        copy_id = next(i["instance_id"] for i in editor._tile_items if i["instance_id"] != table)
+        assert editor._component_instances[copy_id].title == "Original"
+        assert editor._flow.selection == {"nodes": [copy_id], "edges": []}
+
+    async def test_how_was_this_made_only_in_menu_when_agent_made(self, editor):
+        from panel_flowdash.turns import agent_edits
+
+        with agent_edits(run="r1", question="Add table"):
+            made = editor.add_component(TABLE, instance_id="agent_table")
+        select_on_canvas(editor._flow, node_id=made)
+        body = pn.Column(*editor._inspector._body)
+        assert not [
+            b
+            for b in body.select(pn.viewable.Viewable)
+            if getattr(b, "label", None) == "How was this made?"
+        ]
+        menu = next(
+            b
+            for b in body.select(pn.viewable.Viewable)
+            if "fd-inspector-menu" in getattr(b, "css_classes", [])
+        )
+        assert [item["label"] for item in menu.items] == [
+            "How was this made?",
+            "Duplicate",
+            "Remove from dashboard",
+        ]
+
+    async def test_summarize_input_html_for_rich_types(self):
+        from panel_flowdash.port_types import register_port_type
+        from panel_flowdash.ui.inspector import summarize_input_html
+
+        class LazyPipe:
+            def __init__(self, cols):
+                self._cols = cols
+
+            def __repr__(self):
+                return "<LazyPipe object at 0x1234>"
+
+        class DuckSource:
+            def get_tables(self):
+                return ["turbines", "state_population"]
+
+        class PreviewVal:
+            def __repr__(self):
+                return "<PreviewVal object at 0x9999>"
+
+            def __flowdash_preview__(self):
+                return pd.DataFrame({"x": [1], "y": [2]})
+
+        class OpaqueVal:
+            def __repr__(self):
+                return "<OpaqueVal object at 0xdead>"
+
+        register_port_type("test.lazy_pipe", columns=lambda v: v._cols)
+
+        pipe_html = summarize_input_html(
+            LazyPipe(["case_id", "t_state", "p_name", "t_cap"]), "test.lazy_pipe"
+        )
+        assert "4 columns" in pipe_html
+        assert "<code>case_id</code>" in pipe_html
+        assert "<LazyPipe" not in pipe_html
+
+        src_html = summarize_input_html(DuckSource())
+        assert "DuckSource" in src_html
+        assert "<code>turbines</code>" in src_html
+        assert "<code>state_population</code>" in src_html
+
+        chips_html = summarize_input_html(["TX", "IA", "OK"])
+        assert chips_html.count('class="fd-inp-chip"') == 3
+        assert ">TX<" in chips_html and ">IA<" in chips_html and ">OK<" in chips_html
+
+        preview_html = summarize_input_html(PreviewVal())
+        assert "2 columns" in preview_html and "<code>x</code>" in preview_html
+        assert "<PreviewVal" not in preview_html
+
+        opaque_html = summarize_input_html(OpaqueVal())
+        assert "OpaqueVal" in opaque_html and "0xdead" not in opaque_html
+
+        xss_html = summarize_input_html(["<img src=x onerror=alert(1)>"])
+        assert "<img" not in xss_html and "&lt;img" in xss_html
 
     async def test_tile_settings_change_the_saved_layout(self, editor):
         table = editor.add_component(TABLE)
@@ -372,7 +486,13 @@ class TestInspector:
         )
         select_on_canvas(editor._flow, node_id="gone")
         texts = _texts(editor._inspector._body)
-        assert "Gone/widget" in texts and "Remove from dashboard" in texts
+        assert "Gone/widget" in texts
+        menu = next(
+            b
+            for b in pn.Column(*editor._inspector._body).select(pn.viewable.Viewable)
+            if "fd-inspector-menu" in getattr(b, "css_classes", [])
+        )
+        assert [item["label"] for item in menu.items] == ["Remove from dashboard"]
 
     @pytest.mark.parametrize("component_id", ["Gone/widget", SELECTOR])
     async def test_placeholder_node_and_tile_are_separate_views(self, component_id):

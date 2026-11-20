@@ -1,15 +1,15 @@
 """The inspector, a persistent panel beside the wiring canvas bound to its selection.
 
-With a component selected it shows the component's header and status, its
-settings (the config form that used to open in a popup above the node), its
-current outputs and how it appears on the dashboard, with the inputs wired to
-it and a way to remove it. With a connection selected it describes the
-connection and edits its transform steps (see :meth:`Inspector._edge_view`).
-With nothing selected it summarizes the dashboard and lists its issues.
+With a component selected it shows a compact one-line header with status dot and
+overflow menu, its settings, live input summaries, current outputs and tile
+options. With a connection selected it describes the connection and edits its
+transform steps (see :meth:`Inspector._edge_view`). With nothing selected it
+summarizes the dashboard and lists its issues.
 """
 
 from __future__ import annotations
 
+import copy
 import html
 import typing as t
 import weakref
@@ -21,7 +21,7 @@ import param
 from panel.viewable import Viewer
 
 from panel_flowdash.config_check import CheckResult
-from panel_flowdash.config_choices import Choices, has_choices, node_choices
+from panel_flowdash.config_choices import Choices, columns_of, has_choices, node_choices
 from panel_flowdash.groups import component_nodes, group_id_of
 from panel_flowdash.input_literals import takes_literal
 from panel_flowdash.transforms import parse_transform, summarize_transform
@@ -36,6 +36,7 @@ from panel_flowdash.ui.node_card import (
     port_label,
     summarize_value,
 )
+from panel_flowdash.ui.node_preview import PREVIEW_HOOK, describe_object, format_value
 from panel_flowdash.ui.spec_field import SpecEditor
 from panel_flowdash.ui.status_bar import (
     CanvasWatcher,
@@ -55,6 +56,7 @@ from panel_flowdash.ui.tile_layout import (
     tile_entry,
     update_tile,
 )
+from panel_flowdash.util import is_failure
 
 if t.TYPE_CHECKING:
     from panel.viewable import Viewable
@@ -77,6 +79,9 @@ _WIDTHS = {"Full width": 100.0, "Half": 50.0, "Third": 33.33, "Quarter": 25.0}
 _AUTO = "auto"
 _HEIGHTS = (200, 300, 400, 600, 800)
 _MAX_ISSUES = 20
+_MAX_SUMMARY_ITEMS = 3
+_MAX_CHIPS = 6
+_MAX_CHIP_LEN = 24
 
 _TABLE_CSS = """
 :host { overflow-x: auto; }
@@ -93,11 +98,175 @@ _ICON_CSS = """
   font-feature-settings: "liga"; }
 """
 
-_SECTION_SX = {"color": "text.secondary", "fontWeight": 500}
+_HEADER_CSS = """
+.fd-insp-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  color: var(--mui-palette-primary-main, #0072b5);
+}
+.fd-insp-icon span {
+  font-family: "Material Icons";
+  font-size: 20px;
+  line-height: 1;
+  font-feature-settings: "liga";
+}
+.fd-info-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  font-family: "Material Icons";
+  font-size: 15px;
+  line-height: 1;
+  color: var(--mui-palette-text-disabled, #9e9e9e);
+  cursor: default;
+  font-feature-settings: "liga";
+}
+.fd-status-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+}
+.fd-status-dot {
+  display: block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.fd-status-success { background: var(--mui-palette-success-main, #2e7d32); }
+.fd-status-warning { background: var(--mui-palette-warning-main, #ed6c02); }
+.fd-status-error { background: var(--mui-palette-error-main, #d32f2f); }
+.fd-status-default { background: var(--mui-palette-text-disabled, #9e9e9e); }
+"""
+
+_INPUT_DATA_CSS = """
+.fd-inp-data {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  line-height: 16px;
+  color: var(--mui-palette-text-secondary, #666);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fd-inp-data .fd-mi {
+  flex: none;
+  font-family: "Material Icons";
+  font-size: 14px;
+  line-height: 1;
+  color: var(--mui-palette-text-disabled, #888);
+  font-feature-settings: "liga";
+}
+.fd-inp-data .fd-inp-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.fd-inp-data code {
+  font-family: "Roboto Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--mui-palette-text-primary, inherit);
+}
+.fd-inp-chips {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  min-width: 0;
+}
+.fd-inp-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 7px;
+  border-radius: 10px;
+  background: var(--mui-palette-action-selected, rgba(128, 128, 128, 0.14));
+  color: var(--mui-palette-text-primary, inherit);
+  font-size: 11px;
+  line-height: 18px;
+  font-weight: 500;
+  white-space: nowrap;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.fd-inp-err { color: var(--mui-palette-error-main, #d32f2f); }
+"""
+
+_OVERFLOW_SX = {
+    "minWidth": 0,
+    "width": "28px",
+    "height": "28px",
+    "p": 0,
+    "color": "text.secondary",
+    "flexShrink": 0,
+    "& .MuiButton-startIcon": {"m": 0},
+    "& .MuiButton-endIcon": {"display": "none"},
+}
+
+_HEADER_ICON_SX = {
+    "color": "text.secondary",
+    "width": "28px",
+    "height": "28px",
+    "p": 0,
+    "flexShrink": 0,
+}
+
+# MenuButton items take no colour, so the destructive last entry is styled by position.
+_DANGER_LAST_ITEM = """
+li.MuiMenuItem-root:last-of-type {
+  color: var(--mui-palette-error-main);
+}
+li.MuiMenuItem-root:last-of-type:not(:first-of-type) {
+  border-top: 1px solid var(--mui-palette-divider);
+  margin-top: 4px;
+  padding-top: 8px;
+}
+"""
+
+_SECTION_SX = {
+    "color": "text.secondary",
+    "fontWeight": 500,
+    "fontSize": "0.6875rem",
+    "letterSpacing": "0.5px",
+    "textTransform": "uppercase",
+}
+
+_TABS_SX = {
+    "& .MuiTabs-root": {
+        "minHeight": "36px",
+        "px": "6px",
+        "borderBottom": 1,
+        "borderColor": "divider",
+    },
+    "& .MuiTab-root": {
+        "textTransform": "none",
+        "minWidth": 0,
+        "minHeight": "36px",
+        "py": "6px",
+        "px": "10px",
+        "fontSize": "0.8125rem",
+    },
+}
 
 
-def _caption(text: str, **kwargs) -> pmui.Typography:
-    return text_typography(text, variant="caption", sx={"color": "text.secondary"}, **kwargs)
+def _esc(text: str) -> str:
+    return html.escape(text, quote=True)
+
+
+def _caption(text: str, sx: dict | None = None, **kwargs) -> pmui.Typography:
+    style = {"color": "text.secondary"}
+    if sx:
+        style.update(sx)
+    return text_typography(text, variant="caption", sx=style, **kwargs)
 
 
 def _heading(text: str, margin=(16, 0, 4, 0)) -> pmui.Typography:
@@ -106,11 +275,203 @@ def _heading(text: str, margin=(16, 0, 4, 0)) -> pmui.Typography:
 
 def _avatar(icon: str) -> pn.pane.HTML:
     return pn.pane.HTML(
-        f'<div class="fd-avatar"><span aria-hidden="true">{html.escape(icon)}</span></div>',
+        f'<div class="fd-avatar"><span aria-hidden="true">{_esc(icon)}</span></div>',
         width=36,
         height=36,
         margin=(2, 12, 0, 0),
         stylesheets=[_ICON_CSS],
+    )
+
+
+def _header_icon(icon: str) -> pn.pane.HTML:
+    return pn.pane.HTML(
+        f'<div class="fd-insp-icon"><span aria-hidden="true">{_esc(icon)}</span></div>',
+        width=22,
+        height=22,
+        margin=0,
+        align="center",
+        stylesheets=[_HEADER_CSS],
+        styles={"flex": "0 0 auto"},
+    )
+
+
+def _code_list(names: t.Sequence[str], limit: int = _MAX_SUMMARY_ITEMS) -> str:
+    shown = [f"<code>{_esc(str(n))}</code>" for n in names[:limit]]
+    suffix = " …" if len(names) > limit else ""
+    return ", ".join(shown) + suffix
+
+
+def _is_table(value: t.Any) -> bool:
+    shape = getattr(value, "shape", None)
+    return (
+        isinstance(shape, tuple)
+        and len(shape) == 2
+        and hasattr(value, "columns")
+        and hasattr(value, "head")
+    )
+
+
+def _is_raw_repr(text: str) -> bool:
+    stripped = text.strip()
+    return stripped.startswith("<") and stripped.endswith(">")
+
+
+def _source_tables(value: t.Any) -> list[str] | None:
+    getter = getattr(value, "get_tables", None)
+    if callable(getter):
+        try:
+            tables = getter()
+            if isinstance(tables, (list, tuple, set)):
+                return [str(t_) for t_ in tables]
+            if isinstance(tables, dict):
+                return [str(k) for k in tables]
+        except Exception:
+            return None
+    tables = getattr(value, "tables", None)
+    if isinstance(tables, dict) and tables:
+        return [str(k) for k in tables]
+    if isinstance(tables, (list, tuple)) and tables and all(isinstance(x, str) for x in tables):
+        return list(tables)
+    return None
+
+
+def _table_summary_html(rows: int | None, cols: t.Sequence[str]) -> str:
+    parts: list[str] = []
+    if rows is not None:
+        parts.append(f"{rows:,} rows \u00d7 {len(cols)}")
+    else:
+        parts.append(f"{len(cols):,} {'column' if len(cols) == 1 else 'columns'}")
+    if cols:
+        parts.append(_code_list(cols))
+    body = " · ".join(parts)
+    return (
+        '<div class="fd-inp-data">'
+        '<span class="fd-mi" aria-hidden="true">table_chart</span>'
+        f'<span class="fd-inp-text">{body}</span></div>'
+    )
+
+
+def _chips_summary_html(items: t.Sequence[t.Any]) -> str:
+    if not items:
+        return (
+            '<div class="fd-inp-data">'
+            '<span class="fd-mi" aria-hidden="true">checklist</span>'
+            '<span class="fd-inp-text">Empty</span></div>'
+        )
+    formatted = [format_value(item, _MAX_CHIP_LEN) for item in items[:_MAX_CHIPS]]
+    chips = "".join(
+        f'<span class="fd-inp-chip" title="{_esc(text)}">{_esc(text)}</span>' for text in formatted
+    )
+    if len(items) > _MAX_CHIPS:
+        chips += f'<span class="fd-inp-chip">+{len(items) - _MAX_CHIPS}</span>'
+    return (
+        '<div class="fd-inp-data">'
+        '<span class="fd-mi" aria-hidden="true">checklist</span>'
+        f'<span class="fd-inp-chips">{chips}</span></div>'
+    )
+
+
+def summarize_input_html(
+    value: t.Any,
+    port_type: str | None = None,
+    source_instance: t.Any = None,
+) -> str:
+    """Return a compact escaped HTML summary line for a connected input value."""
+    if value is None:
+        return '<div class="fd-inp-data"><span class="fd-inp-text">No value yet</span></div>'
+    if is_failure(value):
+        return (
+            '<div class="fd-inp-data fd-inp-err">'
+            '<span class="fd-mi" aria-hidden="true">error</span>'
+            '<span class="fd-inp-text">Failed</span></div>'
+        )
+    if _is_table(value):
+        cols = [str(c) for c in value.columns]
+        return _table_summary_html(int(value.shape[0]), cols)
+
+    try:
+        cols_info = columns_of(value, port_type)
+    except Exception:
+        cols_info = None
+    if cols_info:
+        cols = [name for name, _ in cols_info]
+        shape = getattr(value, "shape", None)
+        rows = (
+            int(shape[0])
+            if isinstance(shape, tuple) and len(shape) == 2 and isinstance(shape[0], int)
+            else None
+        )
+        return _table_summary_html(rows, cols)
+
+    tables = _source_tables(value)
+    if tables:
+        kind = _esc(type(value).__name__)
+        return (
+            '<div class="fd-inp-data">'
+            '<span class="fd-mi" aria-hidden="true">storage</span>'
+            f'<span class="fd-inp-text">{kind} · {_code_list(tables)}</span></div>'
+        )
+
+    if isinstance(value, (list, tuple, set, frozenset)):
+        seq = list(value)
+        if not seq or all(
+            len(format_value(x, _MAX_CHIP_LEN)) <= _MAX_CHIP_LEN for x in seq[:_MAX_CHIPS]
+        ):
+            return _chips_summary_html(seq)
+
+    if isinstance(value, dict):
+        count = len(value)
+        label = f"{count:,} {'entry' if count == 1 else 'entries'}"
+        keys = _code_list([str(k) for k in list(value)[:_MAX_SUMMARY_ITEMS]]) if count else ""
+        body = f"{label} · {keys}" if keys else label
+        return (
+            '<div class="fd-inp-data">'
+            '<span class="fd-mi" aria-hidden="true">data_object</span>'
+            f'<span class="fd-inp-text">{body}</span></div>'
+        )
+
+    described = describe_object(value)
+    if described is not None:
+        return f'<div class="fd-inp-data"><span class="fd-inp-text">{_esc(described)}</span></div>'
+
+    preview_hook = getattr(value, PREVIEW_HOOK, None)
+    if callable(preview_hook):
+        try:
+            preview_val = preview_hook()
+        except Exception:
+            preview_val = None
+        if preview_val is not None and preview_val is not value:
+            if isinstance(preview_val, str) and preview_val.strip():
+                return (
+                    '<div class="fd-inp-data">'
+                    f'<span class="fd-inp-text">{_esc(preview_val.strip())}</span></div>'
+                )
+            if _is_table(preview_val):
+                cols = [str(c) for c in preview_val.columns]
+                return _table_summary_html(None, cols)
+
+    text = summarize_value(value)
+    if _is_raw_repr(text) and source_instance is not None:
+        src_hook = getattr(source_instance, PREVIEW_HOOK, None)
+        if callable(src_hook):
+            try:
+                src_preview = src_hook()
+            except Exception:
+                src_preview = None
+            if isinstance(src_preview, str) and src_preview.strip():
+                return (
+                    '<div class="fd-inp-data">'
+                    f'<span class="fd-inp-text">{_esc(src_preview.strip())}</span></div>'
+                )
+            if _is_table(src_preview):
+                cols = [str(c) for c in src_preview.columns]
+                return _table_summary_html(None, cols)
+    if _is_raw_repr(text):
+        text = type(value).__name__
+
+    return (
+        '<div class="fd-inp-data">'
+        f'<span class="fd-inp-text" title="{_esc(text)}">{_esc(text)}</span></div>'
     )
 
 
@@ -123,15 +484,27 @@ class Inspector(Viewer):
 
     visible = param.Boolean(default=True, doc="Whether the panel is shown.")
 
+    on_edit_code = param.Callable(
+        default=None,
+        doc="""
+        Optional callback invoked as ``on_edit_code(instance_id, field_name, field)``
+        when Edit is clicked on a code field in the inspector.""",
+    )
+
     def __init__(self, **params):
         super().__init__(**params)
         self._flow = self.editor._flow
         # Watchers following the shown component, released when it is replaced.
         self._releases: list[t.Callable[[], None]] = []
         self._shown: tuple[str, str] | None = None
-        self._status_chip: pmui.Chip | None = None
+        self._status_dot: pmui.Tooltip | None = None
+        self._status_dot_pane: pn.pane.HTML | None = None
+        self._status_info: tuple[str, str] = ("Up to date", "success")
         self._node_status: tuple[str, str] | None = None
         self._config_status: tuple[str, str] | None = None
+        self._last_check_status: tuple[str, str] | None = None
+        self._code_fields: list[CodeField] = []
+        self._has_inline_close = False
         self._data_column: pn.Column | None = None
         self._inputs_column: pn.Column | None = None
         # What the shown input rows depend on, and their parts updated in place.
@@ -139,7 +512,7 @@ class Inspector(Viewer):
         self._connected_caption: pmui.Typography | None = None
         self._literal_editors: dict[str, LiteralEditor] = {}
         self._literal_captions: dict[str, pmui.Typography] = {}
-        self._value_captions: dict[str, pmui.Typography] = {}
+        self._value_panes: dict[str, pn.pane.HTML] = {}
         # The Move to buttons of the shown Tile tab.
         self._tile_move_buttons: list = []
         self._refresh_inputs: t.Callable[[], None] = lambda: None
@@ -255,6 +628,10 @@ class Inspector(Viewer):
         self._shown = selected
         if selected is not None:
             self._shown = selected if self._exists() else None
+        inline_close = self._shown is not None and self._shown[0] == "node"
+        self._has_inline_close = inline_close
+        self._body.margin = 0 if inline_close else (0, 16, 16, 16)
+        self._sync_collapsed()
         if self._shown is None:
             objects = self._summary_view()
         elif self._shown[0] == "node":
@@ -280,6 +657,9 @@ class Inspector(Viewer):
         *release* is called when they are replaced.
         """
         self._release()
+        self._has_inline_close = False
+        self._body.margin = (0, 16, 16, 16)
+        self._sync_collapsed()
         if release is not None:
             self._releases.append(release)
         # Back sits on a row of its own, so the caption and title start at
@@ -314,12 +694,16 @@ class Inspector(Viewer):
         self._releases = []
         self._draft = None
         self._choice_holder = None
-        self._status_chip = None
+        self._status_dot = None
+        self._status_dot_pane = None
         self._node_status = self._config_status = None
+        self._last_check_status = None
+        self._code_fields = []
         self._data_column = None
         self._inputs_column = None
         self._inputs_key = {}
         self._literal_editors = {}
+        self._value_panes = {}
 
     # ------------------------------------------------------------------
     # Dashboard summary, shown without a selection
@@ -396,17 +780,151 @@ class Inspector(Viewer):
     def _item(self, instance_id: str) -> dict | None:
         return next((i for i in self.editor._tile_items if i["instance_id"] == instance_id), None)
 
-    def _header(self, icon: str, title: str, description: str | None) -> Viewable:
-        lines = [text_typography(title, variant="subtitle1", margin=0, sx={"fontWeight": 500})]
+    def _header(
+        self,
+        icon: str,
+        title: str,
+        description: str | None,
+        *,
+        subtitle: str | None = None,
+        menu_items: list[dict] | None = None,
+        on_menu: t.Callable[[t.Any], None] | None = None,
+        show_close: bool = True,
+    ) -> Viewable:
+        name_text = text_typography(
+            title,
+            variant="subtitle2",
+            margin=0,
+            sx={
+                "fontFamily": '"Roboto Mono", ui-monospace, monospace',
+                "fontSize": "0.84375rem",
+                "fontWeight": 500,
+                "lineHeight": "18px",
+                "overflow": "hidden",
+                "textOverflow": "ellipsis",
+                "whiteSpace": "nowrap",
+            },
+            css_classes=["fd-inspector-title"],
+        )
+        stack_items: list[Viewable] = [name_text]
+        sub_parts: list[Viewable] = []
+        if subtitle:
+            sub_parts.append(
+                text_typography(
+                    subtitle,
+                    variant="caption",
+                    margin=0,
+                    sx={
+                        "color": "text.secondary",
+                        "fontSize": "0.75rem",
+                        "lineHeight": "16px",
+                        "overflow": "hidden",
+                        "textOverflow": "ellipsis",
+                        "whiteSpace": "nowrap",
+                    },
+                    css_classes=["fd-inspector-subtitle"],
+                )
+            )
         if description:
-            lines.append(_caption(description, margin=(2, 0, 0, 0)))
-        self._status_chip = pmui.Chip(size="small", margin=(8, 0, 0, 0))
-        lines.append(self._status_chip)
-        return pn.Row(
-            _avatar(icon),
-            pn.Column(*lines, margin=0, sizing_mode="stretch_width"),
-            margin=(0, 0, 8, 0),
+            info_pane = pn.pane.HTML(
+                '<span class="fd-info-icon" role="img" aria-label="Component description">'
+                "info_outline</span>",
+                width=16,
+                height=16,
+                margin=0,
+                stylesheets=[_HEADER_CSS],
+            )
+            sub_parts.append(
+                pmui.Tooltip(
+                    object=info_pane,
+                    title=description,
+                    arrow=True,
+                    margin=0,
+                    css_classes=["fd-inspector-info"],
+                )
+            )
+        if sub_parts:
+            stack_items.append(
+                pn.FlexBox(
+                    *sub_parts,
+                    align_items="center",
+                    flex_wrap="nowrap",
+                    gap="4px",
+                    margin=0,
+                    sizing_mode="stretch_width",
+                    styles={"min-width": "0"},
+                )
+            )
+        title_stack = pn.Column(
+            *stack_items,
+            margin=0,
+            align="center",
             sizing_mode="stretch_width",
+            styles={"min-width": "0", "flex": "1 1 0%", "overflow": "hidden"},
+        )
+        self._status_dot_pane = pn.pane.HTML(
+            '<div class="fd-status-wrap">'
+            '<span class="fd-status-dot fd-status-success" role="status" '
+            'aria-label="Up to date"></span></div>',
+            width=18,
+            height=18,
+            margin=0,
+            stylesheets=[_HEADER_CSS],
+        )
+        self._status_dot = pmui.Tooltip(
+            object=self._status_dot_pane,
+            title="Up to date",
+            arrow=True,
+            margin=0,
+            align="center",
+            css_classes=["fd-inspector-status"],
+        )
+        row_items: list[Viewable] = [_header_icon(icon), title_stack, self._status_dot]
+        if menu_items:
+            menu = pmui.MenuButton(
+                label="",
+                icon="more_vert",
+                icon_size="18px",
+                description="More actions",
+                items=menu_items,
+                size="small",
+                variant="text",
+                color="default",
+                margin=0,
+                align="center",
+                sx=_OVERFLOW_SX,
+                stylesheets=[_DANGER_LAST_ITEM],
+                css_classes=["fd-inspector-menu"],
+            )
+            if on_menu is not None:
+                menu.on_click(on_menu)
+            row_items.append(menu)
+        if show_close:
+            close_btn = pmui.IconButton(
+                icon="close",
+                icon_size="18px",
+                description="Hide inspector",
+                size="small",
+                margin=0,
+                align="center",
+                sx=_HEADER_ICON_SX,
+                css_classes=["fd-inspector-close"],
+            )
+            close_btn.on_click(lambda _event: setattr(self, "collapsed", True))
+            row_items.append(close_btn)
+        return pmui.Row(
+            *row_items,
+            sizing_mode="stretch_width",
+            margin=0,
+            sx={
+                "alignItems": "center",
+                "flexWrap": "nowrap",
+                "minHeight": "54px",
+                "pl": "14px",
+                "pr": "8px",
+                "gap": "4px",
+            },
+            css_classes=["fd-inspector-header"],
         )
 
     def _set_status(self, status: str, detail: str):
@@ -419,26 +937,81 @@ class Inspector(Viewer):
         The outputs are still up to date with the config applied last, but a
         status saying so beside a refused edit reads as if the edit went
         through. A check that finishes after another node was selected is
-        ignored, since the chip now shows that node.
+        ignored, since the header now shows that node.
         """
         if draft is not self._draft:
             return
         if not result:
             self._config_status = None
-        elif pending:
-            self._config_status = ("held", "Edit not applied")
+            if result.warnings:
+                count = len(result.warnings)
+                self._last_check_status = (
+                    "warning",
+                    f"{count} warning" if count == 1 else f"{count} warnings",
+                )
+            else:
+                self._last_check_status = ("ok", "Check passed")
         else:
-            self._config_status = ("refused", "Config refused")
+            count = len(result)
+            self._last_check_status = (
+                "error",
+                f"{count} problem" if count == 1 else f"{count} problems",
+            )
+            if pending:
+                self._config_status = ("held", "Edit not applied")
+            else:
+                self._config_status = ("refused", "Config refused")
+        for field in self._code_fields:
+            field.check_status = self._last_check_status
         self._show_status()
 
     def _show_status(self):
         node_status = self._node_status or ("ok", "")
         failed = node_status[0] == "failed"
         status, detail = node_status if failed else self._config_status or node_status
-        if self._status_chip is not None:
-            self._status_chip.param.update(
-                label=detail or STATUS_TEXT[status], color=_STATUS_COLOR[status]
+        label = detail or STATUS_TEXT[status]
+        color = _STATUS_COLOR[status]
+        self._status_info = (label, color)
+        if self._status_dot is not None:
+            self._status_dot.title = label
+        if self._status_dot_pane is not None:
+            self._status_dot_pane.object = (
+                '<div class="fd-status-wrap">'
+                f'<span class="fd-status-dot fd-status-{_esc(color)}" role="status" '
+                f'aria-label="{_esc(label)}"></span></div>'
             )
+
+    def _duplicate_component(self, instance_id: str):
+        editor = self.editor
+        item = self._item(instance_id)
+        if item is None or "placeholder" in item:
+            return
+        config = copy.deepcopy(item.get("config") or {})
+        node = next((n for n in self._flow.nodes if n["id"] == instance_id), None)
+        pos = node.get("position") if node else None
+        new_pos = {"x": pos["x"] + 32, "y": pos["y"] + 32} if isinstance(pos, dict) else None
+        try:
+            new_id = editor.add_component(
+                item["component_id"], config=config or None, position=new_pos
+            )
+        except PermissionError:
+            return
+        for port_name, val in editor.input_values(instance_id).items():
+            try:
+                editor.set_input_value(new_id, port_name, copy.deepcopy(val))
+            except Exception:
+                pass
+        select_on_canvas(self._flow, node_id=new_id)
+
+    def _on_node_menu(self, instance_id: str, event):
+        item = getattr(event, "new", event)
+        action = item.get("action") if isinstance(item, dict) else None
+        if action == "how_made":
+            self.editor.show_how_made(instance_id)
+        elif action == "duplicate":
+            self._duplicate_component(instance_id)
+        elif action == "remove":
+            self.editor.remove_component(instance_id)
 
     # ------------------------------------------------------------------
     # Several selected components, and a selected group
@@ -553,31 +1126,45 @@ class Inspector(Viewer):
         objects.extend([ungroup, delete])
         return objects
 
-    def _remove_button(self, instance_id: str) -> pmui.Button:
-        button = pmui.Button(
-            label="Remove from dashboard",
-            icon="delete_outline",
-            color="error",
-            variant="text",
-            margin=(16, 0, 0, 0),
-            sx={"textTransform": "none"},
-        )
-        button.on_click(lambda _event: self.editor.remove_component(instance_id))
-        return button
-
     def _node_view(self, instance_id: str) -> list[Viewable]:
         editor = self.editor
         item = self._item(instance_id)
         if "placeholder" in item:
             placeholder = item["placeholder"]
-            header = self._header("extension_off", placeholder.title, placeholder.message)
+            menu_items = [
+                {"label": "Remove from dashboard", "icon": "delete_outline", "action": "remove"}
+            ]
+            header = self._header(
+                "extension_off",
+                placeholder.title,
+                placeholder.message,
+                subtitle="Unavailable",
+                menu_items=menu_items,
+                on_menu=partial(self._on_node_menu, instance_id),
+            )
             self._set_status("unavailable", STATUS_TEXT["unavailable"])
-            return [header, self._remove_button(instance_id)]
+            return [header, _caption(placeholder.message, margin=(12, 14, 16, 14))]
         spec = editor._component_specs[item["component_id"]]
         graph = editor._dataflow_graph
         state, failures = graph.get_state(instance_id), graph.get_failures(instance_id)
-        header = self._header(component_icon(spec), spec.title, spec.description)
-        self._data_column = pn.Column(margin=0, sizing_mode="stretch_width")
+        menu_items: list[dict] = []
+        if editor.made_by_agent(instance_id):
+            menu_items.append(
+                {"label": "How was this made?", "icon": "manage_search", "action": "how_made"}
+            )
+        menu_items.append({"label": "Duplicate", "icon": "content_copy", "action": "duplicate"})
+        menu_items.append(
+            {"label": "Remove from dashboard", "icon": "delete_outline", "action": "remove"}
+        )
+        header = self._header(
+            component_icon(spec),
+            editor._node_name(instance_id),
+            spec.description,
+            subtitle=spec.title,
+            menu_items=menu_items,
+            on_menu=partial(self._on_node_menu, instance_id),
+        )
+        self._data_column = pn.Column(margin=(12, 14, 16, 14), sizing_mode="stretch_width")
         self._inputs_column = pn.Column(margin=0, sizing_mode="stretch_width")
         self._refresh_inputs = partial(self._fill_inputs, instance_id, spec)
 
@@ -606,33 +1193,17 @@ class Inspector(Viewer):
             dynamic=True,
             sizing_mode="stretch_width",
             margin=0,
-            sx={"& .MuiTab-root": {"textTransform": "none", "minWidth": 0}},
+            sx=_TABS_SX,
         )
-        objects = [header, tabs, self._remove_button(instance_id)]
-        if editor.made_by_agent(instance_id):
-            objects.insert(1, self._how_made_button(instance_id))
-        return objects
-
-    def _how_made_button(self, instance_id: str) -> pmui.Button:
-        button = pmui.Button(
-            label="How was this made?",
-            icon="manage_search",
-            variant="text",
-            size="small",
-            margin=(0, 0, 8, 0),
-            sx={"textTransform": "none"},
-        )
-        button.on_click(lambda _event: self.editor.show_how_made(instance_id))
-        return button
+        return [header, tabs]
 
     # Settings
 
     def _settings_tab(self, instance_id: str, item: dict, spec: ComponentSpec) -> Viewable:
         return pn.Column(
-            _heading("Configuration"),
             self._config_form(instance_id, spec),
             self._inputs_column,
-            margin=(8, 0, 0, 0),
+            margin=(12, 14, 16, 14),
             sizing_mode="stretch_width",
         )
 
@@ -646,7 +1217,11 @@ class Inspector(Viewer):
         config_state = editor._dataflow_graph.get_config_state(instance_id)
         names = [n for n in (config_state.param if config_state else []) if n != "name"]
         if not names:
-            caption = _caption("This component has no settings.")
+            caption = (
+                _caption("This component has no settings.")
+                if not spec.inputs
+                else pn.Column(margin=0)
+            )
             if not has_choices(spec) or not any(takes_literal(p) for p in spec.inputs):
                 return caption
             # The choices are offered for the values of the unconnected inputs.
@@ -773,14 +1348,24 @@ class Inspector(Viewer):
             for name, widget in getattr(form, "_widgets", {}).items()
             if name != "_title"
         }
+        for widget in widget_names:
+            if not isinstance(widget, (CodeField, SpecEditor)):
+                widget.margin = (6, 0)
+                if not isinstance(widget, (pmui.Checkbox, pmui.Switch)):
+                    widget.param.update(width=None, sizing_mode="stretch_width")
+        code_fields: list = []
         for field in form.select(CodeField):
             field_name = widget_names.get(field, field.name)
             field.on_edit = partial(self._edit_code_field, instance_id, field_name)
+            if self._last_check_status is not None:
+                field.check_status = self._last_check_status
         for field in (*form.select(CodeField), *form.select(SpecEditor)):
             # Typed text is applied on blur, so Save is offered while some waits.
             field.param.watch(
                 lambda _event: (e := editor()) is not None and e._sync_toolbar_state(), "unsent"
             )
+            code_fields.append(field)
+        self._code_fields = code_fields
         return form
 
     def _sync_save(self):
@@ -915,6 +1500,7 @@ class Inspector(Viewer):
         for port in spec.inputs:
             wired = incoming.get(port.name)
             if wired is not None:
+                source_id = wired[1][0]
                 key = (
                     "wired",
                     wired[0],
@@ -922,10 +1508,13 @@ class Inspector(Viewer):
                     repr(literals.get(port.name)),
                 )
 
-                def update(name=port.name):
-                    caption = self._value_captions.get(name)
-                    if caption is not None:
-                        caption.object = summarize_value(getattr(state, name, None))
+                def update(name=port.name, port_type=port.type, src_id=source_id):
+                    pane = self._value_panes.get(name)
+                    if pane is not None:
+                        src_inst = editor._component_instances.get(src_id)
+                        pane.object = summarize_input_html(
+                            getattr(state, name, None), port_type, src_inst
+                        )
 
             else:
                 key = ("free", takes_literal(port))
@@ -954,18 +1543,22 @@ class Inspector(Viewer):
         literals = editor.input_values(instance_id)
         connected = sum(1 for p in spec.inputs if p.name in incoming)
         self._connected_caption = _caption(
-            f"{connected} of {len(spec.inputs)} connected", margin=(18, 0, 0, 0)
+            f"{connected} of {len(spec.inputs)} connected",
+            margin=0,
+            sx={"whiteSpace": "nowrap", "flexShrink": 0},
         )
         objects: list[Viewable] = [
-            pn.Row(
-                _heading("Inputs"),
-                pn.layout.HSpacer(),
+            pn.FlexBox(
+                _heading("Inputs", margin=0),
                 self._connected_caption,
-                margin=0,
+                align_items="center",
+                justify_content="space-between",
+                flex_wrap="nowrap",
+                margin=(16, 0, 8, 0),
                 sizing_mode="stretch_width",
             )
         ]
-        self._value_captions = {}
+        self._value_panes = {}
         self._literal_captions = {}
         for port in spec.inputs:
             objects.append(
@@ -988,15 +1581,21 @@ class Inspector(Viewer):
         return origin
 
     def _input_row(self, instance_id, port, wired, state, literals) -> Viewable:
-        name = port_label(port) + (" *" if port.required else "")
+        name = port_label(port)
         title = text_typography(
-            f"{name}  {port.type or ''}".rstrip(),
+            name,
             variant="body2",
             margin=0,
-            sx={"fontWeight": 500},
+            sx={"fontWeight": 500, "fontSize": "0.78125rem", "flexShrink": 0},
         )
         if wired is None:
-            lines: list = [title]
+            head_items: list[Viewable] = [title]
+            if not port.required:
+                head_items.append(
+                    _caption(
+                        "optional", margin=0, sx={"color": "text.secondary", "fontSize": "0.75rem"}
+                    )
+                )
             if takes_literal(port):
                 literal = LiteralEditor(
                     port,
@@ -1009,50 +1608,118 @@ class Inspector(Viewer):
                 caption = _caption("")
                 self._literal_captions[port.name] = caption
                 self._literal_caption(port.name, port.name in literals, port)
-                lines = [
-                    pn.Row(title, pn.layout.HSpacer(), literal.clear_button, margin=0),
+                head_items.extend([pn.layout.HSpacer(), literal.clear_button])
+                lines: list[Viewable] = [
+                    pn.FlexBox(
+                        *head_items,
+                        align_items="center",
+                        flex_wrap="nowrap",
+                        gap="6px",
+                        margin=0,
+                        sizing_mode="stretch_width",
+                    ),
                     literal,
                     caption,
                 ]
             else:
-                lines.append(
-                    _caption("Required, not connected" if port.required else "Not connected")
-                )
+                lines = [
+                    pn.FlexBox(
+                        *head_items,
+                        align_items="center",
+                        flex_wrap="nowrap",
+                        gap="6px",
+                        margin=0,
+                        sizing_mode="stretch_width",
+                    ),
+                    _caption(
+                        "Required, not connected" if port.required else "Not connected",
+                        margin=(3, 0, 0, 0),
+                    ),
+                ]
             return pmui.Paper(
                 *lines,
-                margin=(0, 0, 6, 0),
+                margin=(0, 0, 8, 0),
                 sizing_mode="stretch_width",
                 variant="outlined",
-                sx={"p": 1},
+                sx={"p": "7px 8px 7px 10px", "borderRadius": "6px", "boxShadow": "none"},
                 css_classes=["fd-input-row", f"fd-input-{port.name}"],
             )
+
         edge_id, mapping = wired
-        value_caption = _caption(summarize_value(getattr(state, port.name, None)))
-        self._value_captions[port.name] = value_caption
-        lines = [title, _caption(self._origin_text(mapping)), value_caption]
+        source_instance = self.editor._component_instances.get(mapping[0])
+        value_pane = pn.pane.HTML(
+            summarize_input_html(getattr(state, port.name, None), port.type, source_instance),
+            margin=(3, 0, 0, 0),
+            sizing_mode="stretch_width",
+            stylesheets=[_INPUT_DATA_CSS],
+            css_classes=["fd-input-summary"],
+        )
+        self._value_panes[port.name] = value_pane
+        origin_text = self._origin_text(mapping)
+        origin = text_typography(
+            origin_text,
+            variant="caption",
+            margin=0,
+            sizing_mode="stretch_width",
+            sx={
+                "color": "text.secondary",
+                "fontSize": "0.75rem",
+                "overflow": "hidden",
+                "textOverflow": "ellipsis",
+                "whiteSpace": "nowrap",
+                "minWidth": 0,
+            },
+        )
+        edit = pmui.IconButton(
+            icon="edit",
+            icon_size="16px",
+            description="Inspect this connection",
+            size="small",
+            margin=0,
+            align="center",
+            sx={"p": "2px", "color": "text.secondary", "flexShrink": 0},
+        )
+        edit.on_click(lambda _event: select_on_canvas(self._flow, edge_id=edge_id))
+        top_items: list[Viewable] = [title]
+        if not port.required:
+            top_items.append(
+                text_typography(
+                    "optional ·",
+                    variant="caption",
+                    margin=0,
+                    sx={
+                        "color": "text.secondary",
+                        "fontSize": "0.75rem",
+                        "whiteSpace": "nowrap",
+                        "flexShrink": 0,
+                    },
+                )
+            )
+        top_items.extend([origin, edit])
+        lines = [
+            pmui.Row(
+                *top_items,
+                margin=0,
+                sizing_mode="stretch_width",
+                sx={"alignItems": "center", "flexWrap": "nowrap", "gap": "6px"},
+            ),
+            value_pane,
+        ]
         if port.name in literals:
             lines.append(
                 _caption(
                     f"The value set here ({summarize_value(literals[port.name])}) "
                     "applies once disconnected.",
+                    margin=(4, 0, 0, 0),
                     css_classes=["fd-literal-overridden"],
                 )
             )
-        edit = pmui.IconButton(
-            icon="edit", description="Inspect this connection", size="small", margin=0
-        )
-        edit.on_click(lambda _event: select_on_canvas(self._flow, edge_id=edge_id))
         return pmui.Paper(
-            pn.Row(
-                pn.Column(*lines, margin=0, sizing_mode="stretch_width"),
-                edit,
-                margin=0,
-                sizing_mode="stretch_width",
-            ),
-            margin=(0, 0, 6, 0),
+            *lines,
+            margin=(0, 0, 8, 0),
             sizing_mode="stretch_width",
             variant="outlined",
-            sx={"p": 1},
+            sx={"p": "7px 8px 7px 10px", "borderRadius": "6px", "boxShadow": "none"},
             css_classes=["fd-input-row", f"fd-input-{port.name}"],
         )
 
@@ -1108,7 +1775,7 @@ class Inspector(Viewer):
     def _tile_tab(self, instance_id: str, item: dict, spec: ComponentSpec) -> Viewable:
         """Return the tile's options, rebuilt when the component moves to or from the grid."""
         editor = self.editor
-        holder = pn.Column(sizing_mode="stretch_width", margin=0)
+        holder = pn.Column(sizing_mode="stretch_width", margin=(12, 14, 16, 14))
         releases: list = []
         shown = None
 
@@ -1155,7 +1822,7 @@ class Inspector(Viewer):
         layout = tile_entry(editor, instance_id)
         default = spec.default_size or {}
         show = pmui.Switch(
-            label="Show on dashboard", value=layout.get("visible", True), margin=(12, 0, 4, 0)
+            label="Show on dashboard", value=layout.get("visible", True), margin=(4, 0, 4, 0)
         )
         width = layout.get("width")
         options = {"Automatic": _AUTO, **_WIDTHS}
@@ -1325,7 +1992,8 @@ class Inspector(Viewer):
     @param.depends("collapsed", watch=True)
     def _sync_collapsed(self):
         collapsed = self.collapsed
-        self.collapse_button.visible = self._body.visible = not collapsed
+        self.collapse_button.visible = not collapsed and not self._has_inline_close
+        self._body.visible = not collapsed
         self.expand_button.visible = collapsed
         self._panel.width = _COLLAPSED_WIDTH if collapsed else INSPECTOR_WIDTH
 

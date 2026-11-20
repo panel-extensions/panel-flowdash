@@ -79,7 +79,9 @@ def test_the_inspector_shows_how_a_node_the_agent_added_was_made(page):
     _, added = _ask_for_a_note(page)
     page.get_by_role("button", name="Assistant", exact=True).click()
     page.locator(f".react-flow__node[data-id='{added}']").click()
-    page.get_by_role("button", name="How was this made?").click()
+    expect(page.get_by_role("button", name="How was this made?")).to_have_count(0)
+    page.locator(".fd-inspector-menu button, button.fd-inspector-menu").first.click()
+    page.get_by_role("menuitem", name="How was this made?").click()
 
     expect(page.get_by_text("How this was made", exact=True)).to_be_visible()
     view = page.locator(".span-view")
@@ -166,7 +168,9 @@ def test_the_title_lines_up_with_the_request_in_the_inspector(page, width):
     editor, added = _ask_for_a_note(page)
     page.get_by_role("button", name="Assistant", exact=True).click()
     page.locator(f".react-flow__node[data-id='{added}']").click()
-    page.get_by_role("button", name="How was this made?").click()
+    expect(page.get_by_role("button", name="How was this made?")).to_have_count(0)
+    page.locator(".fd-inspector-menu button, button.fd-inspector-menu").first.click()
+    page.get_by_role("menuitem", name="How was this made?").click()
     page.set_viewport_size({"width": width, "height": 900})
 
     header = page.locator(".flowdash-inspector-extra")

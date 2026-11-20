@@ -77,8 +77,13 @@ def test_selecting_a_node_shows_its_config_and_editing_it_updates_the_component(
     expect(page.get_by_text("Issues (1)")).to_be_visible()
     _node(page, table).click()
     wait_until(lambda: editor._inspector._shown == ("node", table), timeout=8000)
-    expect(page.get_by_text("Shows rows.")).to_be_visible()
-    expect(page.get_by_text("Needs Rows").first).to_be_visible()
+    expect(page.locator(".fd-inspector-header")).to_be_visible()
+    expect(page.get_by_text("Configuration", exact=True)).to_have_count(0)
+    # Description sits in the inline info tooltip, status in the status dot tooltip.
+    page.locator(".fd-inspector-info").hover()
+    expect(page.get_by_role("tooltip", name="Shows rows.")).to_be_visible()
+    page.locator(".fd-inspector-status").hover()
+    expect(page.get_by_role("tooltip", name="Needs Rows")).to_be_visible()
 
     title = page.get_by_role("textbox", name="Title")
     expect(title).to_have_value("Turbines")
@@ -94,10 +99,27 @@ def test_remove_from_dashboard(page):
     serve_component(page, editor)
 
     _node(page, table).click()
-    page.get_by_role("button", name="Remove from dashboard").click()
+    wait_until(lambda: editor._inspector._shown == ("node", table), timeout=8000)
+    # Remove lives only in the overflow menu, not as a separate button.
+    expect(page.get_by_role("button", name="Remove from dashboard")).to_have_count(0)
+    page.locator(".fd-inspector-menu button, button.fd-inspector-menu").first.click()
+    page.get_by_role("menuitem", name="Remove from dashboard").click()
     wait_until(lambda: [i["instance_id"] for i in editor._tile_items] == [_src], timeout=8000)
     expect(_node(page, table)).to_have_count(0)
     expect(page.get_by_text("1 component, 0 connections").first).to_be_visible()
+
+
+def test_wired_input_shows_live_data_summary(page):
+    editor, src, table = _editor()
+    editor.connect(src, "rows", table, "rows")
+    serve_component(page, editor)
+
+    _node(page, table).click()
+    wait_until(lambda: editor._inspector._shown == ("node", table), timeout=8000)
+    summary = page.locator(".fd-input-rows .fd-input-summary")
+    expect(summary).to_contain_text("3 rows \u00d7 2")
+    expect(summary).to_contain_text("a")
+    expect(summary).to_contain_text("b")
 
 
 def test_status_bar_counts_issues_and_selects_the_first(page):

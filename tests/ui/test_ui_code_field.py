@@ -19,20 +19,28 @@ def test_sql_is_edited_over_several_lines_and_applied_on_blur(page):
     serve_component(page, editor)
 
     page.locator(f".react-flow__node[data-id='{node}']").click()
-    field = page.locator(".fd-code-field").first
-    expect(field.locator(".ace_content")).to_contain_text("SELECT 1", timeout=8000)
-    expect(field.locator(".ace_keyword").first).to_have_text("SELECT")
-    field.locator(".ace_content").click()
+    snippet = page.locator(".fd-code-snippet").first
+    expect(snippet).to_contain_text("SELECT 1", timeout=8000)
+    expect(snippet.locator(".fd-hk").first).to_have_text("SELECT")
+    expect(page.locator(".fd-code-status").first).to_contain_text("1 line")
+
+    page.locator(".fd-code-edit").first.click(timeout=8000)
+    large = page.locator(".fd-code-field-large")
+    expect(large.locator(".ace_content")).to_contain_text("SELECT 1", timeout=8000)
+    expect(large.locator(".ace_keyword").first).to_have_text("SELECT")
+    large.locator(".ace_content").click()
     page.keyboard.press("End")
     page.keyboard.press("Enter")
     page.keyboard.type("FROM turbines")
     page.wait_for_timeout(300)
     assert editor._component_instances[node].sql == "SELECT 1", "not applied while typing"
-    page.locator(".react-flow__pane").click(position={"x": 5, "y": 5})
+    page.get_by_role("dialog").get_by_role("button", name="Done", exact=True).click()
     wait_until(
         lambda: editor._component_instances[node].sql.replace(" ", "") == "SELECT1\nFROMturbines",
         timeout=8000,
     )
+    expect(snippet).to_contain_text("FROM turbines", timeout=8000)
+    expect(page.locator(".fd-code-status").first).to_contain_text("2 lines")
 
 
 def test_the_expand_button_opens_a_large_editor(page):
@@ -71,11 +79,14 @@ def test_save_while_typing_stores_the_checked_text(page):
     serve_component(page, editor)
 
     page.locator(f".react-flow__node[data-id='{node}']").click()
-    field = page.locator(".fd-code-field").first
-    expect(field.locator(".ace_content")).to_contain_text("SELECT 1", timeout=8000)
-    field.locator(".ace_content").click()
+    expect(page.locator(".fd-code-status").first).to_contain_text("Check passed", timeout=8000)
+    page.locator(".fd-code-edit").first.click(timeout=8000)
+    large = page.locator(".fd-code-field-large")
+    expect(large.locator(".ace_content")).to_contain_text("SELECT 1", timeout=8000)
+    large.locator(".ace_content").click()
     page.keyboard.press("End")
     page.keyboard.type("0")
+    page.get_by_role("dialog").get_by_role("button", name="Done", exact=True).click()
     save = page.get_by_role("button", name="Save", exact=True)
     expect(save).to_be_enabled(timeout=8000)
     save.click()
@@ -97,9 +108,10 @@ def test_escape_then_tab_leaves_the_editor(page):
     serve_component(page, editor)
 
     page.locator(f".react-flow__node[data-id='{node}']").click()
-    field = page.locator(".fd-code-field").first
-    expect(field.locator(".ace_content")).to_contain_text("SELECT 1", timeout=8000)
-    field.locator(".ace_content").click()
+    page.locator(".fd-code-edit").first.click(timeout=8000)
+    large = page.locator(".fd-code-field-large")
+    expect(large.locator(".ace_content")).to_contain_text("SELECT 1", timeout=8000)
+    large.locator(".ace_content").click()
     page.wait_for_timeout(500)
     page.keyboard.press("Escape")
     page.keyboard.press("Tab")
@@ -144,13 +156,13 @@ def test_typing_then_deleting_leaves_save_disabled(page):
     serve_component(page, editor)
 
     page.locator(f".react-flow__node[data-id='{node}']").click()
-    field = page.locator(".fd-code-field").first
-    expect(field.locator(".ace_content")).to_contain_text("SELECT 1", timeout=8000)
-    field.locator(".ace_content").click()
+    page.locator(".fd-code-edit").first.click(timeout=8000)
+    large = page.locator(".fd-code-field-large")
+    expect(large.locator(".ace_content")).to_contain_text("SELECT 1", timeout=8000)
+    large.locator(".ace_content").click()
     page.keyboard.press("End")
     page.keyboard.type("x")
-    save = page.get_by_role("button", name="Save", exact=True)
-    expect(save).to_be_enabled(timeout=8000)
     page.keyboard.press("Backspace")
-    page.locator(".react-flow__pane").click(position={"x": 5, "y": 5})
+    page.get_by_role("dialog").get_by_role("button", name="Done", exact=True).click()
+    save = page.get_by_role("button", name="Save", exact=True)
     expect(save).to_be_disabled(timeout=8000)
