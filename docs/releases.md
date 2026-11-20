@@ -6,7 +6,7 @@ Initial release of panel-flowdash.
 
 ### Upgrading from 0.1.0rc2
 
-Installation. panel-flowdash requires Python 3.12 or newer and Panel 1.11 or newer, which panel-material-ui 0.17 needs; Python 3.10 and 3.11 are no longer supported. It also requires panel-agents 0.1.0b10, panel-reactflow 0.6.0b7 and panel-tiles 0.6.0b2 or later. panel-agents is always installed, while the `agent` extra still adds pydantic-ai for the assistant.
+Installation. panel-flowdash requires Python 3.12 or newer and Panel 1.11 or newer, which panel-material-ui 0.17 needs; Python 3.10 and 3.11 are no longer supported. It also requires panel-agents 0.1.0b10, panel-material-ui 0.17.0rc1, panel-reactflow 0.6.0b7 and panel-tiles 0.6.0b2 or later. panel-agents is always installed, while the `agent` extra still adds pydantic-ai for the assistant.
 
 Look and defaults. Dashboards saved with rc2 load unchanged, but several defaults changed and the editor was redesigned, so they look and behave differently:
 
@@ -15,6 +15,9 @@ Look and defaults. Dashboards saved with rc2 load unchanged, but several default
 - Components registered with `sidebar=True` render in a controls bar above the tiles, and `FlowDashApp` no longer copies them into the page sidebar. Embedders who place `FlowDash.sidebar` themselves set `FlowDash(controls_bar=False)`
 - The floating editor toolbar is replaced by a dashboard bar with separate view and edit modes (Edit, Done, Discard, Save). The Preview switch is gone, since view mode is the preview; the `preview`, `toolbar` and `toolbar_extra` parameters keep working
 - Port popups on the wiring canvas open on click (`FlowDash.popup_trigger="click"`); set `popup_trigger="hover"` for the rc2 behaviour. Node configuration moved from a popup into a persistent inspector, and nodes no longer embed their live views
+- Node cards no longer show a value's repr: an opaque output is named by its type, and a node with several outputs previews the one picked on its card instead of always the first
+- The inspector shows a connected input as a summary of what it carries instead of its repr, and a code field as a five-line read-only snippet whose Edit button opens the code panel under the canvas (or a dialog in windows under 960px and in view mode). Code edited there is applied on Run, not on blur
+- Description, "How was this made?" and Remove moved from the inspector body into its header and its menu
 - Inspecting outputs opens a side sheet from the tile's Inspect action instead of a dialog behind an info button
 - The canvas minimap is off when the editor opens and is toggled from the status bar; it can no longer be turned on by default
 - Dashboard titles, descriptions, tile titles, share names, data column names and error messages are shown as plain text: Markdown and HTML in them are no longer rendered. Component titles, port labels and docstrings written in code render as before
@@ -75,6 +78,7 @@ Serving and API:
 - Built-in text components: Markdown (rendered without raw HTML or math, with `{{ value }}` placeholders filled from an optional input), Notes (rich text typed into the tile while editing, read-only for viewers), Heading and Divider
 - Built-in Radio Group, Range Slider, Number Input, Date Range, Toggle and Text Input widgets, and KPI and Image views, beside Select, MultiChoice and Slider; every built-in has a description and a default tile size
 - A Viewer config param declared with `metadata={"flowdash": {"two_way": True}}` is synced back to the node's config when the component changes it, so it is saved with the dashboard
+- A config check can return or raise `CheckDiagnostic(message, field=, line=, column=, ...)` to say where in a code field a problem is, read back with `CheckResult.diagnostics(field)`, and `@register(config_completions=...)` supplies completion words for code fields, which otherwise complete the node's input column names (`node_completions()`)
 - `FlowDash(context={...})` hands host resources such as data sources to components, which read them with `dashboard_context()`, a read-only view that previews see too
 
 ### Dataflow
@@ -102,7 +106,11 @@ Serving and API:
 - The assistant can offer several models: `FlowDashApp.agent_models` (or `agent_models` in `__init__.py`), `FLOWDASH_AGENT_MODELS="id[=label],..."` or a repeated `flowdash serve --agent-model ID[=LABEL]`. A small picker below the chat input chooses the model of the next request, models with a missing provider key are listed disabled with the reason, and the browser remembers the pick. `agent_model`/`FLOWDASH_AGENT_MODEL` stays the default. Requires panel-agents 0.1.0b10
 - An input nothing is connected to gets a typed editor in the inspector, built from the component's Parameter or port type, so a filter value, a KPI reference or a year range needs no extra widget node. The value is stored under a node's `inputs`, next to `config`, and a connection always wins over it; a typed value reaches the component as soon as it is set. A refused value says what the input needs, e.g. "Needs two numbers, like (2010, 2020)."
 - Dropping a table output on a number input, such as a KPI's value, offers to connect it through a column and an aggregation, with a preview of the number the input would get; dropping a component from the palette there offers the same. Any other refused drop says why
-- SQL, Markdown and other code fields in the inspector use a code editor with highlighting and an expand dialog; Escape then Tab leaves it, and Save waits for a pending config check. The built-in Markdown component's text uses it
+- SQL, Markdown and other code fields use a code editor with highlighting and an expand dialog; Escape then Tab leaves it, and Save waits for a pending config check. The built-in Markdown component's text uses it
+- Code fields open in a resizable code panel docked under the canvas, with the node's live result beside the editor. The text and the node's other config fields form a draft that Run or Ctrl+Enter applies as one checked, undoable edit, or "Run on change" applies after a pause in typing. Unrun drafts are kept per field, shown as "Edits not run" and asked about before leaving the dashboard; positioned check problems are marked in the code with a fix button, and the editor completes input column names. `FlowDash.open_code_panel()` opens it from code
+- The node inspector is compact: one header line with the node's name, component, status and a menu with "How was this made?", Duplicate and Remove, shorter fields, input summaries (rows, columns, tables) read from the value without running a query, and code snippets that open the code panel
+- A config field holding a spec dict, such as a Vega-Lite chart, can be edited as a form of curated settings beside its JSON, kept in sync both ways. Components declare the settings with `SpecSetting` paths in a `param.Dict`'s `metadata={"flowdash": {"widget": "spec", "settings": [...]}}`; keys no setting covers are kept and flagged, and each edit is one checked, undoable version
+- An Explore view, beside View and Edit, reads a dashboard's turns as a feed: each request with its question, steps and answer (or the list of what a manual edit changed), and a live card for each node it created with "Add to dashboard". A composer in the page asks the assistant, approvals are answered in the feed, viewers get the feed without the composer, and without an agent it shows the recorded turns
 - The KPI's Format is a dropdown of named formats with examples, or a custom format spec, and its Thresholds are rows of an "Up to" limit and a color. Both are stored as before
 - The Split tab shows the dashboard at its pane's width, as the dashboard would look at that width, and the Layout tab keeps a row of a heading and a KPI together below 1600 px. Requires panel-tiles 0.6.0b2 or later
 - Download a dashboard as JSON from the editor and drop the file onto the canvas to recreate it; `FlowDash.export_dashboard()` and `FlowDash.import_dashboard()` do the same from Python
@@ -127,6 +135,7 @@ Serving and API:
 - `FlowDashApp.editor_options` passes keyword arguments through to the embedded `FlowDash` editor, and `FlowDashApp.editor_class` substitutes a `FlowDash` subclass
 - Dashboard actions from the launcher card, navigation and dashboard bar menus all dispatch through `FlowDashApp._on_dashboard_action`, so a subclass adds an action by extending `_ADMIN_DASHBOARD_ACTIONS` or `_VIEWER_DASHBOARD_ACTIONS` and overriding that one method; editors and viewers see the actions their role allows
 - A slow dashboard load no longer overwrites a newer navigation
+- The assistant makes independent edits as parallel tool calls and looks up components in one `list_components` call (which takes a `components` list), so building a dashboard takes fewer model turns, and each dashboard tool may fail three times per run before it ends the run (`create_agent(tool_retries=...)`). Its change outlines are patched instead of redrawn after each edit and sit on the tile's visible edge
 - The `wind_energy` example is an offline showcase project with three dashboards, two pages and 20 components built on the US Wind Turbine Database. Its charts, map and tables update in place, and its port types are registered in the project `__init__.py` so its components connect before any source is placed
 
 ### Sharing and permissions
