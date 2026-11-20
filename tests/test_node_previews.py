@@ -5,6 +5,7 @@ import html
 import re
 import threading
 import time
+from functools import partial
 from html.parser import HTMLParser
 
 import numpy as np
@@ -17,7 +18,7 @@ from panel.viewable import Viewer
 from panel_flowdash import register
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.settings import DashboardSettings
-from panel_flowdash.ui import node_preview
+from panel_flowdash.ui import node_card as node_card_module, node_preview
 from panel_flowdash.ui.node_card import (
     NodeCard,
     card_height,
@@ -253,16 +254,49 @@ def _visible_text(markup: str) -> str:
     return html.unescape(re.sub(r"<[^>]+>", " ", markup))
 
 
-_TAGS = {"div", "span", "table", "tr", "th", "td", "svg", "polyline"}
+_TAGS = {
+    "button",
+    "circle",
+    "div",
+    "line",
+    "path",
+    "polyline",
+    "rect",
+    "span",
+    "svg",
+    "table",
+    "td",
+    "text",
+    "th",
+    "tr",
+}
 _ATTRIBUTES = {
-    "class",
-    "style",
-    "title",
-    "viewbox",
-    "preserveaspectratio",
     "aria-hidden",
+    "aria-label",
+    "class",
+    "cx",
+    "cy",
+    "d",
+    "data-fd-action",
+    "fill-opacity",
+    "height",
     "points",
+    "preserveaspectratio",
+    "r",
+    "rx",
+    "style",
+    "text-anchor",
+    "title",
+    "type",
     "vector-effect",
+    "viewbox",
+    "width",
+    "x",
+    "x1",
+    "x2",
+    "y",
+    "y1",
+    "y2",
 }
 
 
@@ -559,10 +593,10 @@ class TestCards:
         pane = filtered.__panel__()
         base = card_height(2, 1)
         assert filtered.base_height == base
-        assert pane.height == base - 22 + HEIGHTS["table"]
+        assert pane.height == base - 34 + HEIGHTS["table"]
         editor._component_instances[ids["slider"]].value = 2.2
         assert "2 rows, 4 columns" in pane.object
-        assert pane.height == base - 22 + HEIGHTS["table"]
+        assert pane.height == base - 34 + HEIGHTS["table"]
 
     async def test_previews_are_off_by_default(self):
         editor = FlowDash(DEMO, notifications=False)
@@ -666,18 +700,31 @@ class TestHandleTops:
         spec = editor._flow.node_types["Demo__filter"]
         tops_in, tops_out = port_tops(2, 1)
         assert [(h["id"], h["top"]) for h in spec["inputs"]] == [
-            ("rows", round(tops_in[0], 2)),
-            ("minimum", round(tops_in[1], 2)),
+            ("rows", f"var(--fd-port-in-0, {round(tops_in[0], 2)}px)"),
+            ("minimum", f"var(--fd-port-in-1, {round(tops_in[1], 2)}px)"),
         ]
-        assert [(h["id"], h["top"]) for h in spec["outputs"]] == [("kept", round(tops_out[0], 2))]
-        assert tops_in == [card_height(2, 1) / 3, card_height(2, 1) * 2 / 3]
+        assert [(h["id"], h["top"]) for h in spec["outputs"]] == [
+            ("kept", f"var(--fd-port-out-0, {round(tops_out[0], 2)}px)")
+        ]
+        assert tops_in == [59.0, 81.0]
+        assert tops_out == [103.0]
 
     async def test_card_rows_match_the_handle_tops(self):
         editor, ids = demo_editor()
-        spec = editor._flow.node_types["Demo__filter"]
-        markup = card(editor, ids["filter"]).__panel__().object
-        for handle in [*spec["inputs"], *spec["outputs"]]:
-            assert f'data-port="{handle["id"]}" style="top: {handle["top"]:.2f}px' in markup
+        filter_card = card(editor, ids["filter"])
+        handles, css_vars = filter_card.handle_layout()
+        tops_in, tops_out = port_tops(2, 1)
+        assert handles["in:rows"]["top"] == tops_in[0]
+        assert handles["in:minimum"]["top"] == tops_in[1]
+        assert handles["out:kept"]["top"] == tops_out[0]
+        assert css_vars == {
+            "--fd-port-in-0": f"{tops_in[0]:.2f}px",
+            "--fd-port-in-1": f"{tops_in[1]:.2f}px",
+            "--fd-port-out-0": f"{tops_out[0]:.2f}px",
+        }
+        markup = filter_card.__panel__().object
+        for port_id in ("rows", "minimum", "kept"):
+            assert f'data-port="{port_id}"' in markup
 
 
 class _FakeDoc:
@@ -709,6 +756,12 @@ def served(monkeypatch):
     monkeypatch.setattr(pn.state, "execute", lambda callback, schedule=None: callback())
     doc = _FakeDoc()
     monkeypatch.setattr(NodeCard, "_document", lambda self: doc)
+    # Previews are built on a worker thread; here straight away, delivered on the next tick.
+    monkeypatch.setattr(
+        node_card_module,
+        "run_off_loop",
+        lambda work, then, doc: doc.add_next_tick_callback(partial(then, work())),
+    )
     return doc
 
 

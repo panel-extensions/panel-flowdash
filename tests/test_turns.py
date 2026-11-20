@@ -210,7 +210,13 @@ def test_a_released_model_3_file_migrates_to_the_current_model():
     assert model.version == MODEL_VERSION
     assert (model.turns, model.parameters, model.groups) == ([], {}, [])
     seed = Path(__file__).parents[1] / "examples" / "wind_energy" / "_dashboards"
-    assert export_model(model) == json.loads((seed / "wind-overview.json").read_text())
+    current = json.loads((seed / "wind-overview.json").read_text())
+    migrated = export_model(model)
+    # The seed's nodes have moved since rc2, to make room for taller card previews.
+    for doc in (migrated, current):
+        for item in doc["items"]:
+            del item["x"], item["y"]
+    assert migrated == current
 
 
 def test_a_development_model_5_loads_as_4():

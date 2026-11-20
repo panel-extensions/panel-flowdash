@@ -124,6 +124,8 @@ class DashboardItem:
     config: dict[str, Any] = field(default_factory=dict)
     origin: str | None = None
     inputs: dict[str, Any] = field(default_factory=dict)
+    preview_output: str | None = None
+    collapsed: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         data = {
@@ -137,6 +139,10 @@ class DashboardItem:
             data["origin"] = self.origin
         if self.inputs:
             data["inputs"] = copy.deepcopy(self.inputs)
+        if self.preview_output is not None:
+            data["preview_output"] = self.preview_output
+        if self.collapsed:
+            data["collapsed"] = True
         return data
 
     @classmethod
@@ -147,6 +153,8 @@ class DashboardItem:
             not isinstance(inputs, dict) or not all(isinstance(k, str) for k in inputs)
         ):
             raise TypeError(f"inputs must be a mapping, not {type(inputs).__name__}")
+        preview_output = data.get("preview_output")
+        collapsed = data.get("collapsed", False)
         return cls(
             instance_id=data["instance_id"],
             component_id=data["component_id"],
@@ -155,6 +163,10 @@ class DashboardItem:
             config=data.get("config", {}),
             origin=origin if isinstance(origin, str) else None,
             inputs=copy.deepcopy(inputs or {}),
+            preview_output=(
+                preview_output if isinstance(preview_output, str) and preview_output else None
+            ),
+            collapsed=collapsed if isinstance(collapsed, bool) else False,
         )
 
 

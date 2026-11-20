@@ -66,7 +66,7 @@
       "instance_id": "kpi_size",
       "component_id": "Views/kpi",
       "x": 1560,
-      "y": 220,
+      "y": 274,
       "config": {
         "metric": "median_size"
       }
@@ -94,7 +94,7 @@
       "instance_id": "detail",
       "component_id": "Views/project_detail",
       "x": 1560,
-      "y": 480,
+      "y": 548,
       "config": {}
     },
     {

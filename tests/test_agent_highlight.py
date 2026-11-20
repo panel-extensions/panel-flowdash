@@ -66,7 +66,8 @@ async def test_an_agent_edit_outlines_the_new_node_until_the_next_run(monkeypatc
     assert session.highlighter.marked == {}
     assert TILE_CLASSES["add"] not in tile.css_classes
     node = next(n for n in app._editor._flow.nodes if n["id"] == instance_id)
-    assert "style" not in node
+    # Only the card's handle positions are left.
+    assert all(key.startswith("--fd-port-") for key in node.get("style") or {})
 
 
 async def test_leaving_edit_mode_clears_the_outlines(monkeypatch):
@@ -94,7 +95,8 @@ async def test_leaving_edit_mode_clears_the_outlines(monkeypatch):
     assert session.highlighter.marked == {}
     assert TILE_CLASSES["add"] not in tile.css_classes
     node = next(n for n in app._editor._flow.nodes if n["id"] == instance_id)
-    assert "style" not in node
+    # Only the card's handle positions are left.
+    assert all(key.startswith("--fd-port-") for key in node.get("style") or {})
     app._editor._rebuild_tile_grid()
     tiles = app._editor._inspect_tiles.values()
     assert not any(set(TILE_CLASSES.values()) & set(t.css_classes) for t in tiles)
@@ -127,7 +129,8 @@ async def test_discarding_the_changes_clears_the_outlines(monkeypatch):
     assert editor.editable
     assert session.highlighter.marked == {}
     node = next(n for n in editor._flow.nodes if n["id"] == instance_id)
-    assert "style" not in node
+    # Only the card's handle positions are left.
+    assert all(key.startswith("--fd-port-") for key in node.get("style") or {})
     editor._rebuild_tile_grid()
     tile = editor._inspect_tiles[instance_id]
     assert not set(TILE_CLASSES.values()) & set(tile.css_classes)

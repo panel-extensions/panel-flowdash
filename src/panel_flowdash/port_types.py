@@ -13,6 +13,7 @@ Parameter still validates every value it receives at runtime.
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from collections.abc import Callable, Iterable
 
@@ -25,6 +26,29 @@ _ALIASES: dict[str, str] = {}
 _SUPERTYPES: dict[str, set[str]] = {}
 # Canonical name -> what lists the columns of a value of that type.
 _COLUMN_READERS: dict[str, Callable] = {}
+# Canonical name -> registered handle color (CSS color string).
+_COLORS: dict[str, str] = {}
+# Canonical name -> built-in dark-theme handle color, used unless overridden.
+_BUILTIN_LIGHT_COLORS: dict[str, str] = {}
+_BUILTIN_DARK_COLORS: dict[str, str] = {}
+
+_KNOWN_CUSTOM_COLORS: dict[str, tuple[str, str]] = {
+    "lumen.source": ("#6D4C41", "#BCAAA4"),
+    "lumen.pipeline": ("#0072B5", "#5AB4EE"),
+}
+
+_FALLBACK_PALETTE: tuple[tuple[str, str], ...] = (
+    ("#0072B5", "#5AB4EE"),
+    ("#2A9D8F", "#3FB8A9"),
+    ("#8E24AA", "#CE93D8"),
+    ("#D97706", "#F5B041"),
+    ("#0284C7", "#38BDF8"),
+    ("#4F46E5", "#818CF8"),
+    ("#DB2777", "#F472B6"),
+    ("#059669", "#34D399"),
+    ("#6D4C41", "#BCAAA4"),
+    ("#7C3AED", "#A78BFA"),
+)
 
 
 def _key(name: str) -> str:
@@ -37,6 +61,7 @@ def register_port_type(
     aliases: Iterable[str] = (),
     subtype_of: Iterable[str] = (),
     columns: Callable | None = None,
+    color: str | None = None,
 ) -> str:
     """Register a port type, its alternative spellings and the types it can feed.
 
@@ -60,6 +85,9 @@ def register_port_type(
         ``{name: type}`` dict. Config fields that offer the columns of an
         input of this type use it, see :class:`~panel_flowdash.Choices`.
         Subtypes inherit it.
+    color
+        Optional CSS color used for canvas handles of this port type.
+        Subtypes inherit it unless they register their own.
 
     Returns
     -------
@@ -91,7 +119,33 @@ def register_port_type(
                 supers.add(parent_key)
         if columns is not None:
             _COLUMN_READERS[canonical] = columns
+        if color is not None:
+            _COLORS[canonical] = color
     return canonical
+
+
+def port_type_color(name: str | None, *, dark: bool = False) -> str:
+    """Return the handle color for *name*, using dark-mode adjustments when *dark* is True."""
+    canonical = normalize_port_type(name)
+    if canonical is None:
+        canonical = ANY
+    with _LOCK:
+        registered = _COLORS.get(canonical)
+        if registered is not None:
+            if dark and registered == _BUILTIN_LIGHT_COLORS.get(canonical):
+                return _BUILTIN_DARK_COLORS[canonical]
+            return registered
+        for parent in sorted(_supertypes(canonical) - {canonical}):
+            parent_color = _COLORS.get(parent)
+            if parent_color is not None:
+                if dark and parent_color == _BUILTIN_LIGHT_COLORS.get(parent):
+                    return _BUILTIN_DARK_COLORS[parent]
+                return parent_color
+    if canonical in _KNOWN_CUSTOM_COLORS:
+        return _KNOWN_CUSTOM_COLORS[canonical][1 if dark else 0]
+    digest = hashlib.blake2b(canonical.encode("utf-8"), digest_size=4).digest()
+    pair = _FALLBACK_PALETTE[int.from_bytes(digest, "big") % len(_FALLBACK_PALETTE)]
+    return pair[1 if dark else 0]
 
 
 def column_reader(name: str | None) -> Callable | None:
@@ -144,8 +198,21 @@ def port_types_compatible(source: str | None, target: str | None) -> bool:
     return source_type == target_type or target_type in _supertypes(source_type)
 
 
+def _register_builtin(
+    name: str,
+    *,
+    aliases: Iterable[str] = (),
+    subtype_of: Iterable[str] = (),
+    light: str,
+    dark: str,
+):
+    canonical = register_port_type(name, aliases=aliases, subtype_of=subtype_of, color=light)
+    _BUILTIN_LIGHT_COLORS[canonical] = light
+    _BUILTIN_DARK_COLORS[canonical] = dark
+
+
 def _register_builtin_types():
-    register_port_type(
+    _register_builtin(
         ANY,
         aliases=[
             "object",
@@ -158,11 +225,13 @@ def _register_builtin_types():
             "Composite",
             "Dynamic",
         ],
+        light="#8A8F98",
+        dark="#9AA0A8",
     )
     # Parameters whose values are strings, lists or tuples with extra
     # constraints are aliases rather than subtypes, so that a plain output can
     # feed them; their Parameter checks the constraint on each value.
-    register_port_type(
+    _register_builtin(
         "str",
         aliases=[
             "String",
@@ -173,17 +242,37 @@ def _register_builtin_types():
             "Foldername",
             "FileSelector",
         ],
+        light="#0284C7",
+        dark="#38BDF8",
     )
-    register_port_type("bytes", aliases=["Bytes", "builtins.bytes"])
-    register_port_type("number", aliases=["Number", "float", "builtins.float", "Magnitude"])
-    register_port_type("int", aliases=["Integer", "builtins.int"], subtype_of=["number"])
+    _register_builtin(
+        "bytes", aliases=["Bytes", "builtins.bytes"], light="#64748B", dark="#94A3B8"
+    )
+    _register_builtin(
+        "number",
+        aliases=["Number", "float", "builtins.float", "Magnitude"],
+        light="#4F46E5",
+        dark="#818CF8",
+    )
+    _register_builtin(
+        "int",
+        aliases=["Integer", "builtins.int"],
+        subtype_of=["number"],
+        light="#4F46E5",
+        dark="#818CF8",
+    )
     # bool is an int in Python, but param.Integer and param.Number reject it, so
     # a Boolean output does not feed numeric inputs.
-    register_port_type("bool", aliases=["Boolean", "builtins.bool", "Event"])
-    register_port_type(
-        "list", aliases=["List", "builtins.list", "HookList", "ListSelector", "MultiFileSelector"]
+    _register_builtin(
+        "bool", aliases=["Boolean", "builtins.bool", "Event"], light="#DB2777", dark="#F472B6"
     )
-    register_port_type(
+    _register_builtin(
+        "list",
+        aliases=["List", "builtins.list", "HookList", "ListSelector", "MultiFileSelector"],
+        light="#8E24AA",
+        dark="#CE93D8",
+    )
+    _register_builtin(
         "tuple",
         aliases=[
             "Tuple",
@@ -194,21 +283,37 @@ def _register_builtin_types():
             "DateRange",
             "CalendarDateRange",
         ],
+        light="#7C3AED",
+        dark="#A78BFA",
     )
-    register_port_type("dict", aliases=["Dict", "builtins.dict"])
+    _register_builtin("dict", aliases=["Dict", "builtins.dict"], light="#D97706", dark="#F5B041")
     # Names match case-insensitively, so param's Date and Python's date are one
     # type; param.CalendarDate refusing datetimes is left to the runtime check.
-    register_port_type(
-        "date", aliases=["CalendarDate", "datetime", "datetime.date", "datetime.datetime"]
+    _register_builtin(
+        "date",
+        aliases=["CalendarDate", "datetime", "datetime.date", "datetime.datetime"],
+        light="#B45309",
+        dark="#FBBF24",
     )
-    register_port_type("callable", aliases=["Callable", "Action"])
-    register_port_type(
-        "DataFrame", aliases=["pd.DataFrame", "pandas.DataFrame", "pandas.core.frame.DataFrame"]
+    _register_builtin("callable", aliases=["Callable", "Action"], light="#059669", dark="#34D399")
+    _register_builtin(
+        "DataFrame",
+        aliases=["pd.DataFrame", "pandas.DataFrame", "pandas.core.frame.DataFrame"],
+        light="#2A9D8F",
+        dark="#3FB8A9",
     )
-    register_port_type(
-        "Series", aliases=["pd.Series", "pandas.Series", "pandas.core.series.Series"]
+    _register_builtin(
+        "Series",
+        aliases=["pd.Series", "pandas.Series", "pandas.core.series.Series"],
+        light="#0D9488",
+        dark="#2DD4BF",
     )
-    register_port_type("Array", aliases=["ndarray", "np.ndarray", "numpy.ndarray"])
+    _register_builtin(
+        "Array",
+        aliases=["ndarray", "np.ndarray", "numpy.ndarray"],
+        light="#0D9488",
+        dark="#2DD4BF",
+    )
 
 
 _register_builtin_types()

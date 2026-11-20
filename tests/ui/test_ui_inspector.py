@@ -56,7 +56,8 @@ def test_nodes_are_compact_cards_with_labels_beside_their_handles(page):
     node = _node(page, table)
     expect(node).to_contain_text("Table")
     expect(node).to_contain_text("Rows")
-    expect(node).to_contain_text("DataFrame")
+    # Type text is no longer printed inline on port rows; it is shown on handle color and hover tooltips.
+    expect(node).not_to_contain_text("DataFrame")
     expect(node).to_contain_text("Showing 3 rows, 2 columns")
     # The live view is only in the tile grid.
     expect(node).not_to_contain_text("Turbines")

@@ -14,8 +14,8 @@ if t.TYPE_CHECKING:
 #: CSS classes set on a tile the assistant added or changed.
 TILE_CLASSES = {"add": "fd-agent-added", "change": "fd-agent-changed"}
 
-# Same colours as the tile outlines; a node may already carry the failure outline,
-# which the next failure update restores.
+# Same colours as the tile outlines. They are drawn over a failure outline,
+# which shows again once they are removed.
 _NODE_STYLES = {
     "add": {
         "borderColor": "var(--mui-palette-success-main, #2e7d32)",
@@ -130,16 +130,17 @@ class ChangeHighlighter:
         changed = False
         for instance_id in [iid for iid in self.marked if iid not in wanted]:
             del self.marked[instance_id]
-            editor._patch_canvas_props("node", instance_id, {"style": None})
+            editor._set_node_outline(instance_id, None)
             self._set_tile_class(instance_id, None)
             changed = True
         for instance_id, kind in wanted.items():
             # A node rebuilt since it was marked, e.g. by a reload, has lost its style.
             style = _NODE_STYLES[kind]
-            if self.marked.get(instance_id) == kind and styles.get(instance_id) == style:
+            shown = styles.get(instance_id) or {}
+            if self.marked.get(instance_id) == kind and style.items() <= shown.items():
                 continue
             self.marked[instance_id] = kind
-            editor._patch_canvas_props("node", instance_id, {"style": style})
+            editor._set_node_outline(instance_id, style)
             self._set_tile_class(instance_id, kind)
             changed = True
         if changed:
@@ -154,7 +155,7 @@ class ChangeHighlighter:
         editor = self._editor
         if editor is not None:
             for instance_id in self.marked:
-                editor._patch_canvas_props("node", instance_id, {"style": None})
+                editor._set_node_outline(instance_id, None)
                 self._set_tile_class(instance_id, None)
             self._resync_canvas(editor)
         self.marked = {}

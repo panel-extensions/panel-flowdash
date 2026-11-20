@@ -28,10 +28,11 @@ _LAYOUT = """(edges) => {
   const offsets = [];
   for (const node of Object.values(nodes)) {
     const labels = {};
-    for (const port of all(node, '.fd-port')) {
+    for (const port of all(node, '.fd-port[data-port]')) {
       labels[(port.classList.contains('fd-in') ? 'L:' : 'R:') + port.dataset.port] = centre(port)[1];
     }
     for (const handle of node.querySelectorAll('.react-flow__handle')) {
+      if (handle.classList.contains('fd-handle-hidden')) continue;
       const key = (handle.classList.contains('react-flow__handle-left') ? 'L:' : 'R:') + handle.dataset.handleid;
       offsets.push([node.dataset.id, key, centre(handle)[1] - labels[key]]);
     }

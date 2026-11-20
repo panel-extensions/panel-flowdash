@@ -46,6 +46,7 @@ from panel_flowdash.parameters import (
 )
 from panel_flowdash.port_types import (
     normalize_port_type,
+    port_type_color,
     port_types_compatible,
     register_port_type,
 )
@@ -129,6 +130,7 @@ __all__: list[str] = [
     "normalize_components",
     "normalize_port_type",
     "panel_app",
+    "port_type_color",
     "port_types_compatible",
     "register",
     "register_port_type",

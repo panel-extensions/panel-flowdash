@@ -53,7 +53,7 @@
       "instance_id": "kpi_checked",
       "component_id": "Views/kpi",
       "x": 1560,
-      "y": 240,
+      "y": 274,
       "config": {
         "metric": "turbines",
         "label": "Turbines passing the gate"
@@ -63,7 +63,7 @@
       "instance_id": "timeline",
       "component_id": "Views/capacity_timeline",
       "x": 1560,
-      "y": 480,
+      "y": 548,
       "config": {}
     },
     {
