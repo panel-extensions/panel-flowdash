@@ -152,6 +152,7 @@ from panel_flowdash.ui.node_card import (
     port_tops,
 )
 from panel_flowdash.ui.node_preview import (
+    CHART_COLOR,
     PREVIEW_KIND_KEY,
     _is_table,
     run_off_loop,
@@ -420,9 +421,11 @@ _FLOW_STYLESHEET = """\
   font-size: 13px;
   min-width: 140px;
 }
+/* Selection is an offset dashed ring, so it reads apart from the solid agent and failure
+   outlines that sit on the border and can show at the same time. */
 .react-flow__node.selected {
-  border-color: var(--mui-palette-primary-main, var(--panel-primary-color));
-  box-shadow: 0 0 0 2px var(--mui-palette-primary-main, var(--panel-primary-color));
+  outline: 2px dashed var(--mui-palette-primary-main, var(--panel-primary-color));
+  outline-offset: 3px;
 }
 /* Nodes show a compact card (see ui/node_card.py) that fills the node, so the
    card's port labels line up with the handles ReactFlow spreads over its height. */
@@ -538,6 +541,27 @@ _TRANSFORMED_EDGE_STYLE = {
 }
 # A failed edge or node is red, over any transform styling, so a failure is the first thing seen.
 _FAILED_EDGE_STYLE = {"stroke": "var(--panel-danger-color, #d32f2f)", "strokeWidth": 2}
+# A narrow window still gets a pop-out wide enough to read a chart or a few columns.
+_POPOUT_MIN_WIDTH = 560
+
+# Tabulator's sort arrow sits over the title unless the header leaves room for it.
+_POPOUT_TABLE_CSS = """
+.tabulator .tabulator-header .tabulator-col .tabulator-col-content .tabulator-col-title-holder {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.tabulator .tabulator-header .tabulator-col .tabulator-col-content .tabulator-col-sorter {
+  position: static !important;
+  margin-left: auto;
+}
+.tabulator .tabulator-tableholder {
+  overflow: auto !important;
+  scrollbar-width: thin;
+  scrollbar-gutter: stable;
+}
+"""
+
 _FAILED_NODE_STYLE = {
     "borderColor": "var(--panel-danger-color, #d32f2f)",
     "boxShadow": "0 0 0 1px var(--panel-danger-color, #d32f2f)",
@@ -819,6 +843,13 @@ def _popout_chart(payload: t.Mapping) -> Viewable:
             spec["data"] = {"values": data.head(500).to_dict(orient="records")}
         elif isinstance(data, list):
             spec["data"] = {"values": data[:500]}
+        # Without these Vega draws at its 200px step default, not across the dialog.
+        spec.setdefault("width", "container")
+        spec.setdefault("height", 300)
+        spec.setdefault("autosize", {"type": "fit", "contains": "padding"})
+        config = spec.setdefault("config", {})
+        if isinstance(config, dict):
+            config.setdefault("mark", {}).setdefault("color", CHART_COLOR)
         return pn.pane.Vega(spec, sizing_mode="stretch_width", height=340, margin=0)
     if payload.get("svg"):
         return pn.pane.HTML(
@@ -2287,7 +2318,12 @@ class FlowDash(Viewer):
             self._open_card_popout(node_id)
 
     def _set_card_view(self, instance_id: str, **changes: t.Any):
-        """Collapse or expand a card or pick the output it previews, as one undoable edit."""
+        """Collapse or expand a card, or pick the output it previews as one undoable edit.
+
+        Collapsing only changes how the canvas looks, like panning, so it is
+        neither an edit in the history nor an unsaved change; it is saved
+        with the dashboard's next save.
+        """
         card = self._find_node_card(instance_id)
         if card is None:
             return
@@ -2298,21 +2334,15 @@ class FlowDash(Viewer):
             card.param.update(**changes)
             if (status_bar := getattr(self, "_status_bar", None)) is not None:
                 status_bar.sync_collapse_toggle()
-        if self.read_only:
+        if self.read_only or "preview_output" not in changes:
             return
         name = self._node_name(instance_id)
-        if "collapsed" in changes:
-            verb = "Collapsed" if changes["collapsed"] else "Expanded"
-            self._record_edit(
-                f"{verb} {name}", op="collapse", args={"node": name, "collapsed": card.collapsed}
-            )
-        else:
-            output = changes["preview_output"]
-            self._record_edit(
-                f"Previewed {name}.{output}",
-                op="preview_output",
-                args={"node": name, "output": output},
-            )
+        output = changes["preview_output"]
+        self._record_edit(
+            f"Previewed {name}.{output}",
+            op="preview_output",
+            args={"node": name, "output": output},
+        )
 
     def _sync_card_bridge(self):
         bridge = getattr(self, "_card_bridge", None)
@@ -2323,19 +2353,10 @@ class FlowDash(Viewer):
             bridge.handles = handles
 
     def _collapse_all_nodes(self, collapsed: bool):
-        """Collapse or expand every card on the canvas, as one undoable edit."""
-        cards = {iid: c for iid, c in self._node_cards().items() if c.collapsed != collapsed}
-        if not cards:
-            return
+        """Collapse or expand every card on the canvas, which like collapsing one is no edit."""
         with pn.io.hold():
-            for card in cards.values():
+            for card in self._node_cards().values():
                 card.collapsed = collapsed
-        if not self.read_only:
-            self._record_edit(
-                "Collapsed all cards" if collapsed else "Expanded all cards",
-                op="collapse_all",
-                args={"collapsed": collapsed},
-            )
 
     def _patch_canvas_props(self, kind: str, item_id: str, patch: dict[str, t.Any]):
         """Patch a node or edge, also while it is still waiting in a batched canvas update."""
@@ -5493,6 +5514,7 @@ class FlowDash(Viewer):
             self._node_name(instance_id),
             pmui.LinearProgress(variant="indeterminate", sizing_mode="stretch_width"),
             width="lg",
+            full_width=True,
         )
 
         def deliver(result):
@@ -5517,12 +5539,14 @@ class FlowDash(Viewer):
             )
             body = pn.widgets.Tabulator(
                 head,
+                layout="fit_data_table",
+                stylesheets=[_POPOUT_TABLE_CSS],
                 disabled=True,
                 selectable=False,
                 show_index=False,
                 formatters=_plain_integer_formatters(head),
                 sizing_mode="stretch_width",
-                height=min(440, 40 + 32 * max(len(head), 1)),
+                height=min(440, 48 + 36 * max(len(head), 1)),
                 margin=0,
             )
         elif isinstance(value, t.Mapping) and value.get(PREVIEW_KIND_KEY) == "chart":
@@ -5546,8 +5570,15 @@ class FlowDash(Viewer):
         )
         open_dialog(
             title,
-            pn.Column(*([header] if caption else []), body, sizing_mode="stretch_width", margin=0),
+            pn.Column(
+                *([header] if caption else []),
+                body,
+                sizing_mode="stretch_width",
+                min_width=_POPOUT_MIN_WIDTH,
+                margin=0,
+            ),
             width="lg",
+            full_width=True,
         )
 
     def _place(
@@ -6885,15 +6916,12 @@ class FlowDash(Viewer):
                 if iid in placeholders:
                     tile = next(i for i in self._tile_items if i["instance_id"] == iid)
                     tile["preview_output"] = after[iid].preview_output
-                    tile["collapsed"] = after[iid].collapsed
                 else:
                     self._set_config(iid, after[iid].config)
                     self._set_inputs(iid, after[iid].inputs)
+                    # Undo leaves cards collapsed or expanded as they are, since that is no edit.
                     if (card := self._find_node_card(iid)) is not None:
-                        card.param.update(
-                            preview_output=after[iid].preview_output,
-                            collapsed=after[iid].collapsed,
-                        )
+                        card.preview_output = after[iid].preview_output
             fresh = set(replaced) | set(added)
             for key, edge in new_edges.items():
                 old = old_edges.get(key)

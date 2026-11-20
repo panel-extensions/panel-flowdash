@@ -132,9 +132,9 @@ class TestNodeCard:
         assert card.inputs[0]["type"] == "DataFrame"
         assert card.inputs[0]["required"] is True
         assert card.inputs[0]["missing"] is True
-        # Names only on rows; type is in tooltip and handle color, missing required is a handle ring.
+        # Names only on rows; type is in the handle's tooltip and colour, missing required is a ring.
         assert 'data-port="rows"' in markup
-        assert "DataFrame" in markup  # inside tooltip title attribute
+        assert "DataFrame" in card.handle_layout()[0]["in:rows"]["tooltip"]
         assert 'class="fd-required"' not in markup
         assert 'class="fd-type"' not in markup
         handles, _ = card.handle_layout()

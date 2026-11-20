@@ -338,10 +338,11 @@ class TestBuilders:
         assert "1.235e+06" in preview.html and "12,345" in preview.html
         assert 'class="fd-num"' in preview.html
 
-    async def test_table_with_fewer_rows_keeps_its_height(self):
+    async def test_table_with_fewer_rows_shrinks_to_them(self):
         short = build_preview(pd.DataFrame({"a": [1]}), "rows")
         empty = build_preview(pd.DataFrame({"a": []}), "rows")
-        assert short.height == empty.height == HEIGHTS["table"]
+        full = build_preview(pd.DataFrame({"a": range(10)}), "rows")
+        assert short.height == empty.height < full.height == HEIGHTS["table"]
 
     @pytest.mark.parametrize(
         "values",
@@ -597,6 +598,22 @@ class TestCards:
         editor._component_instances[ids["slider"]].value = 2.2
         assert "2 rows, 4 columns" in pane.object
         assert pane.height == base - 34 + HEIGHTS["table"]
+
+    async def test_short_table_card_fits_its_rows_then_only_grows(self):
+        editor, ids = demo_editor()
+        editor._show_node_previews(False)
+        editor._component_instances[ids["slider"]].value = 2.9
+        editor._show_node_previews(True)
+        filtered = card(editor, ids["filter"])
+        pane = filtered.__panel__()
+        short = pane.height
+        assert short < card_height(2, 1) - 34 + HEIGHTS["table"]
+        editor._component_instances[ids["slider"]].value = 2.2
+        grown = pane.height
+        assert grown > short
+        editor._component_instances[ids["slider"]].value = 2.9
+        assert "1 row, 4 columns" in pane.object
+        assert pane.height == grown
 
     async def test_previews_are_off_by_default(self):
         editor = FlowDash(DEMO, notifications=False)

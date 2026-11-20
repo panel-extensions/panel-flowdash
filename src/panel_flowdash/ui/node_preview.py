@@ -41,6 +41,9 @@ logger = logging.getLogger(__name__)
 PREVIEW_HOOK = "__flowdash_preview__"
 PREVIEW_KIND_KEY = "__flowdash_preview_kind__"
 
+#: The colour of chart marks, in the card thumbnails and the pop-out alike.
+CHART_COLOR = "#2a9d8f"
+
 MAX_ROWS = 4
 MAX_COLUMNS = 3
 MAX_CELL_CHARS = 24
@@ -366,11 +369,18 @@ class Preview:
 
     kind: str
     html: str
+    size: int | None = None
 
     @property
     def height(self) -> int:
-        """The height the card reserves for this kind of preview."""
-        return HEIGHTS[self.kind]
+        """The height the card reserves for this preview."""
+        return self.size if self.size is not None else HEIGHTS[self.kind]
+
+    def with_height(self, height: int) -> Preview:
+        """Return this preview drawn in a block *height* px tall."""
+        old = f'class="fd-preview fd-preview-{self.kind}" style="height: {self.height}px"'
+        new = f'class="fd-preview fd-preview-{self.kind}" style="height: {height}px"'
+        return Preview(self.kind, self.html.replace(old, new, 1), height)
 
 
 def _esc(text: str) -> str:
@@ -456,11 +466,12 @@ def _header(left: str, right: str = "", *, popout: bool = True) -> str:
     return f'<div class="fd-pvh">{meta}<span class="fd-pv-grow"></span>{extra}{btn}</div>'
 
 
-def _block(kind: str, header: str, body: str) -> Preview:
+def _block(kind: str, header: str, body: str, height: int | None = None) -> Preview:
     return Preview(
         kind,
-        f'<div class="fd-preview fd-preview-{kind}" style="height: {HEIGHTS[kind]}px">'
+        f'<div class="fd-preview fd-preview-{kind}" style="height: {height or HEIGHTS[kind]}px">'
         f'{header}<div class="fd-pvb">{body}</div></div>',
+        height,
     )
 
 
@@ -584,8 +595,13 @@ def table_preview(value: t.Any, caption: str) -> Preview:
         if (left_foot or right_foot)
         else ""
     )
-    body = f'<div class="fd-pv-table-wrap"><table class="fd-pv-table">{"".join(rows)}</table>{foot}</div>'
-    return _block("table", _header(caption), body)
+    # Short tables shrink the card instead of leaving an empty block under their rows.
+    wrap = 22 + max(len(cells), 1) * 19 + (22 if foot else 0)
+    body = (
+        f'<div class="fd-pv-table-wrap" style="height: {wrap}px">'
+        f'<table class="fd-pv-table">{"".join(rows)}</table>{foot}</div>'
+    )
+    return _block("table", _header(caption), body, _PV_CHROME + wrap)
 
 
 def kpi_preview(
@@ -1017,7 +1033,8 @@ def render_vega_lite_svg(
         return base_y - ((v - y_min) / y_span) * plot_h
 
     if mark == "bar":
-        shown = list(zip(x_vals, y_vals, strict=True))[:16]
+        # Every bar is drawn, sampled evenly once they would be thinner than 2px.
+        shown = _sample(list(zip(x_vals, y_vals, strict=True)), max(1, int(plot_w // 2)))
         m = len(shown)
         bw = plot_w / m
         parts = [f'<svg viewBox="0 0 {width} {height}" aria-hidden="true">']

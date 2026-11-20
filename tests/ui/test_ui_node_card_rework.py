@@ -41,6 +41,10 @@ _ALIGN_VISIBLE = """() => {
 }"""
 
 
+def _selected(editor):
+    return [n["id"] for n in editor._flow.nodes if n.get("selected")]
+
+
 def _node(page, instance_id):
     return page.locator(f".react-flow__node[data-id='{instance_id}']")
 
@@ -134,17 +138,23 @@ def test_stacked_card_interactions_handles_and_popout(page, scheme, monkeypatch,
     wait_until(lambda: _card(editor, sql).preview_output == "data", page, timeout=8000)
     expect(sql_node.locator("table")).to_have_count(1)
 
-    # Collapse a single card via its header toggle button
+    # Collapsing a card is view state: it neither selects the card nor marks the dashboard changed
+    editor.dirty = False
+    sql_node.click(position={"x": 60, "y": 20})
+    wait_until(lambda: _selected(editor) == [sql], page, timeout=8000)
     kpi_node.locator('[data-fd-action="toggle_collapse"]').click()
     wait_until(lambda: _card(editor, kpi).collapsed, page, timeout=8000)
     wait_until(lambda: kpi_node.bounding_box()["height"] <= 48, page, timeout=8000)
+    assert _selected(editor) == [sql]
+    assert not editor.dirty
 
-    # Collapse all toggle in status bar
-    collapse_all = page.locator("[aria-label='Collapse all cards']")
-    collapse_all.click()
+    # Collapse all toggle in status bar, whose label follows what it will do
+    page.locator("[aria-label='Collapse all cards']").click()
     wait_until(
         lambda: _card(editor, src).collapsed and _card(editor, sql).collapsed, page, timeout=8000
     )
+    collapse_all = page.locator("[aria-label='Expand all cards']")
+    expect(collapse_all).to_have_count(1)
     collapse_all.click()
     wait_until(
         lambda: not _card(editor, src).collapsed and not _card(editor, sql).collapsed,
@@ -159,6 +169,20 @@ def test_stacked_card_interactions_handles_and_popout(page, scheme, monkeypatch,
     expect(dialog).to_contain_text("turbines_by_year.data")
     expect(dialog.locator(".tabulator-row")).to_have_count(5)
     expect(dialog).to_contain_text("2014")
+    paper = dialog.locator(".MuiDialog-paper")
+    assert paper.bounding_box()["width"] >= 900
+    holder = dialog.locator(".tabulator-tableholder")
+    assert holder.evaluate("el => getComputedStyle(el).overflowY") == "auto"
+    sorter = dialog.locator(".tabulator-col-sorter").first
+    assert sorter.evaluate("el => getComputedStyle(el).position") == "static"
+    page.keyboard.press("Escape")
+    expect(dialog).to_have_count(0)
+
+    # The chart pop-out spans the dialog instead of Vega's default width
+    vega_node.locator('[data-fd-action="popout"]').click()
+    chart = dialog.locator("canvas, svg.marks").first
+    expect(chart).to_be_visible(timeout=15000)
+    wait_until(lambda: chart.bounding_box()["width"] >= 800, page, timeout=8000)
     page.keyboard.press("Escape")
     expect(dialog).to_have_count(0)
     assert threads and not any(name.startswith("flowdash-preview") for name in threads)
@@ -271,9 +295,3 @@ def test_edges_stay_on_the_handles_after_undo(page):
     _assert_edges_attached(page, editor)
 
     _collapse_and_expand(page, editor, "turbines_by_year")
-    _node(page, "turbines_by_year").locator('[data-fd-action="toggle_collapse"]').click()
-    wait_until(lambda: _card(editor, "turbines_by_year").collapsed, page, timeout=8000)
-    _assert_edges_attached(page, editor)
-    assert editor.undo()
-    wait_until(lambda: not _card(editor, "turbines_by_year").collapsed, page, timeout=8000)
-    _assert_edges_attached(page, editor)

@@ -24,6 +24,7 @@ from panel.viewable import Viewer
 
 from panel_flowdash.port_types import port_type_color, port_types_compatible
 from panel_flowdash.ui.node_preview import (
+    CHART_COLOR,
     PREVIEW_CSS,
     PREVIEW_HOOK,
     Coalescer,
@@ -85,7 +86,9 @@ _CARD_CSS = (
   --fd-hover: var(--mui-palette-action-selected, rgba(127, 127, 127, 0.14));
   --fd-chip-bg: var(--mui-palette-action-hover, rgba(127, 127, 127, 0.12));
   --fd-card-bg: var(--mui-palette-background-paper, var(--panel-background-color, #ffffff));
-  --fd-viz-1: #2a9d8f;
+  --fd-viz-1: """
+    + CHART_COLOR
+    + """;
   --fd-viz-1-soft: rgba(42, 157, 143, 0.18);
 }
 .fd-card {
@@ -420,6 +423,8 @@ class CardBridge(JSComponent):
       return true;
     }
 
+    const VIEW_ONLY = new Set(["toggle_collapse"]);
+
     export function render({ el, model }) {
       el.style.display = "none";
       let rafId = null;
@@ -457,7 +462,7 @@ class CardBridge(JSComponent):
       pollInitial();
       model.on("handles", scheduleSync);
 
-      const onClick = (ev) => {
+      const locate = (ev) => {
         const path = ev.composedPath ? ev.composedPath() : [ev.target];
         let actionEl = null;
         let flowNode = null;
@@ -474,17 +479,32 @@ class CardBridge(JSComponent):
             inCanvas = true;
           }
         }
-        // The click goes on to React Flow too, so acting on a card also selects it.
-        if (!actionEl || !flowNode || !inCanvas) return;
+        return actionEl && flowNode && inCanvas ? { actionEl, flowNode } : null;
+      };
+
+      // Collapsing is view state, so React Flow must not see the press and select or drag the card.
+      const isViewOnly = (hit) => hit && VIEW_ONLY.has(hit.actionEl.dataset.fdAction);
+
+      const onPress = (ev) => {
+        if (isViewOnly(locate(ev))) ev.stopPropagation();
+      };
+
+      const onClick = (ev) => {
+        const hit = locate(ev);
+        if (!hit) return;
+        if (isViewOnly(hit)) ev.stopPropagation();
         model.send_msg({
-          node_id: flowNode.dataset.id || "",
-          action: actionEl.dataset.fdAction || "",
-          port: actionEl.dataset.fdPort || "",
+          node_id: hit.flowNode.dataset.id || "",
+          action: hit.actionEl.dataset.fdAction || "",
+          port: hit.actionEl.dataset.fdPort || "",
         });
       };
 
+      const presses = ["pointerdown", "mousedown", "dblclick"];
+      presses.forEach((type) => window.addEventListener(type, onPress, true));
       window.addEventListener("click", onClick, true);
       return () => {
+        presses.forEach((type) => window.removeEventListener(type, onPress, true));
         window.removeEventListener("click", onClick, true);
         if (observer) observer.disconnect();
         if (rafId !== null) cancelAnimationFrame(rafId);
@@ -754,11 +774,12 @@ class NodeCard(Viewer):
         rows: list[str] = []
         for port in visible_in:
             name = html.escape(port["label"])
-            tooltip = html.escape(_port_tooltip(port, is_input=True), quote=True)
+            # The card ignores the pointer outside its actions, so a tooltip here would never show;
+            # the port's handle carries it instead.
             opt_tag = '<span class="fd-popt">optional</span>' if not port.get("required") else ""
             rows.append(
-                f'<div class="fd-port fd-in" data-port="{html.escape(port["name"], quote=True)}" '
-                f'title="{tooltip}"><span class="fd-name">{name}</span>{opt_tag}</div>'
+                f'<div class="fd-port fd-in" data-port="{html.escape(port["name"], quote=True)}">'
+                f'<span class="fd-name">{name}</span>{opt_tag}</div>'
             )
         if has_fold_row:
             if folded_in:
@@ -799,8 +820,8 @@ class NodeCard(Viewer):
                 )
             else:
                 rows.append(
-                    f'<div class="fd-port fd-out" data-port="{html.escape(port["name"], quote=True)}" '
-                    f'title="{tooltip}"><span class="fd-name">{name}</span></div>'
+                    f'<div class="fd-port fd-out" data-port="{html.escape(port["name"], quote=True)}">'
+                    f'<span class="fd-name">{name}</span></div>'
                 )
         return f'<div class="fd-ports">{"".join(rows)}</div>'
 
@@ -835,15 +856,29 @@ class NodeCard(Viewer):
             if wanted and doc is not None:
                 run_off_loop(self._build_preview, partial(self._show_preview, generation), doc)
                 return
-            self._preview = self._build_preview() if wanted else None
+            self._preview = self._settle(self._build_preview()) if wanted else None
             self._render_now()
 
     def _show_preview(self, generation: int, preview: Preview | None):
         with self._render_lock:
             if generation != self._generation or not self._wants_preview():
                 return
-            self._preview = preview
+            self._preview = self._settle(preview)
             self._render_now()
+
+    def _settle(self, preview: Preview | None) -> Preview | None:
+        """Keep the card's height while its value stays the same kind, growing but never shrinking.
+
+        Resizing a card moves its edges and can push its neighbours, so a
+        filter that keeps changing a short table's row count must not resize it
+        each time.
+        """
+        old = self._preview
+        if preview is None or old is None or old.kind != preview.kind:
+            return preview
+        if preview.height >= old.height:
+            return preview
+        return preview.with_height(old.height)
 
     def _render_now(self):
         preview = self._preview
