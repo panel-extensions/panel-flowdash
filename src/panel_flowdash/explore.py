@@ -281,8 +281,10 @@ class ExploreFeed(Viewer):
         key = (self.runner is not None and not self.editor.read_only, self.runner)
         if self._chat is None or self._chat_key != key:
             self._chat_key = key
+            # Shown by the next sync, once it holds the feed's runs and cards: added to a chat
+            # already on the page, each card is a patch of its own, and under load the
+            # browser can miss some of them.
             self._chat = self._build_chat(composer=key[0])
-            self._layout.objects = [self._chat]
         return self._chat
 
     def _build_chat(self, composer: bool) -> AgentChat:
@@ -402,7 +404,7 @@ class ExploreFeed(Viewer):
         self.runner = runner
         self._unsubscribe = runner.state.subscribe(self._on_event)
         if self.shown:
-            self.chat  # noqa: B018
+            self.sync()
 
     @param.depends("shown", watch=True)
     def _on_shown(self):
