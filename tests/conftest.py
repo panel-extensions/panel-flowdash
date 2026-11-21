@@ -20,6 +20,20 @@ optional_markers = {
 }
 
 
+# UI tests that failed on a first attempt in at least three of seven recent main
+# runs. They keep more reruns, with more time between them, than the rest of
+# the suite gets from --reruns.
+FLAKY_UI_TESTS = {
+    "tests/ui/test_ui_code_panel.py::test_a_check_error_shows_under_its_line_and_keeps_the_result",
+    "tests/ui/test_ui_conflicts.py::test_reload_after_conflict",
+    "tests/ui/test_ui_example_wind_energy.py::test_tiles_keep_their_sizes_after_a_top_bar_move_its_undo_and_a_reorder",
+    "tests/ui/test_ui_explore.py::test_a_question_asked_in_explore_shows_its_answer_and_output",
+    "tests/ui/test_ui_explore.py::test_charts_and_selection_links_survive_moving_between_explore_and_the_grid",
+    "tests/ui/test_ui_provenance.py::test_the_tile_menu_shows_it_and_a_viewer_sees_their_own_request_in_full",
+    "tests/ui/test_ui_settings_dialog.py::test_refresh_presets_set_the_period_and_save_it",
+}
+
+
 def pytest_addoption(parser):
     """Add extra command line options."""
     for marker, info in optional_markers.items():
@@ -65,9 +79,18 @@ def _select_shard(config, items):
         items[:] = keep
 
 
+def _mark_flaky(config, items):
+    if not config.pluginmanager.hasplugin("rerunfailures"):
+        return
+    for item in items:
+        if item.nodeid.split("[")[0] in FLAKY_UI_TESTS:
+            item.add_marker(pytest.mark.flaky(reruns=3, reruns_delay=5))
+
+
 def pytest_collection_modifyitems(config, items):
-    """Keep the --shard slice and skip optional tests and failure tests param cannot run."""
+    """Keep the --shard slice, mark known flaky tests, and skip tests that cannot run here."""
     _select_shard(config, items)
+    _mark_flaky(config, items)
     for marker, info in optional_markers.items():
         if config.getoption(f"--{marker}"):
             continue
