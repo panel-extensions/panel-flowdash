@@ -452,9 +452,14 @@ class AceTools(JSComponent):
 
     closing = param.Integer(default=0, doc="Bumped to close the completion popup.")
 
+    scroll_margin = param.Integer(
+        default=0, doc="Pixels the editor scrolls past its last line, so it clears what is below."
+    )
+
     _stylesheets: t.ClassVar[list[str]] = [
         """
-        :host { color: var(--mui-palette-text-secondary); font-size: 12px; white-space: nowrap; }
+        :host { color: var(--mui-palette-text-secondary); font-size: 12px; line-height: 18px;
+          white-space: nowrap; }
         """
     ]
 
@@ -582,6 +587,15 @@ class AceTools(JSComponent):
           ;(root.head || root).appendChild(style)
         }
         try { editor.setOptions({...model.options, enableLiveAutocompletion: true}) } catch (e) { console.warn(e) }
+        // scroll_margin is read once here, so it is fixed when the editor is attached.
+        if (model.scroll_margin) {
+          // Ace scrolls the cursor flush with the bottom edge; keep the margin below it too.
+          const renderer = editor.renderer
+          const margin = {top: 0, bottom: model.scroll_margin}
+          const scroll = renderer.scrollCursorIntoView.bind(renderer)
+          renderer.setScrollMargin(0, model.scroll_margin, 0, 0)
+          renderer.scrollCursorIntoView = (cursor, offset, viewMargin) => scroll(cursor, offset, viewMargin || margin)
+        }
         editor.commands.addCommand({
           name: "flowdashRun",
           bindKey: {win: "Ctrl-Enter", mac: "Command-Enter"},

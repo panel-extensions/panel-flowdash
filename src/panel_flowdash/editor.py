@@ -4017,7 +4017,6 @@ class FlowDash(Viewer):
             self._code_handle.param.watch(self._on_code_dock_resized, "size")
             panel.param.watch(self._sync_code_dock, ["collapsed", "instance_id"])
             panel.param.watch(self._on_code_drafts, "dirty")
-            self._code_dock[:] = [self._code_handle, panel]
         return self._code_panel
 
     @property
@@ -4049,6 +4048,11 @@ class FlowDash(Viewer):
             return False
         docking = not self.code_panel_open
         self.code_panel.open(instance_id, field)
+        if not self._code_dock.objects:
+            # Added once it shows a field, so the browser builds the editor with its language
+            # and text: a change arriving before the code/result split has rendered is lost.
+            self._code_dock[:] = [self._code_handle, self._code_panel]
+            self._code_panel.tools.focus += 1
         if docking and self._flow._models and (doc := pn.state.curdoc) is not None:
             # Once the canvas has shrunk to make room, keep the node in view at the same zoom.
             zoom = (self._flow.viewport or {}).get("zoom") or 1

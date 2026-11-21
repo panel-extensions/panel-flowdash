@@ -5,7 +5,7 @@ import os
 import pytest
 from panel.tests.util import wait_until
 
-from tests.test_code_panel import make_editor
+from tests.test_code_panel import make_editor, make_lazy_editor
 from tests.ui.util import serve_component
 
 pytest.importorskip("playwright")
@@ -104,6 +104,110 @@ def test_opened_from_the_inspector_under_the_canvas(page):
     # The first result renders after the inspector and the panel, which takes a while under load.
     expect(page.locator(".fd-code-table")).to_contain_text("2016", timeout=15000)
     _shot(page, "open")
+
+
+def _middle(box):
+    return box["y"] + box["height"] / 2
+
+
+def test_the_result_header_fits_the_toggle_beside_the_summary(page):
+    editor, query = make_lazy_editor()
+    _open(page, editor, query)
+    result = page.locator(".fd-code-panel-result")
+    strip = result.locator(".fd-cp-subheader").first
+    toggle = result.locator(".fd-code-outputs .MuiToggleButtonGroup-root")
+    summary = result.locator(".fd-cp-subheader .fd-cp-bar")
+    expect(toggle).to_be_visible(timeout=8000)
+    expect(summary).to_contain_text("5 rows", timeout=15000)
+    strip_box, toggle_box = strip.bounding_box(), toggle.bounding_box()
+    text = summary.bounding_box()
+    assert toggle_box["y"] >= strip_box["y"] and (
+        toggle_box["y"] + toggle_box["height"] <= strip_box["y"] + strip_box["height"]
+    )
+    assert text["x"] >= toggle_box["x"] + toggle_box["width"]
+    assert abs(_middle(text) - _middle(toggle_box)) <= 1.5
+    assert abs(_middle(toggle_box) - _middle(strip_box)) <= 1.5
+    expect(toggle.get_by_role("button", name="Rows")).to_have_attribute("aria-pressed", "true")
+
+
+def test_the_table_fits_its_columns_without_the_index(page):
+    editor, query = make_editor()
+    _open(page, editor, query)
+    table = page.locator(".fd-code-table table")
+    expect(table).to_contain_text("2016", timeout=15000)
+    headers = table.locator("thead th")
+    expect(headers).to_have_count(3)
+    assert [h.strip() for h in headers.all_inner_texts()] == ["p_year", "p_name", "p_cap"]
+    expect(table.locator("tbody th")).to_have_count(0)
+    result = page.locator(".fd-code-panel-result").bounding_box()
+    assert table.bounding_box()["width"] < result["width"] / 2
+
+
+def test_the_code_footer_is_on_one_centred_line(page):
+    editor, query = make_editor()
+    _open(page, editor, query)
+    footer = page.locator(".fd-code-footer-bar")
+    icon = footer.locator(".fd-cp-ok .fd-cp-icon")
+    expect(icon).to_be_visible(timeout=8000)
+    middle = _middle(footer.bounding_box())
+    label = footer.locator(".fd-cp-ok")
+    position = footer.get_by_text("Ln ")
+    for part in (icon, label, position):
+        assert abs(_middle(part.bounding_box()) - middle) <= 1.5
+
+
+def _drag_split(page, editor, by=200):
+    """Drag the gutter between code and result by *by* pixels and wait for the sizes to sync."""
+    code = page.locator(".fd-code-panel-code")
+    expect(page.locator(".fd-code-table")).to_contain_text("2016", timeout=15000)
+    gutter = page.locator(".fd-code-panel-body .gutter")
+    expect(gutter).to_be_visible(timeout=15000)
+    # The split shows once laid out; wait for its width to settle before measuring.
+    wait_until(lambda: code.bounding_box() and code.bounding_box()["width"] > 200, timeout=15000)
+    before = code.bounding_box()["width"]
+    box = gutter.bounding_box()
+    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    page.mouse.move(x, y)
+    page.mouse.down()
+    for step in range(1, 11):
+        page.mouse.move(x + by * step / 10, y)
+        page.wait_for_timeout(20)
+    page.mouse.up()
+    wait_until(lambda: code.bounding_box()["width"] > before + by * 0.75, timeout=15000)
+    wait_until(lambda: editor.code_panel._body.sizes[0] > 45, timeout=20000)
+    return code.bounding_box()["width"]
+
+
+def test_the_split_between_code_and_result_is_dragged(page):
+    editor, query = make_editor()
+    _open(page, editor, query)
+    code = page.locator(".fd-code-panel-code")
+    result = page.locator(".fd-code-panel-result")
+    expect(page.locator(".fd-code-table")).to_contain_text("2016", timeout=15000)
+    assert result.bounding_box()["width"] > code.bounding_box()["width"]
+    _drag_split(page, editor)
+    assert page.evaluate(_SIDEWAYS) == []
+
+
+def test_the_dragged_split_survives_switching_nodes_and_collapsing(page):
+    editor, query = make_editor()
+    other = editor.add_component("D/query", position=(320, 300))
+    source = next(e["source"] for e in editor._dataflow_graph.edges if e["target"] == query)
+    editor.connect(source, "data", other, "data")
+    _open(page, editor, query)
+    code = page.locator(".fd-code-panel-code")
+    dragged = _drag_split(page, editor)
+    editor.open_code_panel(other, "expr")
+    wait_until(lambda: editor.code_panel.instance_id == other, timeout=15000)
+    expect(page.locator(".fd-code-panel-header")).to_contain_text(
+        editor._node_name(other), timeout=15000
+    )
+    wait_until(lambda: abs(code.bounding_box()["width"] - dragged) <= 2, timeout=15000)
+    page.locator(".fd-code-collapse").click()
+    expect(page.locator(".fd-code-expand-panel")).to_be_visible(timeout=15000)
+    page.locator(".fd-code-expand-panel").click()
+    expect(code).to_be_visible(timeout=15000)
+    wait_until(lambda: abs(code.bounding_box()["width"] - dragged) <= 2, timeout=15000)
 
 
 def test_typing_is_held_until_run(page):

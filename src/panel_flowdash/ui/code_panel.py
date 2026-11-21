@@ -25,6 +25,7 @@ import param
 from panel.custom import JSComponent
 from panel.viewable import Viewer
 from panel.widgets import CodeEditor
+from panel_splitjs import HSplit
 
 from panel_flowdash.config_check import CheckResult
 from panel_flowdash.config_choices import code_fields, node_completions
@@ -34,6 +35,7 @@ from panel_flowdash.ui.choice_widgets import form_widgets
 from panel_flowdash.ui.code_field import ACE_OPTIONS, ACE_THEME_CSS, AceTools, code_language
 from panel_flowdash.ui.config_draft import ConfigDraft
 from panel_flowdash.ui.node_preview import summarize_value
+from panel_flowdash.ui.split_view import GUTTER_CSS
 from panel_flowdash.ui.text import field_label, text_alert
 from panel_flowdash.util import is_failure
 
@@ -46,6 +48,10 @@ MAX_ROWS = 500
 #: Seconds of no typing after which "Run on change" runs the draft.
 RUN_DELAY = 0.8
 HEADER_HEIGHT = 48
+#: Widths of the code and the result in percent of the panel; a table result wants the room.
+SPLIT_SIZES = (40.0, 60.0)
+#: Narrowest the code or the result may be dragged, in pixels.
+MIN_PANE_WIDTH = 240
 _EDITOR_CLASS = "fd-code-panel-editor"
 
 _HEADER_CSS = """
@@ -67,14 +73,15 @@ _HEADER_CSS = """
 _BAR_CSS = """
 :host { min-width: 0; }
 .fd-cp-bar { display: flex; align-items: center; gap: 10px; height: 100%;
-  font-size: 12px; color: var(--mui-palette-text-secondary); white-space: nowrap;
+  font-size: 12px; line-height: 18px; color: var(--mui-palette-text-secondary); white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; }
 .fd-cp-bar b { font-weight: 600; color: var(--mui-palette-text-primary); }
 .fd-cp-ok { color: var(--mui-palette-success-main, #2e7d32); }
 .fd-cp-error { color: var(--mui-palette-error-main, #d32f2f); }
 .fd-cp-warn { color: var(--mui-palette-warning-main, #ed6c02); }
-.fd-cp-icon { font-family: "Material Icons"; font-size: 15px; line-height: 1;
-  font-feature-settings: "liga"; vertical-align: -3px; margin-right: 4px; }
+.fd-cp-ok, .fd-cp-error, .fd-cp-warn { display: inline-flex; align-items: center; gap: 4px; }
+.fd-cp-icon { font-family: "Material Icons"; font-size: 16px; line-height: 1; width: 16px;
+  font-feature-settings: "liga"; flex: none; }
 """
 
 # A strip of controls, centred on one line, with a rule under it.
@@ -98,7 +105,8 @@ _STRIP_CSS = """
 
 _TABLE_CSS = """
 :host { overflow: auto; height: 100%; }
-table.panel-df { border-collapse: collapse; width: 100%; font-size: 12px; border: none !important;
+/* Columns as wide as their content, scrolling sideways once they outgrow the pane. */
+:host table.panel-df { border-collapse: collapse; width: max-content; min-width: 0; font-size: 12px; border: none !important;
   border-radius: 0 !important;
   font-variant-numeric: tabular-nums; color: var(--mui-palette-text-primary); }
 .panel-df thead th { position: sticky; top: 0; z-index: 1; text-align: right; font-weight: 600;
@@ -107,9 +115,9 @@ table.panel-df { border-collapse: collapse; width: 100%; font-size: 12px; border
   background: var(--mui-palette-background-paper, #fff);
   border-bottom: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.12)); }
 .panel-df th, .panel-df td { white-space: nowrap; padding: 4px 12px !important; text-align: right;
+  max-width: 360px; overflow: hidden; text-overflow: ellipsis;
   height: auto !important; line-height: 18px !important;
   border: none; border-bottom: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.08)); }
-.panel-df tbody th { color: var(--mui-palette-text-secondary); font-weight: 400; }
 """
 
 
@@ -135,6 +143,25 @@ def _utf16(line: str, column: int) -> int:
 
 def _is_frame(value: t.Any) -> bool:
     return hasattr(value, "columns") and hasattr(value, "head") and hasattr(value, "shape")
+
+
+def _shows_index(frame: t.Any) -> bool:
+    """Whether the table shows *frame*'s index: not when it only numbers the rows.
+
+    An unnamed integer index, the default one or what is left of it after
+    filtering, carries no data; a named one, a MultiIndex or e.g. a
+    DatetimeIndex holds group or time labels.
+    """
+    index = getattr(frame, "index", None)
+    if index is None or getattr(index, "nlevels", 1) > 1 or index.name is not None:
+        return index is not None
+    return getattr(index.dtype, "kind", "") not in "iu"
+
+
+def _output_label(port: t.Any) -> str:
+    """Name an output in the toggle: its own label, or its name with the first letter raised."""
+    label = port.label if port.label and port.label != port.name else port.name.replace("_", " ")
+    return label[:1].upper() + label[1:]
 
 
 class DockHandle(JSComponent):
@@ -362,13 +389,20 @@ class CodePanel(Viewer):
         )
         self.code.param.watch(self._typed, "value_input")
         self.tools = AceTools(
-            target_class=_EDITOR_CLASS, options=ACE_OPTIONS, on_run=self.run, margin=0
+            target_class=_EDITOR_CLASS,
+            options=ACE_OPTIONS,
+            on_run=self.run,
+            scroll_margin=8,
+            margin=0,
+            align="center",
         )
         self._problems = pn.Column(margin=0, sizing_mode="stretch_width")
         self._code_status = pn.pane.HTML(
-            "", margin=0, sizing_mode="stretch_width", stylesheets=[_BAR_CSS]
+            "", margin=0, align="center", sizing_mode="stretch_width", stylesheets=[_BAR_CSS]
         )
-        self._language = pn.pane.HTML("", margin=(0, 12, 0, 12), stylesheets=[_BAR_CSS])
+        self._language = pn.pane.HTML(
+            "", margin=(0, 0, 0, 12), align="center", stylesheets=[_BAR_CSS]
+        )
         code_footer = pn.Row(
             self._code_status,
             self.tools,
@@ -380,7 +414,7 @@ class CodePanel(Viewer):
             css_classes=["fd-cp-footer", "fd-code-footer-bar"],
         )
         self._code_header = pn.pane.HTML(
-            "", margin=0, sizing_mode="stretch_width", stylesheets=[_BAR_CSS]
+            "", margin=0, align="center", sizing_mode="stretch_width", stylesheets=[_BAR_CSS]
         )
         code_header = pn.Row(
             self._code_header,
@@ -397,20 +431,30 @@ class CodePanel(Viewer):
             code_footer,
             margin=0,
             sizing_mode="stretch_both",
-            styles={
-                "border-right": "1px solid var(--mui-palette-divider)",
-                "min-width": "0",
-                "overflow": "hidden",
-            },
+            styles={"min-width": "0", "overflow": "hidden"},
             css_classes=["fd-code-panel-code"],
         )
 
         self.outputs = pmui.RadioButtonGroup(
-            options=[], size="small", margin=(0, 8, 0, 0), css_classes=["fd-code-outputs"]
+            options=[],
+            size="small",
+            margin=(0, 12, 0, 0),
+            align="center",
+            # Small enough for the strip, so the summary sits beside it on the same line.
+            sx={
+                "& .MuiToggleButton-root": {
+                    "py": "1px",
+                    "px": "10px",
+                    "fontSize": "0.75rem",
+                    "lineHeight": "20px",
+                    "textTransform": "none",
+                }
+            },
+            css_classes=["fd-code-outputs"],
         )
         self.outputs.param.watch(lambda _event: self._show_result(), "value")
         self._summary = pn.pane.HTML(
-            "", margin=0, sizing_mode="stretch_width", stylesheets=[_BAR_CSS]
+            "", margin=0, align="center", sizing_mode="stretch_width", stylesheets=[_BAR_CSS]
         )
         result_header = pn.Row(
             self.outputs,
@@ -425,7 +469,7 @@ class CodePanel(Viewer):
             margin=0, sizing_mode="stretch_both", scroll="y-auto", css_classes=["fd-code-result"]
         )
         self._result_footer = pn.pane.HTML(
-            "", margin=0, sizing_mode="stretch_width", stylesheets=[_BAR_CSS]
+            "", margin=0, align="center", sizing_mode="stretch_width", stylesheets=[_BAR_CSS]
         )
         result_footer = pn.Row(
             self._result_footer,
@@ -444,12 +488,18 @@ class CodePanel(Viewer):
             styles={"min-width": "0", "overflow": "hidden"},
             css_classes=["fd-code-panel-result"],
         )
-        self._body = pn.Row(
+        self._body = HSplit(
             self._code_column,
             self._result_column,
+            sizes=SPLIT_SIZES,
+            expanded_sizes=SPLIT_SIZES,
+            min_size=(MIN_PANE_WIDTH, MIN_PANE_WIDTH),
+            snap_size=0,
+            gutter_size=8,
             margin=0,
             sizing_mode="stretch_both",
             visible=not self.collapsed,
+            stylesheets=[GUTTER_CSS],
             css_classes=["fd-code-panel-body"],
         )
         self._layout = pmui.Column(
@@ -525,7 +575,8 @@ class CodePanel(Viewer):
         watcher = state.param.watch(self._config_changed, [field, *self._others])
         self._releases.append(lambda: state.param.unwatch(watcher))
         node = editor._dataflow_graph.get_state(instance_id)
-        outputs = [p.name for p in spec.outputs if node is not None and p.name in node.param]
+        ports = [p for p in spec.outputs if node is not None and p.name in node.param]
+        outputs = [p.name for p in ports]
         if node is not None and outputs:
             out_watcher = node.param.watch(lambda *_e: self._show_result(), outputs)
             self._releases.append(lambda: node.param.unwatch(out_watcher))
@@ -533,7 +584,10 @@ class CodePanel(Viewer):
         if node is not None and inputs:
             in_watcher = node.param.watch(lambda *_e: self._complete(), inputs)
             self._releases.append(lambda: node.param.unwatch(in_watcher))
-        self.outputs.param.update(options=outputs, value=self._default_output(node, outputs))
+        self.outputs.param.update(
+            options={_output_label(p): p.name for p in ports},
+            value=self._default_output(node, outputs),
+        )
         self.outputs.visible = len(outputs) > 1
         self._title.object = self._title_html(spec)
         if spec.check_config is not None:
@@ -1036,6 +1090,7 @@ class CodePanel(Viewer):
         if _is_frame(value):
             return pn.pane.DataFrame(
                 value.head(MAX_ROWS),
+                index=_shows_index(value),
                 sizing_mode="stretch_both",
                 margin=0,
                 stylesheets=[_TABLE_CSS],
