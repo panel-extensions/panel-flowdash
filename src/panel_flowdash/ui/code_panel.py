@@ -7,7 +7,9 @@ node does rather than its settings, which stay in the inspector: a code field,
 e.g. a query, as text, or a dict declaring a spec form, e.g. a chart spec, as
 a form of its settings, as YAML or as JSON, see
 :class:`~panel_flowdash.ui.spec_field.SpecEditor`. The browser remembers the
-view picked. A node without a spec shows its result only.
+view picked. A node without a spec shows its result only, beside what defines
+it, read only, if its component has a ``__flowdash_definition__`` hook, see
+:func:`~panel_flowdash.ui.node_preview.call_definition_hook`.
 
 Format (Shift+Alt+F) lays out a spec's text, or code whose field or
 language has a formatter, see :func:`~panel_flowdash.ui.code_field.register_formatter`,
@@ -68,7 +70,7 @@ from panel_flowdash.ui.code_field import (
 )
 from panel_flowdash.ui.config_draft import ConfigDraft
 from panel_flowdash.ui.inspector import hooked_preview, value_preview, wants_preview_hook
-from panel_flowdash.ui.node_preview import run_off_loop, summarize_value
+from panel_flowdash.ui.node_preview import call_definition_hook, run_off_loop, summarize_value
 from panel_flowdash.ui.spec_field import SpecEditor
 from panel_flowdash.ui.split_view import GUTTER_CSS
 from panel_flowdash.ui.text import field_label, text_alert
@@ -621,6 +623,18 @@ class CodePanel(Viewer):
             stylesheets=[_BAR_CSS],
             css_classes=["fd-code-empty"],
         )
+        # What defines a node without code or a spec to edit, e.g. a source's spec, read only.
+        self.definition = CodeEditor(
+            value="",
+            language="text",
+            readonly=True,
+            sizing_mode="stretch_both",
+            min_height=80,
+            margin=0,
+            visible=False,
+            css_classes=["fd-code-definition"],
+            stylesheets=[ACE_THEME_CSS],
+        )
         self._problems = pn.Column(margin=0, sizing_mode="stretch_width")
         # Why the form is disabled while the text does not parse, shown in the Form view.
         self.fix_json_button = pmui.Button(
@@ -737,6 +751,7 @@ class CodePanel(Viewer):
             self._spec_form,
             self._spec_text,
             self._empty,
+            self.definition,
             code_footer,
             margin=0,
             sizing_mode="stretch_both",
@@ -1006,6 +1021,7 @@ class CodePanel(Viewer):
             self._syncing = False
         self._code_header.object = self._code_header_html(spec, parameter)
         self._empty.object = self._empty_html(spec) if kind is None else ""
+        self._show_definition()
         self._sync_kind()
         held = self._held.pop((instance_id, field), None) if field else None
         if held:
@@ -1020,6 +1036,10 @@ class CodePanel(Viewer):
         if node is not None and outputs:
             out_watcher = node.param.watch(lambda *_e: self._show_result(), outputs)
             self._releases.append(lambda: node.param.unwatch(out_watcher))
+            if kind is None:
+                # A new output, e.g. of a source picked by its ref, may come from a new definition.
+                def_watcher = node.param.watch(lambda *_e: self._show_definition(), outputs)
+                self._releases.append(lambda: node.param.unwatch(def_watcher))
         inputs = [p.name for p in spec.inputs if node is not None and p.name in node.param]
         if node is not None and inputs and kind is not None:
             in_watcher = node.param.watch(lambda *_e: self._complete(), inputs)
@@ -1071,7 +1091,7 @@ class CodePanel(Viewer):
             self.view_toggle.param.update(options=options, value=view, visible=kind == "spec")
         finally:
             self._syncing = syncing
-        self._empty.visible = kind is None
+        self._empty.visible = kind is None and not self.definition.visible
         formatter = self._formatter()
         label = self.spec_editor.syntax_label
         self.format_button.param.update(
@@ -1138,6 +1158,26 @@ class CodePanel(Viewer):
         if not self._syncing and kind is not None:
             self._run_on_change[kind] = event.new
         self.spec_editor.live = event.new and kind == "spec"
+
+    def _show_definition(self):
+        """Show what defines a node without code or a spec, read only, if its component says."""
+        editor = self._flowdash
+        empty = editor is not None and self.instance_id is not None and self._kind() is None
+        instance = editor._component_instances.get(self.instance_id) if empty else None
+        definition = call_definition_hook(instance) if instance is not None else None
+        if definition is None:
+            if self.definition.visible:
+                self.definition.visible = False
+                self._empty.visible = empty
+                if empty:
+                    self._code_header.object = self._code_header_html(self._spec(), None)
+                    self._language.object = _bar("")
+            return
+        language, text = definition
+        self.definition.param.update(language=language or "text", value=text, visible=True)
+        self._empty.visible = False
+        self._code_header.object = _bar("<b>Definition</b>", "Read only")
+        self._language.object = _bar(html.escape((language or "text").upper()))
 
     def _default_output(self, node: param.Parameterized | None, outputs: list[str]) -> str | None:
         """Return the output to show first: a table before a lazy value, e.g. a query's pipeline."""
