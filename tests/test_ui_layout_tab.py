@@ -220,14 +220,14 @@ class TestLayoutStatusBar:
         update_tile(editor, chart_id, visible=False)
         assert bar.counts.object == "1 tile, 2 components hidden"
         assert not bar.issues_button.visible
-        assert not bar.minimap_toggle.visible
+        assert not bar.view_controls.visible
 
     async def test_counts_components_in_the_dataflow_tab(self, editor):
         _place(editor, MAP)
         editor.mode = "wiring"
         bar = editor._status_bar
         assert not bar.grid_label.visible
-        assert bar.issues_button.visible and bar.minimap_toggle.visible
+        assert bar.issues_button.visible and bar.view_controls.visible
         assert bar.counts.object == "1 component, 0 connections"
 
     async def test_hidden_in_view_mode(self, editor):

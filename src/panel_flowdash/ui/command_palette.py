@@ -30,6 +30,8 @@ SHORTCUTS = [
     {"group": "Editing", "label": "Undo", "keys": ["Mod", "Z"]},
     {"group": "Editing", "label": "Redo", "keys": ["Mod", "Shift", "Z"]},
     {"group": "Editing", "label": "Dataflow and Layout side by side", "keys": ["S"]},
+    {"group": "Editing", "label": "Show or hide node previews", "keys": ["P"]},
+    {"group": "Editing", "label": "Collapse or expand all nodes", "keys": ["C"]},
     {"group": "Editing", "label": "Clear the selection, then back to view mode", "keys": ["Esc"]},
 ]
 
@@ -161,6 +163,16 @@ class CommandPaletteController:
     def _editing(self) -> bool:
         editor = self._editor
         return self._dashboard() is not None and editor.editable and not editor.read_only
+
+    def _canvas_shown(self) -> bool:
+        """Whether the dataflow canvas, and the status bar with its view controls, is shown."""
+        editor = self._editor
+        return (
+            editor.editable
+            and editor.mode != "dashboard"
+            and not getattr(editor, "explore", False)
+            and getattr(editor, "_status_bar", None) is not None
+        )
 
     def _can_edit(self) -> bool:
         dashboard = self._dashboard()
@@ -349,6 +361,7 @@ class CommandPaletteController:
                             "keywords": "arrange layout tidy auto tiles grid",
                         }
                     )
+                actions.extend(self._canvas_view_items())
                 actions.append(
                     {
                         "id": "action:view",
@@ -406,6 +419,31 @@ class CommandPaletteController:
             }
         )
         return [{**action, "group": "Actions"} for action in actions]
+
+    def _canvas_view_items(self) -> list[dict]:
+        """Offer the status bar's previews and collapse-all toggles while the canvas is shown."""
+        if not self._canvas_shown():
+            return []
+        bar = self._editor._status_bar
+        shown = bar.preview_toggle.value
+        collapsed = bar.collapse_toggle.value
+        return [
+            {
+                "id": "action:previews",
+                "title": "Hide node previews" if shown else "Show node previews",
+                "subtitle": "Values on the dataflow canvas, for this session",
+                "icon": "preview",
+                "keys": ["P"],
+                "keywords": "preview previews values canvas nodes cards dataflow",
+            },
+            {
+                "id": "action:collapse_all",
+                "title": "Expand all nodes" if collapsed else "Collapse all nodes",
+                "icon": "unfold_more" if collapsed else "unfold_less",
+                "keys": ["C"],
+                "keywords": "collapse expand fold unfold all nodes cards canvas dataflow",
+            },
+        ]
 
     def _history_items(self) -> list[dict]:
         """Undo and Redo, while there is something to undo or redo."""
@@ -548,6 +586,10 @@ class CommandPaletteController:
             editor._dashboard_bar.request_mode("view")
         elif action == "split" and editor.editable:
             editor.toggle_split()
+        elif action == "previews" and self._canvas_shown():
+            editor._status_bar.toggle_previews()
+        elif action == "collapse_all" and self._canvas_shown():
+            editor._status_bar.toggle_collapse_all()
         elif action == "arrange_canvas" and editor.editable and not editor.read_only:
             editor.arrange_canvas()
         elif action == "arrange_layout" and editor.editable and not editor.read_only:

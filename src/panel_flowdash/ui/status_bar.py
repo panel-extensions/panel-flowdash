@@ -18,7 +18,7 @@ from panel_flowdash.ui.node_card import NodeCard
 from panel_flowdash.ui.tile_layout import GRID_COLUMNS, layout_summary
 
 _KEYS_CSS = """
-.fd-keys { display: flex; align-items: center; gap: 12px; white-space: nowrap;
+.fd-keys { display: flex; align-items: center; gap: 12px; white-space: nowrap; line-height: 20px;
   font-size: 12px; color: var(--mui-palette-text-secondary, inherit); }
 kbd { font: inherit; font-size: 11px; padding: 0 5px; margin-right: 4px; border-radius: 4px;
   border: 1px solid var(--mui-palette-divider, rgba(127, 127, 127, 0.4)); }
@@ -66,7 +66,33 @@ class CanvasShortcuts(JSComponent):
             self._on_key(data["key"])
 
 
-_NOWRAP = {"color": "text.secondary", "whiteSpace": "nowrap"}
+# One font size and line height for every text on the bar, so the status, its
+# icon and the counts sit on one centred line.
+_TEXT = {"fontSize": "0.75rem", "lineHeight": "20px"}
+
+_NOWRAP = {"color": "text.secondary", "whiteSpace": "nowrap", **_TEXT}
+
+# Below this width the view controls drop their labels and show only their icons.
+_LABELS_MIN_WIDTH = 960
+
+_VIEW_TOGGLE_CSS = f"""
+@container fd-status-bar (max-width: {_LABELS_MIN_WIDTH}px) {{
+  .MuiToggleButton-root {{ font-size: 0 !important; gap: 0 !important; }}
+}}
+"""
+
+_VIEW_TOGGLE_SX = {
+    **_TEXT,
+    "textTransform": "none",
+    "fontWeight": 400,
+    "whiteSpace": "nowrap",
+    "border": "none",
+    "borderRadius": "4px",
+    "gap": "4px",
+    "px": "6px",
+    "py": "2px",
+    "color": "text.secondary",
+}
 
 
 @dataclass(frozen=True)
@@ -215,12 +241,21 @@ class StatusBar(Viewer):
         self.issues_button = pmui.Button(
             label="All outputs up to date",
             icon="check_circle",
+            icon_size="16px",
             variant="text",
             size="small",
             color="success",
             margin=0,
             styles={"flex": "none"},
-            sx={"textTransform": "none", "fontWeight": 400, "whiteSpace": "nowrap"},
+            sx={
+                **_TEXT,
+                "textTransform": "none",
+                "fontWeight": 400,
+                "whiteSpace": "nowrap",
+                "py": "2px",
+                "minHeight": 0,
+                "& .MuiButton-startIcon": {"ml": 0, "mr": "4px"},
+            },
         )
         self.issues_button.on_click(self._on_issues_clicked)
         self.counts = pmui.Typography(
@@ -234,7 +269,11 @@ class StatusBar(Viewer):
             stylesheets=[_KEYS_CSS],
         )
         self.zoom = pmui.Typography(
-            variant="caption", margin=0, styles={"flex": "none"}, sx=_NOWRAP
+            variant="caption",
+            margin=(0, 4, 0, 6),
+            align="center",
+            styles={"flex": "none"},
+            sx=_NOWRAP,
         )
         self.grid_label = pmui.Typography(
             f"{GRID_COLUMNS}-column grid",
@@ -248,49 +287,82 @@ class StatusBar(Viewer):
             active_icon="map",
             value=flow.show_minimap,
             description="Show minimap",
+            color="default",
+            icon_size="18px",
+            sx={
+                "color": "text.secondary",
+                "&.Mui-checked": {"color": "primary.main"},
+                "& .MuiIcon-root": {"color": "inherit"},
+            },
             size="small",
-            margin=(0, 0, 0, 4),
+            margin=0,
+            align="center",
             styles={"flex": "none"},
         )
         self.minimap_toggle.link(flow, value="show_minimap", bidirectional=True)
         settings = self.editor.settings
-        self.preview_toggle = pmui.ToggleIcon(
+        self.preview_toggle = pmui.Toggle(
+            label="Previews",
             icon="preview",
-            active_icon="preview",
+            icon_size="18px",
             value=settings.node_previews,
-            description="Preview values on the canvas",
             size="small",
-            margin=(0, 0, 0, 4),
+            margin=0,
+            align="center",
             styles={"flex": "none"},
+            stylesheets=[_VIEW_TOGGLE_CSS],
+            sx=_VIEW_TOGGLE_SX,
         )
         # Like the minimap, a view of this session only, which starts from the dashboard's setting.
         self.preview_toggle.param.watch(
             lambda event: self.editor._show_node_previews(event.new), "value"
         )
+        self.preview_toggle.param.watch(self._label_preview_toggle, "value")
+        self._label_preview_toggle()
         settings.param.watch(self._follow_preview_setting, "node_previews")
         self._syncing_collapse = False
-        self.collapse_toggle = pmui.ToggleIcon(
+        # An action rather than a state, so it is not drawn as pressed while every card is collapsed.
+        self.collapse_toggle = pmui.Toggle(
+            label="Collapse all",
             icon="unfold_less",
-            active_icon="unfold_more",
+            icon_size="18px",
             value=False,
-            description="Collapse all cards",
+            description="Collapse all nodes (C)",
             size="small",
-            margin=(0, 0, 0, 4),
+            margin=0,
+            align="center",
             styles={"flex": "none"},
+            stylesheets=[_VIEW_TOGGLE_CSS],
+            sx={
+                **_VIEW_TOGGLE_SX,
+                "&.Mui-selected": {"bgcolor": "transparent", "color": "text.secondary"},
+                "&.Mui-selected:hover": {"bgcolor": "action.hover"},
+            },
         )
         self.collapse_toggle.param.watch(self._on_collapse_toggled, "value")
         self.collapse_toggle.param.watch(lambda _e: self.sync_collapse_toggle(), "value")
         self._shortcuts = CanvasShortcuts(active=self.visible, on_key=self._on_shortcut)
+        # How the canvas is shown, set apart from the status on its left by a hairline.
+        self.view_controls = pn.Row(
+            self.preview_toggle,
+            self.collapse_toggle,
+            self.minimap_toggle,
+            self.zoom,
+            margin=(0, 0, 0, 4),
+            styles={
+                "flex": "none",
+                "gap": "2px",
+                "padding-left": "8px",
+                "border-left": "1px solid var(--mui-palette-divider)",
+            },
+        )
         self._bar = pn.FlexBox(
             self.grid_label,
             self.issues_button,
             self.counts,
             pn.layout.HSpacer(),
             self.keys,
-            self.zoom,
-            self.preview_toggle,
-            self.collapse_toggle,
-            self.minimap_toggle,
+            self.view_controls,
             self._shortcuts,
             align_items="center",
             flex_wrap="nowrap",
@@ -298,9 +370,12 @@ class StatusBar(Viewer):
             sizing_mode="stretch_width",
             height=32,
             visible=self.param.visible,
+            css_classes=["fd-status-bar"],
             styles={
                 "padding": "0 12px",
                 "overflow": "hidden",
+                "container-type": "inline-size",
+                "container-name": "fd-status-bar",
                 "background": "var(--mui-palette-background-paper)",
                 "border-top": "1px solid var(--mui-palette-divider)",
             },
@@ -319,6 +394,18 @@ class StatusBar(Viewer):
 
     def _follow_preview_setting(self, event):
         self.preview_toggle.value = event.new
+
+    def _label_preview_toggle(self, *_events):
+        shown = self.preview_toggle.value
+        self.preview_toggle.description = f"{'Hide' if shown else 'Show'} node previews (P)"
+
+    def toggle_previews(self):
+        """Show the values on the canvas's nodes if they are hidden, else hide them."""
+        self.preview_toggle.value = not self.preview_toggle.value
+
+    def toggle_collapse_all(self):
+        """Collapse every node on the canvas, or expand them all when they all are."""
+        self.collapse_toggle.value = not self.collapse_toggle.value
 
     def _on_collapse_toggled(self, event):
         if self._syncing_collapse:
@@ -339,17 +426,19 @@ class StatusBar(Viewer):
                 self.collapse_toggle.value = all_collapsed
             finally:
                 self._syncing_collapse = False
-        self.collapse_toggle.description = (
-            "Expand all cards" if all_collapsed else "Collapse all cards"
+        self.collapse_toggle.param.update(
+            label="Expand all" if all_collapsed else "Collapse all",
+            icon="unfold_more" if all_collapsed else "unfold_less",
+            description=f"{'Expand' if all_collapsed else 'Collapse'} all nodes (C)",
         )
 
     def _on_shortcut(self, key: str):
         if not self.visible or self.editor.mode == "dashboard":
             return
         if key == "p":
-            self.preview_toggle.value = not self.preview_toggle.value
+            self.toggle_previews()
         elif key == "c":
-            self.collapse_toggle.value = not self.collapse_toggle.value
+            self.toggle_collapse_all()
 
     def _follow_theme(self, event):
         self.editor._flow.color_mode = "dark" if event.new else "light"
@@ -369,14 +458,7 @@ class StatusBar(Viewer):
         layout = editor.mode == "dashboard"
         self._shortcuts.active = not layout
         self.grid_label.visible = layout
-        for item in (
-            self.issues_button,
-            self.keys,
-            self.zoom,
-            self.preview_toggle,
-            self.collapse_toggle,
-            self.minimap_toggle,
-        ):
+        for item in (self.issues_button, self.keys, self.view_controls):
             item.visible = not layout
         if layout:
             self.counts.object = layout_summary(editor)
