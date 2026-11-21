@@ -2434,6 +2434,8 @@ class FlowDash(Viewer):
         if isinstance(value, (pn.viewable.Viewable, Viewer)):
             return value
         try:
+            # The pane only serializes the value once rendered, where a failure would blank it.
+            json.dumps(value)
             return pn.pane.JSON(value, depth=2, sizing_mode="stretch_width")
         except Exception:
             text = repr(value)
