@@ -22,6 +22,7 @@ from panel.viewable import Viewer
 
 from panel_flowdash.config_check import CheckResult
 from panel_flowdash.config_choices import Choices, columns_of, has_choices, node_choices
+from panel_flowdash.dataflow_engine import failure_text
 from panel_flowdash.groups import component_nodes, group_id_of
 from panel_flowdash.input_literals import takes_literal
 from panel_flowdash.transforms import parse_transform, summarize_transform
@@ -36,7 +37,13 @@ from panel_flowdash.ui.node_card import (
     port_label,
     summarize_value,
 )
-from panel_flowdash.ui.node_preview import describe_object, format_value
+from panel_flowdash.ui.node_preview import (
+    PREVIEW_HOOK,
+    call_preview_hook,
+    describe_object,
+    format_value,
+    run_off_loop,
+)
 from panel_flowdash.ui.spec_field import SpecEditor
 from panel_flowdash.ui.status_bar import (
     CanvasWatcher,
@@ -83,10 +90,55 @@ _MAX_SUMMARY_ITEMS = 3
 _MAX_CHIPS = 6
 _MAX_CHIP_LEN = 24
 
-_TABLE_CSS = """
-:host { overflow-x: auto; }
-table.panel-df { font-size: 11px; }
-.panel-df th, .panel-df td { white-space: nowrap; padding: 2px 6px; }
+# How many rows of a table the Data tab shows.
+_DATA_ROWS = 15
+_MAX_CELL_WIDTH = 220
+_MAX_TEXT = 2000
+
+# Columns sized to their content, scrolling sideways inside the table only. Every
+# rule starts at :host to override the Material design's own table styles.
+_TABLE_CSS = f"""
+:host {{
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.12));
+  border-radius: 6px;
+}}
+:host table.panel-df {{
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  border-collapse: collapse;
+  font: inherit;
+  font-size: 12px;
+  line-height: 18px;
+}}
+:host table.panel-df th, :host table.panel-df td {{
+  max-width: {_MAX_CELL_WIDTH}px;
+  padding: 3px 10px;
+  overflow: hidden;
+  border: none;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}}
+:host table.panel-df thead th {{
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--mui-palette-text-secondary, inherit);
+  background: var(--mui-palette-action-hover, rgba(0, 0, 0, 0.04));
+  border-bottom: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.12));
+}}
+:host table.panel-df tbody tr:nth-child(even) {{
+  background: var(--mui-palette-action-hover, rgba(0, 0, 0, 0.04));
+}}
+:host table.panel-df tbody tr:hover {{ background: var(--mui-palette-action-selected, rgba(0, 0, 0, 0.08)); }}
 """
 
 _ICON_CSS = """
@@ -343,6 +395,73 @@ def _is_table(value: t.Any) -> bool:
         and hasattr(value, "columns")
         and hasattr(value, "head")
     )
+
+
+def _port_heading(port, margin) -> Viewable:
+    """Return the port's name as a heading, with its type id, if any, only in a tooltip."""
+    label = port_label(port)
+    if label == port.name:
+        label = label.replace("_", " ").capitalize()
+    heading = text_typography(
+        label, variant="subtitle2", margin=0, sx=_SECTION_SX, css_classes=["fd-data-heading"]
+    )
+    if not port.type:
+        return pn.Row(heading, margin=margin)
+    return pmui.Tooltip(
+        object=heading, title=f"Type: {port.type}", placement="left", margin=margin
+    )
+
+
+def _wants_hook(value: t.Any, instance: t.Any) -> bool:
+    if instance is None or not callable(getattr(instance, PREVIEW_HOOK, None)):
+        return False
+    return not (value is None or is_failure(value) or _is_table(value))
+
+
+def _hooked_value(value: t.Any, instance: t.Any, port_name: str) -> tuple[t.Any, bool]:
+    """Return the component's own preview of *port_name*, or *value* when it gives none."""
+    hooked = call_preview_hook(instance, output=port_name)
+    if hooked is None or (isinstance(hooked, str) and not hooked.strip()):
+        return value, False
+    return hooked, True
+
+
+def _count(count: t.Any, noun: str) -> str:
+    return f"{count:,} {noun}{'' if count == 1 else 's'}"
+
+
+def _table_preview(value: t.Any) -> list[Viewable]:
+    """Return the first rows of a table, under its size, without its index."""
+    rows, cols = value.shape
+    head = value.head(_DATA_ROWS)
+    summary = f"{_count(rows, 'row')} \u00d7 {_count(cols, 'column')}"
+    if len(head) < rows:
+        summary += f", first {len(head):,} shown"
+    caption = _caption(summary, margin=(0, 0, 6, 0), css_classes=["fd-data-summary"])
+    if not len(head) and not cols:
+        return [caption]
+    numeric = [
+        i + 1
+        for i, dtype in enumerate(getattr(head, "dtypes", []))
+        if getattr(dtype, "kind", "") in "iuf"
+    ]
+    align = "".join(
+        f":host table.panel-df td:nth-child({i}), :host table.panel-df th:nth-child({i}) "
+        "{ text-align: right; }\n"
+        for i in numeric
+    )
+    table = pn.pane.DataFrame(
+        head,
+        index=False,
+        sizing_mode="stretch_width",
+        margin=0,
+        stylesheets=[_TABLE_CSS + align],
+        css_classes=["fd-data-table"],
+    )
+    objects: list[Viewable] = [caption, table]
+    if not rows:
+        objects.append(_caption("No rows.", margin=(6, 0, 0, 0)))
+    return objects
 
 
 def _is_raw_repr(text: str) -> bool:
@@ -1247,6 +1366,19 @@ class Inspector(Viewer):
         if names:
             watcher = state.param.watch(update, names)
             self._releases.append(partial(state.param.unwatch, watcher))
+        instance = editor._component_instances.get(instance_id)
+        if spec.outputs and callable(getattr(instance, PREVIEW_HOOK, None)):
+            # A component's preview may change without its outputs, e.g. once its rows are fetched.
+            ports = {p.name for p in (*spec.inputs, *spec.outputs)}
+            own = [name for name in instance.param if name != "name" and name not in ports]
+            if own:
+
+                def refresh_data(*_events):
+                    if (owner := inspector()) is not None and owner._data_column is not None:
+                        owner._data_column[:] = owner._data_objects(instance_id, spec)
+
+                watcher = instance.param.watch(refresh_data, own)
+                self._releases.append(partial(instance.param.unwatch, watcher))
         if failures is not None:
             watcher = failures.param.watch(update, "failed")
             self._releases.append(partial(failures.param.unwatch, watcher))
@@ -1822,36 +1954,71 @@ class Inspector(Viewer):
     def _data_objects(self, instance_id: str, spec: ComponentSpec) -> list[Viewable]:
         editor = self.editor
         state = editor._dataflow_graph.get_state(instance_id)
-        ports, kind = (spec.outputs, "Output") if spec.outputs else (spec.inputs, "Input")
+        ports = spec.outputs or spec.inputs
         if not ports:
             return [_caption("This component has no outputs or inputs.", margin=(8, 0, 0, 0))]
+        # A component previews its outputs itself; what a view shows is its input as it is.
+        instance = editor._component_instances.get(instance_id) if spec.outputs else None
+        failures = editor._dataflow_graph.get_failures(instance_id)
+        failed = {} if spec.outputs or failures is None else failures.failed
         objects: list[Viewable] = []
-        for port in ports:
-            value = getattr(state, port.name, None)
+        for index, port in enumerate(ports):
+            value = failed.get(port.name, getattr(state, port.name, None))
             objects += [
-                _heading(f"{kind}: {port_label(port)}  {port.type or ''}".rstrip()),
-                _caption(summarize_value(value), margin=(0, 0, 4, 0)),
-                self._preview(value),
+                _port_heading(port, margin=(0 if index == 0 else 20, 0, 2, 0)),
+                self._port_preview(value, instance, port.name),
             ]
         return objects
 
-    def _preview(self, value) -> Viewable:
-        """Show the first rows and the columns of a table, or the editor's own value preview."""
-        columns = getattr(value, "columns", None)
-        if columns is None or not hasattr(value, "head"):
-            return self.editor._value_preview(value)
-        names = [str(c) for c in columns]
-        listed = ", ".join(names[:12]) + (
-            f" and {len(names) - 12} more" if len(names) > 12 else ""
+    def _port_preview(self, value, instance, port_name: str) -> Viewable:
+        """Preview one port's value, asking the component for its preview first.
+
+        The hook may query a database, so in a session it runs on a worker
+        thread while the tab says the preview is loading.
+        """
+        holder = pn.Column(margin=0, sizing_mode="stretch_width")
+        if not _wants_hook(value, instance):
+            holder[:] = self._preview(value)
+            return holder
+        work = partial(_hooked_value, value, instance, port_name)
+        doc = pn.state.curdoc
+        if doc is None or doc.session_context is None:
+            holder[:] = self._preview(*work())
+            return holder
+        holder[:] = [_caption("Loading the preview…", margin=0)]
+        run_off_loop(
+            work, lambda result: holder.__setitem__(slice(None), self._preview(*result)), doc
         )
-        return pn.Column(
-            _caption(f"Columns: {listed}", margin=(0, 0, 4, 0)),
-            pn.pane.DataFrame(
-                value.head(5), sizing_mode="stretch_width", margin=0, stylesheets=[_TABLE_CSS]
-            ),
-            margin=0,
-            sizing_mode="stretch_width",
-        )
+        return holder
+
+    def _preview(self, value, hooked: bool = False) -> list[Viewable]:
+        """Show a table's first rows, a short caption for an empty or failed value, or the value."""
+        if value is None:
+            return [_caption("No value yet. It appears once the component has run.", margin=0)]
+        if is_failure(value):
+            message = failure_text(value).strip().splitlines()
+            return [
+                _caption(message[0] if message else "Failed", sx={"color": "error.main"}, margin=0)
+            ]
+        if _is_table(value):
+            return _table_preview(value)
+        if isinstance(value, str):
+            text = value if len(value) <= _MAX_TEXT else value[:_MAX_TEXT] + "…"
+            if hooked:
+                return [_caption(text, sx={"whiteSpace": "pre-wrap"}, margin=0)]
+            return [
+                text_typography(
+                    text or "Empty text",
+                    variant="body2",
+                    margin=0,
+                    sx={"whiteSpace": "pre-wrap", "overflowWrap": "anywhere"},
+                )
+            ]
+        summary = summarize_value(value)
+        if isinstance(value, (pn.viewable.Viewable, Viewer)):
+            # A live object, which may be on the dashboard already, has no copy to show here.
+            return [_caption(f"{summary}. This component gives no preview of it.", margin=0)]
+        return [_caption(summary, margin=(0, 0, 4, 0)), self.editor._value_preview(value)]
 
     # Tile
 
