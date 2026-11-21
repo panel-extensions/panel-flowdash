@@ -180,6 +180,7 @@ from panel_flowdash.ui.tile_drag import TileDrag
 from panel_flowdash.ui.transform_offer import TransformOffer, bridge_kind
 from panel_flowdash.util import (
     close_dialog,
+    escape_closes,
     gate_view,
     is_async,
     is_async_gen,
@@ -423,10 +424,16 @@ _FLOW_STYLESHEET = """\
   min-width: 140px;
 }
 /* Selection is an offset dashed ring, so it reads apart from the solid agent and failure
-   outlines that sit on the border and can show at the same time. */
-.react-flow__node.selected {
+   outlines that sit on the border and can show at the same time. React Flow removes the
+   outline of a focused node, which a clicked node is, so this needs its specificity. */
+.react-flow__node.selected,
+.react-flow__node.selectable.selected:is(:focus, :focus-visible) {
   outline: 2px dashed var(--mui-palette-primary-main, var(--panel-primary-color));
-  outline-offset: 3px;
+  outline-offset: 4px;
+}
+.react-flow.dark .react-flow__node.selected,
+.react-flow.dark .react-flow__node.selectable.selected:is(:focus, :focus-visible) {
+  outline-color: var(--mui-palette-primary-light, var(--mui-palette-primary-main));
 }
 /* Nodes show a compact card (see ui/node_card.py) that fills the node, so the
    card's port labels line up with the handles ReactFlow spreads over its height. */
@@ -2325,8 +2332,8 @@ class FlowDash(Viewer):
         """Collapse or expand a card, or pick the output it previews as one undoable edit.
 
         Collapsing only changes how the canvas looks, like panning, so it is
-        neither an edit in the history nor an unsaved change; it is saved
-        with the dashboard's next save.
+        neither an edit in the history nor an unsaved change; see
+        :meth:`_store_collapsed_cards` for how it is kept.
         """
         card = self._find_node_card(instance_id)
         if card is None:
@@ -2338,6 +2345,8 @@ class FlowDash(Viewer):
             card.param.update(**changes)
             if (status_bar := getattr(self, "_status_bar", None)) is not None:
                 status_bar.sync_collapse_toggle()
+        if "collapsed" in changes:
+            self._store_collapsed_cards()
         if self.read_only or "preview_output" not in changes:
             return
         name = self._node_name(instance_id)
@@ -2361,6 +2370,50 @@ class FlowDash(Viewer):
         with pn.io.hold():
             for card in self._node_cards().values():
                 card.collapsed = collapsed
+        self._store_collapsed_cards()
+
+    def _store_collapsed_cards(self):
+        """Write which cards are collapsed into the stored dashboard, without a save.
+
+        While the canvas has unsaved changes the next save includes it. While
+        it has none, only the stored items' collapsed flags change, so the
+        dashboard stays saved and reopens as it was left. A dashboard saved
+        from elsewhere since it was opened is left alone, as a save would be.
+        """
+        current = self.dashboard
+        if (
+            self.read_only
+            or self.store is None
+            or current is None
+            or self.dirty
+            or self._has_unsent_edits()
+        ):
+            return
+        try:
+            stored = self.store._load_any(current.dashboard_id)
+            if (
+                stored is None
+                or stored.revision != current.revision
+                or not self._dashboard_authorized(stored, "edit")
+            ):
+                return
+            cards = self._node_cards()
+            changed = False
+            for item in stored.items:
+                card = cards.get(item.instance_id)
+                if card is not None and item.collapsed != card.collapsed:
+                    item.collapsed = card.collapsed
+                    changed = True
+            if not changed:
+                return
+            self.store.save_dashboard(stored)
+        except DashboardStoreError:
+            logger.warning("Could not store the collapsed cards of %r", current.dashboard_id)
+            return
+        current.revision = stored.revision
+        for item in current.items:
+            if (card := cards.get(item.instance_id)) is not None:
+                item.collapsed = card.collapsed
 
     def _patch_canvas_props(self, kind: str, item_id: str, patch: dict[str, t.Any]):
         """Patch a node or edge, also while it is still waiting in a batched canvas update."""
@@ -3581,6 +3634,7 @@ class FlowDash(Viewer):
             title="Clear canvas",
             open=False,
             min_width=400,
+            **escape_closes(),
         )
 
     def _build_import_dialog(self):
@@ -3588,18 +3642,19 @@ class FlowDash(Viewer):
         confirm = pmui.Button(label="Replace canvas", color="danger")
 
         def _on_confirm(_event):
-            self._import_dialog.open = False
             model, self._pending_import = self._pending_import, None
+            self._import_dialog.open = False
             if model is not None:
                 self._apply_import(model)
 
-        def _on_cancel(_event):
-            self._import_dialog.open = False
-            self._pending_import = None
+        def _on_closed(event):
+            # Cancel, Escape and a click outside all drop the file.
+            if not event.new:
+                self._pending_import = None
 
-        cancel.on_click(_on_cancel)
+        cancel.on_click(lambda _event: self._import_dialog.param.update(open=False))
         confirm.on_click(_on_confirm)
-        return pmui.Dialog(
+        dialog = pmui.Dialog(
             objects=[
                 self._import_message,
                 pn.Row(pn.layout.HSpacer(), cancel, confirm, sizing_mode="stretch_width"),
@@ -3607,7 +3662,10 @@ class FlowDash(Viewer):
             title="Load dashboard file",
             open=False,
             min_width=400,
+            **escape_closes(),
         )
+        dialog.param.watch(_on_closed, "open")
+        return dialog
 
     def _build_settings_dialog(self):
         self._settings_view = SettingsDialog(self)

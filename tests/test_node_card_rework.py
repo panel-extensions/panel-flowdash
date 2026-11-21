@@ -549,14 +549,65 @@ class TestCardViewEdits:
         assert not editor._dataflow_graph.edges
         assert _card(editor, src).collapsed and _card(editor, sql).collapsed
 
-    async def test_collapse_toggle_names_what_it_does(self):
+    async def test_collapsing_a_saved_dashboard_stores_it_and_keeps_it_saved(self):
+        store = MemoryDashboardStore()
+        editor = FlowDash(COMPONENTS, notifications=False, store=store)
+        src = editor.add_component("Demo/src", instance_id="turbines")
+        sql = editor.add_component("Demo/sql", instance_id="turbines_by_year")
+        saved = editor.save()
+        revision = saved.revision
+
+        _click(editor, sql, "toggle_collapse")
+        assert not editor.dirty
+        stored = {item.instance_id: item for item in store._load_any(saved.dashboard_id).items}
+        assert stored[sql].collapsed and not stored[src].collapsed
+        assert editor.dashboard.revision == revision + 1
+        editor._collapse_all_nodes(True)
+        stored = {item.instance_id: item for item in store._load_any(saved.dashboard_id).items}
+        assert stored[src].collapsed and stored[sql].collapsed
+        assert not editor.dirty
+
+        # A save after it is no conflict, and reopening shows the cards as they were left.
+        editor.save()
+        reopened = FlowDash(COMPONENTS, notifications=False, store=store)
+        reopened.load(saved.dashboard_id)
+        assert _card(reopened, src).collapsed and _card(reopened, sql).collapsed
+
+    async def test_collapsing_with_unsaved_changes_waits_for_the_save(self):
+        store = MemoryDashboardStore()
+        editor = FlowDash(COMPONENTS, notifications=False, store=store)
+        src = editor.add_component("Demo/src", instance_id="turbines")
+        saved = editor.save()
+        editor.add_component("Demo/sql", instance_id="turbines_by_year")
+        assert editor.dirty
+        _click(editor, src, "toggle_collapse")
+        stored = store._load_any(saved.dashboard_id)
+        assert stored.revision == saved.revision
+        assert not stored.items[0].collapsed
+
+    async def test_collapsing_leaves_a_dashboard_saved_elsewhere_alone(self):
+        store = MemoryDashboardStore()
+        editor = FlowDash(COMPONENTS, notifications=False, store=store)
+        src = editor.add_component("Demo/src", instance_id="turbines")
+        saved = editor.save()
+        other = store._load_any(saved.dashboard_id)
+        other.title = "Renamed"
+        store.save_dashboard(other)
+        _click(editor, src, "toggle_collapse")
+        stored = store._load_any(saved.dashboard_id)
+        assert stored.revision == other.revision
+        assert not stored.items[0].collapsed
+        assert not editor.dirty
+
+    async def test_collapse_toggle_keeps_its_name(self):
         editor = FlowDash(COMPONENTS, notifications=False)
         src = editor.add_component("Demo/src", instance_id="turbines")
         toggle = editor._status_bar.collapse_toggle
         assert toggle.label == "Collapse all"
         assert toggle.description == "Collapse all nodes (C)"
         _click(editor, src, "toggle_collapse")
-        assert toggle.value and toggle.description == "Expand all nodes (C)"
+        # The pressed state says everything is collapsed; the name matches the visible label.
+        assert toggle.value and toggle.description == "Collapse all nodes (C)"
         assert toggle.label == "Collapse all"
         toggle.value = False
         assert not _card(editor, src).collapsed

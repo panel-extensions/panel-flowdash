@@ -15,7 +15,12 @@ from panel.viewable import Viewer
 from panel_flowdash.ui.fullscreen import TOGGLE_CLASS
 from panel_flowdash.ui.health import DashboardHealth
 from panel_flowdash.ui.health_popover import HealthPopover
-from panel_flowdash.ui.popover_access import NON_MODAL_POPUP_SX, PopoverAccess, link_popup
+from panel_flowdash.ui.popover_access import (
+    NON_MODAL_POPUP_SX,
+    MenuAccess,
+    PopoverAccess,
+    link_popup,
+)
 from panel_flowdash.ui.text import escape_markdown, markdown_pane
 from panel_flowdash.util import close_dialog, confirm, open_dialog
 
@@ -178,6 +183,11 @@ def icon_only_below(width: int, disabled_tooltip: str | None = None) -> str:
 
 
 ICON_ONLY_WHEN_COMPACT = icon_only_below(COMPACT_BREAKPOINT)
+
+# Done keeps its label longer than the view actions: its eye icon alone does not say
+# it ends editing. Below this width the title and save state need the room.
+DONE_COMPACT_BREAKPOINT = 900
+_DONE_ICON_ONLY = icon_only_below(DONE_COMPACT_BREAKPOINT)
 
 # Icon buttons are as tall as the text buttons beside them.
 _ICON_BUTTON_SX = {"p": f"calc(({LABEL_LINE_HEIGHT} + 12px - 20px) / 2)"}
@@ -506,9 +516,7 @@ class DashboardBar(Viewer):
             size="small",
             margin=(0, 4),
             description="Done",
-            # Its eye icon alone does not say it ends editing, so it keeps its
-            # label as long as the view actions keep theirs.
-            stylesheets=[ICON_ONLY_WHEN_COMPACT, _HIDE_ON_PHONE],
+            stylesheets=[_DONE_ICON_ONLY, _HIDE_ON_PHONE],
         )
         self.done_button.on_click(lambda _event: self.request_mode("view"))
 
@@ -521,8 +529,10 @@ class DashboardBar(Viewer):
             description="More actions",
             margin=(0, 4),
             sx=_OVERFLOW_SX,
+            css_classes=["fd-more-actions"],
         )
         self.overflow.on_click(self._on_overflow)
+        self._overflow_access = MenuAccess(button_class="fd-more-actions", margin=0)
         self._divider = pmui.Divider(
             orientation="vertical",
             height=24,
@@ -771,6 +781,7 @@ class DashboardBar(Viewer):
             *(self._edit_actions() if editing else self._view_actions()),
             self.download_button,
             self._phone_query,
+            self._overflow_access,
         ]
         if list(self._actions) != actions:
             self._actions[:] = actions

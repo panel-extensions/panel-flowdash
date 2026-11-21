@@ -41,11 +41,12 @@ class TestDashboardBarSections:
         assert bar._actions.objects[0] is bar.mode_tabs
         for item in (bar.settings_button, bar.overflow, bar.discard_button, bar.done_button):
             assert item in bar._actions.objects
-        assert bar._actions.objects[-4:] == [
+        assert bar._actions.objects[-5:] == [
             editor._save_button,
             bar.done_button,
             bar.download_button,
             bar._phone_query,
+            bar._overflow_access,
         ]
         assert bar.lead.objects == [bar.title, bar.save_state]
 
@@ -60,6 +61,7 @@ class TestDashboardBarSections:
             bar.overflow,
             bar.download_button,
             bar._phone_query,
+            bar._overflow_access,
         ]
         assert bar.lead.objects == [bar.title]
 
@@ -84,6 +86,7 @@ class TestDashboardBarSections:
             bar.fullscreen_button,
             bar.download_button,
             bar._phone_query,
+            bar._overflow_access,
         ]
         assert list(bar.mode_toggle.options.values()) == ["explore", "view"]
 
