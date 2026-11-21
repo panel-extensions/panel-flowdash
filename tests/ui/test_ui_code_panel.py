@@ -158,6 +158,8 @@ def test_the_code_footer_is_on_one_centred_line(page):
 
 def test_the_split_between_code_and_result_is_dragged(page):
     editor, query = make_editor()
+    other = editor.add_component("D/query", position=(320, 300))
+    editor.connect(next(iter(editor._component_instances)), "data", other, "data")
     _open(page, editor, query)
     code = page.locator(".fd-code-panel-code")
     result = page.locator(".fd-code-panel-result")
@@ -173,6 +175,20 @@ def test_the_split_between_code_and_result_is_dragged(page):
     wait_until(lambda: code.bounding_box()["width"] > before + 150, timeout=8000)
     wait_until(lambda: editor.code_panel._body.sizes[0] > 45, timeout=8000)
     assert page.evaluate(_SIDEWAYS) == []
+    dragged = code.bounding_box()["width"]
+    page.locator(f".react-flow__node[data-id='{other}']").click()
+    wait_until(lambda: editor._flow.selection["nodes"] == [other], timeout=8000)
+    page.locator(".fd-code-expand").first.click(timeout=8000)
+    wait_until(lambda: editor.code_panel.instance_id == other, timeout=8000)
+    expect(page.locator(".fd-code-panel-editor .ace_content")).to_contain_text(
+        "p_year", timeout=8000
+    )
+    assert abs(code.bounding_box()["width"] - dragged) <= 2
+    page.locator(".fd-code-collapse").click()
+    expect(page.locator(".fd-code-expand-panel")).to_be_visible(timeout=8000)
+    page.locator(".fd-code-expand-panel").click()
+    expect(code).to_be_visible(timeout=8000)
+    wait_until(lambda: abs(code.bounding_box()["width"] - dragged) <= 2, timeout=8000)
 
 
 def test_typing_is_held_until_run(page):

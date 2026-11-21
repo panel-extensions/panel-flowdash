@@ -587,6 +587,7 @@ class AceTools(JSComponent):
           ;(root.head || root).appendChild(style)
         }
         try { editor.setOptions({...model.options, enableLiveAutocompletion: true}) } catch (e) { console.warn(e) }
+        // scroll_margin is read once here, so it is fixed when the editor is attached.
         if (model.scroll_margin) {
           // Ace scrolls the cursor flush with the bottom edge; keep the margin below it too.
           const renderer = editor.renderer

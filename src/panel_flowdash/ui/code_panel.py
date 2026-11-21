@@ -145,6 +145,25 @@ def _is_frame(value: t.Any) -> bool:
     return hasattr(value, "columns") and hasattr(value, "head") and hasattr(value, "shape")
 
 
+def _shows_index(frame: t.Any) -> bool:
+    """Whether the table shows *frame*'s index: not when it only numbers the rows.
+
+    An unnamed integer index, the default one or what is left of it after
+    filtering, carries no data; a named one, a MultiIndex or e.g. a
+    DatetimeIndex holds group or time labels.
+    """
+    index = getattr(frame, "index", None)
+    if index is None or getattr(index, "nlevels", 1) > 1 or index.name is not None:
+        return index is not None
+    return getattr(index.dtype, "kind", "") not in "iu"
+
+
+def _output_label(port: t.Any) -> str:
+    """Name an output in the toggle: its own label, or its name with the first letter raised."""
+    label = port.label if port.label and port.label != port.name else port.name.replace("_", " ")
+    return label[:1].upper() + label[1:]
+
+
 class DockHandle(JSComponent):
     """A bar dragged to resize the layout holding it, which reports its new :attr:`height`.
 
@@ -556,7 +575,8 @@ class CodePanel(Viewer):
         watcher = state.param.watch(self._config_changed, [field, *self._others])
         self._releases.append(lambda: state.param.unwatch(watcher))
         node = editor._dataflow_graph.get_state(instance_id)
-        outputs = [p.name for p in spec.outputs if node is not None and p.name in node.param]
+        ports = [p for p in spec.outputs if node is not None and p.name in node.param]
+        outputs = [p.name for p in ports]
         if node is not None and outputs:
             out_watcher = node.param.watch(lambda *_e: self._show_result(), outputs)
             self._releases.append(lambda: node.param.unwatch(out_watcher))
@@ -565,7 +585,7 @@ class CodePanel(Viewer):
             in_watcher = node.param.watch(lambda *_e: self._complete(), inputs)
             self._releases.append(lambda: node.param.unwatch(in_watcher))
         self.outputs.param.update(
-            options={n.replace("_", " ").capitalize(): n for n in outputs},
+            options={_output_label(p): p.name for p in ports},
             value=self._default_output(node, outputs),
         )
         self.outputs.visible = len(outputs) > 1
@@ -1070,7 +1090,7 @@ class CodePanel(Viewer):
         if _is_frame(value):
             return pn.pane.DataFrame(
                 value.head(MAX_ROWS),
-                index=False,
+                index=_shows_index(value),
                 sizing_mode="stretch_both",
                 margin=0,
                 stylesheets=[_TABLE_CSS],

@@ -445,11 +445,29 @@ class TestRun:
         assert "5 rows &times; 3 columns" in panel._summary.object
         assert "fd-code-table" in panel._result_body[0].css_classes
 
-    def test_the_table_has_no_index(self, setup):
+    def test_the_table_hides_an_index_that_numbers_rows(self, setup):
         editor, query = setup
         editor.open_code_panel(query, "expr")
-        table = editor.code_panel._result_body[0]
-        assert table.index is False
+        assert editor.code_panel._result_body[0].index is False
+
+    @pytest.mark.parametrize(
+        ("frame", "shown"),
+        [
+            (TURBINES, False),
+            (TURBINES[TURBINES.p_year > 2014], False),
+            (TURBINES.sort_values("p_cap"), False),
+            (TURBINES.iloc[[5, 0, 3]], False),
+            (TURBINES.groupby("p_year").p_cap.sum().to_frame(), True),
+            (TURBINES.groupby(["p_year", "p_name"]).p_cap.sum().to_frame(), True),
+            (TURBINES.set_index(pd.date_range("2024-01-01", periods=6)), True),
+            (TURBINES.set_index("p_name"), True),
+        ],
+        ids=["range", "filtered", "sorted", "iloc", "groupby", "multiindex", "datetime", "named"],
+    )
+    def test_an_index_with_data_is_shown(self, frame, shown):
+        from panel_flowdash.ui.code_panel import _shows_index
+
+        assert _shows_index(frame) is shown
 
     def test_code_and_result_are_split(self, setup):
         from panel_splitjs import HSplit
@@ -463,15 +481,6 @@ class TestRun:
         assert list(panel._body) == [panel._code_column, panel._result_column]
         assert panel._body.sizes == SPLIT_SIZES
         assert SPLIT_SIZES[1] > SPLIT_SIZES[0]
-
-    def test_the_split_is_kept_for_another_node(self, setup):
-        editor, query = setup
-        editor.open_code_panel(query, "expr")
-        panel = editor.code_panel
-        panel._body.sizes = (30.0, 70.0)
-        note = editor.add_component("D/note", position=(0, 300))
-        editor.open_code_panel(note, "text")
-        assert panel._body.sizes == (30.0, 70.0)
 
 
 class TestInspector:
@@ -650,6 +659,14 @@ class TestOutputs:
         assert outputs.visible
         assert outputs.options == {"Pipeline": "pipeline", "Rows": "rows"}
         assert outputs.value == "rows"
+
+    def test_output_labels_keep_their_case(self):
+        from panel_flowdash.component_spec import OutputPort
+        from panel_flowdash.ui.code_panel import _output_label
+
+        assert _output_label(OutputPort("SQL_expr", label="SQL_expr")) == "SQL expr"
+        assert _output_label(OutputPort("data")) == "Data"
+        assert _output_label(OutputPort("rows", label="Result rows")) == "Result rows"
 
 
 def test_code_drafts_follows_held_drafts():
