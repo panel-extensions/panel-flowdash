@@ -5,7 +5,7 @@ import os
 import pytest
 from panel.tests.util import wait_until
 
-from tests.test_code_panel import make_editor
+from tests.test_code_panel import make_editor, make_lazy_editor
 from tests.ui.util import serve_component
 
 pytest.importorskip("playwright")
@@ -104,6 +104,91 @@ def test_opened_from_the_inspector_under_the_canvas(page):
     # The first result renders after the inspector and the panel, which takes a while under load.
     expect(page.locator(".fd-code-table")).to_contain_text("2016", timeout=15000)
     _shot(page, "open")
+
+
+def _middle(box):
+    return box["y"] + box["height"] / 2
+
+
+def test_the_result_header_fits_the_toggle_beside_the_summary(page):
+    editor, query = make_lazy_editor()
+    _open(page, editor, query)
+    result = page.locator(".fd-code-panel-result")
+    strip = result.locator(".fd-cp-subheader").first
+    toggle = result.locator(".fd-code-outputs .MuiToggleButtonGroup-root")
+    summary = result.locator(".fd-cp-subheader .fd-cp-bar")
+    expect(toggle).to_be_visible(timeout=8000)
+    expect(summary).to_contain_text("5 rows", timeout=15000)
+    strip_box, toggle_box = strip.bounding_box(), toggle.bounding_box()
+    text = summary.bounding_box()
+    assert toggle_box["y"] >= strip_box["y"] and (
+        toggle_box["y"] + toggle_box["height"] <= strip_box["y"] + strip_box["height"]
+    )
+    assert text["x"] >= toggle_box["x"] + toggle_box["width"]
+    assert abs(_middle(text) - _middle(toggle_box)) <= 1.5
+    assert abs(_middle(toggle_box) - _middle(strip_box)) <= 1.5
+    expect(toggle.get_by_role("button", name="Rows")).to_have_attribute("aria-pressed", "true")
+
+
+def test_the_table_fits_its_columns_without_the_index(page):
+    editor, query = make_editor()
+    _open(page, editor, query)
+    table = page.locator(".fd-code-table table")
+    expect(table).to_contain_text("2016", timeout=15000)
+    headers = table.locator("thead th")
+    expect(headers).to_have_count(3)
+    assert [h.strip() for h in headers.all_inner_texts()] == ["p_year", "p_name", "p_cap"]
+    expect(table.locator("tbody th")).to_have_count(0)
+    result = page.locator(".fd-code-panel-result").bounding_box()
+    assert table.bounding_box()["width"] < result["width"] / 2
+
+
+def test_the_code_footer_is_on_one_centred_line(page):
+    editor, query = make_editor()
+    _open(page, editor, query)
+    footer = page.locator(".fd-code-footer-bar")
+    icon = footer.locator(".fd-cp-ok .fd-cp-icon")
+    expect(icon).to_be_visible(timeout=8000)
+    middle = _middle(footer.bounding_box())
+    label = footer.locator(".fd-cp-ok")
+    position = footer.get_by_text("Ln ")
+    for part in (icon, label, position):
+        assert abs(_middle(part.bounding_box()) - middle) <= 1.5
+
+
+def test_the_split_between_code_and_result_is_dragged(page):
+    editor, query = make_editor()
+    other = editor.add_component("D/query", position=(320, 300))
+    editor.connect(next(iter(editor._component_instances)), "data", other, "data")
+    _open(page, editor, query)
+    code = page.locator(".fd-code-panel-code")
+    result = page.locator(".fd-code-panel-result")
+    expect(page.locator(".fd-code-table")).to_contain_text("2016", timeout=15000)
+    before = code.bounding_box()["width"]
+    assert result.bounding_box()["width"] > before
+    gutter = page.locator(".fd-code-panel-body .gutter")
+    box = gutter.bounding_box()
+    page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    page.mouse.down()
+    page.mouse.move(box["x"] + 200, box["y"] + box["height"] / 2, steps=8)
+    page.mouse.up()
+    wait_until(lambda: code.bounding_box()["width"] > before + 150, timeout=8000)
+    wait_until(lambda: editor.code_panel._body.sizes[0] > 45, timeout=8000)
+    assert page.evaluate(_SIDEWAYS) == []
+    dragged = code.bounding_box()["width"]
+    page.locator(f".react-flow__node[data-id='{other}']").click()
+    wait_until(lambda: editor._flow.selection["nodes"] == [other], timeout=8000)
+    page.locator(".fd-code-expand").first.click(timeout=8000)
+    wait_until(lambda: editor.code_panel.instance_id == other, timeout=8000)
+    expect(page.locator(".fd-code-panel-editor .ace_content")).to_contain_text(
+        "p_year", timeout=8000
+    )
+    assert abs(code.bounding_box()["width"] - dragged) <= 2
+    page.locator(".fd-code-collapse").click()
+    expect(page.locator(".fd-code-expand-panel")).to_be_visible(timeout=8000)
+    page.locator(".fd-code-expand-panel").click()
+    expect(code).to_be_visible(timeout=8000)
+    wait_until(lambda: abs(code.bounding_box()["width"] - dragged) <= 2, timeout=8000)
 
 
 def test_typing_is_held_until_run(page):

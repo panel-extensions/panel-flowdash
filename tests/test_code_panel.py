@@ -97,13 +97,53 @@ class Note(Viewer):
         return self.text
 
 
-COMPONENTS = {"D/turbines": Turbines, "D/query": Query, "D/note": Note}
+@register(
+    page=False,
+    component=True,
+    title="Lazy query",
+    icon="code",
+    config=["expr"],
+    requires=[{"key": "data", "type": "DataFrame", "required": True}],
+    provides=[{"key": "pipeline"}, {"key": "rows", "type": "DataFrame"}],
+)
+class LazyQuery(Viewer):
+    """A query with a lazy output beside its table, as a Lumen SQL node has."""
+
+    data = param.DataFrame(default=None, allow_None=True)
+    expr = param.String(
+        default="p_year > 2014", metadata={"flowdash": {"widget": "code", "language": "python"}}
+    )
+
+    @param.output(param.String)
+    @param.depends("expr")
+    def pipeline(self):
+        return f"query({self.expr!r})"
+
+    @param.output(param.DataFrame)
+    @param.depends("data", "expr")
+    def rows(self):
+        return None if self.data is None else self.data.query(self.expr)
+
+    def __panel__(self):
+        return "lazy"
+
+
+COMPONENTS = {"D/turbines": Turbines, "D/query": Query, "D/note": Note, "D/lazy": LazyQuery}
 
 
 def make_editor(**params):
     editor = FlowDash(COMPONENTS, notifications=False, include_builtin_components=False, **params)
     source = editor.add_component("D/turbines", position=(0, 0))
     query = editor.add_component("D/query", position=(320, 0))
+    editor.connect(source, "data", query, "data")
+    return editor, query
+
+
+def make_lazy_editor(**params):
+    """An editor with a node whose code panel offers two outputs, a pipeline and a table."""
+    editor = FlowDash(COMPONENTS, notifications=False, include_builtin_components=False, **params)
+    source = editor.add_component("D/turbines", position=(0, 0))
+    query = editor.add_component("D/lazy", position=(320, 0))
     editor.connect(source, "data", query, "data")
     return editor, query
 
@@ -405,6 +445,43 @@ class TestRun:
         assert "5 rows &times; 3 columns" in panel._summary.object
         assert "fd-code-table" in panel._result_body[0].css_classes
 
+    def test_the_table_hides_an_index_that_numbers_rows(self, setup):
+        editor, query = setup
+        editor.open_code_panel(query, "expr")
+        assert editor.code_panel._result_body[0].index is False
+
+    @pytest.mark.parametrize(
+        ("frame", "shown"),
+        [
+            (TURBINES, False),
+            (TURBINES[TURBINES.p_year > 2014], False),
+            (TURBINES.sort_values("p_cap"), False),
+            (TURBINES.iloc[[5, 0, 3]], False),
+            (TURBINES.groupby("p_year").p_cap.sum().to_frame(), True),
+            (TURBINES.groupby(["p_year", "p_name"]).p_cap.sum().to_frame(), True),
+            (TURBINES.set_index(pd.date_range("2024-01-01", periods=6)), True),
+            (TURBINES.set_index("p_name"), True),
+        ],
+        ids=["range", "filtered", "sorted", "iloc", "groupby", "multiindex", "datetime", "named"],
+    )
+    def test_an_index_with_data_is_shown(self, frame, shown):
+        from panel_flowdash.ui.code_panel import _shows_index
+
+        assert _shows_index(frame) is shown
+
+    def test_code_and_result_are_split(self, setup):
+        from panel_splitjs import HSplit
+
+        from panel_flowdash.ui.code_panel import SPLIT_SIZES
+
+        editor, query = setup
+        editor.open_code_panel(query, "expr")
+        panel = editor.code_panel
+        assert isinstance(panel._body, HSplit)
+        assert list(panel._body) == [panel._code_column, panel._result_column]
+        assert panel._body.sizes == SPLIT_SIZES
+        assert SPLIT_SIZES[1] > SPLIT_SIZES[0]
+
 
 class TestInspector:
     def test_the_expand_button_opens_the_panel(self, setup):
@@ -574,6 +651,22 @@ class TestOutputs:
         node = types.SimpleNamespace(pipeline=object(), data=TURBINES)
         assert CodePanel._default_output(None, node, ["pipeline", "data"]) == "data"
         assert CodePanel._default_output(None, node, ["pipeline"]) == "pipeline"
+
+    def test_outputs_are_labelled(self):
+        editor, query = make_lazy_editor()
+        editor.open_code_panel(query, "expr")
+        outputs = editor.code_panel.outputs
+        assert outputs.visible
+        assert outputs.options == {"Pipeline": "pipeline", "Rows": "rows"}
+        assert outputs.value == "rows"
+
+    def test_output_labels_keep_their_case(self):
+        from panel_flowdash.component_spec import OutputPort
+        from panel_flowdash.ui.code_panel import _output_label
+
+        assert _output_label(OutputPort("SQL_expr", label="SQL_expr")) == "SQL expr"
+        assert _output_label(OutputPort("data")) == "Data"
+        assert _output_label(OutputPort("rows", label="Result rows")) == "Result rows"
 
 
 def test_code_drafts_follows_held_drafts():
