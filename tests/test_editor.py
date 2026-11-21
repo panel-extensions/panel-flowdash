@@ -1700,9 +1700,11 @@ class TestDisplayModes:
             editor._settings_dialog,
             editor._transform_offer.dialog,
         ]
-        assert editor._workspace_area.objects[-4:] == dialogs
+        assert editor._dialog_host.objects[:4] == dialogs
+        assert editor._workspace_area.objects[-1] is editor._dialog_host
         editor.mode = "dashboard"
-        assert editor._workspace_area.objects[-4:] == dialogs
+        assert editor._dialog_host.objects[:4] == dialogs
+        assert editor._workspace_area.objects[-1] is editor._dialog_host
 
     async def test_non_editable_always_shows_the_grid(self, editor):
         editor.editable = False

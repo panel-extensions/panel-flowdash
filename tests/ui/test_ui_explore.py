@@ -181,7 +181,12 @@ def test_cards_stack_within_a_narrow_window(page, width):
     with agent_edits(run="run-1", question="Two notes"):
         editor.add_component("Test/note", instance_id="a")
         editor.add_component("Test/note", instance_id="b")
-    page.get_by_role("button", name="Explore", exact=True).click()
+    if width < 600:
+        # On a phone the View/Explore/Edit toggle is in the overflow menu.
+        page.get_by_role("button", name="More actions").filter(visible=True).click()
+        page.get_by_role("menuitem", name="Explore").click()
+    else:
+        page.get_by_role("button", name="Explore", exact=True).click()
     cards = page.locator(".artifact-cell").filter(has=page.get_by_text("note tile"))
     expect(cards).to_have_count(2)
     first, second = cards.first.bounding_box(), cards.last.bounding_box()
