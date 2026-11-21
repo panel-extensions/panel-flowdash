@@ -1,5 +1,7 @@
 """UI tests for the compact node cards, the inspector and the status bar of the wiring canvas."""
 
+import re
+
 import param
 import pytest
 from panel.tests.util import wait_until
@@ -327,3 +329,96 @@ def test_connecting_an_input_shows_the_alert_its_check_raises(page):
 
     editor.disconnect(limit, "limit", query, "limit")
     expect(alert).to_have_count(0)
+
+
+# The vertical centres of the status bar's texts and icons.
+_BAR_CENTRES = """() => {
+  const all = (root, acc = []) => {
+    root.querySelectorAll('*').forEach(el => { acc.push(el); if (el.shadowRoot) all(el.shadowRoot, acc); });
+    return acc;
+  };
+  const bar = all(document).find(el => el.classList && el.classList.contains('fd-status-bar'));
+  const box = bar.getBoundingClientRect();
+  const centre = el => { const r = el.getBoundingClientRect(); return r.top + r.height / 2; };
+  const inside = el => { const r = el.getBoundingClientRect();
+    return r.height > 0 && r.top >= box.top && r.bottom <= box.bottom; };
+  const items = all(bar.shadowRoot).filter(el => el.matches && inside(el) && (
+    el.matches('.MuiIcon-root, .MuiTypography-root, .MuiButton-root, .MuiToggleButton-root')));
+  return {bar: centre(bar), items: items.map(el => [el.className, centre(el)])};
+}"""
+
+
+# Narrower than the editor lets itself become, so the status bar is at its narrowest.
+_MIN_WIDTH = 600
+
+
+def _toggle_width(page, text):
+    return page.locator(".fd-status-bar .MuiToggleButton-root", has_text=text).bounding_box()[
+        "width"
+    ]
+
+
+def test_status_bar_items_share_one_centred_line(page):
+    editor, src, table = _editor()
+    editor.connect(src, "rows", table, "rows")
+    serve_component(page, editor)
+
+    expect(page.locator(".fd-status-bar").get_by_text("All outputs up to date")).to_be_visible()
+    centres = page.evaluate(_BAR_CENTRES)
+    assert len(centres["items"]) >= 6
+    for name, centre in centres["items"]:
+        assert abs(centre - centres["bar"]) <= 1.5, name
+
+
+def test_view_controls_show_labels_only_when_the_bar_has_room(page):
+    page.set_viewport_size({"width": 1500, "height": 800})
+    editor, src, table = _editor()
+    editor.connect(src, "rows", table, "rows")
+    serve_component(page, editor)
+
+    previews = page.locator(".fd-status-bar .MuiToggleButton-root", has_text="Previews")
+    expect(previews).to_be_visible()
+    expect(page.locator(".fd-status-bar").get_by_text("Collapse all")).to_be_visible()
+    assert _toggle_width(page, "Previews") > 60
+
+    page.set_viewport_size({"width": 820, "height": 800})
+    wait_until(lambda: _toggle_width(page, "Previews") < 40, timeout=8000)
+    assert _toggle_width(page, "Collapse all") < 40
+
+
+def test_view_controls_stay_inside_the_bar_at_the_minimum_width(page):
+    editor, src, table = _editor()
+    editor.connect(src, "rows", table, "rows")
+    page.set_viewport_size({"width": 1200, "height": 800})
+    serve_component(page, editor)
+
+    page.set_viewport_size({"width": _MIN_WIDTH, "height": 800})
+    bar = page.locator(".fd-status-bar")
+    zoom = bar.get_by_text("Zoom ")
+    expect(page.locator(".fd-keys")).to_be_hidden()
+
+    def inside():
+        outer, inner = bar.bounding_box(), zoom.bounding_box()
+        return inner["width"] > 0 and inner["x"] + inner["width"] <= outer["x"] + outer["width"]
+
+    wait_until(inside, timeout=8000)
+
+
+def test_view_controls_follow_the_cards(page):
+    editor, src, table = _editor()
+    editor.connect(src, "rows", table, "rows")
+    serve_component(page, editor)
+
+    collapse = page.locator(".fd-status-bar .MuiToggleButton-root", has_text="Collapse all")
+    collapse.click()
+    wait_until(lambda: all(card.collapsed for card in editor._node_cards().values()), timeout=8000)
+    # Drawn pressed while every card is collapsed, which its ARIA state says too.
+    expect(collapse).to_have_attribute("aria-pressed", "true")
+    expect(collapse).to_have_attribute("aria-label", "Expand all nodes (C)")
+    expect(collapse).to_have_class(re.compile(r"\bMui-selected\b"))
+
+    previews = page.locator(".fd-status-bar .MuiToggleButton-root", has_text="Previews")
+    shown = editor._status_bar.preview_toggle.value
+    expect(previews).to_have_attribute("aria-pressed", str(shown).lower())
+    editor._status_bar.toggle_previews()
+    expect(previews).to_have_attribute("aria-pressed", str(not shown).lower())

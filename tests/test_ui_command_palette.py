@@ -126,6 +126,7 @@ class TestItems:
             "action:refresh",
             "action:save",
             "action:split",
+            "action:previews",
             "action:view",
             "action:settings",
             "action:theme",
@@ -323,6 +324,70 @@ class TestRun:
         for action in ("refresh", "edit", "save", "settings"):
             controller.run(f"action:{action}")
         assert not app._editor._settings_dialog.open
+
+
+class TestCanvasViewCommands:
+    async def test_offered_while_the_canvas_is_shown(self, app):
+        _open(app, components=[SELECTOR])
+        controller = app._command_palette
+        assert "action:previews" not in _ids(controller)
+        app._show_edit_mode()
+        assert {"action:previews", "action:collapse_all"} <= set(_ids(controller))
+        app._editor.mode = "dashboard"
+        assert "action:previews" not in _ids(controller)
+        assert "action:collapse_all" not in _ids(controller)
+        app._editor.mode = "split"
+        assert "action:collapse_all" in _ids(controller)
+
+    async def test_collapse_all_needs_nodes(self, app):
+        _open(app, edit=True)
+        controller = app._command_palette
+        assert "action:previews" in _ids(controller)
+        assert "action:collapse_all" not in _ids(controller)
+        app._editor.add_component(SELECTOR)
+        assert "action:collapse_all" in _ids(controller)
+
+    async def test_previews_follow_and_drive_the_status_bar(self, app):
+        _open(app, edit=True, components=[SELECTOR])
+        controller, editor = app._command_palette, app._editor
+        toggle = editor._status_bar.preview_toggle
+        shown = toggle.value
+        item = _item(controller, "action:previews")
+        assert item["title"] == ("Hide node previews" if shown else "Show node previews")
+        assert item["keys"] == ["P"]
+        controller.run("action:previews")
+        assert toggle.value is not shown
+        assert all(card.show_preview is not shown for card in editor._node_cards().values())
+        assert _item(controller, "action:previews")["title"] == (
+            "Show node previews" if shown else "Hide node previews"
+        )
+        assert not editor.dirty
+
+    async def test_collapse_all_follows_and_drives_the_status_bar(self, app):
+        _open(app, edit=True, components=[SELECTOR, CHART])
+        controller, editor = app._command_palette, app._editor
+        cards = editor._node_cards().values()
+        item = _item(controller, "action:collapse_all")
+        assert (item["title"], item["keys"]) == ("Collapse all nodes", ["C"])
+        controller.run("action:collapse_all")
+        assert all(card.collapsed for card in cards)
+        assert editor._status_bar.collapse_toggle.value
+        assert _item(controller, "action:collapse_all")["title"] == "Expand all nodes"
+        controller.run("action:collapse_all")
+        assert not any(card.collapsed for card in cards)
+        assert _item(controller, "action:collapse_all")["title"] == "Collapse all nodes"
+
+    async def test_not_run_on_the_layout_tab(self, app):
+        _open(app, edit=True, components=[SELECTOR])
+        editor = app._editor
+        editor.mode = "dashboard"
+        app._command_palette.run("action:collapse_all")
+        assert not any(card.collapsed for card in editor._node_cards().values())
+
+    async def test_their_keys_are_listed(self):
+        keys = {entry["label"]: entry["keys"] for entry in SHORTCUTS}
+        assert keys["Show or hide node previews"] == ["P"]
+        assert keys["Collapse or expand all nodes"] == ["C"]
 
 
 class TestShortcuts:

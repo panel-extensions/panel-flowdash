@@ -100,7 +100,8 @@ def test_previews_render_and_handles_stay_beside_their_labels(page, scheme):
         assert abs(icon["width"] - icon["height"]) < 1
         assert 0 < title["x"] - (icon["x"] + icon["width"]) < icon["width"]
 
-    toggle = page.locator("[aria-label='Preview values on the canvas']")
+    toggle = page.locator(".fd-status-bar .MuiToggleButton-root", has_text="Previews")
+    expect(toggle).to_have_attribute("aria-label", "Hide node previews (P)")
     toggle.click()
     wait_until(lambda: not card(editor, ids["filter"]).show_preview, page, timeout=8000)
     assert editor.settings.node_previews and not editor.dirty

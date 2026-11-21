@@ -647,6 +647,16 @@ class TestCards:
         assert card(editor, ids["filter"]).preview.kind == "table"
         assert card(editor, placed).show_preview
 
+    async def test_canvas_toggle_is_labelled_and_names_its_shortcut(self):
+        editor, _ids = demo_editor()
+        toggle = editor._status_bar.preview_toggle
+        assert toggle.label == "Previews"
+        assert toggle.description == "Hide node previews (P)"
+        toggle.value = False
+        assert toggle.description == "Show node previews (P)"
+        editor._status_bar._on_shortcut("p")
+        assert toggle.value and toggle.description == "Hide node previews (P)"
+
     async def test_canvas_toggle_leaves_a_read_only_dashboard_unchanged(self):
         editor, ids = demo_editor(read_only=True)
         editor.dirty = False

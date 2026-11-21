@@ -149,11 +149,11 @@ def test_stacked_card_interactions_handles_and_popout(page, scheme, monkeypatch,
     assert not editor.dirty
 
     # Collapse all toggle in status bar, whose label follows what it will do
-    page.locator("[aria-label='Collapse all cards']").click()
+    page.locator("[aria-label='Collapse all nodes (C)']").click()
     wait_until(
         lambda: _card(editor, src).collapsed and _card(editor, sql).collapsed, page, timeout=8000
     )
-    collapse_all = page.locator("[aria-label='Expand all cards']")
+    collapse_all = page.locator("[aria-label='Expand all nodes (C)']")
     expect(collapse_all).to_have_count(1)
     collapse_all.click()
     wait_until(
