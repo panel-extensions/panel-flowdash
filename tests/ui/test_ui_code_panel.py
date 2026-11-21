@@ -513,7 +513,15 @@ def test_the_panel_follows_the_selection_and_keeps_drafts(page):
     _panel, code = _open(page, editor, query)
     _type_at_end(page, code, " and p_cap > 2")
     wait_until(lambda: editor.code_panel.dirty, timeout=8000)
-    page.locator(f".react-flow__node[data-id='{note}']").click()
+    # The panel keeps the edited node in view at its zoom, so the note below it is under the
+    # panel; fit the canvas to its nodes, as a user would, rather than click through the panel.
+    page.locator(".react-flow__controls-fitview").click()
+    note_card = page.locator(f".react-flow__node[data-id='{note}']")
+    dock_top = page.locator(".fd-code-dock").bounding_box()["y"]
+    wait_until(
+        lambda: note_card.bounding_box()["y"] + note_card.bounding_box()["height"] < dock_top, page
+    )
+    note_card.click()
     expect(code.locator(".ace_content")).to_contain_text("# Hi", timeout=8000)
     expect(page.locator(".fd-code-panel-editor")).to_be_visible()
     page.locator(f".react-flow__node[data-id='{source}']").click()
