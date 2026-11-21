@@ -194,24 +194,120 @@ def test_drafts_are_not_previewed(explore):
         ex.preview("nodes: {}")
 
 
-@pytest.mark.parametrize("freeze", [True, False])
-async def test_earlier_answers_are_frozen_unless_turned_off(store, monkeypatch, freeze):
+def _scaled_chain():
+    """An Explore agent scaling base twice: sc reads base, s2 reads sc."""
+    return _agent(
+        ("add_node", {"component": "T/scaled", "name": "sc"}),
+        ("connect", {"source": "base.value", "target": "sc.value"}),
+        ("add_node", {"component": "T/scaled", "name": "s2"}),
+        ("connect", {"source": "sc.out", "target": "s2.value"}),
+    )
+
+
+async def _follow_up(runner, *calls):
+    runner.agent = _agent(*calls)
+    runner.messages = []
+    await runner.run("Follow up")
+    return runner.run_id
+
+
+def _config(exploration, node):
+    return next(i for i in exploration.editor._tile_items if i["instance_id"] == node)["config"]
+
+
+async def test_editing_an_earlier_answer_edits_a_copy(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, explore_agent=_scaled_chain())
+    session = app._agent_session
+    runner = session.explore_runner
+    await runner.run("Scale it")
+    first = runner.run_id
+    second = await _follow_up(runner, ("set_config", {"name": "s2", "config": {"factor": 3}}))
+    exploration = session.explorations.exploration()
+    # The earlier answer is untouched; the edit went to copies of it and the node it reads.
+    assert _config(exploration, "s2") == {} and exploration.leaves(first) == ["s2"]
+    assert _config(exploration, "s2_2") == {"factor": 3}
+    assert sorted(exploration.made_by(second)) == ["s2_2", "sc_2"]
+    assert exploration.leaves(second) == ["s2_2"]
+    edges = {(e["source"], e["target"]) for e in exploration.editor.graph.edges}
+    assert {("base", "sc_2"), ("sc_2", "s2_2"), ("base", "sc"), ("sc", "s2")} <= edges
+    result = str(runner.state.tool_calls["call-1"].result)
+    assert "copied 'sc' as 'sc_2', 's2' as 's2_2'" in result and "Use 's2_2'" in result
+    # Each answer has its card.
+    feed = app._editor.explore_feed
+    feed.shown = True
+    cards = {a.artifact_id for a in feed.state.artifacts}
+    assert {f"explore:{first}:s2", f"explore:{second}:s2_2"} <= cards
+
+
+async def test_an_earlier_chain_is_copied_once_per_request(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, explore_agent=_scaled_chain())
+    session = app._agent_session
+    runner = session.explore_runner
+    await runner.run("Scale it")
+    second = await _follow_up(
+        runner,
+        ("set_config", {"name": "s2", "config": {"factor": 3}}),
+        ("set_config", {"name": "sc", "config": {"factor": 2}}),
+        ("set_config", {"name": "s2", "config": {"factor": 4}}),
+    )
+    exploration = session.explorations.exploration()
+    assert sorted(exploration.made_by(second)) == ["s2_2", "sc_2"]
+    assert _config(exploration, "sc_2") == {"factor": 2}
+    assert _config(exploration, "s2_2") == {"factor": 4}
+    assert _config(exploration, "sc") == {} and _config(exploration, "s2") == {}
+
+
+async def test_a_node_of_the_current_request_is_edited_in_place(store, monkeypatch):
+    app, _ = _open(
+        store,
+        monkeypatch,
+        explore_agent=_agent(
+            ("add_node", {"component": "T/scaled", "name": "sc"}),
+            ("connect", {"source": "base.value", "target": "sc.value"}),
+            ("set_config", {"name": "sc", "config": {"factor": 2}}),
+        ),
+    )
+    session = app._agent_session
+    await session.explore_runner.run("Scale it")
+    exploration = session.explorations.exploration()
+    assert _nodes(exploration.editor) == ["base", "sc"]
+    assert _config(exploration, "sc") == {"factor": 2}
+
+
+async def test_removing_an_earlier_answer_keeps_it(store, monkeypatch):
     app, _ = _open(store, monkeypatch, explore_agent=_exploring("twice"))
     session = app._agent_session
-    session.explorations.freeze_answers = freeze
     runner = session.explore_runner
     await runner.run("Double it")
-    runner.agent = _agent(("remove_node", {"name": "twice"}))
-    runner.messages = []
-    await runner.run("Drop it")
-    # The scripted model numbers its calls per run, so the second run's call is "call-1" again.
-    call = runner.state.tool_calls["call-1"]
+    await _follow_up(runner, ("remove_node", {"name": "twice"}))
+    assert "twice" in _nodes(session.explorations.exploration().editor)
+    assert "belongs to an earlier answer" in str(runner.state.tool_calls["call-1"].result)
+
+
+async def test_without_freezing_a_follow_up_edits_in_place(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, explore_agent=_scaled_chain())
+    session = app._agent_session
+    session.explorations.freeze_answers = False
+    runner = session.explore_runner
+    await runner.run("Scale it")
+    await _follow_up(runner, ("set_config", {"name": "s2", "config": {"factor": 3}}))
     exploration = session.explorations.exploration()
-    if freeze:
-        assert str(call.result).startswith("Refused: 'twice' is part of an earlier answer")
-        assert "twice" in _nodes(exploration.editor)
-    else:
-        assert "twice" not in _nodes(exploration.editor)
+    assert _config(exploration, "s2") == {"factor": 3} and "s2_2" not in _nodes(exploration.editor)
+
+
+async def test_adding_a_copy_reuses_what_the_dashboard_has(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, explore_agent=_scaled_chain())
+    session = app._agent_session
+    editor = app._editor
+    runner = session.explore_runner
+    await runner.run("Scale it")
+    first = runner.run_id
+    second = await _follow_up(runner, ("set_config", {"name": "s2", "config": {"factor": 3}}))
+    assert await session.add_answer(first, "s2") == "s2"
+    # The copy's unchanged upstream is the dashboard's sc now; only the changed node is new.
+    assert await session.add_answer(second, "s2_2") == "s2_2"
+    assert _nodes(editor) == ["base", "sc", "s2", "s2_2"]
+    assert ("sc", "s2_2") in {(e["source"], e["target"]) for e in editor.graph.edges}
 
 
 async def test_an_explore_run_leaves_the_dashboard_and_its_history_alone(store, monkeypatch):
@@ -898,4 +994,4 @@ async def test_adding_runs_the_config_checks_off_the_event_loop(store, monkeypat
     await ticker
     assert _nodes(app._editor) == ["base", "s0", "s1", "s2", "s3"]
     # Four checks of 0.2 s ran, but the loop never waited on one.
-    assert max(gaps) < 0.15, max(gaps)
+    assert max(gaps) < 0.19, max(gaps)

@@ -421,9 +421,10 @@ class ExplorationOps(DashboardOps):
         The operations on the dashboard the user has open, e.g. the
         session's :class:`~panel_flowdash.agent.live.LiveDashboardOps`.
     freeze_answers
-        Whether the nodes of earlier runs stay as they are, so a follow-up
-        adds nodes of its own and each answer keeps showing what it showed.
-        False lets a follow-up change them. Defaults to :attr:`FREEZE_ANSWERS`.
+        Whether the nodes of earlier runs stay as they are, so each answer
+        keeps showing what it showed: a follow-up that changes one changes a
+        copy of it, a new answer. False lets a follow-up change them in
+        place. Defaults to :attr:`FREEZE_ANSWERS`.
     allow_source
         Called with a data source's component id and config to tell whether
         Explore may add it. By default a source the host offers may be added
@@ -457,6 +458,9 @@ class ExplorationOps(DashboardOps):
         self.last_check = CheckResult()
         self._explorations: dict[str | None, Exploration] = {}
         self._answers: dict[str | None, dict[tuple[str, str], Answer]] = {}
+        # The copies of earlier answers' nodes each request made, by run and original node.
+        self._copies: dict[str | None, dict[str, str]] = {}
+        self._notes: list[str] = []
         self._adding: dict[tuple[str, str], asyncio.Future] = {}
         dashboard.editor.param.watch(self._on_dashboard, "dashboard")
 
@@ -533,32 +537,98 @@ class ExplorationOps(DashboardOps):
     def _source_visible(self) -> bool:
         return self.dashboard._source_visible()
 
-    def _frozen(self, instance_id: str, name: str) -> str | None:
-        """Return why the node may not be changed, or None when the current run may change it."""
-        exploration = self.exploration()
-        if exploration.is_mirror(instance_id):
-            return (
+    def _refuse_mirror(self, instance_id: str, name: str):
+        if self.exploration().is_mirror(instance_id):
+            raise PermissionError(
                 f"'{name}' is a node of the dashboard, which Explore cannot change. Build on it: "
                 "connect its outputs to nodes of your own."
             )
+
+    def _earlier(self, instance_id: str) -> bool:
+        """Whether the node belongs to an earlier answer, which stays as it is."""
         if not self.freeze_answers:
-            return None
+            return False
         from panel_agents import current_run_id
 
+        exploration = self.exploration()
+        if exploration.is_mirror(instance_id):
+            return False
         run = exploration.run_of(instance_id)
-        if run is not None and run != current_run_id():
-            return (
-                f"'{name}' is part of an earlier answer, and earlier answers stay as they are. "
-                "Build on it instead: add nodes of your own and connect its outputs to them."
-            )
-        return None
+        return run is not None and run != current_run_id()
 
-    def _refuse_frozen(self, name: str) -> str:
+    def _editable(self, name: str) -> str:
+        """Return the name to change for *name*: itself, or its copy if an earlier answer owns it.
+
+        Earlier answers stay as they are, so an edit of one of their nodes
+        goes to a copy owned by the current request, made with the earlier
+        nodes it is built from, once per request; the agent is told.
+        """
         instance_id = self._instance(name)
-        reason = self._frozen(instance_id, name)
-        if reason is not None:
-            raise PermissionError(reason)
-        return instance_id
+        self._refuse_mirror(instance_id, name)
+        if not self._earlier(instance_id):
+            return name
+        return self._copy_earlier(instance_id)
+
+    def _copy_earlier(self, instance_id: str) -> str:
+        from panel_agents import current_run_id
+
+        run = current_run_id()
+        copies = self._copies.setdefault(run, {})
+        if instance_id in copies:
+            return copies[instance_id]
+        exploration = self.exploration()
+        editor = exploration.editor
+        edges = editor.graph.edges
+        # The node and the earlier nodes it is built from, upstream first.
+        chain, queue = [instance_id], [instance_id]
+        while queue:
+            node = queue.pop(0)
+            for edge in edges:
+                source = edge["source"]
+                if edge["target"] == node and source not in chain and source not in copies:
+                    if self._earlier(source):
+                        chain.append(source)
+                        queue.append(source)
+        items = exploration._items()
+        names = node_names(editor._tile_items)
+        taken = set(items) | set(exploration.mirrors)
+        made = []
+        for node in reversed(chain):
+            new = _free_name(names.get(node, node), taken)
+            taken.add(new)
+            item = items[node]
+            editor.add_component(
+                item["component_id"],
+                copy.deepcopy(item.get("config") or {}),
+                instance_id=new,
+                arrange=True,
+            )
+            copies[node] = new
+            made.append((names.get(node, node), new))
+        for node in reversed(chain):
+            for edge in [e for e in edges if e["target"] == node]:
+                editor.connect(
+                    copies.get(edge["source"], edge["source"]),
+                    edge["source_port"],
+                    copies[node],
+                    edge["target_port"],
+                    edge.get("transform") or None,
+                )
+            literals = editor.graph.literals(node)
+            if literals:
+                editor._set_inputs(copies[node], literals)
+        listed = ", ".join(f"'{old}' as '{new}'" for old, new in made)
+        self._notes.append(
+            f"Earlier answers stay as they are, so this request copied {listed} and made the "
+            f"change to the copy. Use '{dict(made)[names.get(instance_id, instance_id)]}' "
+            "from now on."
+        )
+        return copies[instance_id]
+
+    def take_notes(self) -> str | None:
+        """Return what the agent should know about the last tool call, e.g. copies made, once."""
+        notes, self._notes = self._notes, []
+        return " ".join(notes) or None
 
     def _new_node(self, component: str, config: dict[str, t.Any] | None):
         spec, resolved = super()._new_node(component, config)
@@ -591,25 +661,35 @@ class ExplorationOps(DashboardOps):
 
     def _config_patch(self, name: str, config: dict[str, t.Any]):
         self._require_edit()
-        self._refuse_frozen(name)
-        return super()._config_patch(name, config)
+        return super()._config_patch(self._editable(name), config)
 
     def _inputs_patch(self, name: str, inputs: dict[str, t.Any]) -> dict[str, t.Any]:
         self._require_edit()
-        self._refuse_frozen(name)
-        return super()._inputs_patch(name, inputs)
+        return super()._inputs_patch(self._editable(name), inputs)
+
+    def _set_inputs(self, name: str, inputs: dict[str, t.Any]) -> str:
+        self._require_edit()
+        return super()._set_inputs(self._editable(name), inputs)
 
     def _port(self, ref: str, direction: str) -> tuple[str, str]:
-        instance_id, port = super()._port(ref, direction)
         if direction == "target":
-            reason = self._frozen(instance_id, ref.partition(".")[0])
-            if reason is not None:
-                raise PermissionError(reason)
-        return instance_id, port
+            name, dot, port = ref.partition(".")
+            if dot:
+                self._require_edit()
+                ref = f"{self._editable(name)}.{port}"
+        return super()._port(ref, direction)
 
     def remove_node(self, name: str) -> None:
         self._require_edit()
-        self._refuse_frozen(name)
+        instance_id = self._instance(name)
+        self._refuse_mirror(instance_id, name)
+        if self._earlier(instance_id):
+            # Removing it would change an earlier answer; leaving it out of this one is enough.
+            self._notes.append(
+                f"'{name}' belongs to an earlier answer, which stays as it is, so it was kept; "
+                "this answer does not use it unless you connect it."
+            )
+            return
         super().remove_node(name)
 
     def _checked_nodes(self, editor: FlowDash) -> list[str]:

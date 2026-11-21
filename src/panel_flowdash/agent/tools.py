@@ -518,6 +518,9 @@ def _guarded(func: t.Callable) -> t.Callable:
                 refusal = deps.check_pin(ctx.run_id)
             if refusal is not None:
                 return refusal
+        take_notes = getattr(deps.ops, "take_notes", None)
+        if take_notes is not None:
+            take_notes()
         listen = func in EDIT_TOOLS and bool(deps.edit_listeners)
         before = _snapshot(deps.ops) if listen else None
         try:
@@ -533,6 +536,9 @@ def _guarded(func: t.Callable) -> t.Callable:
             return f"Not available: {exc}"
         finally:
             deps.ops.editor.edit_history.flush()
+        notes = take_notes() if take_notes is not None else None
+        if notes:
+            result = f"{_text(result)} {notes}"
         if func is open_dashboard:
             deps.repin()
         after = _snapshot(deps.ops) if listen else None

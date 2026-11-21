@@ -264,8 +264,10 @@ its dashboard node again when an Undo brings it back. Only the open dashboard's
 exploration is kept, with the answers of its latest 20 requests; an older answer keeps
 its card, which asks to ask the question again. Each answer of a request (a node it made
 that none of its other nodes reads) gets a card, with the nodes it is built from
-collapsed under it. A follow-up adds nodes of its own rather than changing an earlier
-answer's (`ExplorationOps(freeze_answers=False)` lets it change them). A card says when
+collapsed under it. Earlier answers stay as they are: a follow-up that changes one of
+their nodes changes a copy of it, and of the earlier nodes it is built from, named like
+`total_2`, which becomes an answer of its own with its own card
+(`ExplorationOps(freeze_answers=False)` lets a follow-up change them in place). A card says when
 a dashboard node it is built on changed or was removed since, and keeps showing that
 node's last output once it is removed. Answers last as long as the session.
 

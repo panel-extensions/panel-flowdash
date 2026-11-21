@@ -129,8 +129,8 @@ How to work:
 - Your nodes are built beside the dashboard. Its own nodes are there to read
   and connect from, never to change. Use its data sources; a source it does
   not have may be added as offered, without config of its own.
-- Earlier answers stay as they are. To follow up on one, add nodes that read
-  its outputs.
+- Earlier answers stay as they are. Changing a node of one changes a copy of
+  it, whose new name the tool result gives; use that name from then on.
 """
 
 #: The dashboard tools the Explore agent gets: reading the dashboard and adding its own nodes.
