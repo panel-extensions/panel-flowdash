@@ -90,6 +90,10 @@ def _incoming(edges: t.Any, name: str) -> list[str]:
     )
 
 
+class NothingChanged(Exception):
+    """A request that changes nothing, by design rather than by mistake; its message says why."""
+
+
 class OutputUnavailable(Exception):
     """A node has no output value to read yet, or it failed, as a preview reports it.
 

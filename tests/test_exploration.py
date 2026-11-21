@@ -281,7 +281,111 @@ async def test_removing_an_earlier_answer_keeps_it(store, monkeypatch):
     await runner.run("Double it")
     await _follow_up(runner, ("remove_node", {"name": "twice"}))
     assert "twice" in _nodes(session.explorations.exploration().editor)
-    assert "belongs to an earlier answer" in str(runner.state.tool_calls["call-1"].result)
+    result = str(runner.state.tool_calls["call-1"].result)
+    assert result.startswith("Nothing was removed: 'twice' belongs to an earlier answer")
+    assert "Removed" not in result
+
+
+def _edges(exploration):
+    return {(e["source"], e["target"]) for e in exploration.editor.graph.edges}
+
+
+_STEPS = [{"op": "column", "column": "x"}]
+
+
+@pytest.mark.parametrize("tool", ["set_transform", "disconnect"])
+async def test_an_edge_between_earlier_nodes_is_changed_on_the_copies(store, monkeypatch, tool):
+    app, _ = _open(store, monkeypatch, explore_agent=_scaled_chain())
+    session = app._agent_session
+    runner = session.explore_runner
+    await runner.run("Scale it")
+    args = {"source": "sc.out", "target": "s2.value"}
+    if tool == "set_transform":
+        args["transform"] = []
+    second = await _follow_up(runner, (tool, args))
+    exploration = session.explorations.exploration()
+    result = str(runner.state.tool_calls["call-1"].result)
+    assert "copied 'sc' as 'sc_2', 's2' as 's2_2'" in result, result
+    assert {("base", "sc"), ("sc", "s2")} <= _edges(exploration)
+    assert (("sc_2", "s2_2") in _edges(exploration)) == (tool == "set_transform")
+    assert sorted(exploration.made_by(second)) == ["s2_2", "sc_2"]
+
+
+async def test_an_edge_from_a_mirror_into_an_earlier_node_is_changed_on_its_copy(
+    store, monkeypatch
+):
+    app, _ = _open(store, monkeypatch, explore_agent=_scaled_chain())
+    session = app._agent_session
+    runner = session.explore_runner
+    await runner.run("Scale it")
+    await _follow_up(runner, ("disconnect", {"source": "base.value", "target": "sc.value"}))
+    exploration = session.explorations.exploration()
+    assert ("base", "sc") in _edges(exploration)
+    assert ("base", "sc_2") not in _edges(exploration)
+    assert "sc_2" in _nodes(exploration.editor)
+
+
+async def test_an_edge_into_a_mirror_is_refused_without_copies(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, explore_agent=_scaled_chain())
+    session = app._agent_session
+    runner = session.explore_runner
+    await runner.run("Scale it")
+    await _follow_up(runner, ("connect", {"source": "s2.out", "target": "base.value"}))
+    exploration = session.explorations.exploration()
+    assert "node of the dashboard" in str(runner.state.tool_calls["call-1"].result)
+    assert not any(n.endswith("_2") for n in _nodes(exploration.editor))
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        ("set_config", {"name": "s2", "config": {"factor": 99}}),
+        ("set_config", {"name": "s2", "config": {"nope": 1}}),
+        ("connect", {"source": "base.value", "target": "s2.value"}),
+    ],
+    ids=["out-of-bounds", "unknown-field", "taken-input"],
+)
+async def test_a_failed_edit_of_an_earlier_answer_leaves_no_copies(store, monkeypatch, call):
+    app, _ = _open(store, monkeypatch, explore_agent=_scaled_chain())
+    session = app._agent_session
+    runner = session.explore_runner
+    await runner.run("Scale it")
+    second = await _follow_up(runner, call)
+    exploration = session.explorations.exploration()
+    assert _nodes(exploration.editor) == ["base", "sc", "s2"]
+    assert exploration.made_by(second) == [] and session.explorations._copies.get(second) == {}
+    assert "copied" not in str(runner.state.tool_calls["call-1"].result)
+
+
+async def test_this_requests_nodes_read_the_copy_of_an_earlier_node(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, explore_agent=_scaled_chain())
+    session = app._agent_session
+    runner = session.explore_runner
+    await runner.run("Scale it")
+    second = await _follow_up(
+        runner,
+        ("add_node", {"component": "T/scaled", "name": "d"}),
+        ("connect", {"source": "s2.out", "target": "d.value"}),
+        ("set_config", {"name": "s2", "config": {"factor": 3}}),
+    )
+    exploration = session.explorations.exploration()
+    edges = _edges(exploration)
+    assert ("s2_2", "d") in edges and ("s2", "d") not in edges
+    assert ("sc", "s2") in edges
+    assert "now read the copy" in str(runner.state.tool_calls["call-3"].result)
+    assert exploration.leaves(second) == ["d"]
+
+
+async def test_a_copy_of_a_copy_is_named_after_the_original(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, explore_agent=_scaled_chain())
+    session = app._agent_session
+    runner = session.explore_runner
+    await runner.run("Scale it")
+    await _follow_up(runner, ("set_config", {"name": "s2", "config": {"factor": 3}}))
+    third = await _follow_up(runner, ("set_config", {"name": "s2_2", "config": {"factor": 4}}))
+    exploration = session.explorations.exploration()
+    assert "s2_3" in exploration.made_by(third)
+    assert "s2_2_2" not in _nodes(exploration.editor)
 
 
 async def test_without_freezing_a_follow_up_edits_in_place(store, monkeypatch):

@@ -23,6 +23,7 @@ import asyncio
 import copy
 import hashlib
 import logging
+import re
 import typing as t
 import uuid
 import weakref
@@ -35,7 +36,7 @@ from panel_flowdash.config_check import CheckResult
 from panel_flowdash.turns import agent_edits
 from panel_flowdash.ui import tile_layout
 
-from .ops import DashboardOps, OperationError
+from .ops import DashboardOps, NothingChanged, OperationError
 from .yaml_format import node_names
 
 if t.TYPE_CHECKING:
@@ -461,6 +462,8 @@ class ExplorationOps(DashboardOps):
         # The copies of earlier answers' nodes each request made, by run and original node.
         self._copies: dict[str | None, dict[str, str]] = {}
         self._notes: list[str] = []
+        # How to take back the copies and rewiring of the tool call in progress.
+        self._undo: list[t.Callable[[], None]] = []
         self._adding: dict[tuple[str, str], asyncio.Future] = {}
         dashboard.editor.param.watch(self._on_dashboard, "dashboard")
 
@@ -594,7 +597,8 @@ class ExplorationOps(DashboardOps):
         taken = set(items) | set(exploration.mirrors)
         made = []
         for node in reversed(chain):
-            new = _free_name(names.get(node, node), taken)
+            # A copy of a copy is named after the original: s2_3, not s2_2_2.
+            new = _free_name(re.sub(r"_\d+$", "", names.get(node, node)), taken)
             taken.add(new)
             item = items[node]
             editor.add_component(
@@ -604,6 +608,7 @@ class ExplorationOps(DashboardOps):
                 arrange=True,
             )
             copies[node] = new
+            self._undo.append(lambda node=node, new=new: self._forget_copy(run, node, new))
             made.append((names.get(node, node), new))
         for node in reversed(chain):
             for edge in [e for e in edges if e["target"] == node]:
@@ -617,18 +622,74 @@ class ExplorationOps(DashboardOps):
             literals = editor.graph.literals(node)
             if literals:
                 editor._set_inputs(copies[node], literals)
+        # This request's own nodes that read an original read its copy now: within a
+        # request, an edit applies to the answer being built. Earlier answers keep theirs.
+        rewired = []
+        for edge in list(editor.graph.edges):
+            target = edge["target"]
+            if (
+                edge["source"] in chain
+                and target not in copies.values()
+                and not exploration.is_mirror(target)
+                and exploration.run_of(target) == run
+            ):
+                self._rewire(edge, copies[edge["source"]])
+                rewired.append(names.get(target, target))
         listed = ", ".join(f"'{old}' as '{new}'" for old, new in made)
-        self._notes.append(
+        note = (
             f"Earlier answers stay as they are, so this request copied {listed} and made the "
             f"change to the copy. Use '{dict(made)[names.get(instance_id, instance_id)]}' "
             "from now on."
         )
+        if rewired:
+            note += f" This request's {', '.join(sorted(set(rewired)))} now read the copy."
+        self._notes.append(note)
         return copies[instance_id]
+
+    def _rewire(self, edge: dict, source: str):
+        """Feed *edge*'s target from *source* instead of the edge's own source, undoably."""
+        editor = self.editor
+        key = (edge["source"], edge["source_port"], edge["target"], edge["target_port"])
+        transform = edge.get("transform") or None
+        editor.disconnect(*key)
+        editor.connect(source, key[1], key[2], key[3], transform)
+
+        def undo():
+            editor.disconnect(source, key[1], key[2], key[3])
+            editor.connect(*key, transform)
+
+        self._undo.append(undo)
+
+    def _forget_copy(self, run: str | None, node: str, new: str):
+        self._copies.get(run, {}).pop(node, None)
+        if new in self.exploration()._items():
+            self.editor.remove_component(new)
+
+    def begin_call(self):
+        """Start a tool call: forget the notes and undo steps of the previous one."""
+        self._notes, self._undo = [], []
+
+    def abort_call(self):
+        """Take back the copies and rewiring a failed tool call made, so it leaves nothing behind."""
+        undo, self._undo = self._undo, []
+        for step in reversed(undo):
+            try:
+                step()
+            except Exception:
+                logger.exception("Could not take back a copy after a failed edit")
+        self._notes = []
 
     def take_notes(self) -> str | None:
         """Return what the agent should know about the last tool call, e.g. copies made, once."""
         notes, self._notes = self._notes, []
+        self._undo = []
         return " ".join(notes) or None
+
+    def _edge(self, source: str, target: str) -> tuple[str, str, str, str]:
+        # The target first: copying an earlier node copies what it reads, which the
+        # source then resolves to.
+        self._port(target, "target")
+        return super()._edge(source, target)
 
     def _new_node(self, component: str, config: dict[str, t.Any] | None):
         spec, resolved = super()._new_node(component, config)
@@ -672,11 +733,17 @@ class ExplorationOps(DashboardOps):
         return super()._set_inputs(self._editable(name), inputs)
 
     def _port(self, ref: str, direction: str) -> tuple[str, str]:
-        if direction == "target":
-            name, dot, port = ref.partition(".")
-            if dot:
-                self._require_edit()
-                ref = f"{self._editable(name)}.{port}"
+        name, dot, port = ref.partition(".")
+        if dot and direction == "target":
+            self._require_edit()
+            ref = f"{self._editable(name)}.{port}"
+        elif dot:
+            # A node this request copied is read through its copy, as the rest of its answer is.
+            from panel_agents import current_run_id
+
+            copied = self._copies.get(current_run_id(), {})
+            if name in copied:
+                ref = f"{copied[name]}.{port}"
         return super()._port(ref, direction)
 
     def remove_node(self, name: str) -> None:
@@ -684,12 +751,10 @@ class ExplorationOps(DashboardOps):
         instance_id = self._instance(name)
         self._refuse_mirror(instance_id, name)
         if self._earlier(instance_id):
-            # Removing it would change an earlier answer; leaving it out of this one is enough.
-            self._notes.append(
-                f"'{name}' belongs to an earlier answer, which stays as it is, so it was kept; "
-                "this answer does not use it unless you connect it."
+            raise NothingChanged(
+                f"Nothing was removed: '{name}' belongs to an earlier answer, and earlier "
+                "answers' nodes are kept. This answer leaves it out unless you connect it."
             )
-            return
         super().remove_node(name)
 
     def _checked_nodes(self, editor: FlowDash) -> list[str]:
