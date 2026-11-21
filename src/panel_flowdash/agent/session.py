@@ -112,11 +112,11 @@ class AgentSession:
         self.runner.state.subscribe(self._note_run)
         # Background checks of restored versions, kept so they are not collected while they run.
         self._checks: set[asyncio.Task] = set()
-        chat_params = (
-            {"models": list(models), "model_id": model, "remember_model": MODEL_KEY}
-            if models and len(models) > 1
-            else {}
-        )
+        # A single model is named in the chat, with panel-agents versions that show one; there is
+        # no pick to remember, and a remembered one is kept for when there is a choice again.
+        chat_params = {"models": list(models), "model_id": model} if models else {}
+        if len(models or ()) > 1:
+            chat_params["remember_model"] = MODEL_KEY
         self.drawer = AgentDrawer(
             self.runner,
             title="Assistant",

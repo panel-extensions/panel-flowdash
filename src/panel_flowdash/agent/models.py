@@ -109,3 +109,26 @@ def configured_models(
     if model is not None and model not in choices:
         choices = {model: ModelChoice(model), **choices}
     return list(choices.values()), model
+
+
+def agent_model_choice(agent: t.Any, configured: ModelChoice | None = None) -> ModelChoice | None:
+    """Return the model *agent* runs with as a ModelChoice, or None if it names none.
+
+    The choice keeps the agent's own model object, so picking it changes
+    nothing about how the agent runs. *configured* is the model the agent
+    was made from, whose id, label and description it then shows; a
+    ready-made agent's model is named by its ``system`` and ``model_name``,
+    or by the model string it was given.
+    """
+    own = getattr(agent, "model", None)
+    if configured is not None:
+        model = configured.model if configured.model is not None else own
+        return ModelChoice(configured.id, configured.label, configured.description, model)
+    if isinstance(own, str):
+        return ModelChoice(own, model=own) if own else None
+    name = getattr(own, "model_name", None)
+    if not isinstance(name, str) or not name:
+        return None
+    system = getattr(own, "system", None)
+    model_id = f"{system}:{name}" if isinstance(system, str) and system else name
+    return ModelChoice(model_id, label=name, model=own)
