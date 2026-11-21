@@ -1044,7 +1044,7 @@ async def test_a_source_nothing_reads_is_not_an_answer(store, monkeypatch):
 def _slow_check(config, inputs):
     import time
 
-    time.sleep(0.2)
+    time.sleep(0.8)
     return []
 
 
@@ -1097,5 +1097,6 @@ async def test_adding_runs_the_config_checks_off_the_event_loop(store, monkeypat
     done.set()
     await ticker
     assert _nodes(app._editor) == ["base", "s0", "s1", "s2", "s3"]
-    # Four checks of 0.2 s ran, but the loop never waited on one.
-    assert max(gaps) < 0.19, max(gaps)
+    # Four checks of 0.8 s ran, but the loop never waited on one: a check run on
+    # the loop would show a gap of at least 0.8 s, so 0.5 s leaves room for slow CI runners.
+    assert max(gaps) < 0.5, max(gaps)
