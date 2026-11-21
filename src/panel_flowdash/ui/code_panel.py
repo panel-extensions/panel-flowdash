@@ -28,9 +28,11 @@ import asyncio
 import copy
 import datetime as dt
 import html
+import logging
 import time
 import typing as t
 import weakref
+from functools import partial
 
 import panel as pn
 import panel_material_ui as pmui
@@ -60,7 +62,8 @@ from panel_flowdash.ui.code_field import (
     code_language,
 )
 from panel_flowdash.ui.config_draft import ConfigDraft
-from panel_flowdash.ui.node_preview import summarize_value
+from panel_flowdash.ui.inspector import hooked_preview, value_preview, wants_preview_hook
+from panel_flowdash.ui.node_preview import run_off_loop, summarize_value
 from panel_flowdash.ui.spec_field import SpecEditor
 from panel_flowdash.ui.split_view import GUTTER_CSS
 from panel_flowdash.ui.text import field_label, text_alert
@@ -93,6 +96,8 @@ _TEXT = object()
 # Where a held draft keeps the field's value it was written against.
 _BASE = object()
 _MISSING = object()
+logger = logging.getLogger(__name__)
+
 # The result option showing the node's own view rather than one of its outputs.
 _VIEW = "__view__"
 
@@ -384,6 +389,8 @@ class CodePanel(Viewer):
         self._format_error: str | None = None
         # Set while the panel edits the spec itself, e.g. formatting it, which "Run on change" does not run.
         self._hold_run = False
+        # Counts the results shown, so a preview still loading for an earlier one is dropped.
+        self._shown_results = 0
 
         self._title = pn.pane.HTML(
             "",
@@ -1642,6 +1649,7 @@ class CodePanel(Viewer):
                     css_classes=["fd-code-run-error"],
                 )
             )
+        self._shown_results += 1
         view = self._value_view(editor, shown)
         if failed or self._result:
             view.styles = {**(view.styles or {}), "opacity": "0.55"}
@@ -1672,9 +1680,14 @@ class CodePanel(Viewer):
         self._show_result_footer()
 
     def _value_view(self, editor: FlowDash, value: t.Any) -> pn.viewable.Viewable:
+        """Show a DataFrame as a table, and any other output as the inspector's Data tab does.
+
+        The component's own preview of the output comes first; it may query,
+        so in a session it is asked for on a worker thread.
+        """
         if value is None:
             return pn.pane.HTML(_bar("No result yet."), margin=(8, 12), stylesheets=[_BAR_CSS])
-        if _is_frame(value):
+        if _is_pandas(value):
             return pn.pane.DataFrame(
                 value.head(MAX_ROWS),
                 index=_shows_index(value),
@@ -1683,7 +1696,29 @@ class CodePanel(Viewer):
                 stylesheets=[_TABLE_CSS],
                 css_classes=["fd-code-table"],
             )
-        return pn.Column(editor._value_preview(value), margin=(8, 12), sizing_mode="stretch_width")
+        holder = pn.Column(
+            margin=(8, 12), sizing_mode="stretch_width", css_classes=["fd-code-preview"]
+        )
+        instance = editor._component_instances.get(self.instance_id)
+        name = self.outputs.value
+        if not wants_preview_hook(value, instance):
+            holder[:] = _previewed(editor, value)
+            return holder
+        work = partial(hooked_preview, value, instance, name)
+        doc = pn.state.curdoc
+        if doc is None or doc.session_context is None:
+            holder[:] = _previewed(editor, *work())
+            return holder
+        holder[:] = [pn.pane.HTML(_bar("Loading the preview…"), margin=0, stylesheets=[_BAR_CSS])]
+        generation = self._shown_results
+
+        def show(result):
+            # A later result or another output supersedes this preview.
+            if generation == self._shown_results:
+                holder[:] = _previewed(editor, *result)
+
+        run_off_loop(work, show, doc)
+        return holder
 
     def _ran_text(self) -> str:
         parts = []
@@ -1727,6 +1762,23 @@ class CodePanel(Viewer):
     def __panel__(self):
         """Render the panel."""
         return self._layout
+
+
+def _is_pandas(value: t.Any) -> bool:
+    try:
+        import pandas as pd
+    except ImportError:
+        return False
+    return isinstance(value, pd.DataFrame)
+
+
+def _previewed(editor: FlowDash, value: t.Any, hooked: bool = False) -> list:
+    """Return the inspector's preview of *value*, or a caption naming it where that fails."""
+    try:
+        return value_preview(editor, value, hooked)
+    except Exception:
+        logger.exception("Previewing a %s failed", type(value).__name__)
+        return [pn.pane.HTML(_bar(html.escape(summarize_value(value))), stylesheets=[_BAR_CSS])]
 
 
 def _format_spec_text(text: str) -> str:

@@ -429,18 +429,53 @@ def _port_heading(port, margin) -> Viewable:
     )
 
 
-def _wants_hook(value: t.Any, instance: t.Any) -> bool:
+def wants_preview_hook(value: t.Any, instance: t.Any) -> bool:
+    """Whether *instance* is asked for its own preview of *value*: not of a table, a failure or nothing."""
     if instance is None or not callable(getattr(instance, PREVIEW_HOOK, None)):
         return False
     return not (value is None or is_failure(value) or _is_table(value))
 
 
-def _hooked_value(value: t.Any, instance: t.Any, port_name: str) -> tuple[t.Any, bool]:
+def hooked_preview(value: t.Any, instance: t.Any, port_name: str) -> tuple[t.Any, bool]:
     """Return the component's own preview of *port_name*, or *value* when it gives none."""
     hooked = call_preview_hook(instance, output=port_name)
     if hooked is None or (isinstance(hooked, str) and not hooked.strip()):
         return value, False
     return hooked, True
+
+
+def value_preview(editor: t.Any, value: t.Any, hooked: bool = False) -> list[Viewable]:
+    """Show a table's first rows, a short caption for an empty or failed value, or the value.
+
+    *hooked* says *value* is a component's own preview, whose text is shown
+    as a caption.
+    """
+    if value is None:
+        return [_caption("No value yet. It appears once the component has run.", margin=0)]
+    if is_failure(value):
+        message = failure_text(value).strip().splitlines()
+        return [
+            _caption(message[0] if message else "Failed", sx={"color": "error.main"}, margin=0)
+        ]
+    if _is_table(value):
+        return _table_preview(value)
+    if isinstance(value, str):
+        text = value if len(value) <= _MAX_TEXT else value[:_MAX_TEXT] + "…"
+        if hooked:
+            return [_caption(text, sx={"whiteSpace": "pre-wrap"}, margin=0)]
+        return [
+            text_typography(
+                text or "Empty text",
+                variant="body2",
+                margin=0,
+                sx={"whiteSpace": "pre-wrap", "overflowWrap": "anywhere"},
+            )
+        ]
+    summary = summarize_value(value)
+    if isinstance(value, (pn.viewable.Viewable, Viewer)):
+        # A live object, which may be on the dashboard already, has no copy to show here.
+        return [_caption(f"{summary}. This component gives no preview of it.", margin=0)]
+    return [_caption(summary, margin=(0, 0, 4, 0)), editor._value_preview(value)]
 
 
 def _count(count: t.Any, noun: str) -> str:
@@ -2208,10 +2243,10 @@ class Inspector(Viewer):
         thread while the tab says the preview is loading.
         """
         holder = pn.Column(margin=0, sizing_mode="stretch_width")
-        if not _wants_hook(value, instance):
+        if not wants_preview_hook(value, instance):
             holder[:] = self._preview(value)
             return holder
-        work = partial(_hooked_value, value, instance, port_name)
+        work = partial(hooked_preview, value, instance, port_name)
         doc = self._document()
         if doc is None:
             holder[:] = self._preview(*work())
@@ -2228,33 +2263,7 @@ class Inspector(Viewer):
         return holder
 
     def _preview(self, value, hooked: bool = False) -> list[Viewable]:
-        """Show a table's first rows, a short caption for an empty or failed value, or the value."""
-        if value is None:
-            return [_caption("No value yet. It appears once the component has run.", margin=0)]
-        if is_failure(value):
-            message = failure_text(value).strip().splitlines()
-            return [
-                _caption(message[0] if message else "Failed", sx={"color": "error.main"}, margin=0)
-            ]
-        if _is_table(value):
-            return _table_preview(value)
-        if isinstance(value, str):
-            text = value if len(value) <= _MAX_TEXT else value[:_MAX_TEXT] + "…"
-            if hooked:
-                return [_caption(text, sx={"whiteSpace": "pre-wrap"}, margin=0)]
-            return [
-                text_typography(
-                    text or "Empty text",
-                    variant="body2",
-                    margin=0,
-                    sx={"whiteSpace": "pre-wrap", "overflowWrap": "anywhere"},
-                )
-            ]
-        summary = summarize_value(value)
-        if isinstance(value, (pn.viewable.Viewable, Viewer)):
-            # A live object, which may be on the dashboard already, has no copy to show here.
-            return [_caption(f"{summary}. This component gives no preview of it.", margin=0)]
-        return [_caption(summary, margin=(0, 0, 4, 0)), self.editor._value_preview(value)]
+        return value_preview(self.editor, value, hooked)
 
     # Tile
 

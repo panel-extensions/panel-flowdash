@@ -537,3 +537,25 @@ def test_the_inspector_offers_the_spec_and_keeps_the_settings(page):
     expect(page.locator(".fd-code-panel")).to_be_visible(timeout=8000)
     header = page.locator(".fd-code-panel-header")
     expect(header.locator("input")).to_have_count(1)  # Run on change only
+
+
+def test_outputs_json_cannot_show_are_previewed(page):
+    from tests.test_code_panel import make_opaque_editor
+
+    editor, node = make_opaque_editor()
+    errors = []
+    page.on("console", lambda m: m.type == "error" and errors.append(m.text))
+    page.set_viewport_size(VIEWPORT)
+    serve_component(page, editor)
+    page.locator(f".react-flow__node[data-id='{node}']").click()
+    page.locator(".fd-edit-spec").first.click(timeout=8000)
+    expect(page.locator(".fd-code-table")).to_be_visible(timeout=15000)
+    outputs = page.locator(".fd-code-outputs")
+    outputs.get_by_role("button", name="Pipeline").click()
+    preview = page.locator(".fd-code-preview")
+    expect(preview).to_contain_text("2 rows", timeout=15000)
+    outputs.get_by_role("button", name="Result").click()
+    expect(preview).to_contain_text("Opaque()", timeout=15000)
+    outputs.get_by_role("button", name="Rows").click()
+    expect(page.locator(".fd-code-table")).to_be_visible(timeout=15000)
+    assert not [e for e in errors if "JSON" in e]

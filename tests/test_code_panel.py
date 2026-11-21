@@ -1006,3 +1006,97 @@ class TestDock:
         select_on_canvas(editor._flow, node_id=other)
         assert editor.code_panel.instance_id == other
         assert editor._code_side.visible
+
+
+class Opaque:
+    """An output no JSON pane can show, as a Lumen pipeline is."""
+
+    def __repr__(self):
+        return "Opaque()"
+
+
+@register(
+    page=False,
+    component=True,
+    title="Opaque query",
+    icon="code",
+    config=["expr"],
+    requires=[{"key": "data", "type": "DataFrame", "required": True}],
+    provides=[{"key": "rows", "type": "DataFrame"}, {"key": "pipeline"}, {"key": "result"}],
+)
+class OpaqueQuery(Viewer):
+    data = param.DataFrame(default=None, allow_None=True)
+    expr = param.String(
+        default="p_year > 2014", metadata={"flowdash": {"widget": "code", "language": "python"}}
+    )
+    hook = True
+
+    @param.output(param.DataFrame)
+    @param.depends("data", "expr")
+    def rows(self):
+        return None if self.data is None else self.data.query(self.expr)
+
+    @param.output(param.Parameter)
+    def pipeline(self):
+        return Opaque()
+
+    @param.output(param.Parameter)
+    def result(self):
+        return {"pipeline": Opaque()}
+
+    def __flowdash_preview__(self, output=None):
+        if output == "pipeline" and self.hook:
+            return TURBINES.head(2)
+        return None
+
+    def __panel__(self):
+        return "opaque"
+
+
+def make_opaque_editor():
+    editor = FlowDash(
+        {**COMPONENTS, "D/opaque": OpaqueQuery},
+        notifications=False,
+        include_builtin_components=False,
+    )
+    source = editor.add_component("D/turbines", position=(0, 0))
+    node = editor.add_component("D/opaque", position=(320, 0))
+    editor.connect(source, "data", node, "data")
+    return editor, node
+
+
+def _texts(panel):
+    return " ".join(
+        str(getattr(o, "object", ""))
+        for o in pn.Column(*panel._result_body).select(lambda o: hasattr(o, "object"))
+    )
+
+
+class TestOutputPreviews:
+    def test_the_dataframe_output_is_still_a_table(self):
+        editor, node = make_opaque_editor()
+        editor.open_code_panel(node, "expr")
+        panel = editor.code_panel
+        assert panel.outputs.value == "rows"
+        assert "fd-code-table" in panel._result_body[0].css_classes
+
+    def test_an_output_with_a_preview_hook_shows_its_preview(self):
+        editor, node = make_opaque_editor()
+        editor.open_code_panel(node, "expr")
+        panel = editor.code_panel
+        panel.outputs.value = "pipeline"
+        assert not list(pn.Column(*panel._result_body).select(pn.pane.JSON))
+        assert "2 rows" in _texts(panel)
+        assert "fd-code-preview" in panel._result_body[0].css_classes
+
+    @pytest.mark.parametrize("output", ["pipeline", "result"])
+    def test_a_value_json_cannot_show_gets_a_caption(self, output):
+        editor, node = make_opaque_editor()
+        editor._component_instances[node].hook = False
+        editor.open_code_panel(node, "expr")
+        panel = editor.code_panel
+        panel.outputs.value = output
+        assert not list(pn.Column(*panel._result_body).select(pn.pane.JSON))
+        assert "Opaque()" in _texts(panel)
+        panel.outputs.value = "rows"
+        assert "fd-code-table" in panel._result_body[0].css_classes
