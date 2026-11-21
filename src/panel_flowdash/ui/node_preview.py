@@ -19,6 +19,7 @@ import datetime as dt
 import heapq
 import html
 import inspect
+import itertools
 import logging
 import math
 import numbers
@@ -1053,11 +1054,10 @@ def render_vega_lite_svg(
             f'<line class="fd-ch-ax" x1="{pad_l:.1f}" x2="{width - pad_r:.1f}" '
             f'y1="{base_y:.1f}" y2="{base_y:.1f}"/>'
         )
-        tick_idxs = _tick_indices(m, max_ticks=5)
-        for i in tick_idxs:
+        for x_pos, label in _bar_ticks([x for x, _ in shown], xs_centers, pad_l, width - pad_r):
             parts.append(
-                f'<text class="fd-ch-txt" x="{xs_centers[i]:.1f}" y="{height - 4:.1f}" '
-                f'text-anchor="middle">{_esc(_short_tick(shown[i][0]))}</text>'
+                f'<text class="fd-ch-txt" x="{x_pos:.1f}" y="{height - 4:.1f}" '
+                f'text-anchor="middle">{_esc(label)}</text>'
             )
         parts.append("</svg>")
         return "".join(parts), f"bar · {_plural(n, 'bar')}"
@@ -1098,6 +1098,44 @@ def render_vega_lite_svg(
         )
     parts.append("</svg>")
     return "".join(parts), f"{mark} · {_plural(n, 'point')}"
+
+
+# A generous estimate of the width of one character of a tick label, in px.
+_TICK_CHAR_W = 5.6
+
+
+def _bar_ticks(
+    values: t.Sequence, centers: t.Sequence[float], left: float, right: float
+) -> list[tuple[float, str]]:
+    """Return ``(x, label)`` for the bar ticks that fit between *left* and *right* without overlapping.
+
+    Category names are often longer than the space under a few thin bars,
+    so fewer ticks are drawn until the labels fit, each label is cut to the
+    room it has, and the outermost labels are moved inward to stay inside
+    the plot.
+    """
+    labels = [_short_tick(v) for v in values]
+    longest = min(max((len(label) for label in labels), default=0), 8)
+    for max_ticks in (5, 4, 3, 2):
+        idxs = _tick_indices(len(labels), max_ticks)
+        gap = min(
+            (centers[b] - centers[a] for a, b in itertools.pairwise(idxs)),
+            default=right - left,
+        )
+        # A label pushed inward from the edge may reach two thirds of the way to its neighbour.
+        budget = int((gap * 2 / 3 - 2) / _TICK_CHAR_W)
+        if budget >= longest:
+            break
+    ticks = []
+    for i in idxs:
+        label = labels[i]
+        if len(label) > budget:
+            label = label[: max(budget - 1, 1)] + "…" if budget > 1 else ""
+        if not label:
+            continue
+        half = len(label) * _TICK_CHAR_W / 2
+        ticks.append((min(max(centers[i], left + half), right - half), label))
+    return ticks
 
 
 def _tick_indices(count: int, max_ticks: int = 4) -> list[int]:

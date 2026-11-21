@@ -3,9 +3,13 @@
 import logging
 import threading
 
+import pandas as pd
+import panel as pn
 import panel_material_ui as pmui
+import param
 import pytest
 from panel.tests.util import wait_until
+from panel.viewable import Viewer
 
 from panel_flowdash.editor import FlowDash
 from tests.test_node_card_rework import COMPONENTS, _card
@@ -295,3 +299,47 @@ def test_edges_stay_on_the_handles_after_undo(page):
     _assert_edges_attached(page, editor)
 
     _collapse_and_expand(page, editor, "turbines_by_year")
+
+
+class _RowCount(Viewer):
+    rows = param.Integer(default=50)
+
+    @param.output(param.DataFrame)
+    @param.depends("rows")
+    def table(self):
+        return pd.DataFrame({"year": range(2000, 2000 + self.rows), "mw": range(self.rows)})
+
+    def __panel__(self):
+        return "rows"
+
+
+def test_card_shrinks_once_a_shorter_table_settles(page):
+    editors, docs = [], []
+
+    def app():
+        editor = FlowDash({"Demo/rows": _RowCount}, notifications=False, node_previews=True)
+        editor.add_component("Demo/rows", instance_id="rows", position=(40, 40))
+        editors.append(editor)
+        docs.append(pn.state.curdoc)
+        return pmui.Page(main=[editor])
+
+    serve_component(page, app)
+    editor = editors[0]
+    node = _node(page, "rows")
+    expect(node.locator("table tr")).to_have_count(1 + 4)
+    tall = node.bounding_box()["height"]
+
+    def set_rows(n):
+        def update():
+            editor._component_instances["rows"].rows = n
+
+        docs[0].add_next_tick_callback(update)
+
+    set_rows(1)
+    expect(node).to_contain_text("1 row, 2 columns")
+    assert node.bounding_box()["height"] == pytest.approx(tall, abs=1)
+    wait_until(lambda: node.bounding_box()["height"] < tall - 50, page, timeout=8000)
+    _assert_aligned(page)
+
+    set_rows(50)
+    wait_until(lambda: node.bounding_box()["height"] == pytest.approx(tall, abs=1), page)
