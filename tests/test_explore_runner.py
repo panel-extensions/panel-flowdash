@@ -18,6 +18,9 @@ from panel_flowdash.agent.assistant import (
 from panel_flowdash.agent.tools import FlowDashDeps, dashboard_toolset
 from panel_flowdash.explore import EXPLORE_RUN_PREFIX, is_explore_run
 
+HISTORY_RUN = "dashboard-earlier"
+HISTORY_CELL = f"{HISTORY_RUN}:nodes"
+
 from .test_agent_tools import _app, scripted
 
 
@@ -89,7 +92,11 @@ async def test_each_surface_shows_only_its_own_runs(store, monkeypatch):
     feed.sync()
     assert _questions(feed.state) == ["How many are there?"]
     assert explore_run in feed.state.runs and drawer_run not in feed.state.runs
-    assert set(a.artifact_id for a in feed.state.artifacts) == {"node:explored"}
+    cells = {a.artifact_id: a for a in feed.state.artifacts}
+    assert set(cells) == {"node:explored", HISTORY_CELL}
+    # The drawer's request is listed, collapsed, among the turns made outside Explore.
+    (drawn,) = [t for t in app._editor.turns if t.run == drawer_run]
+    assert cells[HISTORY_CELL].value == {"nodes": [], "turns": [drawn.id]}
 
 
 async def test_turns_and_versions_are_recorded_per_runner(store, monkeypatch):
@@ -146,10 +153,38 @@ async def test_explore_turns_are_told_apart_after_a_reload(store, monkeypatch):
     editor = again._editor
     feed = editor.explore_feed
     feed.shown = True
-    explored = editor.turns[0]
-    assert list(feed.state.runs) == [f"turn-{explored.id}"]
+    explored, drawn, by_hand = editor.turns
+    assert list(feed.state.runs) == [HISTORY_RUN, f"turn-{explored.id}"]
     assert _questions(feed.state) == ["How many are there?"]
-    assert {a.artifact_id for a in feed.state.artifacts} == {"node:explored"}
+    cells = {a.artifact_id: a for a in feed.state.artifacts}
+    assert set(cells) == {"node:explored", HISTORY_CELL}
+    assert cells[HISTORY_CELL].value["turns"] == [drawn.id, by_hand.id]
+
+
+async def test_turns_asked_before_explore_had_its_own_agent_stay_in_a_collapsed_entry(
+    store, monkeypatch
+):
+    from panel_flowdash.turns import agent_edits
+
+    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    editor = app._editor
+    with agent_edits(run="run-old", question="An old question"):
+        editor.add_component("T/number", instance_id="old")
+    editor.end_agent_turns()
+    feed = editor.explore_feed
+    feed.shown = True
+    assert list(feed.state.runs) == [HISTORY_RUN]
+    (old,) = editor.turns
+    cell = next(a for a in feed.state.artifacts if a.artifact_id == HISTORY_CELL)
+    assert cell.value == {"nodes": [], "turns": [old.id]}
+    body = feed._render(cell)
+    toggle, shown = body.objects
+    assert not shown.visible and shown.objects == []
+    toggle.clicks += 1
+    assert shown.visible
+    text, nodes = shown.objects
+    assert text.object == "**Assistant**: An old question\n\n- Added old"
+    assert nodes.objects[0].objects[0].label == "old"
 
 
 async def test_without_explore_asking_the_feed_records_every_turn(store, monkeypatch):
@@ -243,3 +278,144 @@ async def test_the_explore_agent_is_told_which_dashboard_is_open(store, monkeypa
     await session.explore_runner.run("What is this?")
     assert "The open dashboard is 'Live'." in seen[0]
     assert "T/number" in seen[0]
+
+
+def _gated(steps):
+    """A model adding a node per step, each step waiting for its gate (an asyncio.Event or None)."""
+    from pydantic_ai.models.function import DeltaToolCall
+
+    from .test_agent_tools import _results
+
+    async def stream(messages, info):
+        done = len(_results(messages))
+        if done >= len(steps):
+            yield "Done."
+            return
+        name, gate = steps[done]
+        if gate is not None:
+            await gate.wait()
+        args = f'{{"component": "T/number", "name": "{name}"}}'
+        yield {0: DeltaToolCall(name="add_node", json_args=args, tool_call_id=f"{name}-call")}
+
+    return Agent(
+        FunctionModel(stream_function=stream),
+        deps_type=FlowDashDeps,
+        toolsets=[dashboard_toolset()],
+    )
+
+
+async def _until(condition, task, timeout=10):
+    import asyncio
+
+    for _ in range(int(timeout / 0.01)):
+        if condition():
+            return
+        if task.done():
+            task.result()
+            raise AssertionError("The run ended before the condition held.")
+        await asyncio.sleep(0.01)
+    raise AssertionError("Timed out")
+
+
+@pytest.mark.parametrize("explore_last", [False, True])
+async def test_runs_of_both_surfaces_at_once_keep_their_own_turn_and_version(
+    store, monkeypatch, explore_last
+):
+    import asyncio
+
+    resume = asyncio.Event()
+    app, _ = _open(
+        store,
+        monkeypatch,
+        agent=_gated([("d1", None), ("d2", resume)]),
+        explore_agent=_gated([("e1", None)]),
+    )
+    session = app._agent_session
+    editor = app._editor
+    nodes = lambda: [i["instance_id"] for i in editor._tile_items]
+    drawer = asyncio.ensure_future(session.runner.run("Add two numbers"))
+    await _until(lambda: "d1" in nodes(), drawer)
+    if explore_last:
+        explore = asyncio.ensure_future(session.explore_runner.run("And one more?"))
+        await _until(lambda: "e1" in nodes(), explore)
+        resume.set()
+        await drawer
+        await explore
+    else:
+        await session.explore_runner.run("And one more?")
+        resume.set()
+        await drawer
+    assert nodes() == ["d1", "e1", "d2"]
+    drawn, explored = (
+        next(t for t in editor.turns if t.run == session.runner.run_id),
+        next(t for t in editor.turns if t.run == session.explore_runner.run_id),
+    )
+    assert len(editor.turns) == 2
+    assert {n: editor.node_origin(n) for n in nodes()} == {
+        "d1": drawn.id,
+        "e1": explored.id,
+        "d2": drawn.id,
+    }
+    (artifact,) = session.runner.state.artifacts
+    runs = [v.run_id for v in artifact.versions if v.actor == "agent"]
+    assert runs == [explored.run, drawn.run]
+    # The latest version is the canvas as it is: nothing is lost to an older snapshot.
+    assert all(f"\n  {n}:" in artifact.applied_version.value for n in nodes())
+
+
+def _ask_approval(state, run_id, call_id):
+    from panel_agents import events as ev
+
+    state.apply_many(
+        [
+            ev.RunStarted(run_id=run_id),
+            ev.ToolCallStart(tool_call_id=call_id, tool_name="save_dashboard", run_id=run_id),
+            ev.ToolCallEnd(tool_call_id=call_id, run_id=run_id),
+            ev.ApprovalRequested(
+                tool_call_id=call_id,
+                tool_name="save_dashboard",
+                args={},
+                description="Save the dashboard. It is shared.",
+                run_id=run_id,
+            ),
+        ]
+    )
+
+
+async def test_an_assistant_approval_waiting_behind_explore_shows_a_notice(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    session, editor = app._agent_session, app._editor
+    chrome = session.chrome
+    editor.explore = True
+    _ask_approval(session.runner.state, "run-a", "c1")
+    assert not session.drawer.open
+    assert chrome.notice.visible
+    assert chrome._notice_text.object.startswith("The assistant is waiting for your approval")
+    chrome.review()
+    assert not editor.explore and session.drawer.open and not chrome.notice.visible
+
+
+async def test_an_explore_approval_left_behind_shows_a_notice(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    session, editor = app._agent_session, app._editor
+    chrome = session.chrome
+    editor.explore = True
+    _ask_approval(session.explore_runner.state, "explore-a", "c2")
+    # Answered in the feed while Explore is shown.
+    assert not chrome.notice.visible
+    editor.explore = False
+    assert chrome.notice.visible and not session.drawer.open
+    assert chrome._notice_text.object.startswith("Explore is waiting for your approval")
+    chrome.review()
+    assert editor.explore and not chrome.notice.visible
+    session.explore_runner.state.resolve_approval("c2", False)
+    editor.explore = False
+    assert not chrome.notice.visible
+
+
+async def test_a_run_id_given_to_the_explore_runner_still_marks_it_as_explores(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    runner = app._agent_session.explore_runner
+    await runner.run("How many are there?", run_id="mine")
+    assert runner.run_id == f"{EXPLORE_RUN_PREFIX}mine"
+    assert app._editor.turns[0].run == runner.run_id

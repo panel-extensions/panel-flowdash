@@ -17,7 +17,7 @@ from panel_agents import AgentDrawer, RunState
 from panel_agents.adapters.pydantic_ai import ActionToolset, AgentRunner
 from panel_agents.events import RunStarted
 
-from panel_flowdash.explore import EXPLORE_RUN_PREFIX
+from panel_flowdash.explore import EXPLORE_RUN_PREFIX, is_explore_run
 from panel_flowdash.ui.text import text_typography
 from panel_flowdash.util import confirm
 
@@ -429,24 +429,31 @@ class _SessionRunner(AgentRunner):
         super()._note_artifact_change(event)
         self._notes[:] = _collapse_notes(self._notes)
 
+    def _run_id(self, given: str | None) -> str:
+        return given or f"run-{uuid.uuid4().hex[:16]}"
+
     async def run(self, prompt=None, **kwargs):
+        # The id is known before the run starts, so its turn, version and tile layout are
+        # kept apart from those of the other surface's runner if both run at once.
+        run_id = kwargs["run_id"] = self._run_id(kwargs.get("run_id"))
         self._session.ops.editor.end_turn()
         self._session.publish_user_edits()
-        self.deps.start_request(prompt if isinstance(prompt, str) else None)
+        self.deps.start_request(prompt if isinstance(prompt, str) else None, run_id)
         try:
             return await super().run(prompt, **kwargs)
         finally:
             self.deps.end_request()
-            self._session.publish_agent_layout(self.run_id)
+            self._session.publish_agent_layout(run_id)
 
 
 class _ExploreRunner(_SessionRunner):
     """Runs the Explore view's agent, with run ids that mark its turns as the Explore view's."""
 
-    async def run(self, prompt=None, **kwargs):
-        if not kwargs.get("run_id"):
-            kwargs["run_id"] = f"{EXPLORE_RUN_PREFIX}{uuid.uuid4().hex[:16]}"
-        return await super().run(prompt, **kwargs)
+    def _run_id(self, given: str | None) -> str:
+        if given:
+            # A run id given by the caller is marked too, so its turn is still known as Explore's.
+            return given if is_explore_run(given) else f"{EXPLORE_RUN_PREFIX}{given}"
+        return f"{EXPLORE_RUN_PREFIX}{uuid.uuid4().hex[:16]}"
 
 
 _PUBLISHED_NOTE = re.compile(

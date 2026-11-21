@@ -60,6 +60,9 @@ EARLIER_KIND = "outputs"
 
 EARLIER_TITLE = "Before the recorded requests"
 
+#: The title of the leading cell that holds, collapsed, the turns made outside Explore.
+HISTORY_TITLE = "Earlier requests and edits"
+
 # Who the leading entry is from, with a dashboard for an avatar.
 EARLIER_AGENT = "Dashboard"
 
@@ -430,7 +433,11 @@ class ExploreFeed(Viewer):
         editor = self.editor
         turns = [turn for turn in editor.turns if turn.status != "pending"]
         asking = self.runner is not None
+        others: list[DashboardTurn] = []
         if asking:
+            # The dashboard's other turns, from the assistant, by hand or asked here before
+            # Explore had its own agent, are kept in a collapsed entry at the top.
+            others = [turn for turn in turns if not self._asked_here(turn)]
             turns = [turn for turn in turns if self._asked_here(turn)]
         self._summaries = set()
         names = self._shown_names()
@@ -442,11 +449,21 @@ class ExploreFeed(Viewer):
             origin = editor.node_origin(instance_id)
             if origin in known:
                 made.setdefault(origin, []).append(instance_id)
-            elif not asking:
+            elif not asking or origin not in {turn.id for turn in others}:
                 earlier.append(instance_id)
         entries: list[tuple[float, list[ev.Event]]] = []
         cells: dict[str, ev.ArtifactPublished] = {}
-        if earlier:
+        if asking and (others or earlier):
+            entries.append((float("-inf"), self._history_run(others, earlier)))
+            cells[f"{_EARLIER_RUN}:nodes"] = ev.ArtifactPublished(
+                artifact_id=f"{_EARLIER_RUN}:nodes",
+                value={"nodes": earlier, "turns": [turn.id for turn in others]},
+                kind=EARLIER_KIND,
+                title=HISTORY_TITLE,
+                run_id=_EARLIER_RUN,
+                timestamp=0.0,
+            )
+        elif earlier:
             entries.append((float("-inf"), self._earlier_run(earlier, names)))
             cells[f"{_EARLIER_RUN}:nodes"] = ev.ArtifactPublished(
                 artifact_id=f"{_EARLIER_RUN}:nodes",
@@ -514,6 +531,40 @@ class ExploreFeed(Viewer):
             *_message(_EARLIER_RUN, "a", "assistant", text, 0.0),
             ev.RunFinished(run_id=_EARLIER_RUN, timestamp=0.0),
         ]
+
+    def _history_run(self, others: list[DashboardTurn], nodes: list[str]) -> list[ev.Event]:
+        parts = []
+        if others:
+            n = len(others)
+            parts.append(
+                f"{n} earlier request{'s' * (n != 1)} and edit{'s' * (n != 1)} made outside Explore"
+            )
+        if nodes:
+            n = len(nodes)
+            parts.append(f"{n} output{'s' * (n != 1)} made before requests were recorded")
+        text = f"This dashboard has {' and '.join(parts)}. Show them to see each one here."
+        self._summaries.add(f"{_EARLIER_RUN}-a")
+        return [
+            ev.RunStarted(run_id=_EARLIER_RUN, agent_name=EARLIER_AGENT, timestamp=0.0),
+            *_message(_EARLIER_RUN, "a", "assistant", text, 0.0),
+            ev.RunFinished(run_id=_EARLIER_RUN, timestamp=0.0),
+        ]
+
+    def _turn_text(self, turn: DashboardTurn) -> str:
+        """Describe an earlier turn for the collapsed history: who, what was asked, what changed."""
+        redacted = (
+            self.editor.run_redacted(turn.run) if turn.actor == "agent" else self.editor.read_only
+        )
+        who = "Assistant" if turn.actor == "agent" else "Edited by hand"
+        lines = [f"**{who}**"]
+        if turn.actor == "agent" and turn.question and not redacted:
+            lines[0] += f": {escape_markdown(turn.question)}"
+        lines.append(
+            _change_list(turn.summary)
+            if turn.summary and not redacted
+            else "- Changed the dashboard."
+        )
+        return "\n\n".join(lines)
 
     def _projected_run(self, turn: DashboardTurn, run_id: str) -> list[ev.Event]:
         at = _turn_time(turn)
@@ -617,6 +668,8 @@ class ExploreFeed(Viewer):
 
     def _render(self, artifact: Artifact) -> Viewable:
         value = artifact.value or {}
+        if artifact.kind == EARLIER_KIND and "turns" in value:
+            return self._render_history(value.get("turns", []), value.get("nodes", []))
         if artifact.kind == EARLIER_KIND:
             return self._render_earlier(value.get("nodes", []))
         instance_id = value.get("node")
@@ -630,6 +683,58 @@ class ExploreFeed(Viewer):
         note.param.update(**self._note(instance_id))
         self._notes[instance_id] = note
         return pn.Column(note, self._output(instance_id), sizing_mode="stretch_width", margin=0)
+
+    def _render_history(self, turn_ids: list[str], nodes: list[str]) -> Viewable:
+        """Render the dashboard's turns from outside Explore, collapsed until shown."""
+        body = pn.Column(sizing_mode="stretch_width", margin=0, visible=False)
+        button = pmui.Button(
+            label="Show earlier requests and edits",
+            icon="expand_more",
+            variant="text",
+            size="small",
+            margin=(0, 4),
+            sx={"textTransform": "none", "justifyContent": "flex-start"},
+            css_classes=["explore-history-toggle"],
+        )
+
+        def build():
+            by_id = {turn.id: turn for turn in self.editor.turns}
+            made: dict[str, list[str]] = {}
+            for instance_id in self._items():
+                made.setdefault(self.editor.node_origin(instance_id), []).append(instance_id)
+            rows = []
+            for turn_id in turn_ids:
+                turn = by_id.get(turn_id)
+                if turn is None:
+                    continue
+                rows.append(
+                    pmui.Typography(
+                        self._turn_text(turn),
+                        variant="body2",
+                        margin=(8, 12, 0, 12),
+                        css_classes=["explore-history-turn"],
+                    )
+                )
+                if made.get(turn_id):
+                    rows.append(self._render_earlier(made[turn_id]))
+            if nodes:
+                rows.append(self._caption("Made before requests were recorded:"))
+                rows.append(self._render_earlier(nodes))
+            return rows
+
+        def toggle(_event):
+            body.visible = not body.visible
+            button.param.update(
+                icon="expand_less" if body.visible else "expand_more",
+                label="Hide earlier requests and edits"
+                if body.visible
+                else "Show earlier requests and edits",
+            )
+            if body.visible and not body.objects:
+                body.objects = build()
+
+        button.on_click(toggle)
+        return pn.Column(button, body, sizing_mode="stretch_width", margin=(4, 0))
 
     def _render_earlier(self, nodes: list[str]) -> Viewable:
         names = self._shown_names()

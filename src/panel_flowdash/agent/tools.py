@@ -74,14 +74,17 @@ class FlowDashDeps:
     _save_revision: str | None = field(default=None, repr=False)
     _question: str | None = field(default=None, repr=False)
 
-    def start_request(self, question: str | None = None):
+    def start_request(self, question: str | None = None, run_id: str | None = None):
         """Pin the next request to the dashboard open now. Call it when the user sends one.
 
         *question* is what the user asked, which the turn of the agent's edits records.
+        *run_id* is the request's run, if known: its edits, turn and tile layout are
+        then kept apart from another agent's request running at the same time.
         """
-        self.ops.editor.end_agent_turns()
-        self.ops.editor._defer_tile_layout()
-        self._reset(_open_id(self.ops))
+        if run_id is None:
+            self.ops.editor.end_agent_turns()
+        self.ops.editor._defer_tile_layout(run_id)
+        self._reset(_open_id(self.ops), run_id)
         self._explicit = True
         self._question = question if isinstance(question, str) else None
 
@@ -95,7 +98,7 @@ class FlowDashDeps:
 
         Call it whether the request finished, failed or was cancelled.
         """
-        self.ops.editor.end_agent_turns()
+        self.ops.editor.end_agent_turns(self._run_id)
         self._reset(_UNPINNED)
 
     def _reset(self, pinned: t.Any, run_id: str | None = None):

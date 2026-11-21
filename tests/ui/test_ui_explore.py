@@ -48,16 +48,19 @@ def test_a_question_asked_in_explore_shows_its_answer_and_output(page):
     page.get_by_text("note tile").first.wait_for()
 
     page.get_by_role("button", name="Explore", exact=True).click()
-    # The feed holds questions asked here only, not the outputs the dashboard was made with.
+    # The outputs the dashboard was made with wait, collapsed, above the questions asked here.
     expect(page.get_by_placeholder(QUESTION)).to_be_visible()
-    expect(page.get_by_text("Before the recorded requests")).to_have_count(0)
-    expect(page.locator(".artifact-cell")).to_have_count(0)
+    expect(page.locator(".artifact-cell")).to_have_count(1)
+    expect(page.get_by_text("note tile")).to_have_count(0)
+    page.get_by_role("button", name="Show earlier requests and edits").click()
+    page.locator(".explore-earlier-toggle").first.click()
+    expect(page.locator(".artifact-cell").get_by_text("note tile")).to_be_visible()
     # Idle, the composer offers Send, not Stop.
     expect(page.get_by_role("button", name="Stop")).to_have_count(0)
 
     composer = _ask(page, apps)
     page.get_by_text("Add another note").first.wait_for()
-    card = page.locator(".artifact-cell", has_text="memo")
+    card = page.locator(".artifact-cell", has_text="memo").last
     expect(card).to_be_visible(timeout=20000)
     expect(card.get_by_text("note tile")).to_be_visible()
     expect(card.locator(".artifact-cell-done")).to_have_text(re.compile("On dashboard"))
@@ -110,7 +113,7 @@ def _ask_drawer(page, text):
     chat.press("Enter")
 
 
-def test_an_approval_left_pending_in_the_drawer_opens_it_on_return_from_explore(page):
+def test_an_approval_waiting_in_the_drawer_shows_a_notice_while_exploring(page):
     store, (dash,) = _store_with("Plant")
     agent = Agent(
         scripted(("save_dashboard", {})),
@@ -129,8 +132,13 @@ def test_an_approval_left_pending_in_the_drawer_opens_it_on_return_from_explore(
     explore = page.locator(".flowdash-explore")
     expect(explore.get_by_text("Save it")).to_have_count(0)
     expect(explore.get_by_role("button", name=re.compile("^Approve"))).to_have_count(0)
-    page.get_by_role("button", name="View", exact=True).click()
-    wait_until(lambda: session.drawer.open, page, timeout=10000)
+    # A notice says the approval waits, and its Review button goes back to the drawer.
+    notice = page.get_by_text(re.compile("^The assistant is waiting for your approval"))
+    expect(notice.first).to_be_visible()
+    page.locator("button:visible", has_text=re.compile("^Review$")).first.click()
+    wait_until(
+        lambda: session.drawer.open and not session.chrome.notice.visible, page, timeout=10000
+    )
     expect(page.locator(".flowdash-explore")).to_have_count(0)
 
 

@@ -237,13 +237,15 @@ The question box at the bottom asks the Explore agent, which is separate from th
 assistant in the drawer: Explore is for questions about the data, the drawer for
 changing the dashboard. Each keeps its own conversation, so a question asked in one does
 not show in the other, while a model picked in either is used by both. With an Explore
-agent the feed holds the requests asked in Explore only, including those of earlier
-sessions; the dashboard's other turns stay in the drawer's history. Requests made in
+agent the feed holds the requests asked in Explore, including those of earlier
+sessions; the dashboard's other turns are listed, collapsed, in an "Earlier requests and
+edits" entry at the top. Requests made in
 this session show every step; after a reload, or for requests made by others, an entry
 shows what the dashboard file records, with the same redaction as **How was this
 made?**. While Explore is shown the drawer stays closed, and an approval the Explore
-agent asks for is answered in the feed; leaving Explore with an approval of the drawer's
-pending opens the drawer on it. People who may only view the dashboard get the feed
+agent asks for is answered in the feed. An approval waiting on the surface out of sight
+shows a notice whose Review button brings it back, and leaving Explore with an approval
+of the drawer's pending opens the drawer on it. People who may only view the dashboard get the feed
 without the question box and without **Add to dashboard**.
 
 `FlowDashApp(explore_agent=...)` chooses the Explore agent. By default it is
