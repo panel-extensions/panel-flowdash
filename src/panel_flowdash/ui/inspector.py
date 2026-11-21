@@ -79,6 +79,11 @@ if t.TYPE_CHECKING:
     from panel_flowdash.component_spec import ComponentSpec
 
 INSPECTOR_WIDTH = 360
+# Material's arrow_back as SVG: the icon font's ligature would put "arrow_back" in the button's text.
+_BACK_ICON = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+    '<path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>'
+)
 _COLLAPSED_WIDTH = 44
 
 _STATUS_COLOR = {
@@ -900,7 +905,7 @@ class Inspector(Viewer):
         # the content's left edge, as in the side sheet.
         back = pmui.Button(
             label="Back",
-            icon="arrow_back",
+            icon=_BACK_ICON,
             variant="text",
             size="small",
             margin=(0, 0, 4, 0),

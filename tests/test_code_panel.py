@@ -1,6 +1,7 @@
 """The code panel docked under the canvas: draft, Run, problems on their lines and the result."""
 
 import asyncio
+import json
 import re
 import time
 import types
@@ -771,3 +772,206 @@ class TestFollowsSelection:
         focus = editor.code_panel.tools.focus
         select_on_canvas(editor._flow, node_id=note)
         assert editor.code_panel.tools.focus == focus
+
+
+def _upper(text):
+    return "\n".join(line.strip().upper() for line in text.split(";") if line.strip())
+
+
+@register(page=False, component=True, title="Formatted", icon="code", config=["sql"])
+class Formatted(Viewer):
+    sql = param.String(
+        default="select 1; select 2",
+        metadata={"flowdash": {"widget": "code", "language": "sql", "formatter": _upper}},
+    )
+
+    def __panel__(self):
+        return "formatted"
+
+
+def make_format_editor():
+    editor = FlowDash(
+        {**COMPONENTS, "D/formatted": Formatted},
+        notifications=False,
+        include_builtin_components=False,
+    )
+    node = editor.add_component("D/formatted", position=(0, 0))
+    return editor, node
+
+
+class TestFormat:
+    def test_a_field_with_a_formatter_offers_format(self):
+        editor, node = make_format_editor()
+        editor.open_code_panel(node, "sql")
+        panel = editor.code_panel
+        assert panel.format_button.visible
+        assert panel.tools.can_format
+        assert "Shift+Alt+F" in panel.format_button.description
+
+    def test_without_a_formatter_there_is_no_format(self, setup):
+        editor, query = setup
+        editor.open_code_panel(query, "expr")
+        panel = editor.code_panel
+        assert not panel.format_button.visible
+        assert not panel.tools.can_format
+
+    def test_format_is_a_draft_until_run(self):
+        editor, node = make_format_editor()
+        editor.open_code_panel(node, "sql")
+        panel = editor.code_panel
+        panel.format()
+        assert panel.code.value_input == "SELECT 1\nSELECT 2"
+        assert panel.tools.replacement["text"] == "SELECT 1\nSELECT 2"
+        assert panel.dirty
+        state = editor._dataflow_graph.get_config_state(node)
+        assert state.sql == "select 1; select 2"
+        panel.run()
+        assert state.sql == "SELECT 1\nSELECT 2"
+        assert not panel.dirty
+
+    def test_the_shortcut_formats_the_text_sent(self):
+        editor, node = make_format_editor()
+        editor.open_code_panel(node, "sql")
+        panel = editor.code_panel
+        panel.tools._handle_msg({"type": "format", "text": "select 3"})
+        assert panel.code.value_input == "SELECT 3"
+
+    def test_each_format_sends_the_text_again(self):
+        # After Ctrl+Z in the browser the server still has the formatted text, so it is sent again.
+        editor, node = make_format_editor()
+        editor.open_code_panel(node, "sql")
+        panel = editor.code_panel
+        panel.format()
+        seq = panel.tools.replacement["seq"]
+        panel.format("select 1; select 2")
+        assert panel.tools.replacement == {"text": "SELECT 1\nSELECT 2", "seq": seq + 1}
+
+    def test_a_failing_formatter_leaves_the_text(self):
+        def broken(text):
+            raise ValueError("unbalanced parenthesis")
+
+        Formatted.param.sql.metadata["flowdash"]["formatter"] = broken
+        try:
+            editor, node = make_format_editor()
+            editor.open_code_panel(node, "sql")
+            panel = editor.code_panel
+            panel.format()
+            assert panel.code.value_input == "select 1; select 2"
+            assert "unbalanced parenthesis" in panel._code_status.object
+            assert not panel.dirty
+        finally:
+            Formatted.param.sql.metadata["flowdash"]["formatter"] = _upper
+
+    def test_a_registered_language_formatter(self, setup):
+        from panel_flowdash.ui.code_field import register_formatter
+
+        editor, query = setup
+        register_formatter("python", lambda text: text.replace(">", " > ").replace("  ", " "))
+        try:
+            editor.open_code_panel(query, "expr")
+            panel = editor.code_panel
+            assert panel.format_button.visible
+            panel.format("p_year>2014")
+            assert panel.code.value_input == "p_year > 2014"
+            assert not panel.dirty
+        finally:
+            register_formatter("python", None)
+
+    def test_not_for_viewers(self):
+        editor, node = make_format_editor()
+        editor.open_code_panel(node, "sql")
+        editor.code_panel.editor.editable = False
+        editor.code_panel.format("select 1")
+        # Closed for a viewer, and nothing formatted.
+        assert not editor.code_panel_open
+
+
+class TestDock:
+    def test_docks_to_the_right_of_the_canvas(self, setup):
+        editor, query = setup
+        editor.open_code_panel(query, "expr")
+        panel = editor.code_panel
+        assert panel.dock_button.visible
+        panel.dock_button.clicks += 1
+        assert panel.dock == "right"
+        row = list(editor._editor_row)
+        assert row.index(editor._code_side) == row.index(editor._workspace_area) + 1
+        assert editor._code_side.visible and not editor._code_dock.visible
+        assert editor._code_side[1] is panel._layout and not editor._code_dock.objects
+        assert editor._code_side.styles["width"] == "520px"
+        assert editor._flow.min_height == 600
+        assert type(panel._body).__name__ == "VSplit"
+        assert panel.dock_button.description == "Dock under the canvas"
+        panel.dock_button.clicks += 1
+        assert panel.dock == "bottom"
+        assert editor._code_dock.visible and not editor._code_side.visible
+        assert type(panel._body).__name__ == "HSplit"
+
+    def test_the_side_is_remembered_for_the_browser(self, setup):
+        editor, query = setup
+        editor.open_code_panel(query, "expr")
+        editor.code_panel.toggle_dock()
+        assert json.loads(editor._split_view.storage.value)["code_dock"] == "right"
+        other, query = make_editor()
+        other._split_view._on_stored(editor._split_view.storage.value)
+        other.open_code_panel(query, "expr")
+        assert other.code_panel.dock == "right"
+        assert other._code_side.visible
+
+    def test_a_narrower_window_docks_it_under_the_canvas(self, setup):
+        editor, query = setup
+        editor.open_code_panel(query, "expr")
+        panel = editor.code_panel
+        panel.toggle_dock()
+        editor._split_view.storage.window_width = 1200
+        assert panel.dock == "bottom" and not panel.dock_button.visible
+        assert editor._code_dock.visible and not editor._code_side.visible
+        # Remembered: widening the window docks it to the right again.
+        assert editor._split_view.preferences.code_dock == "right"
+        editor._split_view.storage.window_width = 1600
+        assert panel.dock == "right" and editor._code_side.visible
+
+    def test_a_narrow_window_still_uses_the_dialog(self, setup):
+        editor, query = setup
+        editor.open_code_panel(query, "expr")
+        editor.code_panel.toggle_dock()
+        editor._split_view.storage.window_width = 800
+        assert not editor.code_panel_open
+        assert not editor.open_code_panel(query, "expr")
+
+    def test_docked_right_it_is_not_collapsed(self, setup):
+        editor, query = setup
+        editor.open_code_panel(query, "expr")
+        panel = editor.code_panel
+        panel.collapsed = True
+        panel.toggle_dock()
+        assert not panel.collapsed
+        assert not panel.collapse_button.visible
+
+    def test_the_width_is_remembered_for_the_session(self, setup):
+        editor, query = setup
+        editor.open_code_panel(query, "expr")
+        editor.code_panel.toggle_dock()
+        editor._code_side_handle.size = 640
+        assert editor._code_side.styles["width"] == "640px"
+        editor.close_code_panel()
+        editor.open_code_panel(query, "expr")
+        assert editor._code_side.styles["width"] == "640px"
+
+    def test_the_draft_survives_the_move(self, setup):
+        editor, query = setup
+        editor.open_code_panel(query, "expr")
+        panel = editor.code_panel
+        panel.code.value_input = "p_year > 2015"
+        panel.toggle_dock()
+        assert panel.code.value == "p_year > 2015"
+        assert panel.dirty
+
+    def test_docked_right_it_follows_the_selection(self, setup):
+        editor, query = setup
+        other = editor.add_component("D/query", position=(640, 0))
+        editor.open_code_panel(query, "expr")
+        editor.code_panel.toggle_dock()
+        select_on_canvas(editor._flow, node_id=other)
+        assert editor.code_panel.instance_id == other
+        assert editor._code_side.visible

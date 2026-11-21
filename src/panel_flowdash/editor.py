@@ -403,6 +403,12 @@ _CANVAS_MIN_HEIGHT_DOCKED = 160
 _CODE_PANEL_HEIGHT = 400
 # Narrower windows edit code fields in a dialog rather than the code panel under the canvas.
 _CODE_PANEL_MIN_WIDTH = 960
+# Narrower windows dock the code panel under the canvas even where it was docked to the right,
+# so the canvas keeps room beside the palette, the inspector and the panel.
+_CODE_PANEL_RIGHT_MIN_WIDTH = 1440
+# Docked to the right, the panel starts this wide and is never dragged narrower.
+_CODE_PANEL_WIDTH = 520
+_CODE_PANEL_MIN_SIDE_WIDTH = 400
 
 _FLOW_STYLESHEET = """\
 /* The canvas shares its height with the code panel docked under it. */
@@ -3456,6 +3462,20 @@ class FlowDash(Viewer):
             # Collapsed to its header, not the smallest height of its editor and result.
             stylesheets=[".fd-code-panel { min-height: 0 !important; }"],
         )
+        self._code_side_width = _CODE_PANEL_WIDTH
+        # Set while the window's width moves the panel, which is not a choice to remember.
+        self._moving_code_dock = False
+        # The code panel docked to the right of the canvas, beside the inspector.
+        self._code_side = pn.Row(
+            margin=0,
+            sizing_mode="stretch_height",
+            visible=False,
+            css_classes=["fd-code-side"],
+            stylesheets=[
+                ":host { border-left: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.12)); }",
+                ".fd-code-panel { min-width: 0 !important; }",
+            ],
+        )
 
         # One slot: a row counts the width of hidden children, and only one of
         # the two panels is shown at a time. The slot is hidden with both,
@@ -3470,6 +3490,7 @@ class FlowDash(Viewer):
         self._editor_row = pn.Row(
             self._side_panel,
             self._workspace_area,
+            self._code_side,
             self._panel_slot,
             sizing_mode="stretch_both",
         )
@@ -4041,6 +4062,7 @@ class FlowDash(Viewer):
     def _on_split_preferences_loaded(self):
         self._restore_split = self._restore_split and self._split_view.preferences.split
         self._apply_stored_split()
+        self._sync_code_dock_side()
 
     @param.depends("editable", watch=True)
     def _apply_stored_split(self):
@@ -4062,6 +4084,17 @@ class FlowDash(Viewer):
             panel = self._code_panel = CodePanel(editor=self, on_close=self.close_code_panel)
             self._code_handle = DockHandle(sizing_mode="stretch_width", height=7, margin=0)
             self._code_handle.param.watch(self._on_code_dock_resized, "size")
+            self._code_side_handle = DockHandle(
+                orientation="vertical",
+                min_size=_CODE_PANEL_MIN_SIDE_WIDTH,
+                max_ratio=0.6,
+                sizing_mode="stretch_height",
+                width=7,
+                margin=0,
+            )
+            self._code_side_handle.param.watch(self._on_code_side_resized, "size")
+            self._sync_code_dock_side()
+            panel.param.watch(self._on_code_dock_moved, "dock")
             panel.param.watch(self._sync_code_dock, ["collapsed", "instance_id"])
             panel.param.watch(self._on_code_drafts, "dirty")
         return self._code_panel
@@ -4111,21 +4144,14 @@ class FlowDash(Viewer):
             return False
         docking = not self.code_panel_open
         self.code_panel.open(instance_id, field, focus=focus)
-        if not self._code_dock.objects:
+        if not (self._code_dock.objects or self._code_side.objects):
             # Added once it shows a field, so the browser builds the editor with its language
             # and text: a change arriving before the code/result split has rendered is lost.
-            self._code_dock[:] = [self._code_handle, self._code_panel]
+            self._place_code_panel()
             if focus:
                 self._code_panel._focus()
-        if docking and self._flow._models and (doc := pn.state.curdoc) is not None:
-            # Once the canvas has shrunk to make room, keep the node in view at the same zoom.
-            zoom = (self._flow.viewport or {}).get("zoom") or 1
-            doc.add_timeout_callback(
-                lambda: self._flow.fit_view(
-                    instance_id, min_zoom=zoom, max_zoom=zoom, duration=300
-                ),
-                200,
-            )
+        if docking:
+            self._keep_in_view(instance_id)
         return True
 
     def close_code_panel(self):
@@ -4160,13 +4186,70 @@ class FlowDash(Viewer):
             return
         panel.open(node, self._primary_spec_field(node), focus=False)
 
+    def _code_dock_right_allowed(self) -> bool:
+        width = self._split_view.storage.window_width
+        return width is None or width >= _CODE_PANEL_RIGHT_MIN_WIDTH
+
+    def _sync_code_dock_side(self):
+        """Dock the code panel where the browser last had it, under the canvas in a narrower window."""
+        panel = self._code_panel
+        if panel is None:
+            return
+        allowed = self._code_dock_right_allowed()
+        side = self._split_view.preferences.code_dock if allowed else "bottom"
+        self._moving_code_dock = True
+        try:
+            panel.param.update(can_dock_right=allowed, dock=side)
+        finally:
+            self._moving_code_dock = False
+
+    def _on_code_dock_moved(self, event):
+        if not self._moving_code_dock:
+            self._split_view.preferences.code_dock = event.new
+        if self._code_dock.objects or self._code_side.objects:
+            self._place_code_panel()
+        if self.code_panel_open:
+            self._keep_in_view(self._code_panel.instance_id)
+
+    def _keep_in_view(self, instance_id: str):
+        """Once the canvas has resized, e.g. for the code panel, keep the node in view at the same zoom."""
+        if not self._flow._models or (doc := pn.state.curdoc) is None:
+            return
+        zoom = (self._flow.viewport or {}).get("zoom") or 1
+        doc.add_timeout_callback(
+            lambda: self._flow.fit_view(instance_id, min_zoom=zoom, max_zoom=zoom, duration=300),
+            200,
+        )
+
+    @pn.io.hold()
+    def _place_code_panel(self):
+        """Put the code panel under the canvas or to its right, as its :attr:`dock` says."""
+        panel = self._code_panel
+        if panel.dock == "right":
+            self._code_dock[:] = []
+            self._code_side[:] = [self._code_side_handle, panel]
+        else:
+            self._code_side[:] = []
+            self._code_dock[:] = [self._code_handle, panel]
+        self._sync_code_dock()
+
     @pn.io.hold()
     def _sync_code_dock(self, *_events):
-        """Show the code panel under the canvas, at its size for the session or as its header."""
+        """Show the code panel under the canvas, at its size for the session or as its header, or to its right."""
         panel = self._code_panel
         if panel is None:
             return
         shown = self.code_panel_open and self._code_panel_fits()
+        right = panel.dock == "right"
+        self._code_side.param.update(
+            visible=shown and right,
+            styles={
+                "flex": "none",
+                "width": f"{self._code_side_width}px",
+                "min-width": f"{self._code_side_width}px",
+            },
+        )
+        shown = shown and not right
         collapsed = shown and panel.collapsed
         self._code_handle.visible = shown and not collapsed
         height = HEADER_HEIGHT if collapsed else self._code_dock_height
@@ -4193,6 +4276,12 @@ class FlowDash(Viewer):
             css_classes=[*docked, "fd-docked"] if shown else docked,
         )
 
+    def _on_code_side_resized(self, event):
+        if event.new:
+            self._code_side_width = int(event.new)
+            if self.code_panel_open:
+                self._sync_code_dock()
+
     def _on_code_dock_resized(self, event):
         if event.new:
             self._code_dock_height = int(event.new)
@@ -4217,6 +4306,7 @@ class FlowDash(Viewer):
 
     def _on_window_resized(self, _event):
         self._close_code_panel_if_hidden()
+        self._sync_code_dock_side()
 
     def _fit_canvas(self):
         self._flow.fit_view()

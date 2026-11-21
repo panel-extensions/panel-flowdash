@@ -1,5 +1,6 @@
 """A spec edited through a form of curated settings and as JSON, kept in sync both ways."""
 
+import asyncio
 import json
 
 import pandas as pd
@@ -506,6 +507,48 @@ class TestCodePanel:
         assert field._controls["title"][1].value == "Typed"
         assert panel.dirty
         assert editor._component_instances[node].spec == SPEC
+
+    async def test_format_lays_out_the_json(self, editor):
+        node = editor.add_component("D/plain")
+        field = _field(editor, node)
+        panel = editor.code_panel
+        assert not panel.format_button.visible
+        panel.view_toggle.value = "spec"
+        assert panel.format_button.visible and panel.spec_tools.can_format
+        assert "Shift+Alt+F" in panel.format_button.description
+        compact = json.dumps({"title": "T", **SPEC}, separators=(",", ":"))
+        field.editor.value_input = compact
+        assert panel.dirty
+        panel.format()
+        expected = format_spec({"title": "T", **SPEC})[0]
+        assert field.editor.value == field.editor.value_input == expected
+        assert expected.startswith('{\n  "title": "T",\n  "mark": "bar"')
+        assert panel.spec_tools.replacement["text"] == expected
+        assert list(field.value) == ["title", *SPEC]
+        assert panel.dirty
+        assert editor._component_instances[node].spec == SPEC
+        await _run(editor)
+        assert editor._component_instances[node].spec == {"title": "T", **SPEC}
+
+    async def test_format_of_json_that_does_not_parse(self, editor):
+        node = editor.add_component("D/json")
+        field = _field(editor, node)
+        panel = editor.code_panel
+        panel.format('{"a": 1,')
+        assert field.error is not None
+        assert field.editor.value == '{"a": 1,'
+        assert editor._component_instances[node].spec == {"a": 1}
+
+    async def test_format_does_not_run_on_change(self, editor):
+        node = editor.add_component("D/json")
+        field = _field(editor, node)
+        panel = editor.code_panel
+        panel.run_on_change = True
+        panel.format('{"a":2}')
+        assert field.value == {"a": 2}
+        await asyncio.sleep(1.0)
+        assert editor._component_instances[node].spec == {"a": 1}
+        assert panel.dirty
 
     async def test_a_spec_without_settings_is_json_only(self, editor):
         node = editor.add_component("D/json")
