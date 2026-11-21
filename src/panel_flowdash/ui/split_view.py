@@ -26,7 +26,7 @@ from panel_splitjs import HSplit
 STORAGE_KEY = "panel-flowdash.editor.split"
 
 # panel-splitjs draws the divider in --panel-border-color, which stays light in the dark theme.
-_GUTTER_CSS = """
+GUTTER_CSS = """
 .gutter > .divider { --color: var(--mui-palette-divider, var(--panel-border-color)); }
 .gutter::after { background-color: var(--mui-palette-text-disabled, var(--panel-border-color)); }
 """
@@ -315,7 +315,7 @@ class SplitView(Viewer):
             snap_size=80,
             gutter_size=8,
             sizing_mode="stretch_both",
-            stylesheets=[_GUTTER_CSS],
+            stylesheets=[GUTTER_CSS],
             margin=0,
         )
         self.split.param.watch(self._on_split_changed, ["sizes", "collapsed"])
