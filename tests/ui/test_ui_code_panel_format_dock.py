@@ -192,9 +192,18 @@ def test_the_inspector_back_button_is_named_back(page):
     serve_component(page, editor)
     page.locator(f".react-flow__node[data-id='{query}']").click()
     wait_until(lambda: editor._flow.selection["nodes"] == [query], page)
-    editor._inspector.show_extra("Caption", "Extra", [pn.pane.Markdown("Extra view")])
+    expect(page.get_by_role("tab", name="Settings")).to_be_visible(timeout=8000)
     back = page.get_by_role("button", name="Back", exact=True)
-    expect(back).to_be_visible(timeout=8000)
+
+    def shown():
+        # The node's view may still be refreshed once it is shown, e.g. as its choices
+        # load, which replaces the extra view; show it again until it stays.
+        if not back.count():
+            editor._inspector.show_extra("Caption", "Extra", [pn.pane.Markdown("Extra view")])
+            return False
+        return back.is_visible()
+
+    wait_until(shown, page, timeout=15000, interval=1000)
     expect(back).to_have_text("Back")
     assert back.evaluate("e => e.textContent.trim()") == "Back"
     back.click()
