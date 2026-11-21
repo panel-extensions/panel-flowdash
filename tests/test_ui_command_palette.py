@@ -1,5 +1,6 @@
 """Tests for the command palette's items and the actions it and the shortcuts run."""
 
+import dataclasses
 import sys
 from types import SimpleNamespace
 
@@ -254,6 +255,79 @@ class TestRun:
         assert [i["component_id"] for i in app._editor._tile_items] == [SELECTOR]
         assert app._editor.dirty
         assert not navigations
+
+    @pytest.fixture
+    def presets(self, app):
+        calls = []
+
+        def hook(context):
+            calls.append(context)
+            return [
+                {
+                    "title": f"{name} selector",
+                    "tooltip": f"Company {name}",
+                    "tags": ["firm"],
+                    "config": {"company": name},
+                }
+                for name in context.get("companies", [])
+            ]
+
+        entry = app._editor._component_entries[SELECTOR]
+        entry.metadata = dataclasses.replace(entry.metadata, palette_presets=hook)
+        app._editor.context = {"companies": ["ACME", "Initech"]}
+        return calls
+
+    def _preset_ids(self, app):
+        return {
+            item["title"]: item["id"]
+            for item in app._command_palette.items()
+            if item["id"].startswith("preset:")
+        }
+
+    async def test_presets_are_offered_only_while_editing(self, app, presets):
+        _open(app)
+        assert not self._preset_ids(app)
+        _open(app, title="Depot", edit=True)
+        item = _item(app._command_palette, self._preset_ids(app)["Initech selector"])
+        assert item["subtitle"] == "Company Initech"
+        assert item["hint"] == "Add"
+        assert "firm" in item["keywords"]
+
+    async def test_preset_is_added_with_its_config(self, app, presets, navigations):
+        _open(app, edit=True)
+        app._command_palette.run(self._preset_ids(app)["ACME selector"])
+        (tile,) = app._editor._tile_items
+        assert tile["component_id"] == SELECTOR
+        assert tile["config"] == {"company": "ACME"}
+        app._command_palette.run(f"preset:nope:{SELECTOR}")
+        app._command_palette.run("preset:x:nope")
+        assert len(app._editor._tile_items) == 1
+        assert not navigations
+
+    async def test_a_listed_preset_keeps_its_config_when_presets_change(self, app, presets):
+        _open(app, edit=True)
+        listed = self._preset_ids(app)["Initech selector"]
+        app._editor.context = {"companies": ["Hooli", "Initech", "ACME"]}
+        app._command_palette.run(listed)
+        assert app._editor._tile_items[0]["config"] == {"company": "Initech"}
+        app._editor.context = {"companies": ["Hooli"]}
+        app._command_palette.run(listed)
+        assert len(app._editor._tile_items) == 1
+
+    async def test_listing_and_adding_ask_the_hook_once_per_context(self, app, presets):
+        _open(app, edit=True)
+        app._editor.context = {"companies": ["ACME"]}
+        presets.clear()
+        for _ in range(3):
+            app._command_palette.items()
+        app._command_palette.run(self._preset_ids(app)["ACME selector"])
+        assert len(presets) == 1
+
+    async def test_presets_of_a_placed_singleton_are_not_offered(self, app, presets):
+        entry = app._editor._component_entries[SELECTOR]
+        entry.metadata = dataclasses.replace(entry.metadata, singleton=True)
+        _open(app, edit=True, components=[SELECTOR])
+        assert not self._preset_ids(app)
 
     async def test_unknown_component_is_ignored(self, app, navigations):
         _open(app, edit=True)

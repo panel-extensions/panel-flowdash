@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
+import time
 import typing as t
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, replace
 
 import panel as pn
 import panel_material_ui as pmui
@@ -15,6 +19,8 @@ from panel.viewable import Viewer
 from panel_flowdash.component_spec import ComponentSpec, _ports_from_metadata
 from panel_flowdash.registry import RegistryEntry
 from panel_flowdash.ui.roles import ROLE_ICONS, component_role
+
+logger = logging.getLogger(__name__)
 
 # Palette group order; "other" holds components whose ports are unknown until imported.
 ROLES = ("source", "transform", "view", "other", "widget")
@@ -115,6 +121,9 @@ class PaletteEntry:
     outputs: tuple[PalettePort, ...] = ()
     placed: bool = False
     draggable: bool = True
+    config: Mapping[str, t.Any] | None = None
+    """The config a preset entry places the component with."""
+    tooltip: str | None = None
 
     @property
     def summary(self) -> str:
@@ -161,9 +170,10 @@ class PaletteEntry:
             "secondary": secondary or None,
             "icon": self.icon or ROLE_ICONS[self.role],
             "color": "action" if self.role == "widget" else "primary",
-            "tooltip": self.description or None,
+            "tooltip": self.tooltip or self.description or None,
             "component_id": self.component_id,
             "draggable": self.draggable,
+            **({"config": dict(self.config)} if self.config is not None else {}),
         }
 
 
@@ -199,6 +209,143 @@ def palette_entry(
         placed=placed,
         draggable=not (placed and meta.singleton),
     )
+
+
+def component_presets(
+    entry: RegistryEntry, context: Mapping[str, t.Any] | None, failed: list[bool] | None = None
+) -> list[dict[str, t.Any]]:
+    """Return the presets ``register(palette_presets=...)`` gives *entry* for *context*.
+
+    Each is a dict with a ``title``, a JSON-serializable ``config`` dict and
+    optionally an ``id``, ``description``, ``tooltip``, ``tags`` and
+    ``icon``, plus the ``key`` that identifies it (a hash of its ``id``,
+    or else of its title and config). Malformed ones are skipped and a failing hook
+    gives none.
+    """
+    hook = entry.metadata.palette_presets
+    if hook is None:
+        return []
+    try:
+        presets = list(hook(dict(context or {})) or [])
+    except Exception:
+        logger.exception("palette_presets of '%s' failed", entry.app_id)
+        if failed is not None:
+            failed.append(True)
+        return []
+    valid = []
+    for preset in presets:
+        if not (
+            isinstance(preset, Mapping)
+            and isinstance(preset.get("title"), str)
+            and preset["title"]
+            and isinstance(preset.get("config"), Mapping)
+        ):
+            logger.warning("Skipping a malformed palette preset of '%s': %r", entry.app_id, preset)
+            continue
+        try:
+            config = json.dumps(preset["config"], sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "Skipping the palette preset %r of '%s': its config is not JSON-serializable (%s)",
+                preset["title"],
+                entry.app_id,
+                exc,
+            )
+            continue
+        given = preset.get("id")
+        identity = (
+            f"id\0{given}" if isinstance(given, str) and given else f"{preset['title']}\0{config}"
+        )
+        key = hashlib.sha1(identity.encode()).hexdigest()[:12]
+        valid.append({**preset, "key": key})
+    return valid
+
+
+# Seconds a failed hook is not asked again, so a hook that fails while typing is
+# asked again soon rather than once per keystroke or only after the context changes.
+PRESET_RETRY = 5.0
+
+
+class _Snapshot:
+    """The context's values, and the items of the dicts and lists in it, compared by identity.
+
+    It holds the objects themselves rather than their ids, so a replaced
+    value cannot reuse the id of the one it replaced.
+    """
+
+    def __init__(self, context: Mapping[str, t.Any] | None):
+        self.items = [(key, value, self._inner(value)) for key, value in (context or {}).items()]
+
+    @staticmethod
+    def _inner(value: t.Any) -> list[tuple[t.Any, t.Any]] | None:
+        if isinstance(value, Mapping):
+            return list(value.items())
+        if isinstance(value, list):
+            return list(enumerate(value))
+        return None
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, _Snapshot) or len(self.items) != len(other.items):
+            return False
+        for (key, value, inner), (okey, ovalue, oinner) in zip(
+            self.items, other.items, strict=True
+        ):
+            if key != okey or value is not ovalue or (inner is None) != (oinner is None):
+                return False
+            if inner is not None and (
+                len(inner) != len(oinner)
+                or any(a != c or b is not d for (a, b), (c, d) in zip(inner, oinner, strict=True))
+            ):
+                return False
+        return True
+
+    __hash__ = None
+
+
+def editor_presets(editor: t.Any, entry: RegistryEntry) -> list[dict[str, t.Any]]:
+    """Return the presets of *entry* for *editor*, asking its hook again only when the context changes.
+
+    A hook that failed is asked again after ``PRESET_RETRY`` seconds.
+    """
+    cache = editor.__dict__.setdefault("_palette_presets_cache", {})
+    hook = entry.metadata.palette_presets
+    snapshot = _Snapshot(editor.context)
+    cached = cache.get(entry.app_id)
+    now = time.monotonic()
+    if (
+        cached is None
+        or cached[0] is not hook
+        or cached[1] != snapshot
+        or (cached[3] is not None and now >= cached[3])
+    ):
+        failed: list[bool] = []
+        presets = component_presets(entry, editor.context, failed)
+        cached = cache[entry.app_id] = (
+            hook,
+            snapshot,
+            presets,
+            now + PRESET_RETRY if failed else None,
+        )
+    return cached[2]
+
+
+def preset_entries(
+    base: PaletteEntry, presets: Iterable[Mapping[str, t.Any]]
+) -> list[PaletteEntry]:
+    """Return palette entries for *presets* of the component *base* describes, with its ports."""
+    return [
+        replace(
+            base,
+            title=preset["title"],
+            description=preset.get("description") or base.description,
+            tooltip=preset.get("tooltip"),
+            icon=preset.get("icon") or base.icon,
+            tags=(*base.tags, *(str(tag) for tag in preset.get("tags") or ())),
+            placed=False,
+            config=dict(preset["config"]),
+        )
+        for preset in presets
+    ]
 
 
 def palette_items(entries: Iterable[PaletteEntry], query: str = "") -> list[dict[str, t.Any]]:

@@ -83,6 +83,7 @@ class PanelAppMetadata:
     contract: Any = None
     config_choices: Callable | None = None
     config_completions: Callable | None = None
+    palette_presets: Callable | None = None
     handles_failures: list[str] = field(default_factory=list)
     # Former component ids and former port names, so dashboards saved before a
     # rename still resolve.
@@ -96,6 +97,9 @@ class PanelAppMetadata:
     # Set by the source scan when the permission arguments are expressions it
     # cannot evaluate; access is refused until an import supplies the real rules.
     auth_pending: bool = False
+    # Set by the source scan when the decorator names ``palette_presets``, which only
+    # an import supplies; editors import such components when a dashboard is edited.
+    presets_pending: bool = False
 
     @property
     def permission(self) -> Permission:
@@ -165,6 +169,7 @@ def register(
     contract: Any = None,
     config_choices: Callable | None = None,
     config_completions: Callable | None = None,
+    palette_presets: Callable | None = None,
     handles_failures: list[str] | None = None,
     aliases: list[str] | None = None,
     port_aliases: dict[str, str] | None = None,
@@ -228,6 +233,19 @@ def register(
     word, e.g. the columns of the tables a query reads. Without it a code
     field completes the column names of the node's tabular inputs.
 
+    The ``palette_presets`` argument takes a callable, called with the
+    editor's ``context``, that returns further entries the component
+    palette and the command palette offer for the component, each placing
+    it with a config filled in: dicts with a ``title`` and a ``config``, and
+    optionally a ``description``, a ``tooltip``, ``tags`` and an ``icon``,
+    e.g. one entry per data source the host provides. It is asked again
+    when the editor's context changes, not on every search; an entry without
+    a title or config, or whose config is not JSON-serializable, is
+    skipped, and a failing callable offers none. An entry's optional ``id``
+    identifies it in the command palette; without one, its title and config
+    do. Components found by scanning a project directory offer their presets
+    once imported, which the app does when a dashboard is edited.
+
     The ``placeholder`` argument sets the message a dashboard tile shows while a
     blocking input of the component is unset, in place of the default
     "Waiting for <inputs>" text.
@@ -287,6 +305,7 @@ def register(
         contract=contract,
         config_choices=config_choices,
         config_completions=config_completions,
+        palette_presets=palette_presets,
         handles_failures=list(handles_failures or []),
         aliases=_name_list(aliases),
         port_aliases=_port_aliases(port_aliases),
@@ -494,6 +513,8 @@ _AUTH_KEYS = {"allow_users", "allow_groups", "deny_users", "deny_groups", "autho
 
 # Key under which _extract_register_kwargs flags rules it could not evaluate.
 _AUTH_PENDING = "auth_pending"
+# Key under which it flags a ``palette_presets`` callable, known only after an import.
+_PRESETS_PENDING = "presets_pending"
 # Key listing permission arguments whose literal value is not a list of names.
 _AUTH_INVALID = "auth_invalid"
 
@@ -553,6 +574,10 @@ def _extract_register_kwargs(source: str) -> dict[str, Any] | None:
                 if kw.arg is None:
                     # **kwargs may carry permission arguments the scan cannot see.
                     kwargs[_AUTH_PENDING] = True
+                    continue
+                if kw.arg == "palette_presets":
+                    if not (isinstance(kw.value, ast.Constant) and kw.value.value is None):
+                        kwargs[_PRESETS_PENDING] = True
                     continue
                 if kw.arg == "authorize":
                     if not (isinstance(kw.value, ast.Constant) and kw.value.value is None):
@@ -684,6 +709,7 @@ def build_registry(project_dir: Path, *, package: str | None = None) -> dict[str
                 deny_users=_name_list(kwargs.get("deny_users")),
                 deny_groups=_name_list(kwargs.get("deny_groups")),
                 auth_pending=bool(kwargs.get(_AUTH_PENDING, False)),
+                presets_pending=bool(kwargs.get(_PRESETS_PENDING, False)),
             )
 
             parts = module_path.relative_to(project_dir).with_suffix("").parts

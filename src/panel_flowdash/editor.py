@@ -160,7 +160,13 @@ from panel_flowdash.ui.node_preview import (
     sanitize_svg,
     summarize_value,
 )
-from panel_flowdash.ui.palette import ComponentPalette, palette_entry, palette_items
+from panel_flowdash.ui.palette import (
+    ComponentPalette,
+    editor_presets,
+    palette_entry,
+    palette_items,
+    preset_entries,
+)
 from panel_flowdash.ui.provenance import provenance_objects
 from panel_flowdash.ui.roles import component_role
 from panel_flowdash.ui.settings_dialog import SettingsDialog
@@ -1775,7 +1781,9 @@ class FlowDash(Viewer):
             if not self._component_authorized(app_id):
                 continue
             spec = self._component_specs.get(app_id)
-            entries.append(palette_entry(entry, spec, placed=app_id in placed))
+            base = palette_entry(entry, spec, placed=app_id in placed)
+            entries.append(base)
+            entries.extend(preset_entries(base, editor_presets(self, entry)))
         return palette_items(entries, self._palette_panel.query)
 
     def _component_authorized(self, component_id: str) -> bool:
@@ -7588,14 +7596,14 @@ class FlowDash(Viewer):
     # Toolbar handlers
     # ------------------------------------------------------------------
 
-    def _add_from_ui(self, component_id, position=None) -> str | None:
+    def _add_from_ui(self, component_id, position=None, config=None) -> str | None:
         """Add *component_id*, reporting failures as notifications instead of raising."""
         if component_id in self._placed_singletons():
             title = self._component_entries[component_id].title
             self._notify("warning", f"'{title}' is already on the canvas.", duration=3000)
             return None
         try:
-            instance_id = self.add_component(component_id, position=position)
+            instance_id = self.add_component(component_id, config=config, position=position)
         except KeyError:
             self._notify("warning", "Select a valid component first.", duration=3000)
         except PermissionError as exc:
@@ -7612,7 +7620,7 @@ class FlowDash(Viewer):
     def _on_palette_clicked(self, item):
         component_id = item.get("component_id") if isinstance(item, dict) else None
         if component_id is not None:
-            self._add_from_ui(component_id)
+            self._add_from_ui(component_id, config=item.get("config"))
 
     def _on_component_dropped(self, payload):
         if payload.get("drop_type") == _FILES_DROP_TYPE:
@@ -7680,7 +7688,20 @@ class FlowDash(Viewer):
             for index in payload["data"]["path"]:
                 item = item["items"][index]
         except (KeyError, IndexError, TypeError):
-            return
+            item = {}
+        label = (payload.get("data") or {}).get("label")
+        if label and item.get("label") != label:
+            # The palette changed while the entry was dragged, e.g. its presets were
+            # refreshed, so the path may point elsewhere; the dragged label still names it.
+            item = next(
+                (
+                    i
+                    for group in self._palette.items
+                    for i in group.get("items", ())
+                    if i.get("label") == label
+                ),
+                {},
+            )
         component_id = item.get("component_id")
         if component_id is None:
             return
@@ -7691,7 +7712,7 @@ class FlowDash(Viewer):
             anchor = self._absolute_positions()[target["node_id"]]
             offset = -_DROP_WIRE_OFFSET if target["direction"] == "input" else _DROP_WIRE_OFFSET
             position = {"x": anchor["x"] + offset, "y": anchor["y"]}
-        instance_id = self._add_from_ui(component_id, position=position)
+        instance_id = self._add_from_ui(component_id, position=position, config=item.get("config"))
         if instance_id is not None and wire:
             self._wire_dropped(instance_id, component_id, target)
 
