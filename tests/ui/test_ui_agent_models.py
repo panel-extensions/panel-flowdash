@@ -50,7 +50,7 @@ def test_one_model_is_named_without_a_picker(page):
     label = page.locator(".pa-model-fixed")
     # panel-agents releases before the read-only label hide the picker with a single model.
     if ModelPicker(models=["fast-model"])._menu.visible:
-        expect(label).to_have_text("Model: fast-model")
+        expect(label).to_have_text("Model: function:fast-model")
         expect(label).to_have_attribute("title", "function:fast-model")
     else:
         expect(label).to_have_count(0)

@@ -123,7 +123,7 @@ async def test_a_ready_made_agent_is_named_by_its_own_model(store, monkeypatch):
     monkeypatch.setenv("FLOWDASH_AGENT_MODEL", "openai:other")
     session = _app(store, monkeypatch, agent=Agent(model))._agent_session
     (choice,) = session.drawer.chat.model_picker.choices
-    assert (choice.id, choice.name, choice.model) == ("test:tiny", "tiny", model)
+    assert (choice.id, choice.name, choice.model) == ("test:tiny", "test:tiny", model)
     assert session.runner.model is model
 
 
@@ -138,14 +138,23 @@ def test_the_model_of_an_agent_is_read_from_its_model():
 
     model = Model()
     assert agent_model_choice(Agent(model)) == ModelChoice(
-        "openrouter:openai/gpt-6-luna", label="openai/gpt-6-luna", model=model
+        "openrouter:openai/gpt-6-luna", model=model
     )
     assert agent_model_choice(Agent("openai:a")) == ModelChoice("openai:a", model="openai:a")
     assert agent_model_choice(Agent(None)) is None and agent_model_choice(object()) is None
-    configured = ModelChoice("openai:a", label="A", description="Fast")
+    configured = ModelChoice("openai:a", label="A", description="Fast", model=object())
     assert agent_model_choice(Agent(model), configured) == ModelChoice(
         "openai:a", "A", "Fast", model
     )
+
+
+def test_a_fallback_model_is_named_once():
+    from pydantic_ai import Agent
+    from pydantic_ai.models.fallback import FallbackModel
+    from pydantic_ai.models.test import TestModel
+
+    model = FallbackModel(TestModel(model_name="a"), TestModel(model_name="b"))
+    assert agent_model_choice(Agent(model)).id == "fallback:a,b"
 
 
 async def test_the_app_refuses_an_invalid_model_list(store, monkeypatch):
