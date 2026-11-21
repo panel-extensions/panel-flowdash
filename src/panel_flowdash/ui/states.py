@@ -15,6 +15,7 @@ from panel.viewable import Viewer
 
 from panel_flowdash.auth import ANONYMOUS_USER
 from panel_flowdash.ui.text import text_typography
+from panel_flowdash.util import escape_closes
 from panel_flowdash.widgets import BUILTIN_COMPONENTS
 
 if t.TYPE_CHECKING:
@@ -506,7 +507,8 @@ class UnsavedChangesDialog(Viewer):
     """Asks what to do with unsaved changes before leaving the editor, listing them.
 
     The answers call ``on_leave`` (discard and go), ``on_save`` (save, then
-    go) or ``on_stay``; each closes the dialog first.
+    go) or ``on_stay``; each closes the dialog first. Dismissing the dialog
+    with Escape or a click outside it answers ``on_stay``.
     """
 
     on_leave = param.Callable(doc="Called when the user leaves without saving.")
@@ -548,7 +550,18 @@ class UnsavedChangesDialog(Viewer):
             title="Save changes before leaving?",
             open=False,
             min_width=440,
+            **escape_closes(),
         )
+        self.dialog.param.watch(self._on_dismissed, "open")
+
+    def _on_dismissed(self, event):
+        if event.new or not self._answered.acquire(blocking=False):
+            return
+        try:
+            if self.on_stay is not None:
+                self.on_stay()
+        finally:
+            self._answered.release()
 
     def _answer_with(self, name: str):
         def answer(_event):

@@ -549,14 +549,15 @@ class TestCardViewEdits:
         assert not editor._dataflow_graph.edges
         assert _card(editor, src).collapsed and _card(editor, sql).collapsed
 
-    async def test_collapse_toggle_names_what_it_does(self):
+    async def test_collapse_toggle_keeps_its_name(self):
         editor = FlowDash(COMPONENTS, notifications=False)
         src = editor.add_component("Demo/src", instance_id="turbines")
         toggle = editor._status_bar.collapse_toggle
         assert toggle.label == "Collapse all"
         assert toggle.description == "Collapse all nodes (C)"
         _click(editor, src, "toggle_collapse")
-        assert toggle.value and toggle.description == "Expand all nodes (C)"
+        # The pressed state says everything is collapsed; the name matches the visible label.
+        assert toggle.value and toggle.description == "Collapse all nodes (C)"
         assert toggle.label == "Collapse all"
         toggle.value = False
         assert not _card(editor, src).collapsed

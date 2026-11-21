@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import typing as t
+
 import panel_material_ui as pmui
 import param
 from panel.custom import JSComponent
@@ -175,6 +177,64 @@ class PopoverAccess(JSComponent):
       const el = document.createElement("span")
       el.style.display = "none"
       return el
+    }
+    """
+
+
+class MenuAccess(JSComponent):
+    """Tell assistive technology that a ``pmui.MenuButton`` opens a menu, and whether it is open.
+
+    Place it in the same layout as the menu button's view (marked with
+    ``button_class``). The button then carries ``aria-haspopup="menu"`` and an
+    ``aria-expanded`` that follows the menu, which Material UI renders into
+    the button's shadow root.
+    """
+
+    button_class = param.String(doc="CSS class of the menu button's view.")
+
+    _stylesheets: t.ClassVar[list[str]] = [":host { display: none !important; }"]
+
+    _esm = """
+    export function render({model, view}) {
+      let observer = null
+      let observed = null
+
+      const sync = (attempt = 0) => {
+        const host = (view.parent?.child_views ?? []).find(
+          (v) => v.el.classList.contains(model.button_class)
+        )
+        const root = host?.el.shadowRoot
+        const button = root?.querySelector("button")
+        if (button == null) {
+          if (attempt < 40) { requestAnimationFrame(() => sync(attempt + 1)) }
+          return
+        }
+        const update = () => {
+          // The menu stays mounted while it fades out, at opacity 0.
+          const paper = root.querySelector(".MuiMenu-paper")
+          const open = paper != null && paper.style.opacity !== "0"
+          button.setAttribute("aria-haspopup", "menu")
+          button.setAttribute("aria-expanded", String(open))
+          const list = open ? paper.querySelector("[role=menu]") : null
+          if (list != null) {
+            list.id ||= `fd-menu-${Math.random().toString(36).slice(2)}`
+            button.setAttribute("aria-controls", list.id)
+          } else {
+            button.removeAttribute("aria-controls")
+          }
+        }
+        if (observed !== root) {
+          observer?.disconnect()
+          observer = new MutationObserver(update)
+          observer.observe(root, {subtree: true, childList: true, attributes: true, attributeFilter: ["style"]})
+          observed = root
+        }
+        update()
+      }
+
+      model.on("after_render", () => sync())
+      model.on("remove", () => observer?.disconnect())
+      return document.createElement("span")
     }
     """
 

@@ -143,7 +143,7 @@ def test_fields_are_compact_and_a_number_shares_a_row(page):
         assert 34 <= stable_box(select)["height"] <= 38, name
 
 
-@pytest.mark.parametrize("width", [1024, 900])
+@pytest.mark.parametrize("width", [1024, 900, 880])
 def test_the_header_actions_stay_on_screen_in_a_narrow_window(page, width):
     from panel_flowdash import DashboardItem, MemoryDashboardStore
     from panel_flowdash.app import FlowDashApp
@@ -168,9 +168,9 @@ def test_the_header_actions_stay_on_screen_in_a_narrow_window(page, width):
     )
     done = page.get_by_role("button", name="Done")
     done.wait_for()
-    # At 1024 the eye icon keeps its label; below, its tooltip names it.
+    # Down to 900 the eye icon keeps its label; below, its tooltip names it.
     labelled = done.evaluate("b => getComputedStyle(b).fontSize") != "0px"
-    assert labelled == (width >= 1024)
+    assert labelled == (width >= 900)
     _node(page, "table").click()
     close = page.get_by_role("button", name="Hide inspector")
     expect(close).to_be_visible()
@@ -414,7 +414,8 @@ def test_view_controls_follow_the_cards(page):
     wait_until(lambda: all(card.collapsed for card in editor._node_cards().values()), timeout=8000)
     # Drawn pressed while every card is collapsed, which its ARIA state says too.
     expect(collapse).to_have_attribute("aria-pressed", "true")
-    expect(collapse).to_have_attribute("aria-label", "Expand all nodes (C)")
+    # The name stays the visible label (WCAG 2.5.3); aria-pressed carries the state.
+    expect(collapse).to_have_attribute("aria-label", "Collapse all nodes (C)")
     expect(collapse).to_have_class(re.compile(r"\bMui-selected\b"))
 
     previews = page.locator(".fd-status-bar .MuiToggleButton-root", has_text="Previews")

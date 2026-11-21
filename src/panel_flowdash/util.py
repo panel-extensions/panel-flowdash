@@ -339,6 +339,17 @@ def notify(
     getattr(notifications, severity)(message, duration=duration)
 
 
+def escape_closes() -> dict[str, bool]:
+    """Return the ``pmui.Dialog`` parameters that let the Escape key dismiss a dialog.
+
+    panel-material-ui releases without ``close_on_escape`` only close a dialog
+    on Escape together with a click outside it, so with those both dismiss it.
+    """
+    if "close_on_escape" in pmui.Dialog.param:
+        return {"close_on_escape": True}
+    return {"close_on_click": True}
+
+
 def page_dialog() -> pmui.Dialog | None:
     """Return the dialog shared by every component of the current session.
 

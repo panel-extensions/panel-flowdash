@@ -285,7 +285,7 @@ class StatusBar(Viewer):
             stylesheets=[
                 _KEYS_CSS,
                 f"@container fd-status-bar (max-width: {_KEYS_MIN_WIDTH - 2 * _BAR_PADDING}px)"
-                " { .fd-keys { display: none; } }",
+                " { :host { display: none !important; } }",
             ],
         )
         self.zoom = pmui.Typography(
@@ -341,7 +341,8 @@ class StatusBar(Viewer):
         self._label_preview_toggle()
         settings.param.watch(self._follow_preview_setting, "node_previews")
         self._syncing_collapse = False
-        # Pressed while every card is collapsed; its tooltip names what a click does.
+        # Pressed while every card is collapsed. Its name stays fixed (WCAG 2.5.3, the tooltip
+        # becomes the accessible name) and aria-pressed carries the state.
         self.collapse_toggle = pmui.Toggle(
             label="Collapse all",
             icon="unfold_less",
@@ -442,9 +443,6 @@ class StatusBar(Viewer):
                 self.collapse_toggle.value = all_collapsed
             finally:
                 self._syncing_collapse = False
-        self.collapse_toggle.description = (
-            f"{'Expand' if all_collapsed else 'Collapse'} all nodes (C)"
-        )
 
     def _on_shortcut(self, key: str):
         if not self.visible or self.editor.mode == "dashboard":
