@@ -476,6 +476,17 @@ class TestPreviewSizing:
         assert all(a[1] < b[0] for a, b in itertools.pairwise(spans))
         assert ticks[0][1] == "Texas 0" and ticks[-1][1].startswith("Californ")
 
+    def test_bar_thumbnail_ticks_thin_out_until_labels_differ(self):
+        import re
+
+        names = [f"State number {i}" for i in range(50)]
+        spec = {"mark": "bar", "encoding": {"x": {"field": "s"}, "y": {"field": "v"}}}
+        svg, _ = render_vega_lite_svg(spec, pd.DataFrame({"s": names, "v": range(50)}))
+        labels = re.findall(r'<text class="fd-ch-txt"[^>]*>([^<]*)</text>', svg)
+        assert len(labels) >= 2
+        assert len(set(labels)) == len(labels)
+        assert labels[0] == "State number 0" and labels[-1] == "State number 49"
+
     def test_short_table_preview_fits_its_rows(self):
         one = build_preview(pd.DataFrame({"a": [1], "b": ["x"]}), "table")
         full = build_preview(pd.DataFrame({"a": range(10)}), "table")

@@ -1110,12 +1110,12 @@ def _bar_ticks(
     """Return ``(x, label)`` for the bar ticks that fit between *left* and *right* without overlapping.
 
     Category names are often longer than the space under a few thin bars,
-    so fewer ticks are drawn until the labels fit, each label is cut to the
-    room it has, and the outermost labels are moved inward to stay inside
-    the plot.
+    so fewer ticks are drawn until the labels fit, or at least until the
+    labels left after cutting each to the room it has tell the ticks apart.
+    The outermost labels are moved inward to stay inside the plot.
     """
-    labels = [_short_tick(v) for v in values]
-    longest = min(max((len(label) for label in labels), default=0), 8)
+    labels = [_clip(v, MAX_CELL_CHARS) if isinstance(v, str) else _short_tick(v) for v in values]
+    choices = []
     for max_ticks in (5, 4, 3, 2):
         idxs = _tick_indices(len(labels), max_ticks)
         gap = min(
@@ -1124,18 +1124,27 @@ def _bar_ticks(
         )
         # A label pushed inward from the edge may reach two thirds of the way to its neighbour.
         budget = int((gap * 2 / 3 - 2) / _TICK_CHAR_W)
-        if budget >= longest:
+        shown = [(i, _cut(labels[i], budget)) for i in idxs]
+        choices.append(shown)
+        if all(text == labels[i] for i, text in shown):
             break
+    else:
+        distinct = [c for c in choices if len({text for _, text in c}) == len(c)]
+        shown = distinct[0] if distinct else choices[-1]
     ticks = []
-    for i in idxs:
-        label = labels[i]
-        if len(label) > budget:
-            label = label[: max(budget - 1, 1)] + "…" if budget > 1 else ""
+    for i, label in shown:
         if not label:
             continue
         half = len(label) * _TICK_CHAR_W / 2
         ticks.append((min(max(centers[i], left + half), right - half), label))
     return ticks
+
+
+def _cut(label: str, budget: int) -> str:
+    """Cut *label* to *budget* characters, ending in an ellipsis, or to nothing if there is no room."""
+    if len(label) <= budget:
+        return label
+    return label[: budget - 1] + "…" if budget > 1 else ""
 
 
 def _tick_indices(count: int, max_ticks: int = 4) -> list[int]:

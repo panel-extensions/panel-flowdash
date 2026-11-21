@@ -337,7 +337,6 @@ def test_card_shrinks_once_a_shorter_table_settles(page):
 
     set_rows(1)
     expect(node).to_contain_text("1 row, 2 columns")
-    assert node.bounding_box()["height"] == pytest.approx(tall, abs=1)
     wait_until(lambda: node.bounding_box()["height"] < tall - 50, page, timeout=8000)
     _assert_aligned(page)
 

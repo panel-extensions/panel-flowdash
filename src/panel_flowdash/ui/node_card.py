@@ -895,6 +895,7 @@ class NodeCard(Viewer):
                 partial(self._fit, self._generation, doc), SHRINK_DELAY * 1000
             )
         except Exception:
+            logger.debug("Could not schedule shrinking the card of %s", self.title, exc_info=True)
             return preview
         self._fitted = preview
         return preview.with_height(old.height)
