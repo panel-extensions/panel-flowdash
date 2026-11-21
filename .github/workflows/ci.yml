@@ -3,6 +3,7 @@ on:
   pull_request:
     branches:
       - "**"
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches:
       - main
@@ -46,6 +47,7 @@ jobs:
       code_change: ${{ steps.filter.outputs.code || 'true' }}
       img_change: ${{ steps.filter.outputs.img || 'false' }}
       matrix: ${{ env.MATRIX }}
+      ui_matrix: ${{ env.UI_MATRIX }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         if: github.event_name == 'push' && github.ref_type == 'branch'
@@ -69,9 +71,13 @@ jobs:
       - name: Set matrix option
         env:
           GITHUB_EVENT_INPUTS_TARGET: ${{ github.event.inputs.target }}
+          # Draft PRs test on Linux only; run the workflow by hand for the full matrix.
+          DRAFT: ${{ github.event.pull_request.draft == true }}
         run: |
           if [[ "${GITHUB_EVENT_NAME}" == 'workflow_dispatch' ]]; then
             OPTION=${GITHUB_EVENT_INPUTS_TARGET}
+          elif [[ "${DRAFT}" == 'true' ]]; then
+            OPTION="draft"
           elif [[ "${GITHUB_EVENT_NAME}" == 'schedule' ]]; then
             OPTION="full"
           elif [[ "${GITHUB_EVENT_NAME}" == 'push' && "${GITHUB_REF_TYPE}" == 'tag' ]]; then
@@ -80,6 +86,26 @@ jobs:
             OPTION="default"
           fi
           echo "MATRIX_OPTION=$OPTION" >> $GITHUB_ENV
+          if [[ "$OPTION" == 'draft' ]]; then
+            UI_OS='["ubuntu-latest"]'
+          else
+            UI_OS='["ubuntu-latest", "macos-latest", "windows-latest"]'
+          fi
+          UI_MATRIX=$(jq -nc --argjson os "$UI_OS" '{
+              "environment": ["test-ui"],
+              "os": $os,
+              "shard": [1, 2],
+              "shards": [2]
+          }')
+          echo "UI_MATRIX=$UI_MATRIX" >> $GITHUB_ENV
+      - name: Set test matrix with 'draft' option
+        if: env.MATRIX_OPTION == 'draft'
+        run: |
+          MATRIX=$(jq -nsc '{
+              "os": ["ubuntu-latest"],
+              "environment": ["test-312"]
+          }')
+          echo "MATRIX=$MATRIX" >> $GITHUB_ENV
       - name: Set test matrix with 'default' option
         if: env.MATRIX_OPTION == 'default'
         run: |
@@ -160,16 +186,14 @@ jobs:
         run: pixi run -e "${ENV}" test-coverage --color=yes
 
   pytest_ui:
-    name: ui:${{ matrix.environment }}:${{ matrix.os }}
+    name: ui:${{ matrix.environment }}:${{ matrix.os }}:${{ matrix.shard }}
     needs: [pre_commit, setup, pixi_lock]
     runs-on: ${{ matrix.os }}
     if: needs.setup.outputs.code_change == 'true'
     strategy:
       fail-fast: false
-      matrix:
-        environment: ["test-ui"]
-        os: ["ubuntu-latest", "macos-latest", "windows-latest"]
-    timeout-minutes: 60
+      matrix: ${{ fromJson(needs.setup.outputs.ui_matrix) }}
+    timeout-minutes: 40
     env:
       PANEL_LOG_LEVEL: info
     steps:
@@ -184,20 +208,18 @@ jobs:
         with:
           environments: ${{ matrix.environment }}
 
-      - name: Configure Coverage
-        run: |
-          echo "[run]" > .uicoveragerc
-          echo "concurrency = greenlet" >> .uicoveragerc
-
       - name: Test UI
+        env:
+          ENV: ${{ matrix.environment }}
+          SHARD: ${{ matrix.shard }}/${{ matrix.shards }}
         run: |
           FAIL="--screenshot only-on-failure --full-page-screenshot --output ui_screenshots --tracing retain-on-failure"
-          pixi run -e ${{ matrix.environment }} test-ui --cov-config=.uicoveragerc $FAIL
+          pixi run -e "${ENV}" test-ui --shard "${SHARD}" $FAIL
 
       - name: Upload UI Screenshots
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
-          name: ui_screenshots_${{ runner.os }}
+          name: ui_screenshots_${{ runner.os }}_${{ matrix.shard }}
           path: ./ui_screenshots
           if-no-files-found: ignore

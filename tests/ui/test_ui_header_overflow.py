@@ -11,7 +11,7 @@ from panel_flowdash.component_library import normalize_components
 
 from .test_ui_header_layout import EDIT_ACTIONS, TOP_BAR, VIEW_ACTIONS
 from .test_ui_view_header import COMPONENTS
-from .util import serve_component, stable_box
+from .util import DASHBOARD_LOAD_TIMEOUT, serve_component, stable_box
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect
@@ -69,7 +69,7 @@ def _serve(page, width, edit):
     suffix = f"/dash/{dash}" + ("?edit=true" if edit else "")
     serve_component(page, {"/": factory, "/dash/[^/]+": factory}, suffix=suffix)
     if edit:
-        expect(page.get_by_text("All changes saved")).to_be_visible()
+        expect(page.get_by_text("All changes saved")).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
     else:
         page.locator(".flowdash-tile").filter(visible=True).first.wait_for()
 
