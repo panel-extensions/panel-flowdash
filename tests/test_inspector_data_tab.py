@@ -198,3 +198,24 @@ async def test_value_preview_falls_back_to_text_for_values_json_cannot_hold(edit
     with pytest.raises(TypeError):
         json.dumps(Pipeline())
     assert isinstance(editor._value_preview({"a": 1}), pn.pane.JSON)
+
+
+async def test_index_carrying_data_is_shown_as_columns(editor):
+    from panel_flowdash.ui.inspector import _table_preview
+
+    sums = FRAME.groupby("state").sum()
+    (table,) = [o for o in _table_preview(sums) if isinstance(o, pn.pane.DataFrame)]
+    assert list(table.object.columns) == ["state", "case_id"]
+    assert list(table.object["state"]) == ["AK", "CA"]
+
+    pivot = FRAME.assign(kind=["a", "b", "c", "d"] * 10).groupby(["state", "kind"]).size()
+    (table,) = [o for o in _table_preview(pivot.to_frame("n")) if isinstance(o, pn.pane.DataFrame)]
+    assert list(table.object.columns) == ["state", "kind", "n"]
+
+    dated = pd.DataFrame({"v": [1, 2]}, index=pd.date_range("2026-01-01", periods=2))
+    (table,) = [o for o in _table_preview(dated) if isinstance(o, pn.pane.DataFrame)]
+    assert list(table.object.columns) == ["index", "v"]
+
+    (table,) = [o for o in _table_preview(FRAME) if isinstance(o, pn.pane.DataFrame)]
+    assert list(table.object.columns) == ["case_id", "state"]
+    assert table.index is False

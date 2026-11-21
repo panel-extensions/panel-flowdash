@@ -430,6 +430,25 @@ def _count(count: t.Any, noun: str) -> str:
     return f"{count:,} {noun}{'' if count == 1 else 's'}"
 
 
+def _index_as_columns(frame: t.Any) -> tuple[t.Any, bool]:
+    """Return *frame* with an index that carries data, e.g. group labels, moved into columns.
+
+    A default unnamed RangeIndex says nothing and is dropped. The returned flag
+    says whether the index must still be shown, when it could not be moved.
+    """
+    index = getattr(frame, "index", None)
+    if index is None or not hasattr(frame, "reset_index"):
+        return frame, False
+    names = [n for n in getattr(index, "names", [index.name]) if n is not None]
+    if not names and type(index).__name__ == "RangeIndex" and index.nlevels == 1:
+        return frame, False
+    try:
+        return frame.reset_index(), False
+    except Exception:
+        # A level named like a column cannot move, so the index is shown as it is.
+        return frame, True
+
+
 def _table_preview(value: t.Any) -> list[Viewable]:
     """Return the first rows of a table, under its size, without its index."""
     rows, cols = value.shape
@@ -440,6 +459,7 @@ def _table_preview(value: t.Any) -> list[Viewable]:
     caption = _caption(summary, margin=(0, 0, 6, 0), css_classes=["fd-data-summary"])
     if not len(head) and not cols:
         return [caption]
+    head, index = _index_as_columns(head)
     numeric = [
         i + 1
         for i, dtype in enumerate(getattr(head, "dtypes", []))
@@ -452,7 +472,7 @@ def _table_preview(value: t.Any) -> list[Viewable]:
     )
     table = pn.pane.DataFrame(
         head,
-        index=False,
+        index=index,
         sizing_mode="stretch_width",
         margin=0,
         stylesheets=[_TABLE_CSS + align],
