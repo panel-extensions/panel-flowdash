@@ -14,6 +14,7 @@ code panel under the canvas when it has room for one, see
 from __future__ import annotations
 
 import html
+import json
 import re
 import typing as t
 
@@ -346,6 +347,51 @@ def code_language(parameter: param.Parameter) -> str | None:
     return language if isinstance(language, str) and language else "text"
 
 
+def format_json(text: str) -> str:
+    """Return the JSON *text* indented by two spaces, keys in the order written.
+
+    Raises
+    ------
+    ValueError
+        If *text* is not valid JSON.
+    """
+    return json.dumps(json.loads(text), indent=2, ensure_ascii=False)
+
+
+#: Formatters of code by language, see :func:`register_formatter`.
+FORMATTERS: dict[str, t.Callable[[str], str]] = {"json": format_json}
+
+
+def register_formatter(language: str, formatter: t.Callable[[str], str] | None):
+    """Format every code field in *language* with *formatter*, or with none if it is None.
+
+    The registry is global to the process, so it applies to every app and
+    session served.
+
+    A formatter takes the text and returns it formatted, raising an exception
+    if it cannot, e.g. ``lambda sql: sqlglot.transpile(sql, pretty=True)[0]``.
+    A code field may declare its own, which takes precedence::
+
+        sql = param.String(metadata={"flowdash": {
+            "widget": "code", "language": "sql", "formatter": format_sql}})
+    """
+    if formatter is None:
+        FORMATTERS.pop(language.lower(), None)
+    else:
+        FORMATTERS[language.lower()] = formatter
+
+
+def code_formatter(parameter: param.Parameter) -> t.Callable[[str], str] | None:
+    """Return what formats the code field *parameter*: its own formatter or its language's, if any."""
+    language = code_language(parameter)
+    if language is None:
+        return None
+    own = (parameter.metadata or {})["flowdash"].get("formatter")
+    if callable(own):
+        return own
+    return FORMATTERS.get(language.lower())
+
+
 class AceOptions(JSComponent):
     """Sets Ace options Panel's ``CodeEditor`` does not expose on the editors beside it.
 
@@ -436,8 +482,11 @@ class AceTools(JSComponent):
     squiggle under its text and its message in a line under it, with a button
     applying the suggestion if it has one. :attr:`completions`,
     ``{"value", "meta"}`` each, are offered while typing. Ctrl+Enter
-    (Cmd+Enter on macOS) sends a ``run`` message with the editor's text.
-    The component itself shows the cursor position, e.g. ``Ln 5, Col 19``.
+    (Cmd+Enter on macOS) sends a ``run`` message with the editor's text,
+    and with :attr:`can_format` Shift+Alt+F a ``format`` message. Setting
+    :attr:`replacement` puts its ``text`` in the editor as one edit, which
+    Ctrl+Z undoes. The component itself shows the cursor position, e.g.
+    ``Ln 5, Col 19``.
     """
 
     target_class = param.String(doc="The CSS class of the CodeEditor to extend.")
@@ -451,6 +500,12 @@ class AceTools(JSComponent):
     focus = param.Integer(default=0)
 
     closing = param.Integer(default=0, doc="Bumped to close the completion popup.")
+
+    can_format = param.Boolean(default=False, doc="Whether Shift+Alt+F sends a format message.")
+
+    replacement = param.Dict(
+        default={}, doc="``{text, seq}``: the text to put in the editor, once per ``seq``."
+    )
 
     scroll_margin = param.Integer(
         default=0, doc="Pixels the editor scrolls past its last line, so it clears what is below."
@@ -604,14 +659,37 @@ class AceTools(JSComponent):
             model.send_msg({type: "run", text: ed.getValue()})
           },
         })
+        editor.commands.addCommand({
+          name: "flowdashFormat",
+          bindKey: {win: "Shift-Alt-F", mac: "Shift-Alt-F"},
+          exec: (ed) => {
+            if (!model.can_format) return false
+            model.send_msg({type: "format", text: ed.getValue()})
+          },
+        })
         editor.selection.on("changeCursor", position)
         position()
+        replace()
         complete()
         diagnose()
       }
 
+      let replaced = model.replacement.seq
+      function replace() {
+        const {text, seq} = model.replacement
+        if (seq == null || seq === replaced) return
+        replaced = seq
+        if (typeof text !== "string" || editor.getValue() === text) return
+        const cursor = editor.getCursorPosition()
+        // One undoable edit, unlike session.setValue, which resets the undo history.
+        editor.session.doc.setValue(text)
+        editor.clearSelection()
+        editor.moveCursorToPosition(cursor)
+      }
+
       el.textContent = ""
       attach()
+      model.on("replacement", () => editor && replace())
       model.on("diagnostics", () => editor && diagnose())
       model.on("completions", () => editor && complete())
       model.on("options", () => editor && editor.setOptions(model.options))
@@ -621,14 +699,29 @@ class AceTools(JSComponent):
     }
     """
 
-    def __init__(self, on_run: t.Callable[[str], None] | None = None, **params):
+    def __init__(
+        self,
+        on_run: t.Callable[[str], None] | None = None,
+        on_format: t.Callable[[str], None] | None = None,
+        **params,
+    ):
         super().__init__(**params)
         self.on_run = on_run
+        self.on_format = on_format
+
+    def replace(self, text: str):
+        """Put *text* in the editor as one edit, which Ctrl+Z undoes."""
+        self.replacement = {"text": text, "seq": self.replacement.get("seq", 0) + 1}
 
     def _handle_msg(self, msg):
-        if isinstance(msg, dict) and msg.get("type") == "run" and self.on_run is not None:
-            text = msg.get("text")
-            self.on_run(text if isinstance(text, str) else None)
+        if not isinstance(msg, dict):
+            return
+        text = msg.get("text")
+        text = text if isinstance(text, str) else None
+        if msg.get("type") == "run" and self.on_run is not None:
+            self.on_run(text)
+        elif msg.get("type") == "format" and self.on_format is not None:
+            self.on_format(text)
 
 
 class CodeField(CompositeWidget):

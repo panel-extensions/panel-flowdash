@@ -1,4 +1,4 @@
-"""The code panel docked under the canvas: a node's spec beside the node's result.
+"""The code panel docked under the canvas, or to its right: a node's spec beside the node's result.
 
 The editor opens it for one node, see
 :meth:`~panel_flowdash.editor.FlowDash.open_code_panel`, and while it is open
@@ -8,6 +8,10 @@ e.g. a query, as text, or a dict declaring a spec form, e.g. a chart spec, as
 a form of its settings or as JSON, see
 :class:`~panel_flowdash.ui.spec_field.SpecEditor`. A node without a spec shows
 its result only.
+
+Format (Shift+Alt+F) lays out a spec's JSON, or code whose field or
+language has a formatter, see :func:`~panel_flowdash.ui.code_field.register_formatter`,
+as an edit of the draft that Ctrl+Z undoes.
 
 The edit is a draft until Run (or Ctrl+Enter) applies it as one edit. With
 "Run on change" on, a pause in typing runs it too. A component with a
@@ -24,9 +28,11 @@ import asyncio
 import copy
 import datetime as dt
 import html
+import logging
 import time
 import typing as t
 import weakref
+from functools import partial
 
 import panel as pn
 import panel_material_ui as pmui
@@ -34,16 +40,30 @@ import param
 from panel.custom import JSComponent
 from panel.viewable import Viewer
 from panel.widgets import CodeEditor
-from panel_splitjs import HSplit
+from panel_splitjs import HSplit, VSplit
 
 from panel_flowdash.config_check import CheckResult
 from panel_flowdash.config_choices import node_choices, node_completions, spec_fields
 from panel_flowdash.dataflow_engine import failure_text
-from panel_flowdash.spec_settings import SpecPathError, declared_settings, delete_path, set_path
+from panel_flowdash.spec_settings import (
+    SpecPathError,
+    declared_settings,
+    delete_path,
+    format_spec,
+    parse_spec,
+    set_path,
+)
 from panel_flowdash.ui.choice_widgets import setting_choices
-from panel_flowdash.ui.code_field import ACE_OPTIONS, ACE_THEME_CSS, AceTools, code_language
+from panel_flowdash.ui.code_field import (
+    ACE_OPTIONS,
+    ACE_THEME_CSS,
+    AceTools,
+    code_formatter,
+    code_language,
+)
 from panel_flowdash.ui.config_draft import ConfigDraft
-from panel_flowdash.ui.node_preview import summarize_value
+from panel_flowdash.ui.inspector import hooked_preview, value_preview, wants_preview_hook
+from panel_flowdash.ui.node_preview import run_off_loop, summarize_value
 from panel_flowdash.ui.spec_field import SpecEditor
 from panel_flowdash.ui.split_view import GUTTER_CSS
 from panel_flowdash.ui.text import field_label, text_alert
@@ -62,6 +82,11 @@ HEADER_HEIGHT = 48
 SPLIT_SIZES = (40.0, 60.0)
 #: Narrowest the code or the result may be dragged, in pixels.
 MIN_PANE_WIDTH = 240
+#: Heights of the code and the result in percent of the panel docked to the right.
+STACKED_SIZES = (50.0, 50.0)
+#: Lowest the code or the result may be dragged in the panel docked to the right, in pixels.
+MIN_PANE_HEIGHT = 140
+FORMAT_SHORTCUT = "Shift+Alt+F"
 _EDITOR_CLASS = "fd-code-panel-editor"
 _SPEC_TEXT_CLASS = "fd-code-panel-spec-json"
 #: The views of a spec with a form, by label, as :attr:`SpecEditor.mode` values.
@@ -71,6 +96,8 @@ _TEXT = object()
 # Where a held draft keeps the field's value it was written against.
 _BASE = object()
 _MISSING = object()
+logger = logging.getLogger(__name__)
+
 # The result option showing the node's own view rather than one of its outputs.
 _VIEW = "__view__"
 
@@ -78,7 +105,9 @@ _HEADER_CSS = """
 :host { min-width: 0; }
 .fd-cp-title { display: flex; align-items: center; gap: 8px; height: 100%; white-space: nowrap;
   overflow: hidden; }
-.fd-cp-name { overflow: hidden; text-overflow: ellipsis; }
+/* The component's name gives way before the node's. */
+.fd-cp-name { overflow: hidden; text-overflow: ellipsis; flex: 0 0.01 auto; min-width: 48px; }
+.fd-cp-kind { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fd-cp-icon { font-family: "Material Icons"; font-size: 18px; line-height: 1;
   font-feature-settings: "liga"; color: var(--mui-palette-text-secondary); }
 .fd-cp-name { font-family: var(--fd-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
@@ -118,7 +147,8 @@ _STRIP_CSS = """
 /* The controls on the right keep their size; the title and the fields give way. */
 :host(.fd-code-panel-header) > * { flex: none; }
 :host(.fd-code-panel-header) > .bk-Spacer { flex: 1 1 0; min-width: 0; width: auto !important; }
-:host(.fd-code-panel-header) > .fd-cp-title-pane { flex: 0 1 auto; min-width: 60px; overflow: hidden; }
+/* In a narrow panel, e.g. docked to the right, the node's name keeps its room. */
+:host(.fd-code-panel-header) > .fd-cp-title-pane { flex: 0 1 auto; min-width: min(150px, 35%); overflow: hidden; }
 :host(.fd-cp-footer) { border-bottom: none; padding: 0 12px;
   border-top: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.12)); }
 :host(.fd-cp-subheader) { padding: 0 12px; }
@@ -186,30 +216,41 @@ def _output_label(port: t.Any) -> str:
 
 
 class DockHandle(JSComponent):
-    """A bar dragged to resize the layout holding it, which reports its new :attr:`height`.
+    """A bar dragged to resize the layout holding it, which reports its new :attr:`size`.
 
-    While dragging, the layout's height follows the pointer in the page;
-    :attr:`height` is set once the pointer is released. Arrow keys resize it
-    by 24 pixels when the bar has focus.
+    A horizontal bar sits on top of a layout docked under the page and sets
+    its height; a vertical one sits on the left of a layout docked to the
+    right and sets its width. While dragging, the layout follows the pointer
+    in the page; :attr:`size` is set once the pointer is released. Arrow keys
+    resize it by 24 pixels when the bar has focus.
     """
 
     size = param.Integer(
-        default=None, allow_None=True, doc="The height the bar resized its layout to."
+        default=None, allow_None=True, doc="The height or width the bar resized its layout to."
     )
 
     min_size = param.Integer(default=160)
 
     max_ratio = param.Number(
-        default=0.8, doc="The largest share of the parent's height it may take."
+        default=0.8, doc="The largest share of the parent's height or width it may take."
+    )
+
+    orientation = param.Selector(
+        default="horizontal",
+        objects=["horizontal", "vertical"],
+        doc="A horizontal bar resizes the height, a vertical one the width.",
     )
 
     _stylesheets: t.ClassVar[list[str]] = [
         """
         :host { cursor: row-resize; }
+        :host(.fd-dock-vertical) { cursor: col-resize; }
         .fd-dock-handle { height: 7px; display: flex; align-items: center; justify-content: center;
           touch-action: none; outline: none; }
+        .fd-dock-handle.vertical { height: 100%; width: 7px; }
         .fd-dock-handle::after { content: ""; width: 32px; height: 3px; border-radius: 2px;
           background: var(--mui-palette-divider, rgba(0, 0, 0, 0.2)); }
+        .fd-dock-handle.vertical::after { width: 3px; height: 32px; }
         .fd-dock-handle:hover::after, .fd-dock-handle:focus-visible::after, .fd-dock-handle.dragging::after {
           background: var(--mui-palette-primary-main, #0072b5); }
         """
@@ -217,36 +258,54 @@ class DockHandle(JSComponent):
 
     _esm = """
     export function render({ el, model }) {
+      const vertical = model.orientation === "vertical"
       const bar = document.createElement("div")
-      bar.className = "fd-dock-handle"
+      bar.className = vertical ? "fd-dock-handle vertical" : "fd-dock-handle"
       bar.tabIndex = 0
       bar.setAttribute("role", "separator")
-      bar.setAttribute("aria-orientation", "horizontal")
+      // A separator's orientation is that of the line it draws, across the resize.
+      bar.setAttribute("aria-orientation", vertical ? "vertical" : "horizontal")
       bar.setAttribute("aria-label", "Resize the code panel")
       el.appendChild(bar)
       function dock() {
         const host = el.getRootNode().host
         return host && host.getRootNode().host
       }
-      function clamp(height, target) {
+      function extent(rect) {
+        return vertical ? rect.width : rect.height
+      }
+      function clamp(size, target) {
         const parent = target.parentElement || (target.getRootNode() && target.getRootNode().host)
-        const room = parent ? parent.getBoundingClientRect().height : window.innerHeight
-        return Math.round(Math.max(model.min_size, Math.min(height, room * model.max_ratio)))
+        const room = parent ? extent(parent.getBoundingClientRect()) : (vertical ? window.innerWidth : window.innerHeight)
+        return Math.round(Math.max(model.min_size, Math.min(size, room * model.max_ratio)))
+      }
+      function resize(target, size) {
+        if (vertical) {
+          target.style.width = `${size}px`
+          target.style.minWidth = `${size}px`
+        } else {
+          target.style.height = `${size}px`
+        }
       }
       let start = null
       bar.addEventListener("pointerdown", (event) => {
         const target = dock()
         if (!target) return
-        start = {y: event.clientY, height: target.getBoundingClientRect().height, target}
+        start = {
+          at: vertical ? event.clientX : event.clientY,
+          size: extent(target.getBoundingClientRect()),
+          target,
+        }
         bar.setPointerCapture(event.pointerId)
         bar.classList.add("dragging")
         event.preventDefault()
       })
       bar.addEventListener("pointermove", (event) => {
         if (!start) return
-        const height = clamp(start.height + start.y - event.clientY, start.target)
-        start.target.style.height = `${height}px`
-        start.last = height
+        const at = vertical ? event.clientX : event.clientY
+        const size = clamp(start.size + start.at - at, start.target)
+        resize(start.target, size)
+        start.last = size
       })
       function end() {
         if (!start) return
@@ -257,16 +316,22 @@ class DockHandle(JSComponent):
       bar.addEventListener("pointerup", end)
       bar.addEventListener("pointercancel", end)
       bar.addEventListener("keydown", (event) => {
-        const step = {ArrowUp: 24, ArrowDown: -24}[event.key]
+        const keys = vertical ? {ArrowLeft: 24, ArrowRight: -24} : {ArrowUp: 24, ArrowDown: -24}
+        const step = keys[event.key]
         const target = dock()
         if (!step || !target) return
         event.preventDefault()
-        const height = clamp(target.getBoundingClientRect().height + step, target)
-        target.style.height = `${height}px`
-        model.size = height
+        const size = clamp(extent(target.getBoundingClientRect()) + step, target)
+        resize(target, size)
+        model.size = size
       })
     }
     """
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        if self.orientation == "vertical":
+            self.css_classes = [*self.css_classes, "fd-dock-vertical"]
 
 
 class CodePanel(Viewer):
@@ -292,6 +357,16 @@ class CodePanel(Viewer):
 
     on_close = param.Callable(default=None, doc="Called when the panel's close button is pressed.")
 
+    dock = param.Selector(
+        default="bottom",
+        objects=["bottom", "right"],
+        doc="Where the panel is docked: under the canvas, or in a column to its right.",
+    )
+
+    can_dock_right = param.Boolean(
+        default=True, doc="Whether the window is wide enough to offer docking to the right."
+    )
+
     def __init__(self, **params):
         super().__init__(**params)
         self._editor_ref = weakref.ref(self.editor)
@@ -311,6 +386,11 @@ class CodePanel(Viewer):
         self._held: dict[tuple[str, str], dict[str, t.Any]] = {}
         self._running = False
         self._run_again = False
+        self._format_error: str | None = None
+        # Set while the panel edits the spec itself, e.g. formatting it, which "Run on change" does not run.
+        self._hold_run = False
+        # Counts the results shown, so a preview still loading for an earlier one is dropped.
+        self._shown_results = 0
 
         self._title = pn.pane.HTML(
             "",
@@ -325,7 +405,10 @@ class CodePanel(Viewer):
             margin=(0, 8),
             size="small",
             align="center",
-            sx={"& .MuiFormControlLabel-label": {"fontSize": "0.8125rem"}},
+            # The sx styles the switch itself, so its label is styled here.
+            stylesheets=[
+                ".MuiFormControlLabel-label { font-size: 0.8125rem; white-space: nowrap; }"
+            ],
             css_classes=["fd-code-run-on-change"],
         )
         self.run_switch.link(self, value="run_on_change", bidirectional=True)
@@ -379,12 +462,22 @@ class CodePanel(Viewer):
             css_classes=["fd-code-close"],
         )
         self.close_button.on_click(lambda _event: self.on_close and self.on_close())
+        self.dock_button = pmui.IconButton(
+            icon="view_sidebar",
+            description="Dock to the right",
+            size="small",
+            margin=(0, 2),
+            align="center",
+            css_classes=["fd-code-dock-toggle"],
+        )
+        self.dock_button.on_click(lambda _event: self.toggle_dock())
         self._header = pn.Row(
             self._title,
             pn.layout.HSpacer(),
             self.discard_button,
             self.run_switch,
             self.run_button,
+            self.dock_button,
             self.collapse_button,
             self.expand_button,
             self.close_button,
@@ -411,6 +504,7 @@ class CodePanel(Viewer):
             target_class=_EDITOR_CLASS,
             options=ACE_OPTIONS,
             on_run=self.run,
+            on_format=self.format,
             scroll_margin=8,
             margin=0,
             align="center",
@@ -433,6 +527,7 @@ class CodePanel(Viewer):
             target_class=_SPEC_TEXT_CLASS,
             options={**ACE_OPTIONS, "wrap": False, "tabSize": 2},
             on_run=self.run,
+            on_format=self.format,
             scroll_margin=8,
             margin=0,
             align="center",
@@ -561,10 +656,24 @@ class CodePanel(Viewer):
         self._code_header = pn.pane.HTML(
             "", margin=0, align="center", sizing_mode="stretch_width", stylesheets=[_BAR_CSS]
         )
+        self.format_button = pmui.Button(
+            label="Format",
+            icon="format_align_left",
+            variant="text",
+            size="small",
+            margin=(0, 8, 0, 0),
+            align="center",
+            visible=False,
+            description=f"Format the code ({FORMAT_SHORTCUT})",
+            sx={"textTransform": "none", "py": "1px", "fontSize": "0.75rem"},
+            css_classes=["fd-code-format"],
+        )
+        self.format_button.on_click(lambda _event: self.format())
         code_header = pn.Row(
             self._code_header,
             self.field_toggle,
             self.view_toggle,
+            self.format_button,
             height=36,
             margin=0,
             sizing_mode="stretch_width",
@@ -640,20 +749,7 @@ class CodePanel(Viewer):
             styles={"min-width": "0", "overflow": "hidden"},
             css_classes=["fd-code-panel-result"],
         )
-        self._body = HSplit(
-            self._code_column,
-            self._result_column,
-            sizes=SPLIT_SIZES,
-            expanded_sizes=SPLIT_SIZES,
-            min_size=(MIN_PANE_WIDTH, MIN_PANE_WIDTH),
-            snap_size=0,
-            gutter_size=8,
-            margin=0,
-            sizing_mode="stretch_both",
-            visible=not self.collapsed,
-            stylesheets=[GUTTER_CSS],
-            css_classes=["fd-code-panel-body"],
-        )
+        self._body = self._make_body()
         self._layout = pmui.Column(
             self._header,
             self._body,
@@ -664,9 +760,78 @@ class CodePanel(Viewer):
         )
         self.param.watch(self._sync_collapsed, "collapsed")
         self.param.watch(self._sync_run_button, ["dirty", "run_on_change", "field"])
+        self.param.watch(self._sync_dock, ["dock", "can_dock_right"])
+        self._sync_dock()
         self._sync_collapsed()
         self._sync_kind()
         self._sync_run_button()
+
+    def _make_body(self) -> HSplit | VSplit:
+        """Lay out the code and the result side by side, or one above the other when docked right."""
+        if self.dock == "right":
+            split, sizes, least = VSplit, STACKED_SIZES, MIN_PANE_HEIGHT
+        else:
+            split, sizes, least = HSplit, SPLIT_SIZES, MIN_PANE_WIDTH
+        return split(
+            self._code_column,
+            self._result_column,
+            sizes=sizes,
+            expanded_sizes=sizes,
+            min_size=(least, least),
+            snap_size=0,
+            gutter_size=8,
+            margin=0,
+            sizing_mode="stretch_both",
+            visible=not self.collapsed,
+            stylesheets=[GUTTER_CSS],
+            css_classes=["fd-code-panel-body"],
+        )
+
+    def toggle_dock(self):
+        """Dock the panel to the right of the canvas, or back under it."""
+        self.dock = "bottom" if self.dock == "right" else "right"
+
+    @pn.io.hold()
+    def _sync_dock(self, *events):
+        right = self.dock == "right"
+        self.dock_button.param.update(
+            icon="horizontal_split" if right else "view_sidebar",
+            description="Dock under the canvas" if right else "Dock to the right",
+            visible=right or self.can_dock_right,
+        )
+        if right and self.collapsed:
+            self.collapsed = False
+        if any(e.name == "dock" for e in events):
+            self._keep_text()
+            self._body.objects = []
+            self._body = self._make_body()
+            self._layout[:] = [self._header, self._body]
+        self._sync_collapsed()
+
+    def _keep_text(self):
+        """Make the text typed in the editors what they show when rendered again, e.g. once moved.
+
+        A browser renders an editor from its applied text, so spec text typed
+        but not applied is applied as leaving the editor would: a valid spec
+        updates the draft and the form, invalid text stays with its problem
+        marked. Ace's undo history starts afresh in the new editor.
+        """
+        self._syncing = True
+        try:
+            if self.code.value != self.code.value_input:
+                self.code.value = self.code.value_input
+        finally:
+            self._syncing = False
+        text = self.spec_editor.editor
+        if self._kind() == "spec" and text.value != text.value_input:
+            # A move is not an edit, so "Run on change" does not run it.
+            self._hold_run = True
+            try:
+                text.value = text.value_input
+            finally:
+                self._hold_run = False
+            self._sync_dirty()
+            self._show_status()
 
     # ------------------------------------------------------------------
     # Opening and closing
@@ -733,6 +898,7 @@ class CodePanel(Viewer):
         spec = self._spec()
         state = editor._dataflow_graph.get_config_state(instance_id)
         self._good = {}
+        self._format_error = None
         self._result = CheckResult()
         self._failed = False
         self._ran_at = self._took = None
@@ -819,6 +985,13 @@ class CodePanel(Viewer):
         self._spec_text.visible = self.spec_tools.visible = kind == "spec" and not form
         self.view_toggle.visible = has_form
         self._empty.visible = kind is None
+        formatter = self._formatter()
+        self.format_button.param.update(
+            visible=formatter is not None,
+            description=f"Format the {'JSON' if kind == 'spec' else 'code'} ({FORMAT_SHORTCUT})",
+        )
+        self.tools.can_format = kind == "code" and formatter is not None
+        self.spec_tools.can_format = kind == "spec" and formatter is not None
         self._sync_json_error()
         if kind == "spec":
             self._language.object = _bar("" if form else "JSON")
@@ -1026,8 +1199,10 @@ class CodePanel(Viewer):
         )
 
     def _sync_collapsed(self, *_events):
+        # Docked to the right the panel has the window's height, so it is not folded to its header.
+        foldable = self.dock == "bottom"
         self._body.visible = not self.collapsed
-        self.collapse_button.visible = not self.collapsed
+        self.collapse_button.visible = foldable and not self.collapsed
         self.expand_button.visible = self.collapsed
 
     def _sync_run_button(self, *_events):
@@ -1085,6 +1260,9 @@ class CodePanel(Viewer):
     def _typed(self, _event):
         if self._syncing or self._kind() != "code":
             return
+        if self._format_error is not None:
+            self._format_error = None
+            self._show_status()
         self._sync_dirty()
         self._run_later()
 
@@ -1092,7 +1270,8 @@ class CodePanel(Viewer):
         if self._syncing or self._kind() != "spec":
             return
         self._sync_dirty()
-        self._run_later()
+        if not self._hold_run:
+            self._run_later()
 
     def _spec_typed(self, _event):
         self._sync_json_error()
@@ -1217,6 +1396,70 @@ class CodePanel(Viewer):
             return
         param.parameterized.async_executor(apply)
 
+    def _formatter(self) -> t.Callable[[str], str] | None:
+        """Return what formats the text shown: the code field's formatter, or JSON's for spec text."""
+        kind = self._kind()
+        if kind == "spec":
+            return _format_spec_text if self._spec_text.visible else None
+        if kind != "code":
+            return None
+        state = self._flowdash._dataflow_graph.get_config_state(self.instance_id)
+        return code_formatter(state.param[self.field])
+
+    def format(self, text: str | None = None):
+        """Lay out the text in the editor, as an edit of the draft that Ctrl+Z undoes.
+
+        *text* is the editor's text as sent with Shift+Alt+F, which may be
+        ahead of what the server has. Text that does not parse is left as
+        it is, with the problem said under it.
+        """
+        formatter = self._formatter()
+        kind = self._kind()
+        editor = self._flowdash
+        if formatter is None or editor is None or not editor.editable:
+            return
+        source = self.code if kind == "code" else self.spec_editor.editor
+        tools = self.tools if kind == "code" else self.spec_tools
+        if text is None:
+            text = source.value_input
+        try:
+            formatted = formatter(text)
+        except Exception as exc:
+            self._format_failed(kind, text, exc)
+            return
+        if not isinstance(formatted, str):
+            return
+        self._format_error = None
+        shown = source.value
+        if kind == "code":
+            self._syncing = True
+            try:
+                self.code.param.update(value=formatted, value_input=formatted)
+            finally:
+                self._syncing = False
+            self._show_status()
+            self._sync_dirty()
+        else:
+            # Applied as if typed, so the spec and the form follow the text.
+            self._hold_run = True
+            try:
+                self.spec_editor.editor.param.update(value_input=formatted)
+                self.spec_editor.editor.value = formatted
+            finally:
+                self._hold_run = False
+        if source.value == shown:
+            # The browser updates the editor when its value changes; unchanged, e.g. after an
+            # undo there, the text is sent. Sending both could redo the edit after an undo.
+            tools.replace(source.value_input)
+
+    def _format_failed(self, kind: str | None, text: str, error: Exception):
+        if kind == "spec":
+            # Applied as typed, so the editor marks where the JSON breaks, as Run would.
+            self.spec_editor.editor.value = text
+            return
+        self._format_error = f"Could not format: {error}"
+        self._show_status()
+
     def _close_completions(self):
         self.tools.closing += 1
         self.spec_tools.closing += 1
@@ -1321,6 +1564,9 @@ class CodePanel(Viewer):
             status = f'<span class="fd-cp-ok">{_icon("check_circle")}Check passed</span>'
         else:
             status = ""
+        if self._format_error and self._kind() == "code":
+            status = f'<span class="fd-cp-warn">{_icon("warning")}{html.escape(self._format_error)}</span>'
+
         self._code_status.object = _bar(status)
         spec = self._spec()
         if spec is not None:
@@ -1403,6 +1649,7 @@ class CodePanel(Viewer):
                     css_classes=["fd-code-run-error"],
                 )
             )
+        self._shown_results += 1
         view = self._value_view(editor, shown)
         if failed or self._result:
             view.styles = {**(view.styles or {}), "opacity": "0.55"}
@@ -1433,9 +1680,14 @@ class CodePanel(Viewer):
         self._show_result_footer()
 
     def _value_view(self, editor: FlowDash, value: t.Any) -> pn.viewable.Viewable:
+        """Show a DataFrame as a table, and any other output as the inspector's Data tab does.
+
+        The component's own preview of the output comes first; it may query,
+        so in a session it is asked for on a worker thread.
+        """
         if value is None:
             return pn.pane.HTML(_bar("No result yet."), margin=(8, 12), stylesheets=[_BAR_CSS])
-        if _is_frame(value):
+        if _is_pandas(value):
             return pn.pane.DataFrame(
                 value.head(MAX_ROWS),
                 index=_shows_index(value),
@@ -1444,7 +1696,29 @@ class CodePanel(Viewer):
                 stylesheets=[_TABLE_CSS],
                 css_classes=["fd-code-table"],
             )
-        return pn.Column(editor._value_preview(value), margin=(8, 12), sizing_mode="stretch_width")
+        holder = pn.Column(
+            margin=(8, 12), sizing_mode="stretch_width", css_classes=["fd-code-preview"]
+        )
+        instance = editor._component_instances.get(self.instance_id)
+        name = self.outputs.value
+        if not wants_preview_hook(value, instance):
+            holder[:] = _previewed(editor, value)
+            return holder
+        work = partial(hooked_preview, value, instance, name)
+        doc = pn.state.curdoc
+        if doc is None or doc.session_context is None:
+            holder[:] = _previewed(editor, *work())
+            return holder
+        holder[:] = [pn.pane.HTML(_bar("Loading the preview…"), margin=0, stylesheets=[_BAR_CSS])]
+        generation = self._shown_results
+
+        def show(result):
+            # A later result or another output supersedes this preview.
+            if generation == self._shown_results:
+                holder[:] = _previewed(editor, *result)
+
+        run_off_loop(work, show, doc)
+        return holder
 
     def _ran_text(self) -> str:
         parts = []
@@ -1488,6 +1762,28 @@ class CodePanel(Viewer):
     def __panel__(self):
         """Render the panel."""
         return self._layout
+
+
+def _is_pandas(value: t.Any) -> bool:
+    try:
+        import pandas as pd
+    except ImportError:
+        return False
+    return isinstance(value, pd.DataFrame)
+
+
+def _previewed(editor: FlowDash, value: t.Any, hooked: bool = False) -> list:
+    """Return the inspector's preview of *value*, or a caption naming it where that fails."""
+    try:
+        return value_preview(editor, value, hooked)
+    except Exception:
+        logger.exception("Previewing a %s failed", type(value).__name__)
+        return [pn.pane.HTML(_bar(html.escape(summarize_value(value))), stylesheets=[_BAR_CSS])]
+
+
+def _format_spec_text(text: str) -> str:
+    """Return spec JSON *text* laid out as the editor shows a spec, keys in the order written."""
+    return format_spec(parse_spec(text))[0]
 
 
 def _same_spec(a: t.Any, b: t.Any) -> bool:

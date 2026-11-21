@@ -46,7 +46,8 @@ def test_the_old_key_is_read_once_and_copied(page):
     wait_until(lambda: len(editors) == 2 and editors[1].mode == "split", page, timeout=8000)
     expect(page.locator(".gutter")).to_be_visible()
     assert editors[1]._split_view.split.sizes == (70.0, 30.0)
-    assert _stored(page, NEW_KEY) == {"split": True, "sizes": [70, 30]}
+    stored = _stored(page, NEW_KEY)
+    assert {k: stored[k] for k in ("split", "sizes")} == {"split": True, "sizes": [70, 30]}
     # Other apps on the origin may still read the old key.
     assert _stored(page, STORAGE_KEY) == {"split": True, "sizes": [70, 30]}
 

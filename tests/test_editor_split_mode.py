@@ -272,7 +272,11 @@ class TestToggleAndCollapse:
         split_view.split.sizes = (70.0, 30.0)
         assert split_view.preferences.sizes == (70.0, 30.0)
         assert split_view.split.expanded_sizes == (70.0, 30.0)
-        assert json.loads(split_view.storage.value) == {"split": True, "sizes": [70.0, 30.0]}
+        assert json.loads(split_view.storage.value) == {
+            "split": True,
+            "sizes": [70.0, 30.0],
+            "code_dock": "bottom",
+        }
         editor.mode = "wiring"
         assert json.loads(split_view.storage.value)["split"] is False
         editor.mode = "split"

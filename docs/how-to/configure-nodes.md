@@ -353,6 +353,33 @@ editor. The text is applied when the editor loses focus, not on every key, so a
 `check_config` runs once per edit. In a JSON schema the same declaration is
 `"x-flowdash": {"widget": "code", "language": "sql"}` on the property.
 
+The code panel's Format button (Shift+Alt+F) lays out JSON specs and JSON code
+fields. Other languages get it once they have a formatter: a function from the
+text to the formatted text, raising if it cannot format it. Register one for a
+language, or give a single field its own with `"formatter"`:
+
+```python
+import sqlglot
+
+from panel_flowdash.ui.code_field import register_formatter
+
+
+def format_sql(sql: str) -> str:
+    return sqlglot.transpile(sql, pretty=True)[0]
+
+
+register_formatter("sql", format_sql)
+
+sql = param.String(metadata={"flowdash": {"widget": "code", "language": "sql", "formatter": format_sql}})
+```
+
+`register_formatter` is global to the Python process: it applies to every app
+and session the server runs, so call it once at import, e.g. next to
+`@register`, rather than per session.
+
+Formatting is an edit of the draft like typing: Ctrl+Z undoes it and Run
+applies it.
+
 While typing, the code editor completes the column names of the node's
 tabular inputs. Pass `config_completions` to complete other words, e.g. the
 columns of the tables a query can read from a database source. It is called

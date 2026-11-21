@@ -2,7 +2,8 @@
 
 The two panes sit in a panel-splitjs ``HSplit``. Dragging the gutter resizes
 them, and the sizes are remembered for the browser in local storage, together
-with whether the editor was last in the Split tab. Collapsing a pane, with the
+with whether the editor was last in the Split tab and where the code panel
+was docked. Collapsing a pane, with the
 gutter's buttons or by dragging it to the edge, falls back to the tab of the
 pane that is left: collapsing the grid leaves the Dataflow tab, collapsing the
 canvas the Layout tab, and the split keeps its last sizes for next time.
@@ -64,9 +65,17 @@ class SplitPreferences(param.Parameterized):
         doc="Widths of the canvas and the grid pane in percent of the split.",
     )
 
+    code_dock = param.Selector(
+        default="bottom",
+        objects=["bottom", "right"],
+        doc="Where the code panel is docked: under the canvas or to its right.",
+    )
+
     def to_json(self) -> str:
         """Return the preferences as stored in the browser."""
-        return json.dumps({"split": self.split, "sizes": list(self.sizes)})
+        return json.dumps(
+            {"split": self.split, "sizes": list(self.sizes), "code_dock": self.code_dock}
+        )
 
     def load(self, stored: t.Any) -> bool:
         """Apply preferences read back from the browser, returning whether any applied.
@@ -87,6 +96,8 @@ class SplitPreferences(param.Parameterized):
         sizes = valid_sizes(stored.get("sizes"))
         if sizes is not None:
             update["sizes"] = sizes
+        if stored.get("code_dock") in ("bottom", "right"):
+            update["code_dock"] = stored["code_dock"]
         if update:
             self.param.update(update)
         return bool(update)
@@ -329,7 +340,7 @@ class SplitView(Viewer):
             key=key,
             legacy_key=None if key == STORAGE_KEY else STORAGE_KEY,
         )
-        self.preferences.param.watch(self._store, ["split", "sizes"])
+        self.preferences.param.watch(self._store, ["split", "sizes", "code_dock"])
 
     def _on_split_changed(self, *_events):
         split = self.split

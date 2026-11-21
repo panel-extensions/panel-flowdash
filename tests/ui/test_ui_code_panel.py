@@ -513,7 +513,15 @@ def test_the_panel_follows_the_selection_and_keeps_drafts(page):
     _panel, code = _open(page, editor, query)
     _type_at_end(page, code, " and p_cap > 2")
     wait_until(lambda: editor.code_panel.dirty, timeout=8000)
-    page.locator(f".react-flow__node[data-id='{note}']").click()
+    # The panel keeps the edited node in view at its zoom, so the note below it is under the
+    # panel; fit the canvas to its nodes, as a user would, rather than click through the panel.
+    page.locator(".react-flow__controls-fitview").click()
+    note_card = page.locator(f".react-flow__node[data-id='{note}']")
+    dock_top = page.locator(".fd-code-dock").bounding_box()["y"]
+    wait_until(
+        lambda: note_card.bounding_box()["y"] + note_card.bounding_box()["height"] < dock_top, page
+    )
+    note_card.click()
     expect(code.locator(".ace_content")).to_contain_text("# Hi", timeout=8000)
     expect(page.locator(".fd-code-panel-editor")).to_be_visible()
     page.locator(f".react-flow__node[data-id='{source}']").click()
@@ -537,3 +545,25 @@ def test_the_inspector_offers_the_spec_and_keeps_the_settings(page):
     expect(page.locator(".fd-code-panel")).to_be_visible(timeout=8000)
     header = page.locator(".fd-code-panel-header")
     expect(header.locator("input")).to_have_count(1)  # Run on change only
+
+
+def test_outputs_json_cannot_show_are_previewed(page):
+    from tests.test_code_panel import make_opaque_editor
+
+    editor, node = make_opaque_editor()
+    errors = []
+    page.on("console", lambda m: m.type == "error" and errors.append(m.text))
+    page.set_viewport_size(VIEWPORT)
+    serve_component(page, editor)
+    page.locator(f".react-flow__node[data-id='{node}']").click()
+    page.locator(".fd-edit-spec").first.click(timeout=8000)
+    expect(page.locator(".fd-code-table")).to_be_visible(timeout=15000)
+    outputs = page.locator(".fd-code-outputs")
+    outputs.get_by_role("button", name="Pipeline").click()
+    preview = page.locator(".fd-code-preview")
+    expect(preview).to_contain_text("2 rows", timeout=15000)
+    outputs.get_by_role("button", name="Result").click()
+    expect(preview).to_contain_text("Opaque()", timeout=15000)
+    outputs.get_by_role("button", name="Rows").click()
+    expect(page.locator(".fd-code-table")).to_be_visible(timeout=15000)
+    assert not [e for e in errors if "JSON" in e]
