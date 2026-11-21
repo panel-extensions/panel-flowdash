@@ -92,8 +92,10 @@ class SessionChrome:
     - While the drawer is open the editor's inspector is folded, so the canvas
       keeps its width; it opens again when the drawer closes, unless the user
       opened or closed it in the meantime.
-    - In full screen the drawer is out of sight, so a pending approval shows a
-      notice whose Review button leaves full screen and opens the drawer.
+    - An approval that waits on a surface out of sight shows a notice whose
+      Review button brings that surface back: one of the assistant's in full
+      screen or while Explore is shown opens the drawer, and one of the
+      Explore agent's, asked before leaving Explore, shows Explore again.
     - The command palette offers to ask the assistant whatever was typed. A
       question asked while the assistant is busy is sent once it is done.
     """
@@ -102,7 +104,11 @@ class SessionChrome:
         self.session = session
         self._folded = False
         self._expected: bool | None = None
-        self._pending_seen = len(session.runner.state.pending_approvals)
+        # Which surface the notice's Review button brings back: "drawer" or "explore".
+        self._review_target = "drawer"
+        # The approvals the notice tells of, and those whose notice the person dismissed.
+        self._shown: set[str] = set()
+        self._dismissed: set[str] = set()
         self._queued: list[str] = []
         drawer = session.drawer
         drawer.overlay_below = OVERLAY_BELOW
@@ -111,6 +117,9 @@ class SessionChrome:
         state = session.runner.state
         state.param.watch(self._on_pending, "pending_approvals")
         state.param.watch(self._on_running, "running")
+        explore = session.explore_runner
+        if explore is not None:
+            explore.state.param.watch(self._on_explore_pending, "pending_approvals")
 
         # The description may come from a third-party tool: show it as plain text.
         self._notice_text = text_typography("", variant="body2", margin=0, sx={"color": "inherit"})
@@ -130,7 +139,7 @@ class SessionChrome:
                 size="small",
                 margin=0,
                 sx={"color": "inherit"},
-                on_click=lambda e: self.notice.param.update(visible=False),
+                on_click=lambda e: self.dismiss(),
             ),
             visible=False,
             margin=0,
@@ -141,6 +150,7 @@ class SessionChrome:
             # Inside the editor, so the notice is on screen when the editor is in full screen.
             editor._view.append(self.notice)
             editor.param.watch(self._on_fullscreen, "fullscreen")
+            editor.param.watch(self._on_explore, "explore")
             editor._inspector.param.watch(self._on_user_toggle, "collapsed")
             # Entering edit mode with the drawer open shows the inspector beside it.
             editor._inspector.param.watch(self._on_inspector_shown, "visible")
@@ -182,34 +192,83 @@ class SessionChrome:
     # ------------------------------------------------------------------
 
     def review(self):
-        """Leave full screen and open the drawer on the pending approvals."""
+        """Leave full screen and bring back the surface whose approval is pending."""
         self.notice.visible = False
         editor = self.session.app._editor
         if editor is not None:
             editor.fullscreen = False
+        if self._review_target == "explore":
+            if editor is not None:
+                editor.explore = True
+            return
+        if editor is not None:
+            editor.explore = False
         self.session.drawer.param.update(open=True, tab="chat")
 
-    def _on_pending(self, event):
-        pending = len(event.new)
+    def _drawer_hidden(self) -> bool:
         editor = self.session.app._editor
-        if pending > self._pending_seen and editor is not None and editor.fullscreen:
-            self._show_notice(event.new[-1])
-        elif not pending:
-            self.notice.visible = False
-        self._pending_seen = pending
+        return editor is not None and (editor.fullscreen or editor.explore)
 
-    def _show_notice(self, request):
-        self._notice_text.object = escape_markdown(
-            f"The assistant is waiting for your approval: {_summary(request)}"
+    def _explore_hidden(self) -> bool:
+        editor = self.session.app._editor
+        return editor is not None and (editor.fullscreen or not editor.explore)
+
+    def _on_pending(self, event):
+        self._refresh_notice()
+
+    def _on_explore_pending(self, event):
+        self._refresh_notice()
+
+    def dismiss(self):
+        """Hide the notice until another approval waits; those it told of are not shown again."""
+        self._dismissed.update(self._shown)
+        self.notice.visible = False
+
+    def _show_notice(self, waiting: list, target: str = "drawer"):
+        who = "The assistant" if target == "drawer" else "Explore"
+        self._review_target = target
+        self._shown = {request.tool_call_id for request in waiting}
+        n = len(waiting)
+        text = (
+            f"{who} is waiting for your approval: {_summary(waiting[-1])}"
+            if n == 1
+            else f"{who} is waiting for {n} approvals, the latest: {_summary(waiting[-1])}"
         )
+        self._notice_text.object = escape_markdown(text)
         self.notice.visible = True
 
-    def _on_fullscreen(self, event):
-        pending = self.session.runner.state.pending_approvals
-        if event.new and pending:
-            self._show_notice(pending[-1])
-        elif not event.new:
+    def _refresh_notice(self):
+        """Show the notice for approvals waiting out of sight and not dismissed, or hide it."""
+        pending = {request.tool_call_id for request in self._waiting(self.session.runner)}
+        explore = self.session.explore_runner
+        if explore is not None:
+            pending |= {request.tool_call_id for request in self._waiting(explore)}
+        # Decided approvals are forgotten, so their ids never hide a later notice.
+        self._dismissed &= pending
+        drawer = [
+            r for r in self._waiting(self.session.runner) if r.tool_call_id not in self._dismissed
+        ]
+        others = (
+            [r for r in self._waiting(explore) if r.tool_call_id not in self._dismissed]
+            if explore is not None
+            else []
+        )
+        if drawer and self._drawer_hidden():
+            self._show_notice(drawer)
+        elif others and self._explore_hidden():
+            self._show_notice(others, "explore")
+        else:
             self.notice.visible = False
+
+    @staticmethod
+    def _waiting(runner) -> list:
+        return list(runner.state.pending_approvals)
+
+    def _on_fullscreen(self, event):
+        self._refresh_notice()
+
+    def _on_explore(self, event):
+        self._refresh_notice()
 
     # ------------------------------------------------------------------
     # The inspector

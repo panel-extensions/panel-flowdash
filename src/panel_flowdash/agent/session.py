@@ -9,6 +9,7 @@ import asyncio
 import logging
 import re
 import typing as t
+import uuid
 
 import panel as pn
 import panel_material_ui as pmui
@@ -16,6 +17,7 @@ from panel_agents import AgentDrawer, RunState
 from panel_agents.adapters.pydantic_ai import ActionToolset, AgentRunner
 from panel_agents.events import RunStarted
 
+from panel_flowdash.explore import EXPLORE_RUN_PREFIX, is_explore_run
 from panel_flowdash.ui.text import text_typography
 from panel_flowdash.util import confirm
 
@@ -24,12 +26,13 @@ logger = logging.getLogger(__name__)
 from panel_flowdash.history import components_of
 
 from .actions import palette_actions
-from .assistant import create_agent
+from .assistant import create_agent, create_explore_agent
 from .chrome import SessionChrome
 from .highlight import ChangeHighlighter
 from .live import LiveDashboardOps
+from .models import agent_model_choice
 from .ops import OperationError, read_revision
-from .tools import ARTIFACT_KIND, FlowDashDeps, approval_policy
+from .tools import ARTIFACT_KIND, AgentEditLock, FlowDashDeps, approval_policy
 
 if t.TYPE_CHECKING:
     from panel_agents import Artifact, ArtifactVersion
@@ -62,6 +65,29 @@ def resolve_agent(agent: t.Any, model: str | None, **kwargs: t.Any) -> Agent | N
     return agent
 
 
+def resolve_explore_agent(
+    explore_agent: t.Any, agent: Agent, model: t.Any = None, **kwargs: t.Any
+) -> Agent | None:
+    """Return the agent a FlowDashApp's ``explore_agent`` option asks for, or None.
+
+    ``False`` turns asking in the Explore view off; ``None`` or ``True``
+    gives the default Explore agent on *model*, or on the assistant *agent*'s
+    own model; a string is the default Explore agent's model; anything else
+    is a ready-made pydantic-ai ``Agent``. *kwargs* are passed on to
+    `create_explore_agent`.
+    """
+    if explore_agent is False:
+        return None
+    if explore_agent is None or explore_agent is True:
+        model = model if model is not None else getattr(agent, "model", None)
+        if model is None:
+            return None
+        return create_explore_agent(model, **kwargs)
+    if isinstance(explore_agent, str):
+        return create_explore_agent(explore_agent, **kwargs)
+    return explore_agent
+
+
 class AgentSession:
     """Connects an agent to one user's FlowDashApp session.
 
@@ -81,35 +107,55 @@ class AgentSession:
     """
 
     def __init__(
-        self, app: FlowDashApp, agent: Agent, models: list | None = None, model: str | None = None
+        self,
+        app: FlowDashApp,
+        agent: Agent,
+        models: list | None = None,
+        model: str | None = None,
+        explore_agent: Agent | None = None,
+        explore_model: t.Any = None,
     ):
         self.app = app
         self.ops = LiveDashboardOps(app)
-        deps = FlowDashDeps(self.ops)
+        # With the Explore view's agent too, one request at a time edits the dashboard.
+        self.edit_lock = AgentEditLock() if explore_agent is not None else None
+        deps = FlowDashDeps(self.ops, edit_lock=self.edit_lock, on_edit_wait=self._on_drawer_wait)
         self.actions = palette_actions(app, deps=deps)
         editor = app._editor
+        settings = {"model_settings": app.agent_model_settings} if app.agent_model_settings else {}
         self.runner = _SessionRunner(
             self,
             agent,
             editor.edit_history.state if editor.history else RunState(),
             deps=deps,
-            approval_policy=approval_policy(
-                *app.agent_approval_rules,
-                sensitive_components=app.agent_sensitive_components,
-                ops=self.ops,
-            ),
+            approval_policy=self._approval_policy(),
             run_kwargs={
                 "toolsets": [ActionToolset(self.actions)] if app.agent_palette else [],
-                **(
-                    {"model_settings": app.agent_model_settings}
-                    if app.agent_model_settings
-                    else {}
-                ),
+                **settings,
             },
         )
         editor.agent_state = self.runner.state
         # Runs applied live are this person's requests; a stored history is restored without notifying.
         self.runner.state.subscribe(self._note_run)
+        # The Explore view asks its own agent, whose runs the drawer does not show. Its edits still
+        # go through the edit history, which waits for its runs and versions each one when it ends.
+        self.explore_runner = None
+        if explore_agent is not None:
+            self.explore_runner = _ExploreRunner(
+                self,
+                explore_agent,
+                RunState(),
+                deps=FlowDashDeps(
+                    self.ops,
+                    edit_lock=self.edit_lock,
+                    edit_label="Explore's answer",
+                    on_edit_wait=editor.explore_feed.show_waiting,
+                ),
+                approval_policy=self._approval_policy(),
+                run_kwargs=dict(settings),
+            )
+            self.explore_runner.state.subscribe(self._note_run)
+            editor.edit_history.follow(self.explore_runner.state)
         # Background checks of restored versions, kept so they are not collected while they run.
         self._checks: set[asyncio.Task] = set()
         # A single model is named in the chat, with panel-agents versions that show one; there is
@@ -126,11 +172,23 @@ class AgentSession:
             redact_runs=editor.run_redacted,
             chat_params=chat_params,
         )
-        # The Explore view's composer asks this runner, so the drawer's chat is not needed
-        # beside it; it offers the same models and follows the drawer's pick.
-        editor.explore_feed.attach(
-            self.runner, chat_params=chat_params, model_chat=self.drawer.chat
-        )
+        if self.explore_runner is not None:
+            if len(models or ()) > 1:
+                # The Explore view's composer offers the same models and shares the drawer's pick.
+                editor.explore_feed.attach(
+                    self.explore_runner,
+                    chat_params=chat_params,
+                    model_chat=self.drawer.chat,
+                    foreign=self._drawer_run,
+                )
+            else:
+                # With nothing to pick, the composer names the Explore agent's own model.
+                only = explore_model or agent_model_choice(explore_agent)
+                editor.explore_feed.attach(
+                    self.explore_runner,
+                    chat_params={"models": [only], "model_id": only.id} if only else {},
+                    foreign=self._drawer_run,
+                )
         editor.param.watch(self._on_explore, "explore")
         self._on_explore()
         self.highlighter = ChangeHighlighter(self)
@@ -142,10 +200,33 @@ class AgentSession:
             visible=False,
             margin=(8, 12, 0, 12),
         )
+        # Says that the assistant's request waits for the Explore view's to finish its edits.
+        self.wait_notice = pmui.Alert(
+            text_typography("", variant="body2", margin=0),
+            severity="info",
+            variant="outlined",
+            visible=False,
+            margin=(8, 12, 0, 12),
+            css_classes=["flowdash-agent-waiting"],
+        )
+        self._place_notice(self.wait_notice)
         if editor.history:
             editor.edit_history.on_load = self._on_history_loaded
             self.drawer.param.watch(self._on_drawer_open, "open")
-            self._place_history_notice()
+            self._place_notice(self.history_notice)
+
+    @property
+    def runners(self) -> list[_SessionRunner]:
+        """The session's runners: the drawer's, then the Explore view's if it has an agent."""
+        return [self.runner] + ([self.explore_runner] if self.explore_runner is not None else [])
+
+    def _approval_policy(self):
+        app = self.app
+        return approval_policy(
+            *app.agent_approval_rules,
+            sensitive_components=app.agent_sensitive_components,
+            ops=self.ops,
+        )
 
     def _on_explore(self, *_events):
         """Close the drawer while Explore shows the chat, and bring back an approval left pending there."""
@@ -160,8 +241,17 @@ class AgentSession:
         if isinstance(event, RunStarted) and event.parent_run_id is None:
             self.app._editor.note_own_run(event.run_id)
 
-    def _place_history_notice(self):
-        """Put the history notice above the drawer's body, or leave it out if the drawer has changed.
+    def _drawer_run(self, run_id: str) -> bool:
+        """Whether *run_id* is a run of the drawer's assistant, in this session or the stored history."""
+        return run_id in self.runner.state.runs
+
+    def _on_drawer_wait(self, waiting: str | None):
+        if waiting is not None:
+            self.wait_notice.objects[0].object = f"Waiting for {waiting} to finish…"
+        self.wait_notice.visible = waiting is not None
+
+    def _place_notice(self, notice):
+        """Put a notice above the drawer's body, or leave it out if the drawer has changed.
 
         AgentDrawer has no slot for a host's notices yet, so this reaches into its layout.
         """
@@ -171,9 +261,9 @@ class AgentSession:
         body = getattr(self.drawer, "_body", None)
         index = next((i for i, obj in enumerate(content.objects) if obj is body), None)
         if index is None:
-            content.append(self.history_notice)
+            content.append(notice)
         else:
-            content.insert(index, self.history_notice)
+            content.insert(index, notice)
 
     def _on_drawer_open(self, event=None):
         """Load the dashboard's stored history while the drawer is open, so it lists its versions."""
@@ -369,15 +459,31 @@ class _SessionRunner(AgentRunner):
         super()._note_artifact_change(event)
         self._notes[:] = _collapse_notes(self._notes)
 
+    def _run_id(self, given: str | None) -> str:
+        return given or f"run-{uuid.uuid4().hex[:16]}"
+
     async def run(self, prompt=None, **kwargs):
+        # The id is known before the run starts, so its turn, version and tile layout are
+        # kept apart from those of the other surface's runner if both run at once.
+        run_id = kwargs["run_id"] = self._run_id(kwargs.get("run_id"))
         self._session.ops.editor.end_turn()
         self._session.publish_user_edits()
-        self.deps.start_request(prompt if isinstance(prompt, str) else None)
+        self.deps.start_request(prompt if isinstance(prompt, str) else None, run_id)
         try:
             return await super().run(prompt, **kwargs)
         finally:
             self.deps.end_request()
-            self._session.publish_agent_layout(self.run_id)
+            self._session.publish_agent_layout(run_id)
+
+
+class _ExploreRunner(_SessionRunner):
+    """Runs the Explore view's agent, with run ids that mark its turns as the Explore view's."""
+
+    def _run_id(self, given: str | None) -> str:
+        if given:
+            # A run id given by the caller is marked too, so its turn is still known as Explore's.
+            return given if is_explore_run(given) else f"{EXPLORE_RUN_PREFIX}{given}"
+        return f"{EXPLORE_RUN_PREFIX}{uuid.uuid4().hex[:16]}"
 
 
 _PUBLISHED_NOTE = re.compile(

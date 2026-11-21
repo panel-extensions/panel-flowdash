@@ -101,6 +101,44 @@ SAFETY = _SAVING + _RIGHTS + _UNTRUSTED
 
 INSTRUCTIONS = _GENERAL + _SAVING + _COMMANDS + _RIGHTS + _UNTRUSTED + _REVISION
 
+#: Added to the assistant's instructions when the Explore view has an agent of its own.
+EDITING = """\
+- Answer questions about the data in text; add nodes only when asked to
+  change the dashboard. The Explore view is where people ask analysis questions.
+"""
+
+#: What the Explore agent is told, besides ``SAFETY`` and the catalogue.
+EXPLORE_INSTRUCTIONS = """\
+You answer questions about the data behind the dashboard the user has open.
+Results appear in the user's Explore feed, not on the dashboard. Build on the
+dashboard's nodes and metrics, put each result in a query node, and chart it
+when that helps. Every number you state comes from a node. You cannot change
+the dashboard; if asked, say the user can add an answer from its card or ask
+the assistant.
+
+How to work:
+- Start with get_dashboard to see the dashboard's nodes. Use only component
+  ids, ports and config fields that exist; to look components up, describe all
+  you need in one list_components call.
+- Add the nodes an answer needs with add_node, giving each a short
+  descriptive name in snake_case, e.g. revenue_by_region, and connect them to
+  the dashboard's nodes with connect. Connect an output only to an input of a
+  compatible type.
+- Run preview_dashboard to read the results, fix nodes that failed, and
+  answer from what the nodes output.
+"""
+
+#: The dashboard tools the Explore agent gets: reading the dashboard and adding its own nodes.
+EXPLORE_TOOLS = (
+    "list_components",
+    "get_dashboard",
+    "preview_dashboard",
+    "add_node",
+    "set_config",
+    "connect",
+    "set_transform",
+)
+
 
 NO_MODEL = (
     "The FlowDash agent has no model. Name one as '<provider>:<model>', the way "
@@ -249,7 +287,7 @@ def create_agent(
     agent = Agent(
         model,
         deps_type=FlowDashDeps,
-        name="FlowDash",
+        name=kwargs.pop("name", "FlowDash"),
         instructions=text or None,
         toolsets=[
             dashboard_toolset(tools, max_retries=tool_retries),
@@ -266,5 +304,28 @@ def create_agent(
         @agent.instructions
         def components(ctx: RunContext[FlowDashDeps]) -> str:
             return _describe_components(ctx.deps.ops, compact, lookup)
+
+    return agent
+
+
+def create_explore_agent(
+    model: t.Any = None, *, instructions: str | None = None, **kwargs: t.Any
+) -> Agent[FlowDashDeps, str]:
+    """Create the default agent of the Explore view, which answers questions about the data.
+
+    It has the tools to read the dashboard and add nodes of its own
+    (``EXPLORE_TOOLS``), and is told at every run which dashboard is open.
+    *instructions* are appended to ``EXPLORE_INSTRUCTIONS``, and *kwargs*
+    are passed on to `create_agent`.
+    """
+    text = EXPLORE_INSTRUCTIONS + (f"\n{instructions}" if instructions else "")
+    kwargs.setdefault("tools", EXPLORE_TOOLS)
+    kwargs.setdefault("name", "Explore")
+    agent = create_agent(model, instructions=text, default_instructions=False, **kwargs)
+
+    @agent.instructions
+    def dashboard(ctx: RunContext[FlowDashDeps]) -> str:
+        current = ctx.deps.ops.editor.dashboard
+        return f"The open dashboard is {current.title!r}." if current is not None else ""
 
     return agent

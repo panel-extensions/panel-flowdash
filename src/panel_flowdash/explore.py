@@ -1,11 +1,17 @@
-"""The Explore view: a dashboard's turns read as a feed, with each turn's outputs shown live.
+"""The Explore view: questions about a dashboard's data as a feed, with each answer's outputs shown live.
 
-Every turn of the open dashboard becomes a run of the feed's own panel-agents
-``RunState``, shown by an ``AgentChat`` in its document layout. A run asked in
-this session is the agent session's run itself, forwarded event by event, so
-the feed shows its steps, answer and approvals as they stream. Any other turn,
-one made before a reload, by someone else or by hand, is projected from the
-dashboard file: the question, what the turn changed, and no model calls.
+With an agent attached, the Explore view asks its own agent runner, apart
+from the assistant in the drawer, and the feed holds the requests asked in
+the Explore view only: the runs of this session and, from the dashboard
+file, the turns of earlier ones (their run ids start with
+``EXPLORE_RUN_PREFIX``). Without one, every turn of the dashboard is shown,
+as a record of how it was made.
+
+Each turn becomes a run of the feed's own panel-agents ``RunState``, shown
+by an ``AgentChat`` in its document layout. A run asked in this session is
+the runner's run itself, forwarded event by event, so the feed shows its
+steps, answer and approvals as they stream. Any other turn is projected from
+the dashboard file: the question, what the turn changed, and no model calls.
 
 Each node a turn created is an inline artifact of that run whose value refers
 to the node, never its data, so the card always shows the node's current
@@ -54,6 +60,9 @@ EARLIER_KIND = "outputs"
 
 EARLIER_TITLE = "Before the recorded requests"
 
+#: The title of the leading cell that holds, collapsed, the turns made outside Explore.
+HISTORY_TITLE = "Earlier requests and edits"
+
 # Who the leading entry is from, with a dashboard for an avatar.
 EARLIER_AGENT = "Dashboard"
 
@@ -71,7 +80,16 @@ FEED_LOAD_BUFFER = 100_000
 #: The height of a card showing a component's view, when its size hints give none.
 CARD_HEIGHT = 320
 
-_EARLIER_RUN = "explore-earlier"
+_EARLIER_RUN = "dashboard-earlier"
+
+#: How the run ids of the Explore view's own requests start, so their turns are known after a reload.
+EXPLORE_RUN_PREFIX = "explore-"
+
+
+def is_explore_run(run_id: str | None) -> bool:
+    """Whether *run_id* is a request asked in the Explore view."""
+    return bool(run_id) and run_id.startswith(EXPLORE_RUN_PREFIX)
+
 
 _ARTIFACT_EVENTS = (ev.ArtifactPublished, ev.ArtifactApplied, ev.ArtifactVersionsDropped)
 
@@ -119,9 +137,10 @@ def _message(run_id: str, key: str, role: str, text: str, at: float) -> list[ev.
 class ExploreFeed(Viewer):
     """The Explore view of a :class:`~panel_flowdash.editor.FlowDash` editor.
 
-    Without an agent it shows the projected turns. :meth:`attach` connects
-    an agent session's runner: its runs then show in full as they happen,
-    and the feed gets a composer for people who may edit the dashboard.
+    Without an agent it shows every turn, projected. :meth:`attach` connects
+    the Explore view's runner: the feed then shows the requests asked in the
+    Explore view, its runs in full as they happen, and gets a composer for
+    people who may edit the dashboard.
     """
 
     editor = param.Parameter(doc="The FlowDash editor whose dashboard the feed shows.")
@@ -166,6 +185,16 @@ class ExploreFeed(Viewer):
         self._model_chat: AgentChat | None = None
         self._model_watchers: list = []
         self._chat_key: tuple | None = None
+        self._foreign: t.Callable[[str], bool] | None = None
+        # Says that a question waits for the assistant's request to finish its edits.
+        self._waiting = pmui.Typography(
+            "",
+            variant="body2",
+            visible=False,
+            margin=(4, 10),
+            sx={"color": "text.secondary", "textAlign": "center"},
+            css_classes=["explore-waiting"],
+        )
         self._empty = pmui.Typography(
             "Ask a question about this dashboard to start. Each answer and the outputs it adds show here.",
             variant="body2",
@@ -289,7 +318,7 @@ class ExploreFeed(Viewer):
         return chat
 
     def _follow_model(self, chat: AgentChat):
-        """Keep the composer's picked model and the other chat's the same, as they ask the same runner."""
+        """Keep the composer's picked model and the drawer chat's the same, so both ask the same model."""
         for obj, watcher in self._model_watchers:
             obj.param.unwatch(watcher)
         self._model_watchers = []
@@ -308,20 +337,35 @@ class ExploreFeed(Viewer):
 
         self._model_watchers = [follow(chat, other), follow(other, chat)]
 
+    def show_waiting(self, waiting: str | None):
+        """Say that the question asked waits for *waiting*, e.g. "the assistant's edit", or stop saying it."""
+        if waiting is not None:
+            self._waiting.object = f"Waiting for {waiting} to finish…"
+        self._waiting.visible = waiting is not None
+
     def _approval(self, request, state):
-        """Decide a forwarded approval on the agent session's own request, so its runner hears of it."""
+        """Decide a forwarded approval on the runner's own request, so the runner hears of it."""
         source = self.runner.state if self.runner is not None else None
         if source is not None and request.tool_call_id in source.approvals:
             return ApprovalCard(request=source.approvals[request.tool_call_id], state=source)
         return ApprovalCard(request=request, state=state)
 
-    def attach(self, runner, chat_params: dict | None = None, model_chat: AgentChat | None = None):
-        """Follow the runs of an agent *runner* (a panel-agents ``AgentRunner``) from now on.
+    def attach(
+        self,
+        runner,
+        chat_params: dict | None = None,
+        model_chat: AgentChat | None = None,
+        foreign: t.Callable[[str], bool] | None = None,
+    ):
+        """Ask the Explore view's agent *runner* (a panel-agents ``AgentRunner``) and show its runs.
 
         *chat_params* are passed to the composer's chat, e.g. the models a
-        person may pick from, and *model_chat* is another chat on the same
-        runner, such as the drawer's, whose picked model the composer follows.
+        person may pick from, and *model_chat* is another chat, such as the
+        drawer's, whose picked model the composer shares. *foreign* tells
+        whether a run id is another runner's, which the feed then never
+        counts as asked in Explore, whatever the id looks like.
         """
+        self._foreign = foreign
         if self._unsubscribe is not None:
             self._unsubscribe()
         self._chat_params = dict(chat_params or {})
@@ -398,10 +442,32 @@ class ExploreFeed(Viewer):
             for instance_id, name in self._names().items()
         }
 
+    def _asked_here(self, turn: DashboardTurn) -> bool:
+        """Whether *turn* is a request asked in the Explore view, in this session or earlier."""
+        run = turn.run
+        if run is None:
+            return False
+        if run in self._recorded or run in self._roots:
+            return True
+        if self._foreign is not None and self._foreign(run):
+            return False
+        return is_explore_run(run)
+
     def project(self) -> tuple[list[ev.Event], dict[str, ev.ArtifactPublished]]:
-        """Return the feed's runs as events, oldest first, and its cards by artifact id."""
+        """Return the feed's runs as events, oldest first, and its cards by artifact id.
+
+        With an Explore agent attached the feed holds the Explore view's own
+        requests only; without one it is the record of every turn.
+        """
         editor = self.editor
         turns = [turn for turn in editor.turns if turn.status != "pending"]
+        asking = self.runner is not None
+        others: list[DashboardTurn] = []
+        if asking:
+            # The dashboard's other turns, from the assistant, by hand or asked here before
+            # Explore had its own agent, are kept in a collapsed entry at the top.
+            others = [turn for turn in turns if not self._asked_here(turn)]
+            turns = [turn for turn in turns if self._asked_here(turn)]
         self._summaries = set()
         names = self._shown_names()
         items = self._items()
@@ -412,11 +478,21 @@ class ExploreFeed(Viewer):
             origin = editor.node_origin(instance_id)
             if origin in known:
                 made.setdefault(origin, []).append(instance_id)
-            else:
+            elif not asking or origin not in {turn.id for turn in others}:
                 earlier.append(instance_id)
         entries: list[tuple[float, list[ev.Event]]] = []
         cells: dict[str, ev.ArtifactPublished] = {}
-        if earlier:
+        if asking and (others or earlier):
+            entries.append((float("-inf"), self._history_run(others, earlier)))
+            cells[f"{_EARLIER_RUN}:nodes"] = ev.ArtifactPublished(
+                artifact_id=f"{_EARLIER_RUN}:nodes",
+                value={"nodes": earlier, "turns": [turn.id for turn in others]},
+                kind=EARLIER_KIND,
+                title=HISTORY_TITLE,
+                run_id=_EARLIER_RUN,
+                timestamp=0.0,
+            )
+        elif earlier:
             entries.append((float("-inf"), self._earlier_run(earlier, names)))
             cells[f"{_EARLIER_RUN}:nodes"] = ev.ArtifactPublished(
                 artifact_id=f"{_EARLIER_RUN}:nodes",
@@ -458,12 +534,15 @@ class ExploreFeed(Viewer):
             if run_id not in placed:
                 entries.append((events[0].timestamp, list(events)))
         entries.sort(key=lambda entry: entry[0])
+        # The collapsed entry of the turns made outside Explore stays at the top whatever is paged.
+        pinned = entries[:1] if asking and entries and entries[0][0] == float("-inf") else []
+        entries = entries[len(pinned) :]
         # Only the latest page and the pages asked for since are shown.
         if self._first is None:
             self._first = max(0, len(entries) - self.page_size)
         self._first = min(self._first, max(0, len(entries) - 1))
         self._hidden = self._first
-        entries = entries[self._first :]
+        entries = pinned + entries[self._first :]
         shown = {
             event.run_id
             for _, events in entries
@@ -484,6 +563,40 @@ class ExploreFeed(Viewer):
             *_message(_EARLIER_RUN, "a", "assistant", text, 0.0),
             ev.RunFinished(run_id=_EARLIER_RUN, timestamp=0.0),
         ]
+
+    def _history_run(self, others: list[DashboardTurn], nodes: list[str]) -> list[ev.Event]:
+        parts = []
+        if others:
+            n = len(others)
+            parts.append(
+                f"{n} earlier request{'s' * (n != 1)} and edit{'s' * (n != 1)} made outside Explore"
+            )
+        if nodes:
+            n = len(nodes)
+            parts.append(f"{n} output{'s' * (n != 1)} made before requests were recorded")
+        text = f"This dashboard has {' and '.join(parts)}. Show them to see each one here."
+        self._summaries.add(f"{_EARLIER_RUN}-a")
+        return [
+            ev.RunStarted(run_id=_EARLIER_RUN, agent_name=EARLIER_AGENT, timestamp=0.0),
+            *_message(_EARLIER_RUN, "a", "assistant", text, 0.0),
+            ev.RunFinished(run_id=_EARLIER_RUN, timestamp=0.0),
+        ]
+
+    def _turn_text(self, turn: DashboardTurn) -> str:
+        """Describe an earlier turn for the collapsed history: who, what was asked, what changed."""
+        redacted = (
+            self.editor.run_redacted(turn.run) if turn.actor == "agent" else self.editor.read_only
+        )
+        who = "Assistant" if turn.actor == "agent" else "Edited by hand"
+        lines = [f"**{who}**"]
+        if turn.actor == "agent" and turn.question and not redacted:
+            lines[0] += f": {escape_markdown(turn.question)}"
+        lines.append(
+            _change_list(turn.summary)
+            if turn.summary and not redacted
+            else "- Changed the dashboard."
+        )
+        return "\n\n".join(lines)
 
     def _projected_run(self, turn: DashboardTurn, run_id: str) -> list[ev.Event]:
         at = _turn_time(turn)
@@ -542,7 +655,11 @@ class ExploreFeed(Viewer):
             visible=bool(hidden),
             label=f"Show earlier requests ({hidden} more)" if hidden else "Show earlier requests",
         )
-        content = [self._earlier, self.chat] if (timeline or self._chat_key[0]) else [self._empty]
+        content = (
+            [self._earlier, self.chat, self._waiting]
+            if (timeline or self._chat_key[0])
+            else [self._empty]
+        )
         if list(self._layout.objects) != content:
             self._layout.objects = content
         self.refresh()
@@ -587,6 +704,8 @@ class ExploreFeed(Viewer):
 
     def _render(self, artifact: Artifact) -> Viewable:
         value = artifact.value or {}
+        if artifact.kind == EARLIER_KIND and "turns" in value:
+            return self._render_history(value.get("turns", []), value.get("nodes", []))
         if artifact.kind == EARLIER_KIND:
             return self._render_earlier(value.get("nodes", []))
         instance_id = value.get("node")
@@ -600,6 +719,58 @@ class ExploreFeed(Viewer):
         note.param.update(**self._note(instance_id))
         self._notes[instance_id] = note
         return pn.Column(note, self._output(instance_id), sizing_mode="stretch_width", margin=0)
+
+    def _render_history(self, turn_ids: list[str], nodes: list[str]) -> Viewable:
+        """Render the dashboard's turns from outside Explore, collapsed until shown."""
+        body = pn.Column(sizing_mode="stretch_width", margin=0, visible=False)
+        button = pmui.Button(
+            label="Show earlier requests and edits",
+            icon="expand_more",
+            variant="text",
+            size="small",
+            margin=(0, 4),
+            sx={"textTransform": "none", "justifyContent": "flex-start"},
+            css_classes=["explore-history-toggle"],
+        )
+
+        def build():
+            by_id = {turn.id: turn for turn in self.editor.turns}
+            made: dict[str, list[str]] = {}
+            for instance_id in self._items():
+                made.setdefault(self.editor.node_origin(instance_id), []).append(instance_id)
+            rows = []
+            for turn_id in turn_ids:
+                turn = by_id.get(turn_id)
+                if turn is None:
+                    continue
+                rows.append(
+                    pmui.Typography(
+                        self._turn_text(turn),
+                        variant="body2",
+                        margin=(8, 12, 0, 12),
+                        css_classes=["explore-history-turn"],
+                    )
+                )
+                if made.get(turn_id):
+                    rows.append(self._render_earlier(made[turn_id]))
+            if nodes:
+                rows.append(self._caption("Made before requests were recorded:"))
+                rows.append(self._render_earlier(nodes))
+            return rows
+
+        def toggle(_event):
+            body.visible = not body.visible
+            button.param.update(
+                icon="expand_less" if body.visible else "expand_more",
+                label="Hide earlier requests and edits"
+                if body.visible
+                else "Show earlier requests and edits",
+            )
+            if body.visible and not body.objects:
+                body.objects = build()
+
+        button.on_click(toggle)
+        return pn.Column(button, body, sizing_mode="stretch_width", margin=(4, 0))
 
     def _render_earlier(self, nodes: list[str]) -> Viewable:
         names = self._shown_names()
@@ -791,4 +962,4 @@ class ExploreFeed(Viewer):
         return f"Added {name} to the dashboard."
 
 
-__all__ = ["EARLIER_KIND", "NODE_KINDS", "ExploreFeed"]
+__all__ = ["EARLIER_KIND", "EXPLORE_RUN_PREFIX", "NODE_KINDS", "ExploreFeed", "is_explore_run"]

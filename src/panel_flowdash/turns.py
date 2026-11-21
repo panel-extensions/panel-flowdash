@@ -311,9 +311,13 @@ class TurnLog:
         """Close the person's open turn, so their next edit opens a new one."""
         self._open.pop(("user",), None)
 
-    def end_agent_turns(self):
-        """Close the agent's open turns, so the next request's edits open a new one."""
-        self._open = {key: turn for key, turn in self._open.items() if key[0] != "agent"}
+    def end_agent_turns(self, run: str | None = None):
+        """Close the agent's open turns, or only request *run*'s, so the next request's edits open a new one."""
+        self._open = {
+            key: turn
+            for key, turn in self._open.items()
+            if key[0] != "agent" or (run is not None and key[1] != run)
+        }
 
     def current(self) -> DashboardTurn:
         """Return the turn an edit made now belongs to, opening it if needed."""

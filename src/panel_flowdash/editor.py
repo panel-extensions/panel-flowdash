@@ -110,6 +110,7 @@ from panel_flowdash.transforms import parse_transform, summarize_transform
 from panel_flowdash.turns import (
     DashboardTurn,
     TurnLog,
+    _agent_source,
     agent_edits,
     change_labels,
     changes_node,
@@ -1414,6 +1415,9 @@ class FlowDash(Viewer):
         # While an agent request runs, the tiles it adds wait here to be laid out once it ends.
         self._deferred_tiles: set[str] | None = None
         self._deferred_rearrange = False
+        # The requests deferring the layout, and the tiles each added, so each is laid out as it ends.
+        self._deferring: set[str | None] = set()
+        self._deferred_by_run: dict[str | None, set[str]] = {}
         # Tiles shown or hidden on purpose, which the editor never hides as plumbing.
         self._chosen_visibility: set[str] = set()
         # Set when deferred tiles were laid out, for the agent session to publish the result.
@@ -2660,6 +2664,13 @@ class FlowDash(Viewer):
         """
         self._render_how_made(instance_id, turn_id, open_sheet=True)
 
+    def _run_state(self, run_id: str | None) -> RunState:
+        """Return the ``RunState`` holding the steps of run *run_id*: the Explore view's or :attr:`agent_state`."""
+        runner = self.explore_feed.runner if self._explore_feed is not None else None
+        if runner is not None and run_id is not None and run_id in runner.state.runs:
+            return runner.state
+        return self.agent_state if self.agent_state is not None else self._history.state
+
     def _render_how_made(self, instance_id: str, turn_id: str | None, *, open_sheet: bool):
         if not self.made_by_agent(instance_id):
             return
@@ -2667,7 +2678,7 @@ class FlowDash(Viewer):
         turn = origin
         if turn_id is not None:
             turn = next((t for t in self.later_turns(instance_id) if t.id == turn_id), origin)
-        state = self.agent_state if self.agent_state is not None else self._history.state
+        state = self._run_state(turn.run if turn is not None else None)
         self._release_span()
         later = self.later_turns(instance_id) if turn is origin else []
         body, self._span_view = provenance_objects(
@@ -5228,38 +5239,58 @@ class FlowDash(Viewer):
         """
         self._turn_log.end_user_turn()
 
-    def end_agent_turns(self):
+    def end_agent_turns(self, run_id: str | None = None):
         """End the turns of the agent's requests, so the next request's edits start a new turn.
 
         The dashboard tools call it when a request ends, whether it finished,
         failed or was cancelled. Each request's edits then become one version
-        of the edit history.
+        of the edit history. With *run_id* only that request's turn ends, so
+        another agent's request running at the same time keeps its own.
         """
-        self._release_tile_layout()
-        self._turn_log.end_agent_turns()
-        self._history.end_requests()
+        self._release_tile_layout(run_id)
+        self._turn_log.end_agent_turns(run_id)
+        self._history.end_requests(run_id)
         self._fit_placed_nodes()
 
-    def _defer_tile_layout(self):
-        """Lay out the tiles added from now on once the agent's request ends, all at once.
+    def _defer_tile_layout(self, run_id: str | None = None):
+        """Lay out the tiles added from now on once the agent's request *run_id* ends, all at once.
 
         Laying the grid out again for each tile the agent adds would rebuild
         every tile on screen once per tile.
         """
         if self._deferred_tiles is None:
             self._deferred_tiles = set()
+        self._deferring.add(run_id)
 
     def _release_tile_layout(self, run_id: str | None = None):
         """Lay out the tiles added while the layout was deferred.
 
         The layout is an edit of the agent's request *run_id*, by default the
         one request with edits not yet in the history, so it joins that
-        request's version.
+        request's version. While another request still defers the layout,
+        only the tiles *run_id* added are laid out.
         """
+        if run_id is not None and self._deferring - {run_id}:
+            if run_id not in self._deferring:
+                return
+            self._deferring.discard(run_id)
+            pending = self._deferred_by_run.pop(run_id, set())
+            rest = (self._deferred_tiles or set()) - pending
+            self._deferred_tiles = None
+            try:
+                self._lay_out_released(pending, False, run_id)
+            finally:
+                self._deferred_tiles = rest
+            return
         pending, self._deferred_tiles = self._deferred_tiles, None
         rearrange, self._deferred_rearrange = self._deferred_rearrange, False
+        self._deferring.clear()
+        self._deferred_by_run.clear()
         if pending is None:
             return
+        self._lay_out_released(pending, rearrange, run_id)
+
+    def _lay_out_released(self, pending: set[str], rearrange: bool, run_id: str | None):
         shown = {item["instance_id"] for item in tile_layout.grid_tiles(self)}
         pending &= shown
         if not (pending or rearrange):
@@ -5977,6 +6008,9 @@ class FlowDash(Viewer):
         """
         if self._deferred_tiles is not None:
             self._deferred_tiles.update(instance_ids)
+            source = _agent_source()
+            run = source.run if source is not None else None
+            self._deferred_by_run.setdefault(run, set()).update(instance_ids)
             return
         hide = self._plumbing(instance_ids)
         tiles = {

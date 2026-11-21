@@ -29,6 +29,7 @@ _AGENT_NAMES = {
     "FlowDashDeps": "tools",
     "approval_policy": "tools",
     "create_agent": "assistant",
+    "create_explore_agent": "assistant",
     "dashboard_toolset": "tools",
 }
 
@@ -63,6 +64,7 @@ __all__ = [
     "approval_policy",
     "component_schema",
     "create_agent",
+    "create_explore_agent",
     "dashboard_from_yaml",
     "dashboard_schema",
     "dashboard_to_yaml",
