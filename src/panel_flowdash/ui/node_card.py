@@ -19,6 +19,7 @@ from functools import partial
 
 import param
 from panel.custom import JSComponent
+from panel.io.state import set_curdoc
 from panel.pane import HTML
 from panel.viewable import Viewer
 
@@ -62,6 +63,10 @@ _PORTS_PAD = 4
 _PORT_ROW_HEIGHT = 22
 _SUMMARY_HEIGHT = 34
 _FOLD_OPTIONAL_THRESHOLD = 2
+
+#: How long, in seconds, a card keeps its height after a preview of the same kind
+#: gets shorter, so a value that keeps changing doesn't keep resizing it.
+SHRINK_DELAY = 1.5
 _COLLAPSED_HANDLE_SPACING = 12
 
 STATUS_TEXT = {
@@ -602,6 +607,8 @@ class NodeCard(Viewer):
         self._on_layout = on_layout
         super().__init__(**params)
         self._preview: Preview | None = None
+        # The shorter preview the card shrinks to once its value has settled.
+        self._fitted: Preview | None = None
         self._pane = HTML(
             width=CARD_WIDTH,
             height=self.base_height,
@@ -758,6 +765,8 @@ class NodeCard(Viewer):
     def release(self):
         """Stop updating the card, e.g. once its component has been removed."""
         self._coalescer.cancel()
+        with self._render_lock:
+            self._generation += 1
 
     def _document(self):
         """Return the served document showing the card, if any."""
@@ -867,18 +876,38 @@ class NodeCard(Viewer):
             self._render_now()
 
     def _settle(self, preview: Preview | None) -> Preview | None:
-        """Keep the card's height while its value stays the same kind, growing but never shrinking.
+        """Keep the card's height for a while when a preview of the same kind gets shorter.
 
         Resizing a card moves its edges and can push its neighbours, so a
         filter that keeps changing a short table's row count must not resize it
-        each time.
+        each time. The card grows straight away, but only shrinks to fit once
+        its value has stayed shorter for :data:`SHRINK_DELAY` seconds; outside
+        a served session it fits straight away.
         """
         old = self._preview
+        self._fitted = None
         if preview is None or old is None or old.kind != preview.kind:
             return preview
-        if preview.height >= old.height:
+        if preview.height >= old.height or (doc := self._document()) is None:
             return preview
+        try:
+            doc.add_timeout_callback(
+                partial(self._fit, self._generation, doc), SHRINK_DELAY * 1000
+            )
+        except Exception:
+            logger.debug("Could not schedule shrinking the card of %s", self.title, exc_info=True)
+            return preview
+        self._fitted = preview
         return preview.with_height(old.height)
+
+    def _fit(self, generation: int, doc):
+        """Shrink the card to its preview, unless it has been repainted since the shrink was scheduled."""
+        with self._render_lock:
+            if generation != self._generation or self._fitted is None:
+                return
+            self._preview, self._fitted = self._fitted, None
+            with set_curdoc(doc):
+                self._render_now()
 
     def _render_now(self):
         preview = self._preview

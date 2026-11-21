@@ -588,7 +588,7 @@ class TestCards:
         assert card(editor, ids["waiting"]).status == "waiting"
         assert "Showing 5 rows, 4 columns" in card(editor, ids["table"]).preview.html
 
-    async def test_card_grows_by_the_preview_and_keeps_its_height(self):
+    async def test_card_grows_by_the_preview(self):
         editor, ids = demo_editor()
         filtered = card(editor, ids["filter"])
         pane = filtered.__panel__()
@@ -597,9 +597,10 @@ class TestCards:
         assert pane.height == base - 34 + HEIGHTS["table"]
         editor._component_instances[ids["slider"]].value = 2.2
         assert "2 rows, 4 columns" in pane.object
-        assert pane.height == base - 34 + HEIGHTS["table"]
+        # Outside a served session nothing moves on screen, so the card fits straight away.
+        assert pane.height < base - 34 + HEIGHTS["table"]
 
-    async def test_short_table_card_fits_its_rows_then_only_grows(self):
+    async def test_short_table_card_fits_its_rows_then_grows(self):
         editor, ids = demo_editor()
         editor._show_node_previews(False)
         editor._component_instances[ids["slider"]].value = 2.9
@@ -609,11 +610,46 @@ class TestCards:
         short = pane.height
         assert short < card_height(2, 1) - 34 + HEIGHTS["table"]
         editor._component_instances[ids["slider"]].value = 2.2
-        grown = pane.height
-        assert grown > short
-        editor._component_instances[ids["slider"]].value = 2.9
-        assert "1 row, 4 columns" in pane.object
-        assert pane.height == grown
+        assert pane.height > short
+
+    def test_card_in_a_session_shrinks_once_its_value_settles(self, monkeypatch):
+        class Doc:
+            def __init__(self):
+                self.timeouts = []
+
+            def add_timeout_callback(self, callback, timeout):
+                self.timeouts.append((callback, timeout))
+
+        def table(rows):
+            return build_preview(pd.DataFrame({"a": range(rows)}), "table")
+
+        doc = Doc()
+        filtered = NodeCard(title="filtered", show_preview=True, preview_source=lambda: None)
+        pane = filtered.__panel__()
+        filtered._show_preview(filtered._generation, table(50))
+        tall = pane.height
+        monkeypatch.setattr(filtered, "_document", lambda: doc)
+
+        # A shorter table of the same kind keeps the height until the value has settled.
+        filtered._show_preview(filtered._generation, table(1))
+        assert pane.height == tall
+        assert "1 row, 1 column" in pane.object
+        [(fit, delay)] = doc.timeouts
+        assert delay == node_card_module.SHRINK_DELAY * 1000
+
+        # A change within the delay restarts it, so a value that keeps changing never resizes the card.
+        filtered._generation += 1
+        filtered._show_preview(filtered._generation, table(2))
+        fit()
+        assert pane.height == tall
+        doc.timeouts[-1][0]()
+        assert pane.height < tall
+        assert "2 rows, 1 column" in pane.object
+
+        # Growing is immediate.
+        filtered._generation += 1
+        filtered._show_preview(filtered._generation, table(50))
+        assert pane.height == tall
 
     async def test_previews_are_off_by_default(self):
         editor = FlowDash(DEMO, notifications=False)

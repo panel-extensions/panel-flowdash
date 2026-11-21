@@ -1,6 +1,7 @@
 """Tests for stacked-port node cards, preview kinds, folding, collapse, pop-out and port colors."""
 
 import contextlib
+import itertools
 import threading
 import time
 import typing as t
@@ -459,6 +460,32 @@ class TestPreviewSizing:
         assert caption == "bar · 39 bars"
         assert float(bars[-1][0]) + float(bars[-1][1]) <= 240 - 10 + 0.1
         assert "2020" in svg
+
+    def test_bar_thumbnail_ticks_fit_between_the_bars(self):
+        import re
+
+        states = ["Texas", "Iowa", "Oklahoma", "Kansas", "Illinois", "California"] * 4
+        states = [f"{name} {i}" for i, name in enumerate(states)]
+        spec = {"mark": "bar", "encoding": {"x": {"field": "s"}, "y": {"field": "v"}}}
+        svg, _ = render_vega_lite_svg(spec, pd.DataFrame({"s": states, "v": range(24)}))
+        ticks = re.findall(r'<text class="fd-ch-txt" x="([\d.]+)"[^>]*>([^<]*)</text>', svg)
+        assert len(ticks) >= 2
+        char = node_preview_module._TICK_CHAR_W
+        spans = [(float(x) - len(t) * char / 2, float(x) + len(t) * char / 2) for x, t in ticks]
+        assert spans[0][0] >= 10 - 0.1 and spans[-1][1] <= 240 - 10 + 0.1
+        assert all(a[1] < b[0] for a, b in itertools.pairwise(spans))
+        assert ticks[0][1] == "Texas 0" and ticks[-1][1].startswith("Californ")
+
+    def test_bar_thumbnail_ticks_thin_out_until_labels_differ(self):
+        import re
+
+        names = [f"State number {i}" for i in range(50)]
+        spec = {"mark": "bar", "encoding": {"x": {"field": "s"}, "y": {"field": "v"}}}
+        svg, _ = render_vega_lite_svg(spec, pd.DataFrame({"s": names, "v": range(50)}))
+        labels = re.findall(r'<text class="fd-ch-txt"[^>]*>([^<]*)</text>', svg)
+        assert len(labels) >= 2
+        assert len(set(labels)) == len(labels)
+        assert labels[0] == "State number 0" and labels[-1] == "State number 49"
 
     def test_short_table_preview_fits_its_rows(self):
         one = build_preview(pd.DataFrame({"a": [1], "b": ["x"]}), "table")
