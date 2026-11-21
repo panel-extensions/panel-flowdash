@@ -176,6 +176,7 @@ async def test_live_object_without_preview_gets_a_caption_not_its_view(editor):
     assert "live" not in texts
 
 
+@pytest.mark.failures
 async def test_failure_is_a_short_caption(editor):
     _, column = _data(editor, BROKEN)
     texts = _texts(column)

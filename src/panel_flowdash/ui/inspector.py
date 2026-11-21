@@ -491,7 +491,7 @@ def _table_preview(value: t.Any) -> list[Viewable]:
     caption = _caption(summary, margin=(0, 0, 6, 0), css_classes=["fd-data-summary"])
     if not len(head) and not cols:
         return [caption]
-    head = _flat_columns(_index_as_columns(head))
+    head = _index_as_columns(_flat_columns(head))
     # Positions in the rendered table, which has no index column.
     numeric = [
         i + 1
