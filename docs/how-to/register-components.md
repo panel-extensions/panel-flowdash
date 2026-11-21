@@ -50,6 +50,7 @@ def app(config):
 | `check_config` | `callable` | `None` | Checks a node's config, with its live inputs, before it is applied and again when the node is rewired. Returns problems that refuse the config, or a `CheckWarning(message)` for one it could not verify, which is applied and shown with the warning. See [Configure nodes](configure-nodes.md#4-check-a-config-with-check_config). |
 | `config_choices` | `callable` | `None` | Returns the values each config field may take, `{field: choices}`, offered in a dropdown. See [Configure nodes](configure-nodes.md#5-offer-choices-for-a-field). |
 | `config_completions` | `callable` | `None` | Returns the words each code field completes while typing, `{field: words}`. Without it a code field completes the columns of the node's tabular inputs. See [Configure nodes](configure-nodes.md#6-edit-code-sql-or-markdown-in-a-code-editor). |
+| `palette_presets` | `callable` | `None` | Returns further palette entries that place the component with a config filled in, from the editor's `context`. See [Preset entries](#preset-entries). |
 | `aliases` | `list[str]` | `[]` | Ids the component was registered under before. See [Renaming components and ports](#renaming-components-and-ports). |
 | `port_aliases` | `dict[str, str]` | `{}` | Former port or config names mapped to the current ones. See [Renaming components and ports](#renaming-components-and-ports). |
 
@@ -88,6 +89,38 @@ matches the title, description, tags and port names and types.
 Project components are imported lazily. Until a module has been imported the
 palette uses the `provides` and `requires` declared on `@register`, and a
 Viewer without them is listed under *Components* until its ports are known.
+
+### Preset entries
+
+A component can offer ready-configured entries beside its own, for example
+one per data source the host provides, so a node placed from one works
+without typing its config. `palette_presets` takes the editor's `context` and
+returns a list of dicts with a `title` and a `config`, and optionally a
+`description`, a `tooltip`, `tags` and an `icon`:
+
+```python
+def table_presets(context):
+    return [
+        {
+            "title": f"{table} ({ref})",
+            "tooltip": f"Source {ref}, table {table}",
+            "config": {"ref": ref, "table": table},
+        }
+        for ref, source in context.get("sources", {}).items()
+        for table in source.tables
+    ]
+
+
+@register(component=True, title="Table", config=["ref", "table"], palette_presets=table_presets)
+class Table(pn.viewable.Viewer):
+    ...
+```
+
+Preset entries sit after their component with its icon and port summary, are
+searched by their title and tags, and can be clicked, dragged or dropped on a
+port like any entry. The command palette (`Ctrl`/`Cmd`+`K`) offers them too
+while a dashboard is edited. The callable runs whenever the palette is drawn
+or searched, so keep it quick; a failing one offers no presets.
 
 ### Built-in widgets and views
 

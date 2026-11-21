@@ -1,5 +1,6 @@
 """Tests for the command palette's items and the actions it and the shortcuts run."""
 
+import dataclasses
 import sys
 from types import SimpleNamespace
 
@@ -253,6 +254,44 @@ class TestRun:
         app._command_palette.run(f"component:{SELECTOR}")
         assert [i["component_id"] for i in app._editor._tile_items] == [SELECTOR]
         assert app._editor.dirty
+        assert not navigations
+
+    @pytest.fixture
+    def presets(self, app):
+        entry = app._editor._component_entries[SELECTOR]
+        entry.metadata = dataclasses.replace(
+            entry.metadata,
+            palette_presets=lambda context: [
+                {
+                    "title": f"{name} selector",
+                    "tooltip": f"Company {name}",
+                    "tags": ["firm"],
+                    "config": {"company": name},
+                }
+                for name in context.get("companies", [])
+            ],
+        )
+        app._editor.context = {"companies": ["ACME", "Initech"]}
+
+    async def test_presets_are_offered_only_while_editing(self, app, presets):
+        _open(app)
+        assert not [i for i in _ids(app._command_palette, "Components") if i.startswith("preset:")]
+        _open(app, title="Depot", edit=True)
+        item = _item(app._command_palette, f"preset:1:{SELECTOR}")
+        assert item["title"] == "Initech selector"
+        assert item["subtitle"] == "Company Initech"
+        assert item["hint"] == "Add"
+        assert "firm" in item["keywords"]
+
+    async def test_preset_is_added_with_its_config(self, app, presets, navigations):
+        _open(app, edit=True)
+        app._command_palette.run(f"preset:0:{SELECTOR}")
+        (tile,) = app._editor._tile_items
+        assert tile["component_id"] == SELECTOR
+        assert tile["config"] == {"company": "ACME"}
+        app._command_palette.run(f"preset:5:{SELECTOR}")
+        app._command_palette.run("preset:x:nope")
+        assert len(app._editor._tile_items) == 1
         assert not navigations
 
     async def test_unknown_component_is_ignored(self, app, navigations):

@@ -38,7 +38,25 @@ def price_chart(config):
     return "chart"
 
 
-COMPONENTS = {"Test/prices": prices, "Test/chart": price_chart}
+@register(
+    page=False,
+    component=True,
+    title="Table",
+    provides=[{"key": "rows", "type": "DataFrame"}],
+    palette_presets=lambda context: [
+        {
+            "title": f"{table} (sales)",
+            "tooltip": f"Source sales, table {table}",
+            "config": {"table": table},
+        }
+        for table in context.get("tables", [])
+    ],
+)
+def table(config):
+    return "table"
+
+
+COMPONENTS = {"Test/prices": prices, "Test/chart": price_chart, "Test/table": table}
 
 
 def _editor():
@@ -120,3 +138,24 @@ def test_drag_from_filtered_palette_adds_node(page):
     wait_until(lambda: len(editor._tile_items) == 1, page=page, timeout=8000)
     assert editor._tile_items[0]["component_id"] == "Test/chart"
     expect(item).to_contain_text("Placed")
+
+
+def test_preset_entry_shows_its_tooltip_and_drags_in_with_its_config(page):
+    editor = FlowDash(
+        COMPONENTS,
+        notifications=False,
+        include_builtin_components=False,
+        context={"tables": ["orders", "regions"]},
+    )
+    serve_component(page, editor)
+
+    item = _item(page, "orders \\(sales\\)")
+    expect(item).to_be_visible()
+    expect(_item(page, "regions \\(sales\\)")).to_be_visible()
+    item.hover()
+    expect(page.get_by_role("tooltip")).to_have_text("Source sales, table orders")
+
+    item.drag_to(page.locator(".react-flow__pane"), target_position={"x": 80, "y": 80})
+    wait_until(lambda: len(editor._tile_items) == 1, page=page, timeout=8000)
+    assert editor._tile_items[0]["component_id"] == "Test/table"
+    assert editor._tile_items[0]["config"] == {"table": "orders"}

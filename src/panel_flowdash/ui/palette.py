@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 import typing as t
-from collections.abc import Callable, Iterable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass, replace
 
 import panel as pn
 import panel_material_ui as pmui
@@ -15,6 +16,8 @@ from panel.viewable import Viewer
 from panel_flowdash.component_spec import ComponentSpec, _ports_from_metadata
 from panel_flowdash.registry import RegistryEntry
 from panel_flowdash.ui.roles import ROLE_ICONS, component_role
+
+logger = logging.getLogger(__name__)
 
 # Palette group order; "other" holds components whose ports are unknown until imported.
 ROLES = ("source", "transform", "view", "other", "widget")
@@ -115,6 +118,9 @@ class PaletteEntry:
     outputs: tuple[PalettePort, ...] = ()
     placed: bool = False
     draggable: bool = True
+    config: Mapping[str, t.Any] | None = None
+    """The config a preset entry places the component with."""
+    tooltip: str | None = None
 
     @property
     def summary(self) -> str:
@@ -161,9 +167,10 @@ class PaletteEntry:
             "secondary": secondary or None,
             "icon": self.icon or ROLE_ICONS[self.role],
             "color": "action" if self.role == "widget" else "primary",
-            "tooltip": self.description or None,
+            "tooltip": self.tooltip or self.description or None,
             "component_id": self.component_id,
             "draggable": self.draggable,
+            **({"config": dict(self.config)} if self.config is not None else {}),
         }
 
 
@@ -199,6 +206,56 @@ def palette_entry(
         placed=placed,
         draggable=not (placed and meta.singleton),
     )
+
+
+def component_presets(
+    entry: RegistryEntry, context: Mapping[str, t.Any] | None
+) -> list[dict[str, t.Any]]:
+    """Return the presets ``register(palette_presets=...)`` gives *entry* for *context*.
+
+    Each is a dict with a ``title``, a ``config`` dict and optionally a
+    ``description``, ``tooltip``, ``tags`` and ``icon``; malformed ones are
+    skipped and a failing hook gives none.
+    """
+    hook = entry.metadata.palette_presets
+    if hook is None:
+        return []
+    try:
+        presets = list(hook(dict(context or {})) or [])
+    except Exception:
+        logger.exception("palette_presets of '%s' failed", entry.app_id)
+        return []
+    valid = []
+    for preset in presets:
+        if (
+            isinstance(preset, Mapping)
+            and isinstance(preset.get("title"), str)
+            and preset["title"]
+            and isinstance(preset.get("config"), Mapping)
+        ):
+            valid.append(dict(preset))
+        else:
+            logger.warning("Skipping a malformed palette preset of '%s': %r", entry.app_id, preset)
+    return valid
+
+
+def preset_entries(
+    base: PaletteEntry, presets: Iterable[Mapping[str, t.Any]]
+) -> list[PaletteEntry]:
+    """Return palette entries for *presets* of the component *base* describes, with its ports."""
+    return [
+        replace(
+            base,
+            title=preset["title"],
+            description=preset.get("description") or base.description,
+            tooltip=preset.get("tooltip"),
+            icon=preset.get("icon") or base.icon,
+            tags=(*base.tags, *(str(tag) for tag in preset.get("tags") or ())),
+            placed=False,
+            config=dict(preset["config"]),
+        )
+        for preset in presets
+    ]
 
 
 def palette_items(entries: Iterable[PaletteEntry], query: str = "") -> list[dict[str, t.Any]]:

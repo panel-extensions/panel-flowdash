@@ -83,6 +83,7 @@ class PanelAppMetadata:
     contract: Any = None
     config_choices: Callable | None = None
     config_completions: Callable | None = None
+    palette_presets: Callable | None = None
     handles_failures: list[str] = field(default_factory=list)
     # Former component ids and former port names, so dashboards saved before a
     # rename still resolve.
@@ -165,6 +166,7 @@ def register(
     contract: Any = None,
     config_choices: Callable | None = None,
     config_completions: Callable | None = None,
+    palette_presets: Callable | None = None,
     handles_failures: list[str] | None = None,
     aliases: list[str] | None = None,
     port_aliases: dict[str, str] | None = None,
@@ -228,6 +230,15 @@ def register(
     word, e.g. the columns of the tables a query reads. Without it a code
     field completes the column names of the node's tabular inputs.
 
+    The ``palette_presets`` argument takes a callable, called with the
+    editor's ``context``, that returns further entries the component
+    palette and the command palette offer for the component, each placing
+    it with a config filled in: dicts with a ``title`` and a ``config``, and
+    optionally a ``description``, a ``tooltip``, ``tags`` and an ``icon``,
+    e.g. one entry per data source the host provides. It is asked whenever
+    the palette is drawn or searched, so it must be quick; an entry without
+    a title or config is skipped, and a failing callable offers none.
+
     The ``placeholder`` argument sets the message a dashboard tile shows while a
     blocking input of the component is unset, in place of the default
     "Waiting for <inputs>" text.
@@ -287,6 +298,7 @@ def register(
         contract=contract,
         config_choices=config_choices,
         config_completions=config_completions,
+        palette_presets=palette_presets,
         handles_failures=list(handles_failures or []),
         aliases=_name_list(aliases),
         port_aliases=_port_aliases(port_aliases),
