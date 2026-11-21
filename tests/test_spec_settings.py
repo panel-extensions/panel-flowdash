@@ -622,7 +622,7 @@ class TestCodePanel:
         assert editor._has_unsent_edits()
 
 
-class TestReviewedDrafts:
+class TestDraftsAcrossChanges:
     async def test_invalid_json_says_why_in_the_form_view(self, editor):
         node = editor.add_component("D/plain")
         field = _field(editor, node)
@@ -676,8 +676,6 @@ class TestReviewedDrafts:
         assert editor.open_code_panel(node, "sql")
         assert panel.code.value_input == "SELECT 3"
         assert panel._stale_notice.visible and panel.dirty
-        panel.run()
-        await _settle()
         assert editor._component_instances[node].sql == "SELECT 3"
         panel.keep_stale_draft()
         assert panel.code.value_input == "SELECT 2" and not panel._stale_notice.visible
@@ -719,9 +717,87 @@ class TestReviewedDrafts:
         labels = [b.label for b in body.select(pmui.Button) if "fd-edit-spec" in b.css_classes]
         assert labels == ["Edit SQL", "Edit Spec · draft not run"]
         panel.field_toggle.value = "sql"
-        assert "Spec •" in panel.field_toggle.options
+        assert "Spec (draft not run)" in panel.field_toggle.options
 
     async def test_a_node_without_a_spec_names_nothing_to_edit(self, editor):
         frame = editor.add_component("D/frame")
         assert editor.open_code_panel(frame)
         assert "Nothing to edit" in editor.code_panel._code_header.object
+
+    async def _hold_then_change(self, editor, start, drafted, outside):
+        """Hold a spec draft on one node, change its spec from outside, and show it again."""
+        node = editor.add_component("D/plain")
+        other = editor.add_component("D/plain")
+        editor._apply_config_patch(node, {"spec": start})
+        field = _field(editor, node)
+        field.value = drafted
+        assert editor.code_panel.dirty
+        _field(editor, other)
+        editor._apply_config_patch(node, {"spec": outside})
+        _field(editor, node)
+        return editor.code_panel, field
+
+    @pytest.mark.parametrize(
+        ("start", "drafted", "outside"),
+        [
+            ({**SPEC, "title": "Old"}, {**SPEC, "title": "Mine"}, {**SPEC, "title": "Agent"}),
+            ({**SPEC, "title": "Old"}, SPEC, {**SPEC, "title": "Agent"}),
+            (
+                SPEC,
+                {
+                    **SPEC,
+                    "encoding": {**SPEC["encoding"], "x": {**SPEC["encoding"]["x"], "title": "X"}},
+                },
+                {**SPEC, "encoding": {"y": SPEC["encoding"]["y"]}},
+            ),
+            (
+                {**SPEC, "layer": [{"mark": "bar"}, {"mark": "line"}]},
+                {**SPEC, "layer": [{"mark": "point"}, {"mark": "line"}]},
+                {**SPEC, "layer": [{"mark": "bar"}, {"mark": "area"}]},
+            ),
+            (
+                SPEC,
+                {**SPEC, "transform": [{"filter": "datum.year >= 2010"}]},
+                {**SPEC, "transform": [*SPEC["transform"], {"filter": "datum.capacity > 1"}]},
+            ),
+        ],
+        ids=["same-path", "deleted-and-edited", "parent-deleted", "list-item", "transform"],
+    )
+    async def test_a_conflicting_change_asks_instead_of_rebasing(
+        self, editor, start, drafted, outside
+    ):
+        panel, field = await self._hold_then_change(editor, start, drafted, outside)
+        assert panel._stale_notice.visible and panel.dirty
+        assert field.value == outside, "the current spec is shown until the person decides"
+        panel.keep_stale_draft()
+        assert field.value == drafted and not panel._stale_notice.visible
+
+    async def test_a_draft_held_against_no_spec_asks(self, editor):
+        node = editor.add_component("D/plain")
+        other = editor.add_component("D/plain")
+        editor._apply_config_patch(node, {"spec": None})
+        field = _field(editor, node)
+        field.value = {"mark": "point"}
+        _field(editor, other)
+        editor._apply_config_patch(node, {"spec": {**SPEC, "mark": "line"}})
+        _field(editor, node)
+        panel = editor.code_panel
+        assert panel._stale_notice.visible
+        assert field.value["mark"] == "line"
+
+    async def test_running_while_the_notice_is_open_clears_it(self, editor):
+        node = editor.add_component("D/both")
+        select_on_canvas(editor._flow, node_id=node)
+        assert editor.open_code_panel(node, "sql")
+        panel = editor.code_panel
+        panel.code.value_input = "SELECT 2"
+        editor.close_code_panel()
+        editor._apply_config_patch(node, {"sql": "SELECT 3"})
+        assert editor.open_code_panel(node, "sql")
+        assert panel._stale_notice.visible
+        panel.run("SELECT 4")
+        await _settle()
+        assert editor._component_instances[node].sql == "SELECT 4"
+        assert not panel._stale_notice.visible and not panel.dirty
+        panel.keep_stale_draft()
+        assert panel.code.value_input == "SELECT 4"

@@ -525,14 +525,18 @@ class CodePanel(Viewer):
             margin=(0, 12, 0, 0),
             align="center",
             visible=False,
+            # Many fields scroll sideways rather than push the header's other controls out.
+            styles={"min-width": "0", "overflow-x": "auto", "flex": "0 1 auto"},
             sx={
+                "flexWrap": "nowrap",
                 "& .MuiToggleButton-root": {
                     "py": "1px",
                     "px": "10px",
                     "fontSize": "0.75rem",
                     "lineHeight": "20px",
                     "textTransform": "none",
-                }
+                    "whiteSpace": "nowrap",
+                },
             },
             css_classes=["fd-code-field-switch"],
         )
@@ -896,7 +900,8 @@ class CodePanel(Viewer):
         options = {}
         for name in fields:
             label = field_label(state.param[name]) or name if state is not None else name
-            options[f"{label} •" if name in drafted and name != self.field else label] = name
+            draft = name in drafted and name != self.field
+            options[f"{label} (draft not run)" if draft else label] = name
         self._syncing = True
         try:
             self.field_toggle.param.update(
@@ -1179,6 +1184,10 @@ class CodePanel(Viewer):
                 self._sync_dirty()
                 self._show_status()
                 return
+        if self._stale is not None:
+            # What is run replaces the older draft the notice offered.
+            self._stale = None
+            self._show_stale()
         self._typing += 1
         self._close_completions()
         patch = self._patch()
@@ -1513,11 +1522,23 @@ def _differences(base: t.Any, draft: t.Any, prefix: tuple = ()) -> list[tuple[tu
 
 
 def _rebase(base: t.Any, draft: t.Any, current: t.Any) -> dict | None:
-    """Return *current* with the changes *draft* made to *base*, or None where they do not apply."""
-    if not isinstance(current, dict):
+    """Return *current* with the changes *draft* made to *base*, or None where they conflict.
+
+    The draft is rebased only where the changes made since touch other
+    paths than the draft's, none inside another, a list counting as one
+    value; otherwise the person decides.
+    """
+    if not isinstance(base, dict) or not isinstance(current, dict):
         return None
+    drafted = _differences(base, draft or {})
+    outside = [path for path, _value in _differences(base, current)]
+    for path, _value in drafted:
+        for other in outside:
+            shared = min(len(path), len(other))
+            if path[:shared] == other[:shared]:
+                return None
     rebased = copy.deepcopy(current)
-    for path, value in _differences(base or {}, draft or {}):
+    for path, value in drafted:
         if not path:
             return None
         try:
