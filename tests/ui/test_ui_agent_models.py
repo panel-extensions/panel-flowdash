@@ -75,6 +75,15 @@ def test_one_labelled_model_shows_its_id_in_a_tooltip(page):
     expect(page.get_by_role("button", name=re.compile("^Model:"))).to_have_count(0)
 
 
+def test_a_ready_made_agent_shows_its_configured_label(page):
+    _open(page, agent_models=[{"id": "fast-model", "label": "Fast"}])
+    label = page.locator(".pa-model-fixed")
+    expect(label).to_have_text("Model: Fast")
+    expect(label).to_have_accessible_name("Model: Fast, fast-model")
+    _ask(page, "Hello")
+    expect(page.get_by_text("Answered by fast-model.")).to_be_visible(timeout=20000)
+
+
 MODELS = [
     ModelChoice("fast-model", label="Fast", model=answering("fast-model")),
     ModelChoice("deep-model", label="Deep", description="Slower", model=answering("deep-model")),

@@ -111,6 +111,17 @@ def configured_models(
     return list(choices.values()), model
 
 
+def same_model(configured: str, own: str) -> bool:
+    """Whether a configured model id names the model an agent runs, *own*.
+
+    pydantic-ai names some models without a provider, e.g. ``test`` runs as
+    ``test:test``, so a missing provider matches any.
+    """
+    provider, _, name = configured.partition(":") if ":" in configured else ("", "", configured)
+    own_provider, _, own_name = own.partition(":") if ":" in own else ("", "", own)
+    return name == own_name and (not provider or not own_provider or provider == own_provider)
+
+
 def agent_model_choice(agent: t.Any, configured: ModelChoice | None = None) -> ModelChoice | None:
     """Return the model *agent* runs with as a ModelChoice, or None if it names none.
 

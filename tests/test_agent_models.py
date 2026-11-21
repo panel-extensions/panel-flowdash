@@ -8,6 +8,7 @@ from panel_flowdash.agent.models import (
     agent_model_choice,
     configured_models,
     parse_models,
+    same_model,
     validate_models,
 )
 
@@ -125,6 +126,43 @@ async def test_a_ready_made_agent_is_named_by_its_own_model(store, monkeypatch):
     (choice,) = session.drawer.chat.model_picker.choices
     assert (choice.id, choice.name, choice.model) == ("test:tiny", "test:tiny", model)
     assert session.runner.model is model
+
+
+@pytest.mark.parametrize(
+    ("params", "named"),
+    [
+        ({"agent_models": [ModelChoice("test", label="Test")]}, ("test", "Test")),
+        ({"agent_models": [{"id": "test:other", "label": "Other"}]}, ("test:other", "Other")),
+        (
+            {"agent_model": "test", "agent_models": [{"id": "test", "label": "Test"}]},
+            ("test", "Test"),
+        ),
+        ({"agent_models": ["test"]}, ("test", "test")),
+        ({"agent_model": "test"}, ("test", "test")),
+        ({"agent_model": "test:test"}, ("test:test", "test:test")),
+        ({"agent_model": "openai:other"}, ("test:test", "test:test")),
+        ({}, ("test:test", "test:test")),
+    ],
+)
+async def test_a_ready_made_agent_is_named_as_configured(store, monkeypatch, params, named):
+    from pydantic_ai import Agent
+    from pydantic_ai.models.test import TestModel
+
+    model = TestModel()
+    session = _app(store, monkeypatch, agent=Agent(model), **params)._agent_session
+    chat = session.drawer.chat
+    (choice,) = chat.model_picker.choices
+    assert (choice.id, choice.name, choice.model) == (*named, model)
+    assert chat.remember_model is None
+    assert session.runner.model is model
+
+
+def test_a_configured_id_matches_the_model_an_agent_runs():
+    assert same_model("test", "test:test")
+    assert same_model("openrouter:openai/gpt-6-luna", "openrouter:openai/gpt-6-luna")
+    assert same_model("openai/gpt-6-luna", "openrouter:openai/gpt-6-luna")
+    assert not same_model("openai:gpt-6-luna", "openrouter:gpt-6-luna")
+    assert not same_model("test", "test:tiny")
 
 
 def test_the_model_of_an_agent_is_read_from_its_model():
