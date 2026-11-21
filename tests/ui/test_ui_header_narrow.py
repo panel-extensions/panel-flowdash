@@ -88,7 +88,7 @@ def _serve(page, width, edit):
 
 
 @pytest.mark.parametrize("edit", [False, True], ids=["view", "edit"])
-@pytest.mark.parametrize("width", [640, 800, 1024])
+@pytest.mark.parametrize("width", [640, 800, 900, 1023, 1024])
 def test_top_bar_items_never_overlap(page, width, edit):
     names = _serve(page, width, edit)
 

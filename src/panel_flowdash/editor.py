@@ -187,6 +187,7 @@ from panel_flowdash.ui.tile_drag import TileDrag
 from panel_flowdash.ui.transform_offer import TransformOffer, bridge_kind
 from panel_flowdash.util import (
     close_dialog,
+    escape_closes,
     gate_view,
     is_async,
     is_async_gen,
@@ -430,10 +431,21 @@ _FLOW_STYLESHEET = """\
   min-width: 140px;
 }
 /* Selection is an offset dashed ring, so it reads apart from the solid agent and failure
-   outlines that sit on the border and can show at the same time. */
-.react-flow__node.selected {
+   outlines that sit on the border and can show at the same time. React Flow removes the
+   outline of a focused node, which a clicked node is, so this needs its specificity. */
+.react-flow__node.selected,
+.react-flow__node.selectable.selected:is(:focus, :focus-visible) {
   outline: 2px dashed var(--mui-palette-primary-main, var(--panel-primary-color));
   outline-offset: 3px;
+}
+/* A node reached with the keyboard but not selected gets a quieter solid ring. */
+.react-flow__node.selectable:focus-visible:not(.selected) {
+  outline: 2px solid var(--mui-palette-text-secondary, currentColor);
+  outline-offset: 3px;
+}
+.react-flow.dark .react-flow__node.selected,
+.react-flow.dark .react-flow__node.selectable.selected:is(:focus, :focus-visible) {
+  outline-color: var(--mui-palette-primary-light, var(--mui-palette-primary-main));
 }
 /* Nodes show a compact card (see ui/node_card.py) that fills the node, so the
    card's port labels line up with the handles ReactFlow spreads over its height. */
@@ -3591,6 +3603,7 @@ class FlowDash(Viewer):
             title="Clear canvas",
             open=False,
             min_width=400,
+            **escape_closes(),
         )
 
     def _build_import_dialog(self):
@@ -3598,18 +3611,19 @@ class FlowDash(Viewer):
         confirm = pmui.Button(label="Replace canvas", color="danger")
 
         def _on_confirm(_event):
-            self._import_dialog.open = False
             model, self._pending_import = self._pending_import, None
+            self._import_dialog.open = False
             if model is not None:
                 self._apply_import(model)
 
-        def _on_cancel(_event):
-            self._import_dialog.open = False
-            self._pending_import = None
+        def _on_closed(event):
+            # Cancel, Escape and a click outside all drop the file.
+            if not event.new:
+                self._pending_import = None
 
-        cancel.on_click(_on_cancel)
+        cancel.on_click(lambda _event: self._import_dialog.param.update(open=False))
         confirm.on_click(_on_confirm)
-        return pmui.Dialog(
+        dialog = pmui.Dialog(
             objects=[
                 self._import_message,
                 pn.Row(pn.layout.HSpacer(), cancel, confirm, sizing_mode="stretch_width"),
@@ -3617,7 +3631,10 @@ class FlowDash(Viewer):
             title="Load dashboard file",
             open=False,
             min_width=400,
+            **escape_closes(),
         )
+        dialog.param.watch(_on_closed, "open")
+        return dialog
 
     def _build_settings_dialog(self):
         self._settings_view = SettingsDialog(self)
