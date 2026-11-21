@@ -55,7 +55,6 @@ def test_one_model_is_named_without_a_picker(page):
     expect(page.get_by_role("button", name=re.compile("^Model:"))).to_have_count(0)
 
 
-
 def test_one_labelled_model_shows_its_id_in_a_tooltip(page):
     store, (dash,) = _store_with("Plant")
     models = [ModelChoice("test", label="Fast")]
