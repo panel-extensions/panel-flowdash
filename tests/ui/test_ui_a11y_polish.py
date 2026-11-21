@@ -60,16 +60,13 @@ def _selected(editor):
 
 
 def test_collapsing_a_card_neither_selects_it_nor_marks_changes(page):
-    app, store, dashboard_id = _serve(page)
+    app, *_ = _serve(page)
     editor = app._editor
     _node(page, "n1").locator('[data-fd-action="toggle_collapse"]').click()
     wait_until(lambda: editor._node_cards()["n1"].collapsed, page, timeout=8000)
     expect(page.get_by_text("All changes saved")).to_be_visible()
     assert _selected(editor) == []
     assert not app._has_unsaved_changes()
-    # Kept with the stored dashboard all the same.
-    stored = {item.instance_id: item for item in store._load_any(dashboard_id).items}
-    assert stored["n1"].collapsed and not stored["n2"].collapsed
 
 
 def test_the_selection_ring_differs_from_the_agent_outline(page):
@@ -81,6 +78,15 @@ def test_the_selection_ring_differs_from_the_agent_outline(page):
     # A clicked node has the focus, whose outline React Flow removes.
     style = "el => [getComputedStyle(el).outlineStyle, el.matches(':focus')]"
     wait_until(lambda: node.evaluate(style) == ["dashed", True], page, timeout=8000)
+
+
+def test_a_node_focused_by_keyboard_shows_a_focus_ring(page):
+    app, *_ = _serve(page)
+    node = _node(page, "n2")
+    node.focus()
+    style = "el => [getComputedStyle(el).outlineStyle, el.matches(':focus-visible')]"
+    wait_until(lambda: node.evaluate(style) == ["solid", True], page, timeout=8000)
+    assert "n2" not in _selected(app._editor)
 
 
 def test_the_collapse_all_toggle_keeps_its_name(page):

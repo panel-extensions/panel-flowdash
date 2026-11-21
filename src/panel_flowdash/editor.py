@@ -429,7 +429,12 @@ _FLOW_STYLESHEET = """\
 .react-flow__node.selected,
 .react-flow__node.selectable.selected:is(:focus, :focus-visible) {
   outline: 2px dashed var(--mui-palette-primary-main, var(--panel-primary-color));
-  outline-offset: 4px;
+  outline-offset: 3px;
+}
+/* A node reached with the keyboard but not selected gets a quieter solid ring. */
+.react-flow__node.selectable:focus-visible:not(.selected) {
+  outline: 2px solid var(--mui-palette-text-secondary, currentColor);
+  outline-offset: 3px;
 }
 .react-flow.dark .react-flow__node.selected,
 .react-flow.dark .react-flow__node.selectable.selected:is(:focus, :focus-visible) {
@@ -2332,8 +2337,8 @@ class FlowDash(Viewer):
         """Collapse or expand a card, or pick the output it previews as one undoable edit.
 
         Collapsing only changes how the canvas looks, like panning, so it is
-        neither an edit in the history nor an unsaved change; see
-        :meth:`_store_collapsed_cards` for how it is kept.
+        neither an edit in the history nor an unsaved change; it is saved
+        with the dashboard's next save.
         """
         card = self._find_node_card(instance_id)
         if card is None:
@@ -2345,8 +2350,6 @@ class FlowDash(Viewer):
             card.param.update(**changes)
             if (status_bar := getattr(self, "_status_bar", None)) is not None:
                 status_bar.sync_collapse_toggle()
-        if "collapsed" in changes:
-            self._store_collapsed_cards()
         if self.read_only or "preview_output" not in changes:
             return
         name = self._node_name(instance_id)
@@ -2370,50 +2373,6 @@ class FlowDash(Viewer):
         with pn.io.hold():
             for card in self._node_cards().values():
                 card.collapsed = collapsed
-        self._store_collapsed_cards()
-
-    def _store_collapsed_cards(self):
-        """Write which cards are collapsed into the stored dashboard, without a save.
-
-        While the canvas has unsaved changes the next save includes it. While
-        it has none, only the stored items' collapsed flags change, so the
-        dashboard stays saved and reopens as it was left. A dashboard saved
-        from elsewhere since it was opened is left alone, as a save would be.
-        """
-        current = self.dashboard
-        if (
-            self.read_only
-            or self.store is None
-            or current is None
-            or self.dirty
-            or self._has_unsent_edits()
-        ):
-            return
-        try:
-            stored = self.store._load_any(current.dashboard_id)
-            if (
-                stored is None
-                or stored.revision != current.revision
-                or not self._dashboard_authorized(stored, "edit")
-            ):
-                return
-            cards = self._node_cards()
-            changed = False
-            for item in stored.items:
-                card = cards.get(item.instance_id)
-                if card is not None and item.collapsed != card.collapsed:
-                    item.collapsed = card.collapsed
-                    changed = True
-            if not changed:
-                return
-            self.store.save_dashboard(stored)
-        except DashboardStoreError:
-            logger.warning("Could not store the collapsed cards of %r", current.dashboard_id)
-            return
-        current.revision = stored.revision
-        for item in current.items:
-            if (card := cards.get(item.instance_id)) is not None:
-                item.collapsed = card.collapsed
 
     def _patch_canvas_props(self, kind: str, item_id: str, patch: dict[str, t.Any]):
         """Patch a node or edge, also while it is still waiting in a batched canvas update."""
