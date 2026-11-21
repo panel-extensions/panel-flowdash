@@ -160,7 +160,7 @@ jobs:
         run: pixi run -e "${ENV}" test-coverage --color=yes
 
   pytest_ui:
-    name: ui:${{ matrix.environment }}:${{ matrix.os }}
+    name: ui:${{ matrix.environment }}:${{ matrix.os }}:${{ matrix.shard }}
     needs: [pre_commit, setup, pixi_lock]
     runs-on: ${{ matrix.os }}
     if: needs.setup.outputs.code_change == 'true'
@@ -169,7 +169,9 @@ jobs:
       matrix:
         environment: ["test-ui"]
         os: ["ubuntu-latest", "macos-latest", "windows-latest"]
-    timeout-minutes: 60
+        shard: [1, 2]
+        shards: [2]
+    timeout-minutes: 40
     env:
       PANEL_LOG_LEVEL: info
     steps:
@@ -190,14 +192,17 @@ jobs:
           echo "concurrency = greenlet" >> .uicoveragerc
 
       - name: Test UI
+        env:
+          ENV: ${{ matrix.environment }}
+          SHARD: ${{ matrix.shard }}/${{ matrix.shards }}
         run: |
           FAIL="--screenshot only-on-failure --full-page-screenshot --output ui_screenshots --tracing retain-on-failure"
-          pixi run -e ${{ matrix.environment }} test-ui --cov-config=.uicoveragerc $FAIL
+          pixi run -e "${ENV}" test-ui --shard "${SHARD}" --cov-config=.uicoveragerc $FAIL
 
       - name: Upload UI Screenshots
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
-          name: ui_screenshots_${{ runner.os }}
+          name: ui_screenshots_${{ runner.os }}_${{ matrix.shard }}
           path: ./ui_screenshots
           if-no-files-found: ignore

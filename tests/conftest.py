@@ -25,6 +25,13 @@ def pytest_addoption(parser):
     for marker, info in optional_markers.items():
         parser.addoption(f"--{marker}", action="store_true", default=False, help=info["help"])
     parser.addoption("--repeat", action="store", help="Number of times to repeat each test")
+    parser.addoption(
+        "--shard",
+        action="store",
+        default=None,
+        metavar="I/N",
+        help="Run only the I-th of N interleaved slices of the collected tests (1-based).",
+    )
 
 
 def pytest_configure(config):
@@ -38,8 +45,29 @@ def pytest_configure(config):
     )
 
 
+def _select_shard(config, items):
+    shard = config.getoption("--shard")
+    if not shard:
+        return
+    try:
+        index, count = (int(part) for part in shard.split("/"))
+    except ValueError:
+        raise pytest.UsageError(f"--shard expects I/N, got {shard!r}") from None
+    if not 1 <= index <= count:
+        raise pytest.UsageError(f"--shard index must be between 1 and {count}, got {index}")
+    # Interleaving spreads each module's tests over every shard, so the slow
+    # modules do not pile up in one shard and the shards take about as long.
+    keep, drop = [], []
+    for position, item in enumerate(items):
+        (keep if position % count == index - 1 else drop).append(item)
+    if drop:
+        config.hook.pytest_deselected(items=drop)
+        items[:] = keep
+
+
 def pytest_collection_modifyitems(config, items):
-    """Skip optional tests unless their option is given, and failure tests param cannot run."""
+    """Keep the --shard slice and skip optional tests and failure tests param cannot run."""
+    _select_shard(config, items)
     for marker, info in optional_markers.items():
         if config.getoption(f"--{marker}"):
             continue
