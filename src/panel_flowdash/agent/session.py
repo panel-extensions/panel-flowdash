@@ -525,7 +525,7 @@ class _ExploreRunner(_SessionRunner):
         try:
             return await super().run(prompt, **kwargs)
         finally:
-            exploration.note_run(run_id)
+            exploration.note_run(run_id, keep=self.deps.ops.MAX_RUNS)
 
     def _run_id(self, given: str | None) -> str:
         if given:

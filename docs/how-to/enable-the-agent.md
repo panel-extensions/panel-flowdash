@@ -254,9 +254,13 @@ The Explore agent's answers stay off the dashboard until someone adds them. Each
 session builds them in an exploration of the open dashboard: a hidden editor holding
 a mirror of each of the dashboard's nodes, whose outputs follow the dashboard node's,
 so an answer built on a filtered table follows the dashboard's widgets. The agent can
-read the dashboard's nodes and connect its own nodes to them, but cannot change them,
-add data sources, or lay out, save or share anything, and an Explore request makes no
-turn of the dashboard and no step of its Undo. Each answer of a request (a node it made
+read the dashboard's nodes and connect its own nodes to them, but cannot change them or
+lay out, save or share anything, and an Explore request makes no turn of the dashboard
+and no step of its Undo. It may add a data source the host offers as it is, without
+config of its own (`ExplorationOps(allow_source=...)` changes the rule), and is told to
+build on a source the dashboard already has rather than load it again. A mirror follows
+its dashboard node again when an Undo brings it back. Only the open dashboard's
+exploration is kept, with the answers of its latest 20 requests. Each answer of a request (a node it made
 that none of its other nodes reads) gets a card, with the nodes it is built from
 collapsed under it. A follow-up adds nodes of its own rather than changing an earlier
 answer's (`ExplorationOps(freeze_answers=False)` lets it change them). A card says when
@@ -269,7 +273,8 @@ already has, with the same component, config and inputs, is reused, and a name t
 dashboard uses for another node gets a `_2` suffix. Only the answer's tile is placed on
 the grid. The copy is one turn of the Explore request, with its question, and one step of
 Undo; the card then says "On dashboard as `name`", and **Show** goes to the dashboard and
-marks the tile.
+marks the tile. When the dashboard shows that answer already, nothing is added and the
+card says "Already on dashboard as `name`". A failed addition takes back what it wrote.
 
 Only one request at a time edits the dashboard: a request takes it at its first edit and
 keeps it until it ends, so each request stays one step of Undo. Adding an answer from

@@ -5454,6 +5454,11 @@ class FlowDash(Viewer):
         self._history.end_requests(run_id)
         self._fit_placed_nodes()
 
+    def _discard_agent_turn(self, run_id: str | None):
+        """Drop the open turn of request *run_id* and its pending version, once its edits were taken back."""
+        self._turn_log.discard(run_id)
+        self._history.drop_requests(run_id)
+
     def _defer_tile_layout(self, run_id: str | None = None):
         """Lay out the tiles added from now on once the agent's request *run_id* ends, all at once.
 

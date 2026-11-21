@@ -1087,7 +1087,11 @@ class ExploreFeed(Viewer):
         answer = self._answer_of(artifact)
         if answer is not None:
             name = self._added_as(answer)
-            return f"On dashboard as {name}" if name is not None else None
+            if name is None:
+                return None
+            exploration = self._exploration()
+            already = exploration is not None and answer in exploration.already
+            return f"{'Already on' if already else 'On'} dashboard as {name}"
         instance_id = self._node_of(artifact)
         item = self._items().get(instance_id) if instance_id is not None else None
         return "On dashboard" if item is not None and self._placed_item(item) else None

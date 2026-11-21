@@ -8,16 +8,18 @@ exploration see the dashboard's nodes, but no component behind it. Each of a
 mirror's outputs follows the dashboard node's output one way, so an answer
 built on a mirror follows the dashboard's data, widgets and filters. When the
 dashboard node is removed or replaced, its mirror keeps its last values and
-stops following.
+stops following, and follows again if the node comes back, e.g. on Undo.
 
 The Explore view's agent works through :class:`ExplorationOps`, which reads
 the dashboard through the mirrors, adds and wires nodes of its own, and
-cannot change mirrors, add data sources, or lay out, save or share anything.
-:meth:`ExplorationOps.add_to_dashboard` copies an answer onto the dashboard.
+cannot change mirrors, add data sources the host does not offer as they are,
+or lay out, save or share anything. :meth:`ExplorationOps.add_to_dashboard`
+copies an answer onto the dashboard.
 """
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import hashlib
 import logging
@@ -31,6 +33,7 @@ import param
 
 from panel_flowdash.config_check import CheckResult
 from panel_flowdash.turns import agent_edits
+from panel_flowdash.ui import tile_layout
 
 from .ops import DashboardOps, OperationError
 from .yaml_format import node_names
@@ -62,9 +65,14 @@ def config_hash(component: str, config: t.Any) -> str:
 
 @dataclass
 class Mirror:
-    """A dashboard node as the exploration sees it."""
+    """A dashboard node as the exploration sees it.
+
+    *node* is the mirror's id in the exploration, usually the dashboard
+    node's own; *source* is the dashboard node's id.
+    """
 
     node: str
+    source: str
     component: str
     config_hash: str
     status: str = LIVE
@@ -115,6 +123,8 @@ class Exploration:
         self.mirrors: dict[str, Mirror] = {}
         #: The dashboard node each added answer became, by (run, node).
         self.added: dict[tuple[str, str], str] = {}
+        #: The answers the dashboard had already when they were added, by (run, node).
+        self.already: set[tuple[str, str]] = set()
         #: The config hashes of the mirrors as each run ended, by run.
         self.seen: dict[str, dict[str, str]] = {}
         editor = dashboard._scratch_editor(_editor_class(type(source)))
@@ -125,7 +135,10 @@ class Exploration:
         for item in model.items:
             item.origin = None
             self.mirrors[item.instance_id] = Mirror(
-                item.instance_id, item.component_id, config_hash(item.component_id, item.config)
+                item.instance_id,
+                item.instance_id,
+                item.component_id,
+                config_hash(item.component_id, item.config),
             )
         editor.load_model(model)
         for instance_id, item in self._items().items():
@@ -143,7 +156,7 @@ class Exploration:
         """Make the mirror's outputs follow the dashboard node's, one way."""
         mirror = self.mirrors[instance_id]
         mirror.unbind()
-        source = self.dashboard.editor.graph.get_state(instance_id)
+        source = self.dashboard.editor.graph.get_state(mirror.source)
         target = target or self.editor.graph.get_state(instance_id)
         spec = self.editor._component_specs.get(mirror.component)
         if source is None or target is None or spec is None:
@@ -184,8 +197,19 @@ class Exploration:
     def is_mirror(self, instance_id: str) -> bool:
         return instance_id in self.mirrors
 
+    def _same_component(self, item: dict, mirror: Mirror) -> bool:
+        resolve = self.dashboard.editor._resolve_component_id
+        return resolve(item["component_id"]) == resolve(mirror.component)
+
     def sync(self):
-        """Bring the mirrors up to date with the dashboard: new nodes, edges, configs, removals."""
+        """Bring the mirrors up to date with the dashboard: new nodes, edges, configs, removals.
+
+        A mirror whose dashboard node was removed or replaced stops following
+        it and keeps its last values; it follows again once the node is back
+        with its component, e.g. after an Undo. A dashboard node whose id an
+        exploration node or a frozen mirror holds is mirrored under another
+        name, ``dashboard_<id>``.
+        """
         source = self.dashboard.editor
         current = source.dashboard
         if current is None or current.dashboard_id != self.dashboard_id:
@@ -193,54 +217,77 @@ class Exploration:
         editor = self.editor
         theirs = self._items(source)
         ours = self._items()
-        for instance_id, mirror in self.mirrors.items():
+        mirrors = list(self.mirrors.values())
+        for mirror in mirrors:
             if mirror.status != LIVE:
                 continue
-            item = theirs.get(instance_id)
+            item = theirs.get(mirror.source)
             if item is None or "placeholder" in item:
                 mirror.status = REMOVED
                 mirror.unbind()
-                continue
-            component = source._resolve_component_id(item["component_id"])
-            if component != editor._resolve_component_id(mirror.component):
+            elif not self._same_component(item, mirror):
                 mirror.status = REPLACED
                 mirror.unbind()
+        followed = {m.source for m in mirrors if m.status == LIVE}
+        for mirror in mirrors:
+            item = theirs.get(mirror.source)
+            if mirror.status == LIVE or mirror.source in followed or item is None:
                 continue
+            if "placeholder" not in item and self._same_component(item, mirror):
+                mirror.status = LIVE
+                followed.add(mirror.source)
+        for mirror in self.mirrors.values():
+            if mirror.status != LIVE:
+                continue
+            item = theirs[mirror.source]
             digest = config_hash(item["component_id"], item.get("config") or {})
             if digest != mirror.config_hash:
-                ours[instance_id]["config"] = copy.deepcopy(item.get("config") or {})
+                ours[mirror.node]["config"] = copy.deepcopy(item.get("config") or {})
                 mirror.config_hash = digest
-            if source.graph.get_state(instance_id) is not mirror.state:
-                self._bind(instance_id)
+            if source.graph.get_state(mirror.source) is not mirror.state:
+                self._bind(mirror.node)
+        taken = set(ours) | set(self.mirrors)
         for instance_id, item in theirs.items():
-            if instance_id in self.mirrors or instance_id in ours or "placeholder" in item:
+            if instance_id in followed or "placeholder" in item:
                 continue
             component = item["component_id"]
             if component not in editor._component_specs:
                 continue
-            self.mirrors[instance_id] = Mirror(
-                instance_id, component, config_hash(component, item.get("config") or {})
+            node = instance_id
+            if node in taken:
+                node = _free_name(f"dashboard_{instance_id}", taken)
+            taken.add(node)
+            self.mirrors[node] = Mirror(
+                node, instance_id, component, config_hash(component, item.get("config") or {})
             )
             try:
-                editor._place(component, instance_id, copy.deepcopy(item.get("config") or {}))
+                editor._place(component, node, copy.deepcopy(item.get("config") or {}))
             except Exception:
                 logger.exception("Could not mirror the dashboard node %s", instance_id)
-                self.mirrors.pop(instance_id)
-                continue
-        live = {iid for iid, m in self.mirrors.items() if m.status == LIVE}
-        wanted = {
-            _edge_key(e) for e in source.graph.edges if e["source"] in live and e["target"] in live
-        }
+                self.mirrors.pop(node)
+        nodes = {m.source: m.node for m in self.mirrors.values() if m.status == LIVE}
+        live = set(nodes.values())
+        wanted = {}
+        for edge in source.graph.edges:
+            if edge["source"] in nodes and edge["target"] in nodes:
+                mapped = {**edge, "source": nodes[edge["source"]], "target": nodes[edge["target"]]}
+                wanted[_edge_key(mapped)] = mapped
         have = {_edge_key(e) for e in editor.graph.edges if e["target"] in live}
-        for key in have - wanted:
+        for key in have - set(wanted):
             editor.disconnect(*key[:4])
-        for key in sorted(wanted - have):
-            edge = next(e for e in source.graph.edges if _edge_key(e) == key)
-            editor.connect(*key[:4], edge.get("transform") or None)
-        for instance_id in live:
-            literals = source.graph.literals(instance_id)
-            if literals != editor.graph.literals(instance_id):
-                editor._set_inputs(instance_id, literals)
+        for key in sorted(set(wanted) - have):
+            editor.connect(*key[:4], wanted[key].get("transform") or None)
+        for dashboard_id, node in nodes.items():
+            literals = source.graph.literals(dashboard_id)
+            if literals != editor.graph.literals(node):
+                editor._set_inputs(node, literals)
+
+    def mirror_of(self, dashboard_id: str) -> Mirror | None:
+        """Return the live mirror of the dashboard node *dashboard_id*, if there is one."""
+        return next(
+            (m for m in self.mirrors.values() if m.source == dashboard_id and m.status == LIVE),
+            None,
+        )
 
     def dispose(self):
         for mirror in self.mirrors.values():
@@ -287,9 +334,31 @@ class Exploration:
                     queue.append(edge["source"])
         return found
 
-    def note_run(self, run: str):
-        """Remember the dashboard nodes as run *run* saw them, to tell later when one changed."""
+    def runs(self) -> list[str]:
+        """Return the runs that made nodes here, oldest first."""
+        return list(dict.fromkeys(turn.run for turn in self.editor.turns if turn.run))
+
+    def note_run(self, run: str, keep: int | None = None):
+        """Remember the dashboard nodes as run *run* saw them, to tell later when one changed.
+
+        With *keep*, only the answers of the latest *keep* runs stay; the
+        nodes of older runs are removed, unless a kept answer is built on them.
+        """
         self.seen[run] = {iid: m.config_hash for iid, m in self.mirrors.items()}
+        runs = self.runs()
+        if keep is None or len(runs) <= keep:
+            return
+        dropped = set(runs[:-keep])
+        needed = set()
+        for kept in runs[-keep:]:
+            for node in self.made_by(kept):
+                needed.update(self.upstream(node))
+        for run_id in dropped:
+            for node in self.made_by(run_id):
+                if node not in needed:
+                    self.editor.remove_component(node)
+            self.seen.pop(run_id, None)
+        self.added = {k: v for k, v in self.added.items() if k[0] not in dropped}
 
     def changed_since(self, run: str, instance_id: str) -> list[tuple[str, str]]:
         """Return the dashboard nodes an answer is built on that changed since its run, with how."""
@@ -337,19 +406,45 @@ class ExplorationOps(DashboardOps):
         Whether the nodes of earlier runs stay as they are, so a follow-up
         adds nodes of its own and each answer keeps showing what it showed.
         False lets a follow-up change them. Defaults to :attr:`FREEZE_ANSWERS`.
+    allow_source
+        Called with a data source's component id and config to tell whether
+        Explore may add it. By default a source the host offers may be added
+        as it is, without config of its own, so new locations or uploads are
+        refused. A source the dashboard already has is never added again:
+        the agent is told to build on the dashboard's node instead.
+
+    Only the open dashboard's exploration is kept: opening another drops it,
+    and only the answers of the latest :attr:`MAX_RUNS` requests stay live.
     """
 
     #: Whether earlier runs' nodes are frozen by default; see ``freeze_answers``.
     FREEZE_ANSWERS: t.ClassVar[bool] = True
 
+    #: How many requests' answers an exploration keeps live; older ones are removed.
+    MAX_RUNS: t.ClassVar[int] = 20
+
     #: Edits here are not versions of the dashboard; the tools return their message only.
     versioned = False
 
-    def __init__(self, dashboard: DashboardOps, *, freeze_answers: bool | None = None):
+    def __init__(
+        self,
+        dashboard: DashboardOps,
+        *,
+        freeze_answers: bool | None = None,
+        allow_source: t.Callable[[str, dict[str, t.Any]], bool] | None = None,
+    ):
         self.dashboard = dashboard
         self.freeze_answers = self.FREEZE_ANSWERS if freeze_answers is None else freeze_answers
+        self.allow_source = allow_source or (lambda _component, config: not config)
         self.last_check = CheckResult()
         self._explorations: dict[str | None, Exploration] = {}
+        self._adding: dict[tuple[str, str], asyncio.Future] = {}
+        dashboard.editor.param.watch(self._on_dashboard, "dashboard")
+
+    def _on_dashboard(self, event):
+        current = event.new.dashboard_id if event.new is not None else None
+        for dashboard_id in [d for d in self._explorations if d != current]:
+            self._explorations.pop(dashboard_id).dispose()
 
     @property
     def editor(self) -> FlowDash:
@@ -425,10 +520,30 @@ class ExplorationOps(DashboardOps):
 
     def _new_node(self, component: str, config: dict[str, t.Any] | None):
         spec, resolved = super()._new_node(component, config)
-        if self.editor._node_role(spec.component_id) == "source":
+        if self.editor._node_role(spec.component_id) != "source":
+            return spec, resolved
+        from .tools import _dumps
+
+        exploration = self.exploration()
+        items = exploration._items()
+        wanted = _dumps(resolved)
+        for mirror in exploration.mirrors.values():
+            item = items.get(mirror.node)
+            if (
+                mirror.status == LIVE
+                and item is not None
+                and self.editor._resolve_component_id(item["component_id"]) == spec.component_id
+                and _dumps(item.get("config") or {}) == wanted
+            ):
+                raise OperationError(
+                    f"The dashboard's node '{mirror.node}' is this source already; connect "
+                    "from its outputs instead of adding it again."
+                )
+        if not self.allow_source(spec.component_id, resolved):
             raise PermissionError(
-                f"'{spec.title}' is a data source, which Explore cannot add. Build on the "
-                "dashboard's data, or ask the user to add the source with the assistant."
+                f"'{spec.title}' with this config is a data source the dashboard does not "
+                "offer, which Explore cannot add. Use the dashboard's data or a source as the "
+                "host offers it, or ask the user to add it with the assistant."
             )
         return spec, resolved
 
@@ -511,6 +626,10 @@ class ExplorationOps(DashboardOps):
         tile is shown; the nodes it is built from are laid out as the
         dashboard lays out what feeds its tiles.
 
+        When the dashboard shows the answer already, nothing changes. When a
+        write fails, the nodes written so far are removed again. Asking for
+        the same answer while it is being added waits for that addition.
+
         Raises
         ------
         OperationError
@@ -518,6 +637,26 @@ class ExplorationOps(DashboardOps):
         PermissionError
             If the user may not edit the dashboard, or the dashboard is busy.
         """
+        key = (run, node)
+        pending = self._adding.get(key)
+        if pending is not None:
+            return await asyncio.shield(pending)
+        future = asyncio.get_running_loop().create_future()
+        self._adding[key] = future
+        try:
+            name = await self._add(run, node, question, edit_lock, on_wait)
+        except BaseException as exc:
+            future.set_exception(exc)
+            # Retrieved, so a failure nobody else waited for is not reported as unhandled.
+            future.exception()
+            raise
+        else:
+            future.set_result(name)
+            return name
+        finally:
+            self._adding.pop(key, None)
+
+    async def _add(self, run, node, question, edit_lock, on_wait) -> str:
         target = self.dashboard
         current = target.editor.dashboard
         if current is None:
@@ -529,6 +668,7 @@ class ExplorationOps(DashboardOps):
             raise OperationError(f"'{node}' is already a node of the dashboard.")
         if target.editor.read_only:
             raise PermissionError("You may only view this dashboard, so nothing can be added.")
+        key = (run, node)
         token = f"add-{uuid.uuid4().hex[:12]}"
         if edit_lock is not None:
             refusal = await edit_lock.acquire(current.dashboard_id, token, ADD_LABEL, on_wait)
@@ -539,31 +679,47 @@ class ExplorationOps(DashboardOps):
             editor = target.editor
             if editor.dashboard is None or editor.dashboard.dashboard_id != current.dashboard_id:
                 raise OperationError("Another dashboard was opened; nothing was added.")
+            names = target._names()
+            added = exploration.added.get(key)
+            if added is not None and added in names.values() and _placed(editor, added):
+                return added
+            plan = self._plan(exploration, node)
+            leaf = plan.on_dashboard.get(node)
+            if not plan.create and leaf is not None and _placed(editor, leaf):
+                # The dashboard shows this answer already: nothing to add, and nothing to undo.
+                exploration.added[key] = names[leaf]
+                exploration.already.add(key)
+                return names[leaf]
             editor.end_turn()
             editor._defer_tile_layout(run)
             try:
                 with agent_edits(run, question):
-                    name = await self._copy(exploration, node)
-                    target.place_tile(name, visible=True)
+                    name = await self._write(exploration, plan, node)
+            except BaseException:
+                # Its nodes were taken back, so the turn and the version would record nothing.
+                editor._discard_agent_turn(run)
+                raise
             finally:
                 editor.end_agent_turns(run)
         finally:
             if edit_lock is not None:
                 edit_lock.release(token)
-        exploration.added[(run, node)] = name
+        exploration.added[key] = name
+        exploration.already.discard(key)
         return name
 
-    async def _copy(self, exploration: Exploration, node: str) -> str:
+    def _plan(self, exploration: Exploration, node: str) -> _Plan:
+        """Work out which nodes of an answer the dashboard has, and which to add under which names."""
         target = self.dashboard
         source = exploration.editor
-        ours = exploration._items()
         names = node_names(source._tile_items)
         closure = [node, *exploration.upstream(node)]
-        copied = [
-            iid
+        live = {
+            iid: exploration.mirrors[iid].source
             for iid in closure
-            if not exploration.is_mirror(iid) or exploration.mirrors[iid].status != LIVE
-        ]
+            if exploration.is_mirror(iid) and exploration.mirrors[iid].status == LIVE
+        }
+        copied = [iid for iid in closure if iid not in live]
         incoming: dict[str, list[dict]] = {iid: [] for iid in copied}
         for edge in source.graph.edges:
             if edge["target"] in incoming:
@@ -579,36 +735,57 @@ class ExplorationOps(DashboardOps):
             )
             pending.remove(ready)
             order.append(ready)
-        # Each node of the exploration as the dashboard names it.
-        on_dashboard = {
-            iid: iid
-            for iid in closure
-            if exploration.is_mirror(iid) and exploration.mirrors[iid].status == LIVE
+        on_dashboard = dict(live)
+        taken = set(target._names().values()) | {
+            i["instance_id"] for i in target.editor._tile_items
         }
-        theirs = {i["instance_id"]: i for i in target.editor._tile_items}
-        taken = set(target._names().values()) | set(theirs)
+        create: list[tuple[str, str]] = []
+        ours = exploration._items()
         for iid in order:
-            item = ours[iid]
             literals = source._dataflow_graph.literals(iid)
-            found = self._same_node(target, item, incoming[iid], literals, on_dashboard)
+            found = self._same_node(target, ours[iid], incoming[iid], literals, on_dashboard)
             if found is not None:
                 on_dashboard[iid] = found
                 continue
             name = _free_name(names.get(iid, iid), taken)
             taken.add(name)
-            added = await target.add_node_async(
-                item["component_id"], copy.deepcopy(item.get("config") or {}), name=name
-            )
-            on_dashboard[iid] = target._instance(added)
-            for edge in incoming[iid]:
-                await target.connect_async(
-                    f"{target._names()[on_dashboard[edge['source']]]}.{edge['source_port']}",
-                    f"{added}.{edge['target_port']}",
-                    edge.get("transform") or None,
+            on_dashboard[iid] = name
+            create.append((iid, name))
+        return _Plan(create, incoming, on_dashboard)
+
+    async def _write(self, exploration: Exploration, plan: _Plan, node: str) -> str:
+        """Add the nodes *plan* creates and show the answer's tile, or remove them all on failure."""
+        target = self.dashboard
+        source = exploration.editor
+        ours = exploration._items()
+        written: list[str] = []
+        try:
+            for iid, name in plan.create:
+                item = ours[iid]
+                added = await target.add_node_async(
+                    item["component_id"], copy.deepcopy(item.get("config") or {}), name=name
                 )
-            if literals:
-                await target.set_inputs_async(added, copy.deepcopy(literals))
-        return target._names()[on_dashboard[node]]
+                written.append(added)
+                for edge in plan.incoming[iid]:
+                    upstream = target._names()[plan.on_dashboard[edge["source"]]]
+                    await target.connect_async(
+                        f"{upstream}.{edge['source_port']}",
+                        f"{added}.{edge['target_port']}",
+                        edge.get("transform") or None,
+                    )
+                literals = source._dataflow_graph.literals(iid)
+                if literals:
+                    await target.set_inputs_async(added, copy.deepcopy(literals))
+            name = target._names()[plan.on_dashboard[node]]
+            target.place_tile(name, visible=True)
+        except BaseException:
+            for added in reversed(written):
+                try:
+                    target.remove_node(added)
+                except Exception:
+                    logger.exception("Could not take back %s after a failed Add", added)
+            raise
+        return name
 
     @staticmethod
     def _same_node(
@@ -655,6 +832,26 @@ class ExplorationOps(DashboardOps):
             if inputs == wanted:
                 return other["instance_id"]
         return None
+
+
+@dataclass
+class _Plan:
+    """What adding an answer writes: the nodes to create with their names and inputs."""
+
+    create: list[tuple[str, str]]
+    incoming: dict[str, list[dict]]
+    #: Each node of the closure as the dashboard names it, or will once created.
+    on_dashboard: dict[str, str]
+
+
+def _placed(editor: FlowDash, instance_id: str) -> bool:
+    """Whether the dashboard shows the node: as a visible tile, above the grid or in its sidebar."""
+    item = next((i for i in editor._tile_items if i["instance_id"] == instance_id), None)
+    if item is None:
+        return False
+    if tile_layout.area_of(editor, item) in (tile_layout.TOP, tile_layout.SIDEBAR):
+        return True
+    return any(i["instance_id"] == instance_id for i in tile_layout.grid_tiles(editor))
 
 
 def _free_name(name: str, taken: t.Collection[str]) -> str:

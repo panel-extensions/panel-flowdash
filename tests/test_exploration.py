@@ -171,13 +171,12 @@ def test_disposing_lets_go_of_the_dashboard(explore):
         lambda ex: ex.set_config("base", {}),
         lambda ex: ex.connect("base.value", "inv.value"),
         lambda ex: ex.remove_node("inv"),
-        lambda ex: ex.add_node("T/number"),
         lambda ex: ex.place_tile("inv"),
         lambda ex: ex.set_settings({}),
         lambda ex: ex.save(),
         lambda ex: ex.replace_yaml("nodes: {}"),
     ],
-    ids=["config", "connect", "remove", "source", "layout", "settings", "save", "replace"],
+    ids=["config", "connect", "remove", "layout", "settings", "save", "replace"],
 )
 def test_explore_cannot_change_the_dashboard(explore, call):
     ops, ex = explore
@@ -445,3 +444,258 @@ async def test_show_leaves_explore_and_marks_the_tile(store, monkeypatch):
     # Adding switched to edit mode; the tiles are shown rather than the canvas.
     assert not editor.explore and editor.editable and editor.mode == "dashboard"
     assert shown == [{"twice": "add"}]
+
+
+def test_a_mirror_follows_its_node_again_once_it_is_back(explore):
+    ops, ex = explore
+    ex.add_node("Demo/inverse", name="back")
+    ex.connect("inv.inverse", "back.value")
+    model = ops.editor.to_model()
+    ops.remove_node("inv")
+    ex.sync()
+    exploration = ex.exploration()
+    assert exploration.mirrors["inv"].status == REMOVED
+    # Undone, e.g. by the history, which loads the dashboard as it was.
+    ops.editor.load_model(model)
+    ex.sync()
+    assert exploration.mirrors["inv"].status == "live"
+    assert {(e["source"], e["target"]) for e in ex.editor.graph.edges} == {
+        ("base", "inv"),
+        ("inv", "back"),
+    }
+    ops.editor.graph.get_state("base").value = 4
+    assert ex.editor.graph.get_state("back").inverse == 4
+
+
+def test_a_replaced_node_is_mirrored_apart_from_the_frozen_copy(explore):
+    ops, ex = explore
+    ex.add_node("Demo/inverse", name="back")
+    ex.connect("inv.inverse", "back.value")
+    ops.remove_node("inv")
+    ops.add_node("T/doubler", name="inv")
+    ops.connect("base.value", "inv.value")
+    ex.sync()
+    mirrors = ex.exploration().mirrors
+    assert mirrors["inv"].status == "replaced"
+    assert (mirrors["dashboard_inv"].source, mirrors["dashboard_inv"].status) == ("inv", "live")
+    assert "dashboard_inv" in [n["name"] for n in ex.nodes()]
+    assert ex.node_output("dashboard_inv.doubled") == 42
+    # The replacement undone: the original follows again and the other mirror stops.
+    ops.remove_node("inv")
+    ops.add_node("Demo/inverse", name="inv")
+    ops.connect("base.value", "inv.value")
+    ex.sync()
+    assert mirrors["inv"].status == "live" and mirrors["dashboard_inv"].status == "replaced"
+
+
+def test_a_dashboard_node_named_like_an_answer_is_mirrored_under_another_name(explore):
+    ops, ex = explore
+    ex.add_node("T/doubler", name="twice")
+    ex.connect("base.value", "twice.value")
+    ops.add_node("T/doubler", name="twice")
+    ops.connect("base.value", "twice.value")
+    ex.sync()
+    assert "dashboard_twice" in [n["name"] for n in ex.nodes()]
+    assert ex.exploration().mirrors["dashboard_twice"].source == "twice"
+    assert not ex.exploration().is_mirror("twice")
+
+
+async def test_an_answer_the_dashboard_shows_already_adds_nothing(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, explore_agent=_exploring("twice"))
+    session = app._agent_session
+    editor = app._editor
+    session.ops.add_node("T/doubler", name="dbl")
+    session.ops.connect("base.value", "dbl.value")
+    session.ops.place_tile("dbl", visible=True)
+    editor.end_turn()
+    turns = list(editor.turns)
+    await session.explore_runner.run("Double it")
+    run = session.explore_runner.run_id
+    (artifact,) = session.runner.state.artifacts
+    versions = len(artifact.versions)
+    feed = editor.explore_feed
+    feed.shown = True
+    card = next(a for a in feed.state.artifacts if a.artifact_id == f"explore:{run}:twice")
+    await feed.actions.invoke("add_to_dashboard", feed._placement(card))
+    assert _nodes(editor) == ["base", "dbl"] and editor.turns == turns
+    assert len(artifact.versions) == versions
+    assert feed._placed(card) == "Already on dashboard as dbl"
+    assert feed._showable(card) == {"name": "dbl"}
+
+
+async def test_an_answer_the_dashboard_has_but_hides_is_shown_as_one_turn(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, explore_agent=_exploring("twice"))
+    session = app._agent_session
+    editor = app._editor
+    session.ops.add_node("T/doubler", name="dbl")
+    session.ops.connect("base.value", "dbl.value")
+    session.ops.place_tile("dbl", visible=False)
+    editor.end_turn()
+    await session.explore_runner.run("Double it")
+    run = session.explore_runner.run_id
+    assert await session.add_answer(run, "twice") == "dbl"
+    assert _nodes(editor) == ["base", "dbl"]
+    assert "dbl" in [i["instance_id"] for i in tile_layout.grid_tiles(editor)]
+    assert editor.turns[-1].run == run
+
+
+async def test_adding_twice_at_once_adds_once(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, explore_agent=_exploring("twice"))
+    session = app._agent_session
+    await session.explore_runner.run("Double it")
+    run = session.explore_runner.run_id
+    first, second = await asyncio.gather(
+        session.add_answer(run, "twice"), session.add_answer(run, "twice")
+    )
+    assert first == second == "twice"
+    assert _nodes(app._editor) == ["base", "twice"]
+    assert len(app._editor.turns) == 1
+    # Adding it again later changes nothing either.
+    assert await session.add_answer(run, "twice") == "twice"
+    assert len(app._editor.turns) == 1
+
+
+async def test_a_failed_add_takes_back_what_it_wrote(store, monkeypatch):
+    app, _ = _open(
+        store,
+        monkeypatch,
+        explore_agent=_agent(
+            ("add_node", {"component": "T/doubler", "name": "twice"}),
+            ("connect", {"source": "base.value", "target": "twice.value"}),
+            ("add_node", {"component": "T/doubler", "name": "quad"}),
+            ("connect", {"source": "twice.doubled", "target": "quad.value"}),
+        ),
+    )
+    session = app._agent_session
+    editor = app._editor
+    await session.explore_runner.run("Quadruple it")
+    run = session.explore_runner.run_id
+    connect = session.ops.connect_async
+
+    async def failing(source, target, transform=None):
+        if target.startswith("quad"):
+            raise RuntimeError("The connection failed")
+        return await connect(source, target, transform)
+
+    monkeypatch.setattr(session.ops, "connect_async", failing)
+    with pytest.raises(RuntimeError, match="connection failed"):
+        await session.add_answer(run, "quad")
+    assert _nodes(editor) == ["base"]
+    assert {(e["source"], e["target"]) for e in editor.graph.edges} == set()
+    versions = [
+        v for a in session.runner.state.artifacts for v in a.versions if v.actor == "agent"
+    ]
+    assert versions == [] and editor.turns == []
+    assert session.edit_lock._holders == {}
+    monkeypatch.setattr(session.ops, "connect_async", connect)
+    assert await session.add_answer(run, "quad") == "quad"
+    assert _nodes(editor) == ["base", "twice", "quad"]
+
+
+async def test_only_the_latest_answers_stay_live(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, explore_agent=_exploring("twice"))
+    session = app._agent_session
+    session.explorations.MAX_RUNS = 1
+    runner = session.explore_runner
+    await runner.run("Double it")
+    first = runner.run_id
+    runner.agent = _exploring("again")
+    runner.messages = []
+    await runner.run("Double it again")
+    exploration = session.explorations.exploration()
+    assert exploration.made_by(first) == [] and exploration.leaves(runner.run_id) == ["again"]
+
+
+async def test_opening_another_dashboard_drops_the_exploration(store, monkeypatch):
+    app, model = _open(store, monkeypatch, explore_agent=_exploring("twice"))
+    session = app._agent_session
+    await session.explore_runner.run("Double it")
+    exploration = session.explorations.exploration()
+    state = app._editor.graph.get_state("base")
+    other = store.create_dashboard("alice", "Other")
+    app._load_dashboard_sync(other.dashboard_id)
+    assert model.dashboard_id not in session.explorations.explorations()
+    assert exploration.editor._tile_items == []
+    assert not state.param.watchers.get("value", {}).get("value")
+
+
+def _with_sources(store, monkeypatch, *calls):
+    from .test_agent_tools import WITH_FETCH
+
+    return _open(store, monkeypatch, explore_agent=_agent(*calls), components=WITH_FETCH)
+
+
+async def test_explore_adds_a_source_the_host_offers_as_it_is(store, monkeypatch):
+    app, _ = _with_sources(
+        store,
+        monkeypatch,
+        ("add_node", {"component": "P/srca", "name": "srca"}),
+        ("add_node", {"component": "T/query", "name": "rows"}),
+        ("connect", {"source": "srca.text", "target": "rows.table"}),
+    )
+    session = app._agent_session
+    editor = app._editor
+    runner = session.explore_runner
+    await runner.run("Query source A")
+    run = runner.run_id
+    exploration = session.explorations.exploration()
+    assert exploration.leaves(run) == ["rows"]
+    assert _nodes(editor) == ["base"]
+    assert await session.add_answer(run, "rows") == "rows"
+    assert _nodes(editor) == ["base", "srca", "rows"]
+    # Now on the dashboard, the source is not added again: the agent is told to build on it.
+    # Its mirror takes another name, since the exploration's own node keeps "srca".
+    runner.agent = _agent(("add_node", {"component": "P/srca"}))
+    runner.messages = []
+    await runner.run("Again")
+    assert "The dashboard's node 'dashboard_srca' is this source already" in str(
+        runner.state.tool_calls["call-1"].result
+    )
+
+
+async def test_explore_cannot_add_a_source_with_config_of_its_own(store, monkeypatch):
+    app, _ = _with_sources(
+        store, monkeypatch, ("add_node", {"component": "P/srca", "config": {"value": "x"}})
+    )
+    runner = app._agent_session.explore_runner
+    await runner.run("Load something else")
+    assert str(runner.state.tool_calls["call-1"].result).startswith(
+        "Refused: 'Source A' with this"
+    )
+    assert app._agent_session.explorations.exploration().made_by(runner.run_id) == []
+
+
+async def test_a_source_the_dashboard_has_is_not_loaded_again(store, monkeypatch):
+    app, _ = _with_sources(store, monkeypatch, ("add_node", {"component": "T/number"}))
+    runner = app._agent_session.explore_runner
+    await runner.run("Load the number")
+    assert "The dashboard's node 'base' is this source already" in str(
+        runner.state.tool_calls["call-1"].result
+    )
+
+
+async def test_an_answer_follows_a_dashboard_node_brought_back_by_undo(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, explore_agent=_exploring("twice", source="mid.doubled"))
+    session = app._agent_session
+    editor = app._editor
+    session.ops.add_node("T/doubler", name="mid")
+    session.ops.connect("base.value", "mid.value")
+    editor.end_turn()
+    await session.explore_runner.run("Double it again")
+    run = session.explore_runner.run_id
+    session.ops.remove_node("mid")
+    editor.end_turn()
+    feed = editor.explore_feed
+    feed.shown = True
+    exploration = session.explorations.exploration()
+    assert exploration.mirrors["mid"].status == REMOVED
+    assert editor.undo()
+    feed.sync()
+    assert exploration.mirrors["mid"].status == "live"
+    assert exploration.changed_since(run, "twice") == []
+    editor.graph.get_state("base").value = 5
+    assert exploration.editor.graph.get_state("twice").doubled == 20
+    # Added now, it reads the dashboard's node rather than a frozen copy.
+    await session.add_answer(run, "twice")
+    assert _nodes(editor) == ["base", "mid", "twice"]
+    assert ("mid", "twice") in {(e["source"], e["target"]) for e in editor.graph.edges}

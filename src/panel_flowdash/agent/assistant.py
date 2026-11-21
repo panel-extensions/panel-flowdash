@@ -127,7 +127,8 @@ How to work:
 - Run preview_dashboard to read the results, fix nodes that failed, and
   answer from what the nodes output.
 - Your nodes are built beside the dashboard. Its own nodes are there to read
-  and connect from, never to change, and you cannot add data sources.
+  and connect from, never to change. Use its data sources; a source it does
+  not have may be added as offered, without config of its own.
 - Earlier answers stay as they are. To follow up on one, add nodes that read
   its outputs.
 """
