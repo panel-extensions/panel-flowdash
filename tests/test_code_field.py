@@ -3,6 +3,7 @@
 import time
 
 import panel as pn
+import panel_material_ui as pmui
 import param
 import pytest
 from panel.viewable import Viewer
@@ -103,6 +104,8 @@ async def editor():
 
 
 def _field(editor, node_id, name):
+    """Return the code field the inspector shows where the code panel cannot, in a narrow window."""
+    editor._split_view.storage.window_width = 800
     select_on_canvas(editor._flow, node_id=node_id)
     fields = [
         w
@@ -132,6 +135,16 @@ class TestLanguage:
 
 
 class TestInspector:
+    async def test_a_wide_window_edits_the_code_in_the_panel(self, editor):
+        node = editor.add_component("D/query")
+        select_on_canvas(editor._flow, node_id=node)
+        body = pn.Column(*editor._inspector._body)
+        assert not list(body.select(CodeField))
+        buttons = [b for b in body.select(pmui.Button) if "fd-edit-spec" in b.css_classes]
+        assert [b.label for b in buttons] == ["Edit SQL", "Edit Notes"]
+        buttons[1].clicks += 1
+        assert (editor.code_panel.instance_id, editor.code_panel.field) == (node, "notes")
+
     async def test_editing_the_code_applies_the_config(self, editor):
         node = editor.add_component("D/query")
         field = _field(editor, node, "SQL")

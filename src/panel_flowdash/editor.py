@@ -46,6 +46,7 @@ from panel_flowdash.component_spec import (
     config_json_schema,
     config_value,
 )
+from panel_flowdash.config_choices import spec_fields
 from panel_flowdash.dashboard_store import (
     BaseDashboardStore,
     DashboardConflictError,
@@ -3426,6 +3427,7 @@ class FlowDash(Viewer):
         self._split_view.storage.param.watch(self._on_window_resized, "window_width")
         self._code_panel: CodePanel | None = None
         self._code_dock_height = _CODE_PANEL_HEIGHT
+        self._code_panel_was_allowed = self._code_panel_allowed()
         self._code_dock = pn.Column(
             margin=0,
             sizing_mode="stretch_width",
@@ -4056,23 +4058,37 @@ class FlowDash(Viewer):
         showing_canvas = self.mode in ("wiring", "split") and not self.explore
         return self._code_panel_allowed() and showing_canvas
 
-    def open_code_panel(self, instance_id: str, field: str) -> bool:
-        """Edit the code field *field* of the node *instance_id* in the panel under the canvas.
+    def _primary_spec_field(self, instance_id: str) -> str | None:
+        """Return the first spec field of the node *instance_id*, e.g. a query or a chart spec."""
+        item = next((i for i in self._tile_items if i["instance_id"] == instance_id), None)
+        spec = self._component_specs.get(item["component_id"]) if item else None
+        fields = spec_fields(spec) if spec is not None else []
+        return fields[0] if fields else None
 
-        Returns False, leaving the panel as it was, where it cannot be shown:
-        to viewers, outside the Dataflow and Split tabs, in a narrow window, or
-        for a node or field that is not a code field. Callers then fall back to
-        the code field's own dialog.
+    def open_code_panel(
+        self, instance_id: str, field: str | None = None, *, focus: bool = True
+    ) -> bool:
+        """Edit the spec field *field* of the node *instance_id* in the panel under the canvas.
+
+        *field* defaults to the node's first spec field, a code field or a
+        spec dict; a node without one shows its result only. Returns False,
+        leaving the panel as it was, where it cannot be shown: to viewers,
+        outside the Dataflow and Split tabs, in a narrow window, or for a
+        node or field it cannot edit. Callers then fall back to the field's
+        own editor.
         """
+        if field is None:
+            field = self._primary_spec_field(instance_id)
         if not self._code_panel_fits() or not self.code_panel.can_edit(instance_id, field):
             return False
         docking = not self.code_panel_open
-        self.code_panel.open(instance_id, field)
+        self.code_panel.open(instance_id, field, focus=focus)
         if not self._code_dock.objects:
             # Added once it shows a field, so the browser builds the editor with its language
             # and text: a change arriving before the code/result split has rendered is lost.
             self._code_dock[:] = [self._code_handle, self._code_panel]
-            self._code_panel.tools.focus += 1
+            if focus:
+                self._code_panel._focus()
         if docking and self._flow._models and (doc := pn.state.curdoc) is not None:
             # Once the canvas has shrunk to make room, keep the node in view at the same zoom.
             zoom = (self._flow.viewport or {}).get("zoom") or 1
@@ -4088,6 +4104,33 @@ class FlowDash(Viewer):
         """Close the code panel, holding a draft it shows until the field is opened again."""
         if self.code_panel_open:
             self._code_panel.release()
+
+    def edit_spec(self, instance_id: str, field: str | None = None) -> bool:
+        """Open the spec of the node *instance_id* in the code panel, showing the canvas if needed.
+
+        Returns False where the panel cannot be shown, to viewers or in a
+        narrow window.
+        """
+        if not self._code_panel_allowed():
+            return False
+        if self.explore:
+            self.explore = False
+        if self.mode not in ("wiring", "split"):
+            self.mode = "split"
+        return self.open_code_panel(instance_id, field)
+
+    def _follow_selection(self, selection: dict | None):
+        """Show the node selected alone on the canvas in the open code panel."""
+        panel = self._code_panel
+        if panel is None or panel.instance_id is None:
+            return
+        nodes = (selection or {}).get("nodes") or []
+        if len(nodes) != 1 or (selection or {}).get("edges") or group_id_of(nodes[0]):
+            return
+        node = nodes[0]
+        if node == panel.instance_id or not panel.can_edit(node):
+            return
+        panel.open(node, self._primary_spec_field(node), focus=False)
 
     @pn.io.hold()
     def _sync_code_dock(self, *_events):
@@ -4137,6 +4180,12 @@ class FlowDash(Viewer):
     def _close_code_panel_if_hidden(self):
         if self.code_panel_open and not self._code_panel_allowed():
             self.close_code_panel()
+        allowed = self._code_panel_allowed()
+        if allowed != getattr(self, "_code_panel_was_allowed", allowed):
+            # The inspector edits specs itself where the panel cannot.
+            self._code_panel_was_allowed = allowed
+            if getattr(self, "_inspector", None) is not None and self._inspector.visible:
+                self._inspector.refresh(force=True)
 
     def _on_window_resized(self, _event):
         self._close_code_panel_if_hidden()
@@ -6239,7 +6288,8 @@ class FlowDash(Viewer):
         self._inspector.refresh_summary()
 
     def _on_selection_changed(self, event):
-        """Reload an edge's transform editor when the edge is newly selected, keeping drafts."""
+        """Follow the selection in the code panel, and reload a newly selected edge's transform editor."""
+        self._follow_selection(event.new)
         previous = set((event.old or {}).get("edges", []))
         for edge_id in (event.new or {}).get("edges", []):
             editor = self._transform_editors.get(edge_id)

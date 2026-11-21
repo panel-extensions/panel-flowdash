@@ -296,6 +296,26 @@ def code_fields(spec: ComponentSpec) -> list[str]:
     ]
 
 
+def spec_fields(spec: ComponentSpec) -> list[str]:
+    """Return the names of the config fields of *spec* edited in the code panel, in order.
+
+    These are its code fields and the dicts declaring a spec form, see
+    :func:`~panel_flowdash.spec_settings.declared_settings`: what the node
+    does, e.g. a query or a chart spec, rather than a setting of it.
+    """
+    from panel_flowdash.ui.code_field import code_language
+
+    cls = spec.config_state_class
+    if cls is None:
+        return []
+    return [
+        name
+        for name, parameter in cls.param.objects("existing").items()
+        if name != "name"
+        and (code_language(parameter) is not None or declared_settings(parameter) is not None)
+    ]
+
+
 def input_columns(spec: ComponentSpec, inputs: t.Mapping[str, t.Any]) -> Choices:
     """Return the columns of the tabular inputs of a node of *spec*, each once, as Choices."""
     names: list[str] = []

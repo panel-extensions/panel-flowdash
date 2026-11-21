@@ -65,7 +65,7 @@ def test_code_panel_cursor_line_is_a_neutral_tint(page, dark):
     editor, query = make_editor()
     _serve(page, editor, dark=dark)
     page.locator(f".react-flow__node[data-id='{query}']").click()
-    page.locator(".fd-code-expand").first.click(timeout=8000)
+    page.locator(".fd-edit-spec").first.click(timeout=8000)
     code = page.locator(".fd-code-panel-editor")
     expect(code.locator(".ace_content")).to_contain_text("p_year > 2014", timeout=8000)
     code.locator(".ace_content").click()

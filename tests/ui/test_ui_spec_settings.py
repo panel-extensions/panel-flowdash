@@ -101,8 +101,22 @@ def _open(page):
             break
         except TimeoutError:
             continue
-    expect(page.locator(".fd-spec-form")).to_be_visible(timeout=10000)
+    # The spec is edited in the code panel under the canvas, not in the inspector.
+    expect(page.locator(".fd-edit-spec")).to_be_visible(timeout=10000)
+    expect(page.locator(".flowdash-inspector .fd-spec-form")).to_have_count(0)
+    page.locator(".fd-edit-spec").click()
+    expect(page.locator(".fd-code-panel .fd-spec-form")).to_be_visible(timeout=10000)
     return editor, chart
+
+
+def _show_json(page):
+    page.locator(".fd-code-spec-view").get_by_role("button", name="JSON").click()
+    expect(page.locator(".fd-spec-editor .ace_content")).to_be_visible(timeout=8000)
+
+
+def _show_form(page):
+    page.locator(".fd-code-spec-view").get_by_role("button", name="Form").click()
+    expect(page.locator(".fd-code-panel .fd-spec-form")).to_be_visible(timeout=8000)
 
 
 # The SVG the chart on the tile draws, which holds its title; Panel draws Vega on a canvas.
@@ -131,11 +145,15 @@ def test_a_title_set_in_the_form_updates_the_spec_and_the_chart(page):
     title = page.get_by_role("textbox", name="Title", exact=True)
     title.fill("Capacity by year")
     title.press("Enter")
+    wait_until(lambda: editor.code_panel.dirty, page, timeout=8000)
+    assert "title" not in editor._component_instances[chart].spec, "a draft until run"
+    page.locator(".fd-code-run").click()
     wait_until(
         lambda: editor._component_instances[chart].spec.get("title") == "Capacity by year",
         page,
         timeout=8000,
     )
+    _show_json(page)
     expect(_spec_text(page)).to_contain_text('"title": "Capacity by year"', timeout=8000)
     changed = page.locator(".fd-spec-editor .ace_gutter-cell.fd-spec-changed-row")
     expect(changed).to_have_count(1, timeout=8000)
@@ -147,6 +165,7 @@ def test_a_title_set_in_the_form_updates_the_spec_and_the_chart(page):
 def test_editing_the_spec_text_updates_the_form(page):
     editor, chart = _open(page)
     expect(page.locator(".fd-spec-mark-type, .fd-spec-mark").first).to_be_visible()
+    _show_json(page)
     text = json.dumps({**SPEC, "mark": "point", "title": "Typed"}, indent=2)
     page.locator(".fd-spec-editor .ace_content").click()
     page.keyboard.press("ControlOrMeta+a")
@@ -155,6 +174,7 @@ def test_editing_the_spec_text_updates_the_form(page):
     wait_until(
         lambda: editor._component_instances[chart].spec.get("title") == "Typed", page, timeout=8000
     )
+    _show_form(page)
     expect(page.locator(".fd-spec-title input")).to_have_value("Typed", timeout=8000)
     selected = page.locator(".fd-spec-mark button[aria-pressed='true']")
     expect(selected).to_have_text("Point", timeout=8000)
@@ -166,11 +186,10 @@ def test_a_key_without_a_control_is_flagged_and_kept(page):
     banner = page.locator(".fd-spec-unknown")
     expect(banner).to_contain_text("encoding.x.axis", timeout=8000)
     expect(banner).to_contain_text("transform")
-    flagged = page.locator(".fd-spec-editor .ace_gutter-cell.fd-spec-only")
-    expect(flagged.first).to_be_visible(timeout=8000)
     x_title = page.locator(".fd-spec-encoding-x-title input")
     x_title.fill("Year")
     x_title.press("Enter")
+    page.locator(".fd-code-run").click()
     wait_until(
         lambda: editor._component_instances[chart].spec["encoding"]["x"].get("title") == "Year",
         page,
@@ -180,6 +199,9 @@ def test_a_key_without_a_control_is_flagged_and_kept(page):
     assert spec["transform"] == SPEC["transform"]
     assert spec["encoding"]["x"]["axis"] == {"labelAngle": -45}
     expect(banner).to_contain_text("transform")
+    _show_json(page)
+    flagged = page.locator(".fd-spec-editor .ace_gutter-cell.fd-spec-only")
+    expect(flagged.first).to_be_visible(timeout=8000)
 
 
 def test_controls_are_named_by_their_labels(page):
@@ -190,10 +212,12 @@ def test_controls_are_named_by_their_labels(page):
 
 def test_invalid_text_disables_the_form_until_it_parses(page):
     editor, chart = _open(page)
+    _show_json(page)
     page.locator(".fd-spec-editor .ace_content").click()
     page.keyboard.press("ControlOrMeta+a")
     page.keyboard.insert_text('{"mark": "line",')
     page.keyboard.press("ControlOrMeta+Enter")
     expect(page.locator(".fd-spec-status")).to_contain_text("Not applied", timeout=8000)
+    _show_form(page)
     expect(page.locator(".fd-spec-title input")).to_be_disabled()
     assert editor._component_instances[chart].spec == SPEC
