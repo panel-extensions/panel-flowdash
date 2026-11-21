@@ -3387,6 +3387,10 @@ class FlowDash(Viewer):
             scroll="y-auto",
             stylesheets=[f":host {{ min-width: {_CANVAS_MIN_WIDTH}px !important; }}"],
         )
+        # The modal dialogs overlay the page, so they hold no room in it. Panel
+        # adds a child's width to its layout's minimum even when that child is a
+        # closed dialog, which would keep the dashboard wider than a phone.
+        self._dialog_host = pn.Column(margin=0, width=0, height=0, sizing_mode="fixed")
         self._inspector = Inspector(editor=self)
         self._layout_panel = LayoutPanel(editor=self)
         self._status_bar = StatusBar(editor=self)
@@ -3950,11 +3954,14 @@ class FlowDash(Viewer):
             self._settings_dialog,
             self._transform_offer.dialog,
         ]
-        if self.inspect_outputs or self.provenance:
-            dialogs.insert(0, self._inspect_dialog)
         shared_dialog = page_dialog() if self.include_page_dialog else None
         if shared_dialog is not None:
             dialogs.append(shared_dialog)
+        if list(self._dialog_host) != dialogs:
+            self._dialog_host[:] = dialogs
+        dialogs = [self._dialog_host]
+        if self.inspect_outputs or self.provenance:
+            dialogs.insert(0, self._inspect_dialog)
         if split:
             self._split_view.show([self._flow], self._view_controls.layout(self._tile_grid))
             self._workspace_area[:] = [self._split_view, *dialogs]

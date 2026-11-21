@@ -81,6 +81,9 @@ _LABELS_MIN_WIDTH = 960
 # Below this bar width the key hints are hidden, so the view controls keep their room.
 _KEYS_MIN_WIDTH = 780
 
+# Below this bar width, on phones, the counts are hidden too.
+_COUNTS_MIN_WIDTH = 520
+
 _VIEW_TOGGLE_CSS = f"""
 @container fd-status-bar (max-width: {_LABELS_MIN_WIDTH - 2 * _BAR_PADDING}px) {{
   .MuiToggleButton-root {{ font-size: 0 !important; gap: 0 !important; }}
@@ -265,7 +268,14 @@ class StatusBar(Viewer):
         )
         self.issues_button.on_click(self._on_issues_clicked)
         self.counts = pmui.Typography(
-            variant="caption", margin=(0, 12), styles={"flex": "none"}, sx=_NOWRAP
+            variant="caption",
+            margin=(0, 12),
+            styles={"flex": "none"},
+            sx=_NOWRAP,
+            stylesheets=[
+                f"@container fd-status-bar (max-width: {_COUNTS_MIN_WIDTH - 2 * _BAR_PADDING}px)"
+                " { :host { display: none !important; } }"
+            ],
         )
         self.keys = pn.pane.HTML(
             '<div class="fd-keys"><span><kbd>Space</kbd>drag to pan</span>'

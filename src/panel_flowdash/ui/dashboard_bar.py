@@ -9,6 +9,7 @@ import time
 import panel as pn
 import panel_material_ui as pmui
 import param
+from panel.custom import JSComponent
 from panel.viewable import Viewer
 
 from panel_flowdash.ui.fullscreen import TOGGLE_CLASS
@@ -50,6 +51,34 @@ _HIDE_WHEN_WIDE = (
 # accessible names.
 COMPACT_BREAKPOINT = 1024
 EDIT_COMPACT_BREAKPOINT = _WIDE_BREAKPOINT
+
+# Material UI's sm breakpoint. On narrower screens, phones, the top bar only
+# has room for the title, the health chip or save state, Save, the toolbar
+# extras and the overflow menu, so the other actions move into that menu.
+PHONE_BREAKPOINT = 600
+_HIDE_ON_PHONE = (
+    f"@media (max-width: {PHONE_BREAKPOINT - 0.05}px) {{ :host {{ display: none !important; }} }}"
+)
+
+
+class PhoneQuery(JSComponent):
+    """Reports whether the browser window is narrower than ``breakpoint``, as a phone's is."""
+
+    breakpoint = param.Integer(default=PHONE_BREAKPOINT, doc="Window width in pixels.")
+
+    phone = param.Boolean(default=False, doc="Whether the window is narrower than the breakpoint.")
+
+    _esm = """
+    export function render({ model }) {
+      const query = window.matchMedia(`(max-width: ${model.breakpoint - 0.05}px)`)
+      const sync = () => {
+        if (model.phone !== query.matches) { model.phone = query.matches }
+      }
+      sync()
+      query.addEventListener("change", sync)
+      model.on("remove", () => query.removeEventListener("change", sync))
+    }
+    """
 
 
 # A button's label sets its line height. Without the label the icon keeps that
@@ -241,9 +270,10 @@ class DashboardBar(Viewer):
     Each part of a section comes from one method returning a list of
     viewables, so a feature adds an item by extending that method:
     :meth:`_view_meta`, :meth:`_view_actions`, :meth:`_edit_status`,
-    :meth:`_edit_actions`, and :meth:`_overflow_items` for the menu entries
+    :meth:`_edit_actions`, and :meth:`_menu_items` for the menu entries
     (dispatched by :meth:`_on_overflow`). Call :meth:`sync` after changing
-    anything they read.
+    anything they read. On phones the menu also stands in for the actions
+    the top bar hides (:meth:`_phone_items`).
     """
 
     editor = param.Parameter(doc="The FlowDash editor the bar controls.")
@@ -371,7 +401,7 @@ class DashboardBar(Viewer):
             margin=(0, 0, 0, 4),
             description="Refresh now",
             sx={"borderTopRightRadius": 0, "borderBottomRightRadius": 0},
-            stylesheets=[ICON_ONLY_WHEN_COMPACT],
+            stylesheets=[ICON_ONLY_WHEN_COMPACT, _HIDE_ON_PHONE],
         )
         self.refresh_button.on_click(lambda _event: editor.param.trigger("refresh"))
         self.refresh_period = pmui.MenuButton(
@@ -388,6 +418,7 @@ class DashboardBar(Viewer):
                 "whiteSpace": "nowrap",
                 "color": "text.secondary",
             },
+            stylesheets=[_HIDE_ON_PHONE],
         )
         self.refresh_period.on_click(self._on_period_chosen)
         # The browser handles the click, as full screen needs the user's gesture.
@@ -399,6 +430,7 @@ class DashboardBar(Viewer):
             align="center",
             css_classes=[TOGGLE_CLASS],
             sx=_ICON_BUTTON_SX,
+            stylesheets=[_HIDE_ON_PHONE],
         )
         self.mode_toggle = pmui.RadioButtonGroup(
             options=_VIEW_OPTIONS,
@@ -406,7 +438,7 @@ class DashboardBar(Viewer):
             size="small",
             margin=(0, 12, 0, 4),
             sx=_TOGGLE_SX,
-            stylesheets=[ICON_ONLY_WHEN_COMPACT],
+            stylesheets=[ICON_ONLY_WHEN_COMPACT, _HIDE_ON_PHONE],
         )
         self.mode_toggle.param.watch(self._on_mode_toggled, "value")
 
@@ -421,7 +453,7 @@ class DashboardBar(Viewer):
             size="small",
             margin=(0, 12, 0, 4),
             sx=_TOGGLE_SX,
-            stylesheets=[_ICON_ONLY_WHEN_NARROW],
+            stylesheets=[_ICON_ONLY_WHEN_NARROW, _HIDE_ON_PHONE],
         )
         self.mode_tabs.param.watch(self._on_tab, "value")
         editor.param.watch(self._sync_switchers, ["explore", "mode", "read_only"])
@@ -442,7 +474,7 @@ class DashboardBar(Viewer):
             color="primary",
             description="Settings",
             sx=_ICON_BUTTON_SX,
-            stylesheets=[_HIDE_WHEN_WIDE],
+            stylesheets=[_HIDE_WHEN_WIDE, _HIDE_ON_PHONE],
         )
         self.settings_icon_button.on_click(lambda _event: self._click_settings())
         self.discard_button = pmui.Button(
@@ -452,7 +484,10 @@ class DashboardBar(Viewer):
             size="small",
             margin=(0, 4),
             description="Discard",
-            stylesheets=[icon_only_below(EDIT_COMPACT_BREAKPOINT, disabled_tooltip="Discard")],
+            stylesheets=[
+                icon_only_below(EDIT_COMPACT_BREAKPOINT, disabled_tooltip="Discard"),
+                _HIDE_ON_PHONE,
+            ],
         )
         self.discard_button.on_click(lambda _event: self._confirm_discard())
         self.save_button = pmui.Button(
@@ -473,7 +508,7 @@ class DashboardBar(Viewer):
             description="Done",
             # Its eye icon alone does not say it ends editing, so it keeps its
             # label as long as the view actions keep theirs.
-            stylesheets=[ICON_ONLY_WHEN_COMPACT],
+            stylesheets=[ICON_ONLY_WHEN_COMPACT, _HIDE_ON_PHONE],
         )
         self.done_button.on_click(lambda _event: self.request_mode("view"))
 
@@ -489,7 +524,11 @@ class DashboardBar(Viewer):
         )
         self.overflow.on_click(self._on_overflow)
         self._divider = pmui.Divider(
-            orientation="vertical", height=24, margin=(0, 8), align="center"
+            orientation="vertical",
+            height=24,
+            margin=(0, 8),
+            align="center",
+            stylesheets=[_HIDE_ON_PHONE],
         )
         # The menu cannot start a browser download itself, so a hidden button
         # receives the file and saves it as soon as its data arrives.
@@ -499,6 +538,8 @@ class DashboardBar(Viewer):
             auto=True,
             visible=False,
         )
+        self._phone_query = PhoneQuery(width=0, height=0, margin=0)
+        self._phone_query.param.watch(lambda _event: self.sync(), "phone")
 
         self._lead = pn.FlexBox(
             align_items="center",
@@ -634,6 +675,35 @@ class DashboardBar(Viewer):
         Each entry has an ``action`` key that :meth:`_on_overflow` dispatches on.
         A destructive entry goes last and is shown in the error colour.
         """
+        phone = self._phone_items() if self._phone_query.phone else []
+        items = self._menu_items()
+        return [*phone, None, *items] if phone and items else phone or items
+
+    def _phone_items(self) -> list[dict]:
+        """Entries for the actions the top bar hides on phones, first in the overflow menu."""
+        editor = self.editor
+        if editor.editable:
+            current = "explore" if editor.explore else editor.mode
+            items = [
+                {"label": label, "icon": icon, "action": f"tab:{tab}"}
+                for tab, label, icon in _PHONE_TABS
+                if tab != current
+            ]
+            if not editor.read_only:
+                items.append(_SETTINGS)
+            if editor.dirty:
+                items.append(_PHONE_DISCARD)
+            return [*items, _PHONE_DONE]
+        current = "explore" if editor.explore else "view"
+        items = [
+            {"label": label, "icon": icon, "action": f"mode:{mode}"}
+            for mode, label, icon in _PHONE_MODES
+            if mode != current and not (mode == "edit" and editor.read_only)
+        ]
+        return [*items, _PHONE_REFRESH, _PHONE_FULLSCREEN]
+
+    def _menu_items(self) -> list[dict]:
+        """Entries of the overflow menu on every screen."""
         editor = self.editor
         if not editor.editable:
             return [] if editor.read_only else [_DOWNLOAD, _DOWNLOAD_YAML, _SETTINGS]
@@ -644,7 +714,22 @@ class DashboardBar(Viewer):
 
     def _on_overflow(self, item):
         action = item.get("action") if isinstance(item, dict) else None
-        if action == "download":
+        if action is None:
+            return
+        kind, _, value = action.partition(":")
+        if kind == "mode":
+            self.mode_toggle.value = value
+        elif kind == "tab":
+            self.mode_tabs.value = value
+        elif action == "refresh":
+            self.editor.param.trigger("refresh")
+        elif action == "fullscreen":
+            self.editor.fullscreen = True
+        elif action == "discard":
+            self._confirm_discard()
+        elif action == "done":
+            self.request_mode("view")
+        elif action == "download":
             self.download()
         elif action == "download_yaml":
             self.download("yaml")
@@ -680,10 +765,12 @@ class DashboardBar(Viewer):
         self._update_view_meta()
         self.health_popover.sync()
         self._sync_lead()
-        # The hidden download button rides along with the actions, which are always rendered.
+        # The hidden download button and the phone query ride along with the
+        # actions, which are always rendered.
         actions = [
             *(self._edit_actions() if editing else self._view_actions()),
             self.download_button,
+            self._phone_query,
         ]
         if list(self._actions) != actions:
             self._actions[:] = actions
@@ -953,6 +1040,21 @@ _DOWNLOAD = {"label": "Download", "icon": "download", "action": "download"}
 _DOWNLOAD_YAML = {"label": "Download as YAML", "icon": "data_object", "action": "download_yaml"}
 _IMPORT = {"label": "Import file", "icon": "upload_file", "action": "import"}
 _SETTINGS = {"label": "Settings", "icon": "tune", "action": "settings"}
+# The entries standing in for the top bar's actions on phones.
+_PHONE_MODES = [
+    ("explore", "Explore", "forum"),
+    ("view", "View", "visibility"),
+    ("edit", "Edit", "edit"),
+]
+_PHONE_TABS = [
+    ("explore", "Explore", "forum"),
+    ("wiring", "Dataflow", "account_tree"),
+    ("dashboard", "Layout", "dashboard"),
+]
+_PHONE_REFRESH = {"label": "Refresh now", "icon": "refresh", "action": "refresh"}
+_PHONE_FULLSCREEN = {"label": "Full screen", "icon": "fullscreen", "action": "fullscreen"}
+_PHONE_DISCARD = {"label": "Discard changes", "icon": "undo", "action": "discard"}
+_PHONE_DONE = {"label": "Done editing", "icon": "visibility", "action": "done"}
 _CLEAR = {
     "label": "Clear canvas",
     "icon": "delete_sweep",

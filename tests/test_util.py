@@ -267,25 +267,25 @@ class TestConfirm:
 class TestLayout:
     def test_editor_lays_out_the_session_dialog(self, doc):
         editor = FlowDash({}, notifications=False)
-        assert editor._workspace_area.objects.count(page_dialog()) == 1
+        assert editor._dialog_host.objects.count(page_dialog()) == 1
 
     def test_editor_keeps_the_dialog_across_mode_changes(self, doc):
         editor = FlowDash({}, notifications=False)
         editor.mode = "dashboard"
-        assert editor._workspace_area.objects.count(page_dialog()) == 1
+        assert editor._dialog_host.objects.count(page_dialog()) == 1
         editor.editable = False
-        assert editor._workspace_area.objects.count(page_dialog()) == 1
+        assert editor._dialog_host.objects.count(page_dialog()) == 1
 
     def test_editor_can_leave_the_dialog_to_the_embedder(self, doc):
         editor = FlowDash({}, notifications=False, include_page_dialog=False)
-        assert page_dialog() not in editor._workspace_area.objects
+        assert page_dialog() not in editor._dialog_host.objects
 
         editor.include_page_dialog = True
-        assert editor._workspace_area.objects.count(page_dialog()) == 1
+        assert editor._dialog_host.objects.count(page_dialog()) == 1
 
     def test_editor_outside_a_session_has_no_page_dialog(self):
         editor = FlowDash({}, notifications=False)
-        dialogs = [o for o in editor._workspace_area.objects if isinstance(o, pmui.Dialog)]
+        dialogs = [o for o in editor._dialog_host.objects if isinstance(o, pmui.Dialog)]
         assert dialogs == [
             editor._clear_dialog,
             editor._import_dialog,
@@ -307,7 +307,7 @@ class TestLayout:
 
         dialog = page_dialog()
         assert app._page.main.count(dialog) == 1
-        assert dialog not in app._editor._workspace_area.objects
+        assert dialog not in app._editor._dialog_host.objects
         assert dialog not in app._page.header
 
     async def test_app_with_an_editor_class_lays_out_the_dialog_once(self, doc, tmp_path):
@@ -325,7 +325,7 @@ class TestLayout:
 
         assert app._editor.include_page_dialog is False
         assert app._page.main.count(page_dialog()) == 1
-        assert page_dialog() not in app._editor._workspace_area.objects
+        assert page_dialog() not in app._editor._dialog_host.objects
 
     async def test_app_navigation_closes_the_dialog(self, doc, tmp_path):
         app = FlowDashApp(project_dir=tmp_path, store=MemoryDashboardStore())
