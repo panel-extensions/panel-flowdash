@@ -175,8 +175,6 @@ class _Request:
     value: str | None = None
     revision: str | None = None
     counted: list[dict[str, t.Any]] = field(default_factory=list)
-    # The order of the request's latest edit among all requests' edits.
-    seq: int = 0
 
 
 def format_version(records: t.Iterable[dict[str, t.Any]]) -> int:
@@ -403,9 +401,6 @@ class EditHistory:
         self._unheaded: dict[str, bool] = {}
         self._timer = False
         self._requests: dict[tuple[str, str | None], _Request] = {}
-        self._edit_seq = 0
-        # The order of the latest edit a published request version holds.
-        self._published_seq = 0
         self._refused: dict[str, str] = {}
         #: Called after :meth:`load`, e.g. to show :attr:`refused`.
         self.on_load: t.Callable[[], None] | None = None
@@ -787,8 +782,6 @@ class EditHistory:
         if tool_call_id and tool_call_id not in request.tool_call_ids:
             request.tool_call_ids.append(tool_call_id)
         request.value, request.revision = self.snapshot()
-        self._edit_seq += 1
-        request.seq = self._edit_seq
         self._head = request.revision
 
     def _close_requests(self):
@@ -797,7 +790,7 @@ class EditHistory:
         Called before a person's edit and on a save, so the history keeps the
         agent's and the person's edits apart, each version with its real base.
         """
-        for request in sorted(self._requests.values(), key=lambda r: r.seq):
+        for request in self._requests.values():
             if request.artifact_id == self.artifact_id and request.ops:
                 self._publish_request(request)
 
@@ -841,11 +834,6 @@ class EditHistory:
         value, revision, ops, labels = request.value, request.revision, request.ops, request.labels
         tool_call_ids, counted = request.tool_call_ids, request.counted
         request.ops, request.tool_call_ids, request.labels, request.counted = [], [], [], []
-        if ops and request.seq < self._published_seq:
-            # Two agents' requests ran at once and the other's version, published since,
-            # already holds these edits: publishing this older canvas would undo its later ones.
-            return
-        self._published_seq = max(self._published_seq, request.seq)
         artifact = self.artifact
         applied = artifact.applied_version if artifact is not None else None
         base = _value_revision(applied.value) if applied is not None else None

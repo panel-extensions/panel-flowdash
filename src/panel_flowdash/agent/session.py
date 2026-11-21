@@ -32,7 +32,7 @@ from .highlight import ChangeHighlighter
 from .live import LiveDashboardOps
 from .models import agent_model_choice
 from .ops import OperationError, read_revision
-from .tools import ARTIFACT_KIND, FlowDashDeps, approval_policy
+from .tools import ARTIFACT_KIND, AgentEditLock, FlowDashDeps, approval_policy
 
 if t.TYPE_CHECKING:
     from panel_agents import Artifact, ArtifactVersion
@@ -117,7 +117,9 @@ class AgentSession:
     ):
         self.app = app
         self.ops = LiveDashboardOps(app)
-        deps = FlowDashDeps(self.ops)
+        # With the Explore view's agent too, one request at a time edits the dashboard.
+        self.edit_lock = AgentEditLock() if explore_agent is not None else None
+        deps = FlowDashDeps(self.ops, edit_lock=self.edit_lock, on_edit_wait=self._on_drawer_wait)
         self.actions = palette_actions(app, deps=deps)
         editor = app._editor
         settings = {"model_settings": app.agent_model_settings} if app.agent_model_settings else {}
@@ -143,7 +145,12 @@ class AgentSession:
                 self,
                 explore_agent,
                 RunState(),
-                deps=FlowDashDeps(self.ops),
+                deps=FlowDashDeps(
+                    self.ops,
+                    edit_lock=self.edit_lock,
+                    edit_label="Explore's answer",
+                    on_edit_wait=editor.explore_feed.show_waiting,
+                ),
                 approval_policy=self._approval_policy(),
                 run_kwargs=dict(settings),
             )
@@ -169,7 +176,10 @@ class AgentSession:
             if len(models or ()) > 1:
                 # The Explore view's composer offers the same models and shares the drawer's pick.
                 editor.explore_feed.attach(
-                    self.explore_runner, chat_params=chat_params, model_chat=self.drawer.chat
+                    self.explore_runner,
+                    chat_params=chat_params,
+                    model_chat=self.drawer.chat,
+                    foreign=self._drawer_run,
                 )
             else:
                 # With nothing to pick, the composer names the Explore agent's own model.
@@ -177,6 +187,7 @@ class AgentSession:
                 editor.explore_feed.attach(
                     self.explore_runner,
                     chat_params={"models": [only], "model_id": only.id} if only else {},
+                    foreign=self._drawer_run,
                 )
         editor.param.watch(self._on_explore, "explore")
         self._on_explore()
@@ -189,10 +200,20 @@ class AgentSession:
             visible=False,
             margin=(8, 12, 0, 12),
         )
+        # Says that the assistant's request waits for the Explore view's to finish its edits.
+        self.wait_notice = pmui.Alert(
+            text_typography("", variant="body2", margin=0),
+            severity="info",
+            variant="outlined",
+            visible=False,
+            margin=(8, 12, 0, 12),
+            css_classes=["flowdash-agent-waiting"],
+        )
+        self._place_notice(self.wait_notice)
         if editor.history:
             editor.edit_history.on_load = self._on_history_loaded
             self.drawer.param.watch(self._on_drawer_open, "open")
-            self._place_history_notice()
+            self._place_notice(self.history_notice)
 
     @property
     def runners(self) -> list[_SessionRunner]:
@@ -220,8 +241,17 @@ class AgentSession:
         if isinstance(event, RunStarted) and event.parent_run_id is None:
             self.app._editor.note_own_run(event.run_id)
 
-    def _place_history_notice(self):
-        """Put the history notice above the drawer's body, or leave it out if the drawer has changed.
+    def _drawer_run(self, run_id: str) -> bool:
+        """Whether *run_id* is a run of the drawer's assistant, in this session or the stored history."""
+        return run_id in self.runner.state.runs
+
+    def _on_drawer_wait(self, waiting: str | None):
+        if waiting is not None:
+            self.wait_notice.objects[0].object = f"Waiting for {waiting} to finish…"
+        self.wait_notice.visible = waiting is not None
+
+    def _place_notice(self, notice):
+        """Put a notice above the drawer's body, or leave it out if the drawer has changed.
 
         AgentDrawer has no slot for a host's notices yet, so this reaches into its layout.
         """
@@ -231,9 +261,9 @@ class AgentSession:
         body = getattr(self.drawer, "_body", None)
         index = next((i for i, obj in enumerate(content.objects) if obj is body), None)
         if index is None:
-            content.append(self.history_notice)
+            content.append(notice)
         else:
-            content.insert(index, self.history_notice)
+            content.insert(index, notice)
 
     def _on_drawer_open(self, event=None):
         """Load the dashboard's stored history while the drawer is open, so it lists its versions."""

@@ -248,6 +248,12 @@ shows a notice whose Review button brings it back, and leaving Explore with an a
 of the drawer's pending opens the drawer on it. People who may only view the dashboard get the feed
 without the question box and without **Add to dashboard**.
 
+Only one request at a time edits the dashboard: a request takes it at its first edit and
+keeps it until it ends, so each request stays one step of Undo. A question asked in
+the other surface meanwhile reads the dashboard freely, and waits to edit it, saying
+"Waiting for the assistant's edit to finish" (or "Explore's answer"). After a few
+minutes it gives up and the agent says so.
+
 `FlowDashApp(explore_agent=...)` chooses the Explore agent. By default it is
 `panel_flowdash.agent.create_explore_agent` on the assistant's model: it reads the
 dashboard and adds nodes of its own, and is told to answer from them. Pass your own

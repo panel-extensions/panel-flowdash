@@ -185,6 +185,16 @@ class ExploreFeed(Viewer):
         self._model_chat: AgentChat | None = None
         self._model_watchers: list = []
         self._chat_key: tuple | None = None
+        self._foreign: t.Callable[[str], bool] | None = None
+        # Says that a question waits for the assistant's request to finish its edits.
+        self._waiting = pmui.Typography(
+            "",
+            variant="body2",
+            visible=False,
+            margin=(4, 10),
+            sx={"color": "text.secondary", "textAlign": "center"},
+            css_classes=["explore-waiting"],
+        )
         self._empty = pmui.Typography(
             "Ask a question about this dashboard to start. Each answer and the outputs it adds show here.",
             variant="body2",
@@ -327,6 +337,12 @@ class ExploreFeed(Viewer):
 
         self._model_watchers = [follow(chat, other), follow(other, chat)]
 
+    def show_waiting(self, waiting: str | None):
+        """Say that the question asked waits for *waiting*, e.g. "the assistant's edit", or stop saying it."""
+        if waiting is not None:
+            self._waiting.object = f"Waiting for {waiting} to finish…"
+        self._waiting.visible = waiting is not None
+
     def _approval(self, request, state):
         """Decide a forwarded approval on the runner's own request, so the runner hears of it."""
         source = self.runner.state if self.runner is not None else None
@@ -334,13 +350,22 @@ class ExploreFeed(Viewer):
             return ApprovalCard(request=source.approvals[request.tool_call_id], state=source)
         return ApprovalCard(request=request, state=state)
 
-    def attach(self, runner, chat_params: dict | None = None, model_chat: AgentChat | None = None):
+    def attach(
+        self,
+        runner,
+        chat_params: dict | None = None,
+        model_chat: AgentChat | None = None,
+        foreign: t.Callable[[str], bool] | None = None,
+    ):
         """Ask the Explore view's agent *runner* (a panel-agents ``AgentRunner``) and show its runs.
 
         *chat_params* are passed to the composer's chat, e.g. the models a
         person may pick from, and *model_chat* is another chat, such as the
-        drawer's, whose picked model the composer shares.
+        drawer's, whose picked model the composer shares. *foreign* tells
+        whether a run id is another runner's, which the feed then never
+        counts as asked in Explore, whatever the id looks like.
         """
+        self._foreign = foreign
         if self._unsubscribe is not None:
             self._unsubscribe()
         self._chat_params = dict(chat_params or {})
@@ -420,9 +445,13 @@ class ExploreFeed(Viewer):
     def _asked_here(self, turn: DashboardTurn) -> bool:
         """Whether *turn* is a request asked in the Explore view, in this session or earlier."""
         run = turn.run
-        return is_explore_run(run) or (
-            run is not None and (run in self._recorded or run in self._roots)
-        )
+        if run is None:
+            return False
+        if run in self._recorded or run in self._roots:
+            return True
+        if self._foreign is not None and self._foreign(run):
+            return False
+        return is_explore_run(run)
 
     def project(self) -> tuple[list[ev.Event], dict[str, ev.ArtifactPublished]]:
         """Return the feed's runs as events, oldest first, and its cards by artifact id.
@@ -505,12 +534,15 @@ class ExploreFeed(Viewer):
             if run_id not in placed:
                 entries.append((events[0].timestamp, list(events)))
         entries.sort(key=lambda entry: entry[0])
+        # The collapsed entry of the turns made outside Explore stays at the top whatever is paged.
+        pinned = entries[:1] if asking and entries and entries[0][0] == float("-inf") else []
+        entries = entries[len(pinned) :]
         # Only the latest page and the pages asked for since are shown.
         if self._first is None:
             self._first = max(0, len(entries) - self.page_size)
         self._first = min(self._first, max(0, len(entries) - 1))
         self._hidden = self._first
-        entries = entries[self._first :]
+        entries = pinned + entries[self._first :]
         shown = {
             event.run_id
             for _, events in entries
@@ -623,7 +655,11 @@ class ExploreFeed(Viewer):
             visible=bool(hidden),
             label=f"Show earlier requests ({hidden} more)" if hidden else "Show earlier requests",
         )
-        content = [self._earlier, self.chat] if (timeline or self._chat_key[0]) else [self._empty]
+        content = (
+            [self._earlier, self.chat, self._waiting]
+            if (timeline or self._chat_key[0])
+            else [self._empty]
+        )
         if list(self._layout.objects) != content:
             self._layout.objects = content
         self.refresh()

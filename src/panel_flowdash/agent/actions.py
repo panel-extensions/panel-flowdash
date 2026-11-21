@@ -128,6 +128,12 @@ def palette_actions(
                     f"The palette does not offer {command!r} any more; call list_commands."
                 )
         run_id = current_run_id() or (deps._run_id if deps is not None else None)
+        if deps is not None:
+            refusal = await deps.wait_to_edit(run_id)
+            if refusal is None:
+                refusal = deps.check_pin(current_run_id())
+            if refusal is not None:
+                return refusal
         with agent_edits(run_id, deps.question if deps is not None else None):
             controller.run(command)
         if deps is not None:

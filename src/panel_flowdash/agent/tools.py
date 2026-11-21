@@ -5,6 +5,7 @@ Needs the ``panel-flowdash[agent]`` extra (panel-agents and pydantic-ai).
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
 import functools
 import inspect
@@ -46,6 +47,83 @@ ACCESS_SETTINGS = ("viewers_can_inspect",)
 
 _UNPINNED = object()
 
+#: Seconds an agent request waits for another request's edits to a dashboard before giving up.
+EDIT_WAIT_TIMEOUT = 180
+
+
+class AgentEditLock:
+    """Lets one agent request at a time edit a dashboard, e.g. the assistant's or the Explore view's.
+
+    A request takes the dashboard at its first edit and keeps it until it
+    ends, so its edits are one turn and one version of the edit history that
+    one Undo takes back, never interleaved with another request's. Another
+    request's edit waits meanwhile, up to *timeout* seconds; reading never
+    waits, and neither do the person's own edits.
+    """
+
+    def __init__(self, timeout: float = EDIT_WAIT_TIMEOUT):
+        self.timeout = timeout
+        self._holders: dict[str | None, tuple[str | None, str]] = {}
+        self._freed: dict[str | None, asyncio.Event] = {}
+
+    def holder(self, dashboard: str | None) -> str | None:
+        """Return the run that holds *dashboard*, if any."""
+        held = self._holders.get(dashboard)
+        return held[0] if held is not None else None
+
+    async def acquire(
+        self,
+        dashboard: str | None,
+        run: str | None,
+        who: str,
+        on_wait: t.Callable[[str | None], None] | None = None,
+    ) -> str | None:
+        """Take *dashboard* for request *run*, waiting while another holds it.
+
+        *who* names the request's work for others waiting, e.g. "the
+        assistant's edit", and *on_wait* is called with the holder's *who*
+        while this request waits, then with None. Returns None once the
+        dashboard is taken, or why it was not, for the model to pass on.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.timeout
+        waiting = None
+        try:
+            while True:
+                held = self._holders.get(dashboard)
+                if held is None or held[0] == run:
+                    self._holders[dashboard] = (run, who)
+                    return None
+                if waiting is None:
+                    waiting = held[1]
+                    if on_wait is not None:
+                        on_wait(waiting)
+                freed = self._freed.setdefault(dashboard, asyncio.Event())
+                remaining = deadline - loop.time()
+                try:
+                    if remaining <= 0:
+                        raise TimeoutError
+                    await asyncio.wait_for(freed.wait(), remaining)
+                except TimeoutError:
+                    minutes = max(1, round(self.timeout / 60))
+                    return (
+                        f"Not available: the dashboard is busy with {held[1]}, which did not "
+                        f"finish within {minutes} minute{'s' * (minutes != 1)}. Nothing was "
+                        "changed; tell the user to ask again once it is done."
+                    )
+        finally:
+            if waiting is not None and on_wait is not None:
+                on_wait(None)
+
+    def release(self, run: str | None):
+        """Let go of every dashboard request *run* holds, waking the requests waiting for one."""
+        for dashboard, (holder, _who) in list(self._holders.items()):
+            if holder == run:
+                del self._holders[dashboard]
+                freed = self._freed.pop(dashboard, None)
+                if freed is not None:
+                    freed.set()
+
 
 @dataclass
 class FlowDashDeps:
@@ -73,6 +151,36 @@ class FlowDashDeps:
     # The revision the save approval's summary was written for, set at each model step.
     _save_revision: str | None = field(default=None, repr=False)
     _question: str | None = field(default=None, repr=False)
+    #: Shared with the session's other agent, so only one request at a time edits a dashboard.
+    edit_lock: AgentEditLock | None = field(default=None, repr=False)
+    #: What this agent's requests are, for a request waiting on one, e.g. "the assistant's edit".
+    edit_label: str = field(default="the assistant's edit", repr=False)
+    #: Called with what a request waits for while it waits to edit, then with None.
+    on_edit_wait: t.Callable[[str | None], None] | None = field(default=None, repr=False)
+    _locked: str | None = field(default=None, repr=False)
+
+    async def wait_to_edit(self, run_id: str | None = None) -> str | None:
+        """Take the open dashboard for this request's edits; None once taken, else why not.
+
+        Edit tools call it before they change anything. A tool of your own
+        that edits the dashboard outside the dashboard tools should call it
+        too, so it does not interleave with the other agent's request.
+        """
+        if self.edit_lock is None:
+            return None
+        run = self._run_id if self._explicit and self._run_id else run_id
+        refusal = await self.edit_lock.acquire(
+            _open_id(self.ops), run, self.edit_label, self.on_edit_wait
+        )
+        if refusal is None:
+            self._locked = run
+        return refusal
+
+    def _release_edits(self):
+        if self.edit_lock is not None:
+            for run in {self._locked, self._run_id}:
+                self.edit_lock.release(run)
+        self._locked = None
 
     def start_request(self, question: str | None = None, run_id: str | None = None):
         """Pin the next request to the dashboard open now. Call it when the user sends one.
@@ -98,8 +206,11 @@ class FlowDashDeps:
 
         Call it whether the request finished, failed or was cancelled.
         """
-        self.ops.editor.end_agent_turns(self._run_id)
-        self._reset(_UNPINNED)
+        try:
+            self.ops.editor.end_agent_turns(self._run_id)
+        finally:
+            self._release_edits()
+            self._reset(_UNPINNED)
 
     def _reset(self, pinned: t.Any, run_id: str | None = None):
         self._pinned = pinned
@@ -400,6 +511,13 @@ def _guarded(func: t.Callable) -> t.Callable:
         refusal = deps.check_pin(ctx.run_id)
         if refusal is not None:
             return refusal
+        if func in LOCKED_TOOLS:
+            refusal = await deps.wait_to_edit(current_run_id() or ctx.run_id)
+            if refusal is None:
+                # The user may have moved to another dashboard while the request waited.
+                refusal = deps.check_pin(ctx.run_id)
+            if refusal is not None:
+                return refusal
         listen = func in EDIT_TOOLS and bool(deps.edit_listeners)
         before = _snapshot(deps.ops) if listen else None
         try:
@@ -962,6 +1080,9 @@ EDIT_TOOLS = (
     remove_parameter,
     replace_dashboard,
 )
+
+#: The tools that wait for another agent request's edits of the dashboard to end, see AgentEditLock.
+LOCKED_TOOLS = (*EDIT_TOOLS, save_dashboard, delete_dashboard, share_dashboard)
 
 TOOLS = (
     list_components,

@@ -280,20 +280,27 @@ async def test_the_explore_agent_is_told_which_dashboard_is_open(store, monkeypa
     assert "T/number" in seen[0]
 
 
-def _gated(steps):
-    """A model adding a node per step, each step waiting for its gate (an asyncio.Event or None)."""
+def _gated(steps, end=None):
+    """A model adding a node per step, each waiting for its gate, then answering once *end* is set.
+
+    A step named "FAIL" makes the model fail instead.
+    """
     from pydantic_ai.models.function import DeltaToolCall
 
     from .test_agent_tools import _results
 
     async def stream(messages, info):
-        done = len(_results(messages))
-        if done >= len(steps):
-            yield "Done."
+        results = _results(messages)
+        if len(results) >= len(steps):
+            if end is not None:
+                await end.wait()
+            yield f"Done: {results[-1].content}"
             return
-        name, gate = steps[done]
+        name, gate = steps[len(results)]
         if gate is not None:
             await gate.wait()
+        if name == "FAIL":
+            raise RuntimeError("The model failed")
         args = f'{{"component": "T/number", "name": "{name}"}}'
         yield {0: DeltaToolCall(name="add_node", json_args=args, tool_call_id=f"{name}-call")}
 
@@ -317,50 +324,130 @@ async def _until(condition, task, timeout=10):
     raise AssertionError("Timed out")
 
 
-@pytest.mark.parametrize("explore_last", [False, True])
-async def test_runs_of_both_surfaces_at_once_keep_their_own_turn_and_version(
-    store, monkeypatch, explore_last
+def _history(app):
+    """Return the agent versions' runs and, undoing one at a time, the nodes left after each Undo."""
+    editor = app._editor
+    (artifact,) = app._agent_session.runner.state.artifacts
+    runs = [v.run_id for v in artifact.versions if v.actor == "agent"]
+    undone = []
+    while editor.edit_history.can_undo:
+        editor.undo()
+        undone.append(sorted(i["instance_id"] for i in editor._tile_items))
+    return runs, undone
+
+
+@pytest.mark.parametrize("ending", ["finished", "cancelled", "failed"])
+async def test_a_run_waits_for_the_other_surfaces_edits_and_each_is_one_undo(
+    store, monkeypatch, ending
 ):
     import asyncio
 
-    resume = asyncio.Event()
+    a2, a_end, b2 = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    second = {"finished": "a2", "cancelled": "a2", "failed": "FAIL"}[ending]
     app, _ = _open(
         store,
         monkeypatch,
-        agent=_gated([("d1", None), ("d2", resume)]),
-        explore_agent=_gated([("e1", None)]),
+        agent=_gated([("a1", None), (second, a2)], end=a_end),
+        explore_agent=_gated([("b1", None), ("b2", b2)]),
     )
     session = app._agent_session
     editor = app._editor
+    feed = editor.explore_feed
     nodes = lambda: [i["instance_id"] for i in editor._tile_items]
-    drawer = asyncio.ensure_future(session.runner.run("Add two numbers"))
-    await _until(lambda: "d1" in nodes(), drawer)
-    if explore_last:
-        explore = asyncio.ensure_future(session.explore_runner.run("And one more?"))
-        await _until(lambda: "e1" in nodes(), explore)
-        resume.set()
-        await drawer
-        await explore
+    drawer = asyncio.ensure_future(session.runner.run("A please"))
+    await _until(lambda: "a1" in nodes(), drawer)
+    explore = asyncio.ensure_future(session.explore_runner.run("B please"))
+    # The Explore request reads freely but waits to edit, and says so.
+    await _until(lambda: feed._waiting.visible, explore)
+    assert feed._waiting.object == "Waiting for the assistant's edit to finish…"
+    assert nodes() == ["a1"]
+    if ending == "cancelled":
+        drawer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await drawer
     else:
-        await session.explore_runner.run("And one more?")
-        resume.set()
+        a2.set()
+        a_end.set()
         await drawer
-    assert nodes() == ["d1", "e1", "d2"]
-    drawn, explored = (
-        next(t for t in editor.turns if t.run == session.runner.run_id),
-        next(t for t in editor.turns if t.run == session.explore_runner.run_id),
+    await _until(lambda: "b1" in nodes(), explore)
+    assert not feed._waiting.visible
+    b2.set()
+    await explore
+    a_nodes = ["a1", "a2"] if ending == "finished" else ["a1"]
+    assert nodes() == [*a_nodes, "b1", "b2"]
+    a_run, b_run = session.runner.run_id, session.explore_runner.run_id
+    assert [(t.run, t.question) for t in editor.turns] == [
+        (a_run, "A please"),
+        (b_run, "B please"),
+    ]
+    runs, undone = _history(app)
+    assert runs == [a_run, b_run]
+    assert undone == [sorted(a_nodes), []]
+
+
+async def test_the_drawer_says_when_it_waits_for_explore(store, monkeypatch):
+    import asyncio
+
+    b_end = asyncio.Event()
+    app, _ = _open(
+        store,
+        monkeypatch,
+        agent=_gated([("a1", None)]),
+        explore_agent=_gated([("b1", None)], end=b_end),
     )
-    assert len(editor.turns) == 2
-    assert {n: editor.node_origin(n) for n in nodes()} == {
-        "d1": drawn.id,
-        "e1": explored.id,
-        "d2": drawn.id,
-    }
-    (artifact,) = session.runner.state.artifacts
-    runs = [v.run_id for v in artifact.versions if v.actor == "agent"]
-    assert runs == [explored.run, drawn.run]
-    # The latest version is the canvas as it is: nothing is lost to an older snapshot.
-    assert all(f"\n  {n}:" in artifact.applied_version.value for n in nodes())
+    session = app._agent_session
+    nodes = lambda: [i["instance_id"] for i in app._editor._tile_items]
+    explore = asyncio.ensure_future(session.explore_runner.run("B please"))
+    await _until(lambda: "b1" in nodes(), explore)
+    drawer = asyncio.ensure_future(session.runner.run("A please"))
+    await _until(lambda: session.wait_notice.visible, drawer)
+    assert session.wait_notice.objects[0].object == "Waiting for Explore's answer to finish…"
+    b_end.set()
+    await explore
+    await drawer
+    assert not session.wait_notice.visible and nodes() == ["b1", "a1"]
+
+
+async def test_a_run_that_waits_too_long_is_told_why(store, monkeypatch):
+    import asyncio
+
+    a_end = asyncio.Event()
+    app, _ = _open(
+        store,
+        monkeypatch,
+        agent=_gated([("a1", None)], end=a_end),
+        explore_agent=_gated([("b1", None)]),
+    )
+    session = app._agent_session
+    session.edit_lock.timeout = 0.2
+    nodes = lambda: [i["instance_id"] for i in app._editor._tile_items]
+    drawer = asyncio.ensure_future(session.runner.run("A please"))
+    await _until(lambda: "a1" in nodes(), drawer)
+    await session.explore_runner.run("B please")
+    (call,) = session.explore_runner.state.tool_calls.values()
+    assert str(call.result).startswith(
+        "Not available: the dashboard is busy with the assistant's edit"
+    )
+    assert not app._editor.explore_feed._waiting.visible
+    a_end.set()
+    await drawer
+    assert nodes() == ["a1"]
+    # The lock was let go, so the next request edits at once.
+    session.explore_runner.messages = []
+    await session.explore_runner.run("B again")
+    assert nodes() == ["a1", "b1"]
+
+
+async def test_a_request_never_waits_for_itself(store, monkeypatch):
+    app, _ = _open(
+        store,
+        monkeypatch,
+        agent=_gated([("a1", None), ("a2", None)]),
+        explore_agent=_adding("explored"),
+    )
+    await app._agent_session.runner.run("A please")
+    assert [i["instance_id"] for i in app._editor._tile_items] == ["a1", "a2"]
+    assert app._agent_session.edit_lock._holders == {}
 
 
 def _ask_approval(state, run_id, call_id):
@@ -419,3 +506,136 @@ async def test_a_run_id_given_to_the_explore_runner_still_marks_it_as_explores(s
     await runner.run("How many are there?", run_id="mine")
     assert runner.run_id == f"{EXPLORE_RUN_PREFIX}mine"
     assert app._editor.turns[0].run == runner.run_id
+
+
+def _calls(steps, end=None):
+    """A model making one tool call per step, each (tool, args, gate), then answering once *end* is set."""
+    import json
+
+    from pydantic_ai.models.function import DeltaToolCall
+
+    from .test_agent_tools import _results
+
+    async def stream(messages, info):
+        done = len(_results(messages))
+        if done >= len(steps):
+            if end is not None:
+                await end.wait()
+            yield "Done."
+            return
+        tool, args, gate = steps[done]
+        if gate is not None:
+            await gate.wait()
+        yield {0: DeltaToolCall(name=tool, json_args=json.dumps(args), tool_call_id=f"c{done}")}
+
+    return Agent(
+        FunctionModel(stream_function=stream),
+        deps_type=FlowDashDeps,
+        toolsets=[dashboard_toolset()],
+    )
+
+
+async def test_config_changes_of_both_surfaces_are_one_undo_each(store, monkeypatch):
+    import asyncio
+
+    import yaml
+
+    gate, a_end = asyncio.Event(), asyncio.Event()
+    model = store.create_dashboard("alice", "Live")
+    app = _app(
+        store,
+        monkeypatch,
+        agent=_calls(
+            [
+                ("set_config", {"name": "s1", "config": {"factor": 2}}, None),
+                ("set_config", {"name": "s1", "config": {"factor": 3}}, gate),
+            ],
+            end=a_end,
+        ),
+        explore_agent=_calls(
+            [
+                ("set_config", {"name": "s2", "config": {"factor": 2}}, None),
+                ("set_config", {"name": "s2", "config": {"factor": 3}}, None),
+            ]
+        ),
+    )
+    app._load_dashboard_sync(model.dashboard_id)
+    editor = app._editor
+    editor.add_component("T/scaled", instance_id="s1")
+    editor.add_component("T/scaled", instance_id="s2")
+    editor.end_turn()
+    session = app._agent_session
+
+    def factors():
+        nodes = yaml.safe_load(editor.edit_history.snapshot()[0])["nodes"]
+        return {n: (nodes[n].get("config") or {}).get("factor", 1) for n in ("s1", "s2")}
+
+    drawer = asyncio.ensure_future(session.runner.run("A"))
+    await _until(lambda: factors()["s1"] == 2, drawer)
+    explore = asyncio.ensure_future(session.explore_runner.run("B"))
+    await _until(lambda: editor.explore_feed._waiting.visible, explore)
+    gate.set()
+    a_end.set()
+    await drawer
+    await explore
+    assert factors() == {"s1": 3, "s2": 3}
+    a_run, b_run = session.runner.run_id, session.explore_runner.run_id
+    assert [t.run for t in editor.turns if t.actor == "agent"] == [a_run, b_run]
+    (artifact,) = session.runner.state.artifacts
+    assert [v.run_id for v in artifact.versions if v.actor == "agent"] == [a_run, b_run]
+    editor.undo()
+    assert factors() == {"s1": 3, "s2": 1}
+    editor.undo()
+    assert factors() == {"s1": 1, "s2": 1}
+
+
+async def test_a_dismissed_approval_notice_stays_dismissed_and_counts_the_rest(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    session, editor = app._agent_session, app._editor
+    chrome = session.chrome
+    editor.explore = True
+    _ask_approval(session.runner.state, "run-a", "c1")
+    chrome.dismiss()
+    assert not chrome.notice.visible
+    editor.explore = False
+    editor.explore = True
+    assert not chrome.notice.visible
+    # Another approval shows the notice again, counting the waiting ones it has not told of.
+    _ask_approval(session.runner.state, "run-b", "c2")
+    assert chrome.notice.visible
+    assert chrome._notice_text.object.startswith("The assistant is waiting for your approval")
+    _ask_approval(session.runner.state, "run-c", "c3")
+    assert chrome._notice_text.object.startswith("The assistant is waiting for 2 approvals")
+
+
+async def test_the_earlier_entry_stays_at_the_top_while_older_pages_are_hidden(store, monkeypatch):
+    from panel_flowdash.turns import agent_edits
+
+    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    editor = app._editor
+    with agent_edits(run="run-old", question="An old question"):
+        editor.add_component("T/number", instance_id="old")
+    for i in range(4):
+        editor.end_agent_turns()
+        with agent_edits(run=f"explore-q{i}", question=f"Question {i}"):
+            editor.add_component("T/number", instance_id=f"q{i}")
+    editor.end_agent_turns()
+    feed = editor.explore_feed
+    feed.page_size = 2
+    feed.shown = True
+    runs = list(feed.state.runs)
+    assert runs[0] == HISTORY_RUN and len(runs) == 3
+    assert feed._earlier.label == "Show earlier requests (2 more)"
+    feed.show_earlier()
+    assert next(iter(feed.state.runs)) == HISTORY_RUN and len(feed.state.runs) == 5
+
+
+async def test_a_drawer_run_is_never_taken_for_an_explore_question(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    session = app._agent_session
+    await session.runner.run("Add a number", run_id="explore-looking")
+    feed = app._editor.explore_feed
+    feed.shown = True
+    (drawn,) = app._editor.turns
+    assert drawn.run == "explore-looking"
+    assert list(feed.state.runs) == [HISTORY_RUN]
