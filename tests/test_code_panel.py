@@ -820,8 +820,7 @@ class TestFormat:
         editor.open_code_panel(node, "sql")
         panel = editor.code_panel
         panel.format()
-        assert panel.code.value_input == "SELECT 1\nSELECT 2"
-        assert panel.tools.replacement["text"] == "SELECT 1\nSELECT 2"
+        assert panel.code.value == panel.code.value_input == "SELECT 1\nSELECT 2"
         assert panel.dirty
         state = editor._dataflow_graph.get_config_state(node)
         assert state.sql == "select 1; select 2"
@@ -836,15 +835,16 @@ class TestFormat:
         panel.tools._handle_msg({"type": "format", "text": "select 3"})
         assert panel.code.value_input == "SELECT 3"
 
-    def test_each_format_sends_the_text_again(self):
-        # After Ctrl+Z in the browser the server still has the formatted text, so it is sent again.
+    def test_formatting_again_after_an_undo_sends_the_text(self):
+        # After Ctrl+Z in the browser the server's value is still the formatted text, so the
+        # editor is not updated through it and the text is sent instead, once.
         editor, node = make_format_editor()
         editor.open_code_panel(node, "sql")
         panel = editor.code_panel
         panel.format()
-        seq = panel.tools.replacement["seq"]
+        assert panel.tools.replacement == {}
         panel.format("select 1; select 2")
-        assert panel.tools.replacement == {"text": "SELECT 1\nSELECT 2", "seq": seq + 1}
+        assert panel.tools.replacement == {"text": "SELECT 1\nSELECT 2", "seq": 1}
 
     def test_a_failing_formatter_leaves_the_text(self):
         def broken(text):

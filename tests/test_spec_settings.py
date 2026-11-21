@@ -523,7 +523,6 @@ class TestCodePanel:
         expected = format_spec({"title": "T", **SPEC})[0]
         assert field.editor.value == field.editor.value_input == expected
         assert expected.startswith('{\n  "title": "T",\n  "mark": "bar"')
-        assert panel.spec_tools.replacement["text"] == expected
         assert list(field.value) == ["title", *SPEC]
         assert panel.dirty
         assert editor._component_instances[node].spec == SPEC

@@ -1423,6 +1423,7 @@ class CodePanel(Viewer):
         if not isinstance(formatted, str):
             return
         self._format_error = None
+        shown = source.value
         if kind == "code":
             self._syncing = True
             try:
@@ -1439,7 +1440,10 @@ class CodePanel(Viewer):
                 self.spec_editor.editor.value = formatted
             finally:
                 self._hold_run = False
-        tools.replace(source.value_input)
+        if source.value == shown:
+            # The browser updates the editor when its value changes; unchanged, e.g. after an
+            # undo there, the text is sent. Sending both could redo the edit after an undo.
+            tools.replace(source.value_input)
 
     def _format_failed(self, kind: str | None, text: str, error: Exception):
         if kind == "spec":
