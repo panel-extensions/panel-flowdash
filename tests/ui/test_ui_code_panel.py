@@ -21,7 +21,7 @@ def _open(page, editor, query):
     page.set_viewport_size(VIEWPORT)
     serve_component(page, editor)
     page.locator(f".react-flow__node[data-id='{query}']").click()
-    page.locator(".fd-code-expand").first.click(timeout=8000)
+    page.locator(".fd-edit-spec").first.click(timeout=8000)
     panel = page.locator(".fd-code-panel")
     expect(panel).to_be_visible(timeout=8000)
     code = page.locator(".fd-code-panel-editor")
@@ -99,7 +99,7 @@ def test_opened_from_the_inspector_under_the_canvas(page):
     assert box["x"] + box["width"] <= page.viewport_size["width"] + 1
     assert box["y"] + box["height"] <= page.viewport_size["height"]
     wait_until(lambda: editor._flow.selection["nodes"] == [query], timeout=8000)
-    expect(page.locator(".flowdash-inspector, .fd-code-expand").first).to_be_visible()
+    expect(page.locator(".flowdash-inspector, .fd-edit-spec").first).to_be_visible()
     expect(page.locator(".fd-code-dialog .fd-code-field-large")).to_have_count(0)
     # The first result renders after the inspector and the panel, which takes a while under load.
     expect(page.locator(".fd-code-table")).to_contain_text("2016", timeout=15000)
@@ -151,7 +151,7 @@ def test_the_code_footer_is_on_one_centred_line(page):
     expect(icon).to_be_visible(timeout=8000)
     middle = _middle(footer.bounding_box())
     label = footer.locator(".fd-cp-ok")
-    position = footer.get_by_text("Ln ")
+    position = footer.get_by_text("Ln ").filter(visible=True)
     for part in (icon, label, position):
         assert abs(_middle(part.bounding_box()) - middle) <= 1.5
 
@@ -351,7 +351,7 @@ def test_screenshots(page, scheme):
     page.set_viewport_size(VIEWPORT)
     serve_component(page, pmui.Page(main=[editor], dark_theme=scheme == "dark"))
     page.locator(f".react-flow__node[data-id='{query}']").click()
-    page.locator(".fd-code-expand").first.click(timeout=8000)
+    page.locator(".fd-edit-spec").first.click(timeout=8000)
     code = page.locator(".fd-code-panel-editor")
     expect(code.locator(".ace_content")).to_contain_text("p_year > 2014", timeout=8000)
     _type_at_end(page, code, "\nand p_yaer < 2016")
@@ -374,7 +374,7 @@ def test_every_control_is_reachable_with_the_inspector_open(page, width):
     page.set_viewport_size({"width": width, "height": 900})
     serve_component(page, editor)
     page.locator(f".react-flow__node[data-id='{query}']").click()
-    page.locator(".fd-code-expand").first.click(timeout=8000)
+    page.locator(".fd-edit-spec").first.click(timeout=8000)
     code = page.locator(".fd-code-panel-editor")
     expect(code.locator(".ace_content")).to_contain_text("p_year > 2014", timeout=8000)
     assert not editor._inspector.collapsed
@@ -385,7 +385,6 @@ def test_every_control_is_reachable_with_the_inspector_open(page, width):
         ".fd-code-run",
         ".fd-code-collapse",
         ".fd-code-close",
-        ".fd-code-panel-fields",
     ):
         wait_until(
             lambda selector=selector: page.evaluate(_REACHABLE, selector) == "ok", timeout=8000
@@ -408,7 +407,7 @@ def test_split_tab_keeps_the_header_in_the_window(page):
     page.set_viewport_size({"width": 1440, "height": 900})
     serve_component(page, editor)
     page.locator(f".react-flow__node[data-id='{query}']").click()
-    page.locator(".fd-code-expand").first.click(timeout=8000)
+    page.locator(".fd-edit-spec").first.click(timeout=8000)
     expect(page.locator(".fd-code-panel")).to_be_visible(timeout=8000)
     for selector in (".fd-code-run", ".fd-code-close"):
         wait_until(
@@ -427,7 +426,7 @@ def test_a_held_draft_comes_back_after_closing(page):
     page.locator(".fd-code-close").click()
     expect(page.locator(".fd-code-panel")).to_be_hidden(timeout=8000)
     expect(page.get_by_text("Edits not run")).to_be_visible(timeout=8000)
-    page.locator(".fd-code-expand").first.click()
+    page.locator(".fd-edit-spec").first.click()
     expect(code.locator(".ace_content")).to_contain_text("p_cap > 2", timeout=8000)
     page.locator(".fd-code-discard").click()
     expect(code.locator(".ace_content")).not_to_contain_text("p_cap", timeout=8000)
@@ -471,7 +470,7 @@ def test_leaving_the_dashboard_asks_about_a_held_draft(page, answer):
     page.get_by_role("button", name="Done").wait_for()
     editor = apps[0]._editor
     page.locator(".react-flow__node[data-id='n1']").click()
-    page.locator(".fd-code-expand").first.click(timeout=8000)
+    page.locator(".fd-edit-spec").first.click(timeout=8000)
     code = page.locator(".fd-code-panel-editor")
     expect(code.locator(".ace_content")).to_contain_text("# Hi", timeout=8000)
     _type_at_end(page, code, " there")
@@ -503,3 +502,38 @@ def test_view_mode_says_a_draft_is_held(page):
     page.get_by_role("button", name="Done").click()
     wait_until(lambda: not editor.editable, timeout=8000)
     expect(page.get_by_text("Edits not run")).to_be_visible(timeout=8000)
+
+
+def test_the_panel_follows_the_selection_and_keeps_drafts(page):
+    editor, query = make_editor()
+    note = editor.add_component("D/note", position=(0, 300))
+    source = next(
+        i["instance_id"] for i in editor._tile_items if i["instance_id"] not in (query, note)
+    )
+    _panel, code = _open(page, editor, query)
+    _type_at_end(page, code, " and p_cap > 2")
+    wait_until(lambda: editor.code_panel.dirty, timeout=8000)
+    page.locator(f".react-flow__node[data-id='{note}']").click()
+    expect(code.locator(".ace_content")).to_contain_text("# Hi", timeout=8000)
+    expect(page.locator(".fd-code-panel-editor")).to_be_visible()
+    page.locator(f".react-flow__node[data-id='{source}']").click()
+    expect(page.locator(".fd-code-empty")).to_contain_text("has no code or spec", timeout=8000)
+    expect(page.locator(".fd-code-panel-editor")).to_be_hidden()
+    expect(page.locator(".fd-code-table")).to_contain_text("2016", timeout=8000)
+    page.locator(f".react-flow__node[data-id='{query}']").click()
+    expect(code.locator(".ace_content")).to_contain_text("p_cap > 2", timeout=8000)
+    assert editor._component_instances[query].expr == "p_year > 2014"
+
+
+def test_the_inspector_offers_the_spec_and_keeps_the_settings(page):
+    editor, query = make_editor()
+    page.set_viewport_size(VIEWPORT)
+    serve_component(page, editor)
+    page.locator(f".react-flow__node[data-id='{query}']").click()
+    expect(page.locator(".fd-edit-spec")).to_be_visible(timeout=8000)
+    expect(page.locator(".fd-code-snippet")).to_have_count(0)
+    expect(page.get_by_text("Limit", exact=True).first).to_be_visible()
+    page.locator(".fd-edit-spec").click()
+    expect(page.locator(".fd-code-panel")).to_be_visible(timeout=8000)
+    header = page.locator(".fd-code-panel-header")
+    expect(header.locator("input")).to_have_count(1)  # Run on change only

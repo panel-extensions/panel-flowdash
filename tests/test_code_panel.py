@@ -7,6 +7,7 @@ import types
 
 import pandas as pd
 import panel as pn
+import panel_material_ui as pmui
 import param
 import pytest
 from panel.viewable import Viewer
@@ -282,12 +283,21 @@ class TestOpening:
         assert not editor.code_panel_open
         assert not editor._code_dock.visible
 
-    def test_other_fields_are_in_the_header(self, setup):
+    def test_settings_stay_in_the_inspector(self, setup):
         editor, query = setup
+        select_on_canvas(editor._flow, node_id=query)
         editor.open_code_panel(query, "expr")
-        panel = editor.code_panel
-        assert panel._others == ["limit"]
-        assert panel._fields_state.limit == 100
+        header = pn.Row(*editor.code_panel._header)
+        assert not [
+            w for w in header.select(pn.widgets.Widget) if getattr(w, "name", "") == "Limit"
+        ]
+        form = next(iter(pn.Column(*editor._inspector._body).select(pn.Param)))
+        assert "limit" in form.parameters and "expr" not in form.parameters
+
+    def test_the_field_defaults_to_the_nodes_spec(self, setup):
+        editor, query = setup
+        assert editor.open_code_panel(query)
+        assert editor.code_panel.field == "expr"
 
     def test_switching_nodes_shows_the_other_text(self, setup):
         editor, query = setup
@@ -295,7 +305,7 @@ class TestOpening:
         editor.open_code_panel(query, "expr")
         editor.open_code_panel(note, "text")
         assert editor.code_panel.code.value == "# Hi"
-        assert editor.code_panel._others == []
+        assert editor.code_panel.code.language == "markdown"
 
 
 class TestRun:
@@ -323,7 +333,7 @@ class TestRun:
         await settle(panel)
         assert editor._component_instances[query].expr == "p_year == 2016"
 
-    async def test_run_applies_the_header_fields_as_one_edit(self, setup, monkeypatch):
+    async def test_run_is_one_edit(self, setup, monkeypatch):
         editor, query = setup
         recorded = []
         record = editor._record_edit
@@ -333,15 +343,12 @@ class TestRun:
         editor.open_code_panel(query, "expr")
         panel = editor.code_panel
         await settle(panel)
-        panel._fields_state.limit = 2
         panel.code.value_input = "p_year > 2015"
-        assert editor._component_instances[query].limit == 100
         panel.run()
         await settle(panel)
-        instance = editor._component_instances[query]
-        assert (instance.expr, instance.limit) == ("p_year > 2015", 2)
-        assert len(rows(editor, query)) == 2
-        assert [k["args"]["keys"] for k in recorded] == [["expr", "limit"]]
+        assert editor._component_instances[query].expr == "p_year > 2015"
+        assert len(rows(editor, query)) == 3
+        assert [k["args"]["keys"] for k in recorded] == [["expr"]]
 
     async def test_a_failed_check_keeps_the_draft_and_the_last_result(self, setup):
         editor, query = setup
@@ -484,14 +491,47 @@ class TestRun:
 
 
 class TestInspector:
-    def test_the_expand_button_opens_the_panel(self, setup):
+    def test_edit_opens_the_panel(self, setup):
         editor, query = setup
         select_on_canvas(editor._flow, node_id=query)
-        field = next(iter(pn.Column(*editor._inspector._body).select(CodeField)))
-        field._open()
+        body = pn.Column(*editor._inspector._body)
+        assert not list(body.select(CodeField))
+        button = next(b for b in body.select(pmui.Button) if "fd-edit-spec" in b.css_classes)
+        assert button.label == "Edit Expr"
+        button.clicks += 1
         assert editor.code_panel_open
         assert editor.code_panel.field == "expr"
-        assert not field._dialog.open
+
+    def test_edit_shows_the_canvas_from_the_layout_tab(self, setup):
+        editor, query = setup
+        editor.mode = "dashboard"
+        assert editor.edit_spec(query)
+        assert editor.mode == "split"
+        assert editor._code_dock.visible
+
+    def test_edit_is_refused_where_the_panel_cannot_show(self, setup):
+        editor, query = setup
+        editor._split_view.storage.window_width = 800
+        assert not editor.edit_spec(query)
+        assert not editor.code_panel_open
+
+    def test_a_narrow_window_keeps_an_extra_view_in_the_inspector(self, setup):
+        editor, query = setup
+        select_on_canvas(editor._flow, node_id=query)
+        editor._inspector.show_extra("How this was made", "Query", [pn.pane.Markdown("steps")])
+        editor._split_view.storage.window_width = 800
+        assert editor._inspector._showing_extra
+        assert "flowdash-inspector-extra" in editor._inspector._body[0].css_classes
+
+    def test_a_narrow_window_puts_the_code_field_in_the_inspector(self, setup):
+        editor, query = setup
+        select_on_canvas(editor._flow, node_id=query)
+        editor._split_view.storage.window_width = 800
+        body = pn.Column(*editor._inspector._body)
+        assert list(body.select(CodeField))
+        editor._split_view.storage.window_width = 1440
+        body = pn.Column(*editor._inspector._body)
+        assert not list(body.select(CodeField))
 
     def test_it_falls_back_to_the_dialog(self, setup):
         editor, query = setup
@@ -510,14 +550,12 @@ class TestDrafts:
         editor.open_code_panel(query, "expr")
         panel = editor.code_panel
         panel.code.value_input = "p_year == 2016"
-        panel._fields_state.limit = 3
         editor.open_code_panel(note, "text")
         assert panel.code.value_input == "# Hi"
         assert panel.has_drafts
         assert editor._has_unsent_edits()
         editor.open_code_panel(query, "expr")
         assert panel.code.value_input == "p_year == 2016"
-        assert panel._fields_state.limit == 3
         assert panel.dirty
         assert editor._component_instances[query].expr == "p_year > 2014"
 
@@ -549,11 +587,9 @@ class TestDrafts:
         editor.open_code_panel(query, "expr")
         panel = editor.code_panel
         panel.code.value_input = "p_year == 2016"
-        panel._fields_state.limit = 3
         assert panel.discard_button.visible
         panel.discard()
         assert panel.code.value_input == "p_year > 2014"
-        assert panel._fields_state.limit == 100
         assert not panel.dirty
         assert not editor._has_unsent_edits()
         assert not panel.discard_button.visible
@@ -581,32 +617,17 @@ class TestDrafts:
         panel = editor.code_panel
         await settle(panel)
         editor.edit_history.flush()
-        panel._fields_state.limit = 2
         panel.run("p_year > 2015")
         await settle(panel)
         assert editor._component_instances[query].expr == "p_year > 2015"
         editor.edit_history.flush()
         assert editor.undo()
-        instance = editor._component_instances[query]
-        assert (instance.expr, instance.limit) == ("p_year > 2014", 100)
+        assert editor._component_instances[query].expr == "p_year > 2014"
         assert panel.code.value_input == "p_year > 2014"
         assert not panel.dirty
 
 
 class TestRunGuards:
-    async def test_header_fields_wait_for_a_pause_too(self, setup, monkeypatch):
-        monkeypatch.setattr("panel_flowdash.ui.code_panel.RUN_DELAY", 0.1)
-        editor, query = setup
-        editor.open_code_panel(query, "expr")
-        panel = editor.code_panel
-        panel.run_on_change = True
-        panel._fields_state.limit = 4
-        panel._fields_state.limit = 3
-        assert editor._component_instances[query].limit == 100
-        await asyncio.sleep(0.3)
-        await settle(panel)
-        assert editor._component_instances[query].limit == 3
-
     async def test_no_auto_run_while_one_is_in_flight(self, setup, monkeypatch):
         monkeypatch.setattr("panel_flowdash.ui.code_panel.RUN_DELAY", 0.05)
         editor, query = setup
@@ -621,20 +642,20 @@ class TestRunGuards:
         assert calls == []
         assert panel._run_again
 
-    async def test_sql_and_limit_refresh_the_node_once(self, setup):
+    async def test_a_setting_changed_in_the_inspector_keeps_the_draft(self, setup):
         editor, query = setup
         editor.open_code_panel(query, "expr")
         panel = editor.code_panel
         await settle(panel)
-        instance = editor._component_instances[query]
-        seen = []
-        instance.param.watch(
-            lambda *events: seen.append(sorted(e.name for e in events)), ["expr", "limit"]
-        )
-        panel._fields_state.limit = 2
-        panel.run("p_year > 2015")
+        panel.code.value_input = "p_year > 2015"
+        editor._apply_config_patch(query, {"limit": 2})
         await settle(panel)
-        assert seen == [["expr", "limit"]]
+        assert panel.code.value_input == "p_year > 2015" and panel.dirty
+        panel.run()
+        await settle(panel)
+        instance = editor._component_instances[query]
+        assert (instance.expr, instance.limit) == ("p_year > 2015", 2)
+        assert len(rows(editor, query)) == 2
 
 
 def test_columns_count_utf16_units():
@@ -681,3 +702,72 @@ def test_code_drafts_follows_held_drafts():
     assert not editor.code_drafts
     editor.open_code_panel(query, "expr")
     assert editor.code_panel.code.value_input == "p_year > 2014"
+
+
+class TestFollowsSelection:
+    def test_selecting_another_node_shows_its_spec(self, setup):
+        editor, query = setup
+        note = editor.add_component("D/note", position=(0, 300))
+        editor.open_code_panel(query, "expr")
+        select_on_canvas(editor._flow, node_id=note)
+        panel = editor.code_panel
+        assert (panel.instance_id, panel.field) == (note, "text")
+        assert panel.code.value == "# Hi" and panel.code.visible
+
+    def test_a_node_without_a_spec_shows_its_result(self, setup):
+        editor, query = setup
+        source = next(i["instance_id"] for i in editor._tile_items if i["instance_id"] != query)
+        editor.open_code_panel(query, "expr")
+        select_on_canvas(editor._flow, node_id=source)
+        panel = editor.code_panel
+        assert (panel.instance_id, panel.field) == (source, None)
+        assert panel._empty.visible and "has no code or spec" in panel._empty.object
+        assert not panel.code.visible and not panel.run_button.visible
+        assert "6 rows" in panel._summary.object
+        assert "fd-code-table" in panel._result_body[0].css_classes
+
+    def test_drafts_are_kept_per_node(self, setup):
+        editor, query = setup
+        note = editor.add_component("D/note", position=(0, 300))
+        editor.open_code_panel(query, "expr")
+        panel = editor.code_panel
+        panel.code.value_input = "p_year == 2016"
+        select_on_canvas(editor._flow, node_id=note)
+        panel.code.value_input = "# Draft"
+        select_on_canvas(editor._flow, node_id=query)
+        assert panel.code.value_input == "p_year == 2016" and panel.dirty
+        select_on_canvas(editor._flow, node_id=note)
+        assert panel.code.value_input == "# Draft"
+        assert editor._component_instances[query].expr == "p_year > 2014"
+        assert editor._component_instances[note].text == "# Hi"
+
+    def test_a_closed_panel_stays_closed(self, setup):
+        editor, query = setup
+        select_on_canvas(editor._flow, node_id=query)
+        assert not editor.code_panel_open
+
+    def test_clearing_or_widening_the_selection_keeps_the_node(self, setup):
+        editor, query = setup
+        note = editor.add_component("D/note", position=(0, 300))
+        editor.open_code_panel(query, "expr")
+        editor._flow.selection = {"nodes": [], "edges": []}
+        assert editor.code_panel.instance_id == query
+        editor._flow.selection = {"nodes": [query, note], "edges": []}
+        assert editor.code_panel.instance_id == query
+
+    def test_following_keeps_a_collapsed_panel_collapsed(self, setup):
+        editor, query = setup
+        note = editor.add_component("D/note", position=(0, 300))
+        editor.open_code_panel(query, "expr")
+        editor.code_panel.collapsed = True
+        select_on_canvas(editor._flow, node_id=note)
+        assert editor.code_panel.instance_id == note
+        assert editor.code_panel.collapsed
+
+    def test_following_does_not_take_the_keyboard(self, setup):
+        editor, query = setup
+        note = editor.add_component("D/note", position=(0, 300))
+        editor.open_code_panel(query, "expr")
+        focus = editor.code_panel.tools.focus
+        select_on_canvas(editor._flow, node_id=note)
+        assert editor.code_panel.tools.focus == focus

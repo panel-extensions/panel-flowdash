@@ -23,13 +23,19 @@ from panel.io.state import set_curdoc
 from panel.viewable import Viewer
 
 from panel_flowdash.config_check import CheckResult
-from panel_flowdash.config_choices import Choices, columns_of, has_choices, node_choices
+from panel_flowdash.config_choices import (
+    Choices,
+    columns_of,
+    has_choices,
+    node_choices,
+    spec_fields,
+)
 from panel_flowdash.dataflow_engine import failure_text
 from panel_flowdash.groups import component_nodes, group_id_of
 from panel_flowdash.input_literals import takes_literal
 from panel_flowdash.transforms import parse_transform, summarize_transform
 from panel_flowdash.ui.choice_widgets import form_widgets, setting_choices, widgets_key
-from panel_flowdash.ui.code_field import CodeField
+from panel_flowdash.ui.code_field import CodeField, code_language
 from panel_flowdash.ui.config_draft import ConfigDraft
 from panel_flowdash.ui.input_editor import LiteralEditor
 from panel_flowdash.ui.node_card import (
@@ -723,6 +729,7 @@ class Inspector(Viewer):
         self._last_check_status: tuple[str, str] | None = None
         self._code_fields: list[CodeField] = []
         self._has_inline_close = False
+        self._showing_extra = False
         self._no_settings = False
         self._data_column: pn.Column | None = None
         self._data_view: tuple[str, ComponentSpec] | None = None
@@ -850,6 +857,7 @@ class Inspector(Viewer):
         if selected == self._shown and not force and selected is not None:
             return
         self._release()
+        self._showing_extra = False
         self._shown = selected
         if selected is not None:
             self._shown = selected if self._exists() else None
@@ -882,6 +890,7 @@ class Inspector(Viewer):
         *release* is called when they are replaced.
         """
         self._release()
+        self._showing_extra = True
         self._has_inline_close = False
         self._body.margin = (0, 16, 16, 16)
         self._sync_collapsed()
@@ -907,6 +916,11 @@ class Inspector(Viewer):
             css_classes=["flowdash-inspector-extra"],
         )
         self._body[:] = [header, *objects]
+
+    def refresh_node(self):
+        """Rebuild a node's view if it is shown, e.g. once its spec moves to or from the code panel."""
+        if self.visible and not self._showing_extra and (self._shown or ("",))[0] == "node":
+            self.refresh(force=True)
 
     def refresh_summary(self):
         """Rebuild the dashboard summary if it is shown, e.g. after the issues changed."""
@@ -1499,10 +1513,81 @@ class Inspector(Viewer):
         editor = self.editor
         config_state = editor._dataflow_graph.get_config_state(instance_id)
         names = [n for n in (config_state.param if config_state else []) if n != "name"]
+        # The spec is edited in the code panel, where it can be shown.
+        in_panel = (
+            [n for n in spec_fields(spec) if n in names]
+            if spec.config_editor is None and editor._code_panel_allowed()
+            else []
+        )
+        if in_panel:
+            names = [n for n in names if n not in in_panel]
+            return pn.Column(
+                self._spec_buttons(instance_id, config_state, in_panel),
+                self._settings_form(instance_id, spec, config_state, names, bool(in_panel)),
+                margin=0,
+                sizing_mode="stretch_width",
+            )
+        return self._settings_form(instance_id, spec, config_state, names, False)
+
+    def _spec_buttons(
+        self, instance_id: str, config_state: param.Parameterized, fields: list[str]
+    ) -> Viewable:
+        """Offer to edit each spec field in the code panel under the canvas."""
+        buttons = []
+        panel = self.editor.code_panel
+        for name in fields:
+            parameter = config_state.param[name]
+            label = field_label(parameter) or name
+            code = code_language(parameter) is not None
+            button = pmui.Button(
+                label=f"Edit {label}",
+                icon="code" if code else "data_object",
+                variant="outlined",
+                size="small",
+                sizing_mode="stretch_width",
+                margin=(0, 0, 4, 0),
+                sx={"textTransform": "none", "justifyContent": "flex-start"},
+                css_classes=["fd-edit-spec", f"fd-edit-spec-{name}"],
+            )
+            button.on_click(
+                partial(lambda _event, n: self.editor.edit_spec(instance_id, n), n=name)
+            )
+            buttons.append((name, label, button))
+
+        def mark(*_events):
+            # A field holding an edit not run yet says so on its button.
+            drafted = panel.drafted_fields(instance_id)
+            for name, label, button in buttons:
+                draft = name in drafted
+                button.label = f"Edit {label} · draft not run" if draft else f"Edit {label}"
+                classes = [c for c in button.css_classes if c != "fd-edit-spec-draft"]
+                button.css_classes = [*classes, "fd-edit-spec-draft"] if draft else classes
+
+        mark()
+        watcher = panel.param.watch(mark, ["dirty", "instance_id", "field"])
+        self._releases.append(partial(panel.param.unwatch, watcher))
+        return pn.Column(
+            *(button for _name, _label, button in buttons),
+            _caption("Edited in the code panel under the canvas.", margin=(0, 0, 8, 0)),
+            margin=(0, 0, 4, 0),
+            sizing_mode="stretch_width",
+            css_classes=["fd-spec-in-panel"],
+        )
+
+    def _settings_form(
+        self,
+        instance_id: str,
+        spec: ComponentSpec,
+        config_state: param.Parameterized | None,
+        names: list[str],
+        has_spec: bool,
+    ) -> Viewable:
+        """Build the form of the settings *names*; *has_spec* when the spec is edited elsewhere."""
+        editor = self.editor
         if not names:
             caption = (
                 _caption("This component has no settings.")
-                if not spec.inputs
+                if not spec.inputs and not has_spec
                 else pn.Column(margin=0, visible=False)
             )
             if not has_choices(spec) or not any(takes_literal(p) for p in spec.inputs):

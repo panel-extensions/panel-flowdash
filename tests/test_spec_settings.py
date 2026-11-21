@@ -4,6 +4,7 @@ import json
 
 import pandas as pd
 import panel as pn
+import panel_material_ui as pmui
 import param
 import pytest
 from panel.viewable import Viewer
@@ -128,7 +129,25 @@ class Frame(Viewer):
         return pn.pane.Str("frame")
 
 
-COMPONENTS = {"D/chart": Chart, "D/plain": PlainChart, "D/json": JSONOnly, "D/frame": Frame}
+@register(page=False, component=True, title="Query chart", config=["sql", "spec", "limit"])
+class QueryChart(Viewer):
+    sql = param.String(
+        default="SELECT 1", metadata={"flowdash": {"widget": "code", "language": "sql"}}
+    )
+    spec = param.Dict(default=SPEC, metadata=SPEC_META)
+    limit = param.Integer(default=10)
+
+    def __panel__(self):
+        return pn.pane.JSON(self.param.spec)
+
+
+COMPONENTS = {
+    "D/chart": Chart,
+    "D/plain": PlainChart,
+    "D/json": JSONOnly,
+    "D/frame": Frame,
+    "D/both": QueryChart,
+}
 
 
 def _setting(path):
@@ -406,10 +425,17 @@ async def editor():
 
 
 def _field(editor, node_id):
+    """Select the node, which shows its spec in the code panel, and return the panel's spec editor."""
     select_on_canvas(editor._flow, node_id=node_id)
-    fields = list(pn.Column(*editor._inspector._body).select(SpecEditor))
-    assert len(fields) == 1
-    return fields[0]
+    if not editor.code_panel_open:
+        assert editor.open_code_panel(node_id)
+    assert editor.code_panel.instance_id == node_id
+    return editor.code_panel.spec_editor
+
+
+async def _run(editor):
+    editor.code_panel.run()
+    await _settle()
 
 
 class TestChoices:
@@ -432,7 +458,7 @@ class TestChoices:
         assert choices["spec.encoding.x.type"].values() == ["ordinal"]
         assert "missing" not in choices
 
-    async def test_the_inspector_passes_the_columns_to_the_form(self, editor):
+    async def test_the_code_panel_passes_the_columns_to_the_form(self, editor):
         frame = editor.add_component("D/frame")
         node = editor.add_component("D/chart")
         assert editor.connect(frame, "data", node, "data") is True
@@ -448,7 +474,75 @@ class TestChoices:
         assert x.value == "year (integer)"
 
 
-class TestInspector:
+class TestCodePanel:
+    async def test_the_inspector_offers_the_spec_in_the_panel(self, editor):
+        node = editor.add_component("D/plain")
+        select_on_canvas(editor._flow, node_id=node)
+        body = pn.Column(*editor._inspector._body)
+        assert not list(body.select(SpecEditor))
+        button = next(b for b in body.select(pmui.Button) if "fd-edit-spec" in b.css_classes)
+        button.clicks += 1
+        panel = editor.code_panel
+        assert (panel.instance_id, panel.field) == (node, "spec")
+        assert panel.spec_editor.value == SPEC
+
+    async def test_a_narrow_window_keeps_the_spec_in_the_inspector(self, editor):
+        node = editor.add_component("D/plain")
+        editor._split_view.storage.window_width = 800
+        select_on_canvas(editor._flow, node_id=node)
+        assert len(list(pn.Column(*editor._inspector._body).select(SpecEditor))) == 1
+
+    async def test_form_and_json_are_views_of_one_spec(self, editor):
+        node = editor.add_component("D/plain")
+        field = _field(editor, node)
+        panel = editor.code_panel
+        assert panel.view_toggle.visible and panel.view_toggle.value == "form"
+        assert panel._spec_form.visible and not panel._spec_text.visible
+        field._controls["title"][1].value = "Capacity"
+        assert '"title": "Capacity"' in field.editor.value
+        panel.view_toggle.value = "spec"
+        assert not panel._spec_form.visible and panel._spec_text.visible
+        field.editor.value = json.dumps({**SPEC, "title": "Typed"})
+        assert field._controls["title"][1].value == "Typed"
+        assert panel.dirty
+        assert editor._component_instances[node].spec == SPEC
+
+    async def test_a_spec_without_settings_is_json_only(self, editor):
+        node = editor.add_component("D/json")
+        _field(editor, node)
+        panel = editor.code_panel
+        assert not panel.view_toggle.visible
+        assert panel._spec_text.visible and not panel._spec_form.visible
+
+    async def test_form_drafts_are_kept_per_node(self, editor):
+        first = editor.add_component("D/plain")
+        second = editor.add_component("D/plain")
+        field = _field(editor, first)
+        field._controls["title"][1].value = "First"
+        _field(editor, second)
+        assert "title" not in field.value
+        field._controls["title"][1].value = "Second"
+        _field(editor, first)
+        assert field.value["title"] == "First"
+        assert field._controls["title"][1].value == "First"
+        _field(editor, second)
+        assert field.value["title"] == "Second"
+        assert all("title" not in editor._component_instances[n].spec for n in (first, second))
+
+    async def test_invalid_text_is_kept_per_node_and_not_run(self, editor):
+        first = editor.add_component("D/plain")
+        second = editor.add_component("D/plain")
+        field = _field(editor, first)
+        editor.code_panel.view_toggle.value = "spec"
+        field.editor.value = '{"mark": '
+        assert field.error is not None and editor.code_panel.dirty
+        await _run(editor)
+        assert editor._component_instances[first].spec == SPEC
+        _field(editor, second)
+        assert field.error is None and field.value == SPEC
+        _field(editor, first)
+        assert field.error is not None and field.editor.value == '{"mark": '
+
     async def test_a_form_edit_is_one_version_and_undo_restores_the_spec_exactly(self, editor):
         node = editor.add_component("D/plain")
         before = json.dumps(editor._component_instances[node].spec)
@@ -457,6 +551,8 @@ class TestInspector:
         versions = len(editor.edit_history.versions)
         field._controls["title"][1].value = "Capacity"
         await _settle()
+        assert "title" not in editor._component_instances[node].spec, "a draft until run"
+        await _run(editor)
         editor.edit_history.flush()
         assert editor._component_instances[node].spec["title"] == "Capacity"
         assert editor._tile_items[0]["config"]["spec"]["title"] == "Capacity"
@@ -471,8 +567,9 @@ class TestInspector:
         field = _field(editor, node)
         await _settle()
         field._controls["title"][1].value = "Capacity"
-        await _settle()
+        await _run(editor)
         assert editor._component_instances[node].spec["title"] == "Capacity"
+        assert not editor.code_panel.dirty
 
     async def test_an_invalid_value_is_refused_by_the_check(self, editor):
         node = editor.add_component("D/chart")
@@ -480,16 +577,17 @@ class TestInspector:
         await _settle()
         bad = {**SPEC, "encoding": {**SPEC["encoding"], "x": {"field": "year", "type": "time"}}}
         field.editor.value = json.dumps(bad)
-        await _settle()
+        await _run(editor)
         assert editor._component_instances[node].spec == SPEC
-        assert editor._inspector._status_info == ("Edit not applied", "warning")
+        assert "problem" in editor.code_panel._code_status.object
         assert field.value == bad, "the draft keeps the text for fixing"
+        assert editor.code_panel.dirty
 
     async def test_unknown_keys_survive_form_edits_and_saving(self, editor):
         node = editor.add_component("D/plain")
         field = _field(editor, node)
         field._controls["encoding.y.title"][1].value = "Capacity (MW)"
-        await _settle()
+        await _run(editor)
         editor.save()
         stored = editor.store.load_dashboard(editor.user, editor.dashboard.dashboard_id)
         spec = stored.items[0].config["spec"]
@@ -506,9 +604,200 @@ class TestInspector:
         assert editor.undo()
         assert "title" not in field.value and field._controls["title"][1].value == ""
 
+    async def test_a_change_made_elsewhere_keeps_a_form_draft(self, editor):
+        node = editor.add_component("D/plain")
+        field = _field(editor, node)
+        field._controls["title"][1].value = "Mine"
+        editor._apply_config_patch(node, {"spec": {**SPEC, "width": 300}})
+        assert field.value["title"] == "Mine" and "width" not in field.value
+        assert editor.code_panel.dirty
+
     async def test_spec_text_typed_offers_save(self, editor):
         node = editor.add_component("D/plain")
         editor.save()
         field = _field(editor, node)
+        editor.code_panel.view_toggle.value = "spec"
         field.editor.value_input = "{}"
-        assert editor._inspector.has_unsent_text()
+        assert editor.code_panel.dirty
+        assert editor._has_unsent_edits()
+
+
+class TestDraftsAcrossChanges:
+    async def test_invalid_json_says_why_in_the_form_view(self, editor):
+        node = editor.add_component("D/plain")
+        field = _field(editor, node)
+        panel = editor.code_panel
+        panel.view_toggle.value = "spec"
+        field.editor.value = '{"mark": '
+        panel.view_toggle.value = "form"
+        assert panel._json_error.visible
+        assert "not a valid spec" in panel._json_error[0].object
+        assert all(control.disabled for _setting, control in field._controls.values())
+        await _run(editor)
+        assert "the JSON is not valid" in panel._code_status.object
+        assert "the JSON is not valid" in panel._result_footer.object
+        panel.fix_json_button.clicks += 1
+        assert panel.view_toggle.value == "spec" and not panel._json_error.visible
+        field.editor.value = json.dumps(SPEC)
+        panel.view_toggle.value = "form"
+        assert not panel._json_error.visible
+
+    @pytest.mark.parametrize("change", ["agent", "undo"])
+    async def test_a_held_form_draft_is_rebased_on_a_change_made_since(self, editor, change):
+        first = editor.add_component("D/plain")
+        second = editor.add_component("D/plain")
+        if change == "undo":
+            editor._apply_config_patch(first, {"spec": {**SPEC, "width": 300}})
+            editor.edit_history.flush()
+        field = _field(editor, first)
+        field._controls["title"][1].value = "Mine"
+        _field(editor, second)
+        if change == "agent":
+            editor._apply_config_patch(first, {"spec": {**SPEC, "width": 300}})
+            expected_width = 300
+        else:
+            assert editor.undo()
+            expected_width = None
+        _field(editor, first)
+        assert field.value["title"] == "Mine"
+        assert field.value.get("width") == expected_width
+        assert editor.code_panel.dirty and not editor.code_panel._stale_notice.visible
+
+    async def test_a_held_text_draft_on_a_changed_field_asks_first(self, editor):
+        node = editor.add_component("D/both")
+        select_on_canvas(editor._flow, node_id=node)
+        assert editor.open_code_panel(node, "sql")
+        panel = editor.code_panel
+        panel.code.value_input = "SELECT 2"
+        editor._split_view.storage.window_width = 800
+        assert not editor.code_panel_open
+        editor._apply_config_patch(node, {"sql": "SELECT 3"})
+        editor._split_view.storage.window_width = 1400
+        assert editor.open_code_panel(node, "sql")
+        assert panel.code.value_input == "SELECT 3"
+        assert panel._stale_notice.visible and panel.dirty
+        assert editor._component_instances[node].sql == "SELECT 3"
+        panel.keep_stale_draft()
+        assert panel.code.value_input == "SELECT 2" and not panel._stale_notice.visible
+        panel.discard()
+        assert panel.code.value_input == "SELECT 3" and not panel.dirty
+
+    async def test_a_stale_draft_can_be_discarded_and_stays_held_until_decided(self, editor):
+        node = editor.add_component("D/both")
+        other = editor.add_component("D/plain")
+        select_on_canvas(editor._flow, node_id=node)
+        assert editor.open_code_panel(node, "sql")
+        panel = editor.code_panel
+        panel.code.value_input = "SELECT 2"
+        editor.close_code_panel()
+        editor._apply_config_patch(node, {"sql": "SELECT 3"})
+        assert editor.open_code_panel(node, "sql")
+        assert panel._stale_notice.visible
+        select_on_canvas(editor._flow, node_id=other)
+        select_on_canvas(editor._flow, node_id=node)
+        assert panel.field == "sql" and panel._stale_notice.visible
+        panel.discard_stale_draft()
+        assert not panel._stale_notice.visible and not panel.has_drafts
+
+    async def test_reselecting_opens_the_field_with_a_draft(self, editor):
+        node = editor.add_component("D/both")
+        other = editor.add_component("D/plain")
+        field = _field(editor, node)
+        panel = editor.code_panel
+        assert panel.field == "sql"
+        assert panel.field_toggle.visible
+        assert list(panel.field_toggle.options.values()) == ["sql", "spec"]
+        panel.field_toggle.value = "spec"
+        assert panel.field == "spec"
+        field._controls["title"][1].value = "Mine"
+        select_on_canvas(editor._flow, node_id=other)
+        select_on_canvas(editor._flow, node_id=node)
+        assert panel.field == "spec" and field.value["title"] == "Mine"
+        body = pn.Column(*editor._inspector._body)
+        labels = [b.label for b in body.select(pmui.Button) if "fd-edit-spec" in b.css_classes]
+        assert labels == ["Edit SQL", "Edit Spec · draft not run"]
+        panel.field_toggle.value = "sql"
+        assert "Spec (draft not run)" in panel.field_toggle.options
+
+    async def test_a_node_without_a_spec_names_nothing_to_edit(self, editor):
+        frame = editor.add_component("D/frame")
+        assert editor.open_code_panel(frame)
+        assert "Nothing to edit" in editor.code_panel._code_header.object
+
+    async def _hold_then_change(self, editor, start, drafted, outside):
+        """Hold a spec draft on one node, change its spec from outside, and show it again."""
+        node = editor.add_component("D/plain")
+        other = editor.add_component("D/plain")
+        editor._apply_config_patch(node, {"spec": start})
+        field = _field(editor, node)
+        field.value = drafted
+        assert editor.code_panel.dirty
+        _field(editor, other)
+        editor._apply_config_patch(node, {"spec": outside})
+        _field(editor, node)
+        return editor.code_panel, field
+
+    @pytest.mark.parametrize(
+        ("start", "drafted", "outside"),
+        [
+            ({**SPEC, "title": "Old"}, {**SPEC, "title": "Mine"}, {**SPEC, "title": "Agent"}),
+            ({**SPEC, "title": "Old"}, SPEC, {**SPEC, "title": "Agent"}),
+            (
+                SPEC,
+                {
+                    **SPEC,
+                    "encoding": {**SPEC["encoding"], "x": {**SPEC["encoding"]["x"], "title": "X"}},
+                },
+                {**SPEC, "encoding": {"y": SPEC["encoding"]["y"]}},
+            ),
+            (
+                {**SPEC, "layer": [{"mark": "bar"}, {"mark": "line"}]},
+                {**SPEC, "layer": [{"mark": "point"}, {"mark": "line"}]},
+                {**SPEC, "layer": [{"mark": "bar"}, {"mark": "area"}]},
+            ),
+            (
+                SPEC,
+                {**SPEC, "transform": [{"filter": "datum.year >= 2010"}]},
+                {**SPEC, "transform": [*SPEC["transform"], {"filter": "datum.capacity > 1"}]},
+            ),
+        ],
+        ids=["same-path", "deleted-and-edited", "parent-deleted", "list-item", "transform"],
+    )
+    async def test_a_conflicting_change_asks_instead_of_rebasing(
+        self, editor, start, drafted, outside
+    ):
+        panel, field = await self._hold_then_change(editor, start, drafted, outside)
+        assert panel._stale_notice.visible and panel.dirty
+        assert field.value == outside, "the current spec is shown until the person decides"
+        panel.keep_stale_draft()
+        assert field.value == drafted and not panel._stale_notice.visible
+
+    async def test_a_draft_held_against_no_spec_asks(self, editor):
+        node = editor.add_component("D/plain")
+        other = editor.add_component("D/plain")
+        editor._apply_config_patch(node, {"spec": None})
+        field = _field(editor, node)
+        field.value = {"mark": "point"}
+        _field(editor, other)
+        editor._apply_config_patch(node, {"spec": {**SPEC, "mark": "line"}})
+        _field(editor, node)
+        panel = editor.code_panel
+        assert panel._stale_notice.visible
+        assert field.value["mark"] == "line"
+
+    async def test_running_while_the_notice_is_open_clears_it(self, editor):
+        node = editor.add_component("D/both")
+        select_on_canvas(editor._flow, node_id=node)
+        assert editor.open_code_panel(node, "sql")
+        panel = editor.code_panel
+        panel.code.value_input = "SELECT 2"
+        editor.close_code_panel()
+        editor._apply_config_patch(node, {"sql": "SELECT 3"})
+        assert editor.open_code_panel(node, "sql")
+        assert panel._stale_notice.visible
+        panel.run("SELECT 4")
+        await _settle()
+        assert editor._component_instances[node].sql == "SELECT 4"
+        assert not panel._stale_notice.visible and not panel.dirty
+        panel.keep_stale_draft()
+        assert panel.code.value_input == "SELECT 4"

@@ -1,18 +1,27 @@
-"""The code panel docked under the canvas: a node's code field beside the node's result.
+"""The code panel docked under the canvas: a node's spec beside the node's result.
 
-The editor opens it for one code field of one node, see
-:meth:`~panel_flowdash.editor.FlowDash.open_code_panel`. The text typed is a
-draft until Run (or Ctrl+Enter) applies it, together with the node's other
-config fields shown in the panel's header, as one edit. With "Run on change"
-on, a pause in typing runs it too. A component with a ``check_config`` has the
-draft checked first, see :class:`~panel_flowdash.ui.config_draft.ConfigDraft`:
-a draft that fails stays in the editor with the problems marked on their
-lines, and the result keeps showing the node's last good output.
+The editor opens it for one node, see
+:meth:`~panel_flowdash.editor.FlowDash.open_code_panel`, and while it is open
+it follows the node selected on the canvas. It edits the node's spec, what the
+node does rather than its settings, which stay in the inspector: a code field,
+e.g. a query, as text, or a dict declaring a spec form, e.g. a chart spec, as
+a form of its settings or as JSON, see
+:class:`~panel_flowdash.ui.spec_field.SpecEditor`. A node without a spec shows
+its result only.
+
+The edit is a draft until Run (or Ctrl+Enter) applies it as one edit. With
+"Run on change" on, a pause in typing runs it too. A component with a
+``check_config`` has the draft checked first, see
+:class:`~panel_flowdash.ui.config_draft.ConfigDraft`: a draft that fails stays
+in the editor with the problems marked on their lines, and the result keeps
+showing the node's last good output. Drafts not run are kept per node and
+field while the panel shows another node or is closed.
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
 import datetime as dt
 import html
 import time
@@ -28,13 +37,14 @@ from panel.widgets import CodeEditor
 from panel_splitjs import HSplit
 
 from panel_flowdash.config_check import CheckResult
-from panel_flowdash.config_choices import code_fields, node_completions
+from panel_flowdash.config_choices import node_choices, node_completions, spec_fields
 from panel_flowdash.dataflow_engine import failure_text
-from panel_flowdash.spec_settings import declared_settings
-from panel_flowdash.ui.choice_widgets import form_widgets
+from panel_flowdash.spec_settings import SpecPathError, declared_settings, delete_path, set_path
+from panel_flowdash.ui.choice_widgets import setting_choices
 from panel_flowdash.ui.code_field import ACE_OPTIONS, ACE_THEME_CSS, AceTools, code_language
 from panel_flowdash.ui.config_draft import ConfigDraft
 from panel_flowdash.ui.node_preview import summarize_value
+from panel_flowdash.ui.spec_field import SpecEditor
 from panel_flowdash.ui.split_view import GUTTER_CSS
 from panel_flowdash.ui.text import field_label, text_alert
 from panel_flowdash.util import is_failure
@@ -53,6 +63,16 @@ SPLIT_SIZES = (40.0, 60.0)
 #: Narrowest the code or the result may be dragged, in pixels.
 MIN_PANE_WIDTH = 240
 _EDITOR_CLASS = "fd-code-panel-editor"
+_SPEC_TEXT_CLASS = "fd-code-panel-spec-json"
+#: The views of a spec with a form, by label, as :attr:`SpecEditor.mode` values.
+SPEC_VIEWS = {"Form": "form", "JSON": "spec"}
+# Where a held draft keeps spec text that was typed but is not a valid spec yet.
+_TEXT = object()
+# Where a held draft keeps the field's value it was written against.
+_BASE = object()
+_MISSING = object()
+# The result option showing the node's own view rather than one of its outputs.
+_VIEW = "__view__"
 
 _HEADER_CSS = """
 :host { min-width: 0; }
@@ -82,6 +102,9 @@ _BAR_CSS = """
 .fd-cp-ok, .fd-cp-error, .fd-cp-warn { display: inline-flex; align-items: center; gap: 4px; }
 .fd-cp-icon { font-family: "Material Icons"; font-size: 16px; line-height: 1; width: 16px;
   font-feature-settings: "liga"; flex: none; }
+.fd-cp-empty { display: flex; flex-direction: column; gap: 4px; padding: 16px; font-size: 13px;
+  line-height: 20px; color: var(--mui-palette-text-secondary); white-space: normal; }
+.fd-cp-empty b { font-weight: 600; color: var(--mui-palette-text-primary); }
 """
 
 # A strip of controls, centred on one line, with a rule under it.
@@ -96,8 +119,6 @@ _STRIP_CSS = """
 :host(.fd-code-panel-header) > * { flex: none; }
 :host(.fd-code-panel-header) > .bk-Spacer { flex: 1 1 0; min-width: 0; width: auto !important; }
 :host(.fd-code-panel-header) > .fd-cp-title-pane { flex: 0 1 auto; min-width: 60px; overflow: hidden; }
-:host(.fd-code-panel-header) > .fd-code-panel-fields { flex: 0 1 auto; min-width: 0;
-  overflow-x: clip; overflow-y: visible; }
 :host(.fd-cp-footer) { border-bottom: none; padding: 0 12px;
   border-top: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.12)); }
 :host(.fd-cp-subheader) { padding: 0 12px; }
@@ -249,13 +270,17 @@ class DockHandle(JSComponent):
 
 
 class CodePanel(Viewer):
-    """Edits one code field of one node beside the node's result, applying the draft on Run."""
+    """Edits the spec of one node beside the node's result, applying the draft on Run."""
 
     editor = param.Parameter(doc="The FlowDash editor holding the node.")
 
-    instance_id = param.String(default=None, allow_None=True, doc="The node edited.")
+    instance_id = param.String(default=None, allow_None=True, doc="The node shown.")
 
-    field = param.String(default=None, allow_None=True, doc="The code field edited.")
+    field = param.String(
+        default=None,
+        allow_None=True,
+        doc="The spec field edited, a code field or a spec dict; None for a node without one.",
+    )
 
     run_on_change = param.Boolean(
         default=False, doc="Whether a pause in typing runs the draft, without pressing Run."
@@ -272,8 +297,6 @@ class CodePanel(Viewer):
         self._editor_ref = weakref.ref(self.editor)
         self._releases: list[t.Callable[[], None]] = []
         self._draft: ConfigDraft | None = None
-        self._fields_state: param.Parameterized | None = None
-        self._others: list[str] = []
         self._runs = 0
         self._typing = 0
         self._started: float | None = None
@@ -295,9 +318,6 @@ class CodePanel(Viewer):
             align="center",
             stylesheets=[_HEADER_CSS],
             css_classes=["fd-cp-title-pane"],
-        )
-        self._fields = pn.Row(
-            margin=(0, 0, 0, 16), align="center", css_classes=["fd-code-panel-fields"]
         )
         self.run_switch = pmui.Switch(
             label="Run on change",
@@ -361,7 +381,6 @@ class CodePanel(Viewer):
         self.close_button.on_click(lambda _event: self.on_close and self.on_close())
         self._header = pn.Row(
             self._title,
-            self._fields,
             pn.layout.HSpacer(),
             self.discard_button,
             self.run_switch,
@@ -396,7 +415,132 @@ class CodePanel(Viewer):
             margin=0,
             align="center",
         )
+        # A spec dict is edited by a SpecEditor whose parts the panel lays out itself.
+        self.spec_editor = SpecEditor(mode="form", margin=0)
+        self.spec_editor.editor.param.update(
+            height=None,
+            min_height=80,
+            sizing_mode="stretch_both",
+            styles={},
+            css_classes=[*self.spec_editor.editor.css_classes, _SPEC_TEXT_CLASS],
+        )
+        self.spec_editor.spec.param.update(sizing_mode="stretch_both", styles={"min-height": "0"})
+        self.spec_editor.status.margin = (4, 12)
+        self.spec_editor.param.watch(self._spec_edited, "value")
+        self.spec_editor.param.watch(self._spec_typed, ["unsent", "error"])
+        self.spec_editor.param.watch(lambda _event: self._sync_kind(), "mode")
+        self.spec_tools = AceTools(
+            target_class=_SPEC_TEXT_CLASS,
+            options={**ACE_OPTIONS, "wrap": False, "tabSize": 2},
+            on_run=self.run,
+            scroll_margin=8,
+            margin=0,
+            align="center",
+        )
+        self.view_toggle = pmui.RadioButtonGroup(
+            options=SPEC_VIEWS,
+            value=self.spec_editor.mode,
+            size="small",
+            margin=(0, 12, 0, 0),
+            align="center",
+            sx={
+                "& .MuiToggleButton-root": {
+                    "py": "1px",
+                    "px": "10px",
+                    "fontSize": "0.75rem",
+                    "lineHeight": "20px",
+                    "textTransform": "none",
+                }
+            },
+            css_classes=["fd-code-spec-view"],
+        )
+        self.view_toggle.link(self.spec_editor, value="mode", bidirectional=True)
+        self._spec_form = pn.Column(
+            self.spec_editor.banner,
+            self.spec_editor.form,
+            margin=0,
+            styles={"padding": "8px 16px", "box-sizing": "border-box", "min-height": "0"},
+            sizing_mode="stretch_both",
+            scroll="y-auto",
+            css_classes=["fd-code-spec-form"],
+        )
+        self._spec_text = pn.Column(
+            self.spec_editor.spec,
+            margin=0,
+            sizing_mode="stretch_both",
+            styles={"min-height": "0"},
+            css_classes=["fd-code-spec-text"],
+        )
+        self._empty = pn.pane.HTML(
+            "",
+            margin=0,
+            sizing_mode="stretch_both",
+            stylesheets=[_BAR_CSS],
+            css_classes=["fd-code-empty"],
+        )
         self._problems = pn.Column(margin=0, sizing_mode="stretch_width")
+        # Why the form is disabled while the JSON does not parse, shown in the Form view.
+        self.fix_json_button = pmui.Button(
+            label="Fix in JSON",
+            variant="text",
+            size="small",
+            margin=(0, 12, 4, 12),
+            sx={"textTransform": "none"},
+            css_classes=["fd-code-fix-json"],
+        )
+        self.fix_json_button.on_click(lambda _event: setattr(self.view_toggle, "value", "spec"))
+        self._json_error = pn.Column(
+            margin=0,
+            sizing_mode="stretch_width",
+            visible=False,
+            css_classes=["fd-code-json-error"],
+        )
+        # A held draft written against a value of the field that has changed since.
+        self._stale: dict | None = None
+        self.keep_draft_button = pmui.Button(
+            label="Keep draft",
+            variant="text",
+            size="small",
+            margin=(0, 4, 4, 12),
+            sx={"textTransform": "none"},
+            css_classes=["fd-code-keep-draft"],
+        )
+        self.keep_draft_button.on_click(lambda _event: self.keep_stale_draft())
+        self.discard_stale_button = pmui.Button(
+            label="Discard",
+            variant="text",
+            size="small",
+            margin=(0, 4, 4, 0),
+            sx={"textTransform": "none"},
+            css_classes=["fd-code-discard-stale"],
+        )
+        self.discard_stale_button.on_click(lambda _event: self.discard_stale_draft())
+        self._stale_notice = pn.Column(
+            margin=0, sizing_mode="stretch_width", visible=False, css_classes=["fd-code-stale"]
+        )
+        # Picks the spec field shown, for a node with several.
+        self.field_toggle = pmui.RadioButtonGroup(
+            options={},
+            size="small",
+            margin=(0, 12, 0, 0),
+            align="center",
+            visible=False,
+            # Many fields scroll sideways rather than push the header's other controls out.
+            styles={"min-width": "0", "overflow-x": "auto", "flex": "0 1 auto"},
+            sx={
+                "flexWrap": "nowrap",
+                "& .MuiToggleButton-root": {
+                    "py": "1px",
+                    "px": "10px",
+                    "fontSize": "0.75rem",
+                    "lineHeight": "20px",
+                    "textTransform": "none",
+                    "whiteSpace": "nowrap",
+                },
+            },
+            css_classes=["fd-code-field-switch"],
+        )
+        self.field_toggle.param.watch(self._field_picked, "value")
         self._code_status = pn.pane.HTML(
             "", margin=0, align="center", sizing_mode="stretch_width", stylesheets=[_BAR_CSS]
         )
@@ -406,6 +550,7 @@ class CodePanel(Viewer):
         code_footer = pn.Row(
             self._code_status,
             self.tools,
+            self.spec_tools,
             self._language,
             height=32,
             margin=0,
@@ -418,6 +563,8 @@ class CodePanel(Viewer):
         )
         code_header = pn.Row(
             self._code_header,
+            self.field_toggle,
+            self.view_toggle,
             height=36,
             margin=0,
             sizing_mode="stretch_width",
@@ -427,7 +574,12 @@ class CodePanel(Viewer):
         self._code_column = pn.Column(
             code_header,
             self._problems,
+            self._stale_notice,
+            self._json_error,
             self.code,
+            self._spec_form,
+            self._spec_text,
+            self._empty,
             code_footer,
             margin=0,
             sizing_mode="stretch_both",
@@ -511,8 +663,9 @@ class CodePanel(Viewer):
             css_classes=["fd-code-panel"],
         )
         self.param.watch(self._sync_collapsed, "collapsed")
-        self.param.watch(self._sync_run_button, ["dirty", "run_on_change"])
+        self.param.watch(self._sync_run_button, ["dirty", "run_on_change", "field"])
         self._sync_collapsed()
+        self._sync_kind()
         self._sync_run_button()
 
     # ------------------------------------------------------------------
@@ -530,8 +683,21 @@ class CodePanel(Viewer):
         item = next((i for i in editor._tile_items if i["instance_id"] == self.instance_id), None)
         return editor._component_specs.get(item["component_id"]) if item else None
 
-    def can_edit(self, instance_id: str, field: str) -> bool:
-        """Whether *field* of the node *instance_id* is a code field the panel can edit."""
+    def _kind(self) -> str | None:
+        """Return how the field shown is edited: ``"code"``, ``"spec"`` or None without one."""
+        editor = self._flowdash
+        if editor is None or self.instance_id is None or self.field is None:
+            return None
+        state = editor._dataflow_graph.get_config_state(self.instance_id)
+        if state is None or self.field not in state.param:
+            return None
+        return "spec" if declared_settings(state.param[self.field]) is not None else "code"
+
+    def can_edit(self, instance_id: str, field: str | None = None) -> bool:
+        """Whether the panel can show the node *instance_id*, editing its spec field *field*.
+
+        Without a *field* it shows the node's result only.
+        """
         editor = self._flowdash
         if editor is None:
             return False
@@ -539,18 +705,30 @@ class CodePanel(Viewer):
         if item is None or "placeholder" in item:
             return False
         spec = editor._component_specs.get(item["component_id"])
+        if spec is None:
+            return False
+        if field is None:
+            return True
         state = editor._dataflow_graph.get_config_state(instance_id)
-        return spec is not None and state is not None and field in code_fields(spec)
+        return state is not None and field in spec_fields(spec)
 
     @pn.io.hold()
-    def open(self, instance_id: str, field: str):
-        """Edit *field* of the node *instance_id*, keeping the draft if it is already shown."""
+    def open(self, instance_id: str, field: str | None = None, focus: bool = True):
+        """Show the node *instance_id*, editing its spec field *field*, keeping the draft if it is already shown.
+
+        Another node's draft not run yet is held until it is shown again.
+        With *focus*, as when asked for rather than following the selection,
+        a collapsed panel expands and the editor takes the keyboard.
+        """
         if (instance_id, field) == (self.instance_id, self.field):
-            self.collapsed = False
-            self.tools.focus += 1
+            if focus:
+                self.collapsed = False
+                self._focus()
             return
         self.release()
-        self.param.update(instance_id=instance_id, field=field, collapsed=False)
+        self.param.update(instance_id=instance_id, field=field)
+        if focus:
+            self.collapsed = False
         editor = self._flowdash
         spec = self._spec()
         state = editor._dataflow_graph.get_config_state(instance_id)
@@ -558,22 +736,37 @@ class CodePanel(Viewer):
         self._result = CheckResult()
         self._failed = False
         self._ran_at = self._took = None
-        parameter = state.param[field]
-        language = code_language(parameter) or "text"
-        text = getattr(state, field) or ""
+        kind = self._kind()
+        parameter = state.param[field] if kind is not None else None
         self._syncing = True
         try:
-            self.code.param.update(language=language, value=text, value_input=text)
+            if kind == "code":
+                language = code_language(parameter) or "text"
+                text = getattr(state, field) or ""
+                self.code.param.update(language=language, value=text, value_input=text)
+                self._language.object = _bar(html.escape(language.upper()))
+            elif kind == "spec":
+                choices = editor._inspector._choices.get(instance_id, {})
+                self.spec_editor.param.update(
+                    settings=declared_settings(parameter) or [],
+                    choices=setting_choices(choices, field),
+                )
+                self.spec_editor.load(copy.deepcopy(getattr(state, field) or {}))
+                self._language.object = _bar("JSON")
+            else:
+                self._language.object = _bar("")
         finally:
             self._syncing = False
-        self._language.object = _bar(html.escape(language.upper()))
         self._code_header.object = self._code_header_html(spec, parameter)
-        self._build_fields(state, spec)
-        held = self._held.pop((instance_id, field), None)
+        self._empty.object = self._empty_html(spec) if kind is None else ""
+        self._sync_kind()
+        held = self._held.pop((instance_id, field), None) if field else None
         if held:
-            self._restore(held)
-        watcher = state.param.watch(self._config_changed, [field, *self._others])
-        self._releases.append(lambda: state.param.unwatch(watcher))
+            self._restore_held(held, getattr(state, field))
+        self._sync_field_toggle(spec)
+        if kind is not None:
+            watcher = state.param.watch(self._config_changed, [field])
+            self._releases.append(lambda: state.param.unwatch(watcher))
         node = editor._dataflow_graph.get_state(instance_id)
         ports = [p for p in spec.outputs if node is not None and p.name in node.param]
         outputs = [p.name for p in ports]
@@ -581,16 +774,20 @@ class CodePanel(Viewer):
             out_watcher = node.param.watch(lambda *_e: self._show_result(), outputs)
             self._releases.append(lambda: node.param.unwatch(out_watcher))
         inputs = [p.name for p in spec.inputs if node is not None and p.name in node.param]
-        if node is not None and inputs:
+        if node is not None and inputs and kind is not None:
             in_watcher = node.param.watch(lambda *_e: self._complete(), inputs)
             self._releases.append(lambda: node.param.unwatch(in_watcher))
+        options = {_output_label(p): p.name for p in ports}
+        if kind == "spec" and instance_id in editor._component_instances:
+            # A spec, e.g. a chart's, is best judged by what it draws.
+            options = {"View": _VIEW, **options}
         self.outputs.param.update(
-            options={_output_label(p): p.name for p in ports},
-            value=self._default_output(node, outputs),
+            options=options,
+            value=_VIEW if _VIEW in options.values() else self._default_output(node, outputs),
         )
-        self.outputs.visible = len(outputs) > 1
+        self.outputs.visible = len(options) > 1
         self._title.object = self._title_html(spec)
-        if spec.check_config is not None:
+        if spec.check_config is not None and kind is not None:
             inspector = editor._inspector
             draft = ConfigDraft(
                 editor, instance_id, inspector._check_runs, inspector._check_results
@@ -602,7 +799,29 @@ class CodePanel(Viewer):
         self._show_status()
         self._show_result()
         self._complete()
-        self.tools.focus += 1
+        if focus:
+            self._focus()
+
+    def _focus(self):
+        kind = self._kind()
+        if kind == "code":
+            self.tools.focus += 1
+        elif kind == "spec" and self._spec_text.visible:
+            self.spec_tools.focus += 1
+
+    def _sync_kind(self):
+        """Show the editor for the field shown: code, the spec's form or JSON, or the empty state."""
+        kind = self._kind()
+        has_form = kind == "spec" and bool(self.spec_editor.settings)
+        form = has_form and self.spec_editor.mode == "form"
+        self.code.visible = self.tools.visible = kind == "code"
+        self._spec_form.visible = form
+        self._spec_text.visible = self.spec_tools.visible = kind == "spec" and not form
+        self.view_toggle.visible = has_form
+        self._empty.visible = kind is None
+        self._sync_json_error()
+        if kind == "spec":
+            self._language.object = _bar("" if form else "JSON")
 
     def _default_output(self, node: param.Parameterized | None, outputs: list[str]) -> str | None:
         """Return the output to show first: a table before a lazy value, e.g. a query's pipeline."""
@@ -611,16 +830,105 @@ class CodePanel(Viewer):
                 return name
         return outputs[0] if outputs else None
 
-    def _restore(self, held: dict[str, t.Any]):
+    def _restore_held(self, held: dict[t.Any, t.Any], current: t.Any):
+        """Show a held draft again, on the field's current value if that changed since it was held.
+
+        A spec draft is rebased: the paths it changed are applied to the
+        current spec. Text, a code field's or spec text that does not parse,
+        is not merged; a notice offers to keep the draft or discard it.
+        """
+        base = held.get(_BASE, current)
+        if _same_spec(base, current):
+            self._restore(held)
+            return
+        if self._kind() == "spec" and _TEXT not in held and self.field in held:
+            rebased = _rebase(base, held[self.field], current)
+            if rebased is not None:
+                self._restore({self.field: rebased})
+                return
+        self._stale = held
+        self._show_stale()
+
+    def _show_stale(self):
+        held = self._stale
+        if held is None:
+            self._stale_notice.param.update(objects=[], visible=False)
+            return
+        self._stale_notice.param.update(
+            objects=[
+                text_alert(
+                    "This draft was written against an older version, which has changed "
+                    "since, e.g. by an undo or the assistant. Keep it to replace the current "
+                    "version when run, or discard it.",
+                    severity="warning",
+                    title="Draft not run",
+                    margin=(8, 12, 4, 12),
+                    sizing_mode="stretch_width",
+                ),
+                pn.Row(self.keep_draft_button, self.discard_stale_button, margin=0, align="start"),
+            ],
+            visible=True,
+        )
+
+    def keep_stale_draft(self):
+        """Show the held draft written against an older version of the field."""
+        held, self._stale = self._stale, None
+        if held is not None:
+            self._restore(held)
+        self._show_stale()
+        self._sync_dirty()
+
+    def discard_stale_draft(self):
+        """Drop the held draft written against an older version of the field."""
+        self._stale = None
+        self._show_stale()
+        self._sync_dirty()
+
+    def drafted_fields(self, instance_id: str) -> list[str]:
+        """Return the spec fields of the node *instance_id* holding an edit that was not run."""
+        fields = [k[1] for k in self._held if k[0] == instance_id]
+        if self.instance_id == instance_id and self.field is not None:
+            if (self.dirty or self._stale is not None) and self.field not in fields:
+                fields.append(self.field)
+        return fields
+
+    def _sync_field_toggle(self, spec: ComponentSpec | None):
+        editor = self._flowdash
+        fields = spec_fields(spec) if spec is not None and self.field is not None else []
+        state = editor._dataflow_graph.get_config_state(self.instance_id) if editor else None
+        drafted = set(self.drafted_fields(self.instance_id)) if self.instance_id else set()
+        options = {}
+        for name in fields:
+            label = field_label(state.param[name]) or name if state is not None else name
+            draft = name in drafted and name != self.field
+            options[f"{label} (draft not run)" if draft else label] = name
         self._syncing = True
         try:
-            if self.field in held:
+            self.field_toggle.param.update(
+                options=options, value=self.field if options else None, visible=len(options) > 1
+            )
+        finally:
+            self._syncing = False
+
+    def _field_picked(self, event):
+        if self._syncing or event.new is None or self.instance_id is None:
+            return
+        if event.new != self.field:
+            self.open(self.instance_id, event.new)
+
+    def _restore(self, held: dict[t.Any, t.Any]):
+        kind = self._kind()
+        self._syncing = True
+        try:
+            if kind == "code" and self.field in held:
                 text = held[self.field]
                 self.code.param.update(value=text, value_input=text)
-            if self._fields_state is not None:
-                self._fields_state.param.update(
-                    {k: v for k, v in held.items() if k in self._others}
-                )
+            elif kind == "spec":
+                if self.field in held:
+                    self.spec_editor.load(copy.deepcopy(held[self.field]))
+                if _TEXT in held:
+                    # Applied as typed, so text that is not a valid spec shows why again.
+                    self.spec_editor.editor.value = held[_TEXT]
         finally:
             self._syncing = False
 
@@ -643,24 +951,31 @@ class CodePanel(Viewer):
         self.param.trigger("dirty")
 
     def discard(self):
-        """Put the node's config back in the editor and the header, dropping the draft."""
+        """Put the node's spec back in the editor, dropping the draft."""
         editor = self._flowdash
-        if editor is None or self.instance_id is None:
+        kind = self._kind()
+        if editor is None or kind is None:
             return
         state = editor._dataflow_graph.get_config_state(self.instance_id)
-        self._restore(
-            {self.field: getattr(state, self.field) or ""}
-            | {n: getattr(state, n) for n in self._others}
-        )
+        value = getattr(state, self.field)
+        self._stale = None
+        self._show_stale()
+        self._restore({self.field: value or ("" if kind == "code" else {})})
         self._typing += 1
         self._sync_dirty()
 
     def release(self):
         """Stop following the node shown, e.g. before closing the panel, holding an unrun draft."""
         if self.instance_id is not None and self.field is not None:
-            patch = self._patch()
-            if patch:
-                self._held[(self.instance_id, self.field)] = patch
+            if self._stale is not None:
+                # Not decided on, so it stays held against the version it was written for.
+                self._held[(self.instance_id, self.field)] = self._stale
+            else:
+                draft = self._held_draft()
+                if draft:
+                    self._held[(self.instance_id, self.field)] = draft
+        self._stale = None
+        self._show_stale()
         self._typing += 1
         for release in self._releases:
             release()
@@ -674,64 +989,27 @@ class CodePanel(Viewer):
         self.tools.param.update(diagnostics=[], completions=[])
         self.code.annotations = []
 
-    def _build_fields(self, state: param.Parameterized, spec: ComponentSpec):
-        """Show the node's other config fields in the header, as a draft applied on Run."""
-        codes = set(code_fields(spec))
-        # Spec settings get an editor of their own, too large for the header.
-        names = [
-            n
-            for n in state.param
-            if n != "name" and n not in codes and declared_settings(state.param[n]) is None
-        ]
-        self._others = names
-        if not names:
-            self._fields_state = None
-            self._fields[:] = []
-            return
-        self._fields_state = draft = type(state)(**{n: getattr(state, n) for n in names})
-        editor = self._flowdash
-        choices = editor._inspector._choices.get(self.instance_id, {}) if editor else {}
-        widgets = form_widgets(draft, names, choices)
-        form = pn.Param(
-            draft,
-            parameters=names,
-            widgets=widgets or None,
-            show_name=False,
-            expand_button=False,
-            default_layout=pn.Row,
-            margin=0,
-        )
-        for widget in getattr(form, "_widgets", {}).values():
-            update = {
-                "width": 150,
-                "sizing_mode": "fixed",
-                "margin": (0, 8, 0, 0),
-                "align": "center",
-            }
-            if "size" in widget.param:
-                update["size"] = "small"
-            if "sx" in widget.param:
-                # As tall as the Run button, so the label clears the top of the strip.
-                update["sx"] = {
-                    **(widget.sx or {}),
-                    "& .MuiInputBase-input": {"py": "5px"},
-                    "& .MuiSelect-select": {"py": "5px"},
-                }
-            widget.param.update(update)
-        self._fields[:] = [form]
-        watcher = draft.param.watch(self._field_edited, names)
-        self._releases.append(lambda: draft.param.unwatch(watcher))
-
-    def _code_header_html(self, spec: ComponentSpec, parameter: param.Parameter) -> str:
+    def _code_header_html(self, spec: ComponentSpec, parameter: param.Parameter | None) -> str:
         """Name the field and where the node's inputs come from."""
         editor = self._flowdash
         sources = []
         for edge in editor._dataflow_graph.edges if editor else []:
             if edge["target"] == self.instance_id:
                 sources.append(f"{editor._node_name(edge['source'])}.{edge['source_port']}")
-        label = field_label(parameter) or self.field
+        label = (
+            (field_label(parameter) or self.field) if parameter is not None else "Nothing to edit"
+        )
         origin = f"from {', '.join(sources)}" if sources else ""
         return _bar(f"<b>{html.escape(label)}</b>", html.escape(origin))
+
+    @staticmethod
+    def _empty_html(spec: ComponentSpec) -> str:
+        return (
+            '<div class="fd-cp-empty">'
+            f"<b>{html.escape(spec.title)} has no code or spec to edit.</b>"
+            "<span>Its settings are in the inspector. Select a node with a query or a spec "
+            "to edit it here.</span></div>"
+        )
 
     def _title_html(self, spec: ComponentSpec) -> str:
         editor = self._flowdash
@@ -753,9 +1031,12 @@ class CodePanel(Viewer):
         self.expand_button.visible = self.collapsed
 
     def _sync_run_button(self, *_events):
-        self.run_button.variant = (
-            "contained" if self.dirty or not self.run_on_change else "outlined"
+        editing = self.field is not None
+        self.run_button.param.update(
+            variant="contained" if self.dirty or not self.run_on_change else "outlined",
+            visible=editing,
         )
+        self.run_switch.visible = editing
         self.discard_button.visible = self.dirty
 
     # ------------------------------------------------------------------
@@ -763,43 +1044,80 @@ class CodePanel(Viewer):
     # ------------------------------------------------------------------
 
     def _patch(self) -> dict[str, t.Any]:
-        """Return the draft's changes to the node's config."""
+        """Return the draft's change to the node's config."""
         editor = self._flowdash
-        if editor is None or self.instance_id is None:
+        kind = self._kind()
+        if editor is None or kind is None:
             return {}
         state = editor._dataflow_graph.get_config_state(self.instance_id)
-        if state is None:
+        current = getattr(state, self.field)
+        if kind == "code":
+            text = self.code.value_input
+            return {self.field: text} if text != (current or "") else {}
+        value = self.spec_editor.value or {}
+        if _same_spec(value, current or {}):
             return {}
-        patch: dict[str, t.Any] = {}
-        text = self.code.value_input
-        if text != (getattr(state, self.field) or ""):
-            patch[self.field] = text
-        if self._fields_state is not None:
-            for name in self._others:
-                value = getattr(self._fields_state, name)
-                try:
-                    same = bool(value == getattr(state, name))
-                except Exception:
-                    same = False
-                if not same:
-                    patch[name] = value
-        return patch
+        return {self.field: copy.deepcopy(value)}
+
+    def _held_draft(self) -> dict[t.Any, t.Any]:
+        """Return the draft to hold while another node is shown: the patch, and spec text not applied."""
+        draft: dict[t.Any, t.Any] = self._patch()
+        if self._kind() == "spec" and self._spec_pending():
+            draft[_TEXT] = self.spec_editor.editor.value_input
+        if draft:
+            editor = self._flowdash
+            state = editor._dataflow_graph.get_config_state(self.instance_id)
+            draft[_BASE] = copy.deepcopy(getattr(state, self.field))
+        return draft
+
+    def _spec_pending(self) -> bool:
+        """Whether the spec's text holds an edit the form and the draft do not have yet."""
+        return self.spec_editor.unsent or self.spec_editor.error is not None
 
     def _sync_dirty(self):
-        self.dirty = bool(self._patch())
+        self.dirty = (
+            bool(self._patch())
+            or (self._kind() == "spec" and self._spec_pending())
+            or self._stale is not None
+        )
         self._show_result_footer()
 
     def _typed(self, _event):
-        if self._syncing or self.instance_id is None:
+        if self._syncing or self._kind() != "code":
             return
         self._sync_dirty()
         self._run_later()
 
-    def _field_edited(self, *_events):
-        if self._syncing:
+    def _spec_edited(self, _event):
+        if self._syncing or self._kind() != "spec":
             return
         self._sync_dirty()
         self._run_later()
+
+    def _spec_typed(self, _event):
+        self._sync_json_error()
+        if self._syncing or self._kind() != "spec":
+            return
+        self._sync_dirty()
+        self._show_status()
+
+    def _sync_json_error(self):
+        """Say in the Form view why the form is disabled while the JSON does not parse."""
+        error = self.spec_editor.error if self._kind() == "spec" else None
+        shown = error is not None and self._spec_form.visible
+        if shown:
+            self._json_error.objects = [
+                text_alert(
+                    f"The JSON is not a valid spec, so the form is disabled. {error}",
+                    severity="error",
+                    margin=(8, 12, 4, 12),
+                    sizing_mode="stretch_width",
+                ),
+                self.fix_json_button,
+            ]
+        elif self._json_error.objects:
+            self._json_error.objects = []
+        self._json_error.visible = shown
 
     def _run_later(self):
         """With "Run on change", run the draft once typing pauses, or after a run in flight."""
@@ -819,43 +1137,57 @@ class CodePanel(Viewer):
 
         param.parameterized.async_executor(later)
 
-    def _config_changed(self, *events):
-        """Follow a change of the node's config made elsewhere, unless the draft holds an edit of it."""
-        state = events[0].obj
-        for event in events:
-            if event.name == self.field:
-                pending = self.code.value_input != (event.old or "")
-                if not pending:
-                    self._syncing = True
-                    try:
-                        text = event.new or ""
-                        self.code.param.update(value=text, value_input=text)
-                    finally:
-                        self._syncing = False
-            elif self._fields_state is not None and event.name in self._others:
-                try:
-                    pending = not bool(getattr(self._fields_state, event.name) == event.old)
-                except Exception:
-                    pending = True
-                if not pending:
-                    self._fields_state.param.update({event.name: getattr(state, event.name)})
+    def _config_changed(self, event):
+        """Follow a change of the node's spec made elsewhere, unless the draft holds an edit of it."""
+        kind = self._kind()
+        self._syncing = True
+        try:
+            if kind == "code" and self.code.value_input == (event.old or ""):
+                text = event.new or ""
+                self.code.param.update(value=text, value_input=text)
+            elif (
+                kind == "spec"
+                and not self._spec_pending()
+                and _same_spec(self.spec_editor.value or {}, event.old or {})
+            ):
+                self.spec_editor.load(copy.deepcopy(event.new or {}))
+        finally:
+            self._syncing = False
         self._sync_dirty()
 
     def run(self, text: str | None = None):
         """Apply the draft to the node, after its check passes if the component has one.
 
         *text* is the editor's text as sent with Ctrl+Enter, which may be
-        ahead of what the server has.
+        ahead of what the server has. Spec text that is not a valid spec is
+        not run; the problem is shown under it.
         """
         editor = self._flowdash
-        if editor is None or self.instance_id is None or not editor.editable:
+        kind = self._kind()
+        if editor is None or kind is None or not editor.editable:
             return
-        if text is not None and text != self.code.value_input:
+        if kind == "code" and text is not None and text != self.code.value_input:
             self._syncing = True
             try:
                 self.code.value_input = text
             finally:
                 self._syncing = False
+        elif kind == "spec":
+            pending = text if text is not None else self.spec_editor.editor.value_input
+            if self._spec_text.visible and pending != self.spec_editor.editor.value:
+                self._syncing = True
+                try:
+                    self.spec_editor.editor.value = pending
+                finally:
+                    self._syncing = False
+            if self.spec_editor.error is not None:
+                self._sync_dirty()
+                self._show_status()
+                return
+        if self._stale is not None:
+            # What is run replaces the older draft the notice offered.
+            self._stale = None
+            self._show_stale()
         self._typing += 1
         self._close_completions()
         patch = self._patch()
@@ -887,6 +1219,7 @@ class CodePanel(Viewer):
 
     def _close_completions(self):
         self.tools.closing += 1
+        self.spec_tools.closing += 1
 
     def _checked(self, result: CheckResult, pending: dict[str, t.Any]):
         """Show what the check of the draft, or of the node's config on opening, found."""
@@ -924,7 +1257,8 @@ class CodePanel(Viewer):
 
     def _show_status(self):
         result = self._result
-        positioned = result.diagnostics(self.field) if self.field else []
+        # Problems in a spec are shown above it; its JSON is laid out afresh, so lines would not hold.
+        positioned = result.diagnostics(self.field) if self._kind() == "code" else []
         text_lines = self.code.value_input.splitlines() or [""]
         diagnostics = []
         for d in positioned:
@@ -970,7 +1304,12 @@ class CodePanel(Viewer):
                 )
             )
         self._problems[:] = alerts
-        if result:
+        invalid = self._kind() == "spec" and self.spec_editor.error is not None
+        if invalid:
+            status = (
+                f'<span class="fd-cp-error">{_icon("error")}Not run, the JSON is not valid</span>'
+            )
+        elif result:
             count = len(result)
             status = (
                 f'<span class="fd-cp-error">{_icon("error")}{count} '
@@ -988,10 +1327,19 @@ class CodePanel(Viewer):
             self._title.object = self._title_html(spec)
 
     def _complete(self):
+        """Offer the words a code field completes, or the choices of a spec form's settings."""
         editor = self._flowdash
-        instance_id, field = self.instance_id, self.field
-        if editor is None or instance_id is None:
+        instance_id, field, kind = self.instance_id, self.field, self._kind()
+        if editor is None or kind is None:
             return
+
+        async def fetch_choices():
+            try:
+                choices = await node_choices(editor, instance_id)
+            except Exception:
+                return
+            if (self.instance_id, self.field) == (instance_id, field):
+                self.spec_editor.choices = setting_choices(choices, field)
 
         async def fetch():
             try:
@@ -1009,7 +1357,7 @@ class CodePanel(Viewer):
                 {"value": str(value), "meta": types.get(value, "")} for value in choices.values()
             ]
 
-        param.parameterized.async_executor(fetch)
+        param.parameterized.async_executor(fetch_choices if kind == "spec" else fetch)
 
     # ------------------------------------------------------------------
     # The result
@@ -1031,7 +1379,7 @@ class CodePanel(Viewer):
             self._result_body[:] = []
             return
         spec = self._spec()
-        if spec is not None and not spec.outputs:
+        if spec is not None and (not spec.outputs or self.outputs.value == _VIEW):
             self._show_view(editor)
             return
         name, value = self._output_value()
@@ -1125,6 +1473,10 @@ class CodePanel(Viewer):
             text = "Running…"
         elif self._result:
             text = '<span class="fd-cp-error">Not run, the check failed</span>'
+        elif self._kind() == "spec" and self.spec_editor.error is not None:
+            text = '<span class="fd-cp-error">Not run, the JSON is not valid</span>'
+        elif self._stale is not None:
+            text = "A draft written against an older version is waiting"
         elif self.dirty:
             text = "Edited since the last run · Ctrl ↵ to run"
         else:
@@ -1136,3 +1488,64 @@ class CodePanel(Viewer):
     def __panel__(self):
         """Render the panel."""
         return self._layout
+
+
+def _same_spec(a: t.Any, b: t.Any) -> bool:
+    """Whether two specs are equal, keys in the same order too, as the order is kept when saved."""
+    try:
+        return bool(a == b) and _key_order(a) == _key_order(b)
+    except Exception:
+        return False
+
+
+def _key_order(value: t.Any) -> t.Any:
+    if isinstance(value, dict):
+        return [(k, _key_order(v)) for k, v in value.items()]
+    if isinstance(value, list):
+        return [_key_order(v) for v in value]
+    return None
+
+
+def _differences(base: t.Any, draft: t.Any, prefix: tuple = ()) -> list[tuple[tuple, t.Any]]:
+    """Return the paths where *draft* differs from *base*, with the draft's value or ``_MISSING``."""
+    if not isinstance(base, dict) or not isinstance(draft, dict):
+        return [] if _same_spec(base, draft) else [(prefix, draft)]
+    found = []
+    for key, value in draft.items():
+        path = (*prefix, key)
+        if key not in base:
+            found.append((path, value))
+        else:
+            found.extend(_differences(base[key], value, path))
+    found.extend(((*prefix, key), _MISSING) for key in base if key not in draft)
+    return found
+
+
+def _rebase(base: t.Any, draft: t.Any, current: t.Any) -> dict | None:
+    """Return *current* with the changes *draft* made to *base*, or None where they conflict.
+
+    The draft is rebased only where the changes made since touch other
+    paths than the draft's, none inside another, a list counting as one
+    value; otherwise the person decides.
+    """
+    if not isinstance(base, dict) or not isinstance(current, dict):
+        return None
+    drafted = _differences(base, draft or {})
+    outside = [path for path, _value in _differences(base, current)]
+    for path, _value in drafted:
+        for other in outside:
+            shared = min(len(path), len(other))
+            if path[:shared] == other[:shared]:
+                return None
+    rebased = copy.deepcopy(current)
+    for path, value in drafted:
+        if not path:
+            return None
+        try:
+            if value is _MISSING:
+                delete_path(rebased, list(path))
+            else:
+                set_path(rebased, list(path), copy.deepcopy(value))
+        except SpecPathError:
+            return None
+    return rebased

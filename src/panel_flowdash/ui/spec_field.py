@@ -215,6 +215,7 @@ class SpecEditor(CompositeWidget):
     def __init__(self, **params):
         super().__init__(**params)
         self._syncing = False
+        self._loading = False
         self._controls: dict[str, tuple[SpecSetting, t.Any]] = {}
         self._spans: dict = {}
         self._label = pmui.Typography(
@@ -483,9 +484,31 @@ class SpecEditor(CompositeWidget):
         if new != self.value or list(new) != list(self.value or {}):
             self.value = new
 
+    def load(self, value: dict | None):
+        """Show *value* as a spec loaded afresh, e.g. another node's, rather than as an edit.
+
+        Unlike setting :attr:`value`, no line is marked as changed, and text
+        typed but not applied, valid or not, is dropped.
+        """
+        self._loading = True
+        try:
+            self.value = value or {}
+        finally:
+            self._loading = False
+        self._syncing = True
+        try:
+            # Cleared first, so the text is shown however it compares with what was typed.
+            self.editor.param.update(value="", value_input="")
+        finally:
+            self._syncing = False
+        self._show_text(self.value)
+        self._sync_form()
+
     # The text
 
     def _value_set(self, event):
+        if self._loading:
+            return
         changed = changed_paths(event.old or {}, event.new or {})
         self._show_text(event.new, changed)
         self._sync_form()
