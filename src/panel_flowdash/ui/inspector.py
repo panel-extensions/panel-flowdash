@@ -18,6 +18,7 @@ from functools import partial
 import panel as pn
 import panel_material_ui as pmui
 import param
+from panel.io.state import set_curdoc
 from panel.viewable import Viewer
 
 from panel_flowdash.config_check import CheckResult
@@ -92,6 +93,10 @@ _MAX_CHIP_LEN = 24
 
 # How many rows of a table the Data tab shows.
 _DATA_ROWS = 15
+_DATA_COLUMNS = 50
+_DATA_TAB = 1
+# A component whose preview arrives later, e.g. once its rows are fetched, bumps this parameter.
+PREVIEW_REVISION = "_preview_rev"
 _MAX_CELL_WIDTH = 220
 _MAX_TEXT = 2000
 
@@ -430,49 +435,79 @@ def _count(count: t.Any, noun: str) -> str:
     return f"{count:,} {noun}{'' if count == 1 else 's'}"
 
 
-def _index_as_columns(frame: t.Any) -> tuple[t.Any, bool]:
+def _index_as_columns(frame: t.Any) -> t.Any:
     """Return *frame* with an index that carries data, e.g. group labels, moved into columns.
 
-    A default unnamed RangeIndex says nothing and is dropped. The returned flag
-    says whether the index must still be shown, when it could not be moved.
+    An unnamed integer index, the default one or what is left of it after
+    filtering, sorting or sampling rows, says nothing and is dropped. A level
+    named like a column is suffixed, so every column keeps its own name.
     """
     index = getattr(frame, "index", None)
     if index is None or not hasattr(frame, "reset_index"):
-        return frame, False
-    names = [n for n in getattr(index, "names", [index.name]) if n is not None]
-    if not names and type(index).__name__ == "RangeIndex" and index.nlevels == 1:
-        return frame, False
-    try:
-        return frame.reset_index(), False
-    except Exception:
-        # A level named like a column cannot move, so the index is shown as it is.
-        return frame, True
+        return frame
+    names = list(index.names)
+    if index.nlevels == 1 and names[0] is None and getattr(index.dtype, "kind", "") in "iu":
+        return frame.reset_index(drop=True)
+    taken = {str(c) for c in frame.columns}
+    out = frame.reset_index(drop=True)
+    for level, name in enumerate(names):
+        label = (
+            str(name)
+            if name is not None
+            else ("index" if index.nlevels == 1 else f"level {level}")
+        )
+        while label in taken:
+            label += " (index)"
+        taken.add(label)
+        out.insert(level, label, index.get_level_values(level), allow_duplicates=True)
+    return out
+
+
+def _flat_columns(frame: t.Any) -> t.Any:
+    """Return *frame* with nested column labels joined, so the table has one header row."""
+    columns = frame.columns
+    if getattr(columns, "nlevels", 1) == 1:
+        return frame
+    frame = frame.copy()
+    frame.columns = [" / ".join(str(part) for part in label if str(part)) for label in columns]
+    return frame
 
 
 def _table_preview(value: t.Any) -> list[Viewable]:
-    """Return the first rows of a table, under its size, without its index."""
+    """Return the first rows and columns of a table, under its size."""
     rows, cols = value.shape
     head = value.head(_DATA_ROWS)
-    summary = f"{_count(rows, 'row')} \u00d7 {_count(cols, 'column')}"
+    shown = []
     if len(head) < rows:
+        shown.append(f"{len(head):,} rows")
+    if cols > _DATA_COLUMNS:
+        head = head.iloc[:, :_DATA_COLUMNS]
+        shown.append(f"{_DATA_COLUMNS} columns")
+    summary = f"{_count(rows, 'row')} \u00d7 {_count(cols, 'column')}"
+    if shown == [f"{len(head):,} rows"]:
         summary += f", first {len(head):,} shown"
+    elif shown:
+        summary += f", first {' and '.join(shown)} shown"
     caption = _caption(summary, margin=(0, 0, 6, 0), css_classes=["fd-data-summary"])
     if not len(head) and not cols:
         return [caption]
-    head, index = _index_as_columns(head)
+    head = _flat_columns(_index_as_columns(head))
+    # Positions in the rendered table, which has no index column.
     numeric = [
         i + 1
         for i, dtype in enumerate(getattr(head, "dtypes", []))
         if getattr(dtype, "kind", "") in "iuf"
     ]
-    align = "".join(
-        f":host table.panel-df td:nth-child({i}), :host table.panel-df th:nth-child({i}) "
-        "{ text-align: right; }\n"
-        for i in numeric
-    )
+    align = ""
+    if numeric:
+        selectors = ", ".join(
+            f":host table.panel-df td:nth-child({i}), :host table.panel-df th:nth-child({i})"
+            for i in numeric
+        )
+        align = f"{selectors} {{ text-align: right; }}\n"
     table = pn.pane.DataFrame(
         head,
-        index=index,
+        index=False,
         sizing_mode="stretch_width",
         margin=0,
         stylesheets=[_TABLE_CSS + align],
@@ -676,6 +711,11 @@ class Inspector(Viewer):
         self._has_inline_close = False
         self._no_settings = False
         self._data_column: pn.Column | None = None
+        self._data_view: tuple[str, ComponentSpec] | None = None
+        self._node_tabs: pmui.Tabs | None = None
+        self._doc = None
+        self._data_generation = 0
+        self._data_pending = False
         self._inputs_column: pn.Column | None = None
         # What the shown input rows depend on, and their parts updated in place.
         self._inputs_key: dict[str, tuple] = {}
@@ -871,6 +911,10 @@ class Inspector(Viewer):
         self._last_check_status = None
         self._code_fields = []
         self._data_column = None
+        self._data_view = None
+        self._node_tabs = None
+        self._data_generation += 1
+        self._data_pending = False
         self._inputs_column = None
         self._inputs_key = {}
         self._literal_editors = {}
@@ -1379,30 +1423,28 @@ class Inspector(Viewer):
             if (owner := inspector()) is None or owner._data_column is None:
                 return
             owner._set_status(*node_status(spec, state, failures))
-            owner._data_column[:] = owner._data_objects(instance_id, spec)
+            owner._schedule_data()
             owner._refresh_inputs()
+
+        def refresh_data(*_events):
+            if (owner := inspector()) is not None:
+                owner._schedule_data()
 
         names = [p.name for p in (*spec.outputs, *spec.inputs) if p.name in state.param]
         if names:
             watcher = state.param.watch(update, names)
             self._releases.append(partial(state.param.unwatch, watcher))
         instance = editor._component_instances.get(instance_id)
-        if spec.outputs and callable(getattr(instance, PREVIEW_HOOK, None)):
-            # A component's preview may change without its outputs, e.g. once its rows are fetched.
-            ports = {p.name for p in (*spec.inputs, *spec.outputs)}
-            own = [name for name in instance.param if name != "name" and name not in ports]
-            if own:
-
-                def refresh_data(*_events):
-                    if (owner := inspector()) is not None and owner._data_column is not None:
-                        owner._data_column[:] = owner._data_objects(instance_id, spec)
-
-                watcher = instance.param.watch(refresh_data, own)
-                self._releases.append(partial(instance.param.unwatch, watcher))
+        if (
+            spec.outputs
+            and callable(getattr(instance, PREVIEW_HOOK, None))
+            and PREVIEW_REVISION in instance.param
+        ):
+            watcher = instance.param.watch(refresh_data, PREVIEW_REVISION)
+            self._releases.append(partial(instance.param.unwatch, watcher))
         if failures is not None:
             watcher = failures.param.watch(update, "failed")
             self._releases.append(partial(failures.param.unwatch, watcher))
-        update()
 
         tabs = pmui.Tabs(
             ("Settings", self._settings_tab(instance_id, item, spec)),
@@ -1413,6 +1455,14 @@ class Inspector(Viewer):
             margin=0,
             sx=_TABS_SX,
         )
+        # The Data tab runs the components' preview hooks, which may query, only while it is shown.
+        self._node_tabs = tabs
+        self._data_view = (instance_id, spec)
+        doc = pn.state.curdoc
+        self._doc = doc if doc is not None and doc.session_context is not None else None
+        watcher = tabs.param.watch(refresh_data, "active")
+        self._releases.append(partial(tabs.param.unwatch, watcher))
+        update()
         return [header, tabs]
 
     # Settings
@@ -1971,6 +2021,46 @@ class Inspector(Viewer):
 
     # Data
 
+    def _document(self):
+        """Return the served document the inspector updates, or None outside a session."""
+        return self._doc
+
+    def _schedule_data(self):
+        """Rebuild the Data tab once per burst of changes, and only while it is shown.
+
+        Changes may come from any thread, so in a session the rebuild runs on
+        the event loop, on its next tick.
+        """
+        if self._data_column is None:
+            return
+        tabs = self._node_tabs
+        if tabs is None or tabs.active != _DATA_TAB:
+            self._data_column[:] = []
+            return
+        doc = self._document()
+        if doc is None:
+            self._refresh_data()
+            return
+        if self._data_pending:
+            return
+        self._data_pending = True
+        try:
+            doc.add_next_tick_callback(partial(self._refresh_data_in, doc))
+        except Exception:
+            # The session is being torn down, so there is nothing left to update.
+            self._data_pending = False
+
+    def _refresh_data_in(self, doc):
+        with set_curdoc(doc):
+            self._refresh_data()
+
+    def _refresh_data(self):
+        self._data_pending = False
+        if self._data_column is None or self._data_view is None:
+            return
+        self._data_generation += 1
+        self._data_column[:] = self._data_objects(*self._data_view)
+
     def _data_objects(self, instance_id: str, spec: ComponentSpec) -> list[Viewable]:
         editor = self.editor
         state = editor._dataflow_graph.get_state(instance_id)
@@ -2001,14 +2091,19 @@ class Inspector(Viewer):
             holder[:] = self._preview(value)
             return holder
         work = partial(_hooked_value, value, instance, port_name)
-        doc = pn.state.curdoc
-        if doc is None or doc.session_context is None:
+        doc = self._document()
+        if doc is None:
             holder[:] = self._preview(*work())
             return holder
         holder[:] = [_caption("Loading the preview…", margin=0)]
-        run_off_loop(
-            work, lambda result: holder.__setitem__(slice(None), self._preview(*result)), doc
-        )
+        generation = self._data_generation
+
+        def show(result):
+            # A later rebuild or selection supersedes this preview.
+            if generation == self._data_generation:
+                holder[:] = self._preview(*result)
+
+        run_off_loop(work, show, doc)
         return holder
 
     def _preview(self, value, hooked: bool = False) -> list[Viewable]:

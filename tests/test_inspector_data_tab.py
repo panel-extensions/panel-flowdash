@@ -1,5 +1,6 @@
 """Tests for the inspector's Data tab: port headings, table previews and components' own previews."""
 
+import contextlib
 import json
 
 import pandas as pd
@@ -11,6 +12,7 @@ from panel.viewable import Viewer
 
 from panel_flowdash import register
 from panel_flowdash.editor import FlowDash
+from panel_flowdash.ui.inspector import _table_preview
 from panel_flowdash.ui.status_bar import select_on_canvas
 from tests.test_ui_inspector import ROWS, TABLE, TABLE_COMPONENTS, _texts
 
@@ -34,7 +36,7 @@ class LazyTable(Viewer):
     """Outputs an opaque pipeline and previews it as rows through the preview hook."""
 
     calls = param.List(default=[])
-    fetched = param.Integer(default=0, precedence=-1)
+    _preview_rev = param.Integer(default=0, precedence=-1)
 
     @param.output(param.Parameter)
     def pipeline(self):
@@ -47,7 +49,7 @@ class LazyTable(Viewer):
     def __flowdash_preview__(self, output=None):
         self.calls.append(output)
         if output == "pipeline":
-            return FRAME if self.fetched else "Fetching rows..."
+            return FRAME if self._preview_rev else "Fetching rows..."
         return None
 
     def __panel__(self):
@@ -110,6 +112,7 @@ def editor():
 def _data(editor, component):
     node = editor.add_component(component)
     select_on_canvas(editor._flow, node_id=node)
+    editor._inspector._node_tabs.active = 1
     return node, editor._inspector._data_column
 
 
@@ -130,7 +133,7 @@ async def test_table_shows_size_and_first_rows_without_index(editor):
     editor.add_component(ROWS)
     node, column = _data(editor, LAZY)
     instance = editor._component_instances[node]
-    instance.fetched += 1
+    instance._preview_rev += 1
     column = editor._inspector._data_column
     assert "40 rows \u00d7 2 columns, first 15 shown" in _texts(column)
     (table,) = _tables(column)
@@ -160,7 +163,7 @@ async def test_preview_hook_is_asked_per_output(editor):
 async def test_preview_follows_the_component_without_new_outputs(editor):
     node, column = _data(editor, LAZY)
     assert not _tables(column)
-    editor._component_instances[node].fetched += 1
+    editor._component_instances[node]._preview_rev += 1
     column = editor._inspector._data_column
     assert "Fetching rows..." not in _texts(column)
     assert len(_tables(column)) == 1
@@ -200,22 +203,119 @@ async def test_value_preview_falls_back_to_text_for_values_json_cannot_hold(edit
     assert isinstance(editor._value_preview({"a": 1}), pn.pane.JSON)
 
 
-async def test_index_carrying_data_is_shown_as_columns(editor):
-    from panel_flowdash.ui.inspector import _table_preview
+def _columns(frame):
+    (table,) = [o for o in _table_preview(frame) if isinstance(o, pn.pane.DataFrame)]
+    assert table.index is False
+    return list(table.object.columns), table
 
+
+async def test_index_carrying_data_is_shown_as_columns():
     sums = FRAME.groupby("state").sum()
-    (table,) = [o for o in _table_preview(sums) if isinstance(o, pn.pane.DataFrame)]
-    assert list(table.object.columns) == ["state", "case_id"]
+    columns, table = _columns(sums)
+    assert columns == ["state", "case_id"]
     assert list(table.object["state"]) == ["AK", "CA"]
 
     pivot = FRAME.assign(kind=["a", "b", "c", "d"] * 10).groupby(["state", "kind"]).size()
-    (table,) = [o for o in _table_preview(pivot.to_frame("n")) if isinstance(o, pn.pane.DataFrame)]
-    assert list(table.object.columns) == ["state", "kind", "n"]
+    assert _columns(pivot.to_frame("n"))[0] == ["state", "kind", "n"]
 
     dated = pd.DataFrame({"v": [1, 2]}, index=pd.date_range("2026-01-01", periods=2))
-    (table,) = [o for o in _table_preview(dated) if isinstance(o, pn.pane.DataFrame)]
-    assert list(table.object.columns) == ["index", "v"]
+    assert _columns(dated)[0] == ["index", "v"]
 
-    (table,) = [o for o in _table_preview(FRAME) if isinstance(o, pn.pane.DataFrame)]
-    assert list(table.object.columns) == ["case_id", "state"]
-    assert table.index is False
+    clash = FRAME.set_index(FRAME["state"])
+    assert _columns(clash)[0] == ["state (index)", "case_id", "state"]
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        FRAME,
+        FRAME[FRAME.case_id > 5],
+        FRAME.sort_values("case_id", ascending=False),
+        FRAME.iloc[[0, 13, 26, 39]],
+    ],
+    ids=["default", "filtered", "sorted", "sampled"],
+)
+async def test_unnamed_integer_index_is_hidden(frame):
+    assert _columns(frame)[0] == ["case_id", "state"]
+
+
+async def test_wide_table_is_capped_and_says_so():
+    wide = pd.DataFrame({f"c{i}": [i] for i in range(2000)})
+    objects = _table_preview(wide)
+    assert "1 row \u00d7 2,000 columns, first 50 columns shown" in _texts(objects)
+    columns, table = _columns(wide)
+    assert len(columns) == 50
+    assert len(table.stylesheets[0]) < 10_000
+
+
+async def test_numbers_are_aligned_on_the_rendered_columns():
+    nested = pd.DataFrame(
+        [[1, "x", 2.5]],
+        columns=pd.MultiIndex.from_tuples([("a", "n"), ("a", "s"), ("b", "f")]),
+        index=pd.Index(["k"], name="key"),
+    )
+    columns, table = _columns(nested)
+    assert columns == ["key", "a / n", "a / s", "b / f"]
+    css = table.stylesheets[0]
+    assert "td:nth-child(2)" in css and "td:nth-child(4)" in css
+    assert "td:nth-child(1)" not in css and "td:nth-child(3)" not in css
+
+
+async def test_data_tab_runs_hooks_only_while_shown(editor):
+    node = editor.add_component(LAZY)
+    instance = editor._component_instances[node]
+    select_on_canvas(editor._flow, node_id=node)
+    assert instance.calls == []
+    assert not len(editor._inspector._data_column)
+    editor._inspector._node_tabs.active = 1
+    assert sorted(instance.calls) == ["note", "pipeline"]
+    editor._inspector._node_tabs.active = 0
+    instance._preview_rev += 1
+    assert len(instance.calls) == 2
+
+
+class _Doc:
+    """Records next-tick callbacks instead of running them."""
+
+    session_context = object()
+
+    def __init__(self):
+        self.callbacks = []
+
+    def add_next_tick_callback(self, callback):
+        self.callbacks.append(callback)
+
+
+async def test_off_loop_preview_coalesces_and_drops_stale_results(editor, monkeypatch):
+    from panel_flowdash.ui import inspector as module
+
+    jobs = []
+    monkeypatch.setattr(module, "run_off_loop", lambda work, then, doc: jobs.append((work, then)))
+    node = editor.add_component(LAZY)
+    select_on_canvas(editor._flow, node_id=node)
+    inspector = editor._inspector
+    doc = _Doc()
+    inspector._doc = doc
+    monkeypatch.setattr(module, "set_curdoc", lambda doc: contextlib.nullcontext())
+    instance = editor._component_instances[node]
+
+    inspector._node_tabs.active = 1
+    instance._preview_rev += 1
+    instance._preview_rev += 1
+    # A burst of changes is one rebuild on the next tick.
+    assert len(doc.callbacks) == 1
+    assert instance.calls == []
+    doc.callbacks.pop()()
+    assert len(jobs) == 2
+    assert "Loading the preview\u2026" in _texts(inspector._data_column)
+
+    stale = jobs[:]
+    instance._preview_rev += 1
+    doc.callbacks.pop()()
+    for work, then in stale:
+        then(work())
+    # The superseded results are dropped; the current rebuild still loads.
+    assert not _tables(inspector._data_column)
+    for work, then in jobs[2:]:
+        then(work())
+    assert len(_tables(inspector._data_column)) == 1
