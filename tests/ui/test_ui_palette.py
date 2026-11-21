@@ -159,3 +159,22 @@ def test_preset_entry_shows_its_tooltip_and_drags_in_with_its_config(page):
     wait_until(lambda: len(editor._tile_items) == 1, page=page, timeout=8000)
     assert editor._tile_items[0]["component_id"] == "Test/table"
     assert editor._tile_items[0]["config"] == {"table": "orders"}
+
+
+def test_dragging_a_preset_several_times_places_a_node_each_time(page):
+    editor = FlowDash(
+        COMPONENTS,
+        notifications=False,
+        include_builtin_components=False,
+        context={"tables": ["orders", "regions"]},
+    )
+    serve_component(page, editor)
+
+    pane = page.locator(".react-flow__pane")
+    for n, (title, x) in enumerate(
+        [("orders", 60), ("regions", 260), ("orders", 460), ("regions", 660)], start=1
+    ):
+        item = _item(page, f"{title} \\(sales\\)")
+        item.drag_to(pane, target_position={"x": x, "y": 80 + 40 * n})
+        wait_until(lambda n=n: len(editor._tile_items) == n, page=page, timeout=8000)
+        assert editor._tile_items[-1]["config"] == {"table": title}

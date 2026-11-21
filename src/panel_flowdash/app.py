@@ -455,6 +455,9 @@ class FlowDashApp(Viewer):
         self._editor._dashboard_bar.on_mode = self._on_dashboard_bar_mode
         self._editor.show_in_editor = self._show_in_editor
         self._editor.param.watch(self._on_fullscreen, "fullscreen")
+        self._preset_tasks: set[asyncio.Task] = set()
+        self._preset_loading: set[str] = set()
+        self._editor.param.watch(self._on_editable, "editable")
         self._menu_bar = None
         self._nav_menu = self._build_nav_menu()
         self._nav_drawer = pmui.Drawer(
@@ -1123,14 +1126,9 @@ class FlowDashApp(Viewer):
             # scanned metadata) and `add_component` imports on demand, so even
             # edit mode does not pay for the whole catalog.
             placed = {item.component_id for item in dashboard.items}
-            if edit:
-                # Scanned components learn their palette presets only from an import.
-                placed |= {
-                    component_id
-                    for component_id, entry in self._editor._component_entries.items()
-                    if entry.metadata.presets_pending
-                }
-            await self._ensure_components_loaded(placed)
+            await self._ensure_components_loaded(
+                placed | (self._preset_component_ids() if edit else set())
+            )
         if not self._is_current_navigation(generation):
             return
         with pn.io.hold():
@@ -1197,6 +1195,7 @@ class FlowDashApp(Viewer):
             return False
         self._begin_navigation()
         self._editor._start_dashboard(dashboard)
+        self._import_preset_components()
         self._set_sidebar_views([])
 
         self._notify("success", f'Created new dashboard "{dashboard.title}".', duration=3000)
@@ -1452,6 +1451,41 @@ class FlowDashApp(Viewer):
                 main.append(self._nav_drawer)
             self._page.main = main
 
+    def _preset_component_ids(self) -> set[str]:
+        """Return the scanned components whose palette presets only an import supplies."""
+        return {
+            component_id
+            for component_id, entry in self._editor._component_entries.items()
+            if entry.metadata.presets_pending and entry.app is None
+        }
+
+    def _on_editable(self, event):
+        if event.new:
+            self._import_preset_components()
+
+    def _import_preset_components(self):
+        """Import the scanned components with palette presets, off the event loop, then refresh the palette."""
+        pending = self._preset_component_ids() - self._preset_loading
+        if not pending:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._editor.ensure_components_loaded(pending)
+            self._editor._palette_panel.refresh()
+            return
+        self._preset_loading |= pending
+        task = loop.create_task(self._load_preset_components(pending))
+        self._preset_tasks.add(task)
+        task.add_done_callback(self._preset_tasks.discard)
+
+    async def _load_preset_components(self, component_ids: set[str]):
+        try:
+            await self._ensure_components_loaded(component_ids)
+        finally:
+            self._preset_loading -= component_ids
+        self._editor._palette_panel.refresh()
+
     @pn.io.hold()
     def _show_edit_mode(self):
         current = self._current_dashboard
@@ -1460,6 +1494,7 @@ class FlowDashApp(Viewer):
         )
         self._share_button.visible = False
         self._editor.param.update(editable=True, read_only=not can_edit)
+        self._import_preset_components()
         if pn.state.location is not None:
             pn.state.location.param.update(search="?edit=true")
 

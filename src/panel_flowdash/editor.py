@@ -7654,7 +7654,20 @@ class FlowDash(Viewer):
             for index in payload["data"]["path"]:
                 item = item["items"][index]
         except (KeyError, IndexError, TypeError):
-            return
+            item = {}
+        label = (payload.get("data") or {}).get("label")
+        if label and item.get("label") != label:
+            # The palette changed while the entry was dragged, e.g. its presets were
+            # refreshed, so the path may point elsewhere; the dragged label still names it.
+            item = next(
+                (
+                    i
+                    for group in self._palette.items
+                    for i in group.get("items", ())
+                    if i.get("label") == label
+                ),
+                {},
+            )
         component_id = item.get("component_id")
         if component_id is None:
             return

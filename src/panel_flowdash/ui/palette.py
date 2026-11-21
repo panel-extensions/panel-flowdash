@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import time
 import typing as t
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, replace
@@ -211,7 +212,7 @@ def palette_entry(
 
 
 def component_presets(
-    entry: RegistryEntry, context: Mapping[str, t.Any] | None
+    entry: RegistryEntry, context: Mapping[str, t.Any] | None, failed: list[bool] | None = None
 ) -> list[dict[str, t.Any]]:
     """Return the presets ``register(palette_presets=...)`` gives *entry* for *context*.
 
@@ -228,6 +229,8 @@ def component_presets(
         presets = list(hook(dict(context or {})) or [])
     except Exception:
         logger.exception("palette_presets of '%s' failed", entry.app_id)
+        if failed is not None:
+            failed.append(True)
         return []
     valid = []
     for preset in presets:
@@ -258,27 +261,72 @@ def component_presets(
     return valid
 
 
-def _context_token(context: Mapping[str, t.Any] | None) -> tuple:
-    """Return a token that changes when a context value, or an item of a dict or list in it, changes."""
+# Seconds a failed hook is not asked again, so a hook that fails while typing is
+# asked again soon rather than once per keystroke or only after the context changes.
+PRESET_RETRY = 5.0
 
-    def token(value: t.Any) -> t.Any:
+
+class _Snapshot:
+    """The context's values, and the items of the dicts and lists in it, compared by identity.
+
+    It holds the objects themselves rather than their ids, so a replaced
+    value cannot reuse the id of the one it replaced.
+    """
+
+    def __init__(self, context: Mapping[str, t.Any] | None):
+        self.items = [(key, value, self._inner(value)) for key, value in (context or {}).items()]
+
+    @staticmethod
+    def _inner(value: t.Any) -> list[tuple[t.Any, t.Any]] | None:
         if isinstance(value, Mapping):
-            return tuple((key, id(item)) for key, item in value.items())
+            return list(value.items())
         if isinstance(value, list):
-            return tuple(map(id, value))
-        return id(value)
+            return list(enumerate(value))
+        return None
 
-    return tuple((key, id(value), token(value)) for key, value in (context or {}).items())
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, _Snapshot) or len(self.items) != len(other.items):
+            return False
+        for (key, value, inner), (okey, ovalue, oinner) in zip(
+            self.items, other.items, strict=True
+        ):
+            if key != okey or value is not ovalue or (inner is None) != (oinner is None):
+                return False
+            if inner is not None and (
+                len(inner) != len(oinner)
+                or any(a != c or b is not d for (a, b), (c, d) in zip(inner, oinner, strict=True))
+            ):
+                return False
+        return True
+
+    __hash__ = None
 
 
 def editor_presets(editor: t.Any, entry: RegistryEntry) -> list[dict[str, t.Any]]:
-    """Return the presets of *entry* for *editor*, asking its hook again only when the context changes."""
+    """Return the presets of *entry* for *editor*, asking its hook again only when the context changes.
+
+    A hook that failed is asked again after ``PRESET_RETRY`` seconds.
+    """
     cache = editor.__dict__.setdefault("_palette_presets_cache", {})
-    token = (entry.metadata.palette_presets, _context_token(editor.context))
+    hook = entry.metadata.palette_presets
+    snapshot = _Snapshot(editor.context)
     cached = cache.get(entry.app_id)
-    if cached is None or cached[0] != token:
-        cached = cache[entry.app_id] = (token, component_presets(entry, editor.context))
-    return cached[1]
+    now = time.monotonic()
+    if (
+        cached is None
+        or cached[0] is not hook
+        or cached[1] != snapshot
+        or (cached[3] is not None and now >= cached[3])
+    ):
+        failed: list[bool] = []
+        presets = component_presets(entry, editor.context, failed)
+        cached = cache[entry.app_id] = (
+            hook,
+            snapshot,
+            presets,
+            now + PRESET_RETRY if failed else None,
+        )
+    return cached[2]
 
 
 def preset_entries(
