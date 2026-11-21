@@ -305,6 +305,7 @@ class TestInspector:
         assert editor._inspector._status_dot.title == "Needs Rows"
         assert editor._inspector._status_info == ("Needs Rows", "warning")
         editor.connect(src, "rows", table, "rows")
+        editor._inspector._node_tabs.active = 1
         assert editor._inspector._status_dot.title == "Up to date"
         assert editor._inspector._status_info == ("Up to date", "success")
         assert "3 rows \u00d7 2 columns" in _texts(editor._inspector._data_column)
