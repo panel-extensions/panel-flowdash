@@ -26,6 +26,7 @@ from panel_flowdash.agent.yaml_format import (
 
 # The names that need the agent extra, by the module that defines them.
 _AGENT_NAMES = {
+    "ExplorationOps": "exploration",
     "FlowDashDeps": "tools",
     "approval_policy": "tools",
     "create_agent": "assistant",
@@ -56,6 +57,7 @@ __all__ = [
     "SCHEMA_ID",
     "DashboardOps",
     "DashboardYAMLError",
+    "ExplorationOps",
     "FlowDashDeps",
     "Issue",
     "NotFound",

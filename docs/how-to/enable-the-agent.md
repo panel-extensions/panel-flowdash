@@ -250,18 +250,40 @@ shows a notice whose Review button brings it back, and leaving Explore with an a
 of the drawer's pending opens the drawer on it. People who may only view the dashboard get the feed
 without the question box and without **Add to dashboard**.
 
+The Explore agent's answers stay off the dashboard until someone adds them. Each
+session builds them in an exploration of the open dashboard: a hidden editor holding
+a mirror of each of the dashboard's nodes, whose outputs follow the dashboard node's,
+so an answer built on a filtered table follows the dashboard's widgets. The agent can
+read the dashboard's nodes and connect its own nodes to them, but cannot change them,
+add data sources, or lay out, save or share anything, and an Explore request makes no
+turn of the dashboard and no step of its Undo. Each answer of a request (a node it made
+that none of its other nodes reads) gets a card, with the nodes it is built from
+collapsed under it. A follow-up adds nodes of its own rather than changing an earlier
+answer's (`ExplorationOps(freeze_answers=False)` lets it change them). A card says when
+a dashboard node it is built on changed or was removed since, and keeps showing that
+node's last output once it is removed. Answers last as long as the session.
+
+**Add to dashboard** on an answer's card copies the answer and the nodes it is built from
+onto the dashboard, connected to the dashboard nodes it reads. A node the dashboard
+already has, with the same component, config and inputs, is reused, and a name the
+dashboard uses for another node gets a `_2` suffix. Only the answer's tile is placed on
+the grid. The copy is one turn of the Explore request, with its question, and one step of
+Undo; the card then says "On dashboard as `name`", and **Show** goes to the dashboard and
+marks the tile.
+
 Only one request at a time edits the dashboard: a request takes it at its first edit and
-keeps it until it ends, so each request stays one step of Undo. A question asked in
-the other surface meanwhile reads the dashboard freely, and waits to edit it, saying
-"Waiting for the assistant's edit to finish" (or "Explore's answer"). After a few
-minutes it gives up and the agent says so.
+keeps it until it ends, so each request stays one step of Undo. Adding an answer from
+Explore while the assistant's request is editing waits, saying "Waiting for the
+assistant's edit to finish", and the assistant waits for an answer being added the same
+way. After a few minutes the wait gives up and says so.
 
 `FlowDashApp(explore_agent=...)` chooses the Explore agent. By default it is
 `panel_flowdash.agent.create_explore_agent` on the assistant's model: it reads the
-dashboard and adds nodes of its own, and is told to answer from them. Pass your own
-pydantic-ai `Agent` taking `FlowDashDeps` to use it as is, or `False` to turn asking in
-Explore off. Without an Explore agent (or without any agent) Explore shows every
-recorded turn of the dashboard, as a record of how it was made.
+dashboard and adds nodes of its own in the exploration, and is told to answer from them.
+Pass your own pydantic-ai `Agent` taking `FlowDashDeps` to use it as is (its
+`ctx.deps.ops` is an `ExplorationOps`), or `False` to turn asking in Explore off.
+Without an Explore agent (or without any agent) Explore shows every recorded turn of the
+dashboard, as a record of how it was made.
 
 Each request to the agent stays on the dashboard that was open when the user sent it:
 if the user opens another dashboard while the agent works, every further tool call

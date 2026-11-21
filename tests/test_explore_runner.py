@@ -22,6 +22,7 @@ HISTORY_RUN = "dashboard-earlier"
 HISTORY_CELL = f"{HISTORY_RUN}:nodes"
 
 from .test_agent_tools import _app, scripted
+from .test_exploration import _exploring, _open as _seeded
 
 
 @pytest.fixture(autouse=True)
@@ -78,7 +79,9 @@ async def test_explore_asks_its_own_runner_with_its_own_state(store, monkeypatch
 
 
 async def test_each_surface_shows_only_its_own_runs(store, monkeypatch):
-    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    app, _ = _seeded(
+        store, monkeypatch, agent=_adding("drawn"), explore_agent=_exploring("explored")
+    )
     session = app._agent_session
     feed = app._editor.explore_feed
     feed.shown = True
@@ -93,68 +96,65 @@ async def test_each_surface_shows_only_its_own_runs(store, monkeypatch):
     assert _questions(feed.state) == ["How many are there?"]
     assert explore_run in feed.state.runs and drawer_run not in feed.state.runs
     cells = {a.artifact_id: a for a in feed.state.artifacts}
-    assert set(cells) == {"node:explored", HISTORY_CELL}
+    assert set(cells) == {f"explore:{explore_run}:explored", HISTORY_CELL}
     # The drawer's request is listed, collapsed, among the turns made outside Explore.
-    (drawn,) = [t for t in app._editor.turns if t.run == drawer_run]
-    assert cells[HISTORY_CELL].value == {"nodes": [], "turns": [drawn.id]}
+    (drawn,) = app._editor.turns
+    assert drawn.run == drawer_run
+    assert cells[HISTORY_CELL].value == {"nodes": ["base"], "turns": [drawn.id]}
 
 
 async def test_turns_and_versions_are_recorded_per_runner(store, monkeypatch):
-    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    app, _ = _seeded(
+        store, monkeypatch, agent=_adding("drawn"), explore_agent=_exploring("explored")
+    )
     session = app._agent_session
     editor = app._editor
     await session.explore_runner.run("How many are there?")
     await session.runner.run("Add a number")
-    explored, drawn = editor.turns
-    assert (explored.actor, explored.question) == ("agent", "How many are there?")
-    assert explored.run == session.explore_runner.run_id
-    assert explored.run.startswith(EXPLORE_RUN_PREFIX)
+    # The Explore run made no turn of the dashboard; adding its answer does.
+    (drawn,) = editor.turns
+    await session.add_answer(session.explore_runner.run_id, "explored")
+    drawn, added = editor.turns
+    assert (added.actor, added.question) == ("agent", "How many are there?")
+    assert added.run == session.explore_runner.run_id
+    assert added.run.startswith(EXPLORE_RUN_PREFIX)
     assert (drawn.run, drawn.question) == (session.runner.run_id, "Add a number")
-    assert editor.node_origin("explored") == explored.id
+    assert editor.node_origin("explored") == added.id
     assert editor.node_origin("drawn") == drawn.id
 
-    # Each request is one version of the edit history, which the drawer lists.
+    # The request and the added answer are a version each of the edit history, which the drawer lists.
     (artifact,) = session.runner.state.artifacts
     requests = [v for v in artifact.versions if v.actor == "agent"]
-    assert [v.run_id for v in requests] == [explored.run, drawn.run]
+    assert [v.run_id for v in requests] == [drawn.run, added.run]
     assert all(v.metadata["op"] == "request" for v in requests)
-    assert editor.undo() and [i["instance_id"] for i in editor._tile_items] == ["explored"]
-    assert editor.undo() and editor._tile_items == []
+    assert editor.undo() and [i["instance_id"] for i in editor._tile_items] == ["base", "drawn"]
+    assert editor.undo() and [i["instance_id"] for i in editor._tile_items] == ["base"]
 
     # "How was this made?" reads each run's steps from the runner that ran it.
-    assert editor._run_state(explored.run) is session.explore_runner.state
+    assert editor._run_state(added.run) is session.explore_runner.state
     assert editor._run_state(drawn.run) is session.runner.state
 
 
-async def test_the_history_waits_for_explore_runs(store, monkeypatch):
-    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
-    session = app._agent_session
-    history = app._editor.edit_history
-    seen = []
-    session.explore_runner.state.param.watch(lambda e: seen.append(history.busy), "running")
-    await session.explore_runner.run("How many are there?")
-    assert seen == [True, False]
-    assert not history.busy
-
-
 async def test_explore_turns_are_told_apart_after_a_reload(store, monkeypatch):
-    app, model = _open(
-        store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored")
+    app, model = _seeded(
+        store, monkeypatch, agent=_adding("drawn"), explore_agent=_exploring("explored")
     )
     session = app._agent_session
     await session.explore_runner.run("How many are there?")
+    await session.add_answer(session.explore_runner.run_id, "explored")
     await session.runner.run("Add a number")
     app._editor.end_turn()
     app._editor.add_component("T/number", instance_id="by_hand")
     assert session.ops.save() == model.dashboard_id
 
-    again, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    again = _app(store, monkeypatch, agent=_adding("drawn"), explore_agent=_exploring("explored"))
     again._load_dashboard_sync(model.dashboard_id)
     editor = again._editor
     feed = editor.explore_feed
     feed.shown = True
-    explored, drawn, by_hand = editor.turns
-    assert list(feed.state.runs) == [HISTORY_RUN, f"turn-{explored.id}"]
+    added, drawn, by_hand = editor.turns
+    # Answers are kept for the session; the one added shows as the dashboard recorded it.
+    assert list(feed.state.runs) == [HISTORY_RUN, f"turn-{added.id}"]
     assert _questions(feed.state) == ["How many are there?"]
     cells = {a.artifact_id: a for a in feed.state.artifacts}
     assert set(cells) == {"node:explored", HISTORY_CELL}
@@ -324,120 +324,6 @@ async def _until(condition, task, timeout=10):
     raise AssertionError("Timed out")
 
 
-def _history(app):
-    """Return the agent versions' runs and, undoing one at a time, the nodes left after each Undo."""
-    editor = app._editor
-    (artifact,) = app._agent_session.runner.state.artifacts
-    runs = [v.run_id for v in artifact.versions if v.actor == "agent"]
-    undone = []
-    while editor.edit_history.can_undo:
-        editor.undo()
-        undone.append(sorted(i["instance_id"] for i in editor._tile_items))
-    return runs, undone
-
-
-@pytest.mark.parametrize("ending", ["finished", "cancelled", "failed"])
-async def test_a_run_waits_for_the_other_surfaces_edits_and_each_is_one_undo(
-    store, monkeypatch, ending
-):
-    import asyncio
-
-    a2, a_end, b2 = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    second = {"finished": "a2", "cancelled": "a2", "failed": "FAIL"}[ending]
-    app, _ = _open(
-        store,
-        monkeypatch,
-        agent=_gated([("a1", None), (second, a2)], end=a_end),
-        explore_agent=_gated([("b1", None), ("b2", b2)]),
-    )
-    session = app._agent_session
-    editor = app._editor
-    feed = editor.explore_feed
-    nodes = lambda: [i["instance_id"] for i in editor._tile_items]
-    drawer = asyncio.ensure_future(session.runner.run("A please"))
-    await _until(lambda: "a1" in nodes(), drawer)
-    explore = asyncio.ensure_future(session.explore_runner.run("B please"))
-    # The Explore request reads freely but waits to edit, and says so.
-    await _until(lambda: feed._waiting.visible, explore)
-    assert feed._waiting.object == "Waiting for the assistant's edit to finish…"
-    assert nodes() == ["a1"]
-    if ending == "cancelled":
-        drawer.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await drawer
-    else:
-        a2.set()
-        a_end.set()
-        await drawer
-    await _until(lambda: "b1" in nodes(), explore)
-    assert not feed._waiting.visible
-    b2.set()
-    await explore
-    a_nodes = ["a1", "a2"] if ending == "finished" else ["a1"]
-    assert nodes() == [*a_nodes, "b1", "b2"]
-    a_run, b_run = session.runner.run_id, session.explore_runner.run_id
-    assert [(t.run, t.question) for t in editor.turns] == [
-        (a_run, "A please"),
-        (b_run, "B please"),
-    ]
-    runs, undone = _history(app)
-    assert runs == [a_run, b_run]
-    assert undone == [sorted(a_nodes), []]
-
-
-async def test_the_drawer_says_when_it_waits_for_explore(store, monkeypatch):
-    import asyncio
-
-    b_end = asyncio.Event()
-    app, _ = _open(
-        store,
-        monkeypatch,
-        agent=_gated([("a1", None)]),
-        explore_agent=_gated([("b1", None)], end=b_end),
-    )
-    session = app._agent_session
-    nodes = lambda: [i["instance_id"] for i in app._editor._tile_items]
-    explore = asyncio.ensure_future(session.explore_runner.run("B please"))
-    await _until(lambda: "b1" in nodes(), explore)
-    drawer = asyncio.ensure_future(session.runner.run("A please"))
-    await _until(lambda: session.wait_notice.visible, drawer)
-    assert session.wait_notice.objects[0].object == "Waiting for Explore's answer to finish…"
-    b_end.set()
-    await explore
-    await drawer
-    assert not session.wait_notice.visible and nodes() == ["b1", "a1"]
-
-
-async def test_a_run_that_waits_too_long_is_told_why(store, monkeypatch):
-    import asyncio
-
-    a_end = asyncio.Event()
-    app, _ = _open(
-        store,
-        monkeypatch,
-        agent=_gated([("a1", None)], end=a_end),
-        explore_agent=_gated([("b1", None)]),
-    )
-    session = app._agent_session
-    session.edit_lock.timeout = 0.2
-    nodes = lambda: [i["instance_id"] for i in app._editor._tile_items]
-    drawer = asyncio.ensure_future(session.runner.run("A please"))
-    await _until(lambda: "a1" in nodes(), drawer)
-    await session.explore_runner.run("B please")
-    (call,) = session.explore_runner.state.tool_calls.values()
-    assert str(call.result).startswith(
-        "Not available: the dashboard is busy with the assistant's edit"
-    )
-    assert not app._editor.explore_feed._waiting.visible
-    a_end.set()
-    await drawer
-    assert nodes() == ["a1"]
-    # The lock was let go, so the next request edits at once.
-    session.explore_runner.messages = []
-    await session.explore_runner.run("B again")
-    assert nodes() == ["a1", "b1"]
-
-
 async def test_a_request_never_waits_for_itself(store, monkeypatch):
     app, _ = _open(
         store,
@@ -501,92 +387,14 @@ async def test_an_explore_approval_left_behind_shows_a_notice(store, monkeypatch
 
 
 async def test_a_run_id_given_to_the_explore_runner_still_marks_it_as_explores(store, monkeypatch):
-    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    app, _ = _seeded(
+        store, monkeypatch, agent=_adding("drawn"), explore_agent=_exploring("explored")
+    )
     runner = app._agent_session.explore_runner
     await runner.run("How many are there?", run_id="mine")
     assert runner.run_id == f"{EXPLORE_RUN_PREFIX}mine"
-    assert app._editor.turns[0].run == runner.run_id
-
-
-def _calls(steps, end=None):
-    """A model making one tool call per step, each (tool, args, gate), then answering once *end* is set."""
-    import json
-
-    from pydantic_ai.models.function import DeltaToolCall
-
-    from .test_agent_tools import _results
-
-    async def stream(messages, info):
-        done = len(_results(messages))
-        if done >= len(steps):
-            if end is not None:
-                await end.wait()
-            yield "Done."
-            return
-        tool, args, gate = steps[done]
-        if gate is not None:
-            await gate.wait()
-        yield {0: DeltaToolCall(name=tool, json_args=json.dumps(args), tool_call_id=f"c{done}")}
-
-    return Agent(
-        FunctionModel(stream_function=stream),
-        deps_type=FlowDashDeps,
-        toolsets=[dashboard_toolset()],
-    )
-
-
-async def test_config_changes_of_both_surfaces_are_one_undo_each(store, monkeypatch):
-    import asyncio
-
-    import yaml
-
-    gate, a_end = asyncio.Event(), asyncio.Event()
-    model = store.create_dashboard("alice", "Live")
-    app = _app(
-        store,
-        monkeypatch,
-        agent=_calls(
-            [
-                ("set_config", {"name": "s1", "config": {"factor": 2}}, None),
-                ("set_config", {"name": "s1", "config": {"factor": 3}}, gate),
-            ],
-            end=a_end,
-        ),
-        explore_agent=_calls(
-            [
-                ("set_config", {"name": "s2", "config": {"factor": 2}}, None),
-                ("set_config", {"name": "s2", "config": {"factor": 3}}, None),
-            ]
-        ),
-    )
-    app._load_dashboard_sync(model.dashboard_id)
-    editor = app._editor
-    editor.add_component("T/scaled", instance_id="s1")
-    editor.add_component("T/scaled", instance_id="s2")
-    editor.end_turn()
-    session = app._agent_session
-
-    def factors():
-        nodes = yaml.safe_load(editor.edit_history.snapshot()[0])["nodes"]
-        return {n: (nodes[n].get("config") or {}).get("factor", 1) for n in ("s1", "s2")}
-
-    drawer = asyncio.ensure_future(session.runner.run("A"))
-    await _until(lambda: factors()["s1"] == 2, drawer)
-    explore = asyncio.ensure_future(session.explore_runner.run("B"))
-    await _until(lambda: editor.explore_feed._waiting.visible, explore)
-    gate.set()
-    a_end.set()
-    await drawer
-    await explore
-    assert factors() == {"s1": 3, "s2": 3}
-    a_run, b_run = session.runner.run_id, session.explore_runner.run_id
-    assert [t.run for t in editor.turns if t.actor == "agent"] == [a_run, b_run]
-    (artifact,) = session.runner.state.artifacts
-    assert [v.run_id for v in artifact.versions if v.actor == "agent"] == [a_run, b_run]
-    editor.undo()
-    assert factors() == {"s1": 3, "s2": 1}
-    editor.undo()
-    assert factors() == {"s1": 1, "s2": 1}
+    (turn,) = app._agent_session.explorations.exploration().editor.turns
+    assert turn.run == runner.run_id
 
 
 async def test_a_dismissed_approval_notice_stays_dismissed_and_counts_the_rest(store, monkeypatch):

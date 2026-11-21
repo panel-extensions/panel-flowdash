@@ -185,6 +185,9 @@ class DashboardOps:
     # Seconds a component's config check may take, see ``register(check_config=)``.
     check_timeout: float = CHECK_TIMEOUT
 
+    #: Whether the edit tools publish the dashboard as a version after each edit.
+    versioned: bool = True
+
     def __init__(self, editor: FlowDash):
         self.editor = editor
         # What the config check found on the latest add_node, set_config,
@@ -794,12 +797,15 @@ class DashboardOps:
             editor, names, samples=self._can_sample(), rows=rows, invalid=invalid
         )
 
-    def _scratch_editor(self) -> FlowDash:
-        """Build an editor with the same components and rights, which nobody sees and nothing saves."""
+    def _scratch_editor(self, cls: type | None = None) -> FlowDash:
+        """Build an editor with the same components and rights, which nobody sees and nothing saves.
+
+        *cls* is the editor class to build, by default the editor's own.
+        """
         editor = self.editor
         doc = pn.state.curdoc
         session_editor = _SESSION_EDITORS.get(doc) if doc is not None else None
-        scratch = type(editor)(
+        scratch = (cls or type(editor))(
             components=editor._registry,
             include_builtin_components=False,
             authorize_component=editor.authorize_component,

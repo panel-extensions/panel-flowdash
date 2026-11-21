@@ -472,7 +472,7 @@ def _artifact(ops: DashboardOps, message: str):
     version, stamped with the tool call, so only the message is returned.
     """
     editor = ops.editor
-    if editor.edit_history.active:
+    if editor.edit_history.active or not ops.versioned:
         return message
     current = editor.dashboard
     artifact_id = artifact_id_for(current.dashboard_id if current else None)

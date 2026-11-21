@@ -28,6 +28,7 @@ from panel_flowdash.history import components_of
 from .actions import palette_actions
 from .assistant import create_agent, create_explore_agent
 from .chrome import SessionChrome
+from .exploration import ExplorationOps
 from .highlight import ChangeHighlighter
 from .live import LiveDashboardOps
 from .models import agent_model_choice
@@ -137,25 +138,22 @@ class AgentSession:
         editor.agent_state = self.runner.state
         # Runs applied live are this person's requests; a stored history is restored without notifying.
         self.runner.state.subscribe(self._note_run)
-        # The Explore view asks its own agent, whose runs the drawer does not show. Its edits still
-        # go through the edit history, which waits for its runs and versions each one when it ends.
+        # The Explore view asks its own agent, whose runs the drawer does not show. It builds its
+        # answers in an exploration beside the dashboard, so they stay off the canvas and out of
+        # the edit history until the person adds one, which takes the edit lock like a request.
         self.explore_runner = None
+        self.explorations = None
         if explore_agent is not None:
+            self.explorations = ExplorationOps(self.ops)
             self.explore_runner = _ExploreRunner(
                 self,
                 explore_agent,
                 RunState(),
-                deps=FlowDashDeps(
-                    self.ops,
-                    edit_lock=self.edit_lock,
-                    edit_label="Explore's answer",
-                    on_edit_wait=editor.explore_feed.show_waiting,
-                ),
+                deps=FlowDashDeps(self.explorations),
                 approval_policy=self._approval_policy(),
                 run_kwargs=dict(settings),
             )
             self.explore_runner.state.subscribe(self._note_run)
-            editor.edit_history.follow(self.explore_runner.state)
         # Background checks of restored versions, kept so they are not collected while they run.
         self._checks: set[asyncio.Task] = set()
         # A single model is named in the chat, with panel-agents versions that show one; there is
@@ -180,6 +178,9 @@ class AgentSession:
                     chat_params=chat_params,
                     model_chat=self.drawer.chat,
                     foreign=self._drawer_run,
+                    explorations=self.explorations,
+                    add=self.add_answer,
+                    show=self.show_answer,
                 )
             else:
                 # With nothing to pick, the composer names the Explore agent's own model.
@@ -188,6 +189,9 @@ class AgentSession:
                     self.explore_runner,
                     chat_params={"models": [only], "model_id": only.id} if only else {},
                     foreign=self._drawer_run,
+                    explorations=self.explorations,
+                    add=self.add_answer,
+                    show=self.show_answer,
                 )
         editor.param.watch(self._on_explore, "explore")
         self._on_explore()
@@ -236,6 +240,30 @@ class AgentSession:
             self.drawer.open = False
         elif self.runner.state.pending_approvals:
             self.drawer.open = True
+
+    async def add_answer(self, run: str, node: str) -> str:
+        """Add the answer *node* of Explore run *run* to the dashboard and return its name there.
+
+        It waits for a request of the assistant that is editing the
+        dashboard, and is one turn of *run* and one version of the history.
+        """
+        name = await self.explorations.add_to_dashboard(
+            run,
+            node,
+            question=self.explore_runner.questions.get(run),
+            edit_lock=self.edit_lock,
+            on_wait=self.app._editor.explore_feed.show_waiting,
+        )
+        self.publish_agent_layout(run)
+        return name
+
+    def show_answer(self, name: str):
+        """Leave the Explore view for the tiles and mark the dashboard node *name*, e.g. an answer just added."""
+        editor = self.app._editor
+        if editor.editable and editor.mode == "wiring":
+            editor.mode = "dashboard"
+        editor.explore = False
+        self.highlighter.show({name: "add"})
 
     def _note_run(self, event):
         if isinstance(event, RunStarted) and event.parent_run_id is None:
@@ -477,7 +505,27 @@ class _SessionRunner(AgentRunner):
 
 
 class _ExploreRunner(_SessionRunner):
-    """Runs the Explore view's agent, with run ids that mark its turns as the Explore view's."""
+    """Runs the Explore view's agent, with run ids that mark its turns as the Explore view's.
+
+    Each run works on the open dashboard's exploration (``deps.ops`` is an
+    ``ExplorationOps``), brought up to date with the dashboard first.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        #: What was asked in each run, for the turn adding one of its answers to the dashboard.
+        self.questions: dict[str, str] = {}
+
+    async def run(self, prompt=None, **kwargs):
+        run_id = kwargs["run_id"] = self._run_id(kwargs.get("run_id"))
+        if isinstance(prompt, str):
+            self.questions[run_id] = prompt
+        exploration = self.deps.ops.exploration()
+        exploration.sync()
+        try:
+            return await super().run(prompt, **kwargs)
+        finally:
+            exploration.note_run(run_id)
 
     def _run_id(self, given: str | None) -> str:
         if given:
