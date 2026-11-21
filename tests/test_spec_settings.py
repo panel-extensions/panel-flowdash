@@ -550,6 +550,48 @@ class TestCodePanel:
         assert editor._component_instances[node].spec == {"a": 1}
         assert panel.dirty
 
+    @pytest.mark.parametrize("move", ["toggle", "narrow"])
+    async def test_a_json_draft_survives_a_move(self, editor, move):
+        editor._split_view.storage.window_width = 1900
+        node = editor.add_component("D/json")
+        field = _field(editor, node)
+        panel = editor.code_panel
+        panel.toggle_dock()
+        field.editor.value_input = '{"title": "Draft"}'
+        if move == "toggle":
+            panel.toggle_dock()
+        else:
+            editor._split_view.storage.window_width = 1300
+        assert panel.dock == "bottom"
+        assert field.editor.value == field.editor.value_input
+        assert field.value == {"title": "Draft"}
+        assert panel.dirty
+        assert editor._component_instances[node].spec == {"a": 1}
+        await _run(editor)
+        assert editor._component_instances[node].spec == {"title": "Draft"}
+
+    async def test_invalid_json_survives_a_move(self, editor):
+        node = editor.add_component("D/json")
+        field = _field(editor, node)
+        panel = editor.code_panel
+        field.editor.value_input = '{"title": '
+        panel.toggle_dock()
+        assert field.editor.value == '{"title": '
+        assert field.error is not None
+        assert panel.dirty
+        assert editor._component_instances[node].spec == {"a": 1}
+
+    async def test_a_form_draft_survives_a_move(self, editor):
+        node = editor.add_component("D/plain")
+        field = _field(editor, node)
+        panel = editor.code_panel
+        field._controls["title"][1].value = "Moved"
+        panel.toggle_dock()
+        assert field.value["title"] == "Moved"
+        assert field._controls["title"][1].value == "Moved"
+        assert '"title": "Moved"' in field.editor.value
+        assert panel.dirty
+
     async def test_a_spec_without_settings_is_json_only(self, editor):
         node = editor.add_component("D/json")
         _field(editor, node)

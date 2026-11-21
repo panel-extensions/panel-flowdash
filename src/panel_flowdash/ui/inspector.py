@@ -1537,7 +1537,7 @@ class Inspector(Viewer):
     def _spec_buttons(
         self, instance_id: str, config_state: param.Parameterized, fields: list[str]
     ) -> Viewable:
-        """Offer to edit each spec field in the code panel under the canvas."""
+        """Offer to edit each spec field in the code panel."""
         buttons = []
         panel = self.editor.code_panel
         for name in fields:
@@ -1573,7 +1573,16 @@ class Inspector(Viewer):
         self._releases.append(partial(panel.param.unwatch, watcher))
         return pn.Column(
             *(button for _name, _label, button in buttons),
-            _caption("Edited in the code panel under the canvas.", margin=(0, 0, 8, 0)),
+            _caption(
+                panel.param.dock.rx().rx.pipe(
+                    lambda dock: (
+                        "Edited in the code panel "
+                        f"{'beside' if dock == 'right' else 'under'} the canvas."
+                    )
+                ),
+                margin=(0, 0, 8, 0),
+                css_classes=["fd-spec-in-panel-caption"],
+            ),
             margin=(0, 0, 4, 0),
             sizing_mode="stretch_width",
             css_classes=["fd-spec-in-panel"],

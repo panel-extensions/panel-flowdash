@@ -365,6 +365,9 @@ FORMATTERS: dict[str, t.Callable[[str], str]] = {"json": format_json}
 def register_formatter(language: str, formatter: t.Callable[[str], str] | None):
     """Format every code field in *language* with *formatter*, or with none if it is None.
 
+    The registry is global to the process, so it applies to every app and
+    session served.
+
     A formatter takes the text and returns it formatted, raising an exception
     if it cannot, e.g. ``lambda sql: sqlglot.transpile(sql, pretty=True)[0]``.
     A code field may declare its own, which takes precedence::

@@ -100,7 +100,9 @@ _HEADER_CSS = """
 :host { min-width: 0; }
 .fd-cp-title { display: flex; align-items: center; gap: 8px; height: 100%; white-space: nowrap;
   overflow: hidden; }
-.fd-cp-name { overflow: hidden; text-overflow: ellipsis; }
+/* The component's name gives way before the node's. */
+.fd-cp-name { overflow: hidden; text-overflow: ellipsis; flex: 0 0.01 auto; min-width: 48px; }
+.fd-cp-kind { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fd-cp-icon { font-family: "Material Icons"; font-size: 18px; line-height: 1;
   font-feature-settings: "liga"; color: var(--mui-palette-text-secondary); }
 .fd-cp-name { font-family: var(--fd-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
@@ -140,7 +142,8 @@ _STRIP_CSS = """
 /* The controls on the right keep their size; the title and the fields give way. */
 :host(.fd-code-panel-header) > * { flex: none; }
 :host(.fd-code-panel-header) > .bk-Spacer { flex: 1 1 0; min-width: 0; width: auto !important; }
-:host(.fd-code-panel-header) > .fd-cp-title-pane { flex: 0 1 auto; min-width: 60px; overflow: hidden; }
+/* In a narrow panel, e.g. docked to the right, the node's name keeps its room. */
+:host(.fd-code-panel-header) > .fd-cp-title-pane { flex: 0 1 auto; min-width: min(150px, 35%); overflow: hidden; }
 :host(.fd-cp-footer) { border-bottom: none; padding: 0 12px;
   border-top: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.12)); }
 :host(.fd-cp-subheader) { padding: 0 12px; }
@@ -379,7 +382,8 @@ class CodePanel(Viewer):
         self._running = False
         self._run_again = False
         self._format_error: str | None = None
-        self._formatting = False
+        # Set while the panel edits the spec itself, e.g. formatting it, which "Run on change" does not run.
+        self._hold_run = False
 
         self._title = pn.pane.HTML(
             "",
@@ -394,7 +398,10 @@ class CodePanel(Viewer):
             margin=(0, 8),
             size="small",
             align="center",
-            sx={"& .MuiFormControlLabel-label": {"fontSize": "0.8125rem"}},
+            # The sx styles the switch itself, so its label is styled here.
+            stylesheets=[
+                ".MuiFormControlLabel-label { font-size: 0.8125rem; white-space: nowrap; }"
+            ],
             css_classes=["fd-code-run-on-change"],
         )
         self.run_switch.link(self, value="run_on_change", bidirectional=True)
@@ -795,13 +802,29 @@ class CodePanel(Viewer):
         self._sync_collapsed()
 
     def _keep_text(self):
-        """Make the text typed in the editors what they show when rendered again, e.g. once moved."""
+        """Make the text typed in the editors what they show when rendered again, e.g. once moved.
+
+        A browser renders an editor from its applied text, so spec text typed
+        but not applied is applied as leaving the editor would: a valid spec
+        updates the draft and the form, invalid text stays with its problem
+        marked. Ace's undo history starts afresh in the new editor.
+        """
         self._syncing = True
         try:
             if self.code.value != self.code.value_input:
                 self.code.value = self.code.value_input
         finally:
             self._syncing = False
+        text = self.spec_editor.editor
+        if self._kind() == "spec" and text.value != text.value_input:
+            # A move is not an edit, so "Run on change" does not run it.
+            self._hold_run = True
+            try:
+                text.value = text.value_input
+            finally:
+                self._hold_run = False
+            self._sync_dirty()
+            self._show_status()
 
     # ------------------------------------------------------------------
     # Opening and closing
@@ -1240,7 +1263,7 @@ class CodePanel(Viewer):
         if self._syncing or self._kind() != "spec":
             return
         self._sync_dirty()
-        if not self._formatting:
+        if not self._hold_run:
             self._run_later()
 
     def _spec_typed(self, _event):
@@ -1410,12 +1433,12 @@ class CodePanel(Viewer):
             self._sync_dirty()
         else:
             # Applied as if typed, so the spec and the form follow the text.
-            self._formatting = True
+            self._hold_run = True
             try:
                 self.spec_editor.editor.param.update(value_input=formatted)
                 self.spec_editor.editor.value = formatted
             finally:
-                self._formatting = False
+                self._hold_run = False
         tools.replace(source.value_input)
 
     def _format_failed(self, kind: str | None, text: str, error: Exception):

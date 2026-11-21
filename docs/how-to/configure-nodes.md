@@ -363,10 +363,19 @@ import sqlglot
 
 from panel_flowdash.ui.code_field import register_formatter
 
-register_formatter("sql", lambda sql: sqlglot.transpile(sql, pretty=True)[0])
+
+def format_sql(sql: str) -> str:
+    return sqlglot.transpile(sql, pretty=True)[0]
+
+
+register_formatter("sql", format_sql)
 
 sql = param.String(metadata={"flowdash": {"widget": "code", "language": "sql", "formatter": format_sql}})
 ```
+
+`register_formatter` is global to the Python process: it applies to every app
+and session the server runs, so call it once at import, e.g. next to
+`@register`, rather than per session.
 
 Formatting is an edit of the draft like typing: Ctrl+Z undoes it and Run
 applies it.

@@ -928,8 +928,39 @@ class TestDock:
         assert editor._code_dock.visible and not editor._code_side.visible
         # Remembered: widening the window docks it to the right again.
         assert editor._split_view.preferences.code_dock == "right"
-        editor._split_view.storage.window_width = 1600
+        editor._split_view.storage.window_width = 1800
         assert panel.dock == "right" and editor._code_side.visible
+
+    def test_the_open_inspector_needs_a_wider_window(self, setup):
+        editor, query = setup
+        editor._split_view.storage.window_width = 1600
+        editor.open_code_panel(query, "expr")
+        panel = editor.code_panel
+        assert editor._inspector.visible
+        assert not panel.can_dock_right and not panel.dock_button.visible
+        editor._inspector.collapsed = True
+        assert panel.can_dock_right
+        panel.toggle_dock()
+        assert editor._code_side.visible
+        editor._inspector.collapsed = False
+        assert panel.dock == "bottom" and editor._code_dock.visible
+        editor._inspector.visible = False
+        assert panel.dock == "right" and editor._code_side.visible
+
+    def test_the_inspector_says_where_the_panel_is(self, setup):
+        editor, query = setup
+        select_on_canvas(editor._flow, node_id=query)
+        editor.open_code_panel(query, "expr")
+        caption = next(
+            iter(
+                pn.Column(*editor._inspector._body).select(
+                    lambda o: "fd-spec-in-panel-caption" in getattr(o, "css_classes", [])
+                )
+            )
+        )
+        assert "under the canvas" in caption.object
+        editor.code_panel.toggle_dock()
+        assert "beside the canvas" in caption.object
 
     def test_a_narrow_window_still_uses_the_dialog(self, setup):
         editor, query = setup

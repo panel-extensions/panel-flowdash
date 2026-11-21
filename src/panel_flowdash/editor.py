@@ -404,8 +404,10 @@ _CODE_PANEL_HEIGHT = 400
 # Narrower windows edit code fields in a dialog rather than the code panel under the canvas.
 _CODE_PANEL_MIN_WIDTH = 960
 # Narrower windows dock the code panel under the canvas even where it was docked to the right,
-# so the canvas keeps room beside the palette, the inspector and the panel.
+# as do windows leaving the canvas less than its docked minimum beside the palette, the open
+# inspector and the panel.
 _CODE_PANEL_RIGHT_MIN_WIDTH = 1440
+_CANVAS_MIN_WIDTH_DOCKED = 560
 # Docked to the right, the panel starts this wide and is never dragged narrower.
 _CODE_PANEL_WIDTH = 520
 _CODE_PANEL_MIN_SIDE_WIDTH = 400
@@ -4095,6 +4097,9 @@ class FlowDash(Viewer):
             self._code_side_handle.param.watch(self._on_code_side_resized, "size")
             self._sync_code_dock_side()
             panel.param.watch(self._on_code_dock_moved, "dock")
+            # The inspector opening or folding changes the canvas's room beside a panel on the right.
+            self._inspector.param.watch(lambda _e: self._sync_code_dock_side(), "visible")
+            self._inspector._panel.param.watch(lambda _e: self._sync_code_dock_side(), "width")
             panel.param.watch(self._sync_code_dock, ["collapsed", "instance_id"])
             panel.param.watch(self._on_code_drafts, "dirty")
         return self._code_panel
@@ -4188,7 +4193,11 @@ class FlowDash(Viewer):
 
     def _code_dock_right_allowed(self) -> bool:
         width = self._split_view.storage.window_width
-        return width is None or width >= _CODE_PANEL_RIGHT_MIN_WIDTH
+        if width is None:
+            return True
+        inspector = self._inspector._panel.width if self._inspector.visible else 0
+        room = width - _SIDE_PANEL_WIDTH - inspector - self._code_side_width
+        return width >= _CODE_PANEL_RIGHT_MIN_WIDTH and room >= _CANVAS_MIN_WIDTH_DOCKED
 
     def _sync_code_dock_side(self):
         """Dock the code panel where the browser last had it, under the canvas in a narrower window."""
@@ -4209,16 +4218,23 @@ class FlowDash(Viewer):
         if self._code_dock.objects or self._code_side.objects:
             self._place_code_panel()
         if self.code_panel_open:
-            self._keep_in_view(self._code_panel.instance_id)
+            # The canvas changes shape, so it may zoom out to keep the whole node in view.
+            self._keep_in_view(self._code_panel.instance_id, keep_zoom=False)
 
-    def _keep_in_view(self, instance_id: str):
-        """Once the canvas has resized, e.g. for the code panel, keep the node in view at the same zoom."""
+    def _keep_in_view(self, instance_id: str, keep_zoom: bool = True):
+        """Once the canvas has resized, e.g. for the code panel, keep the node in view.
+
+        With *keep_zoom* it pans at the current zoom, otherwise it may zoom out
+        to fit the node, never in.
+        """
         if not self._flow._models or (doc := pn.state.curdoc) is None:
             return
         zoom = (self._flow.viewport or {}).get("zoom") or 1
+        least = zoom if keep_zoom else None
         doc.add_timeout_callback(
-            lambda: self._flow.fit_view(instance_id, min_zoom=zoom, max_zoom=zoom, duration=300),
-            200,
+            lambda: self._flow.fit_view(instance_id, min_zoom=least, max_zoom=zoom, duration=300),
+            # A moved panel renders afresh first.
+            200 if keep_zoom else 400,
         )
 
     @pn.io.hold()

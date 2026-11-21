@@ -17,7 +17,7 @@ expect = pytest.importorskip("playwright.sync_api").expect
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
 VIEWPORT = {"width": 1440, "height": 900}
-WIDE = {"width": 1600, "height": 900}
+WIDE = {"width": 1900, "height": 900}
 
 
 def _open_node(page, node, text):
@@ -199,3 +199,40 @@ def test_the_inspector_back_button_is_named_back(page):
     assert back.evaluate("e => e.textContent.trim()") == "Back"
     back.click()
     expect(page.get_by_text("Extra view")).to_have_count(0)
+
+
+@pytest.mark.parametrize("move", ["toggle", "narrow"])
+def test_a_json_draft_survives_a_move(page, move):
+    editor = FlowDash(SPEC_COMPONENTS, notifications=False, include_builtin_components=False)
+    node = editor.add_component("D/json", position=(0, 0))
+    page.set_viewport_size(WIDE)
+    serve_component(page, editor)
+    _open_node(page, node, "")
+    page.locator(".fd-code-dock-toggle button").click()
+    expect(page.locator(".fd-code-side .fd-code-panel")).to_be_visible(timeout=8000)
+    text = page.locator(".fd-code-panel-spec-json")
+    text.locator(".ace_content").click()
+    page.keyboard.press("ControlOrMeta+a")
+    page.keyboard.insert_text('{"title":"Draft"}')
+    wait_until(lambda: editor.code_panel.dirty, page)
+    if move == "toggle":
+        page.locator(".fd-code-dock-toggle button").click()
+    else:
+        page.set_viewport_size({"width": 1300, "height": 900})
+    wait_until(lambda: editor.code_panel.dock == "bottom", page, timeout=8000)
+    expect(page.locator(".fd-code-dock .fd-code-panel-spec-json .ace_content")).to_contain_text(
+        "Draft", timeout=8000
+    )
+    assert editor.code_panel.dirty
+    assert editor._component_instances[node].spec == {"a": 1}
+
+
+def test_the_open_inspector_keeps_the_panel_under_the_canvas_at_1600(page):
+    editor, query = make_editor()
+    page.set_viewport_size({"width": 1600, "height": 900})
+    serve_component(page, editor)
+    _open_node(page, query, "p_year > 2014")
+    expect(page.locator(".fd-code-dock-toggle button")).to_be_hidden()
+    page.get_by_role("button", name="Hide inspector").click()
+    wait_until(lambda: editor._inspector.collapsed, page, timeout=8000)
+    expect(page.locator(".fd-code-dock-toggle button")).to_be_visible()
