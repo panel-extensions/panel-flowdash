@@ -119,8 +119,13 @@ class Table(pn.viewable.Viewer):
 Preset entries sit after their component with its icon and port summary, are
 searched by their title and tags, and can be clicked, dragged or dropped on a
 port like any entry. The command palette (`Ctrl`/`Cmd`+`K`) offers them too
-while a dashboard is edited. The callable runs whenever the palette is drawn
-or searched, so keep it quick; a failing one offers no presets.
+while a dashboard is edited. The editor asks the callable again only when its
+`context` changes, including a value added to or removed from a dict in it,
+and searching filters the entries it has. A preset's config must be
+JSON-serializable; give a preset an `id` when its title or config may change
+while it should stay the same entry. A failing callable offers no presets.
+Components found by scanning a project directory show their presets once
+imported, which the app does when a dashboard is opened for editing.
 
 ### Built-in widgets and views
 

@@ -10,7 +10,7 @@ import panel as pn
 import param
 from panel.custom import JSComponent
 
-from panel_flowdash.ui.palette import component_presets
+from panel_flowdash.ui.palette import editor_presets
 from panel_flowdash.ui.status_bar import select_on_canvas
 
 if t.TYPE_CHECKING:
@@ -246,13 +246,13 @@ class CommandPaletteController:
                     "keywords": " ".join([entry.section, *meta.tags, meta.description or ""]),
                 }
             )
-            if not adding:
+            if not adding or component_id in placed:
                 continue
-            for index, preset in enumerate(component_presets(entry, editor.context)):
+            for preset in editor_presets(editor, entry):
                 description = preset.get("description") or ""
                 items.append(
                     {
-                        "id": f"preset:{index}:{component_id}",
+                        "id": f"preset:{preset['key']}:{component_id}",
                         "group": "Components",
                         "title": preset["title"],
                         "subtitle": preset.get("tooltip") or description or f"Add {entry.title}",
@@ -555,8 +555,8 @@ class CommandPaletteController:
         elif kind == "component":
             self._run_component(value)
         elif kind == "preset":
-            index, _, component_id = value.partition(":")
-            self._run_preset(component_id, index)
+            key, _, component_id = value.partition(":")
+            self._run_preset(component_id, key)
         elif kind == "inspect":
             self._inspect(value)
         elif kind == "expand":
@@ -592,14 +592,14 @@ class CommandPaletteController:
 
             self._navigate(COMPONENTS_ROUTE)
 
-    def _run_preset(self, component_id: str, index: str):
+    def _run_preset(self, component_id: str, key: str):
         editor = self._editor
         entry = editor._component_entries.get(component_id)
         if entry is None or not self._editing() or not editor._component_authorized(component_id):
             return
-        presets = component_presets(entry, editor.context)
-        if index.isdigit() and int(index) < len(presets):
-            editor._add_from_ui(component_id, config=presets[int(index)]["config"])
+        preset = next((p for p in editor_presets(editor, entry) if p["key"] == key), None)
+        if preset is not None:
+            editor._add_from_ui(component_id, config=preset["config"])
 
     def _inspect(self, instance_id: str):
         editor = self._editor

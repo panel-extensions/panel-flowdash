@@ -55,7 +55,13 @@ def broken(config):
 
 
 def odd_presets(context):
-    return [{"title": "No config"}, {"config": {}}, "nope", {"title": "Fine", "config": {}}]
+    return [
+        {"title": "No config"},
+        {"config": {}},
+        "nope",
+        {"title": "Not JSON", "config": {"value": object()}},
+        {"title": "Fine", "config": {}},
+    ]
 
 
 @register(page=False, component=True, title="Odd", palette_presets=odd_presets)
@@ -138,10 +144,116 @@ def test_clicking_the_component_itself_places_it_unconfigured(editor):
     assert editor._tile_items[0]["config"] == {}
 
 
-def test_failing_and_malformed_presets_are_skipped(editor, caplog):
+def test_failing_and_malformed_presets_are_skipped(caplog):
     with caplog.at_level(logging.WARNING, logger="panel_flowdash.ui.palette"):
+        editor = FlowDash(
+            COMPONENTS,
+            notifications=False,
+            include_builtin_components=False,
+            context=dict(SOURCES),
+        )
         labels = [item["label"] for group in editor._palette_items() for item in group["items"]]
+        editor._palette_panel.query = "o"
+        editor._palette_panel.query = ""
     assert "Broken" in labels and "Odd" in labels and "Fine" in labels
-    assert "No config" not in labels
+    assert "No config" not in labels and "Not JSON" not in labels
     assert "palette_presets of 'Test/broken' failed" in caplog.text
     assert "malformed palette preset of 'Test/odd'" in caplog.text
+    assert "is not JSON-serializable" in caplog.text
+    assert caplog.text.count("palette_presets of 'Test/broken' failed") == 1
+
+
+def test_searching_and_adding_do_not_ask_the_hook_again():
+    calls = []
+
+    def counted(context):
+        calls.append(1)
+        return source_presets(context)
+
+    entry_editor = FlowDash(
+        {
+            "Test/data": register(
+                page=False,
+                component=True,
+                title="Data",
+                config=["ref", "table"],
+                palette_presets=counted,
+            )(type("Counted", (Data,), {}))
+        },
+        notifications=False,
+        include_builtin_components=False,
+        context=dict(SOURCES),
+    )
+    for query in ("o", "or", "orders", ""):
+        entry_editor._palette_panel.query = query
+    item = next(
+        i
+        for g in entry_editor._palette.items
+        for i in g["items"]
+        if i["label"] == "orders (sales)"
+    )
+    entry_editor._on_palette_clicked(item)
+    entry_editor.undo()
+    assert len(calls) == 1
+    entry_editor.context["sources"] = {"stock": ["parts"]}
+    entry_editor._palette_panel.refresh()
+    assert len(calls) == 2
+    assert "parts (stock)" in [i["label"] for g in entry_editor._palette.items for i in g["items"]]
+
+
+SCANNED = """\
+from panel_flowdash import register
+
+
+def presets(context):
+    return [{"title": f"{name} feed", "config": {"name": name}} for name in context.get("feeds", [])]
+
+
+@register(page=False, component=True, title="Feed", provides=["rows"], palette_presets=presets)
+def app(config):
+    return "feed"
+"""
+
+
+def test_scan_flags_components_with_presets(tmp_path):
+    from panel_flowdash.registry import build_registry
+
+    section = tmp_path / "Data"
+    section.mkdir()
+    (section / "__init__.py").write_text("")
+    (section / "feed.py").write_text(SCANNED)
+    (section / "plain.py").write_text(
+        SCANNED.replace("palette_presets=presets", "palette_presets=None")
+    )
+    registry = build_registry(tmp_path)
+    flags = {
+        app_id.split("/")[-1]: entry.metadata.presets_pending for app_id, entry in registry.items()
+    }
+    assert flags == {"feed": True, "plain": False}
+
+
+async def test_editing_a_dashboard_imports_scanned_components_with_presets(tmp_path, monkeypatch):
+    import sys
+
+    import panel as pn
+
+    from panel_flowdash.app import FlowDashApp
+    from panel_flowdash.dashboard_store import MemoryDashboardStore
+
+    section = tmp_path / "Data"
+    section.mkdir()
+    (section / "__init__.py").write_text("")
+    (section / "feed.py").write_text(SCANNED)
+    monkeypatch.syspath_prepend(str(tmp_path))
+    store = MemoryDashboardStore()
+    app = FlowDashApp(project_dir=tmp_path, store=store, notifications=False)
+    app._editor.context = {"feeds": ["north", "south"]}
+    model = store.create_dashboard(app._user_id, "Feeds")
+    monkeypatch.setattr(pn.state, "_location", None, raising=False)
+    try:
+        await app._load_dashboard(model.dashboard_id, edit=True)
+        labels = [item["label"] for group in app._editor._palette.items for item in group["items"]]
+        assert "north feed" in labels and "south feed" in labels
+    finally:
+        sys.modules.pop("Data.feed", None)
+        sys.modules.pop("Data", None)

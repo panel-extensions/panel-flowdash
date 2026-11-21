@@ -1122,7 +1122,15 @@ class FlowDashApp(Viewer):
             # loop. The editor palette needs no imports (it is built from the
             # scanned metadata) and `add_component` imports on demand, so even
             # edit mode does not pay for the whole catalog.
-            await self._ensure_components_loaded({item.component_id for item in dashboard.items})
+            placed = {item.component_id for item in dashboard.items}
+            if edit:
+                # Scanned components learn their palette presets only from an import.
+                placed |= {
+                    component_id
+                    for component_id, entry in self._editor._component_entries.items()
+                    if entry.metadata.presets_pending
+                }
+            await self._ensure_components_loaded(placed)
         if not self._is_current_navigation(generation):
             return
         with pn.io.hold():

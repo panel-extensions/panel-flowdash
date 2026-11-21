@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import typing as t
 from collections.abc import Callable, Iterable, Mapping
@@ -213,9 +215,11 @@ def component_presets(
 ) -> list[dict[str, t.Any]]:
     """Return the presets ``register(palette_presets=...)`` gives *entry* for *context*.
 
-    Each is a dict with a ``title``, a ``config`` dict and optionally a
-    ``description``, ``tooltip``, ``tags`` and ``icon``; malformed ones are
-    skipped and a failing hook gives none.
+    Each is a dict with a ``title``, a JSON-serializable ``config`` dict and
+    optionally an ``id``, ``description``, ``tooltip``, ``tags`` and
+    ``icon``, plus the ``key`` that identifies it (a hash of its ``id``,
+    or else of its title and config). Malformed ones are skipped and a failing hook
+    gives none.
     """
     hook = entry.metadata.palette_presets
     if hook is None:
@@ -227,16 +231,54 @@ def component_presets(
         return []
     valid = []
     for preset in presets:
-        if (
+        if not (
             isinstance(preset, Mapping)
             and isinstance(preset.get("title"), str)
             and preset["title"]
             and isinstance(preset.get("config"), Mapping)
         ):
-            valid.append(dict(preset))
-        else:
             logger.warning("Skipping a malformed palette preset of '%s': %r", entry.app_id, preset)
+            continue
+        try:
+            config = json.dumps(preset["config"], sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "Skipping the palette preset %r of '%s': its config is not JSON-serializable (%s)",
+                preset["title"],
+                entry.app_id,
+                exc,
+            )
+            continue
+        given = preset.get("id")
+        identity = (
+            f"id\0{given}" if isinstance(given, str) and given else f"{preset['title']}\0{config}"
+        )
+        key = hashlib.sha1(identity.encode()).hexdigest()[:12]
+        valid.append({**preset, "key": key})
     return valid
+
+
+def _context_token(context: Mapping[str, t.Any] | None) -> tuple:
+    """Return a token that changes when a context value, or an item of a dict or list in it, changes."""
+
+    def token(value: t.Any) -> t.Any:
+        if isinstance(value, Mapping):
+            return tuple((key, id(item)) for key, item in value.items())
+        if isinstance(value, list):
+            return tuple(map(id, value))
+        return id(value)
+
+    return tuple((key, id(value), token(value)) for key, value in (context or {}).items())
+
+
+def editor_presets(editor: t.Any, entry: RegistryEntry) -> list[dict[str, t.Any]]:
+    """Return the presets of *entry* for *editor*, asking its hook again only when the context changes."""
+    cache = editor.__dict__.setdefault("_palette_presets_cache", {})
+    token = (entry.metadata.palette_presets, _context_token(editor.context))
+    cached = cache.get(entry.app_id)
+    if cached is None or cached[0] != token:
+        cached = cache[entry.app_id] = (token, component_presets(entry, editor.context))
+    return cached[1]
 
 
 def preset_entries(

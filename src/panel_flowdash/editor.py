@@ -161,7 +161,7 @@ from panel_flowdash.ui.node_preview import (
 )
 from panel_flowdash.ui.palette import (
     ComponentPalette,
-    component_presets,
+    editor_presets,
     palette_entry,
     palette_items,
     preset_entries,
@@ -1779,7 +1779,7 @@ class FlowDash(Viewer):
             spec = self._component_specs.get(app_id)
             base = palette_entry(entry, spec, placed=app_id in placed)
             entries.append(base)
-            entries.extend(preset_entries(base, component_presets(entry, self.context)))
+            entries.extend(preset_entries(base, editor_presets(self, entry)))
         return palette_items(entries, self._palette_panel.query)
 
     def _component_authorized(self, component_id: str) -> bool:
