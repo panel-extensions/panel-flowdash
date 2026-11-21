@@ -320,3 +320,31 @@ async def test_off_loop_preview_coalesces_and_drops_stale_results(editor, monkey
     for work, then in jobs[2:]:
         then(work())
     assert len(_tables(inspector._data_column)) == 1
+
+
+async def test_wide_polars_frame_is_capped():
+    pl = pytest.importorskip("polars")
+    wide = pl.DataFrame({f"c{i}": [i, i + 1] for i in range(80)})
+    objects = _table_preview(wide)
+    assert "2 rows \u00d7 80 columns, first 50 columns shown" in _texts(objects)
+    (table,) = [o for o in objects if isinstance(o, pn.pane.DataFrame)]
+    assert list(table.object.columns) == [f"c{i}" for i in range(50)]
+
+
+async def test_pending_refresh_skips_hooks_once_the_tab_is_left(editor, monkeypatch):
+    from panel_flowdash.ui import inspector as module
+
+    monkeypatch.setattr(module, "set_curdoc", lambda doc: contextlib.nullcontext())
+    node = editor.add_component(LAZY)
+    select_on_canvas(editor._flow, node_id=node)
+    inspector = editor._inspector
+    doc = _Doc()
+    inspector._doc = doc
+    instance = editor._component_instances[node]
+
+    inspector._node_tabs.active = 1
+    (refresh,) = doc.callbacks
+    inspector._node_tabs.active = 0
+    refresh()
+    assert instance.calls == []
+    assert not len(inspector._data_column)

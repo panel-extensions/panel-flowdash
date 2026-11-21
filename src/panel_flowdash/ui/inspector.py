@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import html
+import threading
 import typing as t
 import weakref
 from functools import partial
@@ -473,15 +474,28 @@ def _flat_columns(frame: t.Any) -> t.Any:
     return frame
 
 
+def _as_pandas(frame: t.Any) -> t.Any:
+    """Return the rows of a table that is not a pandas one, e.g. a polars frame, as pandas."""
+    if hasattr(frame, "iloc") or not callable(getattr(frame, "to_pandas", None)):
+        return frame
+    try:
+        return frame.to_pandas()
+    except Exception:
+        return frame
+
+
 def _table_preview(value: t.Any) -> list[Viewable]:
     """Return the first rows and columns of a table, under its size."""
     rows, cols = value.shape
-    head = value.head(_DATA_ROWS)
+    head = _as_pandas(value.head(_DATA_ROWS))
     shown = []
     if len(head) < rows:
         shown.append(f"{len(head):,} rows")
     if cols > _DATA_COLUMNS:
-        head = head.iloc[:, :_DATA_COLUMNS]
+        if hasattr(head, "iloc"):
+            head = head.iloc[:, :_DATA_COLUMNS]
+        else:
+            head = head[list(head.columns)[:_DATA_COLUMNS]]
         shown.append(f"{_DATA_COLUMNS} columns")
     summary = f"{_count(rows, 'row')} \u00d7 {_count(cols, 'column')}"
     if shown == [f"{len(head):,} rows"]:
@@ -716,6 +730,7 @@ class Inspector(Viewer):
         self._doc = None
         self._data_generation = 0
         self._data_pending = False
+        self._data_lock = threading.Lock()
         self._inputs_column: pn.Column | None = None
         # What the shown input rows depend on, and their parts updated in place.
         self._inputs_key: dict[str, tuple] = {}
@@ -2041,9 +2056,10 @@ class Inspector(Viewer):
         if doc is None:
             self._refresh_data()
             return
-        if self._data_pending:
-            return
-        self._data_pending = True
+        with self._data_lock:
+            if self._data_pending:
+                return
+            self._data_pending = True
         try:
             doc.add_next_tick_callback(partial(self._refresh_data_in, doc))
         except Exception:
@@ -2055,8 +2071,14 @@ class Inspector(Viewer):
             self._refresh_data()
 
     def _refresh_data(self):
-        self._data_pending = False
+        with self._data_lock:
+            self._data_pending = False
         if self._data_column is None or self._data_view is None:
+            return
+        tabs = self._node_tabs
+        if tabs is None or tabs.active != _DATA_TAB:
+            # Switched away since the refresh was scheduled; it runs again once shown.
+            self._data_column[:] = []
             return
         self._data_generation += 1
         self._data_column[:] = self._data_objects(*self._data_view)
