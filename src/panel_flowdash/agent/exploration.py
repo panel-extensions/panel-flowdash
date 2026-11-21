@@ -564,14 +564,18 @@ class ExplorationOps(DashboardOps):
         spec, resolved = super()._new_node(component, config)
         if self.editor._node_role(spec.component_id) != "source":
             return spec, resolved
+        from .tools import _dumps
+
         exploration = self.exploration()
         items = exploration._items()
+        wanted = _dumps(resolved)
         for mirror in exploration.mirrors.values():
             item = items.get(mirror.node)
             if (
                 mirror.status == LIVE
                 and item is not None
                 and self.editor._resolve_component_id(item["component_id"]) == spec.component_id
+                and _dumps(item.get("config") or {}) == wanted
             ):
                 raise OperationError(
                     f"The dashboard's node '{mirror.node}' is this source already; connect "
@@ -740,6 +744,12 @@ class ExplorationOps(DashboardOps):
                 # The dashboard shows this answer already: nothing to add, and nothing to undo.
                 answer.added, answer.already = names[leaf], True
                 return names[leaf]
+            await self._check(exploration, plan)
+            if _open_id(editor) != dashboard_id:
+                raise OperationError(
+                    "Another dashboard was opened while the answer was being checked, so it "
+                    "was not added. Open the dashboard again and add it once more."
+                )
             editor.end_turn()
             editor._defer_tile_layout(run)
             try:
@@ -803,12 +813,35 @@ class ExplorationOps(DashboardOps):
             create.append((iid, name))
         return _Plan(create, incoming, on_dashboard)
 
+    async def _check(self, exploration: Exploration, plan: _Plan):
+        """Run the config checks of the nodes *plan* creates, off the event loop, before any write.
+
+        Each is checked in the exploration, with the inputs it has there,
+        which are those it gets on the dashboard. A node its check refuses
+        refuses the whole answer, before anything is written.
+        """
+        from panel_flowdash.config_check import check_node
+
+        from .ops import _refuse_config
+
+        source = exploration.editor
+        results = await asyncio.gather(
+            *(
+                check_node(source, iid, timeout=self.dashboard.check_timeout)
+                for iid, _ in plan.create
+            )
+        )
+        for (_, name), problems in zip(plan.create, results, strict=True):
+            _refuse_config(f"'{name}' was not added", problems)
+
     def _write(self, exploration: Exploration, plan: _Plan, node: str, dashboard_id: str) -> str:
         """Add the nodes *plan* creates and show the answer's tile, or remove them all on failure.
 
-        The writes run without yielding to the event loop, so the person
-        cannot open another dashboard between them; each still checks that
-        *dashboard_id* is open, and nothing is taken back on another one.
+        The config checks ran before (see :meth:`_check`), so the writes skip
+        them and run without yielding to the event loop: the person cannot
+        open another dashboard between them, and none waits on a slow check.
+        Each still checks that *dashboard_id* is open, and nothing is taken
+        back on another one.
         """
         target = self.dashboard
         source = exploration.editor
@@ -825,15 +858,15 @@ class ExplorationOps(DashboardOps):
         try:
             for iid, name in plan.create:
                 item = ours[iid]
+                config = copy.deepcopy(item.get("config") or {})
                 pinned()
-                added = target.add_node(
-                    item["component_id"], copy.deepcopy(item.get("config") or {}), name=name
-                )
+                spec, _ = target._new_node(item["component_id"], config)
+                added = target._place_node(spec, config, None, name)
                 written.append(added)
                 for edge in plan.incoming[iid]:
                     upstream = target._names()[plan.on_dashboard[edge["source"]]]
                     pinned()
-                    target.connect(
+                    target._connect(
                         f"{upstream}.{edge['source_port']}",
                         f"{added}.{edge['target_port']}",
                         edge.get("transform") or None,
@@ -841,7 +874,7 @@ class ExplorationOps(DashboardOps):
                 literals = source._dataflow_graph.literals(iid)
                 if literals:
                     pinned()
-                    target.set_inputs(added, copy.deepcopy(literals))
+                    target._set_inputs(added, copy.deepcopy(literals))
             pinned()
             name = target._names()[plan.on_dashboard[node]]
             target.place_tile(name, visible=True)
@@ -872,19 +905,6 @@ class ExplorationOps(DashboardOps):
 
         editor = target.editor
         component = editor._resolve_component_id(item["component_id"])
-        if editor._node_role(component) == "source" and not edges:
-            # A source is the data it loads: the dashboard's own of the component is reused.
-            found = next(
-                (
-                    other["instance_id"]
-                    for other in editor._tile_items
-                    if "placeholder" not in other
-                    and editor._resolve_component_id(other["component_id"]) == component
-                ),
-                None,
-            )
-            if found is not None:
-                return found
         config = _dumps(item.get("config") or {})
         wanted = {
             (

@@ -9,7 +9,7 @@ pytest.importorskip("pydantic_ai")
 
 from pydantic_ai import Agent
 
-from panel_flowdash import FlowDash, MemoryDashboardStore
+from panel_flowdash import FlowDash, MemoryDashboardStore, register
 from panel_flowdash.agent import DashboardOps
 from panel_flowdash.agent.exploration import ADD_LABEL, REMOVED, ExplorationOps
 from panel_flowdash.agent.tools import FlowDashDeps, dashboard_toolset
@@ -570,14 +570,14 @@ async def test_a_failed_add_takes_back_what_it_wrote(store, monkeypatch):
     editor = app._editor
     await session.explore_runner.run("Quadruple it")
     run = session.explore_runner.run_id
-    connect = session.ops.connect
+    connect = session.ops._connect
 
     def failing(source, target, transform=None):
         if target.startswith("quad"):
             raise RuntimeError("The connection failed")
         return connect(source, target, transform)
 
-    monkeypatch.setattr(session.ops, "connect", failing)
+    monkeypatch.setattr(session.ops, "_connect", failing)
     with pytest.raises(RuntimeError, match="connection failed"):
         await session.add_answer(run, "quad")
     assert _nodes(editor) == ["base"]
@@ -587,7 +587,7 @@ async def test_a_failed_add_takes_back_what_it_wrote(store, monkeypatch):
     ]
     assert versions == [] and editor.turns == []
     assert session.edit_lock._holders == {}
-    monkeypatch.setattr(session.ops, "connect", connect)
+    monkeypatch.setattr(session.ops, "_connect", connect)
     assert await session.add_answer(run, "quad") == "quad"
     assert _nodes(editor) == ["base", "twice", "quad"]
 
@@ -719,16 +719,16 @@ async def test_opening_another_dashboard_during_an_add_leaves_it_alone(store, mo
     other = store.create_dashboard("alice", "Other")
     other.items.append(DashboardItem("twice", "T/number"))
     store.save_dashboard(other)
-    add = session.ops.add_node
+    place = session.ops._place_node
 
-    def switching(component, config=None, position=None, name=None):
-        added = add(component, config, position, name)
+    def switching(spec, config, position, name):
+        added = place(spec, config, position, name)
         if added == "quad":
             # As if the person opened another dashboard between two writes.
             editor.load_model(store._load_any(other.dashboard_id))
         return added
 
-    monkeypatch.setattr(session.ops, "add_node", switching)
+    monkeypatch.setattr(session.ops, "_place_node", switching)
     with pytest.raises(Exception, match="Another dashboard was opened"):
         await session.add_answer(run, "quad")
     assert editor.dashboard.dashboard_id == other.dashboard_id
@@ -767,27 +767,69 @@ async def test_a_pruned_answer_keeps_a_card_and_an_added_one_its_place(store, mo
         await session.add_answer(first, "first")
 
 
-async def test_a_source_the_dashboard_has_with_other_config_is_not_loaded_again(
-    store, monkeypatch
-):
+def _sources_dashboard(store, monkeypatch, configs, explore_agent):
     from .test_agent_tools import WITH_FETCH
 
     model = store.create_dashboard("alice", "Live")
-    model.items.append(DashboardItem("mine", "P/srca", config={"value": "custom"}))
+    for name, config in configs.items():
+        model.items.append(DashboardItem(name, "P/srca", config=config))
     store.save_dashboard(model)
     app = _app(
-        store,
-        monkeypatch,
-        agent=_agent(),
-        explore_agent=_agent(("add_node", {"component": "P/srca"})),
-        components=WITH_FETCH,
+        store, monkeypatch, agent=_agent(), explore_agent=explore_agent, components=WITH_FETCH
     )
     app._load_dashboard_sync(model.dashboard_id)
+    return app
+
+
+_QUERY_A = (
+    ("add_node", {"component": "P/srca", "name": "source_a"}),
+    ("add_node", {"component": "T/query", "name": "rows"}),
+    ("connect", {"source": "source_a.text", "target": "rows.table"}),
+)
+
+
+async def test_a_source_the_dashboard_has_with_the_same_config_is_reused(store, monkeypatch):
+    app = _sources_dashboard(
+        store, monkeypatch, {"custom": {"value": "x"}, "plain": {}}, _agent(*_QUERY_A[:1])
+    )
     runner = app._agent_session.explore_runner
     await runner.run("Load A")
-    assert "The dashboard's node 'mine' is this source already" in str(
+    # Of the two, the one with the same config is named.
+    assert "The dashboard's node 'plain' is this source already" in str(
         runner.state.tool_calls["call-1"].result
     )
+
+
+async def test_a_source_with_other_config_on_the_dashboard_is_added_apart(store, monkeypatch):
+    app = _sources_dashboard(store, monkeypatch, {"srca": {"value": "x"}}, _agent(*_QUERY_A))
+    session = app._agent_session
+    editor = app._editor
+    await session.explore_runner.run("Query A")
+    run = session.explore_runner.run_id
+    exploration = session.explorations.exploration()
+    # The answer reads its own Source A, with the default config, not the dashboard's.
+    assert exploration.leaves(run) == ["rows"]
+    assert ("source_a", "rows") in {
+        (e["source"], e["target"]) for e in exploration.editor.graph.edges
+    }
+    assert await session.add_answer(run, "rows") == "rows"
+    assert _nodes(editor) == ["srca", "source_a", "rows"]
+    assert ("source_a", "rows") in {(e["source"], e["target"]) for e in editor.graph.edges}
+    assert next(i for i in editor._tile_items if i["instance_id"] == "source_a")["config"] == {}
+
+
+async def test_adding_reuses_the_dashboards_source_with_the_same_config(store, monkeypatch):
+    app = _sources_dashboard(store, monkeypatch, {"custom": {"value": "x"}}, _agent(*_QUERY_A))
+    session = app._agent_session
+    editor = app._editor
+    await session.explore_runner.run("Query A")
+    run = session.explore_runner.run_id
+    # The dashboard gets Source A as offered after the answer was built.
+    session.ops.add_node("P/srca", name="plain")
+    editor.end_turn()
+    assert await session.add_answer(run, "rows") == "rows"
+    assert _nodes(editor) == ["custom", "plain", "rows"]
+    assert ("plain", "rows") in {(e["source"], e["target"]) for e in editor.graph.edges}
 
 
 async def test_a_source_nothing_reads_is_not_an_answer(store, monkeypatch):
@@ -797,3 +839,63 @@ async def test_a_source_nothing_reads_is_not_an_answer(store, monkeypatch):
     exploration = app._agent_session.explorations.exploration()
     assert len(exploration.made_by(runner.run_id)) == 1
     assert exploration.leaves(runner.run_id) == []
+
+
+def _slow_check(config, inputs):
+    import time
+
+    time.sleep(0.2)
+    return []
+
+
+@register(
+    page=False,
+    component=True,
+    title="Slow",
+    provides=[{"key": "doubled", "type": "int"}],
+    requires=[{"key": "value", "type": "int", "required": True}],
+    check_config=_slow_check,
+)
+def slow(config):
+    def update(*_):
+        config.doubled = None if config.value is None else config.value * 2
+
+    config.param.watch(update, "value")
+    update()
+    return "slow"
+
+
+async def test_adding_runs_the_config_checks_off_the_event_loop(store, monkeypatch):
+    import time
+
+    calls = [("add_node", {"component": "T/slow", "name": "s0"})]
+    calls.append(("connect", {"source": "base.value", "target": "s0.value"}))
+    for i in range(1, 4):
+        calls.append(("add_node", {"component": "T/slow", "name": f"s{i}"}))
+        calls.append(("connect", {"source": f"s{i - 1}.doubled", "target": f"s{i}.value"}))
+    app, _ = _open(
+        store,
+        monkeypatch,
+        explore_agent=_agent(*calls),
+        components={**COMPONENTS, "T/slow": slow},
+    )
+    session = app._agent_session
+    await session.explore_runner.run("Slowly")
+    run = session.explore_runner.run_id
+    gaps, done = [], asyncio.Event()
+
+    async def tick():
+        last = time.monotonic()
+        while not done.is_set():
+            await asyncio.sleep(0.01)
+            now = time.monotonic()
+            gaps.append(now - last)
+            last = now
+
+    ticker = asyncio.ensure_future(tick())
+    assert await session.add_answer(run, "s3") == "s3"
+    done.set()
+    await ticker
+    assert _nodes(app._editor) == ["base", "s0", "s1", "s2", "s3"]
+    # Four checks of 0.2 s ran, but the loop never waited on one.
+    assert max(gaps) < 0.15, max(gaps)
