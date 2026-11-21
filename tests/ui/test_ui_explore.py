@@ -259,9 +259,19 @@ def test_cards_stack_within_a_narrow_window(page, width):
         page.get_by_role("button", name="Explore", exact=True).click()
     cards = page.locator(".artifact-cell").filter(has=page.get_by_text("note tile"))
     expect(cards).to_have_count(2)
-    first, second = cards.first.bounding_box(), cards.last.bounding_box()
-    assert second["y"] >= first["y"] + first["height"]
-    assert first["x"] >= 0 and first["x"] + first["width"] <= width
+
+    def stacked():
+        # Under load the feed lays out the second card after both are in the DOM.
+        first, second = cards.first.bounding_box(), cards.last.bounding_box()
+        return (
+            first is not None
+            and second is not None
+            and second["y"] >= first["y"] + first["height"]
+            and first["x"] >= 0
+            and first["x"] + first["width"] <= width
+        )
+
+    wait_until(stacked, page, timeout=10000)
 
 
 def test_a_manual_edit_while_exploring_keeps_the_feed_in_place(page):
