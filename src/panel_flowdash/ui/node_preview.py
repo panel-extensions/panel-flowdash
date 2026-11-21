@@ -324,6 +324,10 @@ PREVIEW_CSS = """
 .fd-kpi-delta.fd-pos { color: var(--mui-palette-success-main, #2e7d32); }
 .fd-kpi-delta.fd-neg { color: var(--mui-palette-error-main, #d32f2f); }
 .fd-kpi-delta .fd-ms { font-size: 13px; }
+"""
+
+#: The rules of a chart thumbnail, in a card and in the inspector's Data tab.
+CHART_CSS = """
 .fd-pv-chart {
   height: 112px;
   box-sizing: border-box;
@@ -362,6 +366,8 @@ PREVIEW_CSS = """
   font-size: 11px;
 }
 """
+
+PREVIEW_CSS += CHART_CSS
 
 
 @dataclass(frozen=True)
@@ -1156,27 +1162,31 @@ def _tick_indices(count: int, max_ticks: int = 4) -> list[int]:
     return list(dict.fromkeys(round(i * step) for i in range(max_ticks)))
 
 
-def chart_preview(payload: t.Mapping, caption: str = "") -> Preview:
-    """Preview a chart from a structured chart payload (Vega-Lite spec or inline SVG)."""
-    custom_caption = str(payload.get("caption") or "") or caption
+def chart_svg(payload: t.Mapping, *, width: int = 240, height: int = 104) -> tuple[str, str]:
+    """Return ``(html, caption)`` drawing a chart payload (Vega-Lite spec or inline SVG).
+
+    The caption is the payload's own, else one naming the mark and its points.
+    """
+    custom_caption = str(payload.get("caption") or "")
     if payload.get("svg"):
         safe = sanitize_svg(str(payload["svg"]))
-        body = safe or '<div class="fd-pv-chart-empty">Chart preview</div>'
-        return _block(
-            "chart", _header(custom_caption or "chart"), f'<div class="fd-pv-chart">{body}</div>'
-        )
+        return safe or '<div class="fd-pv-chart-empty">Chart preview</div>', custom_caption
     spec = payload.get("spec")
     if isinstance(spec, t.Mapping):
-        svg, auto_caption = render_vega_lite_svg(spec, payload.get("data"))
-        return _block(
-            "chart",
-            _header(custom_caption or auto_caption),
-            f'<div class="fd-pv-chart">{svg}</div>',
+        svg, auto_caption = render_vega_lite_svg(
+            spec, payload.get("data"), width=width, height=height
         )
+        return svg, custom_caption or auto_caption
+    return '<div class="fd-pv-chart-empty">Chart preview</div>', custom_caption
+
+
+def chart_preview(payload: t.Mapping, caption: str = "") -> Preview:
+    """Preview a chart from a structured chart payload (Vega-Lite spec or inline SVG)."""
+    body, auto_caption = chart_svg(payload)
     return _block(
         "chart",
-        _header(custom_caption or "chart"),
-        '<div class="fd-pv-chart"><div class="fd-pv-chart-empty">Chart preview</div></div>',
+        _header(str(payload.get("caption") or "") or caption or auto_caption or "chart"),
+        f'<div class="fd-pv-chart">{body}</div>',
     )
 
 

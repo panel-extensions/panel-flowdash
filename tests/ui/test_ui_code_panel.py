@@ -269,6 +269,39 @@ def test_a_check_error_shows_under_its_line_and_keeps_the_result(page):
     expect(message).to_have_count(0, timeout=8000)
 
 
+def _clear_of_the_next_line(code, message):
+    """Whether *message*, under the first line, ends above the second line's text."""
+    box = message.bounding_box()
+    nxt = code.locator(".ace_line").nth(1).bounding_box()
+    return box is not None and nxt is not None and box["y"] + box["height"] <= nxt["y"]
+
+
+def test_a_wrapped_error_message_never_covers_the_next_line(page):
+    editor, query = make_editor()
+    _panel, code = _open(page, editor, query)
+    _type_at_end(page, code, "\nand p_year < 2016")
+    long = "The query reads 'turbines', which is not a table of this source. " * 3
+    editor.code_panel.tools.diagnostics = [{"row": 0, "column": 0, "text": long}]
+    message = code.locator(".fd-code-diagnostic")
+    expect(message).to_have_count(1, timeout=8000)
+    wait_until(lambda: _clear_of_the_next_line(code, message), timeout=8000)
+    height = message.bounding_box()["height"]
+    # A narrower editor, as when the assistant drawer opens, wraps the message onto more lines.
+    page.set_viewport_size({"width": 960, "height": VIEWPORT["height"]})
+    wait_until(lambda: message.bounding_box()["height"] > height + 10, timeout=8000)
+    wait_until(lambda: _clear_of_the_next_line(code, message), timeout=8000)
+    page.set_viewport_size(VIEWPORT)
+    wait_until(lambda: message.bounding_box()["height"] <= height + 1, timeout=8000)
+    wait_until(lambda: _clear_of_the_next_line(code, message), timeout=8000)
+
+    def gap():
+        box = message.bounding_box()
+        return code.locator(".ace_line").nth(1).bounding_box()["y"] - box["y"] - box["height"]
+
+    # The space reserved shrinks with the message, so no gap is left either.
+    wait_until(lambda: gap() < 12, timeout=8000)
+
+
 def test_a_failing_run_keeps_the_last_good_result(page):
     editor, query = make_editor()
     _panel, code = _open(page, editor, query)

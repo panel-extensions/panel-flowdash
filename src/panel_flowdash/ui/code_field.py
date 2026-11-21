@@ -521,14 +521,15 @@ class AceTools(JSComponent):
     _esm = r"""
     const STYLE = `
     .fd-ace-error { position: absolute; border-bottom: 2px wavy var(--mui-palette-error-main, #d32f2f); }
+    .fd-ace-widget-row { box-sizing: border-box; padding: 2px 8px 4px 0; }
     .fd-ace-widget {
-      display: flex; align-items: flex-start; gap: 8px; margin: 2px 8px 4px 0;
+      display: flex; align-items: flex-start; gap: 8px; min-width: 0;
       padding: 6px 10px; border-left: 3px solid var(--mui-palette-error-main, #d32f2f);
       background: rgba(211, 47, 47, 0.08); border-radius: 0 4px 4px 0;
       font: 12px/1.45 var(--mui-typography-fontFamily, sans-serif); white-space: pre-wrap;
       color: var(--mui-palette-text-primary, inherit);
     }
-    .fd-ace-widget span { flex: 1; }
+    .fd-ace-widget span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
     .fd-ace-widget button {
       border: none; background: none; cursor: pointer; padding: 0; font: inherit;
       color: var(--mui-palette-primary-main, #1976d2); white-space: nowrap;
@@ -555,6 +556,17 @@ class AceTools(JSComponent):
       let editor = null
       let markers = []
       let widgets = []
+      // Ace measures a line widget once, before it is given the editor's width, and the
+      // message wraps when the editor narrows: measure it again whenever its height changes.
+      const resized = new ResizeObserver((entries) => {
+        const manager = editor && editor.session.widgetManager
+        for (const entry of entries) {
+          const widget = widgets.find((w) => w.el === entry.target)
+          if (manager && widget && widget.el.offsetHeight !== widget.h) {
+            manager.onWidgetChanged(widget)
+          }
+        }
+      })
 
       function position() {
         const pos = editor.getCursorPosition()
@@ -564,6 +576,7 @@ class AceTools(JSComponent):
       function clear() {
         const session = editor.session
         for (const id of markers) session.removeMarker(id)
+        resized.disconnect()
         if (session.widgetManager) {
           for (const w of widgets) session.widgetManager.removeLineWidget(w)
         }
@@ -607,9 +620,14 @@ class AceTools(JSComponent):
             })
             box.appendChild(fix)
           }
-          const widget = {row, fixedWidth: true, coverGutter: false, el: box}
+          // The widget's margins are padding of its row, so the space Ace reserves includes them.
+          const slot = document.createElement("div")
+          slot.className = "fd-ace-widget-row"
+          slot.appendChild(box)
+          const widget = {row, fixedWidth: true, coverGutter: false, el: slot}
           session.widgetManager.addLineWidget(widget)
           widgets.push(widget)
+          resized.observe(slot)
         }
       }
 
