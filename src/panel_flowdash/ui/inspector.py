@@ -729,6 +729,7 @@ class Inspector(Viewer):
         self._last_check_status: tuple[str, str] | None = None
         self._code_fields: list[CodeField] = []
         self._has_inline_close = False
+        self._showing_extra = False
         self._no_settings = False
         self._data_column: pn.Column | None = None
         self._data_view: tuple[str, ComponentSpec] | None = None
@@ -856,6 +857,7 @@ class Inspector(Viewer):
         if selected == self._shown and not force and selected is not None:
             return
         self._release()
+        self._showing_extra = False
         self._shown = selected
         if selected is not None:
             self._shown = selected if self._exists() else None
@@ -888,6 +890,7 @@ class Inspector(Viewer):
         *release* is called when they are replaced.
         """
         self._release()
+        self._showing_extra = True
         self._has_inline_close = False
         self._body.margin = (0, 16, 16, 16)
         self._sync_collapsed()
@@ -913,6 +916,11 @@ class Inspector(Viewer):
             css_classes=["flowdash-inspector-extra"],
         )
         self._body[:] = [header, *objects]
+
+    def refresh_node(self):
+        """Rebuild a node's view if it is shown, e.g. once its spec moves to or from the code panel."""
+        if self.visible and not self._showing_extra and (self._shown or ("",))[0] == "node":
+            self.refresh(force=True)
 
     def refresh_summary(self):
         """Rebuild the dashboard summary if it is shown, e.g. after the issues changed."""
@@ -1538,7 +1546,6 @@ class Inspector(Viewer):
                 size="small",
                 sizing_mode="stretch_width",
                 margin=(0, 0, 4, 0),
-                description=f"Edit the {label.lower() if code else label} in the code panel under the canvas",
                 sx={"textTransform": "none", "justifyContent": "flex-start"},
                 css_classes=["fd-edit-spec", f"fd-edit-spec-{name}"],
             )

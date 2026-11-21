@@ -4187,8 +4187,8 @@ class FlowDash(Viewer):
         if allowed != getattr(self, "_code_panel_was_allowed", allowed):
             # The inspector edits specs itself where the panel cannot.
             self._code_panel_was_allowed = allowed
-            if getattr(self, "_inspector", None) is not None and self._inspector.visible:
-                self._inspector.refresh(force=True)
+            if getattr(self, "_inspector", None) is not None:
+                self._inspector.refresh_node()
 
     def _on_window_resized(self, _event):
         self._close_code_panel_if_hidden()
