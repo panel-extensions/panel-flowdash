@@ -78,7 +78,9 @@ The default is `agent_model` (or `FLOWDASH_AGENT_MODEL`), which is offered first
 is not in the list, and otherwise the first model listed. Each id is offered once. With a
 single model, whether configured or the model of an `agent` you pass in, the chat
 names it in the picker's place, with its full id as a tooltip (panel-agents after
-0.1.0b11; earlier versions show nothing). `flowdash serve` refuses to
+0.1.0b11; earlier versions show nothing). An `agent` you pass in keeps running its own
+model, and the chat shows the label of a single model listed in `agent_models`, or of
+`agent_model` when that is the agent's model. `flowdash serve` refuses to
 start when an entry is not a model, naming the entry. A switch applies from the next request and never to one
 that is running, each person's pick is their own, and the browser remembers it for
 their next visit while that model is still offered. A model whose provider package or

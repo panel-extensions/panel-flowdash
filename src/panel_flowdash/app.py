@@ -990,13 +990,18 @@ class FlowDashApp(Viewer):
         explore_agent = resolve_explore_agent(
             self.explore_agent, agent, model if made else None, **checks
         )
-        # With a single model there is nothing to pick, and an agent passed in keeps its own model,
-        # which the chat still names.
+        # With a single model there is nothing to pick, and an agent passed in keeps its own model.
+        # The chat names that model as configured when agent_models lists it or the configured id
+        # is the agent's own model, else by the agent's model.
         explore_model = None
         if len(models) < 2:
-            from panel_flowdash.agent.models import agent_model_choice
+            from panel_flowdash.agent.models import agent_model_choice, same_model
 
-            configured = models[0] if made and models else None
+            configured = models[0] if models else None
+            if configured is not None and not (made or self.agent_models):
+                own = agent_model_choice(agent)
+                if own is None or not same_model(configured.id, own.id):
+                    configured = None
             if explore_agent is not None and self.explore_agent in (None, True):
                 explore_model = agent_model_choice(explore_agent, configured)
             only = agent_model_choice(agent, configured)
