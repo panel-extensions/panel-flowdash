@@ -43,8 +43,17 @@ def _open(page, **params):
     return apps
 
 
-def test_one_model_shows_no_picker(page):
+def test_one_model_is_named_without_a_picker(page):
+    from panel_agents import ModelPicker
+
     _open(page)
+    label = page.locator(".pa-model-fixed")
+    # panel-agents releases before the read-only label hide the picker with a single model.
+    if ModelPicker(models=["fast-model"])._menu.visible:
+        expect(label).to_have_text("Model: function:fast-model")
+        expect(label).to_have_attribute("title", "function:fast-model")
+    else:
+        expect(label).to_have_count(0)
     _ask(page, "Hello")
     expect(page.get_by_text("Answered by fast-model.")).to_be_visible(timeout=20000)
     expect(page.get_by_role("button", name=re.compile("^Model:"))).to_have_count(0)

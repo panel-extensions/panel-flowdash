@@ -4,7 +4,12 @@ import pytest
 from panel_agents import ModelChoice
 
 from panel_flowdash import MemoryDashboardStore
-from panel_flowdash.agent.models import configured_models, parse_models, validate_models
+from panel_flowdash.agent.models import (
+    agent_model_choice,
+    configured_models,
+    parse_models,
+    validate_models,
+)
 
 from .test_agent_tools import _app
 
@@ -95,17 +100,61 @@ async def test_the_environment_lists_the_models(store, monkeypatch):
     assert picker._menu.visible
 
 
-async def test_one_model_offers_no_picker(store, monkeypatch):
+async def test_one_model_is_named_without_changing_the_agent(store, monkeypatch):
     monkeypatch.setenv("FLOWDASH_AGENT_MODEL", "test")
     session = _app(store, monkeypatch)._agent_session
     chat = session.drawer.chat
-    assert chat.model_picker.choices == [] and session.runner.model is None
+    assert [(c.id, c.name) for c in chat.model_picker.choices] == [("test", "test")]
+    assert chat.model_id == "test" and chat.remember_model is None
+    assert session.runner.model is session.runner.agent.model
+    session = _app(
+        store, monkeypatch, agent_models=[{"id": "test", "label": "Test"}]
+    )._agent_session
+    chat = session.drawer.chat
+    assert [(c.id, c.name) for c in chat.model_picker.choices] == [("test", "Test")]
     assert chat.remember_model is None
-    session = _app(store, monkeypatch, agent_models=["test", "test"])._agent_session
-    assert (
-        session.drawer.chat.model_picker.choices == []
-        and session.drawer.chat.remember_model is None
+
+
+async def test_a_ready_made_agent_is_named_by_its_own_model(store, monkeypatch):
+    from pydantic_ai import Agent
+    from pydantic_ai.models.test import TestModel
+
+    model = TestModel(model_name="tiny")
+    monkeypatch.setenv("FLOWDASH_AGENT_MODEL", "openai:other")
+    session = _app(store, monkeypatch, agent=Agent(model))._agent_session
+    (choice,) = session.drawer.chat.model_picker.choices
+    assert (choice.id, choice.name, choice.model) == ("test:tiny", "test:tiny", model)
+    assert session.runner.model is model
+
+
+def test_the_model_of_an_agent_is_read_from_its_model():
+    class Model:
+        system = "openrouter"
+        model_name = "openai/gpt-6-luna"
+
+    class Agent:
+        def __init__(self, model):
+            self.model = model
+
+    model = Model()
+    assert agent_model_choice(Agent(model)) == ModelChoice(
+        "openrouter:openai/gpt-6-luna", model=model
     )
+    assert agent_model_choice(Agent("openai:a")) == ModelChoice("openai:a", model="openai:a")
+    assert agent_model_choice(Agent(None)) is None and agent_model_choice(object()) is None
+    configured = ModelChoice("openai:a", label="A", description="Fast", model=object())
+    assert agent_model_choice(Agent(model), configured) == ModelChoice(
+        "openai:a", "A", "Fast", model
+    )
+
+
+def test_a_fallback_model_is_named_once():
+    from pydantic_ai import Agent
+    from pydantic_ai.models.fallback import FallbackModel
+    from pydantic_ai.models.test import TestModel
+
+    model = FallbackModel(TestModel(model_name="a"), TestModel(model_name="b"))
+    assert agent_model_choice(Agent(model)).id == "fallback:a,b"
 
 
 async def test_the_app_refuses_an_invalid_model_list(store, monkeypatch):

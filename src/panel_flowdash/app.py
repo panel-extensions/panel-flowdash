@@ -962,9 +962,14 @@ class FlowDashApp(Viewer):
         )
         if agent is None:
             return None
-        # With a single model there is nothing to pick, and an agent passed in keeps its own model.
+        # With a single model there is nothing to pick, and an agent passed in keeps its own model,
+        # which the chat still names.
         if len(models) < 2:
-            models, model = [], None
+            from panel_flowdash.agent.models import agent_model_choice
+
+            made = self.agent is None or self.agent is True or isinstance(self.agent, str)
+            only = agent_model_choice(agent, models[0] if made and models else None)
+            models, model = ([only], only.id) if only else ([], None)
         return AgentSession(self, agent, models=models, model=model)
 
     def _on_editor_sidebar(self, *events):
