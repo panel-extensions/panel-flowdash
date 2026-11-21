@@ -258,9 +258,11 @@ read the dashboard's nodes and connect its own nodes to them, but cannot change 
 lay out, save or share anything, and an Explore request makes no turn of the dashboard
 and no step of its Undo. It may add a data source the host offers as it is, without
 config of its own (`ExplorationOps(allow_source=...)` changes the rule), and is told to
-build on a source the dashboard already has rather than load it again. A mirror follows
+build on the dashboard's source when it has one of that component rather than load it
+again. A mirror follows
 its dashboard node again when an Undo brings it back. Only the open dashboard's
-exploration is kept, with the answers of its latest 20 requests. Each answer of a request (a node it made
+exploration is kept, with the answers of its latest 20 requests; an older answer keeps
+its card, which asks to ask the question again. Each answer of a request (a node it made
 that none of its other nodes reads) gets a card, with the nodes it is built from
 collapsed under it. A follow-up adds nodes of its own rather than changing an earlier
 answer's (`ExplorationOps(freeze_answers=False)` lets it change them). A card says when

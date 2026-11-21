@@ -570,14 +570,14 @@ async def test_a_failed_add_takes_back_what_it_wrote(store, monkeypatch):
     editor = app._editor
     await session.explore_runner.run("Quadruple it")
     run = session.explore_runner.run_id
-    connect = session.ops.connect_async
+    connect = session.ops.connect
 
-    async def failing(source, target, transform=None):
+    def failing(source, target, transform=None):
         if target.startswith("quad"):
             raise RuntimeError("The connection failed")
-        return await connect(source, target, transform)
+        return connect(source, target, transform)
 
-    monkeypatch.setattr(session.ops, "connect_async", failing)
+    monkeypatch.setattr(session.ops, "connect", failing)
     with pytest.raises(RuntimeError, match="connection failed"):
         await session.add_answer(run, "quad")
     assert _nodes(editor) == ["base"]
@@ -587,7 +587,7 @@ async def test_a_failed_add_takes_back_what_it_wrote(store, monkeypatch):
     ]
     assert versions == [] and editor.turns == []
     assert session.edit_lock._holders == {}
-    monkeypatch.setattr(session.ops, "connect_async", connect)
+    monkeypatch.setattr(session.ops, "connect", connect)
     assert await session.add_answer(run, "quad") == "quad"
     assert _nodes(editor) == ["base", "twice", "quad"]
 
@@ -699,3 +699,101 @@ async def test_an_answer_follows_a_dashboard_node_brought_back_by_undo(store, mo
     await session.add_answer(run, "twice")
     assert _nodes(editor) == ["base", "mid", "twice"]
     assert ("mid", "twice") in {(e["source"], e["target"]) for e in editor.graph.edges}
+
+
+async def test_opening_another_dashboard_during_an_add_leaves_it_alone(store, monkeypatch):
+    app, model = _open(
+        store,
+        monkeypatch,
+        explore_agent=_agent(
+            ("add_node", {"component": "T/doubler", "name": "twice"}),
+            ("connect", {"source": "base.value", "target": "twice.value"}),
+            ("add_node", {"component": "T/doubler", "name": "quad"}),
+            ("connect", {"source": "twice.doubled", "target": "quad.value"}),
+        ),
+    )
+    session = app._agent_session
+    editor = app._editor
+    await session.explore_runner.run("Quadruple it")
+    run = session.explore_runner.run_id
+    other = store.create_dashboard("alice", "Other")
+    other.items.append(DashboardItem("twice", "T/number"))
+    store.save_dashboard(other)
+    add = session.ops.add_node
+
+    def switching(component, config=None, position=None, name=None):
+        added = add(component, config, position, name)
+        if added == "quad":
+            # As if the person opened another dashboard between two writes.
+            editor.load_model(store._load_any(other.dashboard_id))
+        return added
+
+    monkeypatch.setattr(session.ops, "add_node", switching)
+    with pytest.raises(Exception, match="Another dashboard was opened"):
+        await session.add_answer(run, "quad")
+    assert editor.dashboard.dashboard_id == other.dashboard_id
+    assert _nodes(editor) == ["twice"] and editor.graph.get_state("twice").value == 21
+    assert [i.instance_id for i in store._load_any(model.dashboard_id).items] == ["base"]
+    assert session.edit_lock._holders == {}
+
+
+async def test_a_pruned_answer_keeps_a_card_and_an_added_one_its_place(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, explore_agent=_exploring("first"))
+    session = app._agent_session
+    session.explorations.MAX_RUNS = 1
+    runner = session.explore_runner
+    await runner.run("One")
+    first = runner.run_id
+    runner.agent = _exploring("second")
+    runner.messages = []
+    await runner.run("Two")
+    second = runner.run_id
+    runner.agent = _exploring("third")
+    runner.messages = []
+    await session.add_answer(second, "second")
+    await runner.run("Three")
+    feed = app._editor.explore_feed
+    feed.shown = True
+    cells = {a.artifact_id: a for a in feed.state.artifacts}
+    pruned, added = cells[f"explore:{first}:first"], cells[f"explore:{second}:second"]
+    text = feed._render(pruned).object
+    assert "no longer live; ask the question again" in text and text.endswith("One")
+    assert feed._placement(pruned) is None
+    assert feed._placed(added) == "On dashboard as second"
+    assert feed._showable(added) == {"name": "second"}
+    from panel_flowdash.agent import OperationError
+
+    with pytest.raises(OperationError, match="no longer available"):
+        await session.add_answer(first, "first")
+
+
+async def test_a_source_the_dashboard_has_with_other_config_is_not_loaded_again(
+    store, monkeypatch
+):
+    from .test_agent_tools import WITH_FETCH
+
+    model = store.create_dashboard("alice", "Live")
+    model.items.append(DashboardItem("mine", "P/srca", config={"value": "custom"}))
+    store.save_dashboard(model)
+    app = _app(
+        store,
+        monkeypatch,
+        agent=_agent(),
+        explore_agent=_agent(("add_node", {"component": "P/srca"})),
+        components=WITH_FETCH,
+    )
+    app._load_dashboard_sync(model.dashboard_id)
+    runner = app._agent_session.explore_runner
+    await runner.run("Load A")
+    assert "The dashboard's node 'mine' is this source already" in str(
+        runner.state.tool_calls["call-1"].result
+    )
+
+
+async def test_a_source_nothing_reads_is_not_an_answer(store, monkeypatch):
+    app, _ = _with_sources(store, monkeypatch, ("add_node", {"component": "P/srca"}))
+    runner = app._agent_session.explore_runner
+    await runner.run("Load A")
+    exploration = app._agent_session.explorations.exploration()
+    assert len(exploration.made_by(runner.run_id)) == 1
+    assert exploration.leaves(runner.run_id) == []

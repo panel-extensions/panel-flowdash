@@ -573,7 +573,7 @@ class ExploreFeed(Viewer):
         for run_id, events in recorded.items():
             if run_id not in placed:
                 entries.append((events[0].timestamp, list(events)))
-            if exploration is not None:
+            if self.explorations is not None:
                 cells.update(self._answer_cells(exploration, run_id, events))
         entries.sort(key=lambda entry: entry[0])
         # The collapsed entry of the turns made outside Explore stays at the top whatever is paged.
@@ -597,22 +597,28 @@ class ExploreFeed(Viewer):
     def _answer_cells(
         self, exploration, run_id: str, events: list[ev.Event]
     ) -> dict[str, ev.ArtifactPublished]:
-        """Return a card for each answer of a finished run: each node it made that none of its others read."""
+        """Return a card for each answer of a finished run: each node it made that none of its others read.
+
+        The answers are those the session recorded when the run ended, so a
+        card stays when its nodes are gone, e.g. pruned or after opening
+        another dashboard.
+        """
         if not any(
             isinstance(e, (ev.RunFinished, ev.RunError)) and e.run_id == run_id for e in events
         ):
             return {}
-        editor = exploration.editor
-        items = self._items(editor)
-        names = self._shown_names(editor)
+        live = self._items(exploration.editor) if exploration is not None else {}
         cells = {}
-        for node in exploration.leaves(run_id):
+        for answer in self.explorations.answers(self._dashboard_id(), run_id):
+            node = answer.node
             artifact_id = f"explore:{run_id}:{node}"
+            item = live.get(node) or {"instance_id": node, "component_id": answer.component}
+            editor = exploration.editor if node in live else self.editor
             cells[artifact_id] = ev.ArtifactPublished(
                 artifact_id=artifact_id,
                 value={"exploration": run_id, "node": node},
-                kind=self._kind(items[node], editor),
-                title=names.get(node, node),
+                kind=self._kind(item, editor),
+                title=answer.title,
                 run_id=run_id,
                 timestamp=events[0].timestamp,
             )
@@ -799,7 +805,10 @@ class ExploreFeed(Viewer):
         """Render an answer of the exploration live, with the nodes it is built from collapsed."""
         exploration = self._exploration()
         if exploration is None or node not in exploration._items():
-            return self._caption("This answer is no longer available.")
+            answer = self.explorations.answer(self._dashboard_id(), run_id, node)
+            question = answer.question if answer is not None else None
+            text = "This answer is no longer live; ask the question again to rebuild it"
+            return self._caption(f"{text}: {question}" if question else f"{text}.")
         editor = exploration.editor
         note = self._card_note(
             f"explore:{run_id}:{node}", lambda: self._answer_note(exploration, run_id, node)
@@ -1053,14 +1062,21 @@ class ExploreFeed(Viewer):
 
     def _added_as(self, answer: tuple[str, str]) -> str | None:
         """Return the dashboard node an answer was added as, while the dashboard still has it."""
-        exploration = self._exploration()
-        name = exploration.added.get(answer) if exploration is not None else None
+        record = self._answer_record(answer)
+        name = record.added if record is not None else None
         return name if name is not None and name in self._names().values() else None
+
+    def _answer_record(self, answer: tuple[str, str]):
+        if self.explorations is None:
+            return None
+        return self.explorations.answer(self._dashboard_id(), *answer)
 
     def _placement(self, artifact: Artifact) -> dict[str, t.Any] | None:
         answer = self._answer_of(artifact)
         if answer is not None:
             if self._add is None or self.editor.read_only or self._added_as(answer):
+                return None
+            if not self.explorations.live(self._dashboard_id(), answer[1]):
                 return None
             return {"exploration": answer[0], "node": answer[1]}
         instance_id = self._node_of(artifact)
@@ -1089,8 +1105,8 @@ class ExploreFeed(Viewer):
             name = self._added_as(answer)
             if name is None:
                 return None
-            exploration = self._exploration()
-            already = exploration is not None and answer in exploration.already
+            record = self._answer_record(answer)
+            already = record is not None and record.already
             return f"{'Already on' if already else 'On'} dashboard as {name}"
         instance_id = self._node_of(artifact)
         item = self._items().get(instance_id) if instance_id is not None else None
