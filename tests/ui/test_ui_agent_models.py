@@ -47,9 +47,32 @@ def test_one_model_is_named_without_a_picker(page):
     _open(page)
     label = page.locator(".pa-model-fixed")
     expect(label).to_have_text("Model: function:fast-model")
-    expect(label).to_have_attribute("title", "function:fast-model")
+    expect(label).to_have_accessible_name("Model: function:fast-model")
+    label.focus()
+    expect(page.locator(".pa-model-tip")).to_be_hidden()
     _ask(page, "Hello")
     expect(page.get_by_text("Answered by fast-model.")).to_be_visible(timeout=20000)
+    expect(page.get_by_role("button", name=re.compile("^Model:"))).to_have_count(0)
+
+
+
+def test_one_labelled_model_shows_its_id_in_a_tooltip(page):
+    store, (dash,) = _store_with("Plant")
+    models = [ModelChoice("test", label="Fast")]
+    _serve_app(page, store, f"/dash/{dash}", agent=True, agent_models=models)
+    page.get_by_text("note tile").first.wait_for()
+    page.get_by_role("button", name="Assistant", exact=True).click()
+    label = page.locator(".pa-model-fixed")
+    expect(label).to_have_text("Model: Fast")
+    expect(label).to_have_accessible_name("Model: Fast, test")
+    tip = page.get_by_role("tooltip")
+    expect(tip).to_be_hidden()
+    label.hover()
+    expect(tip).to_have_text("test")
+    page.mouse.move(0, 0)
+    expect(tip).to_be_hidden()
+    label.focus()
+    expect(tip).to_have_text("test")
     expect(page.get_by_role("button", name=re.compile("^Model:"))).to_have_count(0)
 
 
