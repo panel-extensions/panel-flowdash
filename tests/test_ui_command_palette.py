@@ -127,7 +127,6 @@ class TestItems:
             "action:save",
             "action:split",
             "action:previews",
-            "action:collapse_all",
             "action:view",
             "action:settings",
             "action:theme",
@@ -329,7 +328,7 @@ class TestRun:
 
 class TestCanvasViewCommands:
     async def test_offered_while_the_canvas_is_shown(self, app):
-        _open(app)
+        _open(app, components=[SELECTOR])
         controller = app._command_palette
         assert "action:previews" not in _ids(controller)
         app._show_edit_mode()
@@ -338,6 +337,14 @@ class TestCanvasViewCommands:
         assert "action:previews" not in _ids(controller)
         assert "action:collapse_all" not in _ids(controller)
         app._editor.mode = "split"
+        assert "action:collapse_all" in _ids(controller)
+
+    async def test_collapse_all_needs_nodes(self, app):
+        _open(app, edit=True)
+        controller = app._command_palette
+        assert "action:previews" in _ids(controller)
+        assert "action:collapse_all" not in _ids(controller)
+        app._editor.add_component(SELECTOR)
         assert "action:collapse_all" in _ids(controller)
 
     async def test_previews_follow_and_drive_the_status_bar(self, app):

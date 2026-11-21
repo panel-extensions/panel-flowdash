@@ -526,11 +526,11 @@ class TestCardViewEdits:
         editor = FlowDash(COMPONENTS, notifications=False)
         src = editor.add_component("Demo/src", instance_id="turbines")
         toggle = editor._status_bar.collapse_toggle
-        assert (toggle.label, toggle.icon) == ("Collapse all", "unfold_less")
+        assert toggle.label == "Collapse all"
         assert toggle.description == "Collapse all nodes (C)"
         _click(editor, src, "toggle_collapse")
         assert toggle.value and toggle.description == "Expand all nodes (C)"
-        assert (toggle.label, toggle.icon) == ("Expand all", "unfold_more")
+        assert toggle.label == "Collapse all"
         toggle.value = False
         assert not _card(editor, src).collapsed
         assert toggle.description == "Collapse all nodes (C)"

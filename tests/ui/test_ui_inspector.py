@@ -1,5 +1,7 @@
 """UI tests for the compact node cards, the inspector and the status bar of the wiring canvas."""
 
+import re
+
 import param
 import pytest
 from panel.tests.util import wait_until
@@ -346,6 +348,10 @@ _BAR_CENTRES = """() => {
 }"""
 
 
+# Narrower than the editor lets itself become, so the status bar is at its narrowest.
+_MIN_WIDTH = 600
+
+
 def _toggle_width(page, text):
     return page.locator(".fd-status-bar .MuiToggleButton-root", has_text=text).bounding_box()[
         "width"
@@ -380,6 +386,24 @@ def test_view_controls_show_labels_only_when_the_bar_has_room(page):
     assert _toggle_width(page, "Collapse all") < 40
 
 
+def test_view_controls_stay_inside_the_bar_at_the_minimum_width(page):
+    editor, src, table = _editor()
+    editor.connect(src, "rows", table, "rows")
+    page.set_viewport_size({"width": 1200, "height": 800})
+    serve_component(page, editor)
+
+    page.set_viewport_size({"width": _MIN_WIDTH, "height": 800})
+    bar = page.locator(".fd-status-bar")
+    zoom = bar.get_by_text("Zoom ")
+    expect(page.locator(".fd-keys")).to_be_hidden()
+
+    def inside():
+        outer, inner = bar.bounding_box(), zoom.bounding_box()
+        return inner["width"] > 0 and inner["x"] + inner["width"] <= outer["x"] + outer["width"]
+
+    wait_until(inside, timeout=8000)
+
+
 def test_view_controls_follow_the_cards(page):
     editor, src, table = _editor()
     editor.connect(src, "rows", table, "rows")
@@ -388,8 +412,10 @@ def test_view_controls_follow_the_cards(page):
     collapse = page.locator(".fd-status-bar .MuiToggleButton-root", has_text="Collapse all")
     collapse.click()
     wait_until(lambda: all(card.collapsed for card in editor._node_cards().values()), timeout=8000)
-    expand = page.locator(".fd-status-bar .MuiToggleButton-root", has_text="Expand all")
-    expect(expand).to_be_visible()
+    # Drawn pressed while every card is collapsed, which its ARIA state says too.
+    expect(collapse).to_have_attribute("aria-pressed", "true")
+    expect(collapse).to_have_attribute("aria-label", "Expand all nodes (C)")
+    expect(collapse).to_have_class(re.compile(r"\bMui-selected\b"))
 
     previews = page.locator(".fd-status-bar .MuiToggleButton-root", has_text="Previews")
     shown = editor._status_bar.preview_toggle.value

@@ -426,8 +426,7 @@ class CommandPaletteController:
             return []
         bar = self._editor._status_bar
         shown = bar.preview_toggle.value
-        collapsed = bar.collapse_toggle.value
-        return [
+        items = [
             {
                 "id": "action:previews",
                 "title": "Hide node previews" if shown else "Show node previews",
@@ -435,15 +434,20 @@ class CommandPaletteController:
                 "icon": "preview",
                 "keys": ["P"],
                 "keywords": "preview previews values canvas nodes cards dataflow",
-            },
-            {
-                "id": "action:collapse_all",
-                "title": "Expand all nodes" if collapsed else "Collapse all nodes",
-                "icon": "unfold_more" if collapsed else "unfold_less",
-                "keys": ["C"],
-                "keywords": "collapse expand fold unfold all nodes cards canvas dataflow",
-            },
+            }
         ]
+        if self._editor._node_cards():
+            collapsed = bar.collapse_toggle.value
+            items.append(
+                {
+                    "id": "action:collapse_all",
+                    "title": "Expand all nodes" if collapsed else "Collapse all nodes",
+                    "icon": "unfold_more" if collapsed else "unfold_less",
+                    "keys": ["C"],
+                    "keywords": "collapse expand fold unfold all nodes cards canvas dataflow",
+                }
+            )
+        return items
 
     def _history_items(self) -> list[dict]:
         """Undo and Redo, while there is something to undo or redo."""

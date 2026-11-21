@@ -24,6 +24,9 @@ kbd { font: inherit; font-size: 11px; padding: 0 5px; margin-right: 4px; border-
   border: 1px solid var(--mui-palette-divider, rgba(127, 127, 127, 0.4)); }
 """
 
+# The bar's horizontal padding, which container queries on it do not count.
+_BAR_PADDING = 12
+
 
 class CanvasShortcuts(JSComponent):
     """Listens for single-key canvas shortcuts (P for previews, C for collapse all)."""
@@ -72,11 +75,14 @@ _TEXT = {"fontSize": "0.75rem", "lineHeight": "20px"}
 
 _NOWRAP = {"color": "text.secondary", "whiteSpace": "nowrap", **_TEXT}
 
-# Below this width the view controls drop their labels and show only their icons.
+# Below this bar width the view controls drop their labels and show only their icons.
 _LABELS_MIN_WIDTH = 960
 
+# Below this bar width the key hints are hidden, so the view controls keep their room.
+_KEYS_MIN_WIDTH = 780
+
 _VIEW_TOGGLE_CSS = f"""
-@container fd-status-bar (max-width: {_LABELS_MIN_WIDTH}px) {{
+@container fd-status-bar (max-width: {_LABELS_MIN_WIDTH - 2 * _BAR_PADDING}px) {{
   .MuiToggleButton-root {{ font-size: 0 !important; gap: 0 !important; }}
 }}
 """
@@ -266,7 +272,11 @@ class StatusBar(Viewer):
             "<span><kbd>Del</kbd>remove</span></div>",
             margin=(0, 12),
             styles={"flex": "none"},
-            stylesheets=[_KEYS_CSS],
+            stylesheets=[
+                _KEYS_CSS,
+                f"@container fd-status-bar (max-width: {_KEYS_MIN_WIDTH - 2 * _BAR_PADDING}px)"
+                " { .fd-keys { display: none; } }",
+            ],
         )
         self.zoom = pmui.Typography(
             variant="caption",
@@ -321,7 +331,7 @@ class StatusBar(Viewer):
         self._label_preview_toggle()
         settings.param.watch(self._follow_preview_setting, "node_previews")
         self._syncing_collapse = False
-        # An action rather than a state, so it is not drawn as pressed while every card is collapsed.
+        # Pressed while every card is collapsed; its tooltip names what a click does.
         self.collapse_toggle = pmui.Toggle(
             label="Collapse all",
             icon="unfold_less",
@@ -333,11 +343,7 @@ class StatusBar(Viewer):
             align="center",
             styles={"flex": "none"},
             stylesheets=[_VIEW_TOGGLE_CSS],
-            sx={
-                **_VIEW_TOGGLE_SX,
-                "&.Mui-selected": {"bgcolor": "transparent", "color": "text.secondary"},
-                "&.Mui-selected:hover": {"bgcolor": "action.hover"},
-            },
+            sx=_VIEW_TOGGLE_SX,
         )
         self.collapse_toggle.param.watch(self._on_collapse_toggled, "value")
         self.collapse_toggle.param.watch(lambda _e: self.sync_collapse_toggle(), "value")
@@ -372,7 +378,7 @@ class StatusBar(Viewer):
             visible=self.param.visible,
             css_classes=["fd-status-bar"],
             styles={
-                "padding": "0 12px",
+                "padding": f"0 {_BAR_PADDING}px",
                 "overflow": "hidden",
                 "container-type": "inline-size",
                 "container-name": "fd-status-bar",
@@ -426,10 +432,8 @@ class StatusBar(Viewer):
                 self.collapse_toggle.value = all_collapsed
             finally:
                 self._syncing_collapse = False
-        self.collapse_toggle.param.update(
-            label="Expand all" if all_collapsed else "Collapse all",
-            icon="unfold_more" if all_collapsed else "unfold_less",
-            description=f"{'Expand' if all_collapsed else 'Collapse'} all nodes (C)",
+        self.collapse_toggle.description = (
+            f"{'Expand' if all_collapsed else 'Collapse'} all nodes (C)"
         )
 
     def _on_shortcut(self, key: str):
