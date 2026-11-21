@@ -20,18 +20,32 @@ optional_markers = {
 }
 
 
-# UI tests that failed on a first attempt in at least three of seven recent main
-# runs. They keep more reruns, with more time between them, than the rest of
-# the suite gets from --reruns.
-FLAKY_UI_TESTS = {
+# UI tests, or whole modules, that needed a rerun in at least two of ten recent
+# CI runs, most of them on Windows. They keep the reruns the whole suite used to
+# get, while the rest of the suite gets the shorter --reruns of the test-ui task.
+FLAKY_UI_TESTS = (
+    "tests/ui/test_ui.py::test_refresh_period_set_in_the_settings_form_persists",
+    "tests/ui/test_ui_agent_highlight.py::test_the_tile_outline_sits_on_the_tiles_visible_edge",
+    "tests/ui/test_ui_agent_models.py::test_a_picked_model_answers_the_next_request_and_its_details_name_it",
     "tests/ui/test_ui_code_panel.py::test_a_check_error_shows_under_its_line_and_keeps_the_result",
     "tests/ui/test_ui_conflicts.py::test_reload_after_conflict",
+    "tests/ui/test_ui_example_wind_energy.py::test_palette_hint_never_covers_an_entry",
     "tests/ui/test_ui_example_wind_energy.py::test_tiles_keep_their_sizes_after_a_top_bar_move_its_undo_and_a_reorder",
     "tests/ui/test_ui_explore.py::test_a_question_asked_in_explore_shows_its_answer_and_output",
+    "tests/ui/test_ui_explore.py::test_add_to_dashboard_shows_a_hidden_output",
+    "tests/ui/test_ui_explore.py::test_cards_stack_within_a_narrow_window",
     "tests/ui/test_ui_explore.py::test_charts_and_selection_links_survive_moving_between_explore_and_the_grid",
+    "tests/ui/test_ui_groups.py::test_connecting_to_a_collapsed_port_wires_the_inner_port",
+    "tests/ui/test_ui_header_narrow.py",
+    "tests/ui/test_ui_history.py::test_reverting_a_large_dashboard_ends_quickly",
+    "tests/ui/test_ui_history.py::test_reverting_from_the_drawer_restores_the_canvas",
+    "tests/ui/test_ui_input_literals.py::test_clearing_and_undo",
     "tests/ui/test_ui_provenance.py::test_the_tile_menu_shows_it_and_a_viewer_sees_their_own_request_in_full",
+    "tests/ui/test_ui_provenance.py::test_the_title_lines_up_with_the_request_in_the_inspector",
+    "tests/ui/test_ui_selection.py::test_brushing_filters_a_kpi_and_clearing_restores_it",
+    "tests/ui/test_ui_selection.py::test_brushing_reports_the_brushed_values_once_per_drag",
     "tests/ui/test_ui_settings_dialog.py::test_refresh_presets_set_the_period_and_save_it",
-}
+)
 
 
 def pytest_addoption(parser):
@@ -83,8 +97,9 @@ def _mark_flaky(config, items):
     if not config.pluginmanager.hasplugin("rerunfailures"):
         return
     for item in items:
-        if item.nodeid.split("[")[0] in FLAKY_UI_TESTS:
-            item.add_marker(pytest.mark.flaky(reruns=3, reruns_delay=5))
+        test = item.nodeid.split("[")[0]
+        if any(test == flaky or test.startswith(f"{flaky}::") for flaky in FLAKY_UI_TESTS):
+            item.add_marker(pytest.mark.flaky(reruns=3, reruns_delay=10))
 
 
 def pytest_collection_modifyitems(config, items):
