@@ -3,7 +3,7 @@ on:
   pull_request:
     branches:
       - "**"
-    types: [opened, synchronize, reopened, ready_for_review, labeled]
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches:
       - main
@@ -29,8 +29,7 @@ on:
 permissions: {}
 
 concurrency:
-  # Adding a label other than full-ci gets a group of its own, so it does not cancel a running build.
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}${{ github.event.action == 'labeled' && github.event.label.name != 'full-ci' && format('-{0}', github.run_id) || '' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 defaults:
@@ -44,7 +43,6 @@ jobs:
     permissions:
       pull-requests: read
     outputs:
-      run: ${{ github.event.action != 'labeled' || github.event.label.name == 'full-ci' }}
       # Scheduled, manual and tag runs skip the filter and test everything.
       code_change: ${{ steps.filter.outputs.code || 'true' }}
       img_change: ${{ steps.filter.outputs.img || 'false' }}
@@ -73,8 +71,8 @@ jobs:
       - name: Set matrix option
         env:
           GITHUB_EVENT_INPUTS_TARGET: ${{ github.event.inputs.target }}
-          # Draft PRs test on Linux only, unless labelled full-ci.
-          DRAFT: ${{ github.event.pull_request.draft == true && !contains(github.event.pull_request.labels.*.name, 'full-ci') }}
+          # Draft PRs test on Linux only; run the workflow by hand for the full matrix.
+          DRAFT: ${{ github.event.pull_request.draft == true }}
         run: |
           if [[ "${GITHUB_EVENT_NAME}" == 'workflow_dispatch' ]]; then
             OPTION=${GITHUB_EVENT_INPUTS_TARGET}
@@ -137,8 +135,6 @@ jobs:
 
   pixi_lock:
     name: Pixi lock
-    needs: [setup]
-    if: needs.setup.outputs.run == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: holoviz-dev/holoviz_tasks/pixi-lock@1a9884850782b0b80ba2e91b573e7d63d9d3c3dc # v1
@@ -148,7 +144,6 @@ jobs:
   pre_commit:
     name: Run pre-commit
     needs: [setup]
-    if: needs.setup.outputs.run == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -213,20 +208,13 @@ jobs:
         with:
           environments: ${{ matrix.environment }}
 
-      - name: Configure Coverage
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          echo "[run]" > .uicoveragerc
-          echo "concurrency = greenlet" >> .uicoveragerc
-          echo "COV=--cov=panel_flowdash --cov-config=.uicoveragerc --cov-report=xml --cov-report=term" >> $GITHUB_ENV
-
       - name: Test UI
         env:
           ENV: ${{ matrix.environment }}
           SHARD: ${{ matrix.shard }}/${{ matrix.shards }}
         run: |
           FAIL="--screenshot only-on-failure --full-page-screenshot --output ui_screenshots --tracing retain-on-failure"
-          pixi run -e "${ENV}" test-ui --shard "${SHARD}" $COV $FAIL
+          pixi run -e "${ENV}" test-ui --shard "${SHARD}" $FAIL
 
       - name: Upload UI Screenshots
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7

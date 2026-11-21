@@ -19,7 +19,7 @@ from ..test_agent_tools import scripted
 from .test_ui_header_layout import EDIT_ACTIONS, TOP_BAR, VIEW_ACTIONS
 from .test_ui_header_overflow import _HITS_ITSELF, _button, _store
 from .test_ui_view_header import COMPONENTS
-from .util import serve_component, stable_box
+from .util import DASHBOARD_LOAD_TIMEOUT, serve_component, stable_box
 
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
@@ -80,7 +80,7 @@ def _serve(page, width, edit):
     serve_component(page, {"/": factory, "/dash/[^/]+": factory}, suffix=suffix)
     names = (EDIT_ACTIONS if edit else VIEW_ACTIONS) + TOP_BAR + ["Assistant"]
     for name in names:
-        expect(_button(page, name)).to_be_visible()
+        expect(_button(page, name)).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
         stable_box(_button(page, name), page)
     if edit and width >= 800:
         expect(page.get_by_text("All changes saved")).to_be_visible()
@@ -154,7 +154,7 @@ def test_crumbs_give_way_before_the_title_truncates(page, width):
 
     serve_component(page, {"/": factory, "/dash/[^/]+": factory}, suffix=f"/dash/{dash}")
     title = page.get_by_role("button", name="Fleet Overview")
-    expect(title).to_be_visible()
+    expect(title).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
     stable_box(title, page)
 
     crumb = page.locator(".MuiAppBar-root").first.get_by_role(
