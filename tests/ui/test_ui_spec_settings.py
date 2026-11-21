@@ -221,3 +221,22 @@ def test_invalid_text_disables_the_form_until_it_parses(page):
     _show_form(page)
     expect(page.locator(".fd-spec-title input")).to_be_disabled()
     assert editor._component_instances[chart].spec == SPEC
+
+
+def test_the_form_says_why_it_is_disabled_and_run_reports_it(page):
+    editor, chart = _open(page)
+    _show_json(page)
+    page.locator(".fd-spec-editor .ace_content").click()
+    page.keyboard.press("ControlOrMeta+a")
+    page.keyboard.insert_text('{"mark": ')
+    page.locator(".fd-code-spec-view").get_by_role("button", name="Form").click()
+    error = page.locator(".fd-code-json-error")
+    expect(error).to_contain_text("not a valid spec", timeout=8000)
+    page.locator(".fd-code-run").click()
+    expect(page.locator(".fd-code-footer-bar")).to_contain_text(
+        "the JSON is not valid", timeout=8000
+    )
+    page.locator(".fd-code-fix-json").click()
+    expect(page.locator(".fd-spec-editor .ace_content")).to_be_visible(timeout=8000)
+    expect(error).to_be_hidden()
+    assert editor._component_instances[chart].spec == SPEC

@@ -1526,6 +1526,7 @@ class Inspector(Viewer):
     ) -> Viewable:
         """Offer to edit each spec field in the code panel under the canvas."""
         buttons = []
+        panel = self.editor.code_panel
         for name in fields:
             parameter = config_state.param[name]
             label = field_label(parameter) or name
@@ -1544,9 +1545,22 @@ class Inspector(Viewer):
             button.on_click(
                 partial(lambda _event, n: self.editor.edit_spec(instance_id, n), n=name)
             )
-            buttons.append(button)
+            buttons.append((name, label, button))
+
+        def mark(*_events):
+            # A field holding an edit not run yet says so on its button.
+            drafted = panel.drafted_fields(instance_id)
+            for name, label, button in buttons:
+                draft = name in drafted
+                button.label = f"Edit {label} · draft not run" if draft else f"Edit {label}"
+                classes = [c for c in button.css_classes if c != "fd-edit-spec-draft"]
+                button.css_classes = [*classes, "fd-edit-spec-draft"] if draft else classes
+
+        mark()
+        watcher = panel.param.watch(mark, ["dirty", "instance_id", "field"])
+        self._releases.append(partial(panel.param.unwatch, watcher))
         return pn.Column(
-            *buttons,
+            *(button for _name, _label, button in buttons),
             _caption("Edited in the code panel under the canvas.", margin=(0, 0, 8, 0)),
             margin=(0, 0, 4, 0),
             sizing_mode="stretch_width",

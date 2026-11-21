@@ -4059,10 +4059,13 @@ class FlowDash(Viewer):
         return self._code_panel_allowed() and showing_canvas
 
     def _primary_spec_field(self, instance_id: str) -> str | None:
-        """Return the first spec field of the node *instance_id*, e.g. a query or a chart spec."""
+        """Return the spec field of the node *instance_id* to edit: one holding a draft, else the first."""
         item = next((i for i in self._tile_items if i["instance_id"] == instance_id), None)
         spec = self._component_specs.get(item["component_id"]) if item else None
         fields = spec_fields(spec) if spec is not None else []
+        if self._code_panel is not None:
+            drafted = self._code_panel.drafted_fields(instance_id)
+            fields = [f for f in fields if f in drafted] + fields
         return fields[0] if fields else None
 
     def open_code_panel(

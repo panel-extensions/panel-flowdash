@@ -129,7 +129,25 @@ class Frame(Viewer):
         return pn.pane.Str("frame")
 
 
-COMPONENTS = {"D/chart": Chart, "D/plain": PlainChart, "D/json": JSONOnly, "D/frame": Frame}
+@register(page=False, component=True, title="Query chart", config=["sql", "spec", "limit"])
+class QueryChart(Viewer):
+    sql = param.String(
+        default="SELECT 1", metadata={"flowdash": {"widget": "code", "language": "sql"}}
+    )
+    spec = param.Dict(default=SPEC, metadata=SPEC_META)
+    limit = param.Integer(default=10)
+
+    def __panel__(self):
+        return pn.pane.JSON(self.param.spec)
+
+
+COMPONENTS = {
+    "D/chart": Chart,
+    "D/plain": PlainChart,
+    "D/json": JSONOnly,
+    "D/frame": Frame,
+    "D/both": QueryChart,
+}
 
 
 def _setting(path):
@@ -602,3 +620,108 @@ class TestCodePanel:
         field.editor.value_input = "{}"
         assert editor.code_panel.dirty
         assert editor._has_unsent_edits()
+
+
+class TestReviewedDrafts:
+    async def test_invalid_json_says_why_in_the_form_view(self, editor):
+        node = editor.add_component("D/plain")
+        field = _field(editor, node)
+        panel = editor.code_panel
+        panel.view_toggle.value = "spec"
+        field.editor.value = '{"mark": '
+        panel.view_toggle.value = "form"
+        assert panel._json_error.visible
+        assert "not a valid spec" in panel._json_error[0].object
+        assert all(control.disabled for _setting, control in field._controls.values())
+        await _run(editor)
+        assert "the JSON is not valid" in panel._code_status.object
+        assert "the JSON is not valid" in panel._result_footer.object
+        panel.fix_json_button.clicks += 1
+        assert panel.view_toggle.value == "spec" and not panel._json_error.visible
+        field.editor.value = json.dumps(SPEC)
+        panel.view_toggle.value = "form"
+        assert not panel._json_error.visible
+
+    @pytest.mark.parametrize("change", ["agent", "undo"])
+    async def test_a_held_form_draft_is_rebased_on_a_change_made_since(self, editor, change):
+        first = editor.add_component("D/plain")
+        second = editor.add_component("D/plain")
+        if change == "undo":
+            editor._apply_config_patch(first, {"spec": {**SPEC, "width": 300}})
+            editor.edit_history.flush()
+        field = _field(editor, first)
+        field._controls["title"][1].value = "Mine"
+        _field(editor, second)
+        if change == "agent":
+            editor._apply_config_patch(first, {"spec": {**SPEC, "width": 300}})
+            expected_width = 300
+        else:
+            assert editor.undo()
+            expected_width = None
+        _field(editor, first)
+        assert field.value["title"] == "Mine"
+        assert field.value.get("width") == expected_width
+        assert editor.code_panel.dirty and not editor.code_panel._stale_notice.visible
+
+    async def test_a_held_text_draft_on_a_changed_field_asks_first(self, editor):
+        node = editor.add_component("D/both")
+        select_on_canvas(editor._flow, node_id=node)
+        assert editor.open_code_panel(node, "sql")
+        panel = editor.code_panel
+        panel.code.value_input = "SELECT 2"
+        editor._split_view.storage.window_width = 800
+        assert not editor.code_panel_open
+        editor._apply_config_patch(node, {"sql": "SELECT 3"})
+        editor._split_view.storage.window_width = 1400
+        assert editor.open_code_panel(node, "sql")
+        assert panel.code.value_input == "SELECT 3"
+        assert panel._stale_notice.visible and panel.dirty
+        panel.run()
+        await _settle()
+        assert editor._component_instances[node].sql == "SELECT 3"
+        panel.keep_stale_draft()
+        assert panel.code.value_input == "SELECT 2" and not panel._stale_notice.visible
+        panel.discard()
+        assert panel.code.value_input == "SELECT 3" and not panel.dirty
+
+    async def test_a_stale_draft_can_be_discarded_and_stays_held_until_decided(self, editor):
+        node = editor.add_component("D/both")
+        other = editor.add_component("D/plain")
+        select_on_canvas(editor._flow, node_id=node)
+        assert editor.open_code_panel(node, "sql")
+        panel = editor.code_panel
+        panel.code.value_input = "SELECT 2"
+        editor.close_code_panel()
+        editor._apply_config_patch(node, {"sql": "SELECT 3"})
+        assert editor.open_code_panel(node, "sql")
+        assert panel._stale_notice.visible
+        select_on_canvas(editor._flow, node_id=other)
+        select_on_canvas(editor._flow, node_id=node)
+        assert panel.field == "sql" and panel._stale_notice.visible
+        panel.discard_stale_draft()
+        assert not panel._stale_notice.visible and not panel.has_drafts
+
+    async def test_reselecting_opens_the_field_with_a_draft(self, editor):
+        node = editor.add_component("D/both")
+        other = editor.add_component("D/plain")
+        field = _field(editor, node)
+        panel = editor.code_panel
+        assert panel.field == "sql"
+        assert panel.field_toggle.visible
+        assert list(panel.field_toggle.options.values()) == ["sql", "spec"]
+        panel.field_toggle.value = "spec"
+        assert panel.field == "spec"
+        field._controls["title"][1].value = "Mine"
+        select_on_canvas(editor._flow, node_id=other)
+        select_on_canvas(editor._flow, node_id=node)
+        assert panel.field == "spec" and field.value["title"] == "Mine"
+        body = pn.Column(*editor._inspector._body)
+        labels = [b.label for b in body.select(pmui.Button) if "fd-edit-spec" in b.css_classes]
+        assert labels == ["Edit SQL", "Edit Spec · draft not run"]
+        panel.field_toggle.value = "sql"
+        assert "Spec •" in panel.field_toggle.options
+
+    async def test_a_node_without_a_spec_names_nothing_to_edit(self, editor):
+        frame = editor.add_component("D/frame")
+        assert editor.open_code_panel(frame)
+        assert "Nothing to edit" in editor.code_panel._code_header.object
