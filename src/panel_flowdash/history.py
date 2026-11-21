@@ -409,6 +409,8 @@ class EditHistory:
         self.shown = False
         # Ahead of any recorder, so a request's version is stored before its run ends.
         self.state.subscribe(self._on_event)
+        # Other states whose runs edit the dashboard, e.g. the Explore view's, see follow().
+        self._followed: list[RunState] = []
 
     # ------------------------------------------------------------------
     # State
@@ -442,10 +444,21 @@ class EditHistory:
         """Why the open dashboard's stored history is not shown, if it was loaded and is not."""
         return self._refused.get(self.artifact_id)
 
+    def follow(self, state: RunState):
+        """Treat the runs of another agent's *state* like those in :attr:`state`.
+
+        For an agent whose runs are shown apart from the history's, such as
+        the Explore view's: undo and redo wait while one of its runs is
+        going, and each request's edits become a version when its run ends.
+        """
+        if state is not self.state and state not in self._followed:
+            self._followed.append(state)
+            state.subscribe(self._on_event)
+
     @property
     def busy(self) -> bool:
         """Whether a request to an agent is running, during which undo and redo wait."""
-        return self.state.running
+        return self.state.running or any(state.running for state in self._followed)
 
     @property
     def can_undo(self) -> bool:

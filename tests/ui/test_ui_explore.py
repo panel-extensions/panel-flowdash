@@ -10,6 +10,7 @@ pytest.importorskip("pydantic_ai")
 expect = pytest.importorskip("playwright.sync_api").expect
 
 from pydantic_ai import Agent
+from pydantic_ai.models.function import FunctionModel
 
 from panel_flowdash import FlowDash
 from panel_flowdash.agent import FlowDashDeps, dashboard_toolset
@@ -43,11 +44,14 @@ def test_a_question_asked_in_explore_shows_its_answer_and_output(page):
     )
     apps, errors = [], []
     page.on("pageerror", lambda exc: errors.append(str(exc)))
-    _serve_app(page, store, f"/dash/{dash}", apps, agent=agent)
+    _serve_app(page, store, f"/dash/{dash}", apps, agent=agent, explore_agent=agent)
     page.get_by_text("note tile").first.wait_for()
 
     page.get_by_role("button", name="Explore", exact=True).click()
-    expect(page.get_by_text("Before the recorded requests")).to_be_visible()
+    # The feed holds questions asked here only, not the outputs the dashboard was made with.
+    expect(page.get_by_placeholder(QUESTION)).to_be_visible()
+    expect(page.get_by_text("Before the recorded requests")).to_have_count(0)
+    expect(page.locator(".artifact-cell")).to_have_count(0)
     # Idle, the composer offers Send, not Stop.
     expect(page.get_by_role("button", name="Stop")).to_have_count(0)
 
@@ -86,7 +90,7 @@ def test_add_to_dashboard_shows_a_hidden_output(page):
         toolsets=[dashboard_toolset()],
     )
     apps = []
-    _serve_app(page, store, f"/dash/{dash}", apps, agent=agent)
+    _serve_app(page, store, f"/dash/{dash}", apps, agent=agent, explore_agent=agent)
     page.get_by_text("note tile").first.wait_for()
     _ask(page, apps)
     card = page.locator(".artifact-cell", has_text="memo")
@@ -99,7 +103,14 @@ def test_add_to_dashboard_shows_a_hidden_output(page):
     assert memo in tile_layout.grid_tiles(editor)
 
 
-def test_an_approval_left_pending_in_explore_opens_the_drawer_on_return(page):
+def _ask_drawer(page, text):
+    page.get_by_role("button", name="Assistant", exact=True).click()
+    chat = page.get_by_placeholder(re.compile("^Ask the agent"))
+    chat.fill(text)
+    chat.press("Enter")
+
+
+def test_an_approval_left_pending_in_the_drawer_opens_it_on_return_from_explore(page):
     store, (dash,) = _store_with("Plant")
     agent = Agent(
         scripted(("save_dashboard", {})),
@@ -109,14 +120,59 @@ def test_an_approval_left_pending_in_explore_opens_the_drawer_on_return(page):
     apps = []
     _serve_app(page, store, f"/dash/{dash}", apps, agent=agent)
     page.get_by_text("note tile").first.wait_for()
-    _ask(page, apps, "Save it")
-    explore = page.locator(".flowdash-explore")
-    expect(explore.get_by_role("button", name=re.compile("^Approve"))).to_be_visible(timeout=20000)
+    _ask_drawer(page, "Save it")
     session = apps[0]._agent_session
-    assert not session.drawer.open
+    wait_until(lambda: bool(session.runner.state.pending_approvals), page, timeout=20000)
+    page.get_by_role("button", name="Explore", exact=True).click()
+    wait_until(lambda: not session.drawer.open, page, timeout=10000)
+    # The drawer's request is not the Explore view's: its approval stays out of the feed.
+    explore = page.locator(".flowdash-explore")
+    expect(explore.get_by_text("Save it")).to_have_count(0)
+    expect(explore.get_by_role("button", name=re.compile("^Approve"))).to_have_count(0)
     page.get_by_role("button", name="View", exact=True).click()
     wait_until(lambda: session.drawer.open, page, timeout=10000)
     expect(page.locator(".flowdash-explore")).to_have_count(0)
+
+
+def answering(text):
+    async def stream(messages, info):
+        yield text
+
+    return FunctionModel(stream_function=stream, model_name="answering")
+
+
+def test_each_question_shows_only_where_it_was_asked(page):
+    store, (dash,) = _store_with("Plant")
+    drawer = Agent(
+        answering("Drawer answer."), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()]
+    )
+    explorer = Agent(
+        answering("Explore answer."), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()]
+    )
+    apps = []
+    _serve_app(page, store, f"/dash/{dash}", apps, agent=drawer, explore_agent=explorer)
+    page.get_by_text("note tile").first.wait_for()
+
+    _ask(page, apps, "Which plant is largest?")
+    explore = page.locator(".flowdash-explore")
+    expect(explore.get_by_text("Explore answer.")).to_be_visible(timeout=20000)
+    expect(explore.get_by_text("Which plant is largest?")).to_be_visible()
+
+    page.get_by_role("button", name="View", exact=True).click()
+    expect(page.locator(".flowdash-explore")).to_have_count(0)
+    _ask_drawer(page, "Make the title bold")
+    session = apps[0]._agent_session
+    expect(page.get_by_text("Drawer answer.")).to_be_visible(timeout=20000)
+    expect(page.get_by_text("Explore answer.")).to_have_count(0)
+    expect(page.get_by_text("Which plant is largest?")).to_have_count(0)
+
+    page.get_by_role("button", name="Explore", exact=True).click()
+    expect(explore.get_by_text("Explore answer.")).to_be_visible(timeout=20000)
+    expect(explore.get_by_text("Drawer answer.")).to_have_count(0)
+    expect(explore.get_by_text("Make the title bold")).to_have_count(0)
+    assert [
+        m.content for m in session.runner.state.items if getattr(m, "role", None) == "user"
+    ] == ["Make the title bold"]
 
 
 def test_charts_and_selection_links_survive_moving_between_explore_and_the_grid(page):

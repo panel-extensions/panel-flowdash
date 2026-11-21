@@ -99,8 +99,9 @@ class ChangeHighlighter:
         self._run_marks: dict[str, str] = {}
         self._run_dashboard: str | None = None
         self._grids: set[int] = set()
-        session.runner.state.param.watch(self._on_running, "running")
-        session.runner.deps.edit_listeners.append(self._on_edit)
+        for runner in session.runners:
+            runner.state.param.watch(self._on_running, "running")
+            runner.deps.edit_listeners.append(self._on_edit)
 
     def show(self, marks: dict[str, str]):
         """Mark nodes of the open dashboard, given ``{node name: "add" | "change"}``.

@@ -2660,6 +2660,13 @@ class FlowDash(Viewer):
         """
         self._render_how_made(instance_id, turn_id, open_sheet=True)
 
+    def _run_state(self, run_id: str | None) -> RunState:
+        """Return the ``RunState`` holding the steps of run *run_id*: the Explore view's or :attr:`agent_state`."""
+        runner = self.explore_feed.runner if self._explore_feed is not None else None
+        if runner is not None and run_id is not None and run_id in runner.state.runs:
+            return runner.state
+        return self.agent_state if self.agent_state is not None else self._history.state
+
     def _render_how_made(self, instance_id: str, turn_id: str | None, *, open_sheet: bool):
         if not self.made_by_agent(instance_id):
             return
@@ -2667,7 +2674,7 @@ class FlowDash(Viewer):
         turn = origin
         if turn_id is not None:
             turn = next((t for t in self.later_turns(instance_id) if t.id == turn_id), origin)
-        state = self.agent_state if self.agent_state is not None else self._history.state
+        state = self._run_state(turn.run if turn is not None else None)
         self._release_span()
         later = self.later_turns(instance_id) if turn is origin else []
         body, self._span_view = provenance_objects(

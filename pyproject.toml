@@ -50,8 +50,8 @@ dependencies = [
     "panel >=1.11.0rc0",
     # RunState undo and redo and drop_artifact_versions, which the edit history builds on;
     # 0.1.0b8 shows a version's metadata["detail"] as the history row's tooltip; 0.1.0b9 has SpanView;
-    # 0.1.0b10 has AgentChat's document layout with inline artifact cells.
-    "panel-agents >=0.1.0b10",
+    # 0.1.0b12 names a single model in the chat (and has the document layout of 0.1.0b10).
+    "panel-agents >=0.1.0b12",
     # Page.rail and Page.header_color arrived in 0.17.0b3.
     "panel-material-ui >=0.17.0rc1",
     # ReactFlow.fit_view, add_nodes/add_edges, graph validation and handle `top` arrived in
@@ -79,7 +79,7 @@ Source = "https://github.com/panel-extensions/panel-flowdash"
 [project.optional-dependencies]
 # The AI agent of panel_flowdash.agent.tools, which runs on pydantic-ai.
 agent = [
-    "panel-agents[pydantic-ai]>=0.1.0b10",
+    "panel-agents[pydantic-ai]>=0.1.0b12",
 ]
 dev = [
     "pre-commit",

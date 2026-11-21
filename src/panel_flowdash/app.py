@@ -164,6 +164,19 @@ class FlowDashApp(Viewer):
         (or taking ``FlowDashDeps``) is used as is.""",
     )
 
+    explore_agent = param.Parameter(
+        default=None,
+        doc="""
+        The AI agent the Explore view asks, which answers questions about
+        the data behind the open dashboard, separately from the assistant
+        in the drawer, which edits it. Each has its own runs, and the
+        picked model is shared. None gives the default Explore agent on the
+        assistant's model (see `panel_flowdash.agent.create_explore_agent`)
+        whenever there is an assistant; False turns asking in the Explore
+        view off, leaving it a read-only record of the dashboard's turns; a
+        ``pydantic_ai.Agent`` taking ``FlowDashDeps`` is used as is.""",
+    )
+
     agent_authorize = param.Callable(
         default=None,
         doc="""
@@ -947,7 +960,12 @@ class FlowDashApp(Viewer):
             if not allowed:
                 return None
         try:
-            from panel_flowdash.agent.session import AgentSession, resolve_agent
+            from panel_flowdash.agent.assistant import EDITING
+            from panel_flowdash.agent.session import (
+                AgentSession,
+                resolve_agent,
+                resolve_explore_agent,
+            )
         except ImportError as exc:
             logger.error("%s (%s)", AGENT_EXTRA_MISSING, exc)
             return None
@@ -957,20 +975,37 @@ class FlowDashApp(Viewer):
         if isinstance(self.agent, str):
             models, model = configured_models(self.agent_models, self.agent)
         # With a choice the picker names every request's model, so an unusable default must not fail here.
+        checks = {"defer_model_check": True} if len(models) > 1 else {}
+        exploring = self.explore_agent is not False
         agent = resolve_agent(
-            self.agent, model, **({"defer_model_check": True} if len(models) > 1 else {})
+            self.agent, model, **checks, **({"instructions": EDITING} if exploring else {})
         )
         if agent is None:
             return None
+        made = self.agent is None or self.agent is True or isinstance(self.agent, str)
+        # An assistant passed in runs on its own model, and the Explore agent made for it too.
+        explore_agent = resolve_explore_agent(
+            self.explore_agent, agent, model if made else None, **checks
+        )
         # With a single model there is nothing to pick, and an agent passed in keeps its own model,
         # which the chat still names.
+        explore_model = None
         if len(models) < 2:
             from panel_flowdash.agent.models import agent_model_choice
 
-            made = self.agent is None or self.agent is True or isinstance(self.agent, str)
-            only = agent_model_choice(agent, models[0] if made and models else None)
+            configured = models[0] if made and models else None
+            if explore_agent is not None and self.explore_agent in (None, True):
+                explore_model = agent_model_choice(explore_agent, configured)
+            only = agent_model_choice(agent, configured)
             models, model = ([only], only.id) if only else ([], None)
-        return AgentSession(self, agent, models=models, model=model)
+        return AgentSession(
+            self,
+            agent,
+            models=models,
+            model=model,
+            explore_agent=explore_agent,
+            explore_model=explore_model,
+        )
 
     def _on_editor_sidebar(self, *events):
         """Mirror the editor's sidebar views into the page sidebar, unless its controls bar shows them.
