@@ -150,6 +150,10 @@ function inDialog(path) {
   ))
 }
 
+function inCodePanel(path) {
+  return path.some((node) => node instanceof Element && node.classList.contains("fd-code-panel"))
+}
+
 // The element in full screen, which may sit in shadow roots, or rather its
 // shadow root, where an appended element is rendered. A dashboard puts the
 // whole page in full screen, where the body is shown as usual.
@@ -558,7 +562,12 @@ export function render({model, el: root}) {
     } else if (key === "s" && editing()) {
       model.send_msg({type: "shortcut", name: "split"})
     } else if (event.key === "Escape" && editing()) {
-      model.send_msg({type: "shortcut", name: selectedAtEscape ? "deselect" : "view"})
+      if (inCodePanel(path)) {
+        // Focus on the code panel's buttons is let go of first, back to the page.
+        path[0].blur?.()
+      } else {
+        model.send_msg({type: "shortcut", name: selectedAtEscape ? "deselect" : "escape"})
+      }
     }
   }
 

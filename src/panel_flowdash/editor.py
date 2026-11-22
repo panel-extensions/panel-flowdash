@@ -396,6 +396,9 @@ _SIDE_PANEL_WIDTH = 250
 
 # Narrower windows show the Split tab with the inspector folded until something is selected.
 _SPLIT_FOLD_WIDTH = 1600
+# How long after the canvas moves to another tab an empty selection from its page is
+# taken as the old view letting go of it rather than the person clearing it.
+_CANVAS_REMOUNT_GRACE = 3.0
 _CANVAS_MIN_HEIGHT = 600
 _CANVAS_MIN_WIDTH = 160
 # With the code panel under it, the canvas keeps this much and the panel starts this high.
@@ -1399,6 +1402,10 @@ class FlowDash(Viewer):
         # The tab Split returns to when it is toggled off.
         self._mode_before_split = "wiring"
         self._split_shown = False
+        # Where the canvas is shown ('wiring', 'split' or None when hidden); moving it
+        # renders it afresh, and the page then reports an empty selection.
+        self._canvas_host: str | None = None
+        self._remount_deadline = 0.0
         # Whether the inspector was folded to make room for the split, rather than by the user.
         self._inspector_folded = False
         self._folding = False
@@ -1914,6 +1921,14 @@ class FlowDash(Viewer):
             },
         )
         flow.on("drop", self._on_component_dropped)
+        process_msg = flow._process_msg
+        dropped = _EditorCall(self, "_selection_dropped_by_remount")
+
+        def _process_msg(msg: dict) -> None:
+            if not dropped(msg):
+                process_msg(msg)
+
+        flow._process_msg = _process_msg
         flow.add_connection_validator(
             lambda payload, _flow: self._validate_connection(
                 payload["source"],
@@ -2740,6 +2755,12 @@ class FlowDash(Viewer):
         self._inspect_dialog.param.update(objects=objects, open=True)
         if not self.editable:
             reserve_space(self._workspace_area, True)
+
+    @param.depends("editable", watch=True)
+    def _close_sheet_for_mode(self):
+        # The sheet belongs to the mode it was opened in: in edit mode it would cover
+        # the dashboard bar's Save and Done, and the inspector shows the same.
+        self._close_inspection_dialog()
 
     @param.depends("read_only", watch=True)
     def _reshow_how_made(self):
@@ -3914,6 +3935,22 @@ class FlowDash(Viewer):
         if self._tile_selection_follows:
             self._select_node(instance_id)
 
+    def _clear_selection(self) -> bool:
+        """Clear the selection on the canvas and the tile grid; return whether there was one.
+
+        In the Layout tab the canvas is hidden and its page reports nothing,
+        so the selection is cleared here as well.
+        """
+        selection = self._flow.selection or {}
+        tile = self._selected_tile_id()
+        if not (selection.get("nodes") or selection.get("edges") or tile is not None):
+            return False
+        select_on_canvas(self._flow)
+        if self._canvas_host is None:
+            self._flow.selection = {"nodes": [], "edges": []}
+        self._set_selected_tile(None, follow=False)
+        return True
+
     def _select_node(self, instance_id: str):
         """Select the node of *instance_id* on the canvas, bringing it into view in the Split tab."""
         if not any(node["id"] == instance_id for node in self._flow.nodes):
@@ -4023,6 +4060,10 @@ class FlowDash(Viewer):
         dialogs = [self._dialog_host]
         if self.inspect_outputs or self.provenance:
             dialogs.insert(0, self._inspect_dialog)
+        canvas_host = "split" if split else "wiring" if showing_canvas else None
+        if canvas_host != self._canvas_host:
+            self._canvas_host = canvas_host
+            self._expect_canvas_remount()
         if split:
             self._split_view.show([self._flow], self._view_controls.layout(self._tile_grid))
             self._workspace_area[:] = [self._split_view, *dialogs]
@@ -4038,6 +4079,24 @@ class FlowDash(Viewer):
             self._fit_placed_nodes()
         self._sync_tile_selection()
         self._sync_tile_drag()
+
+    def _expect_canvas_remount(self):
+        """Keep the selection while the canvas moves to another tab, or is hidden.
+
+        The canvas's old view reports an empty selection as it goes, though the
+        nodes stay selected on the page; the selection is the editor's, so it
+        is kept for the inspector, the tiles and the code panel alike.
+        """
+        selection = self._flow.selection or {}
+        if selection.get("nodes") or selection.get("edges"):
+            self._remount_deadline = time.monotonic() + _CANVAS_REMOUNT_GRACE
+
+    def _selection_dropped_by_remount(self, msg: dict) -> bool:
+        if msg.get("type") != "selection_changed" or not self._remount_deadline:
+            return False
+        expected = time.monotonic() < self._remount_deadline
+        self._remount_deadline = 0.0
+        return expected and not (msg.get("nodes") or msg.get("edges"))
 
     @param.depends("mode", watch=True)
     def _remember_mode(self):

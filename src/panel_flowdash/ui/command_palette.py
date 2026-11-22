@@ -11,7 +11,6 @@ import param
 from panel.custom import JSComponent
 
 from panel_flowdash.ui.palette import editor_presets
-from panel_flowdash.ui.status_bar import select_on_canvas
 
 if t.TYPE_CHECKING:
     from panel_flowdash.app import FlowDashApp
@@ -543,7 +542,12 @@ class CommandPaletteController:
 
         kind, _, value = command.partition(":")
         if kind == "shortcut" and value == "deselect":
-            self._clear_canvas_selection()
+            self._clear_selection()
+        elif kind == "shortcut" and value == "escape":
+            # Escape closes one thing at a time: a selection, wherever it is
+            # shown, before it leaves edit mode.
+            if not self._clear_selection():
+                self.run("shortcut:view")
         elif kind == "shortcut":
             # A shortcut only does what the palette would offer in this state.
             if value in _SHORTCUT_ACTIONS and any(
@@ -568,15 +572,16 @@ class CommandPaletteController:
         elif kind == "ask" and self._ask is not None:
             self._ask(value)
 
-    def _clear_canvas_selection(self):
-        """Clear the selection on the wiring canvas.
+    def _clear_selection(self) -> bool:
+        """Clear the selection on the canvas and the tile grid; return whether there was one.
 
-        Escape sends this rather than ``view`` while a node or connection is
-        selected on the canvas, so it deselects what was clicked last, as on
-        other canvases, instead of leaving edit mode.
+        Escape sends ``deselect`` while a node or connection is selected on
+        the canvas, so it deselects what was clicked last, as on other
+        canvases, instead of leaving edit mode, and ``escape`` otherwise,
+        which leaves edit mode only when nothing is selected elsewhere,
+        e.g. a tile in the Layout tab.
         """
-        if self._editor.editable:
-            select_on_canvas(self._editor._flow)
+        return self._editor.editable and self._editor._clear_selection()
 
     def _navigate(self, path: str):
         self._app._on_nav_click({"path": path})
