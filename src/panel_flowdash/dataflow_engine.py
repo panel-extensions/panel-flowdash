@@ -35,7 +35,11 @@ import param
 
 from panel_flowdash.component_spec import ComponentSpec
 from panel_flowdash.input_literals import check_literal, port_literal
-from panel_flowdash.port_types import normalize_port_type, port_types_compatible
+from panel_flowdash.port_types import (
+    is_registered_port_type,
+    normalize_port_type,
+    port_types_compatible,
+)
 from panel_flowdash.transforms import Transform, apply_transform, parse_transform
 from panel_flowdash.util import ReactiveError, is_failure
 
@@ -141,14 +145,17 @@ def connection_type(port) -> str | None:
 
     Each edge into a list input delivers one item, so the item type applies:
     the declared type of a ``multiple`` input that is not itself a list, or
-    the ``item_type`` of a List Parameter. A plain ``List`` input says nothing
-    about its items and accepts anything.
+    the ``item_type`` of a List Parameter when it names a registered port
+    type. A plain ``List`` input says nothing about its items and accepts
+    anything, as does an ``item_type`` of a class with no registered port
+    type, whose subclasses only the check of each value can tell apart.
     """
     if not _is_list_port(port):
         return port.type
     item_class = _item_class(port)
     if item_class is not None:
-        return item_class.__name__
+        name = item_class.__name__
+        return name if is_registered_port_type(name) else None
     if normalize_port_type(port.type) == "list":
         return None
     return port.type

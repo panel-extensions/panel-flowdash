@@ -6,11 +6,12 @@ import param
 import pytest
 from panel.viewable import Viewer
 
-from panel_flowdash import FlowDash, register
+from panel_flowdash import FlowDash, register, register_port_type
 from panel_flowdash.agent import DashboardOps, OperationError, validate_dashboard
 from panel_flowdash.component_spec import build_component_spec
 from panel_flowdash.dashboard_store import DashboardEdge, DashboardItem, DashboardModel
 from panel_flowdash.dataflow_engine import DataflowGraph, connection_type
+from panel_flowdash.port_types import _ALIASES, _SUPERTYPES
 from panel_flowdash.registry import RegistryEntry
 
 
@@ -165,3 +166,70 @@ class TestLoad:
         key = lambda e: json.dumps(e.to_dict(), sort_keys=True)
         assert sorted(map(key, editor.to_model().edges)) == sorted(map(key, model.edges))
         editor.dispose()
+
+
+class Base:
+    pass
+
+
+class Sub(Base):
+    pass
+
+
+class TestSubclassItems:
+    @pytest.fixture
+    def restore_type_registry(self):
+        aliases, supertypes = dict(_ALIASES), {k: set(v) for k, v in _SUPERTYPES.items()}
+        yield
+        _ALIASES.clear()
+        _ALIASES.update(aliases)
+        _SUPERTYPES.clear()
+        _SUPERTYPES.update(supertypes)
+
+    def _graph(self, target):
+        class Maker(Viewer):
+            @param.output(Sub)
+            def made(self):
+                return Sub()
+
+            def __panel__(self):
+                return ""
+
+        specs = {
+            "t/maker": build_component_spec(RegistryEntry.from_app(Maker, app_id="t/maker")),
+            "t/target": build_component_spec(RegistryEntry.from_app(target, app_id="t/target")),
+        }
+        graph = DataflowGraph(specs)
+        graph.add_node("m", "t/maker")
+        graph.add_node("x", "t/target")
+        return graph
+
+    async def test_subclass_output_feeds_a_list_of_its_base(self):
+        class Bag(Viewer):
+            values = param.List(item_type=Base, default=[])
+
+            def __panel__(self):
+                return ""
+
+        assert (
+            connection_type(
+                build_component_spec(RegistryEntry.from_app(Bag, app_id="t/bag")).inputs[0]
+            )
+            is None
+        )
+        graph = self._graph(Bag)
+        assert graph.add_edge("m", "made", "x", "values") is True
+
+    async def test_subclass_output_feeds_a_multiple_input_of_its_base(self, restore_type_registry):
+        register_port_type("Sub", subtype_of=["Base"])
+
+        @register(
+            page=False,
+            component=True,
+            requires=[{"key": "bases", "type": "Base", "multiple": True, "required": False}],
+        )
+        def bases(config):
+            return "bases"
+
+        graph = self._graph(bases)
+        assert graph.add_edge("m", "made", "x", "bases") is True

@@ -254,8 +254,10 @@ Anything else is rejected with a "Type mismatch" message.
 
 An input that takes several edges receives one item from each, so each output
 is checked against the item type: the `type` of a `multiple` input, or the
-`item_type` of a `param.List`. A plain `list` input, or one whose items are
-typed `any`, takes any output.
+`item_type` of a `param.List` when it is a registered port type. A plain
+`list` input, one whose items are typed `any`, or one whose `item_type` is a
+class with no registered port type takes any output, and each value is checked
+against the `item_type` instead.
 
 ```python
 # Allowed: String and str are one type
