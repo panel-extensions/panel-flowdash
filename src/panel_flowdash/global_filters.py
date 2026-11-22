@@ -59,6 +59,7 @@ import math
 import typing as t
 from collections.abc import Collection, Iterable, Mapping
 
+import numpy as np
 import pandas as pd
 
 from panel_flowdash.selection import Predicate
@@ -106,6 +107,11 @@ def _scalar(value: t.Any) -> bool:
     if isinstance(value, float):
         return math.isfinite(value)
     return value is None or isinstance(value, (str, int, bool))
+
+
+def check_value(value: t.Any, widget: str | None, key: str = "value") -> t.Any:
+    """Return a filter value as a list, raising :class:`FilterError` if it is not one *widget* takes."""
+    return _check_value(value, widget, key)
 
 
 def _check_value(value: t.Any, widget: str | None, key: str) -> t.Any:
@@ -289,22 +295,174 @@ def frame_columns(values: Iterable[t.Any]) -> set[str]:
     return columns
 
 
+class FilterMismatch(ValueError):
+    """A filter's values cannot be compared with a column of the same name, e.g. numbers with text."""
+
+
+def _kind(series: pd.Series) -> str:
+    """Return what *series* holds, as far as comparing it with a filter's values goes."""
+    dtype = series.dtype
+    if isinstance(dtype, pd.CategoricalDtype):
+        return "category"
+    if pd.api.types.is_bool_dtype(dtype):
+        return "bool"
+    if pd.api.types.is_datetime64_any_dtype(dtype):
+        return "datetime"
+    if pd.api.types.is_numeric_dtype(dtype):
+        return "number"
+    sample = series.dropna()
+    if sample.empty:
+        return "empty"
+    first = sample.iloc[0]
+    if isinstance(first, dt.datetime):
+        return "pydatetime"
+    if isinstance(first, dt.date):
+        return "date"
+    if isinstance(first, str):
+        return "text"
+    return "other"
+
+
+_HOLDS = {
+    "number": "numbers",
+    "datetime": "dates",
+    "pydatetime": "dates",
+    "date": "dates",
+    "text": "text",
+}
+
+
+def _is_number(value: t.Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _to_number(value: t.Any) -> t.Any:
+    if value is None or _is_number(value):
+        return value
+    if isinstance(value, str):
+        try:
+            number = float(value)
+        except ValueError:
+            pass
+        else:
+            return int(number) if number.is_integer() else number
+    raise FilterMismatch(f"holds numbers, and {value!r} is not one")
+
+
+def _to_moment(value: t.Any, kind: str) -> t.Any:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = dt.datetime.fromisoformat(value)
+        except ValueError:
+            raise FilterMismatch(f"holds dates, and {value!r} is not one") from None
+    if isinstance(value, pd.Timestamp):
+        value = value.to_pydatetime()
+    if not isinstance(value, dt.date):
+        raise FilterMismatch(f"holds dates, and {value!r} is not one")
+    if kind == "date":
+        return value.date() if isinstance(value, dt.datetime) else value
+    if kind == "pydatetime" and not isinstance(value, dt.datetime):
+        return dt.datetime.combine(value, dt.time())
+    if kind == "datetime":
+        return pd.Timestamp(value)
+    return value
+
+
+def _to_text(value: t.Any) -> t.Any:
+    if value is None or isinstance(value, str):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    if isinstance(value, (dt.date, pd.Timestamp)):
+        return value.isoformat()
+    return str(value)
+
+
+def coerce_predicate(p: Predicate, series: pd.Series) -> Predicate:
+    """Return *p* with its values made comparable with *series*, or raise :class:`FilterMismatch`.
+
+    Columns are matched by name only, so two views can hold a column of the
+    same name with different types. Values are converted where that is safe:
+    ISO strings to dates for a column of dates, numeric strings to numbers
+    for a column of numbers, numbers to strings for a column of text. A range
+    on text or on unordered categories has nothing to compare and is refused.
+    """
+    kind = _kind(series)
+    values = p.values
+    if kind == "category":
+        if p.op == "range" and not series.dtype.ordered:
+            raise FilterMismatch("holds unordered categories, which have no range")
+        categories = series.dtype.categories
+        if p.op == "in" and len(categories) and isinstance(categories[0], str):
+            values = tuple(_to_text(v) for v in values)
+    elif kind == "number":
+        values = tuple(_to_number(v) for v in values)
+    elif kind in ("datetime", "pydatetime", "date"):
+        values = tuple(_to_moment(v, kind) for v in values)
+    elif kind == "text":
+        if p.op == "range":
+            if not all(v is None or isinstance(v, str) for v in values):
+                raise FilterMismatch(
+                    "holds text, which a range of numbers or dates cannot compare"
+                )
+        else:
+            values = tuple(_to_text(v) for v in values)
+    return Predicate(p.field, p.op, values, p.closed)
+
+
+def filter_frame_checked(
+    frame: t.Any, predicates: Mapping[str, Predicate]
+) -> tuple[t.Any, dict[str, str]]:
+    """Return the rows of *frame* matching every predicate it can apply, and why it could not apply the others.
+
+    Like :func:`filter_frame`, and the reasons are by column, e.g.
+    ``{"year": "holds numbers, and 'n/a' is not one"}``. A predicate that
+    cannot be compared with its column is left out rather than failing the
+    whole frame.
+    """
+    if not isinstance(frame, pd.DataFrame) or not predicates:
+        return frame, {}
+    keep = None
+    mismatched: dict[str, str] = {}
+    for column, p in predicates.items():
+        if column not in frame.columns:
+            continue
+        try:
+            coerced = coerce_predicate(p, frame[column])
+            mask = coerced.mask(frame).fillna(False).astype(bool)
+        except FilterMismatch as exc:
+            mismatched[column] = str(exc)
+            continue
+        except (TypeError, ValueError) as exc:
+            mismatched[column] = f"holds values the filter's cannot be compared with ({exc})"
+            continue
+        keep = mask if keep is None else keep & mask
+    return (frame if keep is None else frame[keep]), mismatched
+
+
 def filter_frame(frame: t.Any, predicates: Mapping[str, Predicate]) -> t.Any:
     """Return the rows of *frame* matching every predicate on a column it has.
 
     The reference implementation of global filters, applied to the DataFrame
     inputs of components that do not filter themselves. Anything that is not
-    a DataFrame, and a frame without any of the columns, is returned as is.
+    a DataFrame, and a frame without any of the columns, is returned as is,
+    and a predicate whose values cannot be compared with its column is
+    skipped, see :func:`filter_frame_checked`.
     """
-    if not isinstance(frame, pd.DataFrame) or not predicates:
-        return frame
-    applicable = [p for column, p in predicates.items() if column in frame.columns]
-    if not applicable:
-        return frame
-    keep = pd.Series(True, index=frame.index)
-    for p in applicable:
-        keep &= p.mask(frame).fillna(False).astype(bool)
-    return frame[keep]
+    return filter_frame_checked(frame, predicates)[0]
+
+
+def plain_value(value: t.Any) -> t.Any:
+    """Return a column value as JSON can hold it: dates and datetimes as ISO strings."""
+    if isinstance(value, np.datetime64):
+        value = pd.Timestamp(value)
+    if isinstance(value, pd.Timestamp):
+        value = value.to_pydatetime()
+    if isinstance(value, (dt.datetime, dt.date)):
+        return value.isoformat()
+    return value.item() if hasattr(value, "item") else value
 
 
 def column_options(frames: Iterable[pd.DataFrame], column: str) -> list[t.Any]:
@@ -314,7 +472,7 @@ def column_options(frames: Iterable[pd.DataFrame], column: str) -> list[t.Any]:
         if column not in frame.columns:
             continue
         for value in frame[column].dropna().unique():
-            values[value.item() if hasattr(value, "item") else value] = None
+            values[plain_value(value)] = None
             if len(values) >= MAX_OPTIONS:
                 break
     try:
@@ -323,21 +481,71 @@ def column_options(frames: Iterable[pd.DataFrame], column: str) -> list[t.Any]:
         return sorted(values, key=str)
 
 
+def _scalar_value(value: t.Any) -> t.Any:
+    if isinstance(value, np.datetime64):
+        return pd.Timestamp(value)
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def _span_kind(value: t.Any) -> str | None:
+    if _is_number(value):
+        return "number"
+    if isinstance(value, (dt.date, pd.Timestamp)):
+        return "moment"
+    return None
+
+
+def _moment(value: t.Any) -> dt.datetime:
+    if isinstance(value, pd.Timestamp):
+        value = value.to_pydatetime()
+    if not isinstance(value, dt.datetime):
+        value = dt.datetime.combine(value, dt.time())
+    return value.replace(tzinfo=None)
+
+
+def comparable_span(spans: Iterable[tuple[t.Any, t.Any] | None]) -> tuple[t.Any, t.Any] | None:
+    """Return the overall span of *spans*, keeping those of the kind most of them have.
+
+    Spans of numbers and of dates cannot be compared with each other, nor
+    those of text with anything a range slider shows, so the others are dropped.
+    """
+    by_kind: dict[str, list[tuple]] = {}
+    for span in spans:
+        if span is None:
+            continue
+        lo, hi = (_scalar_value(v) for v in span)
+        kind = _span_kind(lo)
+        if kind is None or _span_kind(hi) != kind:
+            continue
+        if kind == "moment":
+            lo, hi = _moment(lo), _moment(hi)
+        by_kind.setdefault(kind, []).append((lo, hi))
+    if not by_kind:
+        return None
+    chosen = max(by_kind.values(), key=len)
+    return min(s[0] for s in chosen), max(s[1] for s in chosen)
+
+
 def column_span(frames: Iterable[pd.DataFrame], column: str) -> tuple[t.Any, t.Any] | None:
-    """Return the smallest and largest value of *column* across *frames*, or None if it has none."""
-    low = high = None
+    """Return the smallest and largest value of *column* across *frames*, or None if it has none.
+
+    Frames whose column cannot be compared with the others' are left out, see
+    :func:`comparable_span`.
+    """
+    spans = []
     for frame in frames:
         if column not in frame.columns:
             continue
         series = frame[column].dropna()
         if series.empty:
             continue
-        lo, hi = series.min(), series.max()
-        low = lo if low is None else min(low, lo)
-        high = hi if high is None else max(high, hi)
-    if low is None:
-        return None
-    return low, high
+        try:
+            spans.append((series.min(), series.max()))
+        except TypeError:
+            continue
+    return comparable_span(spans)
 
 
 # --------------------------------------------------------------------------
@@ -348,6 +556,7 @@ def column_span(frames: Iterable[pd.DataFrame], column: str) -> tuple[t.Any, t.A
 # Why a global filter does not reach a view.
 MISSING = "missing"
 EXCLUDED = "excluded"
+MISMATCHED = "mismatched"
 
 
 def resolve_view(
@@ -355,13 +564,17 @@ def resolve_view(
     active: Mapping[str, Predicate],
     node: str,
     columns: Collection[str] | None,
+    mismatched: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, Predicate], dict[str, str]]:
     """Return the predicates that reach the view *node*, and why each other active filter does not.
 
     *active* are the predicates of the filters with a value, by column, and
     *columns* the view's columns, None while unknown. A filter the view opts
-    out of is ``excluded``, and one on a column it lacks is ``missing``.
+    out of is ``excluded``, one on a column it lacks is ``missing``, and one
+    whose values its column cannot be compared with, as *mismatched* says by
+    column, is ``mismatched``.
     """
+    mismatched = mismatched or {}
     applied: dict[str, Predicate] = {}
     skipped: dict[str, str] = {}
     for entry in filters:
@@ -372,6 +585,8 @@ def resolve_view(
             skipped[column] = EXCLUDED
         elif columns is None or column not in columns:
             skipped[column] = MISSING
+        elif column in mismatched:
+            skipped[column] = MISMATCHED
         else:
             applied[column] = active[column]
     return applied, skipped
@@ -383,7 +598,11 @@ def hint_text(filters: Iterable[Mapping], skipped: Mapping[str, str]) -> str:
     return f"Not filtered by {', '.join(labels)}" if labels else ""
 
 
-def hint_detail(filters: Iterable[Mapping], skipped: Mapping[str, str]) -> str:
+def hint_detail(
+    filters: Iterable[Mapping],
+    skipped: Mapping[str, str],
+    mismatched: Mapping[str, str] | None = None,
+) -> str:
     """Return why each filter in *skipped* does not reach a view, for its tooltip."""
     reasons = []
     for entry in filters:
@@ -392,4 +611,7 @@ def hint_detail(filters: Iterable[Mapping], skipped: Mapping[str, str]) -> str:
             reasons.append(f"{filter_label(entry)}: this view opts out")
         elif reason == MISSING:
             reasons.append(f"{filter_label(entry)}: its data has no column {entry['column']!r}")
+        elif reason == MISMATCHED:
+            why = (mismatched or {}).get(entry["column"], "cannot be compared with the filter")
+            reasons.append(f"{filter_label(entry)}: its column {entry['column']!r} {why}")
     return "; ".join(reasons)

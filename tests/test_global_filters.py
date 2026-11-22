@@ -1,5 +1,6 @@
 """Global filters: column matching, opt-outs, local filters, the protocol, the YAML and the stores."""
 
+import datetime as dt
 import json
 import sqlite3
 from contextlib import closing
@@ -23,6 +24,7 @@ from panel_flowdash.global_filters import (
     FilterError,
     FilterTarget,
     check_filters,
+    column_span,
     filter_frame,
     predicate,
     resolve_view,
@@ -426,3 +428,131 @@ class TestStores:
         table = other._component_instances[ops._instance("by_state")].table
         assert table["mw"].tolist() == [1.0, 3.0]
         other.dispose()
+
+
+@pytest.fixture
+def mixed():
+    """Two sources whose columns share names but not types, each feeding a view."""
+    editor = FlowDash(COMPONENTS, notifications=False)
+    ops = DashboardOps(editor)
+    ops.add_node("T/Fleet", {}, name="left")
+    ops.add_node("T/Fleet", {}, name="right")
+    ops.add_node("T/Table", {}, name="a")
+    ops.add_node("T/Table", {}, name="b")
+    ops.connect("left.data", "a.table")
+    ops.connect("right.data", "b.table")
+    yield ops
+    editor.dispose()
+
+
+def feed(ops, name, frame):
+    ops.editor._component_instances[ops._instance(name)].data = frame
+
+
+def mws(ops, name):
+    return rows(ops, name)
+
+
+class TestTypeMismatches:
+    def test_int_and_text_columns_of_one_name(self, mixed, caplog):
+        feed(mixed, "right", FLEET.assign(year=FLEET["year"].astype(str)))
+        editor = mixed.editor
+        editor.set_filters([{"column": "year", "widget": "select", "value": [2005, "2010"]}])
+        assert mws(mixed, "a") == [2.0, 3.0]
+        assert mws(mixed, "b") == [2.0, 3.0]
+        editor.set_filters([{"column": "year", "widget": "range", "value": [2005, 2020]}])
+        assert mws(mixed, "a") == [2.0, 3.0, 4.0]
+        assert mws(mixed, "b") == FLEET["mw"].tolist()
+        _, hint, detail = notes(mixed, "b")
+        assert hint == "Not filtered by year"
+        assert "holds text" in detail
+        assert notes(mixed, "a")[1] == ""
+        assert "Runtime wiring error" not in caplog.text
+        assert editor._global_filters.span("year") == (2001, 2021)
+
+    def test_numeric_strings_filter_a_column_of_numbers(self, mixed):
+        mixed.editor.set_filters(
+            [{"column": "year", "widget": "range", "value": ["2005", "2010"]}]
+        )
+        assert mws(mixed, "a") == [2.0, 3.0]
+
+    def test_a_date_range_on_a_column_of_dates(self, mixed):
+        days = FLEET.assign(day=[dt.date(y, 1, 1) for y in FLEET["year"]])
+        feed(mixed, "left", days)
+        feed(mixed, "right", days.assign(day=pd.to_datetime(days["day"])))
+        mixed.editor.set_filters(
+            [{"column": "day", "widget": "range", "value": ["2005-01-01", "2010-06-01"]}]
+        )
+        assert mws(mixed, "a") == mws(mixed, "b") == [2.0, 3.0]
+        assert notes(mixed, "a")[1] == ""
+
+    def test_a_range_on_unordered_categories_is_not_applied(self, mixed):
+        feed(mixed, "left", FLEET.assign(state=FLEET["state"].astype("category")))
+        mixed.editor.set_filters([{"column": "state", "widget": "range", "value": ["A", "P"]}])
+        assert mws(mixed, "a") == FLEET["mw"].tolist()
+        assert "unordered categories" in notes(mixed, "a")[2]
+
+    def test_a_select_on_datetimes_takes_iso_strings(self, mixed):
+        stamped = FLEET.assign(when=pd.to_datetime(FLEET["year"].astype(str) + "-01-01"))
+        feed(mixed, "left", stamped)
+        filters = mixed.editor._global_filters
+        mixed.editor.set_filters([{"column": "when", "widget": "select"}])
+        assert filters.options("when")[0] == "2001-01-01T00:00:00"
+        mixed.editor.set_filter_value("when", ["2005-01-01T00:00:00", "2020-01-01"])
+        assert mws(mixed, "a") == [2.0, 4.0]
+
+    def test_set_value_checks_the_value(self, mixed):
+        mixed.editor.set_filters([{"column": "year", "widget": "range"}])
+        with pytest.raises(FilterError, match=r"\[start, end\]"):
+            mixed.editor.set_filter_value("year", [2001])
+        with pytest.raises(FilterError, match="must be a list"):
+            mixed.editor.set_filter_value("year", "2001")
+
+    def test_spans_that_cannot_be_compared_are_dropped(self):
+        stamps = pd.DataFrame({"x": pd.to_datetime(["2020-01-01", "2021-01-01"])})
+        numbers = pd.DataFrame({"x": [1, 5]})
+        text = pd.DataFrame({"x": ["a", "b"]})
+        assert column_span([numbers, text, numbers.assign(x=[0, 2])], "x") == (0, 5)
+        assert column_span([stamps], "x") == (dt.datetime(2020, 1, 1), dt.datetime(2021, 1, 1))
+        assert column_span([text], "x") is None
+
+
+class TestSharedChips:
+    def test_a_filter_node_feeding_every_view_is_shown_once(self):
+        editor = FlowDash(COMPONENTS, notifications=False)
+        ops = DashboardOps(editor)
+        ops.add_node("T/Fleet", {}, name="fleet")
+        ops.add_node("T/Recent", {}, name="recent")
+        ops.add_node("T/Table", {}, name="a")
+        ops.add_node("T/Table", {}, name="b")
+        ops.connect("fleet.data", "recent.data")
+        ops.connect("recent.filtered", "a.table")
+        ops.connect("recent.filtered", "b.table")
+        filters = editor._global_filters
+        assert [iid for iid, _ in filters.shared] == [ops._instance("recent")]
+        assert notes(ops, "a")[0] == notes(ops, "b")[0] == []
+        from panel_flowdash.ui.global_filters import FilterBar
+
+        bar = FilterBar(filters=filters)
+        assert [o.label for o in bar._row if "fd-filter-shared" in o.css_classes] == [
+            "Recent · all views"
+        ]
+        ops.add_node("T/Table", {}, name="c")
+        ops.connect("fleet.data", "c.table")
+        assert filters.shared == []
+        assert [iid for iid, _ in notes(ops, "a")[0]] == [ops._instance("recent")]
+        editor.dispose()
+
+    def test_notes_reuse_one_pass_over_the_views(self, ops, monkeypatch):
+        filters = ops.editor._global_filters
+        calls = []
+        original = type(filters).targets
+        monkeypatch.setattr(
+            type(filters), "targets", lambda self: calls.append(1) or original(self)
+        )
+        ops.editor.set_filters([{"column": "state", "value": ["TX"]}])
+        calls.clear()
+        for name in ("by_state", "reference", "regional", "latest"):
+            filters.notes(ops._instance(name))
+        assert calls == []
+        assert notes(ops, "regional")[1] == "Not filtered by state"

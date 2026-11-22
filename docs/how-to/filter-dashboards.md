@@ -29,10 +29,24 @@ Two notes on tiles say what applies where:
 
 - A chip for each Filter node feeding the view, directly or further upstream.
   A Filter node is a transform tagged `filter`, such as the built-in
-  *Filter by selection*.
+  *Filter by selection*. A Filter node feeding every view is shown once, in
+  the filter bar, as *Filter Turbines · all views*, rather than on each tile.
 - *Not filtered by State*, while a global filter has a value that does not
-  reach the view, either because its data has no such column or because the
-  view opted out. Hovering over it says which.
+  reach the view: its data has no such column, the column holds values the
+  filter's cannot be compared with (a range of numbers on a column of text,
+  or a range on unordered categories), or the view opted out. Hovering over
+  it says which.
+
+Since columns match by name only, two views can hold a column of the same name
+with different types. Values are converted where that is safe: ISO strings to
+dates for a column of dates, numeric strings to numbers for a column of
+numbers, and numbers to strings for a column of text. A view whose column
+still cannot take the filter is left unfiltered by it, and says so, while the
+other views are filtered as usual.
+
+Global filters reach the views as they are, not the data upstream of them: a
+view fed by an aggregate that has no such column shows the hint rather than
+being filtered.
 
 To opt a view out of a filter, for instance a chart of the whole fleet kept for
 reference, select it and turn the filter off under **Global filters** in the

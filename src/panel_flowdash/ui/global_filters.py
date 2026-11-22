@@ -28,23 +28,26 @@ import param
 from panel.viewable import Viewer
 
 from panel_flowdash.global_filters import (
+    FilterMismatch,
     accepts_filters,
     check_filters,
+    check_value,
+    coerce_predicate,
     column_options,
     column_span,
-    filter_frame,
+    comparable_span,
+    filter_frame_checked,
     filter_label,
     frame_columns,
     hint_detail,
     hint_text,
+    plain_value,
     predicate,
     resolve_view,
     widget_for,
 )
+from panel_flowdash.selection import Predicate
 from panel_flowdash.ui.controls_bar import compact_inputs
-
-if t.TYPE_CHECKING:
-    from panel_flowdash.selection import Predicate
 
 logger = logging.getLogger(__name__)
 
@@ -63,16 +66,6 @@ _REMOVE_CSS = """
 """
 
 
-def _plain(value: t.Any) -> t.Any:
-    if isinstance(value, pd.Timestamp):
-        value = value.to_pydatetime()
-    if isinstance(value, dt.datetime):
-        return value.isoformat()
-    if isinstance(value, dt.date):
-        return value.isoformat()
-    return value.item() if hasattr(value, "item") else value
-
-
 class GlobalFilters(param.Parameterized):
     """The global filters of a :class:`~panel_flowdash.editor.FlowDash` editor and the views they reach."""
 
@@ -86,12 +79,25 @@ class GlobalFilters(param.Parameterized):
         default=0, doc="Bumped when the data of a view changes, so filter choices are read again."
     )
 
+    shared = param.List(
+        default=[],
+        doc="""
+        The Filter nodes feeding every view, as (instance id, title). The
+        filter bar shows them once instead of a chip on each tile.""",
+    )
+
     def __init__(self, editor, **params):
         super().__init__(**params)
         self._editor = weakref.ref(editor)
         # The predicates handed to each view, by instance id.
         self._applied: dict[str, dict[str, Predicate]] = {}
         self._notes: dict[str, tuple] = {}
+        # Why a filter could not be applied to an input of a view, by view, input and column.
+        self._mismatched: dict[str, dict[str, dict[str, str]]] = {}
+        # What apply() last worked out, which the notes of a single view reuse.
+        self._active: dict[str, Predicate] = {}
+        self._targets: set[str] = set()
+        self._chips: dict[str, list[tuple[str, str]]] = {}
         self.param.watch(lambda *_: self.apply(), ["filters", "values"])
 
     @property
@@ -123,9 +129,19 @@ class GlobalFilters(param.Parameterized):
             self.values = values
 
     def set_value(self, column: str, value: t.Any):
-        """Change the current value of the filter on *column*, e.g. as the viewer chose it."""
-        if column not in {f["column"] for f in self.filters}:
+        """Change the current value of the filter on *column*, e.g. as the viewer chose it.
+
+        Raises
+        ------
+        KeyError
+            If the dashboard has no filter on *column*.
+        FilterError
+            If *value* is not one the filter's widget takes.
+        """
+        entry = self.entry(column)
+        if entry is None:
             raise KeyError(f"The dashboard has no filter on {column!r}.")
+        value = check_value(value, self.widget(entry), f"filters.{column}.value")
         if self.values.get(column) != value:
             self.values = {**self.values, column: value}
 
@@ -231,13 +247,14 @@ class GlobalFilters(param.Parameterized):
             return sorted(options, key=str)
 
     def span(self, column: str) -> tuple | None:
-        """Return the smallest and largest value a range filter on *column* spans."""
-        spans = [column_span(self.frames(), column)]
+        """Return the smallest and largest value a range filter on *column* spans.
+
+        Views whose column cannot be compared with the others', e.g. text
+        where most hold numbers, are left out.
+        """
+        spans = [column_span([frame], column) for frame in self.frames()]
         spans += [tuple(v) for v in self._declared_values(column) if len(v) == 2]
-        spans = [s for s in spans if s is not None]
-        if not spans:
-            return None
-        return min(s[0] for s in spans), max(s[1] for s in spans)
+        return comparable_span(spans)
 
     def available_columns(self) -> list[str]:
         """Return the columns of the views' data that have no filter yet, for adding one."""
@@ -253,14 +270,47 @@ class GlobalFilters(param.Parameterized):
             return {}
         return self._applied[instance_id]
 
+    def _filtered(
+        self, instance_id: str, values: dict[str, t.Any], predicates: dict[str, Predicate]
+    ) -> dict[str, t.Any]:
+        """Filter the DataFrames among *values*, noting the filters a view's column cannot take."""
+        mismatched = self._mismatched.setdefault(instance_id, {})
+        filtered = {}
+        for name, value in values.items():
+            try:
+                filtered[name], problems = filter_frame_checked(value, predicates)
+            except Exception as exc:
+                logger.error("Filtering input %r of %r failed: %s", name, instance_id, exc)
+                filtered[name], problems = value, {}
+            if problems:
+                mismatched[name] = problems
+            else:
+                mismatched.pop(name, None)
+        if not mismatched:
+            self._mismatched.pop(instance_id, None)
+        return filtered
+
+    def mismatched(self, instance_id: str) -> dict[str, str]:
+        """Return why the filters a view's data cannot be compared with were not applied, by column."""
+        reasons: dict[str, str] = {}
+        for problems in self._mismatched.get(instance_id, {}).values():
+            for column, reason in problems.items():
+                reasons.setdefault(column, reason)
+        return reasons
+
     def filter_inputs(self, instance_id: str, values: dict[str, t.Any]) -> dict[str, t.Any]:
-        """Return the input *values* of a view with its global filters applied to its DataFrames."""
+        """Return the input *values* of a view with its global filters applied to its DataFrames.
+
+        A filter a column cannot be compared with, e.g. a range of numbers on
+        text, is left out for that view, whose tile then says so.
+        """
         predicates = self._applied.get(instance_id)
-        if predicates:
-            instance = self.editor._component_instances.get(instance_id)
-            if not accepts_filters(instance):
-                values = {name: filter_frame(v, predicates) for name, v in values.items()}
-        return values
+        if not predicates:
+            return values
+        instance = self.editor._component_instances.get(instance_id)
+        if accepts_filters(instance):
+            return values
+        return self._filtered(instance_id, values, predicates)
 
     def inputs_changed(self, instance_id: str, names: t.Iterable[str]):
         """Note that new values arrived at a view's inputs, which may change its columns and notes."""
@@ -272,7 +322,7 @@ class GlobalFilters(param.Parameterized):
         ):
             return
         self.revision += 1
-        if instance_id in self._applied or instance_id in self._notes:
+        if instance_id in self._targets:
             self._sync_notes(instance_id)
 
     def apply(self):
@@ -280,8 +330,9 @@ class GlobalFilters(param.Parameterized):
         editor = self.editor
         if editor is None:
             return
-        active = self.active()
-        targets = set(self.targets()) if self.filters else set()
+        active = self._active = self.active()
+        shown = self.targets()
+        targets = set(shown) if self.filters else set()
         for iid, instance in list(editor._component_instances.items()):
             reaching = {}
             if iid in targets:
@@ -302,7 +353,9 @@ class GlobalFilters(param.Parameterized):
         for iid in list(self._applied):
             if iid not in editor._component_instances:
                 del self._applied[iid]
-        for iid in set(self._notes) | targets:
+        self._targets = set(shown)
+        self._sync_chips(shown)
+        for iid in set(self._notes) | self._targets:
             self._sync_notes(iid)
 
     def _hand_over(self, instance_id: str, instance, predicates: dict[str, Predicate]):
@@ -319,8 +372,9 @@ class GlobalFilters(param.Parameterized):
             if isinstance(value, pd.DataFrame) and name in instance.param
         }
         if not inputs:
+            self._mismatched.pop(instance_id, None)
             return
-        values = {name: filter_frame(v, predicates) for name, v in inputs.items()}
+        values = self._filtered(instance_id, inputs, predicates)
         try:
             instance.param.update(values)
         except Exception as exc:
@@ -331,21 +385,29 @@ class GlobalFilters(param.Parameterized):
         """Drop what is kept about a node that went away."""
         self._applied.pop(instance_id, None)
         self._notes.pop(instance_id, None)
+        self._mismatched.pop(instance_id, None)
+        self._chips.pop(instance_id, None)
 
     # ------------------------------------------------------------------
     # Notes on tiles
     # ------------------------------------------------------------------
 
-    def local_filters(self, instance_id: str) -> list[str]:
+    def _sources(self) -> dict[str, list[str]]:
+        sources: dict[str, list[str]] = {}
+        for edge in self.editor._dataflow_graph.edges:
+            sources.setdefault(edge["target"], []).append(edge["source"])
+        return sources
+
+    def local_filters(
+        self, instance_id: str, sources: dict[str, list[str]] | None = None
+    ) -> list[str]:
         """Return the instance ids of the Filter nodes upstream of a view, nearest first.
 
         A Filter node is a transform tagged ``filter``, such as the built-in filter by selection.
         """
         editor = self.editor
         items = {i["instance_id"]: i for i in editor._tile_items}
-        sources: dict[str, list[str]] = {}
-        for edge in editor._dataflow_graph.edges:
-            sources.setdefault(edge["target"], []).append(edge["source"])
+        sources = self._sources() if sources is None else sources
         found, seen, queue = [], {instance_id}, list(sources.get(instance_id, ()))
         while queue:
             iid = queue.pop(0)
@@ -361,18 +423,44 @@ class GlobalFilters(param.Parameterized):
                 found.append(iid)
         return found
 
-    def notes(self, instance_id: str) -> tuple[list[tuple[str, str]], str, str]:
-        """Return the chips of a view's local filters (id, title), its hint and the hint's detail."""
+    def _sync_chips(self, shown: list[str]):
+        """Work out the Filter nodes of each view, and those every view with data shares.
+
+        A Filter node feeding every view would put the same chip on each
+        tile, so the filter bar shows it once instead.
+        """
         editor = self.editor
-        chips = [(iid, editor._instance_title(iid)) for iid in self.local_filters(instance_id)]
+        sources = self._sources()
+        chips = {}
+        for iid in shown:
+            chips[iid] = [(n, editor._instance_title(n)) for n in self.local_filters(iid, sources)]
+        data_views = [iid for iid in shown if self.columns(iid) is not None]
+        shared: list[tuple[str, str]] = []
+        if len(data_views) > 1:
+            first = chips[data_views[0]]
+            shared = [c for c in first if all(c in chips[iid] for iid in data_views[1:])]
+        self._chips = {iid: [c for c in found if c not in shared] for iid, found in chips.items()}
+        if shared != self.shared:
+            self.shared = shared
+
+    def notes(self, instance_id: str) -> tuple[list[tuple[str, str]], str, str]:
+        """Return the chips of a view's own Filter nodes (id, title), its hint and the hint's detail.
+
+        Filter nodes every view shares are left out, see :attr:`shared`.
+        Reuses what :meth:`apply` last worked out, so a tile costs no more than its own view.
+        """
+        chips = self._chips.get(instance_id, [])
         hint = detail = ""
-        if instance_id in set(self.targets()):
+        if instance_id in self._targets:
             columns = self.columns(instance_id)
-            instance = editor._component_instances.get(instance_id)
+            instance = self.editor._component_instances.get(instance_id)
             if columns is not None or accepts_filters(instance):
-                _, skipped = resolve_view(self.filters, self.active(), instance_id, columns)
+                mismatched = self.mismatched(instance_id)
+                _, skipped = resolve_view(
+                    self.filters, self._active, instance_id, columns, mismatched
+                )
                 hint = hint_text(self.filters, skipped)
-                detail = hint_detail(self.filters, skipped)
+                detail = hint_detail(self.filters, skipped, mismatched)
         return chips, hint, detail
 
     def _sync_notes(self, instance_id: str):
@@ -401,6 +489,7 @@ class FilterBar(Viewer):
         self._widgets: dict[str, tuple[t.Any, pn.Column]] = {}
         self._syncing = False
         self._pending = False
+        self._chips: dict[tuple[str, str], pmui.Chip] = {}
         self._add = pmui.MenuButton(
             label="Add filter",
             icon="filter_alt",
@@ -421,7 +510,7 @@ class FilterBar(Viewer):
             sizing_mode="stretch_width",
             css_classes=["fd-filter-bar"],
         )
-        self.filters.param.watch(self._on_filters, ["filters", "revision"])
+        self.filters.param.watch(self._on_filters, ["filters", "revision", "shared"])
         self.filters.param.watch(self._on_values, "values")
         self.sync()
 
@@ -435,7 +524,7 @@ class FilterBar(Viewer):
 
     def _on_filters(self, *events):
         # New data arrives at every view in turn, so the choices are read again once for all.
-        if any(e.name == "filters" for e in events):
+        if any(e.name in ("filters", "shared") for e in events):
             self.sync()
             return
         doc = pn.state.curdoc
@@ -453,7 +542,10 @@ class FilterBar(Viewer):
         self._syncing = True
         try:
             for column, (widget, _) in self._widgets.items():
-                self._show_value(widget, self.filters.values.get(column))
+                try:
+                    self._show_value(widget, self.filters.values.get(column))
+                except (TypeError, ValueError) as exc:
+                    logger.warning("Cannot show the filter on %r: %s", column, exc)
         finally:
             self._syncing = False
 
@@ -496,6 +588,9 @@ class FilterBar(Viewer):
             try:
                 self._update_choices(widget, entry, kind)
                 self._show_value(widget, state.values.get(column))
+            except (TypeError, ValueError) as exc:
+                # One filter whose values do not suit its widget must not take the bar down.
+                logger.warning("Cannot show the filter on %r: %s", column, exc)
             finally:
                 self._syncing = False
             objects.append(wrapper)
@@ -506,9 +601,31 @@ class FilterBar(Viewer):
         self._add.visible = bool(available)
         if self._add.visible:
             objects.append(self._add)
+        objects += self._shared_chips(state.shared)
         if list(self._row) != objects:
             self._row[:] = objects
         self.has_content = bool(objects)
+
+    def _shared_chips(self, shared: list) -> list:
+        """Return a chip for each Filter node feeding every view, reusing those already made."""
+        chips = []
+        for iid, title in shared:
+            chip = self._chips.get((iid, title))
+            if chip is None:
+                chip = self._chips[(iid, title)] = pmui.Chip(
+                    label=f"{title} · all views",
+                    icon="filter_alt",
+                    color="default",
+                    size="small",
+                    variant="outlined",
+                    description=f"Every view is filtered by {title}",
+                    margin=(10, 10),
+                    align="center",
+                    css_classes=["fd-filter-shared"],
+                )
+            chips.append(chip)
+        self._chips = {key: c for key, c in self._chips.items() if key in set(map(tuple, shared))}
+        return chips
 
     def _make_widget(self, entry: dict, kind: str):
         label = filter_label(entry)
@@ -517,7 +634,9 @@ class FilterBar(Viewer):
             span = self.filters.span(column)
             dates = span is not None and isinstance(span[0], (dt.date, pd.Timestamp))
             cls = pmui.DateRangeSlider if dates else pmui.RangeSlider
-            widget = cls(label=label, width=_FILTER_WIDTH, margin=(10, 10), size="small")
+            # A date slider needs its bounds from the start.
+            bounds = {"start": span[0], "end": span[1], "value": span} if dates else {}
+            widget = cls(label=label, width=_FILTER_WIDTH, margin=(10, 10), size="small", **bounds)
             widget.param.watch(lambda event: self._on_widget(column, event), "value_throttled")
         else:
             widget = pmui.MultiChoice(
@@ -561,21 +680,25 @@ class FilterBar(Viewer):
             if widget.value != value:
                 widget.value = value
             return
-        if widget.disabled:
-            return
         start, end = widget.start, widget.end
+        if widget.disabled or start is None or end is None:
+            return
+        target = (start, end)
         if value is not None:
-            lo, hi = value
-            parse = (
-                dt.datetime.fromisoformat
-                if isinstance(widget, pmui.DateRangeSlider)
-                else (lambda v: v)
+            kind = "pydatetime" if isinstance(widget, pmui.DateRangeSlider) else "number"
+            try:
+                bounds = coerce_predicate(
+                    Predicate("value", "range", tuple(value)),
+                    pd.Series([start], dtype=object)
+                    if kind == "pydatetime"
+                    else pd.Series([start]),
+                ).values
+            except (FilterMismatch, TypeError, ValueError):
+                bounds = (None, None)
+            target = tuple(
+                limit if bound is None else min(max(bound, start), end)
+                for bound, limit in zip(bounds, (start, end), strict=True)
             )
-            lo = start if lo is None else parse(lo)
-            hi = end if hi is None else parse(hi)
-            target = (lo, hi)
-        else:
-            target = (start, end)
         if tuple(widget.value or ()) != target:
             widget.value = target
 
@@ -588,7 +711,7 @@ class FilterBar(Viewer):
         elif value is not None:
             lo, hi = value
             start, end = event.obj.start, event.obj.end
-            value = None if (lo, hi) == (start, end) else [_plain(lo), _plain(hi)]
+            value = None if (lo, hi) == (start, end) else [plain_value(lo), plain_value(hi)]
         self.filters.set_value(column, value)
 
     def _on_add(self, item):

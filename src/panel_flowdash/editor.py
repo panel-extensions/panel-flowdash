@@ -3537,7 +3537,11 @@ class FlowDash(Viewer):
             # Inputs changed together arrive together, so the component runs once.
             values = {event.name: event.new for event in events}
             if (owner := editor()) is not None:
-                values = owner._global_filters.filter_inputs(node_id, values)
+                try:
+                    values = owner._global_filters.filter_inputs(node_id, values)
+                except Exception as exc:
+                    # A global filter must never keep a view from its data.
+                    logger.error("Global filters of %r failed: %s", node_id, exc)
             try:
                 instance.param.update(values)
                 if (owner := editor()) is not None:
@@ -6292,6 +6296,9 @@ class FlowDash(Viewer):
         if turn is not None:
             self._history.record(op, args or {}, label_for(labels), turn)
             self.param.trigger("edited")
+        if not self._hydrating:
+            # A new connection can put a view behind a Filter node, or give it other columns.
+            self._global_filters.apply()
         return turn
 
     def _note_turn(self, *labels: str) -> DashboardTurn:
