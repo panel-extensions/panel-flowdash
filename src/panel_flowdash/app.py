@@ -42,6 +42,11 @@ from panel_flowdash.auth import (
     resolve_identity,
 )
 from panel_flowdash.component_library import merge_libraries
+from panel_flowdash.component_settings import (
+    approval_ids,
+    placement_refusal,
+    project_components,
+)
 from panel_flowdash.dashboard_store import (
     BaseDashboardStore,
     DashboardModel,
@@ -509,6 +514,7 @@ class FlowDashApp(Viewer):
         "authorize_dashboard",
         "components",
         "include_page_dialog",
+        "refuse_placement",
         "store",
         "user",
     )
@@ -555,6 +561,8 @@ class FlowDashApp(Viewer):
             self._configured_admins(),
         )
         self._admin_page: AdminPage | None = None
+        # Whether this session became admin through the admin link.
+        self._admin_by_token = False
         # Views of the open dashboard's sidebar components, shown after `sidebar`.
         self._sidebar_views: list = []
         self._sidebar_open_before_fullscreen: bool | None = None
@@ -894,6 +902,7 @@ class FlowDashApp(Viewer):
                 return
             if user:
                 self._notify("success", f"{user} is now an admin of this project.")
+        self._admin_by_token = True
         if self._is_admin:
             return
         self._is_admin = True
@@ -901,6 +910,30 @@ class FlowDashApp(Viewer):
             self._shell.refresh()
         if location is not None and (location.pathname or "").startswith(ADMIN_ROUTE):
             pn.state.execute(self._load_page_layout)
+
+    def _still_admin(self) -> bool:
+        """Whether this session is still an admin, with the project file read again.
+
+        Asked before every action that changes or removes someone else's
+        dashboards, so an admin removed meanwhile cannot finish one from a
+        page they still have open.
+        """
+        if not self._is_admin:
+            return False
+        if self._admin_by_token:
+            return True
+        try:
+            permissions = self._read_permissions()
+        except PermissionsUnavailable:
+            return False
+        config = effective_auth_config(
+            self._code_auth_config, permissions, self._auth_code_fields()
+        )
+        try:
+            admins = project_admins(self._settings_project(), fresh=True)
+        except OSError:
+            admins = []
+        return is_admin(self._identity, config.admin_groups, admins)
 
     def _on_admin_saved(self, section: str):
         if section == "theme":
@@ -1089,6 +1122,22 @@ class FlowDashApp(Viewer):
         widgets) usable. Never imports, like :meth:`_can_access_entry`.
         """
         return entry_authorized(entry, self._identity, default_allow=True, load=False)
+
+    def _component_settings(self) -> dict[str, dict[str, t.Any]]:
+        """Return the project file's ``components`` section as it is now."""
+        try:
+            return project_components(self._settings_project())
+        except (ProjectError, OSError) as exc:
+            logger.warning("Not using the project file's component settings: %s", exc)
+            return {}
+
+    def _placement_refusal(self, component_id: str) -> str | None:
+        """Return why the current identity may not add *component_id* to a dashboard, or None."""
+        return placement_refusal(self._component_settings(), component_id, self._identity)
+
+    def _approval_components(self) -> list[str]:
+        """Return the components the project file says the agent needs approval to place."""
+        return approval_ids(self._component_settings())
 
     @staticmethod
     def _unresolved(entry: RegistryEntry) -> bool:
@@ -1297,6 +1346,7 @@ class FlowDashApp(Viewer):
         editor = self.editor_class(
             authorize_component=self._can_use_component,
             authorize_dashboard=self._authorize_dashboard,
+            refuse_placement=self._placement_refusal,
             components=self._registry,
             include_page_dialog=False,
             store=self.store,
@@ -1671,6 +1721,22 @@ class FlowDashApp(Viewer):
             self._unsaved_dialog,
             *self._page_dialogs,
         ]
+        self._note_opened(dashboard_id)
+        opening = (parse_qs((search or "").lstrip("?")).get("open") or [None])[0]
+        if opening is not None:
+            pn.state.execute(partial(self._open_on_load, opening, edit), schedule=True)
+
+    def _open_on_load(self, what: str, edit: bool):
+        """Open what a dashboard link's ``open`` asks for: ``settings`` or ``history``."""
+        if what == "settings" and edit:
+            self._editor._settings_view.show("general")
+        elif what == "history" and self._agent_session is not None:
+            self._agent_session.drawer.open = True
+
+    def _note_opened(self, dashboard_id: str):
+        if pn.state.curdoc is None or pn.state.curdoc.session_context is None:
+            return
+        self._usage_ledger().opened(dashboard_id)
 
     def _create_new_dashboard(self, title_str: str) -> bool:
         """Create a dashboard and open it for editing, returning whether it was created."""

@@ -125,13 +125,14 @@ def _sized(obj, width: str):
 class Table(pn.viewable.Viewer):
     """A table of Panel components in an outlined box, with a header row and an optional footer.
 
-    *columns* pairs each title with its width: ``"64px"`` or a share of what
-    is left, ``"2fr"``. Each row is a sequence of components, one per column.
+    *columns* pairs each title (text, or a component such as a select-all
+    checkbox) with its width: ``"64px"`` or a share of what is left,
+    ``"2fr"``. Each row is a sequence of components, one per column.
     """
 
     def __init__(
         self,
-        columns: Sequence[tuple[str, str]],
+        columns: Sequence[tuple[t.Any, str]],
         *,
         toolbar: t.Any = None,
         footer: t.Any = None,
@@ -143,7 +144,12 @@ class Table(pn.viewable.Viewer):
         self._empty = empty
         header = pn.Row(
             *(
-                _sized(pmui.Typography(title, sx=_HEADER_SX, margin=0), width)
+                _sized(
+                    pmui.Typography(title, sx=_HEADER_SX, margin=0)
+                    if isinstance(title, str)
+                    else title,
+                    width,
+                )
                 for title, width in self._columns
             ),
             margin=0,

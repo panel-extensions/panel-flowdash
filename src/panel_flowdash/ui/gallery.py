@@ -579,7 +579,7 @@ class ComponentGallery(Viewer):
         return {
             cid: entry
             for cid, entry in app._component_entries.items()
-            if app._can_use_component(entry)
+            if app._can_use_component(entry) and app._editor._placement_refusal(cid) is None
         }
 
     def _page_path(self, cid: str) -> str | None:

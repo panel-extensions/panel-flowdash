@@ -12,8 +12,8 @@ metrics:          # read by the extension that registered `metrics`
     sum: capacity_mw
 ```
 
-FlowDash registers `general`, `theme`, `ai` and `permissions`, which the
-admin view edits;
+FlowDash registers `general`, `theme`, `ai`, `permissions` and
+`components`, which the admin view edits;
 extensions add theirs, see
 [Add a Project File Section](../how-to/project-sections.md).
 
@@ -107,6 +107,32 @@ permissions:
     - tool: run_sql
       enabled: false
 ```
+
+The `components` section turns components off and limits who may place
+them. A component turned off is left out of the component list, the
+command palette and the agent's components, and nobody can add it to a
+dashboard; dashboards that already have it keep working, and their editors
+are told when they open one. `placed_by` limits adding it to members of
+those groups, without changing who may view or edit dashboards that have
+it, and `approval: true` adds it to `agent_sensitive_components`. The
+admin view's Components page saves each change as it is made.
+
+```yaml
+components:
+  panel_flowdash/image:
+    enabled: false
+  wind_maps/turbine_map:
+    placed_by: [analysts]
+    approval: true
+```
+
+The admin view's Dashboards page works on the dashboard store rather than
+the project file: it lists every dashboard with its owner, history and
+access, and lets admins share, change the owner of, download, prune the
+history of and delete several at once. Each change asks for confirmation,
+checks again that the caller is an admin, and is noted with who made it
+and when in the admin log in `.flowdash/usage.json`, which also records
+when each dashboard was last opened.
 
 Without a project file the admin view writes `flowdash.yaml` in the project
 directory on the first save.

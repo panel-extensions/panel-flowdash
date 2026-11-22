@@ -13,8 +13,10 @@ from panel.viewable import Viewer
 
 from panel_flowdash.admin import (
     ai as _ai,  # noqa: F401  (registers the ai section)
+    components as _components,  # noqa: F401
     permissions as _permissions,  # noqa: F401
 )
+from panel_flowdash.admin.dashboards import DASHBOARDS
 from panel_flowdash.admin.form import SettingsForm, using_app
 from panel_flowdash.admin.sections import BUILTIN_SECTIONS
 from panel_flowdash.project import Project, ProjectSection, sections
@@ -75,8 +77,13 @@ _SAVED_ICON = (
 
 
 def admin_sections() -> list[ProjectSection]:
-    """Return the sections with a settings view: the built-in ones first, then by group and title."""
+    """Return the sections with a settings view: the built-in ones first, then by group and title.
+
+    Dashboards, which works on the dashboard store rather than the project
+    file, is listed with them.
+    """
     registered = [s for s in sections().values() if s.settings_view is not None]
+    registered.append(DASHBOARDS)
     builtin = [s for name in BUILTIN_SECTIONS for s in registered if s.name == name]
     others = sorted(
         (s for s in registered if s.name not in BUILTIN_SECTIONS),

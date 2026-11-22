@@ -341,6 +341,15 @@ class JSONFolderDashboardStore(BaseDashboardStore):
             self._write(dataclasses.replace(model, permission=permission))
         return True
 
+    def set_owner(self, dashboard_id: str, owner: str) -> bool:
+        self._check_writable()
+        with self._locked():
+            model = self._load_any(dashboard_id)
+            if model is None:
+                return False
+            self._write(dataclasses.replace(model, user_id=owner))
+        return True
+
     def create_dashboard(self, user_id: str, title: str) -> DashboardModel:
         self._check_writable()
         slug = _slug(title) or "dashboard"

@@ -416,6 +416,8 @@ class DashboardOps:
         entries = self.editor._component_entries
         listed = []
         for cid, spec in self._authorized_specs().items():
+            if self.editor._placement_refusal(cid) is not None:
+                continue
             text = " ".join([cid, spec.title, spec.description or "", *spec.tags]).lower()
             if all(word in text for word in words):
                 listed.append(component_schema(spec, control=entries[cid].metadata.sidebar))
@@ -725,12 +727,43 @@ class DashboardOps:
             else i
             for i in issues
         ]
+        issues += self._refused_nodes(doc, standalone)
         if checks:
             for path, spec, config, inputs, stored in self._doc_checks(doc, issues, standalone):
                 problems = run_check_sync(
                     spec, config, inputs, editor=editor, timeout=self.check_timeout, stored=stored
                 )
                 issues += _check_issues(path, problems)
+        return issues
+
+    def _refused_nodes(self, doc: dict, standalone: bool) -> list[Issue]:
+        """Return an error for each node *doc* adds of a component the user may not add.
+
+        A node the canvas already has under that name, of that component, is
+        left alone: dashboards keep the components an admin turned off since.
+        """
+        editor = self.editor
+        placed = {}
+        if not standalone:
+            names = self._names()
+            placed = {
+                names[item["instance_id"]]: editor._resolve_component_id(item["component_id"])
+                for item in editor._tile_items
+                if item["instance_id"] in names
+            }
+        issues = []
+        for name, node in (doc.get("nodes") or {}).items():
+            if not isinstance(node, dict) or not isinstance(node.get("component"), str):
+                continue
+            cid = editor._resolve_component_id(node["component"])
+            if cid not in editor._component_entries or placed.get(name) == cid:
+                continue
+            refusal = editor._placement_refusal(cid)
+            if refusal is not None:
+                title = editor._component_entries[cid].title
+                issues.append(
+                    Issue(f"nodes.{name}.component", f"'{title}' can't be added: {refusal}.")
+                )
         return issues
 
     def _doc_checks(
@@ -1160,6 +1193,9 @@ class DashboardOps:
         component_id = self.editor._resolve_component_id(component)
         if component_id not in specs:
             raise OperationError(f"Unknown component '{component}'." + _suggest(component, specs))
+        refusal = self.editor._placement_refusal(component_id)
+        if refusal is not None:
+            raise OperationError(f"'{specs[component_id].title}' can't be added: {refusal}.")
         spec = specs[component_id]
         return spec, self._check_config(spec, config or {})
 

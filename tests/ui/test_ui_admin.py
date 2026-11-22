@@ -7,9 +7,10 @@ from urllib.parse import urlparse
 import pytest
 from panel.tests.util import wait_until
 
-from panel_flowdash import MemoryDashboardStore
+from panel_flowdash import MemoryDashboardStore, register
 from panel_flowdash.admin import access
 from panel_flowdash.app import FlowDashApp
+from panel_flowdash.component_library import normalize_components
 from panel_flowdash.project import PROJECT_FILE, load_project
 
 from .util import serve_component
@@ -20,14 +21,14 @@ expect = pytest.importorskip("playwright.sync_api").expect
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
 
-def _serve(page, tmp_path, suffix="/admin", admin=True, **params):
-    store = MemoryDashboardStore()
+def _serve(page, tmp_path, suffix="/admin", admin=True, store=None, registry=None, **params):
+    store = store if store is not None else MemoryDashboardStore()
     if admin:
         (tmp_path / PROJECT_FILE).write_text(f"general:\n  admins: [{getpass.getuser()}]\n")
 
     def factory():
         return FlowDashApp(
-            registry={},
+            registry=registry or {},
             project_dir=tmp_path,
             store=store,
             notifications=False,
@@ -46,8 +47,12 @@ def _serve(page, tmp_path, suffix="/admin", admin=True, **params):
 
 
 def _rail(page, label):
-    return page.get_by_role("button", name=label, exact=True).or_(
-        page.get_by_role("link", name=label, exact=True)
+    # Within the rail: the admin section list repeats some labels, e.g. Components.
+    rail = page.get_by_role("navigation")
+    return (
+        rail.get_by_role("button", name=label, exact=True)
+        .or_(rail.get_by_role("link", name=label, exact=True))
+        .first
     )
 
 
@@ -209,3 +214,121 @@ def test_a_project_file_whose_permissions_cannot_be_read_denies_access(page, tmp
     _serve(page, tmp_path, suffix="/", admin=False)
     expect(page.get_by_text("Access is denied.")).to_be_visible()
     expect(page.get_by_text("cannot be read")).to_be_visible()
+
+
+@register(page=False, component=True, title="Turbine Map", tags=["map"])
+def turbine_map(config):
+    return "turbine map"
+
+
+@register(page=False, component=True, title="Image", tags=["media"])
+def image(config):
+    return "image"
+
+
+REGISTRY = normalize_components({"Views/turbine_map": turbine_map, "Views/image": image})
+
+
+def _components(tmp_path):
+    return load_project(tmp_path / PROJECT_FILE).get("components")
+
+
+def test_turning_a_component_off_hides_it_from_the_component_list(page, tmp_path):
+    _serve(page, tmp_path, suffix="/admin/components", registry=REGISTRY)
+    table = page.locator(".flowdash-admin-components")
+    expect(table).to_contain_text("Turbine Map")
+    page.locator(".flowdash-admin-row-views-image .MuiSwitch-root").click()
+    wait_until(lambda: _components(tmp_path) == {"Views/image": {"enabled": False}}, page)
+    expect(page.locator(".filter-off")).to_contain_text("Off 1")
+
+    _rail(page, "Components").click()
+    wait_until(lambda: urlparse(page.url).path == "/components", page)
+    cards = page.locator(".flowdash-gallery-card")
+    expect(cards.filter(has_text="Turbine Map")).to_have_count(1)
+    expect(cards.filter(has_text="Image")).to_have_count(0)
+
+
+def test_the_component_drawer_saves_who_needs_approval(page, tmp_path):
+    _serve(page, tmp_path, suffix="/admin/components", registry=REGISTRY)
+    page.locator(".flowdash-admin-row-views-turbine-map").get_by_text("Turbine Map").click()
+    drawer = page.locator(".flowdash-admin-component-drawer")
+    expect(drawer).to_be_visible()
+    expect(drawer).to_contain_text("Views/turbine_map")
+    expect(drawer).to_contain_text("No presets")
+    drawer.locator(".MuiSwitch-root").click()
+    drawer.get_by_role("button", name="Done").click()
+    expect(drawer).to_be_hidden()
+    wait_until(lambda: _components(tmp_path) == {"Views/turbine_map": {"approval": True}}, page)
+    expect(page.locator(".flowdash-admin-row-views-turbine-map")).to_contain_text("Approval")
+
+
+def _dashboards(*specs):
+    store = MemoryDashboardStore()
+    models = [store.create_dashboard(owner, title) for owner, title in specs]
+    return store, models
+
+
+def _row(page, model):
+    return page.locator(f".flowdash-admin-row-{model.dashboard_id}")
+
+
+def test_bulk_delete_asks_first_and_deletes_for_everyone(page, tmp_path):
+    store, (a, b, keep) = _dashboards(("ana", "Fleet"), ("bo", "Old ops"), ("cy", "Keep"))
+    _serve(page, tmp_path, suffix="/admin/dashboards", store=store)
+    for model in (a, b):
+        _row(page, model).locator("input[type=checkbox]").check()
+    bulk = page.locator(".flowdash-admin-bulk")
+    expect(bulk).to_contain_text("2 selected")
+
+    bulk.get_by_role("button", name="Delete").click()
+    dialog = page.get_by_role("dialog")
+    expect(dialog).to_contain_text("Delete 2 dashboards?")
+    dialog.get_by_role("button", name="Cancel").click()
+    expect(dialog).to_be_hidden()
+    assert len(store._all_dashboards()) == 3
+
+    bulk.get_by_role("button", name="Delete").click()
+    dialog.get_by_role("button", name="Delete 2 dashboards").click()
+    expect(_row(page, a)).to_have_count(0)
+    expect(_row(page, keep)).to_be_visible()
+    assert [m.dashboard_id for m in store._all_dashboards()] == [keep.dashboard_id]
+    expect(page.locator(".flowdash-admin-dashboards-section")).to_contain_text(
+        f"{getpass.getuser()} deleted"
+    )
+
+
+def test_change_owner_and_prune_history_from_the_bulk_bar(page, tmp_path):
+    store, (model,) = _dashboards(("ana", "Fleet"))
+    for i in range(5):
+        store.append_history(
+            model.dashboard_id,
+            {"type": "ARTIFACT_PUBLISHED", "value": "x", "metadata": {"version_id": f"v{i}"}},
+        )
+    _serve(page, tmp_path, suffix="/admin/dashboards", store=store)
+    row = _row(page, model)
+    expect(row).to_contain_text("ana")
+    row.locator("input[type=checkbox]").check()
+    bulk = page.locator(".flowdash-admin-bulk")
+
+    bulk.get_by_role("button", name="Change owner").click()
+    dialog = page.get_by_role("dialog")
+    dialog.get_by_label("New owner").fill("bo")
+    dialog.get_by_role("button", name="Change owner").click()
+    expect(dialog).to_be_hidden()
+    wait_until(lambda: store.get_owner(model.dashboard_id) == "bo", page)
+    expect(row).to_contain_text("bo")
+
+    row.locator("input[type=checkbox]").check()
+    bulk.get_by_role("button", name="Prune history").click()
+    dialog.get_by_label("Versions to keep").fill("2")
+    dialog.get_by_role("button", name="Prune history").click()
+    expect(dialog).to_be_hidden()
+    wait_until(lambda: len(store.load_history(model.dashboard_id)) == 2, page)
+
+
+def test_someone_who_is_not_an_admin_cannot_open_the_dashboards_section(page, tmp_path):
+    store, _models = _dashboards(("ana", "Secret plans"))
+    (tmp_path / PROJECT_FILE).write_text("general:\n  admins: [someone-else]\n")
+    _serve(page, tmp_path, suffix="/admin/dashboards", admin=False, store=store)
+    expect(page.get_by_text("You don't have access to Admin")).to_be_visible()
+    expect(page.get_by_text("Secret plans")).to_have_count(0)
