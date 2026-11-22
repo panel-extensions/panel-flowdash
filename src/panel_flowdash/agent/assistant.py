@@ -45,8 +45,8 @@ How to work:
   and the other operations, and fix problems with them too. Write the whole
   YAML (checked with validate_dashboard, loaded with replace_dashboard) only
   to rewrite most of an existing dashboard, never just to set positions, the
-  layout or the title: those are automatic, and only the user can rename a
-  dashboard.
+  layout or the title: positions and the layout are automatic, and set_title
+  renames a dashboard.
 - Make independent changes together, as parallel tool calls in one step: add
   every node a request needs at once, then make all their connections at
   once, then the remaining config changes, instead of one call per step.
@@ -80,6 +80,19 @@ _REPORT = """\
   run_pending answers one now. Read your text back with report_text.
 """
 
+_TITLE = """\
+- Give a dashboard you build a title with set_title, and rename it with
+  set_title when asked, rather than adding a heading for its name.
+"""
+
+_FILTERS = """\
+- When the user asks for a filter, dropdown or slider, add it to the filter
+  bar with add_filter: it filters every view whose data has the column,
+  without nodes or connections. Tell the user which views it cannot filter,
+  as its result says. Build a control that filters only some views only when
+  the user asks for that.
+"""
+
 _SAVING = """\
 - Your edits show on the user's screen as unsaved changes. Save only when the
   user asks to; saving, deleting and sharing wait for the user's approval.
@@ -110,7 +123,9 @@ _REVISION = """\
 # What every agent is told, also one with its own instructions only.
 SAFETY = _SAVING + _RIGHTS + _UNTRUSTED
 
-INSTRUCTIONS = _GENERAL + _REPORT + _SAVING + _COMMANDS + _RIGHTS + _UNTRUSTED + _REVISION
+INSTRUCTIONS = (
+    _GENERAL + _TITLE + _FILTERS + _REPORT + _SAVING + _COMMANDS + _RIGHTS + _UNTRUSTED + _REVISION
+)
 
 #: The report tools whose offer adds the rule about prose to an agent's own instructions.
 _REPORT_WRITERS = ("edit_report", "set_report")
@@ -274,9 +289,11 @@ def create_agent(
         and the catalogue. When replace_dashboard is offered, the rule to
         keep the revision line of get_dashboard's YAML, and to read the
         dashboard again once a replacement is refused as outdated, follows
-        ``SAFETY``, which saves a refused call; when edit_report or
-        set_report is, so does the rule that prose about the dashboard goes
-        in the report rather than in text tiles. The line about the command
+        ``SAFETY``, which saves a refused call; when set_title or
+        add_filter is, so does the rule to title dashboards or to filter
+        them with the filter bar; when edit_report or set_report is, so does
+        the rule that prose about the dashboard goes in the report rather
+        than in text tiles. The line about the command
         palette is left out, since create_agent cannot tell whether a
         session adds those tools.
     catalogue
@@ -305,6 +322,10 @@ def create_agent(
         text = (f"{instructions}\n\n" if instructions else "") + SAFETY
         if tools is None or "replace_dashboard" in tools:
             text += _REVISION
+        if tools is None or "set_title" in tools:
+            text += _TITLE
+        if tools is None or "add_filter" in tools:
+            text += _FILTERS
         if tools is None or any(name in tools for name in _REPORT_WRITERS):
             text += _REPORT
     agent = Agent(

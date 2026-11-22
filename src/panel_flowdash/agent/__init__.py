@@ -28,11 +28,13 @@ from panel_flowdash.agent.yaml_format import (
 _AGENT_NAMES = {
     "ExplorationOps": "exploration",
     "FlowDashDeps": "tools",
+    "LAYOUT_TOOLS": "tools",
     "REPORT_TOOLS": "tools",
     "approval_policy": "tools",
     "create_agent": "assistant",
     "create_explore_agent": "assistant",
     "dashboard_toolset": "tools",
+    "register_local_filter": "tools",
 }
 
 
@@ -55,6 +57,7 @@ def __getattr__(name):
 
 __all__ = [
     "FORMAT_VERSION",
+    "LAYOUT_TOOLS",
     "REPORT_TOOLS",
     "SCHEMA_ID",
     "DashboardOps",
@@ -75,5 +78,6 @@ __all__ = [
     "dashboard_toolset",
     "palette_actions",
     "read_revision",
+    "register_local_filter",
     "validate_dashboard",
 ]

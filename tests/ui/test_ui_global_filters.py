@@ -148,3 +148,75 @@ def test_filters_are_added_in_edit_mode_and_shown_in_the_report(page):
     report = page.locator(".flowdash-report")
     expect(report.locator(".fd-filter-bar").get_by_role("combobox", name="state")).to_be_visible()
     expect(report.get_by_text("By state: 1 rows")).to_be_visible()
+
+
+def test_the_assistant_adds_a_global_filter_that_filters_the_tiles(page):
+    pytest.importorskip("pydantic_ai")
+    import re
+
+    from pydantic_ai import Agent
+
+    from panel_flowdash import MemoryDashboardStore
+    from panel_flowdash.agent import FlowDashDeps, dashboard_toolset
+    from panel_flowdash.app import FlowDashApp
+    from panel_flowdash.auth import resolve_identity
+    from panel_flowdash.component_library import normalize_components
+
+    from ..test_agent_tools import scripted
+
+    components = {"T/Fleet": GFFleet, "T/Regions": GFRegions, "T/Rows": GFRows}
+    store = MemoryDashboardStore()
+    editor = _editor()
+    editor.set_filters([])
+    model = editor.to_model()
+    editor.dispose()
+    created = store.create_dashboard(resolve_identity().user, "Untitled")
+    model.dashboard_id, model.user_id, model.title = (
+        created.dashboard_id,
+        created.user_id,
+        "Untitled",
+    )
+    model.revision = created.revision
+    store.save_dashboard(model)
+    agent = Agent(
+        scripted(
+            ("add_filter", {"column": "state", "label": "State"}),
+            ("set_title", {"title": "Wind fleet"}),
+        ),
+        deps_type=FlowDashDeps,
+        toolsets=[dashboard_toolset()],
+    )
+    apps = []
+
+    def factory():
+        app = FlowDashApp(
+            registry=normalize_components(components),
+            store=store,
+            notifications=False,
+            agent=agent,
+        )
+        apps.append(app)
+        return app
+
+    serve_component(page, {"/dash/[^/]+": factory}, suffix=f"/dash/{created.dashboard_id}")
+    expect(page.get_by_text("By state: 4 rows")).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
+    bar = page.locator(".fd-filter-bar")
+    expect(bar.get_by_role("combobox", name="State")).to_have_count(0)
+
+    page.get_by_role("button", name="Assistant", exact=True).click()
+    chat = page.get_by_placeholder(re.compile("^Ask the agent"))
+    chat.fill("Add a state filter and name the dashboard")
+    chat.press("Enter")
+    page.get_by_text("Done: Titled the dashboard 'Wind fleet'.").wait_for(timeout=20000)
+
+    # The edit opened edit mode on the canvas; the filter bar is over the tiles.
+    page.get_by_role("button", name="Layout", exact=True).click()
+    expect(bar.get_by_role("combobox", name="State")).to_be_visible()
+    _choose(page, "State", "TX")
+    expect(page.get_by_text("By state: 2 rows")).to_be_visible()
+    expect(page.get_by_text("Whole fleet: 2 rows")).to_be_visible()
+    expect(page.get_by_text("Regional: 2 rows")).to_be_visible()
+    expect(page.locator(".flowdash-tile-filter-hint")).to_contain_text("Not filtered by State")
+    expect(page.get_by_text("Wind fleet").first).to_be_visible()
+    assert store._load_any(created.dashboard_id).title == "Wind fleet"
+    assert apps[0]._editor.filters == [{"column": "state", "label": "State", "widget": "select"}]
