@@ -28,7 +28,7 @@ from collections import deque
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
-from functools import partial
+from functools import partial, wraps
 from typing import Any
 
 import param
@@ -182,6 +182,20 @@ def _stack_deeper_than(depth: int) -> bool:
 _iterative_updates = getattr(param, "batch", nullcontext)
 
 
+def _rewires(method):
+    """Mark the graph as wiring while *method* changes what feeds an input, see `DataflowGraph.wiring`."""
+
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        self._wiring_depth += 1
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self._wiring_depth -= 1
+
+    return wrapper
+
+
 # holoviz/param#1232 makes param drop these watchers itself when a reference is
 # overwritten with a plain value.
 _PARAM_RELEASES_REF_WATCHERS = hasattr(param.parameterized.Parameters, "_remove_ref")
@@ -327,6 +341,7 @@ class DataflowGraph:
         self._successors: dict[str, dict[str, int]] = {}
         self._on_error = on_error
         self._batch_depth = 0
+        self._wiring_depth = 0
         self._pending_lists: dict[tuple[str, str], None] = {}
         # Edges replaced inside batch() whose target is rebound only when the
         # pending list inputs are flushed, so they are released after that.
@@ -521,6 +536,11 @@ class DataflowGraph:
         if entry is not None:
             entry[1]()
 
+    @property
+    def wiring(self) -> bool:
+        """Whether an edge or literal is being changed, so the inputs it sets change because of an edit."""
+        return bool(self._wiring_depth)
+
     @contextmanager
     def batch(self) -> Iterator[None]:
         """Defer binding list inputs until the block exits.
@@ -540,6 +560,7 @@ class DataflowGraph:
             if not self._batch_depth:
                 self._flush_pending_lists()
 
+    @_rewires
     def _flush_pending_lists(self, before: str | None = None):
         """Bind the pending list inputs, or only if node *before* is downstream of one."""
         if not self._pending_lists:
@@ -786,6 +807,7 @@ class DataflowGraph:
             return f"Input '{target_port}' rejects the current value of '{source_port}': {reason}"
         return None
 
+    @_rewires
     def add_edge(
         self,
         source_id: str,
@@ -811,6 +833,7 @@ class DataflowGraph:
         key = (source_id, source_port, target_id, target_port)
         return self._wire(key, parse_transform(transform))
 
+    @_rewires
     def set_edge_transform(
         self,
         source_id: str,
@@ -901,6 +924,7 @@ class DataflowGraph:
             f"but input '{target_port}' expects '{target_type}'."
         )
 
+    @_rewires
     def remove_edge(self, source_id: str, source_port: str, target_id: str, target_port: str):
         """Remove an edge and reset the target input to its literal or its default, see `_default`."""
         edge = self._drop_edge((source_id, source_port, target_id, target_port))
@@ -927,6 +951,7 @@ class DataflowGraph:
         """Return a copy of the literal values set on a node's inputs, by port."""
         return copy.deepcopy(self._literals.get(instance_id, {}))
 
+    @_rewires
     def set_literal(self, instance_id: str, port: str, value: Any):
         """Give the input *port* of a node a literal value, used while no edge feeds it.
 
@@ -948,6 +973,7 @@ class DataflowGraph:
         if not self._incoming(instance_id, port):
             self._unbind_to_literal(instance_id, port)
 
+    @_rewires
     def clear_literal(self, instance_id: str, port: str):
         """Remove the literal value of an input; an unwired input goes back to its default.
 

@@ -1561,6 +1561,8 @@ class FlowDash(Viewer):
         self._recording_edit = False
         # Counts recorded edits, so a default knows whether an edit took it in.
         self._edit_count = 0
+        # Defaults set while an edit rewired an input, by node, keys and `_edit_count` then.
+        self._pending_defaults: list[tuple[str, list[str], int]] = []
         self.param.watch(self._on_dirty, "dirty", onlychanged=False)
         self._history = EditHistory(self)
         self._restricted_seen: dict[str, DashboardItem] = {}
@@ -5867,8 +5869,8 @@ class FlowDash(Viewer):
         config, and are part of the edit that brought them about: the
         placement, or the connection that delivered the input, so one undo
         takes back both. Values set outside any edit, e.g. by an input that
-        arrives on its own, are recorded as a config edit of their own once
-        the session's current event is handled.
+        arrives on its own, are recorded right away as a config edit of their
+        own, so undoing a later edit keeps them.
 
         Only fields still at their declared default take a value, so a node
         that arrives configured, e.g. one the agent adds or a duplicate, keeps
@@ -5906,12 +5908,24 @@ class FlowDash(Viewer):
             self._hydrating = False
         if not applied:
             return False
-        _next_tick(partial(self._record_default, instance_id, sorted(applied), self._edit_count))
+        if self._dataflow_graph.wiring:
+            # The edit rewiring the input records next and takes the default in.
+            self._pending_defaults.append((instance_id, sorted(applied), self._edit_count))
+            _next_tick(self._record_defaults)
+        else:
+            self._record_default(instance_id, sorted(applied))
         return True
 
-    def _record_default(self, instance_id: str, keys: list[str], count: int):
-        """Record a default as its own edit, unless an edit since took it in."""
-        if self._edit_count != count or self._dataflow_graph.get_config_state(instance_id) is None:
+    def _record_defaults(self):
+        """Record the defaults no edit took in, each as its own edit."""
+        pending, self._pending_defaults = self._pending_defaults, []
+        current = self._edit_count
+        for instance_id, keys, count in pending:
+            if count == current:
+                self._record_default(instance_id, keys)
+
+    def _record_default(self, instance_id: str, keys: list[str]):
+        if self._dataflow_graph.get_config_state(instance_id) is None:
             return
         name = self._node_name(instance_id)
         self._record_edit(
@@ -7313,6 +7327,7 @@ class FlowDash(Viewer):
         """
         if self.read_only:
             raise _ReadOnlyEditorError("This dashboard is read-only.")
+        self._record_defaults()
         self._compute_expects()
         model = self.to_model(title=title)
         if self.store is not None:
@@ -7350,6 +7365,7 @@ class FlowDash(Viewer):
         """
         if self.read_only:
             raise _ReadOnlyEditorError("This dashboard is read-only.")
+        self._record_defaults()
         model = self.to_model(title=title)
         model.permission = Permission()
         if self.store is not None:

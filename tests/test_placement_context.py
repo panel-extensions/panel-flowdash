@@ -346,7 +346,7 @@ def test_a_default_from_a_connection_is_part_of_it(monkeypatch):
     editor.dispose()
 
 
-def test_a_default_from_an_input_arriving_on_its_own_is_recorded_next_tick(monkeypatch):
+def test_a_default_from_an_input_arriving_on_its_own_is_recorded_right_away(monkeypatch):
     ticks = []
     monkeypatch.setattr("panel_flowdash.editor._next_tick", ticks.append)
     editor = _query_editor(MemoryDashboardStore())
@@ -355,13 +355,52 @@ def test_a_default_from_an_input_arriving_on_its_own_is_recorded_next_tick(monke
     editor.edit_history.flush()
     versions = len(editor.edit_history.versions)
     editor._component_instances[chart].n = 5
-    assert _config(editor, chart) == {"spec": {"n": 5}} and editor.dirty
-    assert len(editor.edit_history.versions) == versions
-    [record] = ticks
-    record()
     editor.edit_history.flush()
+    assert _config(editor, chart) == {"spec": {"n": 5}} and editor.dirty
     assert len(editor.edit_history.versions) == versions + 1
     assert editor.edit_history.versions[-1].metadata["op"] == "set_config"
+    assert not ticks
+    editor.dispose()
+
+
+def test_an_edit_before_the_next_tick_does_not_take_in_a_default(monkeypatch):
+    ticks = []
+    monkeypatch.setattr("panel_flowdash.editor._next_tick", ticks.append)
+    editor = _query_editor(MemoryDashboardStore())
+    editor.new_dashboard("Charts")
+    chart = editor.add_component("T/charted")
+    editor._component_instances[chart].n = 5
+    editor.add_component("T/plain", instance_id="later")
+    for tick in ticks:
+        tick()
+    assert editor.undo(whole_runs=False)
+    assert [item["instance_id"] for item in editor._tile_items] == [chart]
+    assert _config(editor, chart) == {"spec": {"n": 5}}
+    editor.dispose()
+
+
+@pytest.mark.parametrize("rewired", [False, True], ids=["on-its-own", "rewired"])
+def test_saving_before_the_next_tick_leaves_the_dashboard_saved(monkeypatch, rewired):
+    ticks = []
+    monkeypatch.setattr("panel_flowdash.editor._next_tick", ticks.append)
+    editor = _query_editor(MemoryDashboardStore())
+    editor.new_dashboard("Charts")
+    source = editor.add_component("T/plain")
+    chart = editor.add_component("T/charted")
+    editor.save()
+    if rewired:
+        # An input rewired without an edit to take the default in.
+        assert editor._dataflow_graph.add_edge(source, "n", chart, "n") is True
+    else:
+        editor._component_instances[chart].n = 5
+    assert ticks == ([editor._record_defaults] if rewired else [])
+    saved = editor.save()
+    for tick in ticks:
+        tick()
+    assert not editor.dirty
+    assert {item.instance_id: item.config for item in saved.items}[chart] == {
+        "spec": {"n": 1 if rewired else 5}
+    }
     editor.dispose()
 
 
