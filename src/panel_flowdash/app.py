@@ -43,6 +43,7 @@ from panel_flowdash.auth import (
 )
 from panel_flowdash.component_library import merge_libraries
 from panel_flowdash.component_settings import (
+    ComponentSettingsUnavailable,
     approval_ids,
     placement_refusal,
     project_components,
@@ -561,7 +562,8 @@ class FlowDashApp(Viewer):
             self._configured_admins(),
         )
         self._admin_page: AdminPage | None = None
-        # Whether this session became admin through the admin link.
+        # Whether this session is admin through the admin link alone, having no user
+        # name to record in `general.admins`.
         self._admin_by_token = False
         # Views of the open dashboard's sidebar components, shown after `sidebar`.
         self._sidebar_views: list = []
@@ -902,7 +904,9 @@ class FlowDashApp(Viewer):
                 return
             if user:
                 self._notify("success", f"{user} is now an admin of this project.")
-        self._admin_by_token = True
+        # Someone with a name is recorded in `general.admins` and checked there like any
+        # admin; only a session without one stays admin through the token alone.
+        self._admin_by_token = user is None
         if self._is_admin:
             return
         self._is_admin = True
@@ -1123,21 +1127,31 @@ class FlowDashApp(Viewer):
         """
         return entry_authorized(entry, self._identity, default_allow=True, load=False)
 
-    def _component_settings(self) -> dict[str, dict[str, t.Any]]:
-        """Return the project file's ``components`` section as it is now."""
+    def _component_settings(self) -> dict[str, dict[str, t.Any]] | None:
+        """Return the project file's ``components`` section as it is now.
+
+        None when it cannot be read and was never read, which callers treat
+        as refusing every component rather than offering every one.
+        """
         try:
             return project_components(self._settings_project())
-        except (ProjectError, OSError) as exc:
-            logger.warning("Not using the project file's component settings: %s", exc)
-            return {}
+        except ComponentSettingsUnavailable:
+            return None
 
     def _placement_refusal(self, component_id: str) -> str | None:
         """Return why the current identity may not add *component_id* to a dashboard, or None."""
-        return placement_refusal(self._component_settings(), component_id, self._identity)
+        settings = self._component_settings()
+        if settings is None:
+            return "the component settings in the project file cannot be read"
+        return placement_refusal(settings, component_id, self._identity)
 
     def _approval_components(self) -> list[str]:
-        """Return the components the project file says the agent needs approval to place."""
-        return approval_ids(self._component_settings())
+        """Return the components the project file says the agent needs approval to place.
+
+        Every component, when the settings cannot be read.
+        """
+        settings = self._component_settings()
+        return ["*"] if settings is None else approval_ids(settings)
 
     @staticmethod
     def _unresolved(entry: RegistryEntry) -> bool:
@@ -2314,7 +2328,11 @@ class FlowDashApp(Viewer):
         except ValueError as exc:
             self._notify("error", f"Could not import {filename}: {error_text(exc)}", duration=5000)
             return None
-        self._editor._guard_restricted(parsed, None)
+        try:
+            self._editor._guard_restricted(parsed, None)
+        except PermissionError as exc:
+            self._notify("error", f"Could not import {filename}: {error_text(exc)}", duration=8000)
+            return None
         title = unique_title(self.store, self._user_id, parsed.title)
         try:
             model = copy_dashboard(self.store, parsed, self._user_id, title)

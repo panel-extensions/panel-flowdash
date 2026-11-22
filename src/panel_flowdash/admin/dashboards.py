@@ -251,7 +251,7 @@ class DashboardsAdmin(Viewer):
         editor = app._editor
         entries = editor._component_entries
         aliases = editor._component_aliases()
-        settings = app._component_settings()
+        settings = app._component_settings() or {}
         issues = []
         for item in model.items:
             cid = editor._resolve_component_id(item.component_id, aliases)

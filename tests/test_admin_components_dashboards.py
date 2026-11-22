@@ -2,6 +2,7 @@
 
 import getpass
 import io
+import json
 import logging
 import zipfile
 
@@ -476,3 +477,105 @@ def test_dashboard_items_render(sections, tmp_path):
     app = _app(tmp_path, store=store)
     view = _section(app, "dashboards")
     assert view._table._rows.objects
+
+
+def _file(*components, owner="ana"):
+    model = DashboardModel(
+        dashboard_id="f",
+        user_id=owner,
+        title="From a file",
+        items=[
+            DashboardItem(instance_id=f"n{i}", component_id=cid, config={})
+            for i, cid in enumerate(components)
+        ],
+    )
+    return json.dumps(model.to_dict())
+
+
+class TestImports:
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "components:\n  T/image: {enabled: false}\n",
+            "components:\n  T/image: {placed_by: [x]}\n",
+        ],
+    )
+    def test_importing_a_file_with_a_refused_component_is_refused(self, sections, tmp_path, text):
+        store = MemoryDashboardStore()
+        app = _app(tmp_path, text, store=store)
+        told = []
+        app._notify = lambda severity, message, **_kw: told.append(message)
+        assert app._import_dashboard_file("x.json", _file(NUMBER, IMAGE)) is None
+        assert store._all_dashboards() == []
+        assert "n1 (Image:" in told[-1] and "Nothing was imported" in told[-1]
+        assert app._import_dashboard_file("y.json", _file(NUMBER)) is not None
+
+    def test_dropping_a_file_on_the_canvas_is_refused_for_new_nodes_only(self, sections, tmp_path):
+        store = MemoryDashboardStore()
+        model = _dashboard(store, ME, "Mine", IMAGE)
+        app = _app(tmp_path, "components:\n  T/image: {enabled: false}\n", store=store)
+        app._load_dashboard_sync(model.dashboard_id, edit=True)
+        editor = app._editor
+        told = []
+        editor._notify = lambda severity, message, **_kw: told.append(message)
+        editor._on_files_dropped([{"name": "x.json", "content": _file(IMAGE, IMAGE)}])
+        assert "n1 (Image: turned off by an admin)" in told[-1]
+        assert not editor._import_dialog.open
+        # The node the dashboard already has may come back from a file.
+        kept = editor._imported_model(_file(IMAGE, NUMBER))
+        assert [i.component_id for i in kept.items] == [IMAGE, NUMBER]
+
+
+class TestFailClosed:
+    def test_unreadable_settings_never_read_refuse_every_component(self, sections, tmp_path):
+        from panel_flowdash import component_settings
+
+        app = _app(tmp_path)
+        component_settings._LAST.clear()
+        (tmp_path / PROJECT_FILE).write_text("components: [\n")
+        assert "cannot be read" in app._placement_refusal(NUMBER)
+        assert _palette_ids(app._editor) == []
+        assert app._approval_components() == ["*"]
+
+    def test_unreadable_settings_keep_the_last_read(self, sections, tmp_path):
+        app = _app(tmp_path, "components:\n  T/image: {enabled: false}\n")
+        assert app._placement_refusal(IMAGE) == "turned off by an admin"
+        (tmp_path / PROJECT_FILE).write_text("components: [\n")
+        assert app._placement_refusal(IMAGE) == "turned off by an admin"
+        assert app._placement_refusal(NUMBER) is None
+
+
+def test_an_admin_by_the_link_is_checked_like_any_once_recorded(sections, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from panel_flowdash.admin import access
+
+    monkeypatch.delenv(access.TOKEN_ENV, raising=False)
+    access.reset_admin_token()
+    app = _app(tmp_path, admins=())
+    assert not app._is_admin
+    app._on_admin_token(SimpleNamespace(new=access.admin_token()))
+    assert app._is_admin and app._still_admin()
+    (tmp_path / PROJECT_FILE).write_text("general:\n  admins: [someone-else]\n")
+    assert not app._still_admin()
+    access.reset_admin_token()
+
+
+def test_opens_are_written_in_batches(tmp_path, monkeypatch):
+    from panel_flowdash import ai
+
+    ledger = ai.UsageLedger(tmp_path / "usage.json")
+    writes = []
+    write = ledger._write
+    monkeypatch.setattr(ledger, "_write", lambda data: (writes.append(1), write(data)))
+    for _ in range(50):
+        ledger.opened("a")
+    ledger.opened("b")
+    assert writes == []
+    assert set(ledger.dashboards()) == {"a", "b"}
+    ledger.flush_opens()
+    assert len(writes) == 1
+    assert set(json.loads((tmp_path / "usage.json").read_text())["dashboards"]) == {"a", "b"}
+    monkeypatch.setattr(ai, "OPENS_FLUSH_SECONDS", 0)
+    ledger.opened("c")
+    assert len(writes) == 2

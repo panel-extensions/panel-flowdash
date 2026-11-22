@@ -99,20 +99,24 @@ _LAST: dict[str, tuple[int, dict[str, t.Any]]] = {}
 _LAST_LOCK = threading.Lock()
 
 
+class ComponentSettingsUnavailable(RuntimeError):
+    """The project file's component settings cannot be read and none were read from it before."""
+
+
 def project_components(project: Project) -> dict[str, dict[str, t.Any]]:
     """Return the ``components`` section of *project*, read again when its file changes.
 
-    A file that cannot be read keeps the settings last read from it, so a
-    half-written file does not turn components back on; with none read
-    before, the loaded project's value is used.
+    It fails closed: a file that cannot be read keeps the settings last read
+    from it, so a half-written file does not turn components back on, and
+    with none read before `ComponentSettingsUnavailable` is raised, so
+    callers refuse placing components rather than offer every one.
     """
     path = Path(project.path) if project.path else None
-    if path is None or not path.is_file():
+    if path is None or not path.exists():
         try:
             return dict(project.get("components") or {})
         except ProjectError as exc:
-            logger.error("Not using the project file's component settings: %s", exc)
-            return {}
+            raise ComponentSettingsUnavailable(str(exc)) from None
     key = str(path.resolve())
     try:
         stamp = path.stat().st_mtime_ns
@@ -132,13 +136,22 @@ def project_components(project: Project) -> dict[str, dict[str, t.Any]]:
             else {}
         )
     except (ProjectError, SectionError, OSError, UnicodeDecodeError, TypeError, ValueError) as exc:
-        logger.error("Could not read the component settings in %s: %s", key, exc)
         if cached is not None:
+            logger.error(
+                "Keeping the component settings last read from %s; the file cannot be read "
+                "now: %s",
+                key,
+                exc,
+            )
             return cached[1]
-        try:
-            return dict(project.get("components") or {})
-        except ProjectError:
-            return {}
+        logger.error(
+            "Refusing to place components: the component settings in %s cannot be read: %s",
+            key,
+            exc,
+        )
+        raise ComponentSettingsUnavailable(
+            f"the component settings in the project file cannot be read: {exc}"
+        ) from None
     if stamp is not None:
         with _LAST_LOCK:
             _LAST[key] = (stamp, value)

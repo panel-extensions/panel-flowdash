@@ -36,6 +36,7 @@ pydantic-ai when the agent extra is installed.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import contextlib
 import datetime as dt
 import json
@@ -44,6 +45,7 @@ import math
 import os
 import tempfile
 import threading
+import time
 import typing as t
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -499,6 +501,9 @@ def file_lock(path: Path):
 # How many of the admins' destructive actions the ledger keeps.
 ADMIN_LOG_SIZE = 500
 
+# How often the dashboard opens noted in memory are written to the ledger.
+OPENS_FLUSH_SECONDS = 60.0
+
 
 class UsageLedger:
     """What models cost, who opened the app and its dashboards, and what admins did, by the project.
@@ -514,6 +519,10 @@ class UsageLedger:
         self.path = Path(path) if path is not None else None
         self._thread_lock = threading.Lock()
         self._memory: dict[str, t.Any] = {}
+        self._opens: dict[str, str] = {}
+        self._opens_lock = threading.Lock()
+        self._opens_flushed = time.monotonic()
+        atexit.register(self.flush_opens)
 
     @contextlib.contextmanager
     def _lock(self):
@@ -600,25 +609,58 @@ class UsageLedger:
         return dict(people) if isinstance(people, dict) else {}
 
     def opened(self, dashboard_id: str, when: dt.datetime | None = None) -> None:
-        """Note that someone opened the dashboard *dashboard_id*."""
+        """Note that someone opened the dashboard *dashboard_id*.
+
+        Opens are kept in memory and written together at most every
+        ``OPENS_FLUSH_SECONDS`` (and when the process exits), so opening a
+        dashboard does not take the file lock each time.
+        """
+        stamp = (when or dt.datetime.now(dt.UTC)).isoformat(timespec="seconds")
+        with self._opens_lock:
+            previous = self._opens.get(dashboard_id)
+            if previous is None or stamp > previous:
+                self._opens[dashboard_id] = stamp
+            due = time.monotonic() - self._opens_flushed >= OPENS_FLUSH_SECONDS
+        if due:
+            self.flush_opens()
+
+    def flush_opens(self) -> None:
+        """Write the opens noted since the last write."""
+        with self._opens_lock:
+            opens, self._opens = self._opens, {}
+            self._opens_flushed = time.monotonic()
+        if not opens:
+            return
         try:
             with self._lock():
                 data = self._read()
-                data.setdefault("dashboards", {})[dashboard_id] = {
-                    "last_opened": (when or dt.datetime.now(dt.UTC)).isoformat(timespec="seconds")
-                }
+                known = data.setdefault("dashboards", {})
+                for dashboard_id, stamp in opens.items():
+                    previous = (known.get(dashboard_id) or {}).get("last_opened")
+                    if not isinstance(previous, str) or stamp > previous:
+                        known[dashboard_id] = {"last_opened": stamp}
                 self._write(data)
         except OSError as exc:
-            logger.warning("Could not record that %s was opened: %s", dashboard_id, exc)
+            logger.warning("Could not record which dashboards were opened: %s", exc)
 
     def dashboards(self) -> dict[str, dict[str, t.Any]]:
-        """Return when each dashboard was last opened, by id."""
+        """Return when each dashboard was last opened, by id, including opens not written yet."""
         dashboards = self._locked_read().get("dashboards")
-        return dict(dashboards) if isinstance(dashboards, dict) else {}
+        result = dict(dashboards) if isinstance(dashboards, dict) else {}
+        with self._opens_lock:
+            pending = dict(self._opens)
+        for dashboard_id, stamp in pending.items():
+            previous = (result.get(dashboard_id) or {}).get("last_opened")
+            if not isinstance(previous, str) or stamp > previous:
+                result[dashboard_id] = {"last_opened": stamp}
+        return result
 
     def forget_dashboards(self, dashboard_ids: t.Iterable[str]) -> None:
         """Drop what is noted about the dashboards *dashboard_ids*, e.g. once deleted."""
         ids = set(dashboard_ids)
+        with self._opens_lock:
+            for dashboard_id in ids:
+                self._opens.pop(dashboard_id, None)
         try:
             with self._lock():
                 data = self._read()

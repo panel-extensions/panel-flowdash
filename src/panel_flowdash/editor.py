@@ -916,6 +916,10 @@ def dashboard_context() -> t.Mapping[str, t.Any]:
     return MappingProxyType(editor.context if editor is not None else {})
 
 
+class PlacementRefused(PermissionError, ValueError):
+    """An imported dashboard adds components `refuse_placement` keeps this session from adding."""
+
+
 def _drop_repeated_ids(model: DashboardModel) -> int:
     """Keep only the first item of *model* with each instance id, returning how many were dropped."""
     seen: set[str] = set()
@@ -8886,6 +8890,33 @@ class FlowDash(Viewer):
                 restricted.add(item.instance_id)
         return restricted
 
+    def _refuse_new_placements(self, model: DashboardModel, reference: DashboardModel | None):
+        """Raise `PlacementRefused` if importing *model* would add items `refuse_placement` refuses.
+
+        An item *reference* (the dashboard as stored, or the canvas) already
+        has under its id, of the same component, is not new and is kept, so
+        dashboards keep components an admin turned off since.
+        """
+        aliases = self._component_aliases()
+        before = {
+            item.instance_id: self._resolve_component_id(item.component_id, aliases)
+            for item in (reference.items if reference is not None else ())
+        }
+        refused = []
+        for item in model.items:
+            cid = self._resolve_component_id(item.component_id, aliases)
+            if cid not in self._component_entries or before.get(item.instance_id) == cid:
+                continue
+            reason = self._placement_refusal(cid)
+            if reason is not None:
+                refused.append(
+                    f"{item.instance_id} ({self._component_entries[cid].title}: {reason})"
+                )
+        if refused:
+            raise PlacementRefused(
+                f"It adds components you can't add: {', '.join(refused)}. Nothing was imported."
+            )
+
     def _guard_restricted(self, model: DashboardModel, reference: DashboardModel | None):
         """Keep an imported *model* from adding or changing items this session may not use.
 
@@ -8899,6 +8930,7 @@ class FlowDash(Viewer):
         config nor their wiring. Of several items sharing an id only the first
         is kept, since placing the next would replace it.
         """
+        self._refuse_new_placements(model, reference)
         duplicates = _drop_repeated_ids(model)
         if duplicates:
             self._notify(
