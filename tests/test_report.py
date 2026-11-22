@@ -265,6 +265,9 @@ class TestYAML:
         doc["report"]["blocks"][0]["show"] = "table"
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate(doc, schema)
+        doc["report"]["blocks"][0] = {"heading": " "}
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(doc, schema)
 
 
 class TestModel:
@@ -457,3 +460,53 @@ class TestPlaceholders:
     def test_a_restricted_node_shows_nothing(self, editor, monkeypatch):
         monkeypatch.setattr(type(editor), "_node_restricted", lambda self, iid: iid == "m")
         assert render_report_text(editor, "{{ m.total }}") == "<p></p>\n"
+
+
+class TestOps:
+    def test_get_dashboard_round_trips_through_replace_yaml(self, editor):
+        from panel_flowdash.agent import DashboardOps
+
+        ops = DashboardOps(editor)
+        text = ops.get_dashboard()
+        assert "turn: t2" in text and "origin: t1" in text
+        assert [i for i in ops.validate(text) if i.severity == "error"] == []
+        ops.replace_yaml(text)
+        assert editor.report == yaml.safe_load(REPORT)["report"]
+
+    def test_block_origins_from_yaml_are_ignored(self, editor):
+        from panel_flowdash.agent import DashboardOps
+
+        ops = DashboardOps(editor)
+        text = ops.get_dashboard().replace("origin: t1", "origin: t9")
+        ops.replace_yaml(text)
+        assert editor.report["blocks"][1]["origin"] == "t1"
+        ops.replace_yaml(ops.get_dashboard().replace("Revenue is", "Sales are"))
+        assert "origin" not in editor.report["blocks"][1]
+
+    def test_a_turn_block_naming_no_turn_is_refused(self, editor):
+        from panel_flowdash.agent import DashboardOps
+
+        ops = DashboardOps(editor)
+        text = ops.get_dashboard().replace("turn: t2", "turn: t9")
+        issues = ops.validate(text)
+        assert any("names no turn" in i.message for i in issues if i.severity == "error")
+
+    def test_missing_placeholders_and_tables_are_warnings(self, editor):
+        from panel_flowdash.agent import DashboardOps
+
+        ops = DashboardOps(editor)
+        doc = yaml.safe_load(ops.get_dashboard())
+        doc["report"]["blocks"] += [
+            {"text": "{{ nope.total }} {{ m.nope }} {{ m.total }}"},
+            {"node": "intro", "show": "table"},
+        ]
+        issues = ops.validate(yaml.safe_dump(doc))
+        warnings = [(i.path, i.message) for i in issues if i.severity == "warning"]
+        assert [i for i in issues if i.severity == "error"] == []
+        assert any("nope.total" in m and "names no node" in m for _, m in warnings)
+        assert any("has no output 'nope'" in m for _, m in warnings)
+        assert not any("m.total }}'" in m for _, m in warnings)
+        assert (
+            "report.blocks[6].show",
+            "'intro' has no output to show as a table, so it shows nothing.",
+        ) in warnings

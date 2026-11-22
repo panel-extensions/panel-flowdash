@@ -205,7 +205,7 @@ def _report_block_schema(names: dict) -> dict:
     }
     kinds = {
         "heading": {
-            "heading": {"type": "string"},
+            "heading": {"type": "string", "minLength": 1, "pattern": "\\S"},
             "level": {"enum": list(HEADING_LEVELS)},
         },
         "text": {"text": {"type": "string"}},

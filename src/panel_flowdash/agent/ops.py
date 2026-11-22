@@ -128,15 +128,28 @@ def _revision(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
 
 
-def without_provenance(doc: t.Any) -> t.Any:
-    """Return a copy of a YAML document without its turns and node origins.
+def without_provenance(doc: t.Any, turns: t.Sequence[dict] | None = None) -> t.Any:
+    """Return a copy of a YAML document without its turns, node origins and report block origins.
 
     Only the editor records who made which change, so they are dropped from
-    YAML an agent or another caller of :class:`DashboardOps` writes.
+    YAML an agent or another caller of :class:`DashboardOps` writes. Pass the
+    YAML turns of the dashboard the document is meant for as *turns*: when
+    its report has turn blocks, they are checked against those instead.
     """
     if not isinstance(doc, dict):
         return doc
     doc = {key: value for key, value in doc.items() if key != "turns"}
+    report = doc.get("report")
+    if isinstance(report, dict) and isinstance(report.get("blocks"), list):
+        blocks = [
+            {key: value for key, value in block.items() if key != "origin"}
+            if isinstance(block, dict)
+            else block
+            for block in report["blocks"]
+        ]
+        doc["report"] = {**report, "blocks": blocks}
+        if turns and any(isinstance(b, dict) and "turn" in b for b in blocks):
+            doc["turns"] = copy.deepcopy(list(turns))
     nodes = doc.get("nodes")
     if isinstance(nodes, dict):
         doc["nodes"] = {
@@ -548,6 +561,10 @@ class DashboardOps:
         except DashboardYAMLError as exc:
             raise OperationError(str(exc)) from exc
 
+    def _turns(self) -> list[dict]:
+        """Return the editor's turns as the YAML writes them."""
+        return dashboard_to_dict(self.editor).get("turns") or []
+
     def _provenance_issues(self, doc: dict) -> list[Issue]:
         """Warn that turns and node origins *doc* changes are ignored, see :func:`without_provenance`."""
         if not isinstance(doc, dict):
@@ -760,7 +777,7 @@ class DashboardOps:
             scratch.dispose()
 
     def _document(self, text: str | dict) -> dict:
-        return without_provenance(self._parse(text))
+        return without_provenance(self._parse(text), self._turns())
 
     def _preview_data(self, text: str) -> dict:
         doc = self._document(text)
@@ -849,7 +866,7 @@ class DashboardOps:
             )
         self._check_current(revision, self._dashboard_id())
         raw = self._parse(text)
-        doc = without_provenance(raw)
+        doc = without_provenance(raw, self._turns())
         self._refuse_invalid(doc)
         return doc, revision, self._dashboard_id(), self._provenance_issues(raw)
 

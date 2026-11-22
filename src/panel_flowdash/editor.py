@@ -7629,6 +7629,7 @@ class FlowDash(Viewer):
         present = {item["instance_id"] for item in self._tile_items}
         for item in model.items:
             item.origin = self._origins.get(item.instance_id)
+        model.report = self._kept_block_origins(model.report)
         self.ensure_components_loaded(self._model_component_ids(model))
         with self._quiet_history():
             self._hydrate_model(model, keep_open_turns=True)
@@ -7644,6 +7645,28 @@ class FlowDash(Viewer):
             created=[item.instance_id for item in model.items if item.instance_id not in present],
         )
         return model
+
+    def _kept_block_origins(self, report: dict | None) -> dict | None:
+        """Give the blocks of an imported *report* the origins of the same blocks in the current one.
+
+        Like node origins, block origins are only recorded by the editor, so
+        a file loaded with ``keep_turns`` sets none of its own.
+        """
+        if report is None:
+            return None
+        origins: dict[str, list[str]] = {}
+        for block in (self._report or {}).get("blocks") or []:
+            if block.get("origin") is not None:
+                key = json.dumps({k: v for k, v in block.items() if k != "origin"}, sort_keys=True)
+                origins.setdefault(key, []).append(block["origin"])
+        blocks = []
+        for block in report.get("blocks") or []:
+            entry = {k: v for k, v in block.items() if k != "origin"}
+            kept = origins.get(json.dumps(entry, sort_keys=True))
+            if kept:
+                entry["origin"] = kept.pop(0)
+            blocks.append(entry)
+        return {**report, "blocks": blocks}
 
     def _keep_automatic_layout(
         self, model: DashboardModel, unplaced: set[str]

@@ -440,17 +440,18 @@ def placeholder_text(value: t.Any, spec: str = "") -> str:
     return format_value(value, spec)
 
 
-def output_value(editor: FlowDash, name: str, port: str) -> t.Any:
+def output_value(
+    editor: FlowDash, name: str, port: str, ids: t.Mapping[str, str] | None = None
+) -> t.Any:
     """Return the current value of output *port* of the node called *name*, None if it has none to show.
 
     None too when there is no such node or output, when the node is one the
-    editor's user may not use, or when the output failed.
+    editor's user may not use, or when the output failed. *ids* maps node
+    names to instance ids, to look up many outputs without naming the nodes each time.
     """
     from panel_flowdash.agent.preview import output_failures
-    from panel_flowdash.agent.yaml_format import node_names
 
-    ids = {n: iid for iid, n in node_names(editor._tile_items).items()}
-    instance_id = ids.get(name)
+    instance_id = (_node_ids(editor) if ids is None else ids).get(name)
     if instance_id is None or editor._node_restricted(instance_id):
         return None
     item = next(i for i in editor._tile_items if i["instance_id"] == instance_id)
@@ -466,10 +467,18 @@ def output_value(editor: FlowDash, name: str, port: str) -> t.Any:
     return getattr(state, resolved, None) if state is not None else None
 
 
+def _node_ids(editor: FlowDash) -> dict[str, str]:
+    from panel_flowdash.agent.yaml_format import node_names
+
+    return {name: iid for iid, name in node_names(editor._tile_items).items()}
+
+
 def _filler(editor: FlowDash) -> Callable[[re.Match], str]:
+    ids = _node_ids(editor)
+
     def fill(match: re.Match) -> str:
         name, port, key, spec = match.groups()
-        value = _lookup(output_value(editor, name, port), key)
+        value = _lookup(output_value(editor, name, port, ids), key)
         return placeholder_text(value, (spec or "").strip())
 
     return fill
