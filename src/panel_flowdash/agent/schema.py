@@ -13,6 +13,12 @@ from panel_flowdash.groups import GROUP_ID_PATTERN, MAX_LABEL_LENGTH
 from panel_flowdash.input_literals import literal_schema
 from panel_flowdash.parameters import NAME_PATTERN as PARAMETER_NAME, PARAMETER_TYPES
 from panel_flowdash.port_types import ANY, normalize_port_type
+from panel_flowdash.report import (
+    HEADING_LEVELS,
+    MAX_CAPTION_LENGTH,
+    MAX_TITLE_LENGTH,
+    SHOW_CHOICES,
+)
 from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transforms import TRANSFORMS
 from panel_flowdash.turns import TURN_ACTORS, TURN_ID_PATTERN, TURN_STATUSES
@@ -191,6 +197,41 @@ def _transform_schema() -> dict[str, t.Any]:
 FIELD_PATTERN = r"^[A-Za-z_][A-Za-z0-9_-]*(?:\.(?:[A-Za-z_][A-Za-z0-9_-]*|[0-9]+))*$"
 
 
+def _report_block_schema(names: dict) -> dict:
+    """Return the schema of a report block: exactly one kind key, its keys and the common ones."""
+    common = {
+        "origin": {"$ref": "#/$defs/turn_id"},
+        "page_break": {"type": "boolean"},
+    }
+    kinds = {
+        "heading": {
+            "heading": {"type": "string"},
+            "level": {"enum": list(HEADING_LEVELS)},
+        },
+        "text": {"text": {"type": "string"}},
+        "node": {
+            "node": names,
+            "show": {"enum": list(SHOW_CHOICES)},
+            "caption": {"type": "string", "maxLength": MAX_CAPTION_LENGTH},
+            "height": {"type": "number", "exclusiveMinimum": 0},
+        },
+        "group": {"group": {"$ref": "#/$defs/group_id"}},
+        "turn": {"turn": {"$ref": "#/$defs/turn_id"}},
+    }
+    return {
+        "oneOf": [
+            {
+                "type": "object",
+                "required": [kind],
+                "patternProperties": _EXTENSIONS,
+                "additionalProperties": False,
+                "properties": {**properties, **common},
+            }
+            for kind, properties in kinds.items()
+        ]
+    }
+
+
 def dashboard_schema(
     specs: t.Mapping[str, ComponentSpec],
     settings_class: type[DashboardSettings] = DashboardSettings,
@@ -307,6 +348,16 @@ def dashboard_schema(
                             "items": _tile_schema(names, framed=False),
                         },
                     },
+                },
+            },
+            "report": {
+                "type": "object",
+                "description": "The dashboard read as a document: a title and an ordered list of blocks.",
+                "patternProperties": _EXTENSIONS,
+                "additionalProperties": False,
+                "properties": {
+                    "title": {"type": "string", "maxLength": MAX_TITLE_LENGTH},
+                    "blocks": {"type": "array", "items": _report_block_schema(names)},
                 },
             },
         },

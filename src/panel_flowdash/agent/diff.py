@@ -81,8 +81,8 @@ def dashboard_changes(old: str | _Doc | None, new: str | _Doc | None) -> list[Da
     -------
     list of DashboardChange
         Nodes added, removed or given another component, config fields
-        changed, edges added or removed, transforms changed, tiles changed and
-        settings changed, in that order.
+        changed, edges added or removed, transforms changed, tiles changed,
+        settings changed and the report changed, in that order.
     """
     before, after = _load(old), _load(new)
     changes: list[DashboardChange] = []
@@ -201,4 +201,10 @@ def dashboard_changes(old: str | _Doc | None, new: str | _Doc | None) -> list[Da
         ("settings",),
         lambda key: f"Setting {key}",
     )
+    if before.get("report") != after.get("report"):
+        changes.append(
+            DashboardChange(
+                "change", ("report",), "Report changed", before.get("report"), after.get("report")
+            )
+        )
     return changes
