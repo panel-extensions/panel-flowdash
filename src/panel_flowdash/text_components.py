@@ -164,19 +164,38 @@ class _Budget:
         return text
 
 
-def fill_template(template: str, value: t.Any, escape: t.Callable[[str], str] = str) -> str:
-    """Replace the ``{{ value }}`` placeholders of *template*, passing each filled text through *escape*."""
+def _value_filler(value: t.Any) -> t.Callable[[re.Match], str]:
+    def fill(match: re.Match) -> str:
+        key, spec = match.group(1), (match.group(2) or "").strip()
+        return format_value(_lookup(value, key), spec)
+
+    return fill
+
+
+def fill_placeholders(
+    template: str,
+    pattern: re.Pattern,
+    fill: t.Callable[[re.Match], str],
+    escape: t.Callable[[str], str] = str,
+) -> str:
+    """Replace each match of *pattern* in *template* by ``escape(fill(match))``, within the length budget."""
     budget = _Budget()
 
     def replace(match: re.Match) -> str:
-        key, spec = match.group(1), (match.group(2) or "").strip()
-        return escape(budget.take(format_value(_lookup(value, key), spec)))
+        return escape(budget.take(fill(match)))
 
-    return _PLACEHOLDER.sub(replace, template or "")
+    return pattern.sub(replace, template or "")
 
 
-def render_markdown(template: str, value: t.Any) -> str:
-    """Render *template* as HTML, filling its placeholders from *value*.
+def fill_template(template: str, value: t.Any, escape: t.Callable[[str], str] = str) -> str:
+    """Replace the ``{{ value }}`` placeholders of *template*, passing each filled text through *escape*."""
+    return fill_placeholders(template, _PLACEHOLDER, _value_filler(value), escape)
+
+
+def markdown_with_placeholders(
+    template: str, pattern: re.Pattern, fill: t.Callable[[re.Match], str]
+) -> str:
+    """Render *template* as HTML, replacing each match of *pattern* by the text ``fill(match)`` gives.
 
     Placeholders are filled after parsing, so a value is always literal text: it
     cannot add markup, and inside a code span or block it keeps its backslashes.
@@ -188,30 +207,37 @@ def render_markdown(template: str, value: t.Any) -> str:
     budget = _Budget()
 
     def mark(match: re.Match) -> str:
-        key, spec = match.group(1), (match.group(2) or "").strip()
-        fills.append(budget.take(format_value(_lookup(value, key), spec)))
+        fills.append(budget.take(fill(match)))
         return f"fdph{nonce}n{len(fills) - 1}e"
 
     marker = re.compile(f"fdph{nonce}n(\\d+)e")
 
-    def fill(text: str) -> str:
+    def filled(text: str) -> str:
         return marker.sub(lambda m: fills[int(m.group(1))], text)
 
     def walk(tokens):
         for token in tokens:
-            token.content = fill(token.content)
+            token.content = filled(token.content)
             token.info = marker.sub("", token.info)
             for name, attr in list((token.attrs or {}).items()):
                 if isinstance(attr, str):
                     token.attrs[name] = (
-                        fill(attr) if name in ("alt", "title") else marker.sub("", attr)
+                        filled(attr) if name in ("alt", "title") else marker.sub("", attr)
                     )
             if token.children:
                 walk(token.children)
 
-    tokens = _MARKDOWN.parse(_PLACEHOLDER.sub(mark, template or ""))
+    tokens = _MARKDOWN.parse(pattern.sub(mark, template or ""))
     walk(tokens)
     return _MARKDOWN.renderer.render(tokens, _MARKDOWN.options, {})
+
+
+def render_markdown(template: str, value: t.Any) -> str:
+    """Render *template* as HTML, filling its ``{{ value }}`` placeholders from *value*.
+
+    See :func:`markdown_with_placeholders` for how values are kept literal.
+    """
+    return markdown_with_placeholders(template, _PLACEHOLDER, _value_filler(value))
 
 
 _MARKDOWN_CSS = """

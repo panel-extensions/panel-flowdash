@@ -106,6 +106,7 @@ from panel_flowdash.placeholders import (
     unresolved_summary,
 )
 from panel_flowdash.registry import RegistryEntry
+from panel_flowdash.report import check_report, map_report, report_turns, without_nodes
 from panel_flowdash.selection import release_links
 from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transform_editor import TransformEditor
@@ -1454,6 +1455,9 @@ class FlowDash(Viewer):
         self._parameter_components: dict[str, str] = {}
         # Nodes framed together on the canvas, by group id.
         self._groups: dict[str, DashboardGroup] = {}
+        # The dashboard read as a document, nodes by instance id, or None for
+        # the report derived from the layout; see panel_flowdash.report.
+        self._report: dict[str, t.Any] | None = None
         # The nodes expanding a group pushed aside, by group id: their position
         # after the push and before it, so collapsing can move them back.
         self._pushed: dict[str, dict[str, tuple[tuple[float, float], tuple[float, float]]]] = {}
@@ -2204,6 +2208,7 @@ class FlowDash(Viewer):
         self._node_outlines.pop(node_id, None)
         self._forget_layout(node_id)
         self._drop_from_groups(node_id)
+        self._report = without_nodes(self._report, {node_id})
         self._floating_nodes.discard(node_id)
         self._auto_tiles.discard(node_id)
         self._chosen_visibility.discard(node_id)
@@ -4834,6 +4839,57 @@ class FlowDash(Viewer):
         """Return the id of the group a node is in, or None."""
         return next((g.id for g in self._groups.values() if instance_id in g.nodes), None)
 
+    # ------------------------------------------------------------------
+    # Report
+    # ------------------------------------------------------------------
+
+    @property
+    def report(self) -> dict[str, t.Any] | None:
+        """The dashboard's report as a copy, nodes by instance id, or None if it has none.
+
+        Blocks referring to nodes, groups or turns the dashboard no longer has
+        are left out. A dashboard without a report reads as the one
+        :func:`~panel_flowdash.report.report_blocks` derives from its layout.
+        See :mod:`panel_flowdash.report`.
+        """
+        return map_report(
+            self._report,
+            {item["instance_id"]: item["instance_id"] for item in self._tile_items},
+            set(self._groups),
+            {turn.id for turn in self._turn_log.turns},
+        )
+
+    def set_report(self, report: t.Mapping[str, t.Any] | None):
+        """Replace the dashboard's report, nodes by instance id, as one undoable edit.
+
+        None removes it, so the dashboard reads as its derived report again.
+
+        Raises
+        ------
+        ValueError
+            If *report* is malformed or refers to a node, group or turn the
+            dashboard does not have.
+        """
+        checked = None if report is None else check_report(report)
+        if checked is not None:
+            known = map_report(
+                checked,
+                {item["instance_id"]: item["instance_id"] for item in self._tile_items},
+                set(self._groups),
+                {turn.id for turn in self._turn_log.turns},
+            )
+            if known != checked:
+                missing = next(
+                    (i, b) for i, b in enumerate(checked["blocks"]) if b not in known["blocks"]
+                )
+                raise ValueError(
+                    f"blocks[{missing[0]}]: refers to something the dashboard does not have."
+                )
+        if checked == self.report:
+            return
+        self._report = checked
+        self._record_edit("Changed the report", op="set_report")
+
     def group_nodes(
         self,
         instance_ids: t.Iterable[str],
@@ -5667,7 +5723,7 @@ class FlowDash(Viewer):
 
     def _note_turn(self, *labels: str) -> DashboardTurn:
         turn = self._turn_log.record(*labels)
-        self._turn_log.prune(set(self._origins.values()))
+        self._turn_log.prune(set(self._origins.values()) | report_turns(self._report))
         return turn
 
     def _on_dirty(self, event):
@@ -5964,7 +6020,10 @@ class FlowDash(Viewer):
         entry = self._component_entries[component_id]
         spec = self._component_specs[component_id]
         if any(item["instance_id"] == instance_id for item in self._tile_items):
+            # The component replacing it takes over the blocks showing it.
+            report = self._report
             self._unplace(instance_id)
+            self._report = report
 
         node_state = self._dataflow_graph.add_node(instance_id, component_id)
         config_state = self._dataflow_graph.get_config_state(instance_id)
@@ -6623,6 +6682,7 @@ class FlowDash(Viewer):
         self._unresolved_notice = None
         self._origins = {}
         self._groups = {}
+        self._report = None
         self._pushed = {}
         self._rebuild_sidebar()
         with self._muted_canvas():
@@ -6704,6 +6764,12 @@ class FlowDash(Viewer):
             for name, parameter in self._parameters.items()
             if parameter.node in placed
         }
+        model.report = map_report(
+            self._report,
+            {iid: iid for iid in placed},
+            {group.id for group in model.groups},
+            {turn.id for turn in model.turns},
+        )
         model.edges = [
             DashboardEdge(
                 source=edge["source"],
@@ -6854,6 +6920,7 @@ class FlowDash(Viewer):
             len(placeholders), len(self._unresolved_edges)
         )
         self._draw_groups(model.groups)
+        self._report = copy.deepcopy(model.report)
 
         legacy_ids = self._legacy_layout_ids(model)
         self._grid_populated = False
@@ -7352,6 +7419,7 @@ class FlowDash(Viewer):
             }
             self._apply_mode_state()
         self._draw_groups(model.groups)
+        self._report = copy.deepcopy(model.report)
         self._sync_placed()
         self._sync_toolbar_state()
         return True
@@ -7681,6 +7749,7 @@ class FlowDash(Viewer):
         present = {item["instance_id"] for item in self._tile_items}
         for item in model.items:
             item.origin = self._origins.get(item.instance_id)
+        model.report = self._kept_block_origins(model.report)
         self.ensure_components_loaded(self._model_component_ids(model))
         with self._quiet_history():
             self._hydrate_model(model, keep_open_turns=True)
@@ -7696,6 +7765,28 @@ class FlowDash(Viewer):
             created=[item.instance_id for item in model.items if item.instance_id not in present],
         )
         return model
+
+    def _kept_block_origins(self, report: dict | None) -> dict | None:
+        """Give the blocks of an imported *report* the origins of the same blocks in the current one.
+
+        Like node origins, block origins are only recorded by the editor, so
+        a file loaded with ``keep_turns`` sets none of its own.
+        """
+        if report is None:
+            return None
+        origins: dict[str, list[str]] = {}
+        for block in (self._report or {}).get("blocks") or []:
+            if block.get("origin") is not None:
+                key = json.dumps({k: v for k, v in block.items() if k != "origin"}, sort_keys=True)
+                origins.setdefault(key, []).append(block["origin"])
+        blocks = []
+        for block in report.get("blocks") or []:
+            entry = {k: v for k, v in block.items() if k != "origin"}
+            kept = origins.get(json.dumps(entry, sort_keys=True))
+            if kept:
+                entry["origin"] = kept.pop(0)
+            blocks.append(entry)
+        return {**report, "blocks": blocks}
 
     def _keep_automatic_layout(
         self, model: DashboardModel, unplaced: set[str]

@@ -92,6 +92,7 @@ layout:
 | `nodes` | no | The placed components, a mapping from node name to node. |
 | `edges` | no | The connections between ports, a list. |
 | `layout` | no | How the tiles are arranged on the dashboard. |
+| `report` | no | The dashboard read as a document: a title and an ordered list of blocks. |
 
 Keys not listed here are rejected, except keys starting with `x-`, which are accepted
 and ignored in every mapping of the format (the top level, nodes, edges, the layout
@@ -182,7 +183,8 @@ made before failing in its summary.
 
 Each node records the turn that created it as its `origin`. Which later turns changed
 it is not stored in the file. A dashboard keeps its last 200 turns, and older turns
-are only dropped when no node names them as its origin.
+are only dropped when no node names them as its origin and the report does not refer
+to them.
 
 Turns record the question by default, since it says why a node exists. Exports can
 leave the questions out: `dashboard_to_yaml(..., questions=False)`,
@@ -305,6 +307,71 @@ to the grid, and their order in the list is their order in their area. A tile in
 the same at every screen size. Other keys are rejected, except `x-` keys, which are
 ignored. Nodes without a tile entry get their component's default size, after the
 listed tiles.
+
+## Report
+
+A report is the dashboard read as a document: headings and prose around the nodes'
+live outputs, in an order of its own. A dashboard has at most one. Its blocks point
+at nodes, groups and turns by name and hold text, never data, so the report always
+shows what the nodes compute now.
+
+```yaml
+report:
+  title: Q3 revenue review
+  blocks:
+  - heading: Summary
+  - text: |
+      Revenue in EMEA is {{ total_revenue.value:,.0f }} this quarter.
+  - node: revenue_kpi
+  - group: regional
+  - node: churn_table
+    show: table
+    caption: Accounts lost, by month
+  - turn: t9f8e7d6c
+```
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `title` | no | The report's title; the dashboard's title is used without one. |
+| `blocks` | no | The blocks in reading order, a list. |
+
+Each block has exactly one of the keys below, which gives its kind, plus the keys of
+that kind:
+
+| Block | Keys | Shows |
+| --- | --- | --- |
+| `heading` | `level` (1, 2 or 3) | A heading that starts a section. |
+| `text` | | Markdown prose, see below for live values. |
+| `node` | `show` (`view` or `table`), `caption`, `height` (pixels) | The node's live output, as its tile shows it, or its first output as a table. |
+| `group` | | A section: the group's label, then its shown nodes in the order of their tiles. It follows the group as nodes join or leave it. |
+| `turn` | | A question the report asks: the turn's question, then the nodes it made; a `pending` turn is a question not answered yet. |
+
+Every block may also have `origin`, the turn that wrote it, and `page_break: true`,
+which starts it on a new page when the report is printed or exported. `node`, `group`,
+`turn` and `origin` must name a node, group or turn of the file. Other keys are
+rejected, except `x-` keys, which are ignored.
+
+A node in the report need not have a tile: a node may be on the dashboard and in the
+report, only on the dashboard, or only in the report. Removing a node removes the
+blocks that show it in the same edit, so one Undo brings both back, and removing a
+group removes its blocks.
+
+Text blocks may use `{{ <node>.<port> }}` placeholders, which show the current value of
+that output and follow it as it changes. As in the Markdown component, `{{
+<node>.<port>.<key> }}` shows a key of a dict or a pandas Series and a format spec
+after a colon formats a number, e.g. `{{ total.value:,.0f }}`. Values are filled in
+after the Markdown is read, so they are always literal text, and never into a link or
+image URL. Only text, numbers, dates and times, and lists and mappings of them are
+written out; any other object shows only its type's name, so an object holding a
+connection or a credential never shows what it holds. A placeholder naming no node or
+output, a node of a component the reader may not use, or a failed output shows
+nothing.
+
+A dashboard without a `report` reads as a report derived from its layout: a group
+block for each group with a shown tile, where its first tile is, and a node block for
+every other tile, headings and Markdown included, in the order of the top bar, the
+sidebar and the grid. Controls are not blocks; they are listed as the filters the
+report's values depend on.
 
 ## Not in the format
 
