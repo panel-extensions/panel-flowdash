@@ -1,6 +1,7 @@
 """Tests of the setup wizard at /admin/setup."""
 
 import getpass
+from types import SimpleNamespace
 
 import panel_material_ui as pmui
 import pytest
@@ -240,10 +241,32 @@ class TestSecrets:
         assert SECRET not in ai._key_note.object
         _go(wizard, "Review")
         assert wizard.plan["ai"]["providers"]["anthropic"] == {"api_key": "${ANTHROPIC_API_KEY}"}
-        assert wizard.plan["ai"]["default"] == "anthropic:claude-sonnet-4-5"
+        # No model was given on start, so none is made up.
+        assert ai._model.value == ""
+        assert "models" not in wizard.plan["ai"] and "default" not in wizard.plan["ai"]
         assert not any(SECRET in text for _kind, text in wizard.diff())
         assert wizard.finish()
         assert SECRET not in _file(tmp_path)
+
+    def test_the_model_given_on_start_is_suggested_with_its_label(
+        self, tmp_path, sections, monkeypatch
+    ):
+        monkeypatch.setenv("OPENAI_API_KEY", SECRET)
+        project = _app(tmp_path)._settings_project()
+        # Only what the step reads, so no provider package is needed to check the models.
+        started = SimpleNamespace(
+            agent_models=[
+                {"id": "openai:gpt-6-luna", "label": "Luna"},
+                {"id": "anthropic:claude-haiku-5.5", "label": "Haiku"},
+            ],
+            agent_model="anthropic:claude-haiku-5.5",
+        )
+        ai = AIStep(project, started)
+        assert (ai._model.value, ai._label.value) == ("anthropic:claude-haiku-5.5", "Haiku")
+        # Its provider is picked, though OpenAI's key is in the environment.
+        assert ai.provider == "anthropic"
+        ai = AIStep(project, SimpleNamespace(agent_models=["openai:gpt-6-luna"], agent_model=None))
+        assert (ai._model.value, ai._label.value) == ("openai:gpt-6-luna", "")
 
     def test_a_bad_variable_name_is_a_problem_on_review(self, tmp_path, sections):
         wizard = _wizard(_app(tmp_path))

@@ -37,7 +37,7 @@ from panel_flowdash.admin.sections import (
     ThemePreview,
     _project_directory,
 )
-from panel_flowdash.ai import PROVIDERS, KeyCheck, check_key
+from panel_flowdash.ai import PROVIDERS, KeyCheck, check_key, provider_name
 from panel_flowdash.project import (
     _FILE_LOCK,
     PROJECT_FILE,
@@ -102,16 +102,6 @@ DATA_SUFFIXES = (
     ".db",
     ".sqlite",
 )
-
-# A model to start with for each provider; the admin may type any other.
-STARTER_MODELS = {
-    "openai": ("openai:gpt-5-mini", "GPT-5 mini"),
-    "anthropic": ("anthropic:claude-sonnet-4-5", "Claude Sonnet"),
-    "openrouter": ("openrouter:openai/gpt-5-mini", "GPT-5 mini"),
-    "google-gla": ("google-gla:gemini-2.5-flash", "Gemini Flash"),
-    "groq": ("groq:llama-3.3-70b-versatile", "Llama 3.3"),
-    "mistral": ("mistral:mistral-large-latest", "Mistral Large"),
-}
 
 _WIZARD_CSS = """
 .found { border: 1px solid var(--mui-palette-divider); border-radius: 4px; }
@@ -181,6 +171,30 @@ def _model_id(model: t.Any) -> str:
     if isinstance(model, Mapping):
         return str(model.get("id", ""))
     return str(getattr(model, "id", model))
+
+
+def _model_label(model: t.Any) -> str:
+    if isinstance(model, Mapping):
+        return str(model.get("label") or "")
+    return str(getattr(model, "label", None) or "")
+
+
+def given_model(app: FlowDashApp | None) -> tuple[str, str]:
+    """Return the id and label of the model the app was started with, or empty ones.
+
+    That is the app's `agent_model` (with its label from `agent_models`
+    when listed there), else the first of `agent_models`.
+    """
+    if app is None:
+        return "", ""
+    models = list(getattr(app, "agent_models", None) or [])
+    default = getattr(app, "agent_model", None)
+    if default:
+        match = next((m for m in models if _model_id(m) == default), None)
+        return default, _model_label(match) if match is not None else ""
+    if models:
+        return _model_id(models[0]), _model_label(models[0])
+    return "", ""
 
 
 def data_files(directory: Path | None, limit: int = 50) -> list[Path]:
@@ -552,7 +566,9 @@ class AIStep(WizardStep):
         hosted = {p.label: p.name for p in PROVIDERS.values() if not p.local and p.env}
         configured = [n for n in (self._ai.get("providers") or {}) if n in hosted.values()]
         from_env = [n for n in hosted.values() if os.environ.get(PROVIDERS[n].env or "")]
-        start = (configured or from_env or ["openai"])[0]
+        model, label = given_model(app)
+        given = [provider_name(model)] if provider_name(model) in hosted.values() else []
+        start = (configured or given or from_env or ["openai"])[0]
         self._provider = pmui.Select(
             options=hosted, value=start, label="Provider", sizing_mode="stretch_width", margin=0
         )
@@ -591,11 +607,10 @@ class AIStep(WizardStep):
             sizing_mode="stretch_width",
             css_classes=["flowdash-wizard-check"],
         )
-        model, label = STARTER_MODELS.get(start, ("", ""))
         self._model = pmui.TextInput(
             label="Model",
             value=model,
-            placeholder="provider:model",
+            placeholder="e.g. openai:<model>",
             sizing_mode="stretch_width",
             margin=0,
             css_classes=["flowdash-wizard-model"],
@@ -613,9 +628,6 @@ class AIStep(WizardStep):
         old, new = PROVIDERS[event.old], PROVIDERS[event.new]
         if (self._env.value or "") in ("", old.env):
             self._env.value = new.env or ""
-        old_model = STARTER_MODELS.get(event.old, ("", ""))
-        if self._model.value in ("", old_model[0]):
-            self._model.value, self._label.value = STARTER_MODELS.get(event.new, ("", ""))
         self._check.object = ""
         self._sync()
 
