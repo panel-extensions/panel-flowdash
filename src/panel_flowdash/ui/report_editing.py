@@ -98,14 +98,30 @@ class BlockDrag(JSComponent):
       })
       document.body.appendChild(line)
 
+      // The moved block's handle takes the focus back once the server has
+      // re-rendered the blocks in their new order: focusing it any earlier
+      // lands on the block about to move away, and the re-render drops it.
       let focusAfter = null
-      const refocus = (attempt = 0) => {
+      const handleButton = (block) => find(block.shadowRoot ?? block, `.${model.handle_class}`)
+        ?.shadowRoot?.querySelector("button")
+      const refocus = (started = performance.now()) => {
         if (focusAfter === null) { return }
-        const block = blocks()[focusAfter]
-        const button = block && find(block.shadowRoot ?? block, `.${model.handle_class}`)
-          ?.shadowRoot?.querySelector("button")
-        if (button && attempt > 2) { button.focus(); focusAfter = null; return }
-        if (attempt < 60) { requestAnimationFrame(() => refocus(attempt + 1)) }
+        const now = performance.now()
+        const button = blocks()[focusAfter.to] === focusAfter.block && handleButton(focusAfter.block)
+        if (button) {
+          const lost = !document.activeElement || document.activeElement === document.body
+          if (focusAfter.placed === undefined || lost) {
+            button.focus()
+            focusAfter.placed ??= now
+          }
+          // Keep it for a moment, as the last re-render can still replace the button.
+          if (now - focusAfter.placed > 300) { focusAfter = null; return }
+        }
+        if (now - started < 10000) {
+          requestAnimationFrame(() => refocus(started))
+        } else {
+          focusAfter = null
+        }
       }
 
       const onDown = (event) => {
@@ -156,7 +172,7 @@ class BlockDrag(JSComponent):
         const to = index + (event.key === "ArrowUp" ? -1 : 1)
         if (index < 0 || to < 0 || to >= blocks().length) { return }
         event.preventDefault()
-        focusAfter = to
+        focusAfter = { block: blocks()[index], to }
         model.send_msg({ index, to })
         refocus()
       }
