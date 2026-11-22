@@ -51,7 +51,8 @@ def token(monkeypatch):
 def _request(peer: str | None, headers=None, family=socket.AF_INET):
     context = SimpleNamespace(
         address=(peer, 50000) if peer else "/tmp/flowdash.sock",
-        address_family=family if peer else socket.AF_UNIX,
+        # Windows has no socket.AF_UNIX; any family but INET and INET6 has no IP.
+        address_family=family if peer else getattr(socket, "AF_UNIX", -1),
     )
     return SimpleNamespace(
         arguments={},
