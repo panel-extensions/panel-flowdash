@@ -161,3 +161,15 @@ def test_phone_width_is_one_column_with_chips(page):
     report.locator(".fd-contents-chip .fd-contents-item", has_text="Which month").click()
     pending = report.locator(".fd-report-pending")
     wait_until(lambda: 0 <= pending.bounding_box()["y"] < 844, page, timeout=5000)
+
+
+def test_a_narrow_window_keeps_report_in_the_switcher_only_while_shown(page):
+    page.set_viewport_size({"width": 1000, "height": 800})
+    editor = _editor()
+    serve_component(page, editor)
+    report = page.get_by_role("button", name="Report", exact=True)
+    expect(report).to_be_hidden()
+    page.get_by_role("button", name="More actions").click()
+    page.get_by_role("menuitem", name="Report").click()
+    expect(_report(page)).to_be_visible()
+    expect(report).to_be_visible()

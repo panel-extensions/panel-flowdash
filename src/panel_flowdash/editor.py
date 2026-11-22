@@ -172,6 +172,7 @@ from panel_flowdash.ui.palette import (
     preset_entries,
 )
 from panel_flowdash.ui.provenance import provenance_objects
+from panel_flowdash.ui.report_view import ReportView
 from panel_flowdash.ui.roles import component_role
 from panel_flowdash.ui.settings_dialog import SettingsDialog
 from panel_flowdash.ui.split_view import SplitView
@@ -3635,8 +3636,8 @@ class FlowDash(Viewer):
     def report_view(self):
         """The :class:`~panel_flowdash.ui.report_view.ReportView` the Report view shows, made on first use."""
         if self._report_view is None:
-            from panel_flowdash.ui.report_view import ReportView
-
+            # ReportView is imported with the editor: its contents list is a JSComponent,
+            # whose type must be known before the first page is served.
             self._report_view = ReportView(editor=self)
         return self._report_view
 

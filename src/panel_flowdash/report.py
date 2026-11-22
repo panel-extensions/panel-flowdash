@@ -427,7 +427,9 @@ def placeholder_text(value: t.Any, spec: str = "") -> str:
     Text, numbers, dates and lists and mappings of them are formatted as the
     Markdown component formats them, by *spec* if it applies. Any other
     object gives only its type's name, so a value that holds a credential
-    never shows it.
+    never shows it. Prose reads two values as a range ("1981 to 2022"), and a
+    whole number from 1000 to 9999 as a year, without a thousands separator,
+    unless *spec* says otherwise.
     """
     from panel_flowdash.text_components import format_value
     from panel_flowdash.util import is_failure
@@ -437,7 +439,17 @@ def placeholder_text(value: t.Any, spec: str = "") -> str:
         return ""
     if not _plain(value):
         return type(value).__name__
+    if type(value) in (list, tuple) and len(value) == 2:
+        ends = [_unwrap(v) for v in value]
+        if all(_scalar(v) for v in ends):
+            return " to ".join(placeholder_text(v, spec) for v in ends)
+    if not spec and type(value) is int and 1000 <= value <= 9999:
+        return str(value)
     return format_value(value, spec)
+
+
+def _scalar(value: t.Any) -> bool:
+    return value is not None and type(value) not in (list, tuple, dict)
 
 
 def output_value(

@@ -546,3 +546,14 @@ class TestReportView:
         view = plain_editor.report_view
         assert view._notice.visible and view._customize.disabled
         assert view._filters == ["pick"]
+
+
+class TestProseValues:
+    def test_a_pair_reads_as_a_range_and_years_have_no_separator(self):
+        assert placeholder_text((1981, 2022)) == "1981 to 2022"
+        assert placeholder_text([0.25, 0.5], ".0%") == "25% to 50%"
+        assert placeholder_text(2022) == "2022"
+        assert placeholder_text(2022, ",") == "2,022"
+        assert placeholder_text(12345) == "12,345"
+        assert placeholder_text(True) == placeholder_text(True, "")
+        assert placeholder_text([1, 2, 3]) == "1, 2, 3"

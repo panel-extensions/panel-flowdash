@@ -263,11 +263,12 @@ _READER_OPTIONS = {
 _SURFACES = ("explore", "report")
 
 # Below this width the Report segment, second in both switchers, leaves them for
-# the overflow menu, so the dashboard title keeps its room.
+# the overflow menu, so the dashboard title keeps its room. While Report is shown
+# it stays, so the switcher still says where the reader is.
 REPORT_MENU_BREAKPOINT = 1100
 _REPORT_IN_MENU = f"""
 @media (max-width: {REPORT_MENU_BREAKPOINT - 0.05}px) {{
-  .MuiToggleButton-root:nth-child(2) {{ display: none !important; }}
+  .MuiToggleButton-root:nth-child(2):not(.Mui-selected) {{ display: none !important; }}
 }}
 """
 

@@ -142,9 +142,15 @@ p {{ margin: 0 0 0.75em; }}
 a {{ color: var(--mui-palette-primary-main, #0072b5); }}
 h1, h2, h3, h4, h5, h6 {{ font-weight: 500; line-height: 1.3; margin: 1em 0 0.4em; }}
 code {{ font-family: "Roboto Mono", monospace; font-size: 0.9em; }}
+/* The primary colour drawn towards the text colour: darker on light paper, lighter on dark,
+   so the value keeps at least 4.5:1 against its tint in both themes. */
 .{VALUE_CLASS} {{
   background: rgba(var(--mui-palette-primary-mainChannel, 0 114 181) / 0.12);
-  color: var(--mui-palette-primary-main, #0072b5);
+  color: color-mix(
+    in srgb,
+    var(--mui-palette-primary-main, #0072b5) 70%,
+    var(--mui-palette-text-primary, #212121)
+  );
   border-radius: 3px;
   padding: 1px 5px;
   font-weight: 500;
@@ -266,15 +272,20 @@ class ReportContents(JSComponent):
         root.hidden = !model.items.length
       }
       draw()
-      model.on("items", draw)
+      model.on("items", () => { anchors = null; draw() })
 
       let frame = null
+      // The headings, found once per set of items, and again only while one is missing
+      // from the page, e.g. before it has rendered or after a rebuild.
+      let anchors = null
       const follow = () => {
         frame = null
         if (model.variant !== "list" || !links.length || !el.isConnected) { return }
+        if (anchors === null || anchors.some((a) => a === null || !a.isConnected)) {
+          anchors = model.items.map((item) => anchor(item.key))
+        }
         let active = 0
-        model.items.forEach((item, i) => {
-          const target = anchor(item.key)
+        anchors.forEach((target, i) => {
           if (target && target.getBoundingClientRect().top < 160) { active = i }
         })
         links.forEach((link, i) => link.classList.toggle("fd-active", i === active))
@@ -327,16 +338,6 @@ class ReportContents(JSComponent):
     }
     """
     ]
-
-
-def _plain_number(value: t.Any) -> str:
-    """Return an integer as its digits, as a year reads; anything else as a placeholder writes it."""
-    from panel_flowdash.report import _unwrap
-
-    value = _unwrap(value)
-    if isinstance(value, int) and not isinstance(value, bool):
-        return str(value)
-    return placeholder_text(value)
 
 
 def _icon(name: str, color: str) -> pn.pane.HTML:
@@ -655,8 +656,6 @@ class ReportView(Viewer):
 
     def _meta_html(self) -> str:
         """Return the line above the title: live, and the values the controls hold."""
-        from panel_flowdash.report import _unwrap
-
         editor = self.editor
         parts = []
         items = {item["instance_id"]: item for item in editor._tile_items}
@@ -666,12 +665,7 @@ class ReportView(Viewer):
             port = self._first_output(iid)
             state = editor.graph.get_state(iid)
             value = getattr(state, port, None) if state is not None and port else None
-            value = _unwrap(value)
-            if isinstance(value, (tuple, list)) and len(value) == 2:
-                # A range, such as the years a slider spans.
-                text = " to ".join(_plain_number(v) for v in value)
-            else:
-                text = placeholder_text(value)
+            text = placeholder_text(value)
             if not text or len(text) > 60:
                 continue
             label = (items[iid].get("config") or {}).get("label")
