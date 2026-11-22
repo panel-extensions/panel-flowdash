@@ -112,12 +112,18 @@ def test_the_filter_bar_filters_matching_views_and_hints_on_the_rest(page):
 
 def test_a_view_opts_out_in_the_tile_tab(page):
     editor = _editor(editable=True)
+    page.set_viewport_size({"width": 1600, "height": 1000})
     serve_component(page, editor)
+    # Through the page, as a change of mode made from the test thread need not reach it.
+    page.get_by_role("button", name="Layout", exact=True).click()
+    wait_until(lambda: editor.mode == "dashboard", page)
     editor.set_filter_value("state", ["TX"])
-    editor.mode = "dashboard"
     expect(page.get_by_text("Whole fleet: 2 rows")).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
 
-    editor._show_in_sidecar("everything", "Tile")
+    key = next(c for c in editor._inspect_tiles["everything"].css_classes if "-key-" in c)
+    page.locator(".muuri-grid-item").filter(has=page.locator(f".{key}")).click()
+    wait_until(lambda: editor._inspector._shown == ("node", "everything"), page, timeout=8000)
+    page.get_by_role("tab", name="Tile").click()
     switch = page.locator(".fd-tile-filter-switch").get_by_role("switch")
     expect(switch).to_be_checked()
     switch.click()
