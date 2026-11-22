@@ -1,6 +1,7 @@
 """Tests for the inspector's Data tab: port headings, table previews and components' own previews."""
 
 import contextlib
+import datetime as dt
 import json
 
 import pandas as pd
@@ -246,14 +247,20 @@ async def test_view_without_input_says_no_value_yet(editor):
 
 
 async def test_value_preview_falls_back_to_text_for_values_json_cannot_hold(editor):
-    preview = editor._value_preview(Pipeline())
-    assert not isinstance(preview, pn.pane.JSON)
+    moment = dt.datetime(2026, 11, 22, 9, 30)
     with pytest.raises(TypeError):
-        json.dumps(Pipeline())
+        json.dumps(moment)
     assert isinstance(editor._value_preview({"a": 1}), pn.pane.JSON)
     # Shown as typed, without the margins and highlighting of a Markdown code block.
+    preview = editor._value_preview(moment)
     assert isinstance(preview, pn.pane.HTML)
-    assert preview.object.startswith('<pre class="fd-value-repr">&lt;')
+    assert preview.object == '<pre class="fd-value-repr">2026-11-22 09:30:00</pre>'
+
+
+async def test_value_preview_names_an_object_by_its_type_not_its_repr(editor):
+    preview = editor._value_preview(Pipeline())
+    assert isinstance(preview, pn.pane.Markdown)
+    assert preview.object == "Pipeline"
 
 
 async def test_text_preview_is_a_compact_caption(editor):

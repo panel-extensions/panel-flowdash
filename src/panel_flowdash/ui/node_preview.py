@@ -23,7 +23,6 @@ import itertools
 import logging
 import math
 import numbers
-import reprlib
 import threading
 import typing as t
 import weakref
@@ -36,6 +35,7 @@ import panel as pn
 from panel.io.state import set_curdoc
 
 from panel_flowdash.util import is_failure
+from panel_flowdash.value_text import SafeRepr, safe_str
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +60,7 @@ MIN_POINTS = 3
 MAX_LINE_CHARS = 48
 
 # Builds the text of a container item by item, so a large one is never written out whole.
-_REPR = reprlib.Repr()
+_REPR = SafeRepr()
 _REPR.maxstring = MAX_TEXT_CHARS
 _REPR.maxother = MAX_TEXT_CHARS
 _REPR.maxlist = _REPR.maxtuple = _REPR.maxset = _REPR.maxfrozenset = _REPR.maxdict = 8
@@ -419,11 +419,7 @@ def _text(value: t.Any, limit: int) -> str:
         return f"{type(value).__name__} of shape {' x '.join(map(str, shape))}"
     if isinstance(value, (list, tuple, set, frozenset, dict)):
         return _clip(_REPR.repr(value), limit)
-    text = str(value)
-    if text.startswith("<") and text.endswith(">") and " " in text:
-        # A repr such as <Pipeline query_1a2b> says nothing to the user; its type does.
-        return type(value).__name__
-    return _clip(text, limit)
+    return _clip(safe_str(value), limit)
 
 
 def _format_time(value: t.Any) -> str | None:

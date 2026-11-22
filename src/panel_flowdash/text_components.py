@@ -24,6 +24,7 @@ from panel_flowdash.registry import register
 from panel_flowdash.ui.node_card import summarize_value
 from panel_flowdash.ui.text import escape_markdown, text_typography
 from panel_flowdash.util import is_failure
+from panel_flowdash.value_text import safe_str
 
 _PLACEHOLDER = re.compile(r"\{\{\s*value(?:\.([\w-]+))?\s*(?::([^{}]*?))?\s*\}\}")
 # A format spec asking for thousands of characters would make the server build them.
@@ -134,7 +135,7 @@ def _format(value: t.Any, spec: str, depth: int) -> str:
         return _items(value, depth, mapping=True)
     if isinstance(value, Collection):
         return _items(value, depth, mapping=False)
-    return str(value)
+    return safe_str(value)
 
 
 def format_value(value: t.Any, spec: str = "") -> str:

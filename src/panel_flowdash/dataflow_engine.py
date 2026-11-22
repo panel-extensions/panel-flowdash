@@ -38,6 +38,7 @@ from panel_flowdash.input_literals import check_literal, port_literal
 from panel_flowdash.port_types import port_types_compatible
 from panel_flowdash.transforms import Transform, apply_transform, parse_transform
 from panel_flowdash.util import ReactiveError, is_failure
+from panel_flowdash.value_text import redact_secrets
 
 logger = logging.getLogger("panel_flowdash")
 
@@ -94,7 +95,8 @@ def failure_text(error: param.ReactiveError) -> str:
 
 def exception_text(exc: BaseException) -> str:
     """Describe an exception as ``Type: message``."""
-    return f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+    message = redact_secrets(str(exc))
+    return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
 
 
 @dataclass(frozen=True)
