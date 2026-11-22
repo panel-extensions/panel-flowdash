@@ -235,6 +235,16 @@ class TestSubclassItems:
         assert graph.add_edge("m", "made", "x", "bases") is True
 
 
+async def test_mismatch_behind_a_transform_is_refused(editor):
+    """A step that cannot take the output's kind of value does not slip a mismatch through."""
+    steps = [{"op": "column", "column": "x"}]
+    assert "Type mismatch" in editor.connect("c", "count", "j", "texts")
+    assert editor.connect("c", "count", "j", "texts", steps) == (
+        "Transform fails on the current value of 'count': Column cannot be applied to a int."
+    )
+    assert editor.graph.edges == []
+
+
 class TestDisconnectInput:
     async def test_removes_every_connection_into_the_input_as_one_edit(self, editor):
         editor.history_coalesce = 0

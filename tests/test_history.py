@@ -424,6 +424,39 @@ def test_an_agents_request_is_one_version_undone_as_a_whole(editor):
     assert editor.redo() and _names(editor) == ["a1", "a2", "mine"]
 
 
+def test_a_batch_takes_the_canvas_once_and_reports_its_own_failure(editor, monkeypatch):
+    from panel_flowdash.history import EditHistory
+
+    history = editor.edit_history
+    state = history.state
+    state.apply(RunStarted(run_id="run-1", agent_name="assistant", input="Add two"))
+    snapshot = EditHistory.snapshot
+    taken = []
+
+    def counted(self):
+        taken.append(self)
+        return snapshot(self)
+
+    monkeypatch.setattr(EditHistory, "snapshot", counted)
+    with history.batched(), agent_edits("run-1"):
+        editor.add_component("T/number", instance_id="a1")
+        editor.add_component("T/doubler", instance_id="a2")
+        editor.connect("a1", "value", "a2", "value")
+    assert len(taken) == 1
+    state.apply(RunFinished(run_id="run-1"))
+    assert "a2:" in history.versions[-1].value
+
+    def failing(self):
+        raise RuntimeError("snapshot failed")
+
+    state.apply(RunStarted(run_id="run-2", agent_name="assistant", input="Add one"))
+    monkeypatch.setattr(EditHistory, "snapshot", failing)
+    with pytest.raises(ValueError, match="the edits failed"):
+        with history.batched(), agent_edits("run-2"):
+            editor.add_component("T/number", instance_id="a3")
+            raise ValueError("the edits failed")
+
+
 def test_a_request_of_many_edits_is_counted_with_the_edits_in_its_detail(editor):
     state = editor.edit_history.state
     state.apply(RunStarted(run_id="run-1", agent_name="assistant", input="Build it"))
