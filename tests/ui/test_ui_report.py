@@ -137,6 +137,63 @@ def test_done_and_pending_turns(page):
     expect(item.first).to_contain_text("Not run")
 
 
+def test_run_answers_a_pending_question_in_place(page):
+    from panel_flowdash.turns import agent_edits
+
+    editor = _editor()
+    asked = []
+
+    def run_pending(turn_id):
+        asked.append(turn_id)
+        # As the assistant does: the request's edits answer the question.
+        editor.answer_pending(turn_id, "run-answer")
+        with agent_edits("run-answer", "Which month was the best?"):
+            editor.add_component(
+                "Widgets/KPI", {"label": "Best", "suffix": " MW"}, instance_id="best"
+            )
+            editor.connect("level", "selected", "best", "value")
+        editor.end_agent_turns("run-answer")
+
+    editor.run_pending = run_pending
+    serve_component(page, editor)
+    page.get_by_role("button", name="Report", exact=True).click()
+    report = _report(page)
+    pending = report.locator(".fd-report-pending")
+    run = pending.get_by_role("button", name="Run")
+    expect(run).to_be_enabled()
+    run.click()
+    wait_until(lambda: asked == ["t2"], page)
+    expect(pending).to_have_count(0)
+    answer = report.locator(".fd-report-turn", has_text="Which month was the best?")
+    expect(answer.locator(".fd-report-node")).to_have_count(1)
+    expect(answer).to_contain_text("40 MW")
+    assert editor.node_origin("best") == "t2"
+
+
+def test_run_clicked_twice_asks_once_and_shows_it_running(page):
+    editor = _editor()
+    asked = []
+
+    def run_pending(turn_id):
+        asked.append(turn_id)
+        editor.running_pending = [*editor.running_pending, turn_id]
+
+    editor.run_pending = run_pending
+    serve_component(page, editor)
+    editor.surface = "report"
+    pending = _report(page).locator(".fd-report-pending")
+    run = pending.get_by_role("button", name="Run")
+    expect(run).to_be_enabled()
+    run.dblclick()
+    running = pending.get_by_role("button", name="Running")
+    expect(running).to_be_disabled()
+    wait_until(lambda: asked == ["t2"], page)
+    page.wait_for_timeout(300)
+    assert asked == ["t2"]
+    editor.running_pending = []
+    expect(pending.get_by_role("button", name="Run")).to_be_enabled()
+
+
 def test_a_done_turn_keeps_its_output_above_the_next_block(page):
     editor = _editor()
     serve_component(page, editor)

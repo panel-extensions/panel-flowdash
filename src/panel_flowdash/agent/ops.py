@@ -16,6 +16,7 @@ import re
 import typing as t
 
 import panel as pn
+import yaml
 
 from panel_flowdash.config_check import (
     CHECK_TIMEOUT,
@@ -39,6 +40,17 @@ from panel_flowdash.editor import (
 )
 from panel_flowdash.input_literals import check_literal
 from panel_flowdash.parameters import ContractError, ParameterError
+from panel_flowdash.report import (
+    ReportError,
+    block_kind,
+    insert_block,
+    move_block,
+    remove_block,
+    report_blocks,
+    set_title,
+    update_block,
+)
+from panel_flowdash.turns import _agent_source
 from panel_flowdash.ui import tile_layout
 
 from .preview import node_health, output_failures, preview_editor
@@ -47,10 +59,13 @@ from .validation import Issue, _check_value, _suggest, validate_dashboard
 from .yaml_format import (
     RESTRICTED_COMPONENT,
     DashboardYAMLError,
+    _Dumper,
+    _report as _report_doc,
     dashboard_from_dict,
     dashboard_to_dict,
     dashboard_to_yaml,
     editor_restricted,
+    load_yaml,
     node_names,
     parse_yaml,
     split_port,
@@ -175,6 +190,72 @@ def read_revision(text: str) -> str | None:
     first = text.split("\n", 1)[0]
     match = _REVISION.fullmatch(first)
     return match["token"] if match else None
+
+
+def _yaml(value: t.Any) -> str:
+    return yaml.dump(value, Dumper=_Dumper, sort_keys=False, allow_unicode=True, width=88)
+
+
+_REPORT_OPS = ("insert", "update", "move", "remove", "title")
+
+
+def _report_operation(report: dict, operation: t.Any) -> tuple[dict, str]:
+    """Apply one operation of :meth:`DashboardOps.edit_report` to *report*, nodes by name.
+
+    Returns the changed report and a label for the turn's summary.
+    """
+    if not isinstance(operation, dict):
+        raise ReportError("op", f"each operation must be a mapping, got {operation!r}.")
+    op = operation.get("op")
+    if op not in _REPORT_OPS:
+        raise ReportError("op", f"must be one of {', '.join(_REPORT_OPS)}, got {op!r}.")
+    allowed = {
+        "insert": ("block", "index"),
+        "update": ("index", "block"),
+        "move": ("index", "to"),
+        "remove": ("index",),
+        "title": ("title",),
+    }[op]
+    unknown = [key for key in operation if key not in ("op", *allowed)]
+    if unknown:
+        raise ReportError(
+            unknown[0], f"is not a key of a {op} operation; it takes {', '.join(allowed)}."
+        )
+    blocks = report.get("blocks") or []
+    index = operation.get("index")
+    if op == "title":
+        return set_title(report, operation.get("title")), "Renamed the report"
+    if op == "insert":
+        block = operation.get("block")
+        report = insert_block(report, index, block)
+        return report, _block_label("Added", block)
+    if op == "update" and isinstance(operation.get("block"), dict):
+        report = update_block(report, index, **operation["block"])
+        return report, _block_label("Changed", report["blocks"][index])
+    if op == "update":
+        raise ReportError("block", "give the keys to change as a mapping.")
+    if op == "move":
+        return move_block(report, index, operation.get("to")), "Reordered the report"
+    removed = blocks[index] if isinstance(index, int) and 0 <= index < len(blocks) else None
+    report = remove_block(report, index)
+    return report, _block_label("Removed", removed)
+
+
+def _block_label(verb: str, block: t.Any) -> str:
+    """Describe a change of a report block for a turn's summary, naming nodes but no prose."""
+    kind = block_kind(block) if isinstance(block, dict) and block else None
+    where = "from" if verb == "Removed" else "in" if verb == "Changed" else "to"
+    if kind == "node":
+        if verb == "Changed":
+            return f"Changed how the report shows {block['node']}"
+        return f"{verb} {block['node']} {where} the report"
+    if kind == "text":
+        return {
+            "Added": "Wrote a paragraph in the report",
+            "Changed": "Rewrote a paragraph in the report",
+        }.get(verb, "Removed a paragraph from the report")
+    noun = {"heading": "a heading", "group": "a group", "turn": "a question"}.get(kind, "a block")
+    return f"{verb} {noun} {where} the report"
 
 
 class DashboardOps:
@@ -1490,6 +1571,297 @@ class DashboardOps:
                 raise OperationError(f"Setting '{key}': {reason}")
         editor.settings.param.update(**settings)
         return editor._settings_values()
+
+    # ------------------------------------------------------------------
+    # Report
+    # ------------------------------------------------------------------
+
+    def report(self) -> dict[str, t.Any]:
+        """Return the open dashboard's report with nodes by name, as the YAML writes it.
+
+        A dashboard without a report of its own gives the one derived from
+        its groups and tile layout, with ``derived`` set; editing it makes it
+        the dashboard's own.
+        """
+        self._require_source()
+        editor = self.editor
+        resolved = report_blocks(editor)
+        names = self._names()
+        report: dict[str, t.Any] = {}
+        own = editor.report
+        if own is not None and own.get("title"):
+            report["title"] = own["title"]
+        blocks = []
+        for block in resolved.blocks:
+            entry = copy.deepcopy(dict(block))
+            if "node" in entry:
+                entry["node"] = names.get(entry["node"], entry["node"])
+            blocks.append(entry)
+        report["blocks"] = blocks
+        if resolved.derived:
+            report["derived"] = True
+        return report
+
+    def _report_revision(self, report: dict | None = None) -> str:
+        """Return a token identifying the report as it is now, nodes by name."""
+        report = self.report() if report is None else report
+        return _revision(json.dumps(report, sort_keys=True, default=str))
+
+    def report_revision(self) -> str:
+        """Return the token :meth:`get_report` writes, which :meth:`edit_report` can check."""
+        return self._report_revision()
+
+    def _check_report_revision(self, revision: str | None):
+        if revision is not None and revision != self._report_revision():
+            raise OperationError(
+                "The report changed since it was read, e.g. by the user's own edits, so its "
+                "indices may have moved. Nothing was changed; call get_report again and apply "
+                "your change to that."
+            )
+
+    def get_report(self) -> str:
+        """Return the report as YAML, each block preceded by a ``# <index>`` comment.
+
+        The first line is a ``# revision: <token>`` comment, which
+        :meth:`edit_report` and :meth:`set_report` check. The indices are
+        those :meth:`edit_report` takes. A question not run yet, or one
+        answered, has its question in the comment.
+        """
+        report = self.report()
+        turns = {turn.id: turn for turn in self.editor.turns}
+        lines = [f"# revision: {self._report_revision(report)}"]
+        if report.pop("derived", False):
+            lines.append(
+                "# derived: the dashboard has no report of its own yet; these blocks follow its "
+                "groups and tiles. Editing the report makes them its own."
+            )
+        if report.get("title"):
+            lines.append(_yaml({"title": report["title"]}).rstrip())
+        lines.append("blocks:" if report["blocks"] else "blocks: []")
+        for index, block in enumerate(report["blocks"]):
+            note = ""
+            turn = turns.get(block.get("turn"))
+            if turn is not None:
+                state = "question not run yet" if turn.status == "pending" else "answered"
+                question = " ".join((turn.question or "").split())
+                if len(question) > 160:
+                    question = question[:159] + "…"
+                note = f", {state}: {question}" if question else f", {state}"
+            lines.append(f"# {index}{note}")
+            lines.append(_yaml([block]).rstrip())
+        return "\n".join(lines) + "\n"
+
+    def report_text(self) -> str:
+        """Return the report as Markdown, as a reader sees it, placeholders filled with current values.
+
+        Nodes are named, with their title, rather than rendered; a group
+        lists its shown nodes and an answered question the nodes of its answer.
+        """
+        from panel_flowdash.report import fill_report_text, group_members, turn_outputs
+        from panel_flowdash.ui.tile_layout import tile_title
+
+        self._require_source()
+        editor = self.editor
+        resolved = report_blocks(editor)
+        names = self._names()
+        items = {item["instance_id"]: item for item in editor._tile_items}
+        turns = {turn.id: turn for turn in editor.turns}
+
+        def node(instance_id: str, block: t.Mapping | None = None) -> str:
+            item = items.get(instance_id)
+            title = tile_title(editor, item) if item is not None else instance_id
+            line = f"[node {names.get(instance_id, instance_id)}: {title}"
+            if block is not None and block.get("show") == "table":
+                line += ", as a table"
+            line += "]"
+            if block is not None and block.get("caption"):
+                line += f"\n*{block['caption']}*"
+            return line
+
+        parts = [f"# {resolved.title}"]
+        if resolved.filters:
+            parts.append("Filters: " + ", ".join(names.get(iid, iid) for iid in resolved.filters))
+        for block in resolved.blocks:
+            kind = block_kind(block)
+            if kind == "heading":
+                parts.append("#" * (block.get("level", 1) + 1) + " " + block["heading"])
+            elif kind == "text":
+                parts.append(fill_report_text(editor, block["text"]))
+            elif kind == "node":
+                parts.append(node(block["node"], block))
+            elif kind == "group":
+                group = editor.groups.get(block["group"])
+                label = group.title if group is not None and group.title else block["group"]
+                members = group_members(editor, block["group"])
+                parts.append(f"## {label}\n\n" + "\n".join(node(iid) for iid in members))
+            else:
+                turn = turns.get(block["turn"])
+                if turn is None:
+                    continue
+                question = turn.question or "A question"
+                if turn.status == "pending":
+                    parts.append(f"> Not run yet ({turn.id}): {question}")
+                else:
+                    answer = [node(iid) for iid in turn_outputs(editor, turn.id)]
+                    parts.append(
+                        f"### {question}\n\n"
+                        + ("\n".join(answer) or "(the nodes of this answer are gone)")
+                    )
+        return "\n\n".join(parts) + "\n"
+
+    def _report_ids(self) -> dict[str, str]:
+        return {name: iid for iid, name in self._names().items()}
+
+    def _apply_report(self, report: dict[str, t.Any], labels: list[str]) -> list[Issue]:
+        """Store *report*, nodes by name, as one edit described by *labels*; return its warnings."""
+        editor = self.editor
+        try:
+            stored = _report_doc(
+                report,
+                self._report_ids(),
+                set(editor.groups),
+                {turn.id for turn in editor.turns},
+            )
+        except DashboardYAMLError as exc:
+            raise OperationError(str(exc)) from exc
+        doc = dashboard_to_dict(editor)
+        doc["report"] = copy.deepcopy(report)
+        warnings = [
+            issue
+            for issue in self.validate(doc, checks=False)
+            if issue.path.startswith("report") and issue.severity != "error"
+        ]
+        try:
+            editor.set_report(stored, label=labels, coalesce=False)
+        except ValueError as exc:
+            raise OperationError(str(exc)) from exc
+        return warnings
+
+    def edit_report(
+        self, operations: list[dict[str, t.Any]], revision: str | None = None
+    ) -> list[Issue]:
+        """Change the report's blocks by index, in one edit, and return warnings about the result.
+
+        Each operation is a mapping with an ``op``:
+
+        - ``{"op": "insert", "block": {...}, "index": 2}`` inserts a block
+          before the block at ``index``, or last without it;
+        - ``{"op": "update", "index": 2, "block": {...}}`` changes keys of a
+          block, a null value removing the key;
+        - ``{"op": "move", "index": 2, "to": 0}`` moves a block to ``to``;
+        - ``{"op": "remove", "index": 2}`` removes a block;
+        - ``{"op": "title", "title": "..."}`` renames the report, an empty
+          title giving it the dashboard's.
+
+        Operations apply in order, each to the blocks the earlier ones left.
+        A dashboard without a report of its own starts from the derived one.
+        Nothing changes unless every operation applies and the result names
+        only nodes, groups and turns the dashboard has. With *revision*, the
+        token :meth:`get_report` gave, nothing changes either if the report
+        changed since, as its indices may have moved.
+
+        Raises
+        ------
+        OperationError
+            If an operation is malformed, the result is invalid or the report
+            changed since *revision*.
+        """
+        self._require_edit()
+        self._check_report_revision(revision)
+        if not isinstance(operations, list) or not operations:
+            raise OperationError("operations: give a list of at least one operation.")
+        report = self.report()
+        report.pop("derived", None)
+        labels: list[str] = []
+        for i, operation in enumerate(operations):
+            try:
+                report, label = _report_operation(report, operation)
+            except ReportError as exc:
+                raise OperationError(f"operations[{i}].{exc.key}: {exc.reason}") from None
+            if label not in labels:
+                labels.append(label)
+        return self._apply_report(report, labels)
+
+    def set_report(self, blocks_yaml: str) -> list[Issue]:
+        """Replace the report with YAML: a list of blocks, or a mapping with ``title`` and ``blocks``.
+
+        A list keeps the report's title. Returns warnings about the result.
+        YAML starting with the ``# revision:`` line :meth:`get_report`
+        writes is refused if the report changed since.
+
+        Raises
+        ------
+        OperationError
+            If the YAML is malformed or names a node, group or turn the dashboard does not have.
+        """
+        self._require_edit()
+        if isinstance(blocks_yaml, str):
+            self._check_report_revision(read_revision(blocks_yaml))
+        try:
+            value = load_yaml(blocks_yaml) if isinstance(blocks_yaml, str) else blocks_yaml
+        except DashboardYAMLError as exc:
+            raise OperationError(str(exc)) from exc
+        current = self.report()
+        derived = current.pop("derived", False)
+        if isinstance(value, list):
+            report = {**current, "blocks": value}
+        elif isinstance(value, dict):
+            report = dict(value)
+        else:
+            raise OperationError(
+                "blocks_yaml: give a list of blocks, or a mapping with title and blocks."
+            )
+        label = "Wrote the report" if derived else "Rewrote the report"
+        return self._apply_report(report, [label])
+
+    def ask_in_report(self, question: str, after: int | None = None) -> str:
+        """Add a question to the report, not run yet, and return its turn id.
+
+        Its block goes after the block at index *after*, or last without it.
+        Running it (:meth:`run_pending`, or the Run button in the app) asks
+        the agent, whose answer then fills the block.
+        """
+        self._require_edit()
+        editor = self.editor
+        blocks = report_blocks(editor).blocks
+        if after is not None and (
+            isinstance(after, bool) or not isinstance(after, int) or not 0 <= after < len(blocks)
+        ):
+            raise OperationError(
+                f"after: must be the index of a block, 0 to {len(blocks) - 1}, got {after!r}."
+                if blocks
+                else "after: the report has no blocks yet; leave after out."
+            )
+        try:
+            return editor.ask_in_report(question, None if after is None else after + 1)
+        except ValueError as exc:
+            raise OperationError(str(exc)) from exc
+
+    def pending_question(self, turn: str) -> str:
+        """Return the question of the pending turn *turn*, raising OperationError if there is none."""
+        found = next((t for t in self.editor.turns if t.id == turn), None)
+        if found is None or found.status != "pending":
+            pending = [t.id for t in self.editor.turns if t.status == "pending"]
+            raise OperationError(
+                f"No question waiting to be run has the id {turn!r}."
+                + (f" Those waiting are: {', '.join(pending)}." if pending else "")
+            )
+        return found.question or ""
+
+    def run_pending(self, turn: str, run_id: str | None = None) -> str:
+        """Answer the pending turn *turn* with the agent request *run_id*'s next edits; return its question.
+
+        Defaults to the panel-agents run the call is made in. The request's
+        edits so far keep their turn; those it makes from now on are the
+        answer, see :meth:`FlowDash.answer_pending`.
+        """
+        self._require_edit()
+        question = self.pending_question(turn)
+        if run_id is None:
+            source = _agent_source()
+            run_id = source.run if source is not None else None
+        self.editor.answer_pending(turn, run_id)
+        return question
 
     # ------------------------------------------------------------------
     # Parameters

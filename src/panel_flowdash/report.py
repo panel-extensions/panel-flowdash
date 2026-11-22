@@ -390,6 +390,31 @@ def dashboard_nodes(editor: FlowDash) -> set[str]:
     return {item["instance_id"] for item in _ordered_items(editor)}
 
 
+def turn_outputs(editor: FlowDash, turn_id: str) -> list[str]:
+    """Return the nodes a turn made that no other node it made reads from, in dashboard order.
+
+    They are the turn's answer, which its block in the report shows.
+    """
+    from panel_flowdash.ui import tile_layout
+
+    made = [
+        item["instance_id"]
+        for item in editor._tile_items
+        if editor.node_origin(item["instance_id"]) == turn_id
+    ]
+    feeding = {
+        edge["source"]
+        for edge in editor._dataflow_graph.edges
+        if edge["source"] in made and edge["target"] in made
+    }
+    leaves = [iid for iid in made if iid not in feeding]
+    order = {
+        item["instance_id"]: i
+        for i, item in enumerate(tile_layout.area_items(editor, tile_layout.GRID))
+    }
+    return sorted(leaves, key=lambda iid: order.get(iid, len(order)))
+
+
 def report_blocks(editor: FlowDash) -> ResolvedReport:
     """Return the report *editor*'s dashboard reads as, authored or derived.
 
@@ -622,6 +647,7 @@ __all__ = [
     "report_blocks",
     "report_turns",
     "set_title",
+    "turn_outputs",
     "update_block",
     "without_nodes",
 ]

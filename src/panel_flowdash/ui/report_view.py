@@ -15,7 +15,9 @@ menu, an insert bar between blocks adds headings, text, nodes, groups and
 questions, text is edited in place and the title can be changed (see
 :mod:`panel_flowdash.ui.report_editing`). Every change goes through
 ``FlowDash.set_report``, so it is one version of the edit history. Viewers,
-and editors outside edit mode, read the report. Running pending turns comes later.
+and editors outside edit mode, read the report. A question not run yet has a
+Run button, which editors use to ask the assistant (``FlowDash.run_pending``);
+its answer fills the question's block.
 """
 
 from __future__ import annotations
@@ -45,6 +47,7 @@ from panel_flowdash.report import (
     render_report_text,
     report_blocks,
     set_title,
+    turn_outputs,
     update_block,
 )
 from panel_flowdash.ui import tile_layout
@@ -79,6 +82,7 @@ DERIVED_NOTICE = "Built from this dashboard's groups and tile layout."
 CUSTOMIZE_HINT = "Customize it to reorder, write prose or ask questions."
 EDIT_HINT = "Edit the dashboard to customize it."
 PENDING_NOTE = "Not answered yet. Running it asks the assistant to build the answer here."
+RUN_UNAVAILABLE = "Only editors can run a question, in an app with an assistant."
 EMPTY_TEXT = "This dashboard has nothing to show in a report yet."
 RESTRICTED_TEXT = "This output uses a component you may not see."
 
@@ -672,7 +676,10 @@ class ReportView(Viewer):
             css_classes=["flowdash-report"],
             stylesheets=[_LAYOUT_CSS],
         )
-        editor.param.watch(self.schedule, ["dashboard", "read_only", "provenance", "editable"])
+        editor.param.watch(
+            self.schedule,
+            ["dashboard", "read_only", "provenance", "editable", "run_pending", "running_pending"],
+        )
 
     def __panel__(self):
         """Render the view."""
@@ -1192,26 +1199,6 @@ class ReportView(Viewer):
             )
         ]
 
-    def _turn_outputs(self, turn_id: str) -> list[str]:
-        """Return the nodes a turn made that no other node it made reads from, in dashboard order."""
-        editor = self.editor
-        made = [
-            item["instance_id"]
-            for item in editor._tile_items
-            if editor.node_origin(item["instance_id"]) == turn_id
-        ]
-        feeding = {
-            edge["source"]
-            for edge in editor._dataflow_graph.edges
-            if edge["source"] in made and edge["target"] in made
-        }
-        leaves = [iid for iid in made if iid not in feeding]
-        order = {
-            item["instance_id"]: i
-            for i, item in enumerate(tile_layout.area_items(editor, tile_layout.GRID))
-        }
-        return sorted(leaves, key=lambda iid: order.get(iid, len(order)))
-
     def _turn(self, turn_id: str) -> list[Viewable]:
         editor = self.editor
         turn = next((t for t in editor.turns if t.id == turn_id), None)
@@ -1222,7 +1209,7 @@ class ReportView(Viewer):
         redacted = editor.run_redacted(turn.run) if turn.run is not None else editor.read_only
         who = "Answered by the assistant" if turn.actor == "agent" else "Edited by hand"
         title = turn.question if turn.question and not redacted else who
-        outputs = self._turn_outputs(turn.id)
+        outputs = turn_outputs(editor, turn.id)
         meta = [text_typography(who, variant="body2", margin=0, sx={"color": "text.secondary"})]
         made_by_agent = next((iid for iid in outputs if editor.made_by_agent(iid)), None)
         if made_by_agent is not None:
@@ -1251,21 +1238,43 @@ class ReportView(Viewer):
             )
         ]
 
+    def _run_pending(self, turn_id: str, button: pmui.Button | None = None):
+        editor = self.editor
+        if editor.run_pending is None or editor.read_only or turn_id in editor.running_pending:
+            return
+        if button is not None:
+            # At once, before the rebuild the run sets off, so a second click does nothing.
+            button.param.update(disabled=True, loading=True, label="Running")
+        try:
+            editor.run_pending(turn_id)
+        except Exception:
+            logger.exception("Running a question of the report failed")
+            editor._notify("warning", "The question could not be run.", duration=5000)
+            self.schedule()
+
     def _how_made(self, instance_id: str):
         self.editor.show_how_made(instance_id)
 
     def _pending_turn(self, turn: DashboardTurn) -> Viewable:
         question = turn.question or "A planned question"
         anchor = self._next_anchor(question, "Not run")
+        editor = self.editor
+        runnable = editor.run_pending is not None and not editor.read_only
+        running = turn.id in editor.running_pending
         run = pmui.Button(
-            label="Run",
+            label="Running" if running else "Run",
             icon="play_arrow",
             variant="contained",
             size="small",
-            disabled=True,
+            disabled=not runnable or running,
+            loading=running,
+            description=None if runnable else RUN_UNAVAILABLE,
             margin=0,
             align="center",
             css_classes=["fd-report-run"],
+        )
+        run.on_click(
+            lambda _event, turn_id=turn.id, button=run: self._run_pending(turn_id, button)
         )
         text = self._section(
             text_typography(
