@@ -34,7 +34,14 @@ from panel_flowdash.dashboard_store import (
     MemoryDashboardStore,
 )
 from panel_flowdash.dataflow_engine import DataflowGraph, build_node_state_class
-from panel_flowdash.editor import FlowDash, current_dashboard, current_node_id, dashboard_context
+from panel_flowdash.editor import (
+    FlowDash,
+    PlacementReason,
+    current_dashboard,
+    current_node_id,
+    dashboard_context,
+    placement_context,
+)
 from panel_flowdash.json_store import JSONFolderDashboardStore
 from panel_flowdash.parameters import (
     ContractContext,
@@ -104,6 +111,7 @@ __all__: list[str] = [
     "ParameterContract",
     "ParameterError",
     "Permission",
+    "PlacementReason",
     "Predicate",
     "RegistryEntry",
     "Selection",
@@ -130,6 +138,7 @@ __all__: list[str] = [
     "normalize_components",
     "normalize_port_type",
     "panel_app",
+    "placement_context",
     "port_type_color",
     "port_types_compatible",
     "register",
