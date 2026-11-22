@@ -15,14 +15,17 @@ import panel as pn
 import panel_material_ui as pmui
 
 from panel_flowdash.ui.tile_layout import (
+    AREA_ICONS,
     AREA_NAMES,
+    AREAS,
     FRAME_DEFAULT,
     GRID,
     GRID_COLUMNS,
     area_of,
     frame_choices,
     frame_value,
-    move_buttons,
+    move_targets,
+    move_to_area,
     tile_entry,
     to_columns,
     to_width,
@@ -86,6 +89,20 @@ def _caption(text: str, **kwargs) -> pmui.Typography:
     return pmui.Typography(text, variant="caption", sx={"color": "text.secondary"}, **kwargs)
 
 
+def _update_select(select: pmui.Select, options: dict, value) -> bool:
+    """Set a select's options and value if they changed, returning whether the options did.
+
+    The grid sends its layout again on every selection and resize; setting the
+    options of a select whose menu is open would rebuild the menu under the pointer.
+    """
+    changed = select.options != options
+    if changed:
+        select.param.update(options=options, value=value)
+    elif select.value != value:
+        select.value = value
+    return changed
+
+
 class TileOptions:
     """The tile options of the component *instance_id*, kept in step with the grid.
 
@@ -144,7 +161,25 @@ class TileOptions:
             sx={"textTransform": "none"},
         )
         self.arrange_button.on_click(lambda _event: setattr(editor, "mode", "dashboard"))
-        self._moves = pn.FlexBox(margin=0, gap="0px 16px")
+        # One button per area, shown for the areas the component can move to. They
+        # and the rest of the tab are kept across moves, as the browser drops the
+        # focus asked for a button it has not rendered yet.
+        self._move_buttons: dict[str, pmui.Button] = {}
+        for area in AREAS:
+            # Without a tooltip: a button with one cannot be given the focus.
+            button = pmui.Button(
+                label=f"Move to {AREA_NAMES[area]}",
+                icon=AREA_ICONS[area],
+                variant="text",
+                size="small",
+                margin=(4, 0, 0, 0),
+                sx={"textTransform": "none"},
+                visible=False,
+            )
+            button.on_click(partial(self._on_move, area))
+            self._move_buttons[area] = button
+        self._moves = pn.FlexBox(*self._move_buttons.values(), margin=0, gap="0px 16px")
+        self._elsewhere = _caption("", margin=(12, 0, 0, 0))
         # A switch for each global filter, off where the view opts out of it.
         self._filter_switches: dict[str, pmui.Switch] = {}
         self.filters = pn.Column(margin=(12, 0, 0, 0), sizing_mode="stretch_width", visible=False)
@@ -177,70 +212,82 @@ class TileOptions:
 
     @pn.io.hold()
     def sync(self):
-        """Show the tile's current options, rebuilding the tab when the component changed area."""
+        """Show the tile's current options, and those its component's area allows."""
         editor = self.editor
         area = area_of(editor, self.item)
         self._syncing = True
         try:
-            if area != self._area or not self.layout.objects:
+            if not self.layout.objects:
+                self._grid_options = [
+                    self.show_switch,
+                    pn.Row(
+                        self.width_select,
+                        self.height_select,
+                        margin=0,
+                        sizing_mode="stretch_width",
+                    ),
+                    self.size_hint,
+                    self.band_hint,
+                    self.frame_select,
+                ]
+                self.layout[:] = [
+                    self._elsewhere,
+                    *self._grid_options,
+                    self.filters,
+                    self._moves,
+                    self.arrange_button,
+                ]
+            if area != self._area:
                 self._area = area
-                self.layout[:] = self._objects(area)
+                self._show_area(area)
             if area == GRID:
                 self._sync_values()
             self._sync_filters()
         finally:
             self._syncing = False
 
-    def _objects(self, area: str | None) -> list[Viewable]:
-        moves = move_buttons(self.editor, self.item, then=self._refocus, margin=(4, 0, 0, 0))
-        # A button with a tooltip cannot be given the focus, see _refocus.
-        for button in moves:
-            button.description = None
-        self._moves[:] = moves
-        if area != GRID:
-            where = AREA_NAMES.get(area, "sidebar")
-            return [
-                _caption(
-                    f"This component is shown in the {where} of the dashboard rather than "
-                    "as a tile.",
-                    margin=(12, 0, 0, 0),
-                ),
-                self._moves,
-                self.filters,
-            ]
-        objects: list[Viewable] = [
-            self.show_switch,
-            pn.Row(self.width_select, self.height_select, margin=0, sizing_mode="stretch_width"),
-            self.size_hint,
-            self.band_hint,
-            self.frame_select,
-            self.filters,
-            self._moves,
-            self.arrange_button,
-        ]
-        return objects
+    def _show_area(self, area: str | None):
+        on_grid = area == GRID
+        self._elsewhere.object = (
+            ""
+            if on_grid
+            else f"This component is shown in the {AREA_NAMES.get(area, 'sidebar')} of the "
+            "dashboard rather than as a tile."
+        )
+        self._elsewhere.visible = not on_grid
+        for widget in self._grid_options:
+            widget.visible = on_grid
+        self.arrange_button.visible = on_grid and self.editor.mode != "dashboard"
+        targets = move_targets(self.editor, self.item)
+        for target, button in self._move_buttons.items():
+            button.visible = target in targets
+
+    def _on_move(self, area: str, _event=None):
+        if move_to_area(self.editor, self.instance_id, area):
+            self._refocus()
 
     def _refocus(self):
-        # The pressed button went with the rebuilt tab, which may be a new one for
-        # the same component; the first move left there takes the focus.
-        def focus():
-            current = getattr(self.editor._inspector, "tile_options", None) or self
-            button = next(iter(current._moves.objects), None)
-            if button is not None:
-                button.focus()
-
+        # The pressed button is hidden with the move; the first move left takes the focus.
+        button = next((b for b in self._move_buttons.values() if b.visible), None)
+        if button is None:
+            return
         if pn.state.curdoc is None or pn.state.curdoc.session_context is None:
-            focus()
+            button.focus()
         else:
-            pn.state.execute(focus, schedule=True)
+            # After the browser has shown it, which the change of area sends first.
+            pn.state.execute(button.focus, schedule=True)
 
     def _sync_values(self):
         editor = self.editor
         entry = tile_entry(editor, self.instance_id)
         spec = self.spec
         width = entry.get("width")
-        self.show_switch.value = entry.get("visible", True)
-        self.width_select.value = to_columns(width) if isinstance(width, (int, float)) else AUTO
+        visible = entry.get("visible", True)
+        if self.show_switch.value != visible:
+            self.show_switch.value = visible
+        columns = to_columns(width) if isinstance(width, (int, float)) else AUTO
+        if self.width_select.value != columns:
+            self.width_select.value = columns
         height = entry.get("height", ((spec and spec.default_size) or {}).get("height"))
         low = ((spec and spec.min_size) or {}).get("height", 0)
         high = ((spec and spec.max_size) or {}).get("height", float("inf"))
@@ -250,15 +297,12 @@ class TileOptions:
             choices.add(height)
         else:
             height = AUTO
-        self.height_select.param.update(
-            options={"Automatic": AUTO, **{f"{h} px": h for h in sorted(choices)}},
-            value=height,
-        )
-        self.frame_select.param.update(
-            options=frame_choices(editor, self.instance_id), value=frame_value(entry)
-        )
-        # The browser shows the label of the value, which changing only the options does not resend.
-        self.frame_select.param.trigger("value")
+        heights = {"Automatic": AUTO, **{f"{h} px": h for h in sorted(choices)}}
+        _update_select(self.height_select, heights, height)
+        frames = frame_choices(editor, self.instance_id)
+        if _update_select(self.frame_select, frames, frame_value(entry)):
+            # The browser shows the label of the value, which changing only the options does not resend.
+            self.frame_select.param.trigger("value")
         self.size_hint.object = size_hints(spec)
         self.size_hint.visible = bool(self.size_hint.object)
         band = editor._layout_panel.band_hint() if editor.mode == "dashboard" else ""

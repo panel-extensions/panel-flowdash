@@ -51,6 +51,7 @@ flowdash serve <directory> [options]
 | `--warm` | off | Import all modules at startup instead of lazily on first visit. |
 | `--dev` | off | Enable autoreload for development. |
 | `--admin` | off | Enable the Panel admin interface. |
+| `--admin-link` | off | Print a link that adds one admin even when the project already has admins. See [The admin view](#the-admin-view). |
 | `--profiler` | none | Profiler to use (pyinstrument, snakeviz). |
 | `--num-threads` | auto | Thread pool size. |
 | `--allow-websocket-origin` | all | Restrict allowed websocket origins. |
@@ -205,6 +206,7 @@ missing or set to `None` keeps its default.
 | `header_layout` | `str` | `"compact"` (default) puts a dashboard's title, health and actions in the top bar, `"full"` in a row of their own under it, see [Navigation](#navigation). Dashboards can override it in their settings. |
 | `home_dashboard` | `str` | Dashboard id or title shown on the homepage. Overridden by `--home-dashboard`. |
 | `include_builtin_components` | `bool` | Offer the built-in widget components in the editor. Default `True`. |
+| `admin_link` | `bool` | Whether the admin link printed at startup can claim the admin view. Default `True`, see [The admin view](#the-admin-view). |
 | `nav_variant` | `str` | `"rail"` (default), `"left"`, `"right"` or `"menubar"`, see [Navigation](#navigation). Overridden by `--nav-variant`. |
 | `notifications` | `bool` | Show user-facing messages as Panel notifications. Default `True`. |
 | `page_options` | `dict` | Extra keyword arguments for the underlying `panel_material_ui.Page`. |
@@ -240,6 +242,61 @@ attribute. `editor_options` and `page_options` are shared by every session, so
 create any Panel objects they would hold in an `editor_class` subclass or in
 `configure_layout` instead. `sidebar` and `contextbar` are not read for the same
 reason; set them from `configure_layout`.
+
+---
+
+## The admin view
+
+Admins get an Admin item at the bottom of the rail, which edits the
+project file's settings (see the
+[Project File reference](../reference/project-file.md#built-in-sections)).
+An admin is a member of `admin_groups` or a user named in the project
+file's `general.admins`, which admins can edit under Admin, General.
+
+### Claiming a new project
+
+While a project has no admin (no `admin_groups` and nobody in `general.admins`),
+`flowdash serve` prints a link when it starts,
+as Jupyter does:
+
+```text
+No one administers this FlowDash project yet. Open this link to become its admin
+(valid until the server restarts):
+    http://localhost:5006/admin#token=Xb3...
+```
+
+The token is random, kept in memory and new on every start. It travels in
+the URL fragment, which the browser never sends to the server, so it
+appears in no access log, and the page removes it from the address bar
+once it has handed it over. Whoever opens the link is added to
+`general.admins` and is admin on every later start, with no token.
+
+The link claims the project once: the token stops working after its first
+use, and it is refused once the project has an admin or `admin_groups`,
+even if the printed link is still in a console or log. To add an admin
+when the existing ones are away, restart with `--admin-link`, which prints
+a link that adds one more admin, again once. `FLOWDASH_ADMIN_TOKEN` fixes
+the token for scripted setups; it too works once per start and only under
+the same rules. Set `admin_link = False` in `__init__.py` to turn the link
+off entirely.
+
+### Two ways of working
+
+**Shared project, launched by each person.** The project folder lives in
+version control or on a network drive and each person runs
+`flowdash serve` on their own machine, without sign-in. Without sign-in
+every visitor of a server is the account that runs it (its OS user name),
+so `general.admins` names OS accounts: once `philipp` claimed the project,
+anyone who opens a server that `philipp` started is admin. That is fine on
+your own machine and is not a security boundary: anyone who can reach that
+server, or edit the project file, can make themselves admin.
+
+**Deployed with sign-in.** Configure OAuth (Panel's `--oauth-provider`
+options) and, if you like, `admin_groups`. The user who opens the admin
+link is recorded by their sign-in name and only they, the other users in
+`general.admins` and the members of `admin_groups` get the admin view. The
+link works from wherever it is opened, so it is also safe behind a proxy;
+treat it like a password until it has been used.
 
 ---
 
