@@ -7,11 +7,12 @@ of a hidden grid until it is shown again.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass
 
 import panel_material_ui as pmui
 
+from panel_flowdash import auto_layout
 from panel_flowdash.ui.tile import resolve_framed
 
 GRID_COLUMNS = 12
@@ -45,13 +46,22 @@ def tile_entry(editor, instance_id: str) -> dict:
     return next((dict(e) for e in _layout(editor) if e.get("instance_id") == instance_id), {})
 
 
-def update_tile(editor, instance_id: str, **patch):
+def update_tile(editor, instance_id: str, rebalance: Collection[str] | None = None, **patch):
     """Change how a component's tile is laid out, e.g. ``visible``, ``width`` or ``height``.
 
     Works whether or not the tile grid is on screen: the grid is rebuilt from
-    the updated layout, which is what is saved.
+    the updated layout, which is what is saved. With *rebalance*, a new width
+    or height also resizes the other tiles of the tile's row, except those
+    of *rebalance*, as dragging the tile's edge does (see
+    :func:`~panel_flowdash.auto_layout.resize_in_row`).
     """
+    editor._settle_deferred_tiles()
     layout = [dict(e) for e in _layout(editor)]
+    if rebalance is not None and {"width", "height"} & set(patch):
+        layout, held = _rebalanced(editor, layout, instance_id, patch, rebalance)
+        if held is not None and "width" in patch:
+            # Its row may hold the tile narrower than asked.
+            patch["width"] = held
     entry = next((e for e in layout if e.get("instance_id") == instance_id), None)
     if entry is None:
         entry = {"instance_id": instance_id}
@@ -83,8 +93,62 @@ def update_tile(editor, instance_id: str, **patch):
     )
 
 
+def _rebalanced(
+    editor, layout: list[dict], instance_id: str, patch: dict, fixed: Collection[str]
+) -> tuple[list[dict], float | None]:
+    """Return *layout* with the tile's new size from *patch* and its row rebalanced around it.
+
+    Also returns the width the tile got, None while it is not shown on the grid.
+    """
+    by_id = {e["instance_id"]: e for e in layout if "instance_id" in e}
+    shown = [
+        item
+        for item in area_items(editor, GRID, by_id)
+        if by_id.get(item["instance_id"], {}).get("visible") is not False
+    ]
+    if not any(item["instance_id"] == instance_id for item in shown):
+        return layout, None
+    width, _ = editor._tile_bands()
+    bounds = {
+        item["instance_id"]: auto_layout.width_bounds(editor._tile_box(item), width)
+        for item in shown
+    }
+    entries = [
+        by_id.get(item["instance_id"], {"instance_id": item["instance_id"]}) for item in shown
+    ]
+    resized = auto_layout.resize_in_row(
+        entries,
+        instance_id,
+        width=patch.get("width"),
+        height=patch.get("height"),
+        fixed=fixed,
+        bounds=bounds,
+    )
+    held = None
+    for entry in resized:
+        if entry["instance_id"] == instance_id:
+            held = entry.get("width")
+        if entry["instance_id"] in by_id:
+            by_id[entry["instance_id"]].update(entry)
+        elif entry.keys() != {"instance_id"}:
+            layout.append(entry)
+    return layout, held
+
+
+def row_layout(editor) -> list[list[dict]]:
+    """Return the entries of the tiles shown on the grid, by the rows they fill."""
+    entries = _entries(editor)
+    shown = [
+        entries.get(item["instance_id"], {"instance_id": item["instance_id"]})
+        for item in area_items(editor, GRID, entries)
+        if entries.get(item["instance_id"], {}).get("visible") is not False
+    ]
+    return [[dict(e) for e in row] for row in auto_layout.layout_rows(shown)]
+
+
 def move_tile(editor, instance_id: str, index: int):
     """Move a component's tile to position *index* among the tiles, 0 for the first."""
+    editor._settle_deferred_tiles()
     layout = [dict(e) for e in _layout(editor)]
     entries = _entries(editor)
     tiles = [
@@ -256,6 +320,7 @@ def move_to_area(
     """
     if area not in AREAS:
         raise ValueError(f"area is one of {', '.join(AREAS)}, got {area!r}.")
+    editor._settle_deferred_tiles()
     item = next(i for i in editor._tile_items if i["instance_id"] == instance_id)
     if area != GRID and not fits_beside(editor, item):
         raise ValueError(refusal(editor, item, area))

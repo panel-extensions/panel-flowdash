@@ -327,6 +327,14 @@ def _key_saved_layout(layout: list | None, legacy_ids: list[str]) -> list[dict]:
     return keyed
 
 
+def _is_title(item: dict) -> bool:
+    """Whether a placed item is a heading of the dashboard's title size."""
+    return (
+        item.get("component_id") == "Text/Heading"
+        and (item.get("config") or {}).get("size") == "Title"
+    )
+
+
 def _display_rank(entries: dict[str, dict], item: dict, position: int) -> tuple:
     """Order a placed item by its layout index, then those without one by placement."""
     index = entries.get(item["instance_id"], {}).get("index")
@@ -6292,6 +6300,31 @@ class FlowDash(Viewer):
             return
         self._lay_out_released(pending, rearrange, run_id)
 
+    def _settle_deferred_tiles(self):
+        """Lay out the tiles waiting for the agent's request to end now, before a layout edit.
+
+        An edit that sizes, moves or arranges tiles applies to the tiles as
+        they are, so laying the waiting ones out only when the request ends
+        would undo it. The layout stays deferred for the tiles added later.
+        """
+        pending = self._deferred_tiles
+        if not pending:
+            return
+        rearrange, self._deferred_rearrange = self._deferred_rearrange, False
+        self._deferred_tiles = None
+        try:
+            shown = {item["instance_id"] for item in tile_layout.grid_tiles(self)}
+            pending = pending & shown
+            if pending or rearrange:
+                if self._all_tiles_automatic(pending):
+                    self._arrange_tiles(self._plumbing(pending))
+                else:
+                    self._place_new_tiles(pending)
+        finally:
+            self._deferred_tiles = set()
+            for tiles in self._deferred_by_run.values():
+                tiles.clear()
+
     def _lay_out_released(self, pending: set[str], rearrange: bool, run_id: str | None):
         shown = {item["instance_id"] for item in tile_layout.grid_tiles(self)}
         pending &= shown
@@ -7134,6 +7167,7 @@ class FlowDash(Viewer):
             dict(spec.default_size or {}),
             dict(spec.min_size or {}),
             dict(spec.max_size or {}),
+            lead=_is_title(item),
         )
 
     def _tile_bands(self) -> tuple[int, dict[str, float]]:
@@ -7168,6 +7202,9 @@ class FlowDash(Viewer):
 
         def key(i):
             index = rank.get(tiles[i]["instance_id"])
+            # A dashboard title not laid out yet goes in front of the tiles.
+            if index is None and _is_title(tiles[i]):
+                return (False, -1, i)
             return (index is None, index or 0, i)
 
         return [tiles[i] for i in sorted(range(len(tiles)), key=key)]
@@ -7177,13 +7214,15 @@ class FlowDash(Viewer):
         hide: t.Collection[str] = (),
         order: t.Sequence[str] = (),
         style: str = "grid",
+        sizes: t.Mapping[str, t.Mapping[str, float]] | None = None,
     ):
         """Lay out every visible tile, hiding the tiles of *hide* first.
 
         The tiles of *order*, instance ids, come first in that order and the
         rest after them in their current order; a heading moves with the tile
         it titles. The ``"grid"`` style lays them out by kind, ``"stack"`` one
-        to a row in that order.
+        to a row in that order. The tiles of *sizes* then get their ``width``
+        and ``height`` from it, with their rows rebalanced around them.
         """
         tiles = [item for item in self._tile_order() if item["instance_id"] not in hide]
         boxes = [self._tile_box(item) for item in tiles]
@@ -7195,6 +7234,11 @@ class FlowDash(Viewer):
             layout = auto_layout.stack_tiles(boxes, previous)
         else:
             layout = auto_layout.arrange_tiles(boxes, width, previous)
+        bounds = {box.id: auto_layout.width_bounds(box, width) for box in boxes}
+        for iid, size in (sizes or {}).items():
+            layout = auto_layout.resize_in_row(
+                layout, iid, size.get("width"), size.get("height"), fixed=set(sizes), bounds=bounds
+            )
         shown = {box.id for box in boxes}
         hidden = [dict(e) for e in self.layout if e.get("instance_id") not in shown | set(hide)]
         hidden += [{**previous.get(iid, {}), "instance_id": iid, "visible": False} for iid in hide]
@@ -7299,7 +7343,12 @@ class FlowDash(Viewer):
         self._set_tile_layout(layout, responsive)
         self._auto_tiles.update(new)
 
-    def arrange_layout(self, order: t.Sequence[str] | None = None, style: str = "grid"):
+    def arrange_layout(
+        self,
+        order: t.Sequence[str] | None = None,
+        style: str = "grid",
+        sizes: t.Mapping[str, t.Mapping[str, float]] | None = None,
+    ):
         """Lay out every visible tile by its kind, as one edit.
 
         Controls go first, then KPIs, both at their default width, charts in
@@ -7316,12 +7365,17 @@ class FlowDash(Viewer):
         style
             ``"grid"`` lays the tiles out by kind as above, ``"stack"`` puts
             them one to a row at full width in their order.
+        sizes
+            The ``width`` and ``height`` of tiles sized on purpose, by
+            instance id, which they keep; the other tiles of their rows make
+            room for them.
         """
         if style not in ("grid", "stack"):
             raise ValueError(f"Unknown layout style {style!r}; use 'grid' or 'stack'.")
+        self._settle_deferred_tiles()
         if not tile_layout.grid_tiles(self):
             return
-        self._arrange_tiles(order=order or (), style=style)
+        self._arrange_tiles(order=order or (), style=style, sizes=sizes)
         self._record_edit("Arranged the tile layout", op="arrange_layout")
 
     def _placed_singletons(self) -> set[str]:

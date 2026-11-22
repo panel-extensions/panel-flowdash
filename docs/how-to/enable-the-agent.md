@@ -412,6 +412,12 @@ tile with the tiles of its kind, see
 [Automatic arrangement](layout-and-sizing.md#automatic-arrangement), and
 `ops.arrange_canvas()` and `ops.arrange_tiles()` rearrange everything on request;
 `ops.arrange_tiles(order=[...], style="stack")` also puts named tiles first or stacks them.
+`ops.place_tile(name, width=...)` rebalances the tile's row as dragging its edge does,
+and the sizes it sets in a request survive `arrange_tiles` unless you pass
+`keep_sizes=False`; `ops.layout_notes` says what it could not apply as asked, and
+`ops.describe_layout()` lists the rows with each tile's width. A request a tool cannot
+fulfil by being asked again, such as a chart for the top bar, raises `NotApplied`,
+which a dashboard tool reports to the model instead of asking it to retry.
 Without `name`, `add_node` gives the node a generated name such as `kpi_3fa2c1` and
 returns it. A chosen name follows the rules for
 [node names](../reference/dashboard-yaml.md#nodes) and is at most 64 characters long,

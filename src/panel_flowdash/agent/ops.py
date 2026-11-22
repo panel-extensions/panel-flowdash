@@ -79,6 +79,15 @@ class OperationError(ValueError):
     """
 
 
+def _tile_text(names: dict[str, str], entry: dict) -> str:
+    """Describe a tile's layout entry as its node's name, width and height, e.g. ``kpi 25% 130px``."""
+    text = f"{names.get(entry['instance_id'], entry['instance_id'])} "
+    text += f"{min(100.0, entry.get('width') or 100.0):g}%"
+    if entry.get("height") is not None:
+        text += f" {entry['height']:g}px"
+    return text
+
+
 def _refuse_config(what: str, problems: list[str]):
     """Raise an :class:`OperationError` listing the problems a config check found."""
     if len(problems) == 1:
@@ -124,6 +133,13 @@ class OutputUnavailable(Exception):
         self.name = name
         self.status = status
         self.message = message
+
+
+class NotApplied(OperationError):
+    """A request that asking again cannot fix, e.g. a chart moved to the top bar.
+
+    Tools report it as their result rather than asking the agent to retry.
+    """
 
 
 class NotFound(OperationError, KeyError):
@@ -291,6 +307,11 @@ class DashboardOps:
         # What the config check found on the latest add_node, set_config,
         # connect or disconnect, warnings included.
         self.last_check: CheckResult = CheckResult()
+        # The tile sizes place_tile set in the current request, by instance id,
+        # which arrange_tiles keeps.
+        self.sized_tiles: dict[str, dict[str, float]] = {}
+        # What the latest place_tile did not apply as asked, for the agent.
+        self.layout_notes: list[str] = []
 
     # ------------------------------------------------------------------
     # Rights
@@ -1451,8 +1472,18 @@ class DashboardOps:
         index: int | None = None,
         frame: t.Literal["default", "framed", "unframed"] | None = None,
         area: t.Literal["grid", "top", "sidebar"] | None = None,
+        before: str | None = None,
+        after: str | None = None,
     ) -> dict[str, t.Any]:
         """Change how a node's tile is laid out and return its layout entry.
+
+        A new width or height also resizes the other tiles of the tile's row,
+        as dragging its edge in the Layout tab does: a wider tile takes room
+        from them and a narrower one gives it back, unless the first tile of
+        the next row moves up into it. Tiles sized with this method earlier
+        in the request keep their size, and :meth:`arrange_tiles` keeps it
+        too. Notes on what was not applied as asked, e.g. a width bounded by
+        the component or a hidden tile, are in :attr:`layout_notes`.
 
         Parameters
         ----------
@@ -1473,19 +1504,30 @@ class DashboardOps:
             "grid" shows the node as a tile; "top" in the bar above the grid
             and "sidebar" in the panel left of it, which only controls, KPIs
             and text fit.
+        before, after
+            The name of a node whose tile this one goes in front of or after,
+            in its area, instead of an *index*.
+
+        Raises
+        ------
+        NotApplied
+            If the node does not fit in *area*, or is sized while beside the
+            grid.
         """
         self._require_edit()
         instance_id = self._instance(name)
         editor = self.editor
+        editor._settle_deferred_tiles()
         item = self._item(instance_id)
+        self.layout_notes = []
         if area is not None and area not in tile_layout.AREAS:
             raise OperationError(f"area is one of {', '.join(tile_layout.AREAS)}, got {area!r}.")
         if area not in (None, tile_layout.GRID) and not tile_layout.fits_beside(editor, item):
-            raise OperationError(tile_layout.refusal(editor, item, area))
+            raise NotApplied(tile_layout.refusal(editor, item, area) + self._kept_place(name))
         placed = area or tile_layout.area_of(editor, item)
         sized = any(v is not None for v in (width, height, visible, frame))
         if placed not in (None, tile_layout.GRID) and sized:
-            raise OperationError(
+            raise NotApplied(
                 f"'{name}' is in the {tile_layout.AREA_NAMES[placed]}, not a tile on the grid; "
                 "width, height, visible and frame apply on the grid (area='grid')."
             )
@@ -1495,6 +1537,12 @@ class DashboardOps:
             raise OperationError(f"height must be a positive number of pixels, got {height}.")
         if frame is not None and frame not in _FRAMES:
             raise OperationError(f"frame is one of {', '.join(_FRAMES)}, got {frame!r}.")
+        if sum(v is not None for v in (index, before, after)) > 1:
+            raise OperationError("Pass one of index, before and after.")
+        if before is not None or after is not None:
+            index = self._index_beside(instance_id, placed, before, after)
+        if width is not None:
+            width = self._bounded_width(name, item, width)
         patch = {
             key: value
             for key, value in (("width", width), ("height", height), ("visible", visible))
@@ -1507,12 +1555,116 @@ class DashboardOps:
         elif index is not None:
             tile_layout.move_tile(editor, instance_id, index)
         if patch:
-            tile_layout.update_tile(editor, instance_id, **patch)
+            if width is not None or height is not None:
+                size = self.sized_tiles.setdefault(instance_id, {})
+                size.update({k: v for k, v in (("width", width), ("height", height)) if v})
+            tile_layout.update_tile(editor, instance_id, rebalance=set(self.sized_tiles), **patch)
+            held = tile_layout.tile_entry(editor, instance_id).get("width")
+            if width is not None and held is not None and abs(held - width) > 0.01:
+                self.sized_tiles[instance_id]["width"] = held
+                self.layout_notes.append(
+                    f"Width {width:g} not applied: the other tiles of its row are as narrow as "
+                    f"they go, so '{name}' got width {held:g}. Width 100 gives it a row of its "
+                    "own; narrowing or moving the others makes room."
+                )
+        self._note_hidden(name, instance_id, visible, sized or index is not None)
         return {
             k: v
             for k, v in tile_layout.tile_entry(editor, instance_id).items()
             if k != "instance_id"
         }
+
+    def _kept_place(self, name: str) -> str:
+        area = tile_layout.area_of(self.editor, self._item(self._instance(name)))
+        return f" '{name}' stays {'on the grid' if area == tile_layout.GRID else 'where it is'}."
+
+    def _index_beside(
+        self, instance_id: str, area: str | None, before: str | None, after: str | None
+    ) -> int:
+        """Return the index in *area* that puts a tile in front of *before* or after *after*."""
+        other = before if before is not None else after
+        other_id = self._instance(other)
+        editor = self.editor
+        if other_id == instance_id:
+            raise OperationError(f"'{other}' is the tile being placed; name another node.")
+        area = area or tile_layout.GRID
+        if tile_layout.area_of(editor, self._item(other_id)) != area:
+            raise OperationError(
+                f"'{other}' is not in the {tile_layout.AREA_NAMES[area]}; "
+                "before and after name a tile in the same area."
+            )
+        order = [
+            i["instance_id"]
+            for i in tile_layout.area_items(editor, area)
+            if i["instance_id"] != instance_id
+        ]
+        return order.index(other_id) + (after is not None)
+
+    def _bounded_width(self, name: str, item: dict, width: float) -> float:
+        """Return *width* within the width bounds the component gives its tile, noting a change."""
+        editor = self.editor
+        spec = editor._tile_spec(item)
+        reference, _ = editor._tile_bands()
+        low = ((spec and spec.min_size) or {}).get("width")
+        high = ((spec and spec.max_size) or {}).get("width")
+        bounded = width
+        if low:
+            bounded = max(bounded, min(100.0, round(low * 100 / reference, 2)))
+        if high:
+            bounded = min(bounded, round(high * 100 / reference, 2))
+        if bounded != width:
+            bound, pixels = ("at least", low) if bounded > width else ("at most", high)
+            self.layout_notes.append(
+                f"Width {width:g} not applied: '{name}' is {bound} {pixels:g} px wide, "
+                f"{bounded:g}% of the {reference} px grid, so it got width {bounded:g}."
+            )
+        return bounded
+
+    def _note_hidden(self, name: str, instance_id: str, visible: bool | None, changed: bool):
+        """Note that a tile laid out but not shown on the dashboard stays out of sight, and why."""
+        if visible is not None or not changed:
+            return
+        hidden = next(
+            (o for o in tile_layout.off_grid(self.editor) if o.instance_id == instance_id), None
+        )
+        if hidden is None or not hidden.hidden:
+            return
+        why = hidden.reason.removesuffix(f" · {tile_layout.HIDDEN}")
+        role = (
+            f"a {why}, whose tile is hidden by default" if why != tile_layout.HIDDEN else "hidden"
+        )
+        self.layout_notes.append(
+            f"'{name}' is not shown on the dashboard ({role}), so the change is not visible. "
+            "Pass visible=True to show its tile, or show its result with a chart or table node."
+        )
+
+    def describe_layout(self) -> str:
+        """Describe the layout as it is now: the top bar, the sidebar and the grid's rows.
+
+        Each tile is named with its width in percent of the row and its
+        height in pixels when it has one; hidden tiles are listed last.
+        """
+        editor = self.editor
+        names = self._names()
+        lines = []
+        for area in (tile_layout.TOP, tile_layout.SIDEBAR):
+            items = tile_layout.area_items(editor, area)
+            if items:
+                shown = ", ".join(names.get(i["instance_id"], i["instance_id"]) for i in items)
+                lines.append(f"{tile_layout.AREA_NAMES[area].capitalize()}: {shown}")
+        for number, row in enumerate(tile_layout.row_layout(editor), start=1):
+            tiles = " | ".join(_tile_text(names, entry) for entry in row)
+            lines.append(f"Row {number}: {tiles}")
+        if not any(line.startswith("Row") for line in lines):
+            lines.append("No tiles on the grid.")
+        hidden = [
+            names.get(o.instance_id, o.instance_id)
+            for o in tile_layout.off_grid(editor)
+            if o.hidden
+        ]
+        if hidden:
+            lines.append(f"Hidden: {', '.join(hidden)}")
+        return "\n".join(lines)
 
     def group_nodes(
         self, nodes: list[str], label: str | None = None, name: str | None = None
@@ -1577,7 +1729,9 @@ class DashboardOps:
         """Lay out every visible tile by kind for each screen size, see :meth:`arrange_tiles`."""
         self.arrange_tiles()
 
-    def arrange_tiles(self, order: t.Sequence[str] | None = None, style: str = "grid") -> None:
+    def arrange_tiles(
+        self, order: t.Sequence[str] | None = None, style: str = "grid", keep_sizes: bool = True
+    ) -> None:
         """Lay out every visible tile again in one edit, for each screen size.
 
         With the ``"grid"`` style controls go first, then KPIs in a row,
@@ -1585,13 +1739,19 @@ class DashboardOps:
         front of the tile they title; ``"stack"`` puts the tiles one to a row
         at full width. *order* names nodes whose tiles go first, in that
         order within their kind; the others follow in their current order.
-        This also rearranges the tiles people laid out.
+        This also rearranges the tiles people laid out. The tiles sized with
+        :meth:`place_tile` in this request keep their size, with their rows
+        rebalanced around them, unless *keep_sizes* is False.
         """
         self._require_edit()
         if style not in ("grid", "stack"):
             raise OperationError(f"Unknown style {style!r}; use 'grid' or 'stack'.")
         ids = [self._instance(name) for name in order or ()]
-        self.editor.arrange_layout(order=ids, style=style)
+        if not keep_sizes:
+            self.sized_tiles.clear()
+        known = {item["instance_id"] for item in self.editor._tile_items}
+        sizes = {iid: size for iid, size in self.sized_tiles.items() if iid in known}
+        self.editor.arrange_layout(order=ids, style=style, sizes=sizes)
 
     def set_settings(self, settings: dict[str, t.Any]) -> dict[str, t.Any]:
         """Change some dashboard settings and return them all."""

@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 # ----------------------------------------------------------------------------
@@ -522,6 +522,8 @@ class TileBox:
     default_size: Mapping[str, float] = field(default_factory=dict)
     min_size: Mapping[str, float] = field(default_factory=dict)
     max_size: Mapping[str, float] = field(default_factory=dict)
+    #: Whether the tile titles the dashboard, so a new one goes in front of the others.
+    lead: bool = False
 
 
 def tile_kind(
@@ -843,6 +845,129 @@ def arrange_tiles(
     return entries
 
 
+def width_bounds(tile: TileBox, width: float) -> tuple[float, float]:
+    """Return the narrowest and widest a tile is laid out, in percent of a row *width* pixels wide."""
+    low = max(TILE_MIN_WIDTH.get(tile.kind, 0), tile.min_size.get("width") or 0)
+    high = tile.max_size.get("width")
+    least = min(100.0, round(low * 100 / width, 2))
+    return least, max(least, 100.0 if high is None else min(100.0, round(high * 100 / width, 2)))
+
+
+def layout_rows(entries: Sequence[Mapping]) -> list[list[Mapping]]:
+    """Group the entries of the shown tiles, in display order, into the rows they fill.
+
+    The grid fills a row left to right and starts the next one with the first
+    tile that does not fit in the room left.
+    """
+    rows: list[list[Mapping]] = []
+    used = math.inf
+    for entry in entries:
+        width = min(100.0, entry.get("width") or 100.0)
+        if used + width > 100.01:
+            rows.append([])
+            used = 0.0
+        rows[-1].append(entry)
+        used += width
+    return rows
+
+
+def resize_in_row(
+    entries: Sequence[Mapping],
+    tile_id: str,
+    width: float | None = None,
+    height: float | None = None,
+    fixed: Collection[str] = (),
+    bounds: Mapping[str, tuple[float, float]] | None = None,
+) -> list[dict]:
+    """Resize one tile of a layout and rebalance the other tiles of its row, as dragging its edge does.
+
+    *entries* are the shown tiles' entries in display order. A wider tile takes
+    the room its row has left, then shrinks the row's other tiles, those after
+    it first, down to their narrowest in *bounds* (percent by tile id); it is
+    held at the width they leave, unless it takes the whole row and they wrap
+    to the next one. A narrower tile in a full row leaves its room to the
+    tiles of the next row that fit in it, as the grid moves them up, and the
+    other tiles of its row, then of the row those came from, widen alike to
+    fill what is left. A *height* goes to the row's other tiles too, so the
+    row stays aligned. The tiles of *fixed*, sized on purpose, keep their
+    size. Returns copies; the resized tile's entry holds the width it got.
+    """
+    entries = [dict(e) for e in entries]
+    target = next((e for e in entries if e["instance_id"] == tile_id), None)
+    if target is None:
+        return entries
+    bounds = bounds or {}
+
+    def current(entry):
+        return min(100.0, entry.get("width") or 100.0)
+
+    def row_index(rows):
+        return next(r for r, row in enumerate(rows) if any(e is target for e in row))
+
+    def adjustable(row):
+        # The tiles after the target give way first, then those before it, nearest first.
+        position = next((i for i, e in enumerate(row) if e is target), len(row))
+        return [
+            e
+            for e in [*row[position + 1 :], *reversed(row[:position])]
+            if e is not target and e["instance_id"] not in fixed
+        ]
+
+    def fill(row):
+        others = adjustable(row)
+        room = 100 - sum(current(e) for e in row)
+        for k, entry in enumerate(others):
+            most = bounds.get(entry["instance_id"], (0.0, 100.0))[1]
+            grown = max(current(entry), min(most, current(entry) + room / (len(others) - k)))
+            room -= grown - current(entry)
+            entry["width"] = round(grown, 2)
+
+    if width is not None:
+        rows = layout_rows(entries)
+        row = rows[row_index(rows)]
+        old = current(target)
+        full = {id(e): sum(current(o) for o in r) >= 99.99 for r in rows for e in r}
+        was = {id(e): [id(o) for o in r] for r in rows for e in r}
+        if width > old and width < 100:
+            others = adjustable(row)
+            kept = sum(current(e) for e in row if e is not target and e not in others)
+            least = sum(bounds.get(e["instance_id"], (0.0, 100.0))[0] for e in others)
+            width = max(
+                old, min(width, round(100 - kept - min(least, sum(map(current, others))), 2))
+            )
+        target["width"] = width
+        if width > old:
+            excess = sum(current(e) for e in row) - 100
+            for entry in adjustable(row):
+                if excess <= 0.01:
+                    break
+                least = bounds.get(entry["instance_id"], (0.0, 100.0))[0]
+                take = min(max(0.0, current(entry) - least), excess)
+                entry["width"] = round(current(entry) - take, 2)
+                excess -= take
+        elif width < old and full[id(target)]:
+            now = layout_rows(entries)
+            r = row_index(now)
+            # A tile that moved up into the room of the row before leaves no gap in it.
+            if now[r][0] is row[0]:
+                fill(now[r])
+            # The row whose tiles moved up, or that the tile left, fills the gap they leave.
+            below = now[r + 1] if r + 1 < len(now) else []
+            if (
+                below
+                and [id(e) for e in below] != was[id(below[0])]
+                and all(full[id(e)] for e in below)
+            ):
+                fill(below)
+    if height is not None:
+        target["height"] = height
+        rows = layout_rows(entries)
+        for entry in rows[row_index(rows)]:
+            if entry is not target and entry["instance_id"] not in fixed:
+                entry["height"] = height
+    return entries
+
+
 def _entry(tile: TileBox, width: float) -> dict:
     """Return the entry of a tile laid out on its own."""
     if tile.kind in PACKED:
@@ -927,7 +1052,9 @@ def insert_tiles(
         kept = (previous or {}).get(tile.id) or {}
         entry = {k: v for k, v in kept.items() if k not in ARRANGED_KEYS} | _entry(tile, width)
         same = [i for i, iid in enumerate(ordered) if kinds.get(iid) == tile.kind]
-        if tile.kind == "text" or not ordered:
+        if tile.lead:
+            position = 0
+        elif tile.kind == "text" or not ordered:
             position = len(ordered)
         elif same:
             position = same[-1] + 1

@@ -31,7 +31,14 @@ from panel_flowdash.value_text import error_text
 
 from .diff import dashboard_changes
 from .live import LiveDashboardOps
-from .ops import DashboardOps, NothingChanged, OperationError, OutputUnavailable, read_revision
+from .ops import (
+    DashboardOps,
+    NotApplied,
+    NothingChanged,
+    OperationError,
+    OutputUnavailable,
+    read_revision,
+)
 from .yaml_format import DashboardYAMLError, dashboard_to_dict, dashboard_to_yaml, parse_yaml
 
 logger = logging.getLogger(__name__)
@@ -202,6 +209,9 @@ class FlowDashDeps:
         if run_id is None:
             self.ops.editor.end_agent_turns()
         self.ops.editor._defer_tile_layout(run_id)
+        sized = getattr(self.ops, "sized_tiles", None)
+        if sized is not None:
+            sized.clear()
         self._reset(_open_id(self.ops), run_id)
         self._explicit = True
         self._question = question if isinstance(question, str) else None
@@ -505,6 +515,9 @@ def _open_id(ops: DashboardOps) -> str | None:
 def _guarded(func: t.Callable) -> t.Callable:
     """Turn refusals into messages: a fixable request is retried, a forbidden one is reported.
 
+    A request asking again cannot fix (:class:`NotApplied`) is reported too, so
+    several refused calls in one step do not use up the tool's retries.
+
     An output that is not available yet (:class:`OutputUnavailable`) is
     reported too, since asking again does not help until the dashboard changes.
 
@@ -546,6 +559,8 @@ def _guarded(func: t.Callable) -> t.Callable:
                     if abort is not None:
                         abort()
                     raise
+        except NotApplied as exc:
+            return f"Not applied: {error_text(exc)}"
         except OperationError as exc:
             raise ModelRetry(error_text(exc)) from exc
         except PermissionError as exc:
@@ -812,8 +827,15 @@ def place_tile(
     index: int | None = None,
     frame: t.Literal["default", "framed", "unframed"] | None = None,
     area: t.Literal["grid", "top", "sidebar"] | None = None,
+    before: str | None = None,
+    after: str | None = None,
 ) -> t.Any:
     """Change how a node's tile is laid out on the dashboard, or where it is shown.
+
+    A new width or height rebalances the tile's row: the other tiles shrink to
+    make room or widen to fill it, and take a new height too. Sizes you set
+    stay when you resize another tile or call arrange_tiles. Returns the
+    layout as it is now, row by row, with what was not applied as asked.
 
     Args:
         name: The node's name in the dashboard YAML.
@@ -828,12 +850,28 @@ def place_tile(
         area: "grid" shows the node as a tile, "top" in the bar above the grid,
             "sidebar" in the panel beside it. Only controls, KPIs and text fit
             in the top bar or the sidebar.
+        before: Put the tile in front of this node's tile, instead of an index.
+        after: Put the tile after this node's tile, instead of an index.
     """
     ops = ctx.deps.ops
     ops.place_tile(
-        name, width=width, height=height, visible=visible, index=index, frame=frame, area=area
+        name,
+        width=width,
+        height=height,
+        visible=visible,
+        index=index,
+        frame=frame,
+        area=area,
+        before=before,
+        after=after,
     )
-    return _artifact(ops, f"Laid out the tile of '{name}'.")
+    notes = " ".join(ops.layout_notes)
+    message = f"Laid out the tile of '{name}'." + (f" {notes}" if notes else "")
+    return _artifact(ops, f"{message}\n{_layout_text(ops)}")
+
+
+def _layout_text(ops: DashboardOps) -> str:
+    return "Layout now:\n" + ops.describe_layout()
 
 
 def arrange_canvas(ctx: RunContext[FlowDashDeps]) -> t.Any:
@@ -882,19 +920,25 @@ def ungroup(ctx: RunContext[FlowDashDeps], name: str) -> t.Any:
 
 
 def arrange_tiles(
-    ctx: RunContext[FlowDashDeps], order: list[str] | None = None, style: str = "grid"
+    ctx: RunContext[FlowDashDeps],
+    order: list[str] | None = None,
+    style: str = "grid",
+    keep_sizes: bool = True,
 ) -> t.Any:
     """Lay out every tile again in one step: controls, KPIs in a row, charts two per row, tables full width.
 
-    New tiles join their kind already. It also moves the tiles the user placed.
+    New tiles join their kind already. It also moves the tiles the user placed;
+    tiles you sized with place_tile in this request keep their size, with their
+    rows rebalanced. Returns the layout as it is now.
 
     Args:
         order: Node names whose tiles go first, in this order within their kind.
         style: "grid" lays tiles out by kind as above, "stack" one per row at full width.
+        keep_sizes: False resets the sizes you set with place_tile too.
     """
     ops = ctx.deps.ops
-    ops.arrange_tiles(order, style)
-    return _artifact(ops, "Arranged the tile layout.")
+    ops.arrange_tiles(order, style, keep_sizes=keep_sizes)
+    return _artifact(ops, f"Arranged the tile layout.\n{_layout_text(ops)}")
 
 
 def set_settings(ctx: RunContext[FlowDashDeps], settings: dict[str, t.Any]) -> t.Any:
