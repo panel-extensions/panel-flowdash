@@ -170,6 +170,30 @@ def test_run_answers_a_pending_question_in_place(page):
     assert editor.node_origin("best") == "t2"
 
 
+def test_run_clicked_twice_asks_once_and_shows_it_running(page):
+    editor = _editor()
+    asked = []
+
+    def run_pending(turn_id):
+        asked.append(turn_id)
+        editor.running_pending = [*editor.running_pending, turn_id]
+
+    editor.run_pending = run_pending
+    serve_component(page, editor)
+    editor.surface = "report"
+    pending = _report(page).locator(".fd-report-pending")
+    run = pending.get_by_role("button", name="Run")
+    expect(run).to_be_enabled()
+    run.dblclick()
+    running = pending.get_by_role("button", name="Running")
+    expect(running).to_be_disabled()
+    wait_until(lambda: asked == ["t2"], page)
+    page.wait_for_timeout(300)
+    assert asked == ["t2"]
+    editor.running_pending = []
+    expect(pending.get_by_role("button", name="Run")).to_be_enabled()
+
+
 def test_a_done_turn_keeps_its_output_above_the_next_block(page):
     editor = _editor()
     serve_component(page, editor)

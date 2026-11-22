@@ -265,15 +265,25 @@ class AgentSession:
         The request is an ordinary one, shown in the drawer's chat, and its
         edits answer the turn, so the question's block in the report shows
         the nodes it builds. Only editors may run a question; one asked while
-        the assistant is busy is sent once it is done.
+        the assistant is busy is sent once it is done. A question already
+        asked and not yet answered is not asked again.
         """
         editor = self.app._editor
         if editor.read_only:
             raise PermissionError("Only editors can run the report's questions.")
+        if turn_id in editor.running_pending:
+            return
         turn = next((t for t in editor.turns if t.id == turn_id), None)
         if turn is None or turn.status != "pending" or not turn.question:
             raise ValueError(f"{turn_id!r} is not a question waiting to be run.")
+        editor.running_pending = [*editor.running_pending, turn_id]
         self.chrome.ask(turn.question, turn=turn_id)
+
+    def pending_done(self, turn_id: str):
+        """Note that the request asking the pending turn *turn_id*'s question ended, or never started."""
+        editor = self.app._editor
+        if turn_id in editor.running_pending:
+            editor.running_pending = [t for t in editor.running_pending if t != turn_id]
 
     def show_answer(self, name: str):
         """Leave the Explore view for the tiles and mark the dashboard node *name*, e.g. an answer just added."""

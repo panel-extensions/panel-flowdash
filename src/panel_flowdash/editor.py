@@ -1463,6 +1463,15 @@ class FlowDash(Viewer):
         leaves the report's Run buttons disabled.""",
     )
 
+    running_pending = param.List(
+        default=[],
+        item_type=str,
+        doc="""
+        The ids of the pending turns whose question is being run, from the
+        click on Run until the request answering it ends. Their Run buttons
+        show that they are running and cannot be pressed again.""",
+    )
+
     show_in_editor = param.Callable(
         default=None,
         allow_None=True,

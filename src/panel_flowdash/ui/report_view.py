@@ -670,7 +670,8 @@ class ReportView(Viewer):
             stylesheets=[_LAYOUT_CSS],
         )
         editor.param.watch(
-            self.schedule, ["dashboard", "read_only", "provenance", "editable", "run_pending"]
+            self.schedule,
+            ["dashboard", "read_only", "provenance", "editable", "run_pending", "running_pending"],
         )
 
     def __panel__(self):
@@ -1216,15 +1217,19 @@ class ReportView(Viewer):
             )
         ]
 
-    def _run_pending(self, turn_id: str):
+    def _run_pending(self, turn_id: str, button: pmui.Button | None = None):
         editor = self.editor
-        if editor.run_pending is None or editor.read_only:
+        if editor.run_pending is None or editor.read_only or turn_id in editor.running_pending:
             return
+        if button is not None:
+            # At once, before the rebuild the run sets off, so a second click does nothing.
+            button.param.update(disabled=True, loading=True, label="Running")
         try:
             editor.run_pending(turn_id)
         except Exception:
             logger.exception("Running a question of the report failed")
             editor._notify("warning", "The question could not be run.", duration=5000)
+            self.schedule()
 
     def _how_made(self, instance_id: str):
         self.editor.show_how_made(instance_id)
@@ -1234,18 +1239,22 @@ class ReportView(Viewer):
         anchor = self._next_anchor(question, "Not run")
         editor = self.editor
         runnable = editor.run_pending is not None and not editor.read_only
+        running = turn.id in editor.running_pending
         run = pmui.Button(
-            label="Run",
+            label="Running" if running else "Run",
             icon="play_arrow",
             variant="contained",
             size="small",
-            disabled=not runnable,
+            disabled=not runnable or running,
+            loading=running,
             description=None if runnable else RUN_UNAVAILABLE,
             margin=0,
             align="center",
             css_classes=["fd-report-run"],
         )
-        run.on_click(lambda _event, turn_id=turn.id: self._run_pending(turn_id))
+        run.on_click(
+            lambda _event, turn_id=turn.id, button=run: self._run_pending(turn_id, button)
+        )
         text = self._section(
             text_typography(
                 question,

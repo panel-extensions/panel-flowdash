@@ -1593,15 +1593,34 @@ class DashboardOps:
             report["derived"] = True
         return report
 
+    def _report_revision(self, report: dict | None = None) -> str:
+        """Return a token identifying the report as it is now, nodes by name."""
+        report = self.report() if report is None else report
+        return _revision(json.dumps(report, sort_keys=True, default=str))
+
+    def report_revision(self) -> str:
+        """Return the token :meth:`get_report` writes, which :meth:`edit_report` can check."""
+        return self._report_revision()
+
+    def _check_report_revision(self, revision: str | None):
+        if revision is not None and revision != self._report_revision():
+            raise OperationError(
+                "The report changed since it was read, e.g. by the user's own edits, so its "
+                "indices may have moved. Nothing was changed; call get_report again and apply "
+                "your change to that."
+            )
+
     def get_report(self) -> str:
         """Return the report as YAML, each block preceded by a ``# <index>`` comment.
 
-        The indices are those :meth:`edit_report` takes. A question not run
-        yet, or one answered, has its question in the comment.
+        The first line is a ``# revision: <token>`` comment, which
+        :meth:`edit_report` and :meth:`set_report` check. The indices are
+        those :meth:`edit_report` takes. A question not run yet, or one
+        answered, has its question in the comment.
         """
         report = self.report()
         turns = {turn.id: turn for turn in self.editor.turns}
-        lines = []
+        lines = [f"# revision: {self._report_revision(report)}"]
         if report.pop("derived", False):
             lines.append(
                 "# derived: the dashboard has no report of its own yet; these blocks follow its "
@@ -1709,7 +1728,9 @@ class DashboardOps:
             raise OperationError(str(exc)) from exc
         return warnings
 
-    def edit_report(self, operations: list[dict[str, t.Any]]) -> list[Issue]:
+    def edit_report(
+        self, operations: list[dict[str, t.Any]], revision: str | None = None
+    ) -> list[Issue]:
         """Change the report's blocks by index, in one edit, and return warnings about the result.
 
         Each operation is a mapping with an ``op``:
@@ -1726,14 +1747,18 @@ class DashboardOps:
         Operations apply in order, each to the blocks the earlier ones left.
         A dashboard without a report of its own starts from the derived one.
         Nothing changes unless every operation applies and the result names
-        only nodes, groups and turns the dashboard has.
+        only nodes, groups and turns the dashboard has. With *revision*, the
+        token :meth:`get_report` gave, nothing changes either if the report
+        changed since, as its indices may have moved.
 
         Raises
         ------
         OperationError
-            If an operation is malformed or the result is invalid.
+            If an operation is malformed, the result is invalid or the report
+            changed since *revision*.
         """
         self._require_edit()
+        self._check_report_revision(revision)
         if not isinstance(operations, list) or not operations:
             raise OperationError("operations: give a list of at least one operation.")
         report = self.report()
@@ -1752,6 +1777,8 @@ class DashboardOps:
         """Replace the report with YAML: a list of blocks, or a mapping with ``title`` and ``blocks``.
 
         A list keeps the report's title. Returns warnings about the result.
+        YAML starting with the ``# revision:`` line :meth:`get_report`
+        writes is refused if the report changed since.
 
         Raises
         ------
@@ -1759,6 +1786,8 @@ class DashboardOps:
             If the YAML is malformed or names a node, group or turn the dashboard does not have.
         """
         self._require_edit()
+        if isinstance(blocks_yaml, str):
+            self._check_report_revision(read_revision(blocks_yaml))
         try:
             value = load_yaml(blocks_yaml) if isinstance(blocks_yaml, str) else blocks_yaml
         except DashboardYAMLError as exc:

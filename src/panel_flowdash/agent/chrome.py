@@ -196,6 +196,8 @@ class SessionChrome:
                 await chat.submit(text)
             finally:
                 runner.answering = None
+                if turn is not None:
+                    self.session.pending_done(turn)
 
         pn.state.execute(submit)
 
