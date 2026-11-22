@@ -170,7 +170,7 @@ class CommandPaletteController:
         return (
             editor.editable
             and editor.mode != "dashboard"
-            and not getattr(editor, "explore", False)
+            and getattr(editor, "surface", "workspace") == "workspace"
             and getattr(editor, "_status_bar", None) is not None
         )
 

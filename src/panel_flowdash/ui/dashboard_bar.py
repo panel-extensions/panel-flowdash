@@ -259,14 +259,42 @@ def format_period(seconds: float) -> str:
 
 
 _EXPLORE_LABEL = ":material/forum: Explore"
+_REPORT_LABEL = ":material/description: Report"
 
 # The view-mode toggle; people who may only view the dashboard get no Edit.
 _VIEW_OPTIONS = {
     _EXPLORE_LABEL: "explore",
+    _REPORT_LABEL: "report",
     ":material/visibility: View": "view",
     ":material/edit: Edit": "edit",
 }
-_READER_OPTIONS = {_EXPLORE_LABEL: "explore", ":material/visibility: View": "view"}
+_READER_OPTIONS = {
+    _EXPLORE_LABEL: "explore",
+    _REPORT_LABEL: "report",
+    ":material/visibility: View": "view",
+}
+# The views shown in place of the workspace, picked in the toggle and the tabs alike.
+_SURFACES = ("explore", "report")
+
+# Below this width the Report segment, second in both switchers, leaves them for
+# the overflow menu, so the dashboard title keeps its room. While Report is shown
+# it stays, so the switcher still says where the reader is.
+REPORT_MENU_BREAKPOINT = 1100
+_REPORT_IN_MENU = f"""
+@media (max-width: {REPORT_MENU_BREAKPOINT - 0.05}px) {{
+  .MuiToggleButton-root:nth-child(2):not(.Mui-selected) {{ display: none !important; }}
+}}
+"""
+
+
+def _view(editor) -> str:
+    """Return the entry of the View/Edit toggle the editor shows: a surface, or "view"."""
+    return editor.surface if editor.surface in _SURFACES else "view"
+
+
+def _tab(editor) -> str:
+    """Return the edit tab the editor shows: a surface, or its mode."""
+    return editor.surface if editor.surface in _SURFACES else editor.mode
 
 
 class DashboardBar(Viewer):
@@ -462,25 +490,28 @@ class DashboardBar(Viewer):
             size="small",
             margin=(0, 12, 0, 4),
             sx=_TOGGLE_SX,
-            stylesheets=[ICON_ONLY_WHEN_COMPACT, _HIDE_ON_PHONE],
+            stylesheets=[ICON_ONLY_WHEN_COMPACT, _HIDE_ON_PHONE, _REPORT_IN_MENU],
         )
         self.mode_toggle.param.watch(self._on_mode_toggled, "value")
 
         self.mode_tabs = pmui.RadioButtonGroup(
             options={
                 _EXPLORE_LABEL: "explore",
+                _REPORT_LABEL: "report",
                 ":material/account_tree: Dataflow": "wiring",
                 ":material/dashboard: Layout": "dashboard",
                 ":material/vertical_split: Split": "split",
             },
-            value="explore" if editor.explore else editor.mode,
+            value=_tab(editor),
             size="small",
             margin=(0, 12, 0, 4),
             sx=_TOGGLE_SX,
-            stylesheets=[_ICON_ONLY_WHEN_NARROW, _HIDE_ON_PHONE],
+            stylesheets=[_ICON_ONLY_WHEN_NARROW, _HIDE_ON_PHONE, _REPORT_IN_MENU],
         )
         self.mode_tabs.param.watch(self._on_tab, "value")
-        editor.param.watch(self._sync_switchers, ["explore", "mode", "read_only"])
+        editor.param.watch(self._sync_switchers, ["surface", "mode", "read_only"])
+        # The overflow menu offers the views the switchers have no room for.
+        editor.param.watch(lambda _event: self.sync(), "surface")
         self.settings_button = pmui.Button(
             label="Settings",
             icon="tune",
@@ -568,6 +599,10 @@ class DashboardBar(Viewer):
         )
         self._phone_query = PhoneQuery(width=0, height=0, margin=0)
         self._phone_query.param.watch(lambda _event: self.sync(), "phone")
+        self._narrow_query = PhoneQuery(
+            breakpoint=REPORT_MENU_BREAKPOINT, width=0, height=0, margin=0
+        )
+        self._narrow_query.param.watch(lambda _event: self.sync(), "phone")
 
         self._lead = pn.FlexBox(
             align_items="center",
@@ -703,7 +738,13 @@ class DashboardBar(Viewer):
         Each entry has an ``action`` key that :meth:`_on_overflow` dispatches on.
         A destructive entry goes last and is shown in the error colour.
         """
-        phone = self._phone_items() if self._phone_query.phone else []
+        if self._phone_query.phone:
+            phone = self._phone_items()
+        elif self._narrow_query.phone and self.editor.surface != "report":
+            kind = "tab" if self.editor.editable else "mode"
+            phone = [{"label": "Report", "icon": "description", "action": f"{kind}:report"}]
+        else:
+            phone = []
         items = self._menu_items()
         return [*phone, None, *items] if phone and items else phone or items
 
@@ -711,7 +752,7 @@ class DashboardBar(Viewer):
         """Entries for the actions the top bar hides on phones, first in the overflow menu."""
         editor = self.editor
         if editor.editable:
-            current = "explore" if editor.explore else editor.mode
+            current = _tab(editor)
             items = [
                 {"label": label, "icon": icon, "action": f"tab:{tab}"}
                 for tab, label, icon in _PHONE_TABS
@@ -722,7 +763,7 @@ class DashboardBar(Viewer):
             if editor.dirty:
                 items.append(_PHONE_DISCARD)
             return [*items, _PHONE_DONE]
-        current = "explore" if editor.explore else "view"
+        current = _view(editor)
         items = [
             {"label": label, "icon": icon, "action": f"mode:{mode}"}
             for mode, label, icon in _PHONE_MODES
@@ -799,6 +840,7 @@ class DashboardBar(Viewer):
             *(self._edit_actions() if editing else self._view_actions()),
             self.download_button,
             self._phone_query,
+            self._narrow_query,
             self._overflow_access,
         ]
         if list(self._actions) != actions:
@@ -820,10 +862,10 @@ class DashboardBar(Viewer):
         """Show the open view in the View/Edit toggle and the edit tabs; readers get no Edit."""
         editor = self.editor
         options = _READER_OPTIONS if editor.read_only else _VIEW_OPTIONS
-        view = "explore" if editor.explore else "view"
+        view = _view(editor)
         if self.mode_toggle.options != options or self.mode_toggle.value != view:
             self.mode_toggle.param.update(options=options, value=view)
-        tab = "explore" if editor.explore else editor.mode
+        tab = _tab(editor)
         if self.mode_tabs.value != tab:
             self.mode_tabs.value = tab
 
@@ -938,19 +980,21 @@ class DashboardBar(Viewer):
 
     def _on_mode_toggled(self, event):
         if event.new == "edit":
-            self.editor.explore = False
+            self.editor.surface = "workspace"
             self.request_mode("edit")
-        elif event.new in ("explore", "view"):
-            self.editor.explore = event.new == "explore"
+        elif event.new in _SURFACES:
+            self.editor.surface = event.new
+        elif event.new == "view":
+            self.editor.surface = "workspace"
 
     def _on_tab(self, event):
         editor = self.editor
-        if event.new == "explore":
-            editor.explore = True
+        if event.new in _SURFACES:
+            editor.surface = event.new
         elif event.new is not None:
             with param.parameterized.batch_call_watchers(editor):
                 editor.mode = event.new
-                editor.explore = False
+                editor.surface = "workspace"
 
     def request_mode(self, mode: str):
         """Switch to *mode* ("edit" or "view") through `on_mode`, or directly."""
@@ -1072,11 +1116,13 @@ _SETTINGS = {"label": "Settings", "icon": "tune", "action": "settings"}
 # The entries standing in for the top bar's actions on phones.
 _PHONE_MODES = [
     ("explore", "Explore", "forum"),
+    ("report", "Report", "description"),
     ("view", "View", "visibility"),
     ("edit", "Edit", "edit"),
 ]
 _PHONE_TABS = [
     ("explore", "Explore", "forum"),
+    ("report", "Report", "description"),
     ("wiring", "Dataflow", "account_tree"),
     ("dashboard", "Layout", "dashboard"),
 ]

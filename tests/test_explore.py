@@ -292,7 +292,7 @@ def test_the_switchers_show_explore(editor):
     bar.mode_tabs.value = "dashboard"
     assert not editor.explore and editor.mode == "dashboard"
     editor.read_only = True
-    assert list(bar.mode_toggle.options.values()) == ["explore", "view"]
+    assert list(bar.mode_toggle.options.values()) == ["explore", "report", "view"]
 
 
 def test_a_manual_edit_while_shown_updates_the_feed_in_place(editor):
