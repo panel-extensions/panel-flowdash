@@ -45,10 +45,13 @@ _SECRET_QUOTED = re.compile(
     rf"""(["']?{_SECRET_KEY}["']?\s*[:=]\s*)(["'])(?:\\.|(?!\2).)*?\2""", re.IGNORECASE
 )
 # An unquoted header-style value. Authorization may also be a keyword argument or a dict
-# value, and its value may follow its scheme.
+# value, and its value may follow its scheme. An unquoted short lowercase word is English,
+# not a credential, as in "Authorization: token required".
 _SECRET_HEADER = re.compile(
-    r"""(\b(?:(?:x-)?api[_-]?key["']?\s*:|authorization["']?\s*[:=])\s*["']?"""
-    r"""(?:(?:bearer|basic|token)\s+)?)(?![*"'])[^\s"',;}&]+""",
+    r"""(\b(?:(?:x-)?api[_-]?key["']?\s*:|authorization["']?\s*[:=])\s*"""
+    r"""(?:["'](?:(?:bearer|basic|token)\s+)?"""
+    r"""|(?:(?:bearer|basic|token)\s+)?(?!(?-i:[a-z]{1,15})(?![^\s"',;}&]))))"""
+    r"""(?![*"'])[^\s"',;}&]+""",
     re.IGNORECASE,
 )
 # An unquoted "password: value" takes one word, and none that starts a sentence such as

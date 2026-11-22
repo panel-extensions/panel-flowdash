@@ -13,6 +13,7 @@ from panel.viewable import Viewer
 
 from panel_flowdash.input_literals import explain, literal_parameter, port_literal
 from panel_flowdash.ui.choice_widgets import form_widgets, widgets_key
+from panel_flowdash.value_text import error_text
 
 if t.TYPE_CHECKING:
     from panel_flowdash.component_spec import InputPort
@@ -243,7 +244,7 @@ class LiteralEditor(Viewer):
         try:
             self._on_change(event.new)
         except ValueError as exc:
-            self._refuse(str(exc))
+            self._refuse(error_text(exc))
             return
         self._current = event.new
         self._error.visible = False

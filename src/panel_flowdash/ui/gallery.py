@@ -19,6 +19,7 @@ from panel_flowdash.component_spec import ComponentSpec, _ports_from_metadata
 from panel_flowdash.dashboard_store import DashboardModel
 from panel_flowdash.port_types import normalize_port_type
 from panel_flowdash.ui.roles import ROLE_ICONS, ROLES, component_role, is_builtin
+from panel_flowdash.value_text import error_text
 
 if t.TYPE_CHECKING:
     from panel_flowdash.app import FlowDashApp
@@ -903,7 +904,7 @@ class ComponentGallery(Viewer):
         try:
             instance_id = editor.add_component(component_id)
         except (KeyError, PermissionError, ValueError) as exc:
-            app._notify("error", str(exc).strip("'\""), duration=5000)
+            app._notify("error", error_text(exc).strip("'\""), duration=5000)
             return None
         app._notify("success", f'Added "{entry.title}". Save to keep it.', duration=3000)
         return instance_id

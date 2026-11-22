@@ -14,6 +14,7 @@ from panel.viewable import Viewer
 
 from panel_flowdash.registry import PanelAppMetadata, RegistryEntry
 from panel_flowdash.util import ReactiveError, is_failure
+from panel_flowdash.value_text import error_text
 
 logger = logging.getLogger("panel_flowdash")
 
@@ -50,7 +51,7 @@ class InputPort:
         try:
             self.parameter._validate(value)
         except Exception as exc:
-            return str(exc)
+            return error_text(exc)
         return None
 
 

@@ -1771,7 +1771,7 @@ class CodePanel(Viewer):
             # Applied as typed, so the editor marks where the text breaks, as Run would.
             self.spec_editor.editor.value = text
             return
-        self._format_error = f"Could not format: {error}"
+        self._format_error = f"Could not format: {error_text(error)}"
         self._show_status()
 
     def _close_completions(self):
