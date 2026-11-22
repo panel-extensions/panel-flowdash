@@ -313,7 +313,7 @@ class StatusBar(Viewer):
             icon_size="18px",
             sx={
                 "color": "text.secondary",
-                "&.Mui-checked": {"color": "primary.main"},
+                "&.Mui-checked": {"color": "primary.text"},
                 "& .MuiIcon-root": {"color": "inherit"},
             },
             size="small",

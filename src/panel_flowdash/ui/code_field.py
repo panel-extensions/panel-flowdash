@@ -199,7 +199,7 @@ _SNIPPET_CSS = """
   color: var(--mui-palette-text-disabled, #9e9e9e);
   font-style: italic;
 }
-.fd-hk { color: var(--mui-palette-primary-main, #0072b5); font-weight: 500; }
+.fd-hk { color: var(--mui-palette-primary-text, var(--mui-palette-primary-main, #0072b5)); font-weight: 500; }
 .fd-hn { color: var(--mui-palette-warning-main, #b35c00); }
 .fd-hs { color: var(--mui-palette-success-main, #2e7d32); }
 .fd-hc { color: var(--mui-palette-text-disabled, #9e9e9e); font-style: italic; }
@@ -532,7 +532,7 @@ class AceTools(JSComponent):
     .fd-ace-widget span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
     .fd-ace-widget button {
       border: none; background: none; cursor: pointer; padding: 0; font: inherit;
-      color: var(--mui-palette-primary-main, #1976d2); white-space: nowrap;
+      color: var(--mui-palette-primary-text, var(--mui-palette-primary-main, #1976d2)); white-space: nowrap;
     }
     `
 
@@ -828,10 +828,8 @@ class CodeField(CompositeWidget):
         self._ace = AceOptions(options=ACE_OPTIONS, focus_class="fd-code-field-large")
         done = pmui.Button(label="Done", variant="text")
         self._dialog = pmui.Dialog(
-            objects=[
-                self._large,
-                pn.Row(pn.layout.HSpacer(), done, sizing_mode="stretch_width"),
-            ],
+            objects=[self._large],
+            actions=[done],
             title=self.label or "",
             open=False,
             show_close_button=True,

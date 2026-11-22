@@ -566,3 +566,13 @@ def test_serve_prints_the_admin_link_while_no_one_is_admin(
     Serve(parser).invoke(parser.parse_args([str(project_dir), "--port", "5999", *argv]))
     out = capsys.readouterr().out
     assert (f"http://localhost:5999/admin#token={token}" in out) is printed
+
+
+@pytest.mark.parametrize(
+    ("primary", "text"),
+    [("#0072B5", "#59a3cf"), ("#90caf9", "#90caf9")],
+)
+def test_theme_preview_tints_dark_primary_text_like_panel_material_ui(primary, text):
+    from panel_flowdash.admin.sections import dark_primary_text
+
+    assert dark_primary_text(primary, ["#121212", "#1a1a1a"]).lower() == text

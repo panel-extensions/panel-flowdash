@@ -9,7 +9,6 @@ import pytest
 from panel_flowdash.app import DASH_ROUTE_PREFIX, FlowDashApp
 from panel_flowdash.dashboard_store import DashboardStore
 from panel_flowdash.editor import FlowDash
-from panel_flowdash.ui.fullscreen import EXIT_CLASS, PRESENTING_CLASS, TOGGLE_CLASS
 from tests.test_editor import COMPONENTS, SELECTOR
 from tests.test_navigation import FakeLocation, _create_project
 
@@ -27,7 +26,7 @@ def _labels(editor):
 
 
 def _presenting(editor) -> bool:
-    return PRESENTING_CLASS in editor._view.css_classes
+    return editor._fullscreen.active
 
 
 class TestEditor:
@@ -36,7 +35,7 @@ class TestEditor:
         actions = bar._actions.objects
         assert bar.fullscreen_button in actions
         assert actions.index(bar.fullscreen_button) == actions.index(bar.refresh_period) + 1
-        assert TOGGLE_CLASS in bar.fullscreen_button.css_classes
+        assert pmui.Fullscreen.TOGGLE_CLASS in bar.fullscreen_button.css_classes
 
     async def test_button_follows_extra_toolbar_items(self, editor):
         share = pmui.Button(label="Share")
@@ -54,17 +53,16 @@ class TestEditor:
 
     async def test_setting_the_param_enters_full_screen(self, editor):
         editor.fullscreen = True
-        assert editor._fullscreen_controller.active
+        assert editor._fullscreen.active
 
-    async def test_overlay_is_empty_until_full_screen(self, editor):
-        # A hidden copy of the bar's title and health chip would still be in the page.
-        assert not editor._fullscreen_overlay.visible
-        assert editor._fullscreen_overlay.objects == []
+    async def test_editor_is_wrapped_for_full_screen(self, editor):
+        assert editor.__panel__() is editor._fullscreen
+        assert editor._fullscreen.object is editor._view
+        assert not editor._fullscreen.show_button
 
     async def test_full_screen_shows_only_the_dashboard(self, editor):
         editor.fullscreen = True
         assert not editor._dashboard_bar.__panel__().visible
-        assert editor._fullscreen_overlay.visible
         assert _presenting(editor)
         assert editor._view_controls.__panel__() in editor._workspace_area
         assert editor._tile_grid in editor._workspace_area
@@ -74,27 +72,24 @@ class TestEditor:
         editor.add_component(SELECTOR)
         editor.editable = False
         editor.fullscreen = True
-        chip, exit_button = editor._fullscreen_overlay
-        assert editor._fullscreen_controller.overlay_label == "Plant, full screen controls"
+        chip, exit_button = editor._fullscreen.toolbar
+        assert editor._fullscreen.label == "Plant, full screen controls"
         assert chip.object == editor._dashboard_bar.health_chip.label == "1/1 up to date"
         assert chip.sx == editor._dashboard_bar.health_chip.sx
-        assert EXIT_CLASS in exit_button.css_classes
+        assert pmui.Fullscreen.EXIT_CLASS in exit_button.css_classes
 
     async def test_the_button_toggles_this_editor_from_outside_it(self, editor):
         # With the compact header the button sits in the app's top bar.
-        toggle_class = editor._fullscreen_controller.toggle_class
+        toggle_class = editor._fullscreen.toggle_class
         assert toggle_class
         assert toggle_class in editor._dashboard_bar.fullscreen_button.css_classes
 
     async def test_leaving_full_screen_in_the_browser_restores_the_layout(self, editor):
         editor.fullscreen = True
         # Esc or the browser's own control: the browser turns the hook off.
-        editor._fullscreen_controller.active = False
+        editor._fullscreen.active = False
         assert not editor.fullscreen
         assert editor._dashboard_bar.__panel__().visible
-        assert not editor._fullscreen_overlay.visible
-        assert not editor._fullscreen_overlay.objects
-        assert not _presenting(editor)
 
     async def test_bar_stays_hidden_without_a_toolbar(self, editor):
         editor.toolbar = False
@@ -106,19 +101,18 @@ class TestEditor:
         editor.fullscreen = True
         editor.editable = True
         assert not editor.fullscreen
-        assert not editor._fullscreen_controller.active
-        assert not editor._fullscreen_controller.enabled
         assert not _presenting(editor)
+        assert editor._fullscreen.disabled
         assert editor._dashboard_bar.__panel__().visible
 
     async def test_not_available_in_edit_mode(self, editor):
         editor.editable = True
         editor.fullscreen = True
         assert not editor.fullscreen
-        assert not editor._fullscreen_overlay.visible
+        assert not _presenting(editor)
 
-    async def test_controller_enabled_in_view_mode(self, editor):
-        assert editor._fullscreen_controller.enabled
+    async def test_enabled_in_view_mode(self, editor):
+        assert not editor._fullscreen.disabled
 
 
 @pytest.fixture
@@ -154,7 +148,7 @@ class TestApp:
 
     async def test_leaving_kiosk_drops_the_query(self, app):
         _open(app, "?kiosk=1")
-        app._editor._fullscreen_controller.active = False
+        app._editor._fullscreen.active = False
         assert not app._editor.fullscreen
         assert pn.state.location.search == ""
 

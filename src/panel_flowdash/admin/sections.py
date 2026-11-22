@@ -524,17 +524,52 @@ _PREVIEW_CSS = """
 """
 
 
-def _mix(color: str, other: str, amount: float) -> str:
-    """Mix *amount* of *other* into the hex *color*."""
+def _rgb(color: str) -> list[int]:
     color = color.lstrip("#")
     if len(color) == 3:
         color = "".join(c * 2 for c in color)
-    other = other.lstrip("#")
-    channels = [
-        round(int(color[i : i + 2], 16) * (1 - amount) + int(other[i : i + 2], 16) * amount)
-        for i in (0, 2, 4)
-    ]
-    return "#" + "".join(f"{c:02x}" for c in channels)
+    return [int(color[i : i + 2], 16) for i in (0, 2, 4)]
+
+
+def _hex(rgb: t.Sequence[float]) -> str:
+    return "#" + "".join(f"{round(c):02x}" for c in rgb)
+
+
+def _mix(color: str, other: str, amount: float) -> str:
+    """Mix *amount* of *other* into the hex *color*."""
+    return _hex(
+        a * (1 - amount) + b * amount for a, b in zip(_rgb(color), _rgb(other), strict=True)
+    )
+
+
+def _contrast(fg: t.Sequence[float], bg: t.Sequence[float]) -> float:
+    def luminance(rgb):
+        lin = [
+            (v / 12.92) if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4
+            for v in (c / 255 for c in rgb)
+        ]
+        return 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2]
+
+    high, low = sorted((luminance(fg), luminance(bg)), reverse=True)
+    return (high + 0.05) / (low + 0.05)
+
+
+def dark_primary_text(primary: str, backgrounds: t.Sequence[str]) -> str:
+    """Return the tint panel-material-ui shows primary text in on dark *backgrounds*.
+
+    Mirrors pmui's ``primary_text_color``: a primary reaching 4.5:1 on every
+    background is kept, else it is lightened by the least amount, but at least
+    35%, that does.
+    """
+    rgb = _rgb(primary)
+    bgs = [_rgb(bg) for bg in backgrounds]
+    if min(_contrast(rgb, bg) for bg in bgs) >= 4.5:
+        return primary
+    for step in range(35, 101):
+        tint = [c + (255 - c) * step / 100 for c in rgb]
+        if min(_contrast(tint, bg) for bg in bgs) >= 4.5:
+            return _hex(tint)
+    return primary
 
 
 def preview_html(
@@ -542,18 +577,11 @@ def preview_html(
 ) -> str:
     """Return the preview of a light and/or dark mini app in the given theme."""
     try:
-        light_link = primary
-        dark_link = _mix(primary, "#ffffff", 0.35)
         tint = _mix(primary, "#ffffff", 0.82)
         dark_tint = _mix(primary, "#121212", 0.6)
     except ValueError:
-        primary, light_link, dark_link, tint, dark_tint = (
-            PRIMARY,
-            PRIMARY,
-            "#58A9DE",
-            "#dcebf5",
-            "#0b3a55",
-        )
+        primary, tint, dark_tint = PRIMARY, "#dcebf5", "#0b3a55"
+    dark_link = dark_primary_text(primary, ["#121212", "#1a1a1a"])
     palettes = {
         "light": {
             "bg": "#ffffff",
@@ -563,7 +591,7 @@ def preview_html(
             "line": "rgba(0,0,0,.12)",
             "fill": "rgba(0,0,0,.06)",
             "tint": tint,
-            "link": light_link,
+            "link": primary,
         },
         "dark": {
             "bg": "#121212",

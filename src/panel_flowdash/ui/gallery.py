@@ -101,7 +101,7 @@ _CARD_CSS = (
 .preview .mi { font-size: 36px; }
 .body { padding: 12px 16px 14px; min-width: 0; }
 .head { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.head .mi { color: var(--mui-palette-primary-main); }
+.head .mi { color: var(--mui-palette-primary-text, var(--mui-palette-primary-main)); }
 .title {
   flex: 1;
   min-width: 0;
@@ -208,7 +208,7 @@ _DETAIL_ICON_CSS = (
   border-radius: 10px;
   display: grid;
   place-items: center;
-  color: var(--mui-palette-primary-main);
+  color: var(--mui-palette-primary-text, var(--mui-palette-primary-main));
   background: rgba(var(--mui-palette-primary-mainChannel) / 0.12);
 }
 .box .mi { font-size: 22px; }

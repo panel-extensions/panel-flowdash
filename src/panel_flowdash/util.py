@@ -345,22 +345,6 @@ def notify(
     getattr(notifications, severity)(message, duration=duration)
 
 
-def escape_closes() -> dict[str, bool]:
-    """Return the ``pmui.Dialog`` parameters that let the Escape key dismiss a dialog.
-
-    panel-material-ui releases without ``close_on_escape`` only close a dialog
-    on Escape together with a click outside it, so with those both dismiss it.
-    """
-    if "close_on_escape" in pmui.Dialog.param:
-        return {"close_on_escape": True}
-    return {"close_on_click": True}
-
-
-def _close_on_escape(value: bool) -> dict[str, bool]:
-    # Releases without the parameter tie Escape to ``close_on_click``.
-    return {"close_on_escape": value} if "close_on_escape" in pmui.Dialog.param else {}
-
-
 def _forget_confirmation(dialog: pmui.Dialog, watcher=None) -> None:
     with _dialogs_lock:
         current = _confirmations.get(dialog)
@@ -435,8 +419,9 @@ def open_dialog(
         title=title,
         objects=[content],
         open=True,
+        actions=[],
         close_on_click=True,
-        **_close_on_escape(True),
+        close_on_escape=True,
         show_close_button=True,
         width_option=width,
         sizing_mode="stretch_width" if full_width else None,
@@ -535,13 +520,11 @@ def confirm(
         _confirmations[dialog] = watcher
     dialog.param.update(
         title=title,
-        objects=[
-            *([] if content is None else [content]),
-            pn.Row(pn.layout.HSpacer(), cancel, accept, sizing_mode="stretch_width"),
-        ],
+        objects=[] if content is None else [content],
+        actions=[cancel, accept],
         open=True,
         close_on_click=False,
-        **_close_on_escape(False),
+        close_on_escape=False,
         show_close_button=False,
         width_option=width,
     )

@@ -7,69 +7,12 @@ import typing as t
 import panel as pn
 import panel_material_ui as pmui
 import param
-from panel.custom import JSComponent
 from panel.viewable import Viewer
 
 from panel_flowdash.ui.health import DashboardHealth
 
 #: Marks the tiles "Show issues" scrolls to and highlights.
 ISSUE_CLASS = "fd-issue-target"
-
-
-class TileFocus(JSComponent):
-    """Scrolls to and briefly outlines the elements carrying a CSS class.
-
-    Tiles live in nested shadow roots, which ``document.querySelector`` does
-    not reach, so the search walks them. The class may arrive in the same
-    update as the request, hence the few retries.
-    """
-
-    _esm = """
-    function collect(root, cls, found) {
-      for (const el of root.querySelectorAll("*")) {
-        if (el.classList.contains(cls)) { found.push(el) }
-        if (el.shadowRoot) { collect(el.shadowRoot, cls, found) }
-      }
-      return found
-    }
-
-    function highlight(el) {
-      const previous = [el.style.outline, el.style.outlineOffset, el.style.transition]
-      el.style.transition = "outline-color 0.6s"
-      el.style.outline = "3px solid var(--mui-palette-error-main, #d32f2f)"
-      el.style.outlineOffset = "2px"
-      setTimeout(() => {
-        el.style.outlineColor = "transparent"
-        setTimeout(() => {
-          [el.style.outline, el.style.outlineOffset, el.style.transition] = previous
-        }, 700)
-      }, 2200)
-    }
-
-    export function render({model}) {
-      model.on("msg:custom", (msg) => {
-        let attempts = 0
-        const focus = () => {
-          const found = collect(document, msg.cls, [])
-          if (!found.length) {
-            if (attempts++ < 20) { setTimeout(focus, 50) }
-            return
-          }
-          found.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)
-          found[0].scrollIntoView({behavior: "smooth", block: "center"})
-          found.forEach(highlight)
-        }
-        focus()
-      })
-      const el = document.createElement("span")
-      el.style.display = "none"
-      return el
-    }
-    """
-
-    def focus(self, cls: str):
-        """Scroll to the first element with *cls* and outline every one."""
-        self._send_msg({"cls": cls})
 
 
 class IssueBanner(Viewer):
@@ -102,7 +45,7 @@ class IssueBanner(Viewer):
             styles={"margin-left": "auto", "flex-shrink": "0"},
         )
         self.show_button.on_click(lambda _event: self.show_issues())
-        self._focus = TileFocus(margin=0, width=0, height=0)
+        self._focus = pmui.Reveal(color="error")
         # The children go in the alert's message area, laid out as one wrapping
         # line with the action pushed to the end.
         self._banner = pmui.Alert(
@@ -153,7 +96,7 @@ class IssueBanner(Viewer):
             return []
         if self.on_show is not None:
             self.on_show(affected)
-        self._focus.focus(ISSUE_CLASS)
+        self._focus.scroll_to(ISSUE_CLASS)
         return affected
 
     def __panel__(self):

@@ -99,7 +99,7 @@ def _texts(state) -> str:
 
 class TestEmptyState:
     def test_tones_use_theme_colours(self):
-        for tone, colour in (("primary", "primary.main"), ("error", "error.main")):
+        for tone, colour in (("primary", "primary.text"), ("error", "error.main")):
             state = EmptyState(icon="lock", title="t", tone=tone)
             assert state._icon.sx["color"] == colour
             assert "--mui-palette" in state._icon.sx["bgcolor"]

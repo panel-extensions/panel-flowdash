@@ -2554,18 +2554,12 @@ class FlowDashApp(Viewer):
                     self._dialog_message,
                     self._dialog_name_input,
                     self._dialog_delete_input,
-                    pn.Row(
-                        pn.layout.HSpacer(),
-                        cancel_btn,
-                        self._dialog_confirm_button,
-                        sizing_mode="stretch_width",
-                    ),
                     sizing_mode="stretch_width",
                 )
             ],
+            actions=[cancel_btn, self._dialog_confirm_button],
             title="Dashboard",
             open=False,
-            min_width=400,
         )
 
     def _build_share_dialog(self):

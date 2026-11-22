@@ -82,7 +82,7 @@ def test_tab_never_reaches_the_page_behind_the_dialog(page):
     _serve(page, store, dash, [])
 
     chip, dialog = _open_with_enter(page)
-    page.keyboard.press("Tab")
+    # Opening moves the focus to the dialog's first control.
     expect(dialog.get_by_role("button", name="Show issues")).to_be_focused()
     # Past the last action the focus either wraps inside the dialog, or the
     # dialog closes and the focus is back on the chip.
@@ -100,7 +100,7 @@ def test_escape_closes_and_returns_the_focus_to_the_chip(page):
     _serve(page, store, dash, [])
 
     chip, dialog = _open_with_enter(page)
-    page.keyboard.press("Tab")
+    expect(dialog.get_by_role("button", name="Show issues")).to_be_focused()
     page.keyboard.press("Escape")
     expect(dialog).to_be_hidden()
     expect(chip).to_be_focused()

@@ -12,15 +12,8 @@ import param
 from panel.custom import JSComponent
 from panel.viewable import Viewer
 
-from panel_flowdash.ui.fullscreen import TOGGLE_CLASS
 from panel_flowdash.ui.health import DashboardHealth
 from panel_flowdash.ui.health_popover import HealthPopover
-from panel_flowdash.ui.popover_access import (
-    NON_MODAL_POPUP_SX,
-    MenuAccess,
-    PopoverAccess,
-    link_popup,
-)
 from panel_flowdash.ui.text import escape_markdown, markdown_pane
 from panel_flowdash.util import close_dialog, confirm, open_dialog
 
@@ -397,13 +390,11 @@ class DashboardBar(Viewer):
             self._about,
             anchor_origin={"horizontal": "left", "vertical": "bottom"},
             transform_origin={"horizontal": "left", "vertical": "top"},
-            elevation=4,
-            hide_backdrop=True,
+            modal=False,
+            label="About this dashboard",
             css_classes=["fd-description-popover"],
             sx={
-                **NON_MODAL_POPUP_SX,
                 "& .MuiPopover-paper": {
-                    **NON_MODAL_POPUP_SX["& .MuiPopover-paper"],
                     "p": 2,
                     "mt": 1,
                     "maxWidth": "min(420px, calc(100vw - 32px))",
@@ -411,20 +402,10 @@ class DashboardBar(Viewer):
                 },
             },
         )
-        info_access = PopoverAccess(
-            button_class="fd-description",
-            popup_class="fd-description-popover",
-            label="About this dashboard",
-            margin=0,
-            width=0,
-            height=0,
-        )
-        link_popup(self.info_popup, info_access)
-        # The popup anchors to its parent, so it sits next to the button.
+        # The popup takes the button beside it as its trigger.
         self.info = pn.Row(
             self.info_button,
             self.info_popup,
-            info_access,
             margin=0,
             align="center",
             styles={"width": "fit-content", "flex": "0 0 auto"},
@@ -480,7 +461,7 @@ class DashboardBar(Viewer):
             size="small",
             margin=(0, 4),
             align="center",
-            css_classes=[TOGGLE_CLASS],
+            css_classes=[pmui.Fullscreen.TOGGLE_CLASS],
             sx=_ICON_BUTTON_SX,
             stylesheets=[_HIDE_ON_PHONE],
         )
@@ -581,7 +562,6 @@ class DashboardBar(Viewer):
             stylesheets=[PHONE_TOUCH_CSS],
         )
         self.overflow.on_click(self._on_overflow)
-        self._overflow_access = MenuAccess(button_class="fd-more-actions", margin=0)
         self._divider = pmui.Divider(
             orientation="vertical",
             height=24,
@@ -841,7 +821,6 @@ class DashboardBar(Viewer):
             self.download_button,
             self._phone_query,
             self._narrow_query,
-            self._overflow_access,
         ]
         if list(self._actions) != actions:
             self._actions[:] = actions
@@ -1135,3 +1114,34 @@ _CLEAR = {
     "icon": "delete_sweep",
     "action": "clear",
 }
+
+
+# The chip's style is the bar's button style; laid out as a flex row like the
+# button, its dot and text sit on one line inside one rounded background.
+_CHIP_CSS = ".MuiTypography-root { display: inline-flex; align-items: center; } p { margin: 0; }"
+
+
+def fullscreen_toolbar(health_chip: pmui.Button) -> list:
+    """Return the items shown over a dashboard in full screen: its health and an exit button.
+
+    The chip follows the text and style of the bar's *health_chip*. The
+    dashboard's title is not shown; it names the toolbar for screen readers.
+    """
+    chip = pmui.Typography(
+        health_chip.param.label,
+        variant="caption",
+        # As far from the edge as from the top and bottom, so the pills nest.
+        margin=(0, 4, 0, 2),
+        align="center",
+        sx=health_chip.param.sx,
+        stylesheets=[_CHIP_CSS],
+    )
+    exit_button = pmui.IconButton(
+        icon="fullscreen_exit",
+        description="Exit full screen",
+        size="small",
+        margin=0,
+        align="center",
+        css_classes=[pmui.Fullscreen.EXIT_CLASS],
+    )
+    return [chip, exit_button]

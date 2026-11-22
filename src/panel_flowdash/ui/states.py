@@ -15,7 +15,6 @@ from panel.viewable import Viewer
 
 from panel_flowdash.auth import ANONYMOUS_USER
 from panel_flowdash.ui.text import text_typography
-from panel_flowdash.util import escape_closes
 from panel_flowdash.widgets import BUILTIN_COMPONENTS
 
 if t.TYPE_CHECKING:
@@ -27,7 +26,7 @@ if t.TYPE_CHECKING:
 _TONES = {
     "primary": {
         "bgcolor": "rgba(var(--mui-palette-primary-mainChannel) / 0.12)",
-        "color": "primary.main",
+        "color": "primary.text",
     },
     "error": {
         "bgcolor": "rgba(var(--mui-palette-error-mainChannel) / 0.12)",
@@ -533,24 +532,10 @@ class UnsavedChangesDialog(Viewer):
         )
         self.changes: list[tuple[str, str]] = []
         self.dialog = pmui.Dialog(
-            objects=[
-                pn.Column(
-                    self._changes,
-                    pn.Row(
-                        self.leave_button,
-                        pn.layout.HSpacer(),
-                        self.stay_button,
-                        self.save_button,
-                        sizing_mode="stretch_width",
-                        margin=(8, 0, 0, 0),
-                    ),
-                    sizing_mode="stretch_width",
-                )
-            ],
+            objects=[self._changes],
+            actions=[self.leave_button, pn.layout.HSpacer(), self.stay_button, self.save_button],
             title="Save changes before leaving?",
             open=False,
-            min_width=440,
-            **escape_closes(),
         )
         self.dialog.param.watch(self._on_dismissed, "open")
 

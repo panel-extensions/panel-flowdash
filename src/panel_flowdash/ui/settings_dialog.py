@@ -268,23 +268,11 @@ class SettingsDialog(param.Parameterized):
             variant="caption",
             sx={"color": "text.secondary"},
             align="center",
-            margin=(0, 8, 0, 0),
         )
         self._cancel_button = pmui.Button(label="Cancel", variant="text", align="center")
         self._save_button = pmui.Button(label="Save settings", color="primary", align="center")
         self._cancel_button.on_click(lambda _event: self.dialog.param.update(open=False))
         self._save_button.on_click(self._on_save)
-        footer = pmui.FlexBox(
-            self._footer_note,
-            pn.layout.HSpacer(),
-            self._cancel_button,
-            self._save_button,
-            align_items="center",
-            flex_wrap="wrap",
-            sizing_mode="stretch_width",
-            margin=(12, 0, 0, 0),
-            sx={"borderTop": 1, "borderColor": "divider", "pt": 1.5, "gap": 1},
-        )
         body = pmui.FlexBox(
             nav,
             content,
@@ -294,7 +282,13 @@ class SettingsDialog(param.Parameterized):
             sx={"rowGap": 2},
         )
         self.dialog = pmui.Dialog(
-            objects=[self._subtitle, body, footer],
+            objects=[self._subtitle, body],
+            actions=[
+                self._footer_note,
+                pn.layout.HSpacer(),
+                self._cancel_button,
+                self._save_button,
+            ],
             title="Dashboard settings",
             open=False,
             show_close_button=True,

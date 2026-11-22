@@ -109,7 +109,7 @@ _WIZARD_CSS = """
 .found { border: 1px solid var(--mui-palette-divider); border-radius: 4px; }
 .found .row { display: flex; gap: 14px; padding: 10px 16px; align-items: flex-start; }
 .found .row + .row { border-top: 1px solid var(--mui-palette-divider); }
-.found svg { width: 22px; height: 22px; fill: var(--mui-palette-primary-main); flex: 0 0 auto;
+.found svg { width: 22px; height: 22px; fill: var(--mui-palette-primary-text, var(--mui-palette-primary-main)); flex: 0 0 auto;
   margin-top: 2px; }
 .found .what { font-size: 0.9375rem; letter-spacing: 0.15px; color: var(--mui-palette-text-primary); }
 .found .detail { font-size: 0.8125rem; color: var(--mui-palette-text-secondary); letter-spacing: 0.2px;

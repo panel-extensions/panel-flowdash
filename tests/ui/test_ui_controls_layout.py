@@ -65,7 +65,7 @@ def test_left_panel_stacks_its_controls(page):
     wait_until(lambda: 0 <= _control_gap(page) < 80, page, timeout=8000)
 
     editor.fullscreen = True
-    expect(page.locator(".fd-presenting")).to_be_visible()
+    expect(page.locator("[data-pmui-fullscreen]")).to_be_visible()
     page.wait_for_timeout(500)
     wait_until(lambda: 0 <= _control_gap(page) < 80, page, timeout=8000)
 

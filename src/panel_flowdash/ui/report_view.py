@@ -169,16 +169,16 @@ _PROSE_CSS = f"""
 :host > div > :first-child {{ margin-top: 0; }}
 :host > div > :last-child {{ margin-bottom: 0; }}
 p {{ margin: 0 0 0.75em; }}
-a {{ color: var(--mui-palette-primary-main, #0072b5); }}
+a {{ color: var(--mui-palette-primary-text, var(--mui-palette-primary-main, #0072b5)); }}
 h1, h2, h3, h4, h5, h6 {{ font-weight: 500; line-height: 1.3; margin: 1em 0 0.4em; }}
 code {{ font-family: "Roboto Mono", monospace; font-size: 0.9em; }}
-/* The primary colour drawn towards the text colour: darker on light paper, lighter on dark,
-   so the value keeps at least 4.5:1 against its tint in both themes. */
+/* The primary text colour drawn towards the text colour, so the value keeps
+   at least 4.5:1 against its tint in both themes. */
 .{VALUE_CLASS} {{
   background: rgba(var(--mui-palette-primary-mainChannel, 0 114 181) / 0.12);
   color: color-mix(
     in srgb,
-    var(--mui-palette-primary-main, #0072b5) 70%,
+    var(--mui-palette-primary-text, var(--mui-palette-primary-main, #0072b5)) 70%,
     var(--mui-palette-text-primary, #212121)
   );
   border-radius: 3px;
