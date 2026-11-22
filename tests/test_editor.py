@@ -3125,6 +3125,34 @@ async def test_failing_async_generator_without_propagation_ends_its_run():
     assert escaped == []
 
 
+async def test_list_edge_whose_transform_fails_during_load_is_wired():
+    """A list input fails as a whole, so it takes an edge whose transform fails on the current value."""
+    editor = FlowDash(FAILING_COMPONENTS, notifications=False)
+    model = DashboardModel(
+        dashboard_id="d1",
+        user_id="alice",
+        title="Failing",
+        items=[
+            DashboardItem(instance_id="src", component_id="Demo/inverse"),
+            DashboardItem(instance_id="lst", component_id="Demo/list"),
+        ],
+        edges=[
+            DashboardEdge(
+                source="src",
+                source_port="inverse",
+                target="lst",
+                target_port="tickers",
+                transform=[{"op": "column", "column": "x"}],
+            )
+        ],
+    )
+
+    editor.load_model(model)
+
+    assert editor._unresolved_edges == []
+    assert [(e["source"], e["target"]) for e in editor.graph.edges] == [("src", "lst")]
+
+
 @pytest.mark.failures
 class TestFailurePropagation:
     @pytest.fixture

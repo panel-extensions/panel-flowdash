@@ -915,6 +915,10 @@ class DataflowGraph:
         try:
             value = self._edge_value((source_id, source_port, target_id, target_port), steps)
         except Exception as exc:
+            # A list input fails as a whole, so the edge is wired and the
+            # failure reaches the input like any later one.
+            if is_list:
+                return None
             return f"Transform fails on the current value of '{source_port}': {error_text(exc)}"
         port = next(p for p in target_spec.inputs if p.name == target_port)
         reason = _check_item(port, value) if is_list else port.check_value(value)
