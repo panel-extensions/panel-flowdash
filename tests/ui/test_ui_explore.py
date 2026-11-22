@@ -20,7 +20,7 @@ from panel_flowdash.ui import tile_layout
 from ..test_agent_tools import scripted
 from .test_ui_selection import CHART, FRAME, ROWS, SelectionChart, SelectionRows, _drag
 from .test_ui_shell import _serve_app, _store_with
-from .util import serve_component
+from .util import DASHBOARD_LOAD_TIMEOUT, serve_component, stable_box
 
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
@@ -102,13 +102,16 @@ def test_add_to_dashboard_puts_an_answer_on_the_dashboard(page):
     button = card.get_by_role("button", name="Add to dashboard")
     expect(button).to_be_visible(timeout=20000)
     button.click()
-    expect(card.locator(".artifact-cell-done")).to_have_text(re.compile("On dashboard as memo$"))
+    expect(card.locator(".artifact-cell-done")).to_have_text(
+        re.compile("On dashboard as memo$"), timeout=DASHBOARD_LOAD_TIMEOUT
+    )
     editor = apps[0]._editor
     memo = next(i for i in editor._tile_items if i["instance_id"] == "memo")
     assert memo in tile_layout.grid_tiles(editor)
-    # Show leaves Explore for the dashboard, where the answer's tile is.
+    # Show leaves Explore for the dashboard, where the answer's tile is, which renders
+    # the whole grid before Explore goes.
     card.get_by_role("button", name="Show").click()
-    expect(page.locator(".flowdash-explore")).to_have_count(0)
+    expect(page.locator(".flowdash-explore")).to_have_count(0, timeout=DASHBOARD_LOAD_TIMEOUT)
     expect(page.get_by_text("note tile")).to_have_count(1, timeout=20000)
 
 
@@ -274,6 +277,25 @@ def test_cards_stack_within_a_narrow_window(page, width):
     wait_until(stacked, page, timeout=10000)
 
 
+def _in_session(page, editor, fn):
+    """Run *fn* on the session's event loop, holding its document like a browser event would."""
+    doc = next(iter(editor._view._models.values()))[0].document
+    done = []
+
+    def run():
+        try:
+            fn()
+        except Exception as exc:
+            done.append(exc)
+        else:
+            done.append(None)
+
+    doc.add_next_tick_callback(run)
+    wait_until(lambda: bool(done), page, timeout=30000)
+    if done[0] is not None:
+        raise done[0]
+
+
 def test_a_manual_edit_while_exploring_keeps_the_feed_in_place(page):
     store, (dash,) = _store_with("Plant")
     apps, errors = [], []
@@ -282,28 +304,32 @@ def test_a_manual_edit_while_exploring_keeps_the_feed_in_place(page):
     _serve_app(page, store, f"/dash/{dash}?edit=true", apps)
     page.get_by_role("button", name="Explore", exact=True).wait_for()
     editor = apps[0]._editor
-    # A long feed: a full page shown and older entries behind it.
-    for i in range(25):
-        editor.end_turn()
-        with agent_edits(run=f"run-{i}", question=f"Note number {i}"):
-            editor.add_component("Test/note", instance_id=f"memo{i}")
-    tile_layout.update_tile(editor, "memo24", visible=False)
+
+    def fill():
+        # A long feed: a full page shown and older entries behind it.
+        for i in range(25):
+            editor.end_turn()
+            with agent_edits(run=f"run-{i}", question=f"Note number {i}"):
+                editor.add_component("Test/note", instance_id=f"memo{i}")
+        tile_layout.update_tile(editor, "memo24", visible=False)
+
+    _in_session(page, editor, fill)
     page.get_by_role("button", name="Explore", exact=True).click()
     card = page.locator(".artifact-cell", has_text="memo24")
     button = card.get_by_role("button", name="Add to dashboard")
     expect(button).to_be_visible(timeout=90000)
     button.scroll_into_view_if_needed()
-    page.wait_for_timeout(1500)
-    before = card.bounding_box()["y"]
+    before = stable_box(card, page, timeout=20000)["y"]
     resets = []
     editor.explore_feed.state.param.watch(
         lambda e: resets.append(e) if not e.new else None, "runs"
     )
     button.click()
-    expect(card.locator(".artifact-cell-done")).to_have_text(re.compile("On dashboard"))
-    page.get_by_text("Changed the tile layout").first.wait_for(timeout=10000)
-    page.wait_for_timeout(2000)
-    after = card.bounding_box()["y"]
+    expect(card.locator(".artifact-cell-done")).to_have_text(
+        re.compile("On dashboard"), timeout=DASHBOARD_LOAD_TIMEOUT
+    )
+    page.get_by_text("Changed the tile layout").first.wait_for(timeout=DASHBOARD_LOAD_TIMEOUT)
+    after = stable_box(card, page, timeout=20000)["y"]
     assert abs(after - before) < 200, (before, after)
     assert resets == []
     assert errors == []

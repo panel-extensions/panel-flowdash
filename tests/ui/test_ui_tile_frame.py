@@ -25,9 +25,19 @@ def _framed(tile) -> bool:
     return tile.evaluate("el => getComputedStyle(el).borderTopColor") != "rgba(0, 0, 0, 0)"
 
 
-def _pick(page, label, option):
-    page.get_by_role("combobox", name=label).click()
-    page.get_by_role("listbox").get_by_text(option, exact=True).click()
+def _pick(page, label, option, current):
+    """Pick *option* from the select *label*, once it shows the tile's *current* choice.
+
+    Selecting another tile swaps the Tile tab's controls when the browser gets them;
+    a menu opened on the previous tile's select closes as its select goes.
+    """
+    select = page.get_by_role("combobox", name=label)
+    expect(select).to_have_text(current, timeout=8000)
+    select.click()
+    listbox = page.get_by_role("listbox")
+    expect(listbox).to_be_visible()
+    listbox.get_by_text(option, exact=True).click()
+    expect(select).to_have_text(option)
 
 
 def _done(page, editor):
@@ -77,10 +87,10 @@ def test_frame_option_in_the_layout_tab_frames_the_tile_in_view_mode(page):
     wait_until(lambda: editor.editable, timeout=8000)
     page.get_by_role("button", name="Layout", exact=True).click()
     _select_tile(page, editor, divider_id)
-    _pick(page, "Frame", "Framed")
+    _pick(page, "Frame", "Framed", "Default (unframed)")
     wait_until(lambda: tile_entry(editor, divider_id).get("framed") is True, timeout=8000)
     _select_tile(page, editor, chart_id)
-    _pick(page, "Frame", "Unframed")
+    _pick(page, "Frame", "Unframed", "Default (framed)")
     wait_until(lambda: tile_entry(editor, chart_id).get("framed") is False, timeout=8000)
 
     _done(page, editor)
