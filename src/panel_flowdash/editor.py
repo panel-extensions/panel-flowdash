@@ -7344,6 +7344,9 @@ class FlowDash(Viewer):
                 self._hydrating = False
             if not patched:
                 self._hydrate_model(model, keep_open_turns=True)
+        if self._report_view is not None:
+            # The report is restored after the dashboard, which the view follows.
+            self._report_view.schedule()
 
     @pn.io.hold()
     def _patch_canvas(self, model: DashboardModel) -> bool:

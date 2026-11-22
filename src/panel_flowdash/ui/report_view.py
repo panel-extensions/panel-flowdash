@@ -70,6 +70,10 @@ _HIDE_ON_PHONE = f"@media {_PHONE} {{ :host {{ display: none !important; }} }}"
 _PHONE_ONLY = f"@media not {_PHONE} {{ :host {{ display: none !important; }} }}"
 _HIDE_WHEN_NARROW = f"@media {_NARROW} {{ :host {{ display: none !important; }} }}"
 
+# A view that stretches makes its frame stretch too, to the height of the section
+# it is in; blocks, sections and frames take the height of their content instead.
+_HOST_FITS_CONTENT = ":host { height: auto !important; flex: 0 0 auto !important; }"
+
 _LAYOUT_CSS = """
 :host {
   background: var(--mui-palette-background-default, #fafafa);
@@ -468,7 +472,12 @@ class ReportView(Viewer):
             },
             css_classes=["fd-report-derived"],
         )
-        self._blocks = pn.Column(margin=0, sizing_mode="stretch_width", styles={"gap": "28px"})
+        self._blocks = pn.Column(
+            margin=0,
+            sizing_mode="stretch_width",
+            styles={"gap": "28px"},
+            stylesheets=[_FIT_CONTENT],
+        )
         self._article = pmui.Paper(
             pn.Column(
                 self._meta,
@@ -748,6 +757,7 @@ class ReportView(Viewer):
             margin=0,
             sizing_mode="stretch_width",
             styles={"gap": f"{gap}px", **(styles or {})},
+            stylesheets=[_FIT_CONTENT],
             **params,
         )
 
@@ -870,6 +880,7 @@ class ReportView(Viewer):
                 sizing_mode="stretch_width",
                 sx={"p": 1, "gap": "8px", "overflow": "hidden"},
                 css_classes=classes,
+                stylesheets=[_HOST_FITS_CONTENT],
             )
         else:
             wrapper = self._section(*objects, gap=8, css_classes=classes)
