@@ -47,7 +47,7 @@ panel = { version = ">=1.11.0rc0", channel = "pyviz/label/dev" }
 # TODO: Add these to conda-forge / pyviz
 # Pre-release floors matching pyproject.toml until panel-reactflow and panel-tiles
 # 0.6.0 are released.
-panel_reactflow = ">=0.6.0b7"
+panel_reactflow = ">=0.6.0b9"
 panel_tiles = ">=0.6.0b2"
 # A prerelease floor, which uv's default mode allows for this package alone.
 panel-agents = ">=0.1.0b13"

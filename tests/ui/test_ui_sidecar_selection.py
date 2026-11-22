@@ -90,6 +90,36 @@ def test_the_inspector_keeps_the_selection_across_tab_switches(page):
     wait_until(lambda: editor._inspector._shown is None, page, timeout=TIMEOUT)
 
 
+def test_a_deselect_right_after_a_tab_switch_clears_the_selection(page):
+    page.set_viewport_size(WIDE)
+    apps = []
+    _serve_code_app(page, apps)
+    editor = apps[0]._editor
+    page.get_by_role("button", name="Dataflow").click()
+    wait_until(lambda: editor.mode == "wiring", page, timeout=TIMEOUT)
+    _node(page, "q").click()
+    _shows_node(page, editor, "q")
+
+    # Well within the 3 s the canvas's old view once had to let go of its selection.
+    quick = 1500
+    page.get_by_role("button", name="Split").click()
+    wait_until(lambda: editor.mode == "split", page, timeout=TIMEOUT)
+    expect(_node(page, "q")).to_have_class(re.compile(r"\bselected\b"), timeout=TIMEOUT)
+    page.locator(".react-flow__pane").click(position={"x": 20, "y": 20})
+    wait_until(lambda: editor._flow.selection["nodes"] == [], page, timeout=quick)
+    wait_until(lambda: editor._inspector._shown is None, page, timeout=quick)
+
+    _node(page, "q").click()
+    _shows_node(page, editor, "q")
+    page.get_by_role("button", name="Dataflow").click()
+    wait_until(lambda: editor.mode == "wiring", page, timeout=TIMEOUT)
+    expect(_node(page, "q")).to_have_class(re.compile(r"\bselected\b"), timeout=TIMEOUT)
+    page.keyboard.press("Escape")
+    wait_until(lambda: editor._flow.selection["nodes"] == [], page, timeout=quick)
+    expect(_node(page, "q")).not_to_have_class(re.compile(r"\bselected\b"), timeout=quick)
+    _still_editing(page, editor)
+
+
 def test_the_inspector_keeps_the_selection_as_the_code_panel_moves(page):
     editor, query = make_editor()
     page.set_viewport_size({"width": 1900, "height": 900})

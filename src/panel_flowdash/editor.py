@@ -481,9 +481,6 @@ _SIDE_PANEL_WIDTH = 250
 _PHONE_REVEAL_ZOOM = 0.75
 _PHONE_REVEAL_TOP = 24
 
-# How long after the canvas moves to another tab an empty selection from its page is
-# taken as the old view letting go of it rather than the person clearing it.
-_CANVAS_REMOUNT_GRACE = 3.0
 _CANVAS_MIN_HEIGHT = 600
 _CANVAS_MIN_WIDTH = 160
 # With the code panel under it, the canvas keeps this much and the panel starts this high.
@@ -1653,10 +1650,8 @@ class FlowDash(Viewer):
         self._split_shown = False
         self._phone = False
         self._phone_tile_tapped = False
-        # Where the canvas is shown ('wiring', 'split' or None when hidden); moving it
-        # renders it afresh, and the page then reports an empty selection.
+        # Where the canvas is shown: 'wiring', 'split' or None when hidden.
         self._canvas_host: str | None = None
-        self._remount_deadline = 0.0
         self._tile_selection_follows = True
         self._rebuilding_grid = False
         self._inspected_id: str | None = None
@@ -2207,14 +2202,6 @@ class FlowDash(Viewer):
             },
         )
         flow.on("drop", self._on_component_dropped)
-        process_msg = flow._process_msg
-        dropped = _EditorCall(self, "_selection_dropped_by_remount")
-
-        def _process_msg(msg: dict) -> None:
-            if not dropped(msg):
-                process_msg(msg)
-
-        flow._process_msg = _process_msg
         flow.add_connection_validator(
             lambda payload, _flow: self._validate_connection(
                 payload["source"],
@@ -4617,9 +4604,7 @@ class FlowDash(Viewer):
         if self.inspect_outputs or self.provenance:
             dialogs.insert(0, self._inspect_dialog)
         canvas_host = "split" if split else "wiring" if showing_canvas else None
-        if canvas_host != self._canvas_host:
-            self._canvas_host = canvas_host
-            self._expect_canvas_remount()
+        self._canvas_host = canvas_host
         if split:
             self._split_view.show([self._flow], self._view_controls.layout(self._tile_grid))
             self._workspace_area[:] = [self._split_view, *dialogs]
@@ -4638,24 +4623,6 @@ class FlowDash(Viewer):
         self._sidecar.sync()
         # "Arrange for" is shown in the Layout tab only.
         self._inspector.refresh_summary()
-
-    def _expect_canvas_remount(self):
-        """Keep the selection while the canvas moves to another tab, or is hidden.
-
-        The canvas's old view reports an empty selection as it goes, though the
-        nodes stay selected on the page; the selection is the editor's, so it
-        is kept for the inspector, the tiles and the code panel alike.
-        """
-        selection = self._flow.selection or {}
-        if selection.get("nodes") or selection.get("edges"):
-            self._remount_deadline = time.monotonic() + _CANVAS_REMOUNT_GRACE
-
-    def _selection_dropped_by_remount(self, msg: dict) -> bool:
-        if msg.get("type") != "selection_changed" or not self._remount_deadline:
-            return False
-        expected = time.monotonic() < self._remount_deadline
-        self._remount_deadline = 0.0
-        return expected and not (msg.get("nodes") or msg.get("edges"))
 
     @param.depends("mode", watch=True)
     def _remember_mode(self):

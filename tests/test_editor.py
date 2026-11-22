@@ -502,35 +502,15 @@ def _click_overflow(editor, label):
     editor._dashboard_bar.overflow._handle_msg({"type": "click", "item": index})
 
 
-class TestCanvasRemount:
+class TestCanvasMove:
     def _report(self, editor, nodes):
         editor._flow._process_msg({"type": "selection_changed", "nodes": nodes, "edges": []})
 
-    async def test_the_selection_is_kept_as_the_canvas_moves_to_another_tab(self, editor):
-        editor.editable = True
-        node = editor.add_component(SHOUTER)
-        self._report(editor, [node])
-
-        editor.mode = "split"
-        self._report(editor, [])
-
-        assert editor._flow.selection["nodes"] == [node]
-        assert editor._inspector._shown == ("node", node)
-
-    async def test_a_later_empty_selection_clears_it(self, editor):
+    async def test_an_empty_selection_right_after_a_tab_switch_clears_it(self, editor):
         editor.editable = True
         node = editor.add_component(SHOUTER)
         self._report(editor, [node])
         editor.mode = "split"
-        self._report(editor, [])
-
-        self._report(editor, [])
-        assert editor._flow.selection["nodes"] == []
-
-    async def test_without_a_move_an_empty_selection_clears_it(self, editor):
-        editor.editable = True
-        node = editor.add_component(SHOUTER)
-        self._report(editor, [node])
 
         self._report(editor, [])
         assert editor._flow.selection["nodes"] == []
