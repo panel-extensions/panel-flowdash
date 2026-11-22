@@ -213,6 +213,11 @@ class TestRenderMarkdown:
         assert render_markdown("```{{ value }}\nx\n```", 1) == "<pre><code>x\n</code></pre>\n"
         assert 'class="language-py"' in render_markdown("```py {{ value }}\nx\n```", 1)
 
+    def test_links_open_in_a_new_tab_and_anchors_stay(self):
+        rendered = render_markdown("[docs](https://example.com) [up](#top) <https://a.test>", 1)
+        assert rendered.count('target="_blank" rel="noopener noreferrer"') == 2
+        assert '<a href="#top">up</a>' in rendered
+
     def test_values_fill_image_alt_text(self):
         rendered = render_markdown("![{{ value.secret }}](https://example.com/a.png)", self.VALUE)
         assert 'alt="hunter2"' in rendered

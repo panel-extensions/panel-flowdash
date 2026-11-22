@@ -277,7 +277,7 @@ async def test_text_preview_is_a_compact_caption(editor):
 async def test_text_preview_with_markdown_structure_is_markdown_without_margins(editor):
     node, _ = _data(editor, SUMMARY)
     instance = editor._component_instances[node]
-    instance.text = "**2 tables**\n\n- sales\n- <b>regions</b>"
+    instance.text = "**2 tables**\n\n- sales\n- <b>regions</b>\n- [docs](https://example.com)"
     instance._preview_rev = 1
     editor._inspector._node_tabs.active = 0
     editor._inspector._node_tabs.active = 1
@@ -288,6 +288,10 @@ async def test_text_preview_with_markdown_structure_is_markdown_without_margins(
     assert "<li>sales</li>" in pane.object
     # A component's text never becomes markup of its own.
     assert "&lt;b&gt;regions&lt;/b&gt;" in pane.object
+    # A link leaves the app's own tab alone.
+    assert (
+        '<a href="https://example.com" target="_blank" rel="noopener noreferrer">' in pane.object
+    )
     assert "h6 { margin: 0 0 4px; }" in pane.stylesheets[0]
     assert ":last-child { margin-bottom: 0; }" in pane.stylesheets[0]
 

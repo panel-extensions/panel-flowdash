@@ -21,6 +21,7 @@ import typing as t
 import panel as pn
 import panel_material_ui as pmui
 import param
+from markdown_it import MarkdownIt
 
 # Underscores inside a word never emphasise, so names like ``wind_speed`` stay as typed.
 # ``:`` starts links (``https:``), emoji (``:smile:``) and definition list items.
@@ -106,6 +107,25 @@ def markdown_pane(object: t.Any = "", **params) -> pn.pane.Markdown:
     """
     params.setdefault("disable_math", True)
     return _NoMathMarkdown(object, **params)
+
+
+def markdown_renderer(preset: str = "commonmark") -> MarkdownIt:
+    """Return a Markdown renderer that shows raw HTML as typed and opens links in a new tab.
+
+    A link followed in the app's own tab would leave the dashboard and any unsaved
+    edits behind; a link to an anchor on the page stays in it.
+    """
+    md = MarkdownIt(preset, {"html": False})
+
+    def link_open(renderer, tokens, idx, options, env):
+        token = tokens[idx]
+        if not str(token.attrGet("href") or "").startswith("#"):
+            token.attrSet("target", "_blank")
+            token.attrSet("rel", "noopener noreferrer")
+        return renderer.renderToken(tokens, idx, options, env)
+
+    md.add_render_rule("link_open", link_open)
+    return md
 
 
 def alert_pane(object: t.Any = "", **params) -> pn.pane.Alert:

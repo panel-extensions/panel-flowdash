@@ -17,12 +17,11 @@ from html.parser import HTMLParser
 import panel as pn
 import panel_material_ui as pmui
 import param
-from markdown_it import MarkdownIt
 from panel.viewable import Viewer
 
 from panel_flowdash.registry import register
 from panel_flowdash.ui.node_card import summarize_value
-from panel_flowdash.ui.text import escape_markdown, text_typography
+from panel_flowdash.ui.text import escape_markdown, markdown_renderer, text_typography
 from panel_flowdash.util import is_failure
 from panel_flowdash.value_text import safe_str
 
@@ -37,7 +36,7 @@ _HUGE_INT = 10**_MAX_DIGITS
 # What all the placeholders of one text may add up to.
 _MAX_TOTAL = 20 * _MAX_FILL
 # Raw HTML is shown as text; math is never typeset since the HTML pane leaves it alone.
-_MARKDOWN = MarkdownIt("gfm-like", {"html": False})
+_MARKDOWN = markdown_renderer("gfm-like")
 
 _TEMPLATE_DOC = """
 Placeholders are filled from the connected `value` input: `{{ value }}` shows
