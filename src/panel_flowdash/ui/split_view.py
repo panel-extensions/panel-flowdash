@@ -71,10 +71,28 @@ class SplitPreferences(param.Parameterized):
         doc="Where the code panel is docked: under the canvas or to its right.",
     )
 
+    spec_view = param.Selector(
+        default="form",
+        objects=["form", "yaml", "json"],
+        doc="The view of a spec in the code panel: its form, or its text as YAML or JSON.",
+    )
+
+    spec_text = param.Selector(
+        default="yaml",
+        objects=["yaml", "json"],
+        doc="The syntax of a spec's text in the code panel.",
+    )
+
     def to_json(self) -> str:
         """Return the preferences as stored in the browser."""
         return json.dumps(
-            {"split": self.split, "sizes": list(self.sizes), "code_dock": self.code_dock}
+            {
+                "split": self.split,
+                "sizes": list(self.sizes),
+                "code_dock": self.code_dock,
+                "spec_view": self.spec_view,
+                "spec_text": self.spec_text,
+            }
         )
 
     def load(self, stored: t.Any) -> bool:
@@ -98,6 +116,10 @@ class SplitPreferences(param.Parameterized):
             update["sizes"] = sizes
         if stored.get("code_dock") in ("bottom", "right"):
             update["code_dock"] = stored["code_dock"]
+        if stored.get("spec_view") in self.param.spec_view.objects:
+            update["spec_view"] = stored["spec_view"]
+        if stored.get("spec_text") in self.param.spec_text.objects:
+            update["spec_text"] = stored["spec_text"]
         if update:
             self.param.update(update)
         return bool(update)
@@ -340,7 +362,9 @@ class SplitView(Viewer):
             key=key,
             legacy_key=None if key == STORAGE_KEY else STORAGE_KEY,
         )
-        self.preferences.param.watch(self._store, ["split", "sizes", "code_dock"])
+        self.preferences.param.watch(
+            self._store, ["split", "sizes", "code_dock", "spec_view", "spec_text"]
+        )
 
     def _on_split_changed(self, *_events):
         split = self.split

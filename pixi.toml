@@ -32,6 +32,7 @@ panel-material-ui = ">=0.17.0rc1"
 panel-splitjs = ">=0.4.0"
 param = ">=2.3.0"
 pyyaml = "*"
+"ruamel.yaml" = ">=0.18"
 
 [dependencies]
 panel_flowdash = { path = "." }

@@ -3,6 +3,7 @@
 import asyncio
 import json
 
+import numpy as np
 import pandas as pd
 import panel as pn
 import panel_material_ui as pmui
@@ -22,10 +23,13 @@ from panel_flowdash.spec_settings import (
     declared_settings,
     delete_path,
     format_spec,
+    format_spec_yaml,
     parse_spec,
+    parse_spec_yaml,
     problems,
     set_path,
     shown_in_spec,
+    text_spans,
     unknown_paths,
 )
 from panel_flowdash.ui.choice_widgets import plain_widget
@@ -300,7 +304,9 @@ class TestField:
     def test_unknown_keys_are_flagged_and_kept(self):
         field = SpecEditor(value=SPEC, settings=SETTINGS)
         assert field.unknown == ["encoding.x.axis", "transform"]
-        assert "transform" in field.banner[0].object
+        listed = [row[0].object for row in field.unshown[1:]]
+        assert "<code>encoding.x.axis</code>" in listed[0] and "1 key" in listed[0]
+        assert "<code>transform</code>" in listed[1] and "1 item" in listed[1]
         rows = {a["row"] for a in field.editor.annotations}
         assert rows == {
             field._spans[("encoding", "x", "axis")][0],
@@ -371,7 +377,7 @@ class TestField:
     def test_a_value_the_control_cannot_show_is_flagged_and_kept(self):
         field = SpecEditor(value={"title": {"text": "T", "fontSize": 20}}, settings=SETTINGS)
         assert field.unknown == ["title"]
-        assert "title" in field.banner[0].object
+        assert "<code>title</code>" in field.unshown[1][0].object
 
     def test_a_disabled_control_says_why(self):
         settings = [
@@ -425,8 +431,16 @@ async def editor():
     editor.dispose()
 
 
-def _field(editor, node_id):
-    """Select the node, which shows its spec in the code panel, and return the panel's spec editor."""
+def _field(editor, node_id, run_on_change=False):
+    """Select the node, which shows its spec in the code panel, and return the panel's spec editor.
+
+    The spec's text is JSON, and "Run on change" is off unless asked for, so a draft waits for Run.
+    """
+    panel = editor.code_panel
+    panel._run_on_change["spec"] = run_on_change
+    if panel.spec_view != "form":
+        panel.spec_view = "json"
+    panel.spec_text = "json"
     select_on_canvas(editor._flow, node_id=node_id)
     if not editor.code_panel_open:
         assert editor.open_code_panel(node_id)
@@ -501,7 +515,7 @@ class TestCodePanel:
         assert panel._spec_form.visible and not panel._spec_text.visible
         field._controls["title"][1].value = "Capacity"
         assert '"title": "Capacity"' in field.editor.value
-        panel.view_toggle.value = "spec"
+        panel.view_toggle.value = "json"
         assert not panel._spec_form.visible and panel._spec_text.visible
         field.editor.value = json.dumps({**SPEC, "title": "Typed"})
         assert field._controls["title"][1].value == "Typed"
@@ -513,7 +527,7 @@ class TestCodePanel:
         field = _field(editor, node)
         panel = editor.code_panel
         assert not panel.format_button.visible
-        panel.view_toggle.value = "spec"
+        panel.view_toggle.value = "json"
         assert panel.format_button.visible and panel.spec_tools.can_format
         assert "Shift+Alt+F" in panel.format_button.description
         compact = json.dumps({"title": "T", **SPEC}, separators=(",", ":"))
@@ -591,11 +605,11 @@ class TestCodePanel:
         assert '"title": "Moved"' in field.editor.value
         assert panel.dirty
 
-    async def test_a_spec_without_settings_is_json_only(self, editor):
+    async def test_a_spec_without_settings_is_text_only(self, editor):
         node = editor.add_component("D/json")
         _field(editor, node)
         panel = editor.code_panel
-        assert not panel.view_toggle.visible
+        assert panel.view_toggle.options == {"YAML": "yaml", "JSON": "json"}
         assert panel._spec_text.visible and not panel._spec_form.visible
 
     async def test_form_drafts_are_kept_per_node(self, editor):
@@ -617,7 +631,7 @@ class TestCodePanel:
         first = editor.add_component("D/plain")
         second = editor.add_component("D/plain")
         field = _field(editor, first)
-        editor.code_panel.view_toggle.value = "spec"
+        editor.code_panel.view_toggle.value = "json"
         field.editor.value = '{"mark": '
         assert field.error is not None and editor.code_panel.dirty
         await _run(editor)
@@ -700,7 +714,7 @@ class TestCodePanel:
         node = editor.add_component("D/plain")
         editor.save()
         field = _field(editor, node)
-        editor.code_panel.view_toggle.value = "spec"
+        editor.code_panel.view_toggle.value = "json"
         field.editor.value_input = "{}"
         assert editor.code_panel.dirty
         assert editor._has_unsent_edits()
@@ -711,7 +725,7 @@ class TestDraftsAcrossChanges:
         node = editor.add_component("D/plain")
         field = _field(editor, node)
         panel = editor.code_panel
-        panel.view_toggle.value = "spec"
+        panel.view_toggle.value = "json"
         field.editor.value = '{"mark": '
         panel.view_toggle.value = "form"
         assert panel._json_error.visible
@@ -721,7 +735,7 @@ class TestDraftsAcrossChanges:
         assert "the JSON is not valid" in panel._code_status.object
         assert "the JSON is not valid" in panel._result_footer.object
         panel.fix_json_button.clicks += 1
-        assert panel.view_toggle.value == "spec" and not panel._json_error.visible
+        assert panel.view_toggle.value == "json" and not panel._json_error.visible
         field.editor.value = json.dumps(SPEC)
         panel.view_toggle.value = "form"
         assert not panel._json_error.visible
@@ -885,3 +899,452 @@ class TestDraftsAcrossChanges:
         assert not panel._stale_notice.visible and not panel.dirty
         panel.keep_stale_draft()
         assert panel.code.value_input == "SELECT 4"
+
+
+SELECTION = {
+    "params": [{"name": "pick", "select": {"type": "point", "on": "click", "clear": "dblclick"}}],
+    "mark": "bar",
+    "encoding": {"x": {"field": "year", "type": "ordinal"}},
+}
+
+COMMENTED = """# Capacity per year
+mark: bar  # bars read best here
+params:
+  - name: pick
+    select: {type: point, on: click}
+yes: no
+"""
+
+
+class TestYaml:
+    def test_keys_like_on_stay_strings_both_ways(self):
+        text, _spans, _doc = format_spec_yaml(SELECTION)
+        assert "on: click" in text
+        spec, _doc = parse_spec_yaml(text)
+        assert spec == SELECTION and json.dumps(spec) == json.dumps(SELECTION)
+        spec, _doc = parse_spec_yaml("on: click\nyes: no\noff: true\n")
+        assert spec == {"on": "click", "yes": "no", "off": True}
+
+    def test_key_order_is_kept(self):
+        spec = {
+            "width": 300,
+            "mark": "bar",
+            "encoding": {"y": {"field": "a"}, "x": {"field": "b"}},
+        }
+        text, _spans, _doc = format_spec_yaml(spec)
+        assert list(parse_spec_yaml(text)[0]["encoding"]) == ["y", "x"]
+        assert text.splitlines()[0] == "width: 300"
+
+    def test_dates_and_numbers_read_as_json_values(self):
+        spec, _doc = parse_spec_yaml("a: 2024-01-31\nb: 1.5\nc: 7\nd: ~\ne: '1'\n")
+        assert spec == {"a": "2024-01-31", "b": 1.5, "c": 7, "d": None, "e": "1"}
+        text = format_spec_yaml({"a": "2024-01-31", "b": "true"})[0]
+        assert parse_spec_yaml(text)[0] == {"a": "2024-01-31", "b": "true"}
+
+    def test_values_json_writes_are_written_as_yaml(self):
+        text = format_spec_yaml({"a": np.float64(1.5), "t": (1, 2), "n": None})[0]
+        assert "n: null" in text
+        assert parse_spec_yaml(text)[0] == {"a": 1.5, "t": [1, 2], "n": None}
+
+    def test_json_is_read_as_yaml_too(self):
+        assert parse_spec_yaml(json.dumps(SPEC, indent=2))[0] == SPEC
+        assert parse_spec_yaml("  ") == ({}, None)
+        assert format_spec_yaml({})[0] == ""
+
+    def test_comments_are_kept_when_the_spec_changes(self):
+        spec, doc = parse_spec_yaml(COMMENTED)
+        spec["title"] = "T"
+        spec["params"][0]["select"]["on"] = "mouseover"
+        del spec["yes"]
+        text = format_spec_yaml(spec, doc)[0]
+        assert text.startswith("# Capacity per year\nmark: bar  # bars read best here\n")
+        assert "select: {type: point, on: mouseover}" in text
+        assert "yes" not in text and text.endswith("title: T")
+        assert parse_spec_yaml(text)[0] == spec
+
+    def test_invalid_yaml_says_where(self):
+        with pytest.raises(SpecTextError) as info:
+            parse_spec_yaml("mark: bar\n  width: 2\n")
+        assert (info.value.line, info.value.column) == (2, 8)
+        with pytest.raises(SpecTextError, match="mapping"):
+            parse_spec_yaml("- 1\n- 2\n")
+        with pytest.raises(SpecTextError, match="duplicate"):
+            parse_spec_yaml("a: 1\na: 2\n")
+
+    @pytest.mark.parametrize("syntax", ["yaml", "json"])
+    def test_spans_of_text_as_written(self, syntax):
+        text = format_spec_yaml(SPEC)[0] if syntax == "yaml" else json.dumps(SPEC, indent=2)
+        spans = text_spans(text)
+        lines = text.splitlines()
+        start, end = spans[("encoding", "x", "axis")]
+        assert "axis" in lines[start] and "labelAngle" in lines[end]
+        start, _end = spans[("transform",)]
+        assert "transform" in lines[start]
+        assert text_spans("a: [") == {}
+
+
+class TestFieldYaml:
+    def test_the_text_is_yaml_and_the_form_follows_it(self):
+        field = SpecEditor(value=SPEC, settings=SETTINGS, syntax="yaml")
+        assert field.editor.language == "yaml"
+        assert field.editor.value.startswith("mark: bar\nencoding:")
+        field.editor.value = COMMENTED
+        assert field.value == {
+            "mark": "bar",
+            "params": [{"name": "pick", "select": {"type": "point", "on": "click"}}],
+            "yes": "no",
+        }
+        assert field._controls["mark.type"][1].value == "Bar"
+        assert field.editor.value == COMMENTED, "the text stays as typed"
+
+    def test_a_form_edit_keeps_the_comments(self):
+        field = SpecEditor(value={}, settings=SETTINGS, syntax="yaml")
+        field.editor.value = COMMENTED
+        field._controls["title"][1].value = "Capacity"
+        text = field.editor.value
+        assert "# Capacity per year" in text and "# bars read best here" in text
+        assert "on: click" in text and text.endswith("title: Capacity")
+        row = field._spans[("title",)][0]
+        assert field._marks.changed == [row]
+
+    def test_switching_the_syntax_shows_the_same_spec(self):
+        field = SpecEditor(value={}, settings=SETTINGS, syntax="yaml")
+        field.editor.value = COMMENTED
+        spec = field.value
+        field.syntax = "json"
+        assert json.loads(field.editor.value) == spec and field.editor.language == "json"
+        field.editor.value = json.dumps({**spec, "width": 200})
+        field.syntax = "yaml"
+        assert "# bars read best here" in field.editor.value
+        assert parse_spec_yaml(field.editor.value)[0] == {**spec, "width": 200}
+
+    def test_invalid_yaml_keeps_the_spec(self):
+        field = SpecEditor(value=SPEC, settings=SETTINGS, syntax="yaml")
+        field.editor.value = "mark: [bar\n"
+        assert field.error and field.value == SPEC and field.unsent
+        assert field.editor.annotations[0]["type"] == "error"
+        assert all(control.disabled for _, control in field._controls.values())
+
+    async def test_live_text_applies_once_it_parses_and_typing_pauses(self, monkeypatch):
+        monkeypatch.setattr("panel_flowdash.ui.spec_field.APPLY_DELAY", 0.05)
+        field = SpecEditor(value=SPEC, settings=SETTINGS, syntax="yaml", live=True)
+        typed = field.editor.value + "\ntitle: Typed  # live"
+        field.editor.value_input = typed
+        assert field.unsent and "title" not in field.value
+        await _settle(0.2)
+        assert field.value["title"] == "Typed" and not field.unsent
+        assert field.editor.value_input == typed, "the text is not written back while typing"
+        field.editor.value_input = typed + "\nwidth: ["
+        await _settle(0.2)
+        assert field.error is not None and "width" not in field.value and field.unsent
+        field.editor.value_input = typed + "\nwidth: 300"
+        await _settle(0.2)
+        assert field.error is None and field.value["width"] == 300
+
+    async def test_without_live_text_waits_for_blur(self, monkeypatch):
+        monkeypatch.setattr("panel_flowdash.ui.spec_field.APPLY_DELAY", 0.05)
+        field = SpecEditor(value=SPEC, settings=SETTINGS, syntax="yaml")
+        field.editor.value_input = "mark: line"
+        await _settle(0.2)
+        assert field.value == SPEC and field.unsent
+        assert field.flush() and field.value == {"mark": "line"} and not field.unsent
+
+    def test_typing_back_to_the_applied_text_clears_the_error(self):
+        field = SpecEditor(value=SPEC, settings=SETTINGS, syntax="yaml")
+        applied = field.editor.value
+        field.editor.value = "mark: ["
+        assert field.error is not None
+        field.editor.value_input = applied
+        assert field.error is None and not field.unsent
+
+    def test_unshown_paths_link_to_their_lines(self):
+        field = SpecEditor(value=SPEC, settings=SETTINGS, syntax="yaml", mode="form")
+        link = field.unshown[2][1]
+        assert link.label == "Edit in YAML"
+        link.clicks += 1
+        assert field.mode == "spec"
+        row = field._spans[("transform",)][0]
+        assert field.editor.value.splitlines()[row].startswith("transform:")
+        assert field._marks.goto == {"row": row, "count": 1}
+        field.syntax = "json"
+        assert field.unshown[2][1].label == "Edit in JSON"
+
+
+class TestSpecViews:
+    async def test_yaml_is_the_default_text_view_and_the_views_stay_in_sync(self, editor):
+        node = editor.add_component("D/plain")
+        panel = editor.code_panel
+        select_on_canvas(editor._flow, node_id=node)
+        assert editor.open_code_panel(node)
+        field = panel.spec_editor
+        assert panel.view_toggle.options == {"Form": "form", "YAML": "yaml", "JSON": "json"}
+        assert panel.view_toggle.value == "form" and panel.spec_text == "yaml"
+        panel.run_on_change = False
+        field._controls["title"][1].value = "Capacity"
+        panel.view_toggle.value = "yaml"
+        assert panel._spec_text.visible and field.syntax == "yaml"
+        assert "title: Capacity" in field.editor.value
+        field.editor.value = field.editor.value.replace("Capacity", "Typed") + "\n# note"
+        panel.view_toggle.value = "json"
+        assert json.loads(field.editor.value)["title"] == "Typed"
+        panel.view_toggle.value = "yaml"
+        assert "# note" in field.editor.value
+        panel.view_toggle.value = "form"
+        assert field._controls["title"][1].value == "Typed"
+        assert panel.dirty and "title" not in editor._component_instances[node].spec
+
+    async def test_text_that_does_not_parse_stays_in_its_view(self, editor):
+        node = editor.add_component("D/plain")
+        field = _field(editor, node)
+        panel = editor.code_panel
+        panel.view_toggle.value = "yaml"
+        field.editor.value_input = "mark: ["
+        panel.view_toggle.value = "json"
+        assert panel.view_toggle.value == "yaml" and field.syntax == "yaml"
+        assert field.editor.value_input == "mark: [" and field.error is not None
+        assert "Not switched to JSON" in field.status.object
+        panel.view_toggle.value = "form"
+        assert panel._json_error.visible and panel.fix_json_button.label == "Fix in YAML"
+
+    async def test_typed_text_is_applied_when_switching_views(self, editor):
+        node = editor.add_component("D/plain")
+        field = _field(editor, node)
+        panel = editor.code_panel
+        panel.view_toggle.value = "yaml"
+        field.editor.value_input = "mark: line\non: click"
+        panel.view_toggle.value = "json"
+        assert json.loads(field.editor.value) == {"mark": "line", "on": "click"}
+        assert panel.dirty
+
+    async def test_the_view_is_remembered_for_the_browser(self, editor):
+        node = editor.add_component("D/plain")
+        _field(editor, node)
+        panel = editor.code_panel
+        panel.view_toggle.value = "yaml"
+        stored = json.loads(editor._split_view.preferences.to_json())
+        assert (stored["spec_view"], stored["spec_text"]) == ("yaml", "yaml")
+        editor._split_view.preferences.load({"spec_view": "json", "spec_text": "json"})
+        editor._on_split_preferences_loaded()
+        assert panel.view_toggle.value == "json" and panel.spec_editor.syntax == "json"
+
+    async def test_comments_survive_a_run_an_undo_and_another_node(self, editor):
+        node = editor.add_component("D/plain")
+        other = editor.add_component("D/plain")
+        field = _field(editor, node)
+        panel = editor.code_panel
+        panel.view_toggle.value = "yaml"
+        field.editor.value = "# mine\n" + field.editor.value + "\ntitle: T  # why"
+        editor.edit_history.flush()
+        await _run(editor)
+        editor.edit_history.flush()
+        assert editor._component_instances[node].spec["title"] == "T"
+        assert editor.undo()
+        assert "title" not in field.value
+        assert field.editor.value.startswith("# mine\n")
+        _field(editor, other)
+        assert "# mine" not in field.editor.value
+        _field(editor, node)
+        panel.view_toggle.value = "yaml"
+        assert field.editor.value.startswith("# mine\n")
+
+    async def test_a_link_from_the_form_opens_the_text_at_the_line(self, editor):
+        node = editor.add_component("D/plain")
+        field = _field(editor, node)
+        panel = editor.code_panel
+        panel.spec_text = "yaml"
+        assert panel.view_toggle.value == "form"
+        assert [row[1].label for row in field.unshown[1:]] == ["Edit in YAML"] * 2
+        field.unshown[2][1].clicks += 1
+        assert panel.view_toggle.value == "yaml" and panel._spec_text.visible
+        row = field._marks.goto["row"]
+        assert field.editor.value.splitlines()[row].startswith("transform:")
+
+
+class TestRunOnChange:
+    async def test_on_by_default_for_a_spec_and_off_for_code(self, editor):
+        node = editor.add_component("D/both")
+        select_on_canvas(editor._flow, node_id=node)
+        panel = editor.code_panel
+        assert editor.open_code_panel(node, "sql")
+        assert not panel.run_on_change and not panel.run_switch.value
+        assert editor.open_code_panel(node, "spec")
+        assert panel.run_on_change and panel.spec_editor.live
+        panel.run_on_change = False
+        assert editor.open_code_panel(node, "sql")
+        panel.run_on_change = True
+        assert editor.open_code_panel(node, "spec")
+        assert not panel.run_on_change and not panel.spec_editor.live
+        assert editor.open_code_panel(node, "sql")
+        assert panel.run_on_change
+
+    async def test_a_form_edit_runs_at_once(self, editor):
+        node = editor.add_component("D/plain")
+        field = _field(editor, node, run_on_change=True)
+        shown = []
+        editor.code_panel.param.watch(lambda event: shown.append(event.new), "stale")
+        field._controls["title"][1].value = "Now"
+        await _settle(0.5)
+        assert editor._component_instances[node].spec["title"] == "Now"
+        assert not editor.code_panel.dirty
+        assert shown == [], "a quick run is not marked stale"
+
+    async def test_text_runs_once_it_parses(self, editor, monkeypatch):
+        monkeypatch.setattr("panel_flowdash.ui.spec_field.APPLY_DELAY", 0.05)
+        node = editor.add_component("D/plain")
+        field = _field(editor, node, run_on_change=True)
+        panel = editor.code_panel
+        panel.view_toggle.value = "yaml"
+        start = field.editor.value
+        field.editor.value_input = start + "\ntitle: ["
+        await _settle(0.5)
+        assert editor._component_instances[node].spec == SPEC
+        assert panel.dirty and field.error is not None
+        assert panel._stale_badge.visible and editor._find_node_card(node).stale == "draft"
+        field.editor.value_input = (
+            start + "\ntitle: Live\nparams: [{name: p, select: {type: point, on: click}}]"
+        )
+        await _settle(0.5)
+        spec = editor._component_instances[node].spec
+        assert spec["title"] == "Live" and spec["params"][0]["select"]["on"] == "click"
+        assert not panel.dirty
+
+    async def test_code_waits_for_run(self, editor, monkeypatch):
+        monkeypatch.setattr("panel_flowdash.ui.code_panel.RUN_DELAY", 0.05)
+        node = editor.add_component("D/both")
+        select_on_canvas(editor._flow, node_id=node)
+        assert editor.open_code_panel(node, "sql")
+        editor.code_panel.code.value_input = "SELECT 2"
+        await _settle(0.3)
+        assert editor._component_instances[node].sql == "SELECT 1"
+        assert editor.code_panel.dirty
+
+
+class TestStale:
+    async def test_a_draft_dims_the_result_and_marks_the_card_and_tile(self, editor):
+        node = editor.add_component("D/plain")
+        other = editor.add_component("D/plain")
+        field = _field(editor, node)
+        panel = editor.code_panel
+        item = next(i for i in editor._tile_items if i["instance_id"] == node)
+        tile = editor._grid_view(item, pn.pane.Str("chart"))
+        assert not tile.stale_mark.visible
+        assert not panel._stale_badge.visible and editor._find_node_card(node).stale is None
+        field._controls["title"][1].value = "Draft"
+        assert panel._stale_badge.visible and panel.stale_run_button.visible
+        assert "Not run" in panel._stale_text.object
+        assert "fd-code-result-dimmed" in panel._result_body.css_classes
+        assert editor._find_node_card(node).stale == "draft"
+        assert tile.stale_mark.visible and tile.stale_mark.object == "Not run"
+        assert "flowdash-tile-stale" in tile.css_classes
+        _field(editor, other)
+        assert editor._find_node_card(node).stale == "draft", "a held draft is not run either"
+        assert not panel._stale_badge.visible
+        _field(editor, node)
+        panel.stale_run_button.clicks += 1
+        await _settle()
+        assert editor._component_instances[node].spec["title"] == "Draft"
+        assert not panel._stale_badge.visible
+        assert "fd-code-result-dimmed" not in panel._result_body.css_classes
+        assert editor._find_node_card(node).stale is None
+        assert not tile.stale_mark.visible and "flowdash-tile-stale" not in tile.css_classes
+
+    async def test_text_that_does_not_parse_is_stale(self, editor):
+        node = editor.add_component("D/plain")
+        field = _field(editor, node)
+        editor.code_panel.view_toggle.value = "yaml"
+        field.editor.value_input = "mark: ["
+        assert editor.code_panel._stale_badge.visible
+        assert editor._find_node_card(node).stale == "draft"
+        editor.code_panel.discard()
+        assert not editor.code_panel._stale_badge.visible
+        assert editor._find_node_card(node).stale is None
+
+    async def test_a_run_in_flight_says_running(self, editor):
+        node = editor.add_component("D/chart")
+        _field(editor, node)
+        panel = editor.code_panel
+        panel.running = True
+        assert not panel._stale_badge.visible, "a quick run does not flash"
+        await _settle(0.5)
+        assert "Running" in panel._stale_text.object and not panel.stale_run_button.visible
+        assert panel._stale_badge.visible
+        assert editor._find_node_card(node).stale == "running"
+        panel.running = False
+        assert editor._find_node_card(node).stale is None
+        assert not panel._stale_badge.visible
+
+
+class TestRunOnChangeHistory:
+    async def test_undo_is_not_run_again(self, editor):
+        node = editor.add_component("D/plain")
+        field = _field(editor, node, run_on_change=True)
+        editor.edit_history.flush()
+        versions = len(editor.edit_history.versions)
+        field._controls["title"][1].value = "Once"
+        await _settle(0.5)
+        editor.edit_history.flush()
+        assert editor._component_instances[node].spec["title"] == "Once"
+        assert len(editor.edit_history.versions) == versions + 1, "one run, one version"
+        assert editor.undo()
+        await _settle(0.5)
+        assert "title" not in editor._component_instances[node].spec
+        assert "title" not in field.value and not editor.code_panel.dirty
+        assert editor.code_panel.stale is None
+
+
+class TestYamlAliases:
+    def test_merge_keys_have_spans_and_apply(self):
+        text = "base: &b {a: 1}\nx:\n  <<: *b\n  c: 2\n"
+        spans = text_spans(text)
+        assert spans[("x",)][0] == 1 and spans[("x", "c")] == (3, 3)
+        field = SpecEditor(value={}, settings=SETTINGS, syntax="yaml")
+        field.editor.value = text
+        assert field.error is None
+        assert field.value == {"base": {"a": 1}, "x": {"c": 2, "a": 1}}
+
+    def test_an_edit_under_an_alias_changes_that_path_only(self):
+        spec, doc = parse_spec_yaml("base: &b {a: 1}\nx: *b\n")
+        spec["x"]["a"] = 2
+        text = format_spec_yaml(spec, doc)[0]
+        assert parse_spec_yaml(text)[0] == {"base": {"a": 1}, "x": {"a": 2}}
+        spec, doc = parse_spec_yaml("base: &b {a: 1}\nx:\n  <<: *b\n  c: 2\n")
+        spec["x"]["a"] = 5
+        assert parse_spec_yaml(format_spec_yaml(spec, doc)[0])[0] == spec
+
+    def test_an_unchanged_alias_is_kept(self):
+        spec, doc = parse_spec_yaml("base: &b {a: 1}\nx: *b\n")
+        spec["title"] = "T"
+        assert format_spec_yaml(spec, doc)[0] == "base: &b {a: 1}\nx: *b\ntitle: T"
+
+    def test_a_form_edit_under_an_alias_keeps_text_and_spec_in_step(self):
+        field = SpecEditor(value={}, settings=SETTINGS, syntax="yaml")
+        field.editor.value = "encoding: &e {x: {title: A}}\nlayer: [{encoding: *e}]\n"
+        field._controls["encoding.x.title"][1].value = "B"
+        assert field.value["layer"][0]["encoding"] == {"x": {"title": "A"}}
+        assert parse_spec_yaml(field.editor.value)[0] == field.value
+
+    def test_anchored_scalars_keep_their_type(self):
+        spec, _doc = parse_spec_yaml("a: &t true\nb: *t\nf: &f 1.5\ni: &i 3\n")
+        assert spec == {"a": True, "b": True, "f": 1.5, "i": 3}
+        assert [type(v) for v in spec.values()] == [bool, bool, float, int]
+
+
+class TestRunFailure:
+    async def test_a_failing_apply_finishes_the_run_and_says_why(self, editor, monkeypatch):
+        node = editor.add_component("D/plain")
+        field = _field(editor, node, run_on_change=True)
+        panel = editor.code_panel
+
+        def fail(*_args):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(editor, "_apply_config_patch", fail)
+        field._controls["title"][1].value = "X"
+        await _settle(0.5)
+        assert not panel.running and panel.stale == "draft"
+        assert "boom" in panel._problems[0].object
+        monkeypatch.undo()
+        field._controls["title"][1].value = "Y"
+        await _settle(0.5)
+        assert editor._component_instances[node].spec["title"] == "Y"
+        assert not panel.running and panel.stale is None

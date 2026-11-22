@@ -276,6 +276,8 @@ class TestToggleAndCollapse:
             "split": True,
             "sizes": [70.0, 30.0],
             "code_dock": "bottom",
+            "spec_view": "form",
+            "spec_text": "yaml",
         }
         editor.mode = "wiring"
         assert json.loads(split_view.storage.value)["split"] is False
