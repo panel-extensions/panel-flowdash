@@ -8,7 +8,7 @@ from panel.viewable import Viewer
 
 from panel_flowdash import register
 from panel_flowdash.dashboard_store import DashboardItem, DashboardModel
-from panel_flowdash.editor import FlowDash
+from panel_flowdash.editor import FILL_HEIGHT, FlowDash, _fills_tile
 
 
 @register(
@@ -173,3 +173,69 @@ class TestBounds:
         (tile,) = editor._tile_grid.objects
         assert (tile.min_width, tile.max_width) == (240, 960)
         assert tile.inspect_button.visible
+
+
+VEGA = {"$schema": "https://vega.github.io/schema/vega-lite/v5.json", "mark": "bar"}
+
+
+@register(page=False, component=True, title="Filling")
+def filling(config):
+    return pn.pane.Vega({**VEGA, "width": "container", "height": "container"})
+
+
+@register(page=False, component=True, title="Filling bounded", max_size={"height": 300})
+def filling_bounded(config):
+    return pn.Column(
+        pn.pane.Markdown("a"), pn.Spacer(sizing_mode="stretch_both"), sizing_mode="stretch_both"
+    )
+
+
+FILLING = "Test/filling"
+FILLING_BOUNDED = "Test/filling_bounded"
+
+
+def _fill_editor():
+    return FlowDash(
+        {SIZED: Sized, PLAIN: plain, FILLING: filling, FILLING_BOUNDED: filling_bounded},
+        notifications=False,
+    )
+
+
+class TestFillHeight:
+    def test_a_view_sized_by_its_tile_starts_at_the_fill_height(self):
+        editor = _fill_editor()
+        editor.add_component(PLAIN)
+        editor.add_component(FILLING)
+        editor.add_component(SIZED)
+        editor.mode = "dashboard"
+
+        assert editor._tile_grid.layout == [
+            {},
+            {"height": FILL_HEIGHT},
+            {"width": 50.0, "height": 300},
+        ]
+
+    def test_the_fill_height_is_kept_within_bounds(self):
+        editor = _fill_editor()
+        editor.add_component(FILLING_BOUNDED)
+        editor.mode = "dashboard"
+
+        assert editor._tile_grid.layout == [{"height": 300}]
+
+    def test_a_stored_height_wins_over_the_fill_height(self):
+        editor = _fill_editor()
+        stored = {"index": 0, "width": 40, "height": 250, "visible": True}
+        editor.load_model(_model([("f", FILLING)], [{**stored, "instance_id": "f"}]))
+        editor.mode = "dashboard"
+
+        assert editor._tile_grid.layout == [stored]
+
+    def test_views_with_a_height_of_their_own_are_not_filled(self):
+        sized = pn.pane.Vega({**VEGA, "height": "container"}, height=200)
+        markdown = pn.Column(pn.pane.Markdown("a"), sizing_mode="stretch_both")
+
+        assert not _fills_tile(sized)
+        assert not _fills_tile(markdown)
+        assert not _fills_tile(pn.pane.Vega({**VEGA, "height": 300}))
+        assert not _fills_tile(pn.pane.Markdown("a", sizing_mode="stretch_both", min_height=100))
+        assert _fills_tile(pn.pane.Markdown("a", sizing_mode="stretch_height"))

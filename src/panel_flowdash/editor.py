@@ -34,7 +34,8 @@ import panel as pn
 import panel_material_ui as pmui
 import panel_reactflow as pr
 import param
-from panel.viewable import Children, Viewer
+from panel.layout.base import ListLike
+from panel.viewable import Children, Layoutable, Viewer
 from panel_agents import RunState
 from panel_tiles import TileGrid
 
@@ -333,12 +334,41 @@ def _bounded(value: float, low: float | None, high: float | None) -> float:
     return value
 
 
-def _size_layout(layout: list[dict], specs: list, reference_width: int) -> list[dict]:
+# The height a tile whose view takes its height from the tile starts at.
+FILL_HEIGHT = 360
+
+_FILL_SIZING = ("stretch_both", "stretch_height", "scale_both", "scale_height")
+
+
+def _fills_tile(view: t.Any) -> bool:
+    """Whether *view* takes its height from its tile rather than giving the tile one.
+
+    The grid sizes a tile without a height to its content, so such a view, e.g.
+    a Vega-Lite chart sized to its container, would leave the tile a header
+    tall and draw nothing. A layout around views fills its tile if one of them does.
+    """
+    if not isinstance(view, Layoutable) or view.height is not None or view.min_height is not None:
+        return False
+    if isinstance(view, pn.pane.Vega) and view.sizing_mode is None:
+        spec = view.object
+        height = spec.get("height") if isinstance(spec, dict) else getattr(spec, "height", None)
+        return height == "container"
+    if view.sizing_mode not in _FILL_SIZING:
+        return False
+    if isinstance(view, ListLike):
+        return any(_fills_tile(child) for child in view)
+    return True
+
+
+def _size_layout(
+    layout: list[dict], specs: list, reference_width: int, fills: t.Sequence[bool] = ()
+) -> list[dict]:
     """Apply the size hints of the tiles' *specs* to a positional TileGrid layout.
 
     A tile without an entry starts at its ``default_size``, and every tile's size
     is kept within its ``min_size`` and ``max_size``. Hints are pixels; layout
-    widths are percentages of *reference_width*, heights are pixels.
+    widths are percentages of *reference_width*, heights are pixels. A tile
+    whose view *fills* it and that has no height yet starts at :data:`FILL_HEIGHT`.
     """
 
     def percent(pixels):
@@ -356,6 +386,9 @@ def _size_layout(layout: list[dict], specs: list, reference_width: int) -> list[
                     entry["width"] = percent(default["width"])
                 if "height" in default:
                     entry["height"] = default["height"]
+        if "height" not in entry and i < len(fills) and fills[i]:
+            entry["height"] = FILL_HEIGHT
+        if spec is not None:
             low, high = spec.min_size or {}, spec.max_size or {}
             if isinstance(entry.get("width"), (int, float)):
                 entry["width"] = _bounded(
@@ -4011,8 +4044,11 @@ class FlowDash(Viewer):
         """Apply the size hints of the tiles on the grid to its positional *layout*."""
         items = {item["instance_id"]: item for item in self._tile_items}
         specs = [self._tile_spec(items[i]) if i in items else None for i in self._grid_ids]
+        tiles = [self._inspect_tiles.get(i) for i in self._grid_ids]
+        fills = [tile is not None and _fills_tile(tile.view) for tile in tiles]
         grid = self._tile_grid
-        return _size_layout(layout, specs, reference_width(grid.reference_width, grid.breakpoints))
+        width = reference_width(grid.reference_width, grid.breakpoints)
+        return _size_layout(layout, specs, width, fills)
 
     def _on_tile_layout(self, event):
         # Resizing in the browser bounds only a tile's width, so heights are kept in bounds here.
