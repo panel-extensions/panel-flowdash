@@ -38,7 +38,7 @@ from panel_flowdash.input_literals import check_literal, port_literal
 from panel_flowdash.port_types import port_types_compatible
 from panel_flowdash.transforms import Transform, apply_transform, parse_transform
 from panel_flowdash.util import ReactiveError, is_failure
-from panel_flowdash.value_text import redact_secrets
+from panel_flowdash.value_text import error_text
 
 logger = logging.getLogger("panel_flowdash")
 
@@ -95,7 +95,7 @@ def failure_text(error: param.ReactiveError) -> str:
 
 def exception_text(exc: BaseException) -> str:
     """Describe an exception as ``Type: message``."""
-    message = redact_secrets(str(exc))
+    message = error_text(exc)
     return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
 
 
@@ -619,7 +619,7 @@ class DataflowGraph:
         try:
             return parse_transform(transform), None
         except ValueError as exc:
-            return [], f"Invalid transform: {exc}"
+            return [], f"Invalid transform: {error_text(exc)}"
 
     def _edge_value(self, key: EdgeKey, steps: list[Transform]):
         """Return the source's current value run through *steps*, raising if a step fails."""
@@ -740,7 +740,7 @@ class DataflowGraph:
         try:
             value = self._edge_value((source_id, source_port, target_id, target_port), steps)
         except Exception as exc:
-            return f"Transform fails on the current value of '{source_port}': {exc}"
+            return f"Transform fails on the current value of '{source_port}': {error_text(exc)}"
         port = next(p for p in target_spec.inputs if p.name == target_port)
         reason = port.check_value(value)
         if reason:
@@ -802,7 +802,7 @@ class DataflowGraph:
             try:
                 self._check_target_value(target_id, target_port, self._edge_value(key, steps))
             except Exception as exc:
-                return f"Connection rejected: {exc}"
+                return f"Connection rejected: {error_text(exc)}"
 
         previous = self._edges.get(key)
         self._store_edge(key, self._build_edge(key, steps))

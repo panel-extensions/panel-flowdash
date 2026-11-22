@@ -79,6 +79,7 @@ from panel_flowdash.ui.text import (
     markdown_pane,
 )
 from panel_flowdash.util import notify, page_dialog, panel_call, panel_viewer
+from panel_flowdash.value_text import error_text, redact_secrets
 from panel_flowdash.widgets import BUILTIN_COMPONENTS
 
 logger = logging.getLogger("panel_flowdash")
@@ -895,7 +896,7 @@ class FlowDashApp(Viewer):
             logger.exception("Error rendering page '%s'", "/".join(key))
             err_name = type(e).__name__
             return alert_pane(
-                f"**{err_name}**: {escape_markdown(e)}\n<hr>\n<pre> {escape_html(traceback.format_exc())}</pre>\n",
+                f"**{err_name}**: {escape_markdown(error_text(e))}\n<hr>\n<pre> {escape_html(redact_secrets(traceback.format_exc()))}</pre>\n",
                 alert_type="danger",
                 styles={"color": "black"},
             )

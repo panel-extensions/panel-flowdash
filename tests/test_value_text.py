@@ -3,6 +3,7 @@
 import datetime as dt
 import json
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -11,7 +12,7 @@ import param
 import pytest
 from panel.viewable import Viewer
 
-from panel_flowdash import editor as editor_module, register
+from panel_flowdash import editor as editor_module, register, util as util_module
 from panel_flowdash.agent.preview import preview_editor, sample_value
 from panel_flowdash.dataflow_engine import exception_text
 from panel_flowdash.editor import FlowDash
@@ -20,7 +21,7 @@ from panel_flowdash.ui.inspect_sheet import python_literal
 from panel_flowdash.ui.inspector import summarize_input_html
 from panel_flowdash.ui.node_preview import format_value, summarize_value
 from panel_flowdash.ui.status_bar import select_on_canvas
-from panel_flowdash.util import ReactiveError
+from panel_flowdash.util import ReactiveError, notify
 from panel_flowdash.value_text import (
     held_table_names,
     is_plain,
@@ -287,6 +288,12 @@ def test_exception_text_masks_credentials():
         ("login failed, password=hunter2 for u", "login failed, password=*** for u"),
         ("sent apikey=sk-secret", "sent apikey=***"),
         ("rejected Bearer abcdefghijklmnopqrst", "rejected Bearer ***"),
+        ("connect(authorization='Basic sk-secret')", "connect(authorization='Basic ***')"),
+        (
+            'headers {"authorization": "Bearer sk-secret"}',
+            'headers {"authorization": "Bearer ***"}',
+        ),
+        ("sent authorization=Bearer sk-secret", "sent authorization=Bearer ***"),
     ],
 )
 def test_exception_text_masks_quoted_and_bearer_credentials(message, shown):
@@ -301,6 +308,7 @@ def test_exception_text_masks_quoted_and_bearer_credentials(message, shown):
         "Bearer authentication failed",
         "token: expired",
         "password must be set",
+        "Password: must be at least 8 characters",
         '"max_tokens": 5',
         "http://h:8080/x",
     ],
@@ -369,3 +377,30 @@ def test_failed_output_message_never_shows_secrets(editor):
     _assert_no_secrets(_all_text(editor._value_preview(error)))
     report = preview_editor(editor, {node: "secret"})
     _assert_no_secrets(json.dumps(report, default=str))
+
+
+CONNECT_ERROR = "cannot connect to postgresql://u:SECRET@h/db"
+
+
+class Notifications:
+    def __init__(self):
+        self.shown = []
+
+    def error(self, message, duration):
+        self.shown.append(message)
+
+
+def test_a_toast_never_shows_a_password(monkeypatch, caplog):
+    area = Notifications()
+    monkeypatch.setattr(
+        util_module, "pn", SimpleNamespace(state=SimpleNamespace(notifications=area))
+    )
+    notify("error", f"Could not load the dashboard: {CONNECT_ERROR}")
+    assert area.shown == [
+        "Could not load the dashboard: cannot connect to postgresql://u:***@h/db"
+    ]
+    monkeypatch.setattr(
+        util_module, "pn", SimpleNamespace(state=SimpleNamespace(notifications=None))
+    )
+    notify("error", CONNECT_ERROR)
+    assert "SECRET" not in caplog.text and "u:***@h" in caplog.text
