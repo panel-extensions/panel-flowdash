@@ -15,6 +15,7 @@ import weakref
 from types import SimpleNamespace
 from typing import ClassVar
 
+import pandas as pd
 import panel as pn
 import panel_material_ui as pmui
 import panel_reactflow as pr
@@ -2098,6 +2099,17 @@ class TestComponentWiring:
         assert Summing.runs == [(2, 0)]
 
 
+class Frame(Viewer):
+    """A Viewer whose output is a table with one column."""
+
+    @param.output(param.DataFrame)
+    def frame(self):
+        return pd.DataFrame({"a": [1, 2]})
+
+    def __panel__(self):
+        return "frame"
+
+
 class Inverse(Viewer):
     """A Viewer whose output raises for some inputs."""
 
@@ -3089,6 +3101,7 @@ FAILING_COMPONENTS = {
     "Demo/gen_inverse": GenInverse,
     "Demo/tolerant": Tolerant,
     "Demo/list": ticker_list,
+    "Demo/frame": Frame,
 }
 
 
@@ -3133,13 +3146,13 @@ async def test_list_edge_whose_transform_fails_during_load_is_wired():
         user_id="alice",
         title="Failing",
         items=[
-            DashboardItem(instance_id="src", component_id="Demo/inverse"),
+            DashboardItem(instance_id="src", component_id="Demo/frame"),
             DashboardItem(instance_id="lst", component_id="Demo/list"),
         ],
         edges=[
             DashboardEdge(
                 source="src",
-                source_port="inverse",
+                source_port="frame",
                 target="lst",
                 target_port="tickers",
                 transform=[{"op": "column", "column": "x"}],
@@ -3151,6 +3164,18 @@ async def test_list_edge_whose_transform_fails_during_load_is_wired():
 
     assert editor._unresolved_edges == []
     assert [(e["source"], e["target"]) for e in editor.graph.edges] == [("src", "lst")]
+
+
+async def test_list_edge_whose_transform_cannot_take_the_value_is_refused():
+    """A step refusing the kind of value an output holds is a mismatch, not a failure."""
+    editor = FlowDash(FAILING_COMPONENTS, notifications=False)
+    src = editor.add_component("Demo/inverse")
+    lst = editor.add_component("Demo/list")
+    result = editor.connect(src, "inverse", lst, "tickers", [{"op": "column", "column": "x"}])
+    assert result == (
+        "Transform fails on the current value of 'inverse': Column cannot be applied to a float."
+    )
+    assert editor.graph.edges == []
 
 
 @pytest.mark.failures
@@ -3369,13 +3394,13 @@ class TestFailurePropagation:
             user_id="alice",
             title="Failing",
             items=[
-                DashboardItem(instance_id="src", component_id="Demo/inverse"),
+                DashboardItem(instance_id="src", component_id="Demo/frame"),
                 DashboardItem(instance_id="lst", component_id="Demo/list"),
             ],
             edges=[
                 DashboardEdge(
                     source="src",
-                    source_port="inverse",
+                    source_port="frame",
                     target="lst",
                     target_port="tickers",
                     transform=[{"op": "column", "column": "x"}],

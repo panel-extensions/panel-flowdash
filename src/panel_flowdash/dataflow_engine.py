@@ -47,7 +47,12 @@ from panel_flowdash.port_types import (
     normalize_port_type,
     port_types_compatible,
 )
-from panel_flowdash.transforms import Transform, apply_transform, parse_transform
+from panel_flowdash.transforms import (
+    StepInputError,
+    Transform,
+    apply_transform,
+    parse_transform,
+)
 from panel_flowdash.util import ReactiveError, is_failure
 from panel_flowdash.value_text import error_text
 
@@ -915,9 +920,10 @@ class DataflowGraph:
         try:
             value = self._edge_value((source_id, source_port, target_id, target_port), steps)
         except Exception as exc:
-            # A list input fails as a whole, so the edge is wired and the
-            # failure reaches the input like any later one.
-            if is_list:
+            # A list input fails as a whole, so an edge whose transform fails
+            # on this value is wired and the failure reaches the input like any
+            # later one. A step that cannot take this kind of value never will.
+            if is_list and not isinstance(exc, StepInputError):
                 return None
             return f"Transform fails on the current value of '{source_port}': {error_text(exc)}"
         port = next(p for p in target_spec.inputs if p.name == target_port)
