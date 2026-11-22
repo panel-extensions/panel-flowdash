@@ -1563,6 +1563,9 @@ class FlowDash(Viewer):
         self._edit_count = 0
         # Defaults set while an edit rewired an input, by node, keys and `_edit_count` then.
         self._pending_defaults: list[tuple[str, list[str], int]] = []
+        # Defaults set off the session's event loop, applied on it, see `set_default`.
+        self._queued_defaults: list[tuple[str, dict]] = []
+        self._queued_lock = threading.Lock()
         self.param.watch(self._on_dirty, "dirty", onlychanged=False)
         self._history = EditHistory(self)
         self._restricted_seen: dict[str, DashboardItem] = {}
@@ -1577,6 +1580,11 @@ class FlowDash(Viewer):
         self.settings.param.watch(self._on_setting_changed, self._settings_names)
         if pn.state.curdoc is not None:
             _SESSION_EDITORS[pn.state.curdoc] = weakref.ref(self)
+        self._session_doc = (
+            weakref.ref(pn.state.curdoc)
+            if pn.state.curdoc is not None and pn.state.curdoc.session_context is not None
+            else None
+        )
 
         self._dataflow_graph = DataflowGraph(
             {},
@@ -5870,7 +5878,9 @@ class FlowDash(Viewer):
         placement, or the connection that delivered the input, so one undo
         takes back both. Values set outside any edit, e.g. by an input that
         arrives on its own, are recorded right away as a config edit of their
-        own, so undoing a later edit keeps them.
+        own, so undoing a later edit keeps them. Called from a thread other
+        than the session's event loop, they are set and recorded on the loop,
+        as an edit of their own, and before a save.
 
         Only fields still at their declared default take a value, so a node
         that arrives configured, e.g. one the agent adds or a duplicate, keeps
@@ -5879,18 +5889,12 @@ class FlowDash(Viewer):
         version restored, to viewers and in a preview, and for a node or a
         config field the node does not have.
         """
-        if self._hydrating or self.read_only or self.preview or not self.editable:
-            return False
-        config_state = self._dataflow_graph.get_config_state(instance_id)
-        if config_state is None or any(
-            key == "name" or key not in config_state.param for key in config
-        ):
-            return False
-        config = {key: value for key, value in config.items() if _unset(config_state, key)}
+        config = self._unset_config(instance_id, config)
         if not config:
             return False
         if _INSTANTIATING.get() is self and _INSTANTIATING_NODE.get() == instance_id:
             # `_place` takes config written while the component is created into the node's config.
+            config_state = self._dataflow_graph.get_config_state(instance_id)
             try:
                 config_state.param.update(
                     {key: config_value(config_state.param[key], v) for key, v in config.items()}
@@ -5899,6 +5903,45 @@ class FlowDash(Viewer):
                 logger.warning("Default config rejected on %s: %s", instance_id, exc)
                 return False
             return True
+        if (doc := self._off_loop_doc()) is not None:
+            # The canvas and its history change on the session's event loop only.
+            with self._queued_lock:
+                self._queued_defaults.append((instance_id, config))
+            doc.add_next_tick_callback(self._apply_queued_defaults)
+            return True
+        return self._apply_default(instance_id, config)
+
+    def _unset_config(self, instance_id: str, config: t.Mapping[str, t.Any]) -> dict | None:
+        """Return the fields of *config* a default may set on the node, or None if it may set none."""
+        if self._hydrating or self.read_only or self.preview or not self.editable:
+            return None
+        config_state = self._dataflow_graph.get_config_state(instance_id)
+        if config_state is None or any(
+            key == "name" or key not in config_state.param for key in config
+        ):
+            return None
+        return {key: value for key, value in config.items() if _unset(config_state, key)}
+
+    def _off_loop_doc(self):
+        """Return the session's document when called off its event loop, else None."""
+        doc = self._session_doc() if self._session_doc is not None else None
+        if doc is None or doc.session_context is None:
+            return None
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return doc
+        return None
+
+    def _apply_queued_defaults(self):
+        """Set and record the defaults set off the event loop, each as its own edit."""
+        with self._queued_lock:
+            queued, self._queued_defaults = self._queued_defaults, []
+        for instance_id, config in queued:
+            if config := self._unset_config(instance_id, config):
+                self._apply_default(instance_id, config)
+
+    def _apply_default(self, instance_id: str, config: dict) -> bool:
         self._hydrating = True
         try:
             applied = self._set_config_state(instance_id, dict(config))
@@ -7327,6 +7370,7 @@ class FlowDash(Viewer):
         """
         if self.read_only:
             raise _ReadOnlyEditorError("This dashboard is read-only.")
+        self._apply_queued_defaults()
         self._record_defaults()
         self._compute_expects()
         model = self.to_model(title=title)
@@ -7365,6 +7409,7 @@ class FlowDash(Viewer):
         """
         if self.read_only:
             raise _ReadOnlyEditorError("This dashboard is read-only.")
+        self._apply_queued_defaults()
         self._record_defaults()
         model = self.to_model(title=title)
         model.permission = Permission()

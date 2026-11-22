@@ -404,6 +404,65 @@ def test_saving_before_the_next_tick_leaves_the_dashboard_saved(monkeypatch, rew
     editor.dispose()
 
 
+class _Doc:
+    """A served session's document, collecting the callbacks scheduled on its event loop."""
+
+    session_context = object()
+
+    def __init__(self):
+        self.ticks = []
+
+    def add_next_tick_callback(self, callback):
+        self.ticks.append(callback)
+
+
+def _off_loop_editor():
+    editor = _query_editor(MemoryDashboardStore())
+    editor.new_dashboard("Charts")
+    chart = editor.add_component("T/charted")
+    editor.save()
+    doc = _Doc()
+    editor._session_doc = lambda: doc
+    with ThreadPoolExecutor(1) as pool:
+        assert pool.submit(editor.set_default, chart, {"spec": {"n": 7}}).result()
+    assert _config(editor, chart).get("spec", {}) == {} and not editor.dirty
+    assert len(doc.ticks) == 1
+    return editor, chart, doc
+
+
+def test_a_default_set_off_the_event_loop_is_recorded_on_it():
+    editor, chart, doc = _off_loop_editor()
+    versions = len(editor.edit_history.versions)
+    doc.ticks[0]()
+    editor.edit_history.flush()
+    assert _config(editor, chart) == {"spec": {"n": 7}} and editor.dirty
+    assert len(editor.edit_history.versions) == versions + 1
+    assert editor.edit_history.versions[-1].metadata["op"] == "set_config"
+    editor.dispose()
+
+
+def test_an_edit_does_not_take_in_a_default_set_off_the_event_loop():
+    editor, chart, doc = _off_loop_editor()
+    editor.add_component("T/plain", instance_id="later")
+    doc.ticks[0]()
+    assert _config(editor, chart) == {"spec": {"n": 7}}
+    assert editor.undo(whole_runs=False)
+    assert [item["instance_id"] for item in editor._tile_items] == [chart, "later"]
+    assert _config(editor, chart).get("spec", {}) == {}
+    assert editor.undo(whole_runs=False)
+    assert [item["instance_id"] for item in editor._tile_items] == [chart]
+    editor.dispose()
+
+
+def test_saving_takes_in_a_default_set_off_the_event_loop():
+    editor, chart, doc = _off_loop_editor()
+    saved = editor.save()
+    doc.ticks[0]()
+    assert not editor.dirty
+    assert {item.instance_id: item.config for item in saved.items}[chart] == {"spec": {"n": 7}}
+    editor.dispose()
+
+
 def test_code_panel_node_follows_the_code_panel(editor):
     assert editor.code_panel_node is None
     editor.code_panel.instance_id = "x"
