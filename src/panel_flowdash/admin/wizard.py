@@ -29,7 +29,8 @@ import panel_material_ui as pmui
 import param
 from panel.viewable import Viewer
 
-from panel_flowdash.admin.ai import _redacted_log
+from panel_flowdash.admin.access import entry_matches
+from panel_flowdash.admin.ai import NOT_ADMIN, _redacted_log
 from panel_flowdash.admin.form import Group, SettingsForm, current_app, current_section, using_app
 from panel_flowdash.admin.kit import KEY_SVG, KIT_CSS, esc
 from panel_flowdash.admin.permissions import POLICY_GROUPS, _clean
@@ -719,6 +720,13 @@ class AIStep(WizardStep):
 
     async def test(self) -> KeyCheck:
         """Ask the provider whether the key works, without saving it."""
+        if self._app is not None and not self._app._still_admin():
+            result = KeyCheck(False, NOT_ADMIN)
+            self.last_check = result
+            self._check.object = (
+                f'<div class="k"><span class="chip error">Not tested</span> {esc(NOT_ADMIN)}</div>'
+            )
+            return result
         try:
             key = self._resolved_key()
         except SecretError as exc:
@@ -869,9 +877,9 @@ class PeopleStep(FormStep):
         if identity is None:
             return False
         admins, policy = self.forms
-        if identity.user not in admins.initial.get("admins", []):
+        if not any(entry_matches(e, identity) for e in admins.initial.get("admins", [])):
             return False
-        if identity.user in admins.values.get("admins", []):
+        if any(entry_matches(e, identity) for e in admins.values.get("admins", [])):
             return False
         code_groups = set(self._app._admin_groups()) if self._app is not None else set()
         groups = code_groups | set(policy.values.get("admin_groups") or [])
@@ -901,8 +909,8 @@ def people_step(project: Project, app: FlowDashApp | None = None) -> FormStep:
             pmui.Alert(
                 object=(
                     "Without sign-in everyone who opens the app is the account that runs the "
-                    "server, so admins are names of local accounts. Deployed apps use OAuth "
-                    "and admin groups."
+                    "server, so admins are local accounts (local:<name>) and have admin rights "
+                    "only in a browser on this machine. Deployed apps use OAuth and admin groups."
                 ),
                 severity="info",
                 margin=(0, 0, 8, 0),

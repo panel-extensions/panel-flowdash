@@ -71,7 +71,7 @@ def test_the_admin_link_claims_the_admin_view(page, tmp_path, monkeypatch):
     wait_until(lambda: "token" not in page.url, page)
     assert not [url for url in requests if token in url]
     user = getpass.getuser()
-    assert load_project(tmp_path / PROJECT_FILE).get("general") == {"admins": [user]}
+    assert load_project(tmp_path / PROJECT_FILE).get("general") == {"admins": [f"local:{user}"]}
 
     admin.click()
     wait_until(lambda: urlparse(page.url).path == "/admin", page)
@@ -324,6 +324,38 @@ def test_change_owner_and_prune_history_from_the_bulk_bar(page, tmp_path):
     dialog.get_by_role("button", name="Prune history").click()
     expect(dialog).to_be_hidden()
     wait_until(lambda: len(store.load_history(model.dashboard_id)) == 2, page)
+
+
+def test_download_yaml_asks_first_and_is_logged(page, tmp_path):
+    store, (model,) = _dashboards(("ana", "Fleet"))
+    _serve(page, tmp_path, suffix="/admin/dashboards", store=store)
+    _row(page, model).locator("input[type=checkbox]").check()
+    bulk = page.locator(".flowdash-admin-bulk")
+
+    bulk.get_by_role("button", name="Download YAML").click()
+    dialog = page.get_by_role("dialog")
+    expect(dialog).to_contain_text("Download 1 dashboard as YAML?")
+    expect(dialog).to_contain_text("admin log")
+    dialog.get_by_role("button", name="Cancel").click()
+    expect(dialog).to_be_hidden()
+    section = page.locator(".flowdash-admin-dashboards-section")
+    expect(section).not_to_contain_text("downloaded")
+
+    bulk.get_by_role("button", name="Download YAML").click()
+    with page.expect_download() as info:
+        dialog.get_by_role("button", name="Download", exact=True).click()
+    assert info.value.suggested_filename.endswith(".yaml")
+    expect(dialog).to_be_hidden()
+    expect(section).to_contain_text(f"{getpass.getuser()} downloaded Fleet")
+
+
+def test_without_sign_in_admin_is_refused_to_a_proxied_visitor(page, tmp_path):
+    # Behind a reverse proxy that is not trusted, no visitor counts as local.
+    page.set_extra_http_headers({"X-Forwarded-For": "203.0.113.5"})
+    _serve(page, tmp_path, suffix="/admin/general")
+    expect(page.get_by_text("Admin opens only on the server's machine")).to_be_visible()
+    expect(_rail(page, "Admin")).to_have_count(0)
+    expect(page.locator(".flowdash-admin")).to_have_count(0)
 
 
 def test_someone_who_is_not_an_admin_cannot_open_the_dashboards_section(page, tmp_path):

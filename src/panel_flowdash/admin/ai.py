@@ -72,6 +72,8 @@ from panel_flowdash.value_text import error_text
 
 logger = logging.getLogger(__name__)
 
+NOT_ADMIN = "You are no longer an admin of this project, so this was not done."
+
 _AVATAR_COLORS = {
     "openai": "#10a37f",
     "anthropic": "#d97757",
@@ -367,8 +369,14 @@ class AISettings(Viewer):
             self._app._code_setting_source("agent") if isinstance(self._app.agent, str) else None
         )
 
+    def _still_admin(self) -> bool:
+        return self._app is None or self._app._still_admin()
+
     def write(self, ai: dict[str, t.Any], message: str = "Saved") -> bool:
         """Write *ai* as the project file's ``ai`` section; show its problems if it is rejected."""
+        if not self._still_admin():
+            self._show_problems([Problem(NOT_ADMIN)])
+            return False
         try:
             self.project.set("ai", {k: v for k, v in ai.items() if v not in (None, {}, [])})
         except ProjectError as exc:
@@ -555,6 +563,9 @@ class AISettings(Viewer):
 
     async def test(self, name: str) -> KeyCheck:
         """Test provider *name*'s key as the file has it and show the result on its card."""
+        if not self._still_admin():
+            self._notify("error", NOT_ADMIN)
+            return KeyCheck(False, NOT_ADMIN)
         ai = self.ai()
         provider = PROVIDERS[name]
         try:
@@ -1100,6 +1111,10 @@ class AISettings(Viewer):
         name = self._key_provider
         if name is None:
             return None
+        if not self._still_admin():
+            result = KeyCheck(False, NOT_ADMIN)
+            self._show_key_check(result)
+            return result
         try:
             _, key = self._dialog_key()
         except SecretError as exc:

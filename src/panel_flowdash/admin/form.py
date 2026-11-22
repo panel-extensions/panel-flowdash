@@ -81,7 +81,8 @@ class Setting:
     ``"editor_options.mode"``; one the app was given in code shows locked,
     with the parameter's value turned into the setting's by ``from_target``.
     ``validate(value, section)`` returns why a value the loader reads is
-    not acceptable, beyond what ``kind`` checks.
+    not acceptable, beyond what ``kind`` checks. ``normalize(name, app)``
+    rewrites a name typed into a ``"names"`` setting before it is added.
     """
 
     key: str
@@ -100,6 +101,7 @@ class Setting:
     validate: Callable[[t.Any, Section], str | None] | None = None
     parts: tuple[Setting, ...] = ()
     swatches: tuple[str, ...] = ()
+    normalize: Callable[[str, t.Any], str] | None = None
 
     def __post_init__(self):  # noqa: D105
         if self.kind not in KINDS:
@@ -317,6 +319,7 @@ class SettingsForm(Viewer):
         super().__init__(editable=editable, **params)
         self.project = project
         self.section = section
+        self._app = current_app()
         self.groups = list(groups)
         self._columns = columns
         self._to_form = to_form or (lambda value: dict(value or {}))
@@ -416,6 +419,11 @@ class SettingsForm(Viewer):
 
     def save(self) -> bool:
         """Write the form's value to the project file; show the problems if it is rejected."""
+        if self._app is not None and not self._app._still_admin():
+            self.show_problems(
+                [Problem("You are no longer an admin of this project, so this was not saved.")]
+            )
+            return False
         try:
             self.project.set(self.section, self.value())
         except ProjectError as exc:
@@ -724,8 +732,12 @@ class SettingsForm(Viewer):
             size="small",
         )
 
+        app = self._app
+
         def _add(_event):
             name = (add.value_input or add.value or "").strip()
+            if name and setting.normalize is not None:
+                name = setting.normalize(name, app)
             if name and name not in chosen.value:
                 chosen.options = [*chosen.options, name]
                 chosen.value = [*chosen.value, name]

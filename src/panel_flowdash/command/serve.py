@@ -58,6 +58,7 @@ PROJECT_OPTIONS = (
     "propagate_failures",
     "settings_class",
     "title",
+    "trusted_proxies",
 )
 
 # Options that also have a CLI flag; an explicit flag takes precedence.

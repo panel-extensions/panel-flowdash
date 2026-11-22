@@ -248,6 +248,21 @@ def access_denied(
     )
 
 
+def admin_needs_this_machine(*, on_home: t.Callable[[], None] | None = None) -> EmptyState:
+    """Build the page refusing Admin to a session without sign-in from another machine."""
+    return EmptyState(
+        icon="lock",
+        tone="neutral",
+        title="Admin opens only on the server's machine",
+        text=(
+            "You're not signed in. Without sign-in, Admin is available only in a browser on "
+            "the machine that runs the server, as localhost. Open it there, or ask the person "
+            "who runs this app to set up sign-in and an admin group."
+        ),
+        actions=[_button("Go home", on_home, icon="home")] if on_home is not None else [],
+    )
+
+
 def page_not_found(path: str, *, on_home: t.Callable[[], None]) -> EmptyState:
     """Build the page for a URL that matches no dashboard, page or route."""
     return EmptyState(
