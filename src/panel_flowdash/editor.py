@@ -177,6 +177,7 @@ from panel_flowdash.ui.node_card import (
 )
 from panel_flowdash.ui.node_preview import (
     CHART_COLOR,
+    DEFINITION_HOOK,
     PREVIEW_KIND_KEY,
     _is_table,
     run_off_loop,
@@ -2643,6 +2644,8 @@ class FlowDash(Viewer):
             card.show_optional = not card.show_optional
         elif action == "popout":
             self._open_card_popout(node_id)
+        elif action == "edit_spec":
+            self.edit_spec(node_id)
 
     def _set_card_view(self, instance_id: str, **changes: t.Any):
         """Collapse or expand a card, or pick the output it previews as one undoable edit.
@@ -4747,6 +4750,24 @@ class FlowDash(Viewer):
         wanted = self._split_view.preferences.code_dock
         return "bottom" if wanted == "bottom" and self._code_panel_fits() else "sidecar"
 
+    def _spec_to_edit(self, instance_id: str) -> str | None:
+        """Return what the code panel offers for the node *instance_id*: its ``"spec"``, its read-only ``"definition"``, or None."""
+        if not self._code_panel_allowed():
+            return None
+        item = next((i for i in self._tile_items if i["instance_id"] == instance_id), None)
+        spec = self._component_specs.get(item["component_id"]) if item else None
+        if spec is None:
+            return None
+        if spec_fields(spec):
+            return "spec"
+        instance = self._component_instances.get(instance_id)
+        return "definition" if callable(getattr(instance, DEFINITION_HOOK, None)) else None
+
+    def _sync_card_edit(self):
+        """Offer the edit button on each card whose spec the code panel can show."""
+        for instance_id, card in self._node_cards().items():
+            card.edit = self._spec_to_edit(instance_id)
+
     def _primary_spec_field(self, instance_id: str) -> str | None:
         """Return the spec field of the node *instance_id* to edit: one holding a draft, else the first."""
         item = next((i for i in self._tile_items if i["instance_id"] == instance_id), None)
@@ -4954,6 +4975,7 @@ class FlowDash(Viewer):
         if allowed != getattr(self, "_code_panel_was_allowed", allowed):
             # The inspector edits specs itself where the panel cannot.
             self._code_panel_was_allowed = allowed
+            self._sync_card_edit()
             if getattr(self, "_inspector", None) is not None:
                 self._inspector.refresh_node()
 
@@ -6906,6 +6928,7 @@ class FlowDash(Viewer):
             }
         )
         self._tile_objects.append(view)
+        card.edit = self._spec_to_edit(instance_id)
         if self.propagate_failures:
             watcher = failures.param.watch(
                 partial(self._sync_failure_marks, instance_id), "failed"

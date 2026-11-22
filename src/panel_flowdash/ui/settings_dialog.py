@@ -40,6 +40,15 @@ REFRESH_PRESETS = {"Off": 0, "1 min": 60, "5 min": 300, "15 min": 900, "1 hour":
 
 CUSTOM = "Custom"
 
+# A one-line toggle of standard height, like the admin's choices.
+_CHOICE = {
+    "type": pmui.RadioButtonGroup,
+    "button_style": "contained",
+    "color": "primary",
+    "size": "small",
+    "sx": {"& .MuiToggleButton-root": {"px": 1.5, "whiteSpace": "nowrap"}},
+}
+
 ROLE_LABELS = {"view": "Can view", "edit": "Can edit", "blocked": "Blocked"}
 
 REMOVE = "remove"
@@ -334,15 +343,19 @@ class SettingsDialog(param.Parameterized):
         }
         if "header_layout" in extra:
             widgets["header_layout"] = {
-                "type": pmui.RadioButtonGroup,
+                **_CHOICE,
                 "name": "Header",
                 "options": {"Compact": "compact", "Full": "full"},
+                "description": "Compact puts the title and actions on one line, "
+                "full gives them a row of their own with the description.",
             }
         if "controls_position" in extra:
             widgets["controls_position"] = {
-                "type": pmui.RadioButtonGroup,
+                **_CHOICE,
                 "name": "Controls",
-                "options": {"Above the tiles": "top", "Left of the tiles": "left"},
+                "options": {"Above": "top", "Left": "left"},
+                "description": "Above the tiles in a slim row, or left of them "
+                "in a collapsible panel that suits many controls.",
             }
         # `pn.Param` would pick a slider over the whole bounds for a bounded number.
         self._extra_form = pn.Param(

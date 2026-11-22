@@ -196,7 +196,8 @@ _CARD_CSS = (
 }
 .fd-failed .fd-dot { background: var(--mui-palette-error-main, #d32f2f); }
 .fd-unavailable .fd-dot { background: var(--fd-muted); }
-.fd-collapse-btn {
+.fd-collapse-btn,
+.fd-edit-btn {
   flex: none;
   width: 22px;
   height: 22px;
@@ -210,12 +211,23 @@ _CARD_CSS = (
   justify-content: center;
   opacity: 0.72;
 }
-.fd-collapse-btn:hover {
+.fd-collapse-btn:hover,
+.fd-edit-btn:hover {
   background: var(--fd-hover);
   color: var(--fd-text);
   opacity: 1;
 }
 .fd-collapse-btn .fd-ms { font-size: 16px; }
+.fd-edit-btn {
+  opacity: 0;
+}
+.fd-edit-btn .fd-ms { font-size: 15px; }
+.fd-card:hover .fd-edit-btn,
+.fd-edit-btn:focus-visible,
+:host-context(.react-flow__node.selected) .fd-edit-btn {
+  opacity: 0.72;
+}
+.fd-card .fd-edit-btn:hover { opacity: 1; }
 .fd-ports {
   flex: none;
   padding: 4px 0;
@@ -572,6 +584,15 @@ class NodeCard(Viewer):
 
     collapsed = param.Boolean(
         default=False, doc="Whether the card is collapsed to a single 44 px header row."
+    )
+
+    edit = param.Selector(
+        default=None,
+        objects=[None, "spec", "definition"],
+        doc="""
+        What the header's edit button opens in the code panel: the
+        component's ``"spec"``, its read-only ``"definition"``, or None for
+        no button.""",
     )
 
     icon = param.String(default="widgets", doc="Material icon name.")
@@ -956,6 +977,7 @@ class NodeCard(Viewer):
             f"{_stale_mark(self.stale)}"
             f'<span class="fd-dot" role="img" aria-label="{html.escape(detail, quote=True)}" '
             f'title="{html.escape(detail, quote=True)}"></span>'
+            f"{_edit_button(self.edit)}"
             f'<button class="fd-collapse-btn fd-card-action" type="button" '
             f'data-fd-action="toggle_collapse" aria-label="{collapse_label}" '
             f'title="{collapse_label}">'
@@ -987,6 +1009,17 @@ class NodeCard(Viewer):
     def __panel__(self):
         """Return the card's single view component."""
         return self._pane
+
+
+def _edit_button(edit: str | None) -> str:
+    if edit is None:
+        return ""
+    icon, label = ("edit", "Edit spec") if edit == "spec" else ("code", "Show definition")
+    return (
+        '<button class="fd-edit-btn fd-card-action" type="button" '
+        f'data-fd-action="edit_spec" aria-label="{label}" title="{label}">'
+        f'<span class="fd-ms" aria-hidden="true">{icon}</span></button>'
+    )
 
 
 def _stale_mark(stale: str | None) -> str:
