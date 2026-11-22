@@ -43,8 +43,10 @@ def _select_tile(page, editor, instance_id):
     A click rather than a selection made from the test's thread: the canvas leaving
     the page as the tab opens reports an empty selection, which could come after it.
     """
-    key = next(c for c in editor._inspect_tiles[instance_id].css_classes if "-key-" in c)
-    item = page.locator(".muuri-grid-item").filter(has=page.locator(f".{key}"))
+    # The grid is filled once the Layout tab is shown. An unframed tile has no frame
+    # of its own to find it by, so it is found by its place.
+    wait_until(lambda: instance_id in editor._grid_ids, timeout=8000)
+    item = page.locator(".muuri-grid-item").nth(editor._grid_ids.index(instance_id))
     expect(item).to_be_visible(timeout=8000)
     item.click(position={"x": 20, "y": 20})
     wait_until(lambda: editor._inspector._shown == ("node", instance_id), timeout=8000)

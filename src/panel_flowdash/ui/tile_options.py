@@ -89,6 +89,20 @@ def _caption(text: str, **kwargs) -> pmui.Typography:
     return pmui.Typography(text, variant="caption", sx={"color": "text.secondary"}, **kwargs)
 
 
+def _update_select(select: pmui.Select, options: dict, value) -> bool:
+    """Set a select's options and value if they changed, returning whether the options did.
+
+    The grid sends its layout again on every selection and resize; setting the
+    options of a select whose menu is open would rebuild the menu under the pointer.
+    """
+    changed = select.options != options
+    if changed:
+        select.param.update(options=options, value=value)
+    elif select.value != value:
+        select.value = value
+    return changed
+
+
 class TileOptions:
     """The tile options of the component *instance_id*, kept in step with the grid.
 
@@ -262,8 +276,12 @@ class TileOptions:
         entry = tile_entry(editor, self.instance_id)
         spec = self.spec
         width = entry.get("width")
-        self.show_switch.value = entry.get("visible", True)
-        self.width_select.value = to_columns(width) if isinstance(width, (int, float)) else AUTO
+        visible = entry.get("visible", True)
+        if self.show_switch.value != visible:
+            self.show_switch.value = visible
+        columns = to_columns(width) if isinstance(width, (int, float)) else AUTO
+        if self.width_select.value != columns:
+            self.width_select.value = columns
         height = entry.get("height", ((spec and spec.default_size) or {}).get("height"))
         low = ((spec and spec.min_size) or {}).get("height", 0)
         high = ((spec and spec.max_size) or {}).get("height", float("inf"))
@@ -273,15 +291,12 @@ class TileOptions:
             choices.add(height)
         else:
             height = AUTO
-        self.height_select.param.update(
-            options={"Automatic": AUTO, **{f"{h} px": h for h in sorted(choices)}},
-            value=height,
-        )
-        self.frame_select.param.update(
-            options=frame_choices(editor, self.instance_id), value=frame_value(entry)
-        )
-        # The browser shows the label of the value, which changing only the options does not resend.
-        self.frame_select.param.trigger("value")
+        heights = {"Automatic": AUTO, **{f"{h} px": h for h in sorted(choices)}}
+        _update_select(self.height_select, heights, height)
+        frames = frame_choices(editor, self.instance_id)
+        if _update_select(self.frame_select, frames, frame_value(entry)):
+            # The browser shows the label of the value, which changing only the options does not resend.
+            self.frame_select.param.trigger("value")
         self.size_hint.object = size_hints(spec)
         self.size_hint.visible = bool(self.size_hint.object)
         band = editor._layout_panel.band_hint() if editor.mode == "dashboard" else ""
