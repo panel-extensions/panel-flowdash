@@ -28,6 +28,7 @@ from panel_flowdash.agent.yaml_format import (
 _AGENT_NAMES = {
     "ExplorationOps": "exploration",
     "FlowDashDeps": "tools",
+    "REPORT_TOOLS": "tools",
     "approval_policy": "tools",
     "create_agent": "assistant",
     "create_explore_agent": "assistant",
@@ -54,6 +55,7 @@ def __getattr__(name):
 
 __all__ = [
     "FORMAT_VERSION",
+    "REPORT_TOOLS",
     "SCHEMA_ID",
     "DashboardOps",
     "DashboardYAMLError",

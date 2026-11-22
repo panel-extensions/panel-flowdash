@@ -16,6 +16,7 @@ from panel_flowdash.auto_layout import (
     insert_tiles,
     order_rows,
     place_nodes,
+    stack_tiles,
     tile_kind,
 )
 
@@ -479,6 +480,49 @@ class TestInsertTiles:
         result = insert_tiles(layout, ["chart"], kinds, [TileBox("kpi", "kpi")], 1200)
         assert [e["instance_id"] for e in result] == ["kpi", "chart", "gone"]
         assert [e["index"] for e in result] == [0, 1, 2]
+
+    def test_a_new_chart_shares_the_row_of_a_chart_the_editor_placed_alone(self):
+        layout = [{"instance_id": "a", "index": 0, "width": 100, "height": 300}]
+        new = [TileBox("b", "chart", {"height": 320})]
+        resizable = {"a": TileBox("a", "chart", {"height": 300})}
+        result = insert_tiles(layout, ["a"], {"a": "chart"}, new, 1200, None, resizable)
+        assert [(e["instance_id"], e["width"], e["height"]) for e in result] == [
+            ("a", 50, 320),
+            ("b", 50, 320),
+        ]
+
+    def test_charts_added_one_by_one_pair_up(self):
+        layout, order, kinds, resizable = [], [], {}, {}
+        for name in ("a", "b", "c", "d", "e"):
+            box = TileBox(name, "chart", {"height": 300})
+            layout = insert_tiles(layout, order, kinds, [box], 1200, None, resizable)
+            order.append(name)
+            kinds[name] = "chart"
+            resizable[name] = box
+        widths = {e["instance_id"]: e.get("width", 100) for e in layout}
+        assert widths == {"a": 50, "b": 50, "c": 50, "d": 50, "e": 100}
+
+    def test_a_chart_someone_placed_keeps_its_width(self):
+        layout = [{"instance_id": "a", "index": 0, "width": 100, "height": 300}]
+        result = insert_tiles(layout, ["a"], {"a": "chart"}, [TileBox("b", "chart")], 1200)
+        assert [e["width"] for e in result] == [100, 100]
+        assert result[0] == layout[0]
+
+    def test_charts_too_wide_for_half_a_row_do_not_pair(self):
+        layout = [{"instance_id": "a", "index": 0, "width": 100}]
+        wide = TileBox("b", "chart", min_size={"width": 700})
+        resizable = {"a": TileBox("a", "chart")}
+        result = insert_tiles(layout, ["a"], {"a": "chart"}, [wide], 1200, None, resizable)
+        assert [e["width"] for e in result] == [100, 100]
+
+
+def test_stack_tiles_puts_each_tile_on_a_row_of_its_own():
+    tiles = [TileBox("k", "kpi", {"width": 280, "height": 130}), TileBox("c", "chart")]
+    previous = {"k": {"instance_id": "k", "width": 25, "framed": False}}
+    assert stack_tiles(tiles, previous) == [
+        {"instance_id": "k", "width": 100, "index": 0, "height": 130, "framed": False},
+        {"instance_id": "c", "width": 100, "index": 1},
+    ]
 
 
 def test_band_widths_use_the_narrowest_width_of_each_band():

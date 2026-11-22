@@ -856,6 +856,36 @@ def _entry(tile: TileBox, width: float) -> dict:
     return entry
 
 
+def _pairs_with(tile: TileBox, before: TileBox | None, entry: Mapping, width: float) -> bool:
+    """Whether a new chart *tile* can share the row of the chart *before* it, both half wide.
+
+    Only a chart alone in its row, at full width, that the editor laid out
+    (*before* is its box) makes room, and only when both fit in half the row.
+    """
+    if tile.kind != "chart" or before is None or before.kind != "chart":
+        return False
+    if (entry.get("width") or 100) < 99.99:
+        return False
+    half = GRID_COLUMNS // 2
+    return all(_column_bounds(t, width)[0] <= half for t in (tile, before))
+
+
+def stack_tiles(
+    tiles: Sequence[TileBox], previous: Mapping[str, Mapping] | None = None
+) -> list[dict]:
+    """Lay out *tiles* one to a row at full width, in the order given, each at its default height."""
+    previous = previous or {}
+    entries = []
+    for index, tile in enumerate(tiles):
+        kept = {k: v for k, v in (previous.get(tile.id) or {}).items() if k not in ARRANGED_KEYS}
+        entry = {**kept, "instance_id": tile.id, "width": 100.0, "index": index}
+        height = _bounded_height(tile, tile.default_size.get("height"))
+        if height is not None:
+            entry["height"] = height
+        entries.append(entry)
+    return entries
+
+
 def band_widths(breakpoints: Sequence[float], labels: Sequence[str]) -> dict[str, float]:
     """Return the width each breakpoint band is laid out for: the narrowest it gets."""
     edges = [0, *sorted(breakpoints)]
@@ -869,6 +899,7 @@ def insert_tiles(
     new: Sequence[TileBox],
     width: float,
     previous: Mapping[str, Mapping] | None = None,
+    resizable: Mapping[str, TileBox] | None = None,
 ) -> list[dict]:
     """Add entries for the *new* tiles to a *layout*, leaving the other tiles' sizes alone.
 
@@ -876,10 +907,13 @@ def insert_tiles(
     kind of each. A new tile goes after the last tile of its kind, or else
     before the first tile of a later kind, at the size of the tile of its
     kind before it when their row has room (a packed tile keeps its own
-    width), else in a row of its own. The
+    width), else in a row of its own. A new chart after a chart alone in
+    its row shares that row, both half wide, when the chart before it is
+    one of *resizable*, the tiles the editor laid out itself, by id. The
     other entries change only when a tile goes in among them, and then only
-    their ``index``. *previous* gives entries the new tiles had, whose keys
-    other than :data:`ARRANGED_KEYS` are kept.
+    their ``index``, or when such a chart makes room. *previous* gives
+    entries the new tiles had, whose keys other than :data:`ARRANGED_KEYS`
+    are kept.
     """
     rank = {kind: i for i, kind in enumerate(TILE_KINDS)}
     by_id = {e["instance_id"]: dict(e) for e in layout if "instance_id" in e}
@@ -888,6 +922,7 @@ def insert_tiles(
         iid for iid in order if iid not in fresh and by_id.get(iid, {}).get("visible") is not False
     ]
     appended = True
+    resized: set[str] = set()
     for tile in new:
         kept = (previous or {}).get(tile.id) or {}
         entry = {k: v for k, v in kept.items() if k not in ARRANGED_KEYS} | _entry(tile, width)
@@ -904,6 +939,17 @@ def insert_tiles(
                 fits = tile.kind == "chart" and row and row + (last.get("width") or 100) <= 100.01
                 if fits:
                     entry["width"] = last.get("width")
+                elif _pairs_with(tile, (resizable or {}).get(ordered[same[-1]]), last, width):
+                    last = by_id.setdefault(ordered[same[-1]], {"instance_id": ordered[same[-1]]})
+                    half = _width(GRID_COLUMNS // 2)
+                    heights = [
+                        h for h in (last.get("height"), entry.get("height")) if h is not None
+                    ]
+                    last["width"] = entry["width"] = half
+                    if heights:
+                        last["height"] = max(heights)
+                    resized.add(ordered[same[-1]])
+                    fits = True
             if fits and last.get("height") is not None:
                 entry["height"] = last["height"]
         else:
@@ -918,7 +964,7 @@ def insert_tiles(
         by_id[tile.id] = entry
         kinds = {**kinds, tile.id: tile.kind}
     indexed = [e["index"] for e in by_id.values() if e.get("index") is not None]
-    if appended:
+    if appended and not resized:
         start = max(indexed, default=-1) + 1
         added = []
         for offset, tile in enumerate(new):

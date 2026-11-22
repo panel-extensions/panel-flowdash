@@ -69,6 +69,11 @@ from panel_flowdash.dataflow_engine import (
     failure_text,
 )
 from panel_flowdash.failure_overlay import FailureMessage, FailureOverlay, with_failure_overlay
+from panel_flowdash.global_filters import (
+    check_filters,
+    map_filters,
+    without_nodes as without_filtered_nodes,
+)
 from panel_flowdash.groups import (
     GROUP_HEADER_HEIGHT,
     GROUP_PORT_ROW_HEIGHT,
@@ -144,6 +149,7 @@ from panel_flowdash.ui.fullscreen import (
     FullscreenController,
     PresentationOverlay,
 )
+from panel_flowdash.ui.global_filters import GlobalFilters
 from panel_flowdash.ui.inspect_sheet import (
     dataframe_preview,
     describe_value,
@@ -1453,6 +1459,25 @@ class FlowDash(Viewer):
         assistant shares when history is on.""",
     )
 
+    run_pending = param.Callable(
+        default=None,
+        allow_None=True,
+        doc="""
+        Called with the id of a pending turn when an editor runs its question
+        from the report, e.g. to ask the assistant, which then answers it
+        through :meth:`answer_pending`. None, the default without an agent,
+        leaves the report's Run buttons disabled.""",
+    )
+
+    running_pending = param.List(
+        default=[],
+        item_type=str,
+        doc="""
+        The ids of the pending turns whose question is being run, from the
+        click on Run until the request answering it ends. Their Run buttons
+        show that they are running and cannot be pressed again.""",
+    )
+
     show_in_editor = param.Callable(
         default=None,
         allow_None=True,
@@ -1638,6 +1663,9 @@ class FlowDash(Viewer):
         # The dashboard read as a document, nodes by instance id, or None for
         # the report derived from the layout; see panel_flowdash.report.
         self._report: dict[str, t.Any] | None = None
+        # The dashboard's global filters and the views they reach, see
+        # panel_flowdash.global_filters.
+        self._global_filters = GlobalFilters(self)
         # The nodes expanding a group pushed aside, by group id: their position
         # after the push and before it, so collapsing can move them back.
         self._pushed: dict[str, dict[str, tuple[tuple[float, float], tuple[float, float]]]] = {}
@@ -1646,6 +1674,8 @@ class FlowDash(Viewer):
         # `_settle_nodes` and `_place_new_tiles`.
         self._floating_nodes: set[str] = set()
         self._auto_tiles: set[str] = set()
+        # Whether the tiles were last arranged as a stack, which new tiles keep.
+        self._stacked = False
         # The tiles released over the top bar or the sidebar and not dropped there
         # yet, oldest first: when, and whether the grid has since sent the layout
         # the drag ended with, which the move's version then holds.
@@ -2401,6 +2431,11 @@ class FlowDash(Viewer):
         self._forget_layout(node_id)
         self._drop_from_groups(node_id)
         self._report = without_nodes(self._report, {node_id})
+        self._global_filters.forget(node_id)
+        if any(node_id in f.get("exclude", ()) for f in self._global_filters.filters):
+            self._global_filters.filters = without_filtered_nodes(
+                self._global_filters.filters, {node_id}
+            )
         self._floating_nodes.discard(node_id)
         self._auto_tiles.discard(node_id)
         self._chosen_visibility.discard(node_id)
@@ -3143,6 +3178,7 @@ class FlowDash(Viewer):
         tile.set_chrome(not self._tile_grid.editable)
         tile.set_style(framed=self._tile_framed(item), titled=self.settings.tile_titles)
         tile.set_stale(self._code_stale(instance_id))
+        tile.set_filters(*self._global_filters.notes(instance_id))
         self._sync_tile(instance_id, tile, spec)
         return tile
 
@@ -3521,8 +3557,16 @@ class FlowDash(Viewer):
         def _propagate_inputs(*events):
             # Inputs changed together arrive together, so the component runs once.
             values = {event.name: event.new for event in events}
+            if (owner := editor()) is not None:
+                try:
+                    values = owner._global_filters.filter_inputs(node_id, values)
+                except Exception as exc:
+                    # A global filter must never keep a view from its data.
+                    logger.error("Global filters of %r failed: %s", node_id, exc)
             try:
                 instance.param.update(values)
+                if (owner := editor()) is not None:
+                    owner._global_filters.inputs_changed(node_id, values)
                 return
             except Exception as exc:
                 if len(values) == 1:
@@ -4986,6 +5030,7 @@ class FlowDash(Viewer):
         if self._view_controls.sync():
             self._place_controls()
         self._sync_tile_drag()
+        self._global_filters.apply()
         bar = self._dashboard_bar
         bar.health.track()
         bar.health_popover.sync()
@@ -5295,17 +5340,23 @@ class FlowDash(Viewer):
         self,
         report: t.Mapping[str, t.Any] | None,
         *,
-        label: str | None = None,
+        label: str | t.Sequence[str] | None = None,
         coalesce: bool = True,
     ):
         """Replace the dashboard's report, nodes by instance id, as one undoable edit.
 
         None removes it, so the dashboard reads as its derived report again.
-        *label* describes the edit in the history, "Changed the report" by
-        default. A pending turn the report no longer refers to goes with its
-        block, as it was only ever asked in the report. With *coalesce* False
-        the edit is a version of its own, never batched with the quick edits
-        before or after it, as for a structural change such as moving a block.
+        *label* describes the edit in the history and the turn's summary,
+        "Changed the report" by default, or a list of labels for an edit
+        making several changes. A pending turn the report no longer refers
+        to goes with its block, as it was only ever asked in the report. With
+        *coalesce* False the edit is a version of its own, never batched with
+        the quick edits before or after it, as for a structural change such
+        as moving a block.
+
+        When the agent makes the edit, each block it adds or changes gets
+        its turn as ``origin``, and the blocks it leaves as they were keep
+        theirs, whatever *report* gives.
 
         Raises
         ------
@@ -5328,17 +5379,66 @@ class FlowDash(Viewer):
                 raise ValueError(
                     f"blocks[{missing[0]}]: refers to something the dashboard does not have."
                 )
+        agent = checked is not None and _agent_source() is not None and not self._hydrating
+        if agent:
+            checked, written = self._report_origins(checked)
         if checked == self.report:
             return
+        if agent and written:
+            turn_id = self._turn_log.current().id
+            for index in written:
+                checked["blocks"][index]["origin"] = turn_id
         dropped = report_turns(self._report) - report_turns(checked)
         self._report = checked
         if dropped:
             self._turn_log.drop_pending(dropped)
         if not coalesce:
             self._history.flush()
-        self._record_edit(label or "Changed the report", op="set_report")
+        labels = [label] if isinstance(label, str) else [lbl for lbl in label or () if lbl]
+        self._record_edit(*(labels or ["Changed the report"]), op="set_report")
         if not coalesce:
             self._history.flush()
+
+    def _report_origins(self, report: dict[str, t.Any]) -> tuple[dict[str, t.Any], list[int]]:
+        """Return *report* with the origins of the blocks the agent keeps, and the indices of those it writes.
+
+        A block equal, but for its origin, to one the report shows now keeps
+        that block's origin; every other block loses the origin it gives.
+        """
+
+        def bare(block):
+            return {k: v for k, v in block.items() if k != "origin"}
+
+        current = self.report
+        before = current["blocks"] if current is not None else report_blocks(self).blocks
+        remaining = [(bare(block), block.get("origin")) for block in before]
+        blocks, written = [], []
+        for index, block in enumerate(report["blocks"]):
+            plain = bare(block)
+            match = next((i for i, (b, _) in enumerate(remaining) if b == plain), None)
+            if match is None:
+                written.append(index)
+                blocks.append(plain)
+                continue
+            origin = remaining.pop(match)[1]
+            blocks.append({**plain, "origin": origin} if origin is not None else plain)
+        return {**report, "blocks": blocks}, written
+
+    def answer_pending(self, turn_id: str, run_id: str | None = None) -> DashboardTurn:
+        """Make the pending turn *turn_id* the turn of the agent request *run_id*'s next edits.
+
+        The request's edits so far stay in its own turn. Its next edit runs
+        the pending turn: the turn records the request, and the nodes the
+        request creates get it as their origin, so the question's block in
+        the report shows them as its answer. Without an edit the turn stays
+        pending. The turn is returned.
+
+        Raises
+        ------
+        ValueError
+            If no pending turn has the id *turn_id*.
+        """
+        return self._turn_log.claim_pending(turn_id, run_id)
 
     def customize_report(self) -> bool:
         """Make the report derived from the dashboard its own, to be edited, and return whether it did.
@@ -6182,6 +6282,67 @@ class FlowDash(Viewer):
             self._fit_pending = False
             self._flow.fit_view()
 
+    # ------------------------------------------------------------------
+    # Global filters
+    # ------------------------------------------------------------------
+
+    @property
+    def filters(self) -> list[dict[str, t.Any]]:
+        """The dashboard's global filters as a copy, the views they exclude by instance id.
+
+        See :mod:`panel_flowdash.global_filters`.
+        """
+        return map_filters(
+            self._global_filters.filters,
+            {item["instance_id"]: item["instance_id"] for item in self._tile_items},
+        )
+
+    def set_filters(self, filters: t.Iterable[t.Mapping[str, t.Any]], *, label: str | None = None):
+        """Replace the dashboard's global filters, views they exclude by instance id, as one undoable edit.
+
+        Raises
+        ------
+        ValueError
+            If *filters* are malformed or exclude a node the dashboard does not have.
+        """
+        checked = check_filters(list(filters))
+        placed = {item["instance_id"] for item in self._tile_items}
+        for i, entry in enumerate(checked):
+            missing = [n for n in entry.get("exclude", ()) if n not in placed]
+            if missing:
+                raise ValueError(f"filters[{i}].exclude: names no node: {missing[0]!r}.")
+        if checked == self.filters:
+            return
+        self._global_filters.load(checked)
+        # Each change is a version of its own, so undo takes back one opt-out, not a burst.
+        self._history.flush()
+        self._record_edit(label or "Changed the filters", op="set_filters")
+        self._history.flush()
+
+    def set_filter_value(self, column: str, value: t.Any):
+        """Change what the global filter on *column* keeps for whoever is viewing, without an edit.
+
+        *value* is a list of values for a ``select`` filter, ``[start, end]``
+        for a ``range``, or None to keep every row.
+        """
+        self._global_filters.set_value(column, value)
+
+    def exclude_from_filter(self, column: str, instance_id: str, excluded: bool = True):
+        """Opt the view *instance_id* out of the global filter on *column*, or back in."""
+        filters = self.filters
+        entry = next((f for f in filters if f["column"] == column), None)
+        if entry is None:
+            raise KeyError(f"The dashboard has no filter on {column!r}.")
+        exclude = [n for n in entry.get("exclude", ()) if n != instance_id]
+        if excluded:
+            exclude.append(instance_id)
+        entry.pop("exclude", None)
+        if exclude:
+            entry["exclude"] = exclude
+        title = self._instance_title(instance_id)
+        action = f"Excluded {title} from" if excluded else f"Included {title} in"
+        self.set_filters(filters, label=f"{action} the {column} filter")
+
     def _record_edit(
         self,
         *labels: str,
@@ -6211,6 +6372,9 @@ class FlowDash(Viewer):
         if turn is not None:
             self._history.record(op, args or {}, label_for(labels), turn)
             self.param.trigger("edited")
+        if not self._hydrating:
+            # A new connection can put a view behind a Filter node, or give it other columns.
+            self._global_filters.apply()
         return turn
 
     def _note_turn(self, *labels: str) -> DashboardTurn:
@@ -6969,14 +7133,29 @@ class FlowDash(Viewer):
 
         return [tiles[i] for i in sorted(range(len(tiles)), key=key)]
 
-    def _arrange_tiles(self, hide: t.Collection[str] = ()):
-        """Lay out every visible tile by its kind, hiding the tiles of *hide* first."""
-        boxes = [
-            self._tile_box(item) for item in self._tile_order() if item["instance_id"] not in hide
-        ]
+    def _arrange_tiles(
+        self,
+        hide: t.Collection[str] = (),
+        order: t.Sequence[str] = (),
+        style: str = "grid",
+    ):
+        """Lay out every visible tile, hiding the tiles of *hide* first.
+
+        The tiles of *order*, instance ids, come first in that order and the
+        rest after them in their current order; a heading moves with the tile
+        it titles. The ``"grid"`` style lays them out by kind, ``"stack"`` one
+        to a row in that order.
+        """
+        tiles = [item for item in self._tile_order() if item["instance_id"] not in hide]
+        boxes = [self._tile_box(item) for item in tiles]
+        if order:
+            boxes = self._ordered_sections(boxes, order)
         width, _ = self._tile_bands()
         previous = {e["instance_id"]: e for e in self.layout}
-        layout = auto_layout.arrange_tiles(boxes, width, previous)
+        if style == "stack":
+            layout = auto_layout.stack_tiles(boxes, previous)
+        else:
+            layout = auto_layout.arrange_tiles(boxes, width, previous)
         shown = {box.id for box in boxes}
         hidden = [dict(e) for e in self.layout if e.get("instance_id") not in shown | set(hide)]
         hidden += [{**previous.get(iid, {}), "instance_id": iid, "visible": False} for iid in hide]
@@ -6984,7 +7163,31 @@ class FlowDash(Viewer):
             entry["index"] = index
         # Narrower bands follow the arranged layout, rather than keep layouts made for the old one.
         self._set_tile_layout(layout + hidden, {})
-        self._auto_tiles = shown
+        # A stack is a choice new tiles follow, so the grid's rules no longer rearrange it.
+        self._auto_tiles = shown if style == "grid" else set()
+        self._stacked = style == "stack"
+
+    @staticmethod
+    def _ordered_sections(
+        boxes: list[auto_layout.TileBox], order: t.Sequence[str]
+    ) -> list[auto_layout.TileBox]:
+        """Return *boxes* with the sections of the tiles of *order* first, in that order.
+
+        A section is a tile with the text tiles in front of it, so a heading
+        keeps titling its tile; text after the last tile is a section of its own.
+        """
+        sections: list[list[auto_layout.TileBox]] = [[]]
+        for box in boxes:
+            sections[-1].append(box)
+            if box.kind != "text":
+                sections.append([])
+        sections = [section for section in sections if section]
+        rank = {iid: i for i, iid in enumerate(order)}
+
+        def key(section):
+            return min((rank[b.id] for b in section if b.id in rank), default=len(rank))
+
+        return [box for section in sorted(sections, key=key) for box in section]
 
     def _plumbing(self, instance_ids: t.Iterable[str]) -> list[str]:
         """Return the shown tiles of *instance_ids* that are data sources and transforms.
@@ -7035,10 +7238,19 @@ class FlowDash(Viewer):
         order = [item["instance_id"] for item in self._tile_order()]
         width, bands = self._tile_bands()
 
+        # A stack someone chose stays a stack, so no chart makes room for another.
+        resizable = {
+            iid: self._tile_box(item)
+            for iid, item in tiles.items()
+            if iid in self._auto_tiles and not self._stacked
+        }
+
         def insert(entries, width):
             previous = {e["instance_id"]: e for e in entries if e.get("instance_id") in new}
             entries = [e for e in entries if e.get("instance_id") not in new]
-            return auto_layout.insert_tiles(entries, order, kinds, boxes, width, previous)
+            return auto_layout.insert_tiles(
+                entries, order, kinds, boxes, width, previous, resizable
+            )
 
         layout = insert(self.layout, width)
         responsive = {
@@ -7048,7 +7260,7 @@ class FlowDash(Viewer):
         self._set_tile_layout(layout, responsive)
         self._auto_tiles.update(new)
 
-    def arrange_layout(self):
+    def arrange_layout(self, order: t.Sequence[str] | None = None, style: str = "grid"):
         """Lay out every visible tile by its kind, as one edit.
 
         Controls go first, then KPIs, both at their default width, charts in
@@ -7056,10 +7268,21 @@ class FlowDash(Viewer):
         transforms last; text tiles stay in front of the tile they preceded.
         Hidden tiles stay hidden. Layouts made for narrower breakpoint bands
         are dropped, so those bands follow the arranged layout again.
+
+        Parameters
+        ----------
+        order
+            Instance ids of tiles to put first, in this order within their
+            kind; the other tiles follow in their current order.
+        style
+            ``"grid"`` lays the tiles out by kind as above, ``"stack"`` puts
+            them one to a row at full width in their order.
         """
+        if style not in ("grid", "stack"):
+            raise ValueError(f"Unknown layout style {style!r}; use 'grid' or 'stack'.")
         if not tile_layout.grid_tiles(self):
             return
-        self._arrange_tiles()
+        self._arrange_tiles(order=order or (), style=style)
         self._record_edit("Arranged the tile layout", op="arrange_layout")
 
     def _placed_singletons(self) -> set[str]:
@@ -7304,6 +7527,7 @@ class FlowDash(Viewer):
             self._dataflow_graph.remove_node(node_id)
         self._floating_nodes = set()
         self._auto_tiles = set()
+        self._stacked = False
         self._chosen_visibility = set()
         self._tile_items = []
         self._tile_objects = []
@@ -7321,6 +7545,7 @@ class FlowDash(Viewer):
         self._origins = {}
         self._groups = {}
         self._report = None
+        self._global_filters.load([])
         self._pushed = {}
         self._rebuild_sidebar()
         with self._muted_canvas():
@@ -7408,6 +7633,7 @@ class FlowDash(Viewer):
             {group.id for group in model.groups},
             {turn.id for turn in model.turns},
         )
+        model.filters = map_filters(self._global_filters.filters, {iid: iid for iid in placed})
         model.edges = [
             DashboardEdge(
                 source=edge["source"],
@@ -7564,6 +7790,7 @@ class FlowDash(Viewer):
         )
         self._draw_groups(model.groups)
         self._report = copy.deepcopy(model.report)
+        self._global_filters.load(model.filters)
 
         legacy_ids = self._legacy_layout_ids(model)
         self._grid_populated = False
@@ -8070,6 +8297,7 @@ class FlowDash(Viewer):
             self._apply_mode_state()
         self._draw_groups(model.groups)
         self._report = copy.deepcopy(model.report)
+        self._global_filters.load(model.filters)
         self._sync_placed()
         self._sync_toolbar_state()
         return True

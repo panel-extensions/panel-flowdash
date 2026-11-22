@@ -46,12 +46,19 @@ TOOL_LABELS: dict[str, str | t.Callable[[dict], str]] = {
     "place_tile": lambda a: f"Place the tile of {a['name']}",
     "arrange_canvas": "Arrange the canvas",
     "arrange_layout": "Arrange the tile layout",
+    "arrange_tiles": "Arrange the tile layout",
     "group_nodes": lambda a: f"Group {', '.join(a.get('nodes') or [])}",
     "ungroup": lambda a: f"Ungroup {a['name']}",
     "set_settings": lambda a: f"Change the settings: {_keys(a.get('settings'))}",
     "declare_parameter": lambda a: f"Make {a.get('node')}.{a.get('field')} a parameter",
     "remove_parameter": lambda a: f"Remove parameter {a.get('name')}",
     "replace_dashboard": "Rewrite the dashboard",
+    "get_report": "Read the report",
+    "report_text": "Read the report",
+    "edit_report": "Edit the report",
+    "set_report": "Write the report",
+    "ask_in_report": "Add a question to the report",
+    "run_pending": "Answer a question of the report",
     "save_dashboard": "Save the dashboard",
     "delete_dashboard": lambda a: f"Delete {a['title']}",
     "share_dashboard": "Change who can see the dashboard",
@@ -108,7 +115,8 @@ class SessionChrome:
         # The approvals the notice tells of, and those whose notice the person dismissed.
         self._shown: set[str] = set()
         self._dismissed: set[str] = set()
-        self._queued: list[str] = []
+        # Questions asked while the assistant is busy, each with the pending turn it answers, if any.
+        self._queued: list[tuple[str, str | None]] = []
         drawer = session.drawer
         drawer.overlay_below = OVERLAY_BELOW
         drawer.chat.tool_labels = TOOL_LABELS
@@ -164,29 +172,39 @@ class SessionChrome:
     # Asking from the palette
     # ------------------------------------------------------------------
 
-    def ask(self, text: str):
-        """Open the drawer on the chat and send *text* to the assistant."""
+    def ask(self, text: str, turn: str | None = None):
+        """Open the drawer on the chat and send *text* to the assistant.
+
+        With *turn*, the id of a pending turn asking *text*, the request answers that turn.
+        """
         text = text.strip()
         if not text:
             return
         drawer = self.session.drawer
         drawer.param.update(open=True, tab="chat")
         if self.session.runner.state.running:
-            self._queued.append(text)
+            self._queued.append((text, turn))
             return
-        self._submit(text)
+        self._submit(text, turn)
 
-    def _submit(self, text: str):
+    def _submit(self, text: str, turn: str | None = None):
         chat = self.session.drawer.chat
+        runner = self.session.runner
 
         async def submit():
-            await chat.submit(text)
+            runner.answering = turn
+            try:
+                await chat.submit(text)
+            finally:
+                runner.answering = None
+                if turn is not None:
+                    self.session.pending_done(turn)
 
         pn.state.execute(submit)
 
     def _on_running(self, event):
         if not event.new and self._queued:
-            self._submit(self._queued.pop(0))
+            self._submit(*self._queued.pop(0))
 
     # ------------------------------------------------------------------
     # Full screen
