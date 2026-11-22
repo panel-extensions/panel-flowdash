@@ -425,6 +425,62 @@ def test_view_controls_follow_the_cards(page):
     expect(previews).to_have_attribute("aria-pressed", str(not shown).lower())
 
 
+# Every text the page renders, inside shadow roots too.
+_ALL_TEXT = """() => {
+  const out = [document.body.innerText];
+  const walk = root => root.querySelectorAll('*').forEach(el => {
+    if (el.shadowRoot) { out.push(el.shadowRoot.textContent); walk(el.shadowRoot); }
+  });
+  walk(document);
+  return out.join('\\n');
+}"""
+
+
+def _leaked(page):
+    text = page.evaluate(_ALL_TEXT)
+    return [line[:120] for line in text.splitlines() if "hunter2" in line or "sk-secret" in line]
+
+
+def test_no_output_view_shows_a_secret_an_object_holds(page):
+    from tests.test_value_text import NODE, SecretNode
+
+    editor = FlowDash({NODE: SecretNode}, notifications=False, include_builtin_components=False)
+    node = editor.add_component(NODE, position=(0, 0))
+    page.set_viewport_size({"width": 1400, "height": 900})
+    serve_component(page, editor)
+    card = _node(page, node)
+    leaks = {}
+
+    handles = card.locator(".react-flow__handle-right")
+    expect(handles).to_have_count(5)
+    popup = page.locator(".rf-value-popup")
+    for i in range(handles.count()):
+        handles.nth(i).click()
+        expect(popup).to_be_visible()
+        page.wait_for_timeout(300)
+        if found := _leaked(page):
+            leaks[f"popup:{handles.nth(i).get_attribute('data-handleid')}"] = found
+        page.keyboard.press("Escape")
+    page.mouse.click(5, 5)
+
+    card.click()
+    page.get_by_role("tab", name="Data").first.click(timeout=15000)
+    expect(page.get_by_text("SecretSource · turbines").first).to_be_visible(timeout=15000)
+    if found := _leaked(page):
+        leaks["inspector"] = found
+
+    page.get_by_role("tab", name="Settings").first.click()
+    page.locator(".fd-edit-spec").first.click(timeout=15000)
+    outputs = page.locator(".fd-code-outputs")
+    expect(outputs).to_be_visible(timeout=15000)
+    for name in outputs.get_by_role("button").all_inner_texts():
+        outputs.get_by_role("button", name=name).first.click()
+        page.wait_for_timeout(800)
+        if found := _leaked(page):
+            leaks[f"code:{name}"] = found
+    assert not leaks, leaks
+
+
 def test_port_value_of_a_source_shows_its_name_not_its_secrets(page):
     from tests.test_value_text import NODE, SecretNode
 

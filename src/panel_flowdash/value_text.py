@@ -14,6 +14,7 @@ import enum
 import fractions
 import numbers
 import pathlib
+import re
 import reprlib
 import typing as t
 import uuid
@@ -36,6 +37,11 @@ _PLAIN_TYPES = (
 )
 _CONTAINERS = (list, tuple, set, frozenset, dict)
 _MAX_NAME = 60
+_URL_PASSWORD = re.compile(r"(\b[a-zA-Z][\w+.-]*://[^\s:/@]+:)[^\s@/]+@")
+_SECRET_PARAM = re.compile(
+    r"(\b(?:password|passwd|pwd|secret|token|access_token|api_key|apikey)=)[^\s&;,'\"]+",
+    re.IGNORECASE,
+)
 
 
 def is_plain(value: t.Any) -> bool:
@@ -44,7 +50,10 @@ def is_plain(value: t.Any) -> bool:
         return True
     # numpy and pandas scalars (np.datetime64, pd.NaT, pd.NA) print as their value.
     module = type(value).__module__.split(".")[0]
-    return module in ("numpy", "pandas") and getattr(value, "ndim", 0) == 0
+    if module not in ("numpy", "pandas") or getattr(value, "ndim", 0) != 0:
+        return False
+    # A 0-d object array prints the object it holds.
+    return getattr(getattr(value, "dtype", None), "kind", None) != "O"
 
 
 def _auto_name(obj: param.Parameterized, name: str) -> bool:
@@ -76,6 +85,32 @@ def held_table_names(value: t.Any) -> list[str] | None:
     if isinstance(tables, (list, tuple)) and tables and all(isinstance(x, str) for x in tables):
         return list(tables)
     return None
+
+
+def redact_secrets(text: str) -> str:
+    """Mask a URL's password and ``password=``/``token=`` style values, e.g. in an error message."""
+    text = _URL_PASSWORD.sub(r"\1***@", text)
+    return _SECRET_PARAM.sub(r"\1***", text)
+
+
+def safe_frame(frame: t.Any) -> t.Any:
+    """Return a copy of a pandas *frame* whose object cells that are not plain data show their label.
+
+    Pass only the rows to show: every object column of *frame* is copied.
+    """
+    try:
+        import pandas as pd
+    except ImportError:
+        return frame
+    if not isinstance(frame, pd.DataFrame):
+        return frame
+    columns = [i for i, dtype in enumerate(frame.dtypes) if dtype.kind == "O"]
+    if not columns:
+        return frame
+    frame = frame.copy()
+    for i in columns:
+        frame.isetitem(i, frame.iloc[:, i].map(lambda v: v if is_plain(v) else safe_repr(v)))
+    return frame
 
 
 def safe_str(value: t.Any) -> str:

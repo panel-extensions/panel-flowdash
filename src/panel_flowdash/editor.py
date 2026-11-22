@@ -200,7 +200,13 @@ from panel_flowdash.util import (
     panel_viewer,
     stepped,
 )
-from panel_flowdash.value_text import held_table_names, is_plain, object_label, safe_repr
+from panel_flowdash.value_text import (
+    held_table_names,
+    is_plain,
+    object_label,
+    safe_frame,
+    safe_repr,
+)
 from panel_flowdash.widgets import BUILTIN_COMPONENTS, TEXT_COMPONENTS
 
 try:
@@ -2474,7 +2480,7 @@ class FlowDash(Viewer):
                         f"DataFrame · {value.shape[0]} rows x {value.shape[1]} cols",
                         margin=(0, 0, 6, 0),
                     ),
-                    pn.pane.DataFrame(value.head(10), sizing_mode="stretch_width"),
+                    pn.pane.DataFrame(safe_frame(value.head(10)), sizing_mode="stretch_width"),
                     sizing_mode="stretch_width",
                 )
         except ImportError:
@@ -5792,7 +5798,7 @@ class FlowDash(Viewer):
             body = markdown_pane("*No value yet*", margin=0)
         elif _is_table(value):
             rows, cols = value.shape
-            head = value.head(100)
+            head = safe_frame(value.head(100))
             caption = f"{rows:,} rows \u00d7 {cols:,}" + (
                 f", first {len(head):,} shown" if rows > len(head) else ""
             )

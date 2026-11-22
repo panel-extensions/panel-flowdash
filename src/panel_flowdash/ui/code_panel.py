@@ -68,6 +68,7 @@ from panel_flowdash.ui.spec_field import SpecEditor
 from panel_flowdash.ui.split_view import GUTTER_CSS
 from panel_flowdash.ui.text import field_label, text_alert
 from panel_flowdash.util import is_failure
+from panel_flowdash.value_text import safe_frame
 
 if t.TYPE_CHECKING:
     from panel_flowdash.component_spec import ComponentSpec
@@ -1689,7 +1690,7 @@ class CodePanel(Viewer):
             return pn.pane.HTML(_bar("No result yet."), margin=(8, 12), stylesheets=[_BAR_CSS])
         if _is_pandas(value):
             return pn.pane.DataFrame(
-                value.head(MAX_ROWS),
+                safe_frame(value.head(MAX_ROWS)),
                 index=_shows_index(value),
                 sizing_mode="stretch_both",
                 margin=0,

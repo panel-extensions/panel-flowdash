@@ -8,7 +8,7 @@ import typing as t
 
 from panel_flowdash.dataflow_engine import exception_text, failure_text
 from panel_flowdash.util import is_failure, missing_inputs
-from panel_flowdash.value_text import held_table_names, safe_repr
+from panel_flowdash.value_text import held_table_names, safe_repr, safe_str
 
 if t.TYPE_CHECKING:
     from panel_flowdash.editor import FlowDash
@@ -56,9 +56,9 @@ def sample_value(value: t.Any, rows: int = 5) -> dict[str, t.Any]:
         sample = {
             "type": "DataFrame",
             "rows": int(value.shape[0]),
-            "columns": {str(c): str(dtype) for c, dtype in shown.dtypes.items()},
+            "columns": {safe_str(c): str(dtype) for c, dtype in shown.dtypes.items()},
             "head": [
-                {str(k): _scalar(v) for k, v in record.items()}
+                {safe_str(k): _scalar(v) for k, v in record.items()}
                 for record in shown.to_dict(orient="records")
             ],
         }
@@ -84,7 +84,7 @@ def sample_value(value: t.Any, rows: int = 5) -> dict[str, t.Any]:
         return {
             "type": "dict",
             "length": len(keys),
-            "head": {str(k): _scalar(value[k]) for k in keys[:_MAX_ITEMS]},
+            "head": {safe_str(k): _scalar(value[k]) for k in keys[:_MAX_ITEMS]},
         }
     sample = {"type": type(value).__name__, "value": _scalar(value)}
     if tables := held_table_names(value):

@@ -78,7 +78,7 @@ from panel_flowdash.ui.tile_layout import (
     update_tile,
 )
 from panel_flowdash.util import is_failure
-from panel_flowdash.value_text import held_table_names, is_plain
+from panel_flowdash.value_text import held_table_names, is_plain, safe_frame, safe_str
 
 if t.TYPE_CHECKING:
     from panel.viewable import Viewable
@@ -630,7 +630,7 @@ def _as_pandas(frame: t.Any) -> t.Any:
 def _table_preview(value: t.Any) -> list[Viewable]:
     """Return the first rows and columns of a table, under its size."""
     rows, cols = value.shape
-    head = _as_pandas(value.head(_DATA_ROWS))
+    head = safe_frame(_as_pandas(value.head(_DATA_ROWS)))
     shown = []
     if len(head) < rows:
         shown.append(f"{len(head):,} rows")
@@ -769,7 +769,7 @@ def summarize_input_html(value: t.Any, port_type: str | None = None) -> str:
     if isinstance(value, dict):
         count = len(value)
         label = f"{count:,} {'entry' if count == 1 else 'entries'}"
-        keys = _code_list([str(k) for k in list(value)[:_MAX_SUMMARY_ITEMS]]) if count else ""
+        keys = _code_list([safe_str(k) for k in list(value)[:_MAX_SUMMARY_ITEMS]]) if count else ""
         body = f"{label} · {keys}" if keys else label
         return (
             '<div class="fd-inp-data">'
