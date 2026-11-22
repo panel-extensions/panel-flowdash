@@ -14,7 +14,7 @@ from panel_flowdash import FlowDash, MemoryDashboardStore, register
 from panel_flowdash.agent import DashboardOps
 from panel_flowdash.agent.exploration import ADD_LABEL, REMOVED, ExplorationOps
 from panel_flowdash.agent.tools import FlowDashDeps, dashboard_toolset
-from panel_flowdash.dashboard_store import DashboardItem
+from panel_flowdash.dashboard_store import DashboardEdge, DashboardItem
 from panel_flowdash.ui import tile_layout
 
 from .test_agent_ops import COMPONENTS
@@ -1111,3 +1111,78 @@ async def test_adding_runs_the_config_checks_off_the_event_loop(store, monkeypat
     during = [start, *(t for t in ticks if start <= t <= end), end]
     gap = max(b - a for a, b in itertools.pairwise(during))
     assert gap < 0.5, gap
+
+
+def _large(store, monkeypatch, explore_agent, nodes=150, tiles=40, edits=20):
+    """Open a dashboard of *nodes* chained doublers, *tiles* of them shown, after *edits* edits."""
+    model = store.create_dashboard("alice", "Large")
+    model.items.append(DashboardItem("base", "T/number"))
+    for i in range(nodes - 1):
+        model.items.append(
+            DashboardItem(f"d{i}", "T/doubler", x=200 * (i % 10), y=100 * (i // 10))
+        )
+        source = ("base", "value") if i % 10 == 0 else (f"d{i - 1}", "doubled")
+        model.edges.append(DashboardEdge(*source, f"d{i}", "value"))
+    model.tile_layout = [
+        {"instance_id": item.instance_id, **({} if i < tiles else {"visible": False})}
+        for i, item in enumerate(model.items)
+    ]
+    store.save_dashboard(model)
+    app = _app(store, monkeypatch, agent=_agent(), explore_agent=explore_agent)
+    app._load_dashboard_sync(model.dashboard_id)
+    ops = app._agent_session.ops
+    for i in range(edits):
+        ops.place_tile(f"d{i}", height=200 + i)
+        app._editor.end_turn()
+    return app
+
+
+async def test_adding_to_a_large_dashboard_takes_the_version_once_and_keeps_the_loop_turning(
+    store, monkeypatch
+):
+    import time
+
+    from panel_flowdash.history import EditHistory
+
+    calls = [("add_node", {"component": "T/doubler", "name": "a0"})]
+    calls.append(("connect", {"source": "d148.doubled", "target": "a0.value"}))
+    for i in range(1, 4):
+        calls.append(("add_node", {"component": "T/doubler", "name": f"a{i}"}))
+        calls.append(("connect", {"source": f"a{i - 1}.doubled", "target": f"a{i}.value"}))
+    app = _large(store, monkeypatch, _agent(*calls))
+    session, editor = app._agent_session, app._editor
+    before = _nodes(editor)
+    versions = len(editor.edit_history.versions)
+    await session.explore_runner.run("Deeper")
+    run = session.explore_runner.run_id
+    snapshots = []
+    snapshot = EditHistory.snapshot
+
+    def counted(self):
+        snapshots.append(self)
+        return snapshot(self)
+
+    monkeypatch.setattr(EditHistory, "snapshot", counted)
+    ticks, done = [], asyncio.Event()
+
+    async def tick():
+        while not done.is_set():
+            await asyncio.sleep(0.01)
+            ticks.append(time.monotonic())
+
+    ticker = asyncio.ensure_future(tick())
+    await asyncio.sleep(0.05)
+    start = time.monotonic()
+    assert await session.add_answer(run, "a3") == "a3"
+    end = time.monotonic()
+    done.set()
+    await ticker
+    # Nine edits, one version of the whole dashboard, written once rather than after each edit.
+    assert len(snapshots) == 1
+    during = [start, *(t for t in ticks if start <= t <= end), end]
+    gap = max(b - a for a, b in itertools.pairwise(during))
+    assert gap < 4, gap
+    assert _nodes(editor) == [*before, "a0", "a1", "a2", "a3"]
+    assert len(editor.edit_history.versions) == versions + 1
+    assert "a3:" in editor.edit_history.versions[-1].value
+    assert editor.undo() and _nodes(editor) == before

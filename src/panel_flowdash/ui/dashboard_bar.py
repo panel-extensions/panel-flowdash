@@ -65,6 +65,20 @@ _HIDE_ON_PHONE = (
     f"@media (max-width: {PHONE_BREAKPOINT - 0.05}px) {{ :host {{ display: none !important; }} }}"
 )
 
+# Public for the editor's side panels, which the phone's bottom sheets replace, and
+# their inverse for the buttons opening those sheets. CSS, so a phone never shows
+# the wrong ones before the server knows the window's width.
+HIDE_ON_PHONE = _HIDE_ON_PHONE
+SHOW_ON_PHONE = (
+    f"@media (min-width: {PHONE_BREAKPOINT}px) {{ :host {{ display: none !important; }} }}"
+)
+
+# On phones the buttons left on screen are 44 px touch targets, as are tabs.
+PHONE_TOUCH_CSS = (
+    f"@media (max-width: {PHONE_BREAKPOINT - 0.05}px) {{ "
+    ".MuiButtonBase-root, .MuiTabs-root { min-width: 44px !important; min-height: 44px !important; } }"
+)
+
 
 class PhoneQuery(JSComponent):
     """Reports whether the browser window is narrower than ``breakpoint``, as a phone's is."""
@@ -507,7 +521,10 @@ class DashboardBar(Viewer):
             size="small",
             margin=(0, 4),
             description="Save",
-            stylesheets=[icon_only_below(EDIT_COMPACT_BREAKPOINT, disabled_tooltip="Save")],
+            stylesheets=[
+                icon_only_below(EDIT_COMPACT_BREAKPOINT, disabled_tooltip="Save"),
+                PHONE_TOUCH_CSS,
+            ],
         )
         self.done_button = pmui.Button(
             label="Done",
@@ -530,6 +547,7 @@ class DashboardBar(Viewer):
             margin=(0, 4),
             sx=_OVERFLOW_SX,
             css_classes=["fd-more-actions"],
+            stylesheets=[PHONE_TOUCH_CSS],
         )
         self.overflow.on_click(self._on_overflow)
         self._overflow_access = MenuAccess(button_class="fd-more-actions", margin=0)

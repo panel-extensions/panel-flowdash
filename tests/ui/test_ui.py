@@ -536,7 +536,7 @@ def test_inspect_button_opens_sheet_with_current_value(page):
 
     page.get_by_role("button", name="Inspect data for Gauge").click()
 
-    sheet = page.locator(".MuiDrawer-paper")
+    sheet = page.locator(".flowdash-inspect-sheet .MuiDrawer-paper")
     sheet.get_by_text("Gauge", exact=True).wait_for()
     sheet.get_by_text("doubled is reading * 2").wait_for()
     assert sheet.get_by_text("14").is_visible()
@@ -586,7 +586,7 @@ def test_inspect_button_in_app_dashboard_page(page):
 
     page.get_by_role("button", name="Inspect data for Gauge").click()
 
-    page.locator(".MuiDrawer-paper").get_by_text("14").wait_for()
+    page.locator(".flowdash-inspect-sheet .MuiDrawer-paper").get_by_text("14").wait_for()
 
 
 @register(page=False, component=True, title="Divider")
