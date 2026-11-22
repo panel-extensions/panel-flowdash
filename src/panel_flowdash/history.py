@@ -29,6 +29,7 @@ import time
 import typing as t
 import uuid
 import weakref
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from functools import partial
 
@@ -175,6 +176,8 @@ class _Request:
     value: str | None = None
     revision: str | None = None
     counted: list[dict[str, t.Any]] = field(default_factory=list)
+    # Edited inside :meth:`EditHistory.batched` since ``value`` was taken.
+    stale: bool = False
 
 
 def format_version(records: t.Iterable[dict[str, t.Any]]) -> int:
@@ -401,6 +404,7 @@ class EditHistory:
         self._unheaded: dict[str, bool] = {}
         self._timer = False
         self._requests: dict[tuple[str, str | None], _Request] = {}
+        self._batching = 0
         self._refused: dict[str, str] = {}
         #: Called after :meth:`load`, e.g. to show :attr:`refused`.
         self.on_load: t.Callable[[], None] | None = None
@@ -781,8 +785,35 @@ class EditHistory:
         tool_call_id = current_tool_call_id()
         if tool_call_id and tool_call_id not in request.tool_call_ids:
             request.tool_call_ids.append(tool_call_id)
+        if self._batching:
+            request.stale = True
+        else:
+            self._snapshot_request(request)
+
+    def _snapshot_request(self, request: _Request):
         request.value, request.revision = self.snapshot()
+        request.stale = False
         self._head = request.revision
+
+    @contextmanager
+    def batched(self):
+        """Take the canvas once for the agent's edits made inside, rather than after each of them.
+
+        Each agent edit otherwise writes the whole dashboard as YAML, which
+        on a large dashboard is the bulk of an edit's time. Only for edits
+        made without yielding to the event loop, such as Explore's Add: a
+        person's edit cannot land between them, so the canvas at the end is
+        the one the agent's last edit left.
+        """
+        self._batching += 1
+        try:
+            yield
+        finally:
+            self._batching -= 1
+            if not self._batching:
+                for request in self._requests.values():
+                    if request.stale:
+                        self._snapshot_request(request)
 
     def _close_requests(self):
         """Publish the edits the open dashboard's requests made so far, keeping the requests open.
@@ -839,6 +870,8 @@ class EditHistory:
             )
             return
         self.flush()
+        if request.stale:
+            self._snapshot_request(request)
         value, revision, ops, labels = request.value, request.revision, request.ops, request.labels
         tool_call_ids, counted = request.tool_call_ids, request.counted
         request.ops, request.tool_call_ids, request.labels, request.counted = [], [], [], []

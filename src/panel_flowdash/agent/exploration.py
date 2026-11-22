@@ -897,16 +897,18 @@ class ExplorationOps(DashboardOps):
                 )
             editor.end_turn()
             editor._defer_tile_layout(run)
-            try:
-                with agent_edits(run, question):
-                    name = self._write(exploration, plan, node, dashboard_id)
-            except BaseException:
-                if _open_id(editor) == dashboard_id:
-                    # Its nodes were taken back, so the turn and the version would record nothing.
-                    editor._discard_agent_turn(run)
-                raise
-            finally:
-                editor.end_agent_turns(run)
+            # The writes do not yield, so the version is taken once, when the turn ends.
+            with editor._history.batched():
+                try:
+                    with agent_edits(run, question):
+                        name = self._write(exploration, plan, node, dashboard_id)
+                except BaseException:
+                    if _open_id(editor) == dashboard_id:
+                        # Its nodes were taken back, so the turn and the version would record nothing.
+                        editor._discard_agent_turn(run)
+                    raise
+                finally:
+                    editor.end_agent_turns(run)
         finally:
             if edit_lock is not None:
                 edit_lock.release(token)
