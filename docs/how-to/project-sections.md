@@ -249,3 +249,40 @@ LIMITS = ProjectSection(
 A setting whose value comes from somewhere the admin cannot change, such as
 a command-line flag, is shown locked when the loader's context lists it:
 `load_project(path, context={"locked_settings": {"limits": {"rows": "--rows"}}})`.
+
+## 6. A setup wizard step
+
+A section can add a step to the setup wizard with `wizard_view`, a function
+of the project that returns a `panel_flowdash.admin.SettingsForm` or a
+`panel_flowdash.admin.WizardStep`. The wizard writes nothing until its
+Review: there it asks each step's `changes()` for the sections to write and
+shows them, and Finish writes exactly those with `Project.set`, through the
+section's loader. A step in the `"Data"` group takes the place of the
+built-in Data step; any other comes after People. The simplest step reuses
+the section's form, `wizard_view=lambda project: SettingsForm(project,
+"limits", LIMIT_GROUPS)`; a `WizardStep` lays out its own page:
+
+```python
+import panel_material_ui as pmui
+from panel_flowdash.admin import WizardStep
+
+
+class LimitsStep(WizardStep):
+    def __init__(self, project):
+        super().__init__(project, title="Limits", heading="Row limits")
+        self.rows = pmui.IntInput(label="Rows", value=1000)
+
+    def changes(self):
+        return {"limits": {"rows": self.rows.value}}
+
+    def summary(self):
+        return [f"Rows: {self.rows.value}"]
+
+    def view(self):
+        return self.rows
+
+
+LIMITS = ProjectSection(
+    "limits", settings_loader(LIMIT_GROUPS), title="Limits", wizard_view=LimitsStep
+)
+```

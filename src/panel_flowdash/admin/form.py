@@ -243,6 +243,9 @@ _ROW_STYLES = {
     "width": "100%",
 }
 
+# On a phone a row's control goes under its label rather than squeezing it.
+_NARROW_ROW_CSS = "@media (max-width: 600px) { :host { flex-wrap: wrap; } }"
+
 _CHOICE_SX = {
     "& .MuiToggleButton-root": {
         "px": 1.5,
@@ -559,6 +562,7 @@ class SettingsForm(Viewer):
                 margin=0,
                 sizing_mode="stretch_width",
                 styles=_ROW_STYLES,
+                stylesheets=[_NARROW_ROW_CSS],
                 css_classes=["flowdash-setting", f"flowdash-setting-{setting.key}"],
             )
         self._render_text(setting)

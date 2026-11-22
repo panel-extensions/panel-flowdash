@@ -19,6 +19,7 @@ from panel_flowdash.admin import (
 from panel_flowdash.admin.dashboards import DASHBOARDS
 from panel_flowdash.admin.form import SettingsForm, using_app
 from panel_flowdash.admin.sections import BUILTIN_SECTIONS
+from panel_flowdash.admin.wizard import SETUP_SECTION
 from panel_flowdash.project import Project, ProjectSection, sections
 from panel_flowdash.ui.text import alert_pane, escape_markdown
 from panel_flowdash.value_text import error_text
@@ -154,6 +155,16 @@ class AdminPage(Viewer):
             disabled=True,
             styles={"flex": "0 0 auto"},
         )
+        self._wizard_button = pmui.Button(
+            label="Setup wizard",
+            icon="auto_fix_high",
+            variant="text",
+            margin=0,
+            visible=False,
+            styles={"flex": "0 0 auto"},
+            css_classes=["flowdash-admin-wizard-button"],
+        )
+        self._wizard_button.on_click(lambda _event: self.select(SETUP_SECTION))
         self._discard_button.on_click(lambda _event: self.discard())
         self._save_button.on_click(lambda _event: self.save())
         self._narrow_select = pmui.Select(
@@ -172,6 +183,7 @@ class AdminPage(Viewer):
                 sizing_mode="stretch_width",
                 styles={"min-width": "0"},
             ),
+            self._wizard_button,
             self._status,
             self._discard_button,
             self._save_button,
@@ -351,6 +363,8 @@ class AdminPage(Viewer):
             self._description.object = section.description
             self._description.visible = bool(section.description)
             self._body[:] = [view]
+            # Setup can be run again from General, e.g. after skipping it.
+            self._wizard_button.visible = name == "general" and self._on_select is not None
             for menu in self._menus.values():
                 index = next(
                     (i for i, item in enumerate(menu.items) if item.get("name") == name), None

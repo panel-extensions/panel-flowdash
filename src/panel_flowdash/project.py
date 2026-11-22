@@ -122,6 +122,8 @@ Loader = Callable[["Section"], Any]
 Dumper = Callable[[Any], Any]
 # Builds the admin settings tab of a section: ``settings_view(project, editable)``.
 SettingsView = Callable[["Project", bool], Any]
+# Builds the section's step of the setup wizard: ``wizard_view(project)``.
+WizardView = Callable[["Project"], Any]
 
 
 @dataclass(frozen=True)
@@ -137,6 +139,10 @@ class ProjectSection:
     data for ``Project.set``; without it the value is written as it is.
     ``settings_view(project, editable)``, if given, builds the section's page
     in the admin view, listed under the heading ``group``, e.g. ``"Data"``.
+    ``wizard_view(project)``, if given, builds the section's step of the setup
+    wizard (a ``panel_flowdash.admin.wizard.WizardStep`` or a ``SettingsForm``);
+    a ``"Data"`` section's step takes the place of the wizard's Data step,
+    any other comes after People. The wizard writes nothing until its Review.
     """
 
     name: str
@@ -147,6 +153,7 @@ class ProjectSection:
     dump: Dumper | None = None
     settings_view: SettingsView | None = None
     group: str = "Extensions"
+    wizard_view: WizardView | None = None
 
     @property
     def label(self) -> str:

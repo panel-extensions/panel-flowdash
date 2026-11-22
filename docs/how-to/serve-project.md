@@ -280,6 +280,22 @@ the token for scripted setups; it too works once per start and only under
 the same rules. Set `admin_link = False` in `__init__.py` to turn the link
 off entirely.
 
+### The setup wizard
+
+When the admin link claims a project whose file has no settings yet, the
+first admin lands in the setup wizard at `/admin/setup`. It walks through
+Welcome, Data (the served data folder, or the data sources an extension
+such as Lumen adds), AI (a provider, its key and a model), Theme (colour,
+title and logo), People (admins, `admin_groups` and `default_allow`) and
+Review. Review shows what will be written to `flowdash.yaml`, line by line,
+and nothing is written until you click Finish there; Cancel or Skip setup
+leaves the file as it was. Each step can be skipped, and the wizard can be
+opened again at any time from Admin, General.
+
+The AI step writes the provider key as a reference to an environment
+variable, such as `${OPENAI_API_KEY}`, unless you choose to paste a key,
+which is then stored encrypted like one saved under Admin, AI.
+
 ### Two ways of working
 
 **Shared project, launched by each person.** The project folder lives in
