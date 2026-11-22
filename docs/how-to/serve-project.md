@@ -51,6 +51,7 @@ flowdash serve <directory> [options]
 | `--warm` | off | Import all modules at startup instead of lazily on first visit. |
 | `--dev` | off | Enable autoreload for development. |
 | `--admin` | off | Enable the Panel admin interface. |
+| `--admin-link` | off | Print the link that claims FlowDash's admin view even when the project already has admins. See [The admin view](#the-admin-view). |
 | `--profiler` | none | Profiler to use (pyinstrument, snakeviz). |
 | `--num-threads` | auto | Thread pool size. |
 | `--allow-websocket-origin` | all | Restrict allowed websocket origins. |
@@ -205,7 +206,7 @@ missing or set to `None` keeps its default.
 | `header_layout` | `str` | `"compact"` (default) puts a dashboard's title, health and actions in the top bar, `"full"` in a row of their own under it, see [Navigation](#navigation). Dashboards can override it in their settings. |
 | `home_dashboard` | `str` | Dashboard id or title shown on the homepage. Overridden by `--home-dashboard`. |
 | `include_builtin_components` | `bool` | Offer the built-in widget components in the editor. Default `True`. |
-| `local_admin` | `bool` | Offer the admin view to anyone who opens the app at `localhost` without signing in. Default `True`; set it to `False` behind a proxy, see [The admin view](#the-admin-view). |
+| `admin_link` | `bool` | Whether the admin link printed at startup can claim the admin view. Default `True`, see [The admin view](#the-admin-view). |
 | `nav_variant` | `str` | `"rail"` (default), `"left"`, `"right"` or `"menubar"`, see [Navigation](#navigation). Overridden by `--nav-variant`. |
 | `notifications` | `bool` | Show user-facing messages as Panel notifications. Default `True`. |
 | `page_options` | `dict` | Extra keyword arguments for the underlying `panel_material_ui.Page`. |
@@ -247,25 +248,51 @@ reason; set them from `configure_layout`.
 ## The admin view
 
 Admins get an Admin item at the bottom of the rail, which edits the
-project file's settings (see the [Project File reference](../reference/project-file.md#built-in-sections)).
-Members of `admin_groups` are admins. Without sign-in everyone is the
-system user, so the admin view is then only offered to a page opened at
-`localhost`, `127.0.0.1` or `::1` from the same machine, and a request that
-carries a proxy header (`Forwarded`, `Via`, `X-Forwarded-For`,
-`X-Forwarded-Host`, `X-Forwarded-Proto` or `X-Real-Ip`) never counts as
-local. `flowdash serve` logs a warning at startup while this is on.
+project file's settings (see the
+[Project File reference](../reference/project-file.md#built-in-sections)).
+An admin is a member of `admin_groups` or a user named in the project
+file's `general.admins`, which admins can edit under Admin, General.
 
-A proxy on the same machine that forwards requests without adding such a
-header, such as nginx's default `proxy_pass http://127.0.0.1:5006`, makes
-every visitor look local. **Anyone deploying behind a proxy must set
-`local_admin = False`** in `__init__.py` and give admin rights through
-`admin_groups` with sign-in:
+### Claiming a new project
 
-```python
-# my_project/__init__.py
-local_admin = False
-admin_groups = ["admins"]
+While a project has no admin (no `admin_groups` and nobody in `general.admins`),
+`flowdash serve` prints a link when it starts,
+as Jupyter does:
+
+```text
+No one administers this FlowDash project yet. Open this link to become its admin
+(valid until the server restarts):
+    http://localhost:5006/admin#token=Xb3...
 ```
+
+The token is random, kept in memory and new on every start;
+`FLOWDASH_ADMIN_TOKEN` fixes it for scripted setups. It travels in the URL
+fragment, which the browser never sends to the server, so it appears in no
+access log, and the page removes it from the address bar once it has
+handed it over. Whoever opens the link is added to `general.admins` and is
+admin on every later start, with no token. A wrong token is refused. Once
+the project has an admin the link is no longer printed; pass
+`--admin-link` to print it anyway, e.g. to add yourself to a project whose
+admins are away, or set `admin_link = False` in `__init__.py` to turn the
+link off.
+
+### Two ways of working
+
+**Shared project, launched by each person.** The project folder lives in
+version control or on a network drive and each person runs
+`flowdash serve` on their own machine, without sign-in. Without sign-in
+every visitor of a server is the account that runs it (its OS user name),
+so `general.admins` names OS accounts: once `philipp` claimed the project,
+anyone who opens a server that `philipp` started is admin. That is fine on
+your own machine and is not a security boundary: anyone who can reach that
+server, or edit the project file, can make themselves admin.
+
+**Deployed with sign-in.** Configure OAuth (Panel's `--oauth-provider`
+options) and, if you like, `admin_groups`. The user who opens the admin
+link is recorded by their sign-in name and only they, the other users in
+`general.admins` and the members of `admin_groups` get the admin view. The
+link works from wherever it is opened, so it is also safe behind a proxy;
+treat it like a password until it has been used.
 
 ---
 

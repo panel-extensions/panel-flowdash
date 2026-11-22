@@ -19,10 +19,22 @@ import panel_material_ui as pmui
 import param
 from panel.viewable import Children, Viewer
 
-from panel_flowdash.admin.access import is_admin, is_local_request
+from panel_flowdash.admin.access import (
+    AdminTokenExchange,
+    check_token,
+    is_admin,
+    show_admin_link,
+)
 from panel_flowdash.admin.page import ADMIN_ROUTE, AdminPage
-from panel_flowdash.admin.sections import FontLoader, font_href, project_overrides
+from panel_flowdash.admin.sections import (
+    FontLoader,
+    add_admin,
+    font_href,
+    project_admins,
+    project_overrides,
+)
 from panel_flowdash.auth import (
+    ANONYMOUS_USER,
     AuthConfig,
     Permission,
     entry_authorized,
@@ -190,6 +202,18 @@ AGENT_EXTRA_MISSING = (
 
 class FlowDashApp(Viewer):
     """FlowDash application: scans a project directory and serves its pages and components."""
+
+    admin_link = param.Boolean(
+        default=True,
+        doc="""
+        Whether the admin link can claim the admin view: ``/admin#token=...``
+        with the server's admin token, which `flowdash serve` prints at
+        startup while the project has no admin (see
+        `panel_flowdash.admin.admin_path`). Whoever opens it is added to the
+        project file's ``general.admins`` and is admin from then on: the
+        signed-in user, or without sign-in the account that runs the server.
+        Members of the `auth_config`'s ``admin_groups`` are admins either way.""",
+    )
 
     agent = param.Parameter(
         default=None,
@@ -384,14 +408,6 @@ class FlowDashApp(Viewer):
         default=True, doc="Include built-in widget components in the dashboard editor."
     )
 
-    local_admin = param.Boolean(
-        default=True,
-        doc="""
-        Whether a page opened on this computer (at ``localhost``) without
-        sign-in gets the admin view. Members of the `auth_config`'s
-        ``admin_groups`` always do.""",
-    )
-
     nav_variant = param.Selector(
         default="rail",
         objects=["left", "menubar", "rail", "right"],
@@ -528,7 +544,7 @@ class FlowDashApp(Viewer):
         self._is_admin = is_admin(
             self._identity,
             self._admin_groups(),
-            local=self.local_admin and is_local_request(),
+            self._configured_admins(),
         )
         self._admin_page: AdminPage | None = None
         # Views of the open dashboard's sidebar components, shown after `sidebar`.
@@ -596,6 +612,21 @@ class FlowDashApp(Viewer):
             href=font_href(self._project_font), width=0, height=0, margin=0, visible=False
         )
         self._page_dialogs.append(self._font_loader)
+        if self.admin_link:
+            doc = pn.state.curdoc
+            if (
+                doc is not None
+                and doc.session_context is not None
+                and not self._admin_groups()
+                and not self._configured_admins()
+            ):
+                # Served some other way than `flowdash serve`, which prints it at startup.
+                show_admin_link()
+            self._token_exchange = AdminTokenExchange(
+                width=0, height=0, margin=0, styles={"display": "none"}
+            )
+            self._token_exchange.param.watch(self._on_admin_token, "token")
+            self._page_dialogs.append(self._token_exchange)
         self._leave_page_guard = LeavePageGuard()
         self._editor.param.watch(
             self._sync_leave_page_guard, ["dashboard", "dirty", "code_drafts"]
@@ -741,6 +772,43 @@ class FlowDashApp(Viewer):
                 updates[name] = self._project_page_options[name]
         page.param.update(updates)
         self._font_loader.href = font_href(self._project_font)
+
+    def _configured_admins(self) -> list[str]:
+        try:
+            return project_admins(self._settings_project())
+        except (ProjectError, OSError):
+            return []
+
+    def _on_admin_token(self, event):
+        """Make whoever opened the admin link an admin, now and on every later start."""
+        if not event.new:
+            return
+        if not check_token(event.new):
+            logger.warning("Refused an admin link with a wrong token.")
+            self._notify("error", "This admin link is not valid. Use the one the server printed.")
+            return
+        location = pn.state.location
+        if location is not None and "token=" in (location.hash or ""):
+            # Otherwise the next navigation would write the fragment back into the address bar.
+            location.hash = ""
+        user = self._identity.user
+        if user and user != ANONYMOUS_USER:
+            try:
+                add_admin(self._settings_project(), user)
+            except (ProjectError, OSError) as exc:
+                logger.warning("Could not record %s as an admin: %s", user, exc)
+                self._notify(
+                    "warning", f"You're admin until the server restarts: {error_text(exc)}"
+                )
+            else:
+                self._notify("success", f"{user} is now an admin of this project.")
+        if self._is_admin:
+            return
+        self._is_admin = True
+        if self._shell is not None:
+            self._shell.refresh()
+        if location is not None and (location.pathname or "").startswith(ADMIN_ROUTE):
+            pn.state.execute(self._load_page_layout)
 
     def _on_admin_saved(self, section: str):
         if section == "theme":

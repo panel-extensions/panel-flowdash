@@ -204,9 +204,11 @@ class AdminPage(Viewer):
     def _signed_in(self) -> str:
         identity = self._app._identity
         groups = sorted(identity.groups & self._app._admin_groups())
+        if identity.oauth_user is None:
+            return f"{identity.user} · no sign-in"
         if groups:
             return f"Signed in as {identity.user} · {', '.join(groups)}"
-        return f"On this computer as {identity.user}"
+        return f"Signed in as {identity.user}"
 
     def _build_nav(self):
         groups: dict[str, list[ProjectSection]] = {}

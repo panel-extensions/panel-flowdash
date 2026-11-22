@@ -1,90 +1,120 @@
-"""Who may open the admin view."""
+"""Who may open the admin view: members of the admin groups, or whoever has the admin link.
+
+The admin link bootstraps the first admin. Like Jupyter's token, the
+server makes a random admin token when it starts and, while the project
+has no admin yet, prints a link with it, ``/admin#token=...``. The token
+rides in the URL fragment, which browsers never send to the server, so it
+shows up in no access log; the page hands it over the websocket instead.
+Whoever opens the link is recorded in the project file's
+``general.admins`` and is admin on every later start, with no token.
+"""
 
 from __future__ import annotations
 
-import ipaddress
+import hmac
+import os
+import secrets
+import threading
 import typing as t
 
-import panel as pn
+import param
+from panel.custom import JSComponent
 
 from panel_flowdash.auth import Identity
 
-_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+TOKEN_ENV = "FLOWDASH_ADMIN_TOKEN"
+
+_TOKEN: str | None = None
+_TOKEN_LOCK = threading.Lock()
 
 
-def _host_name(host: str) -> str:
-    host = host.strip().lower()
-    if host.startswith("["):
-        return host[1 : host.find("]")] if "]" in host else host[1:]
-    return host.rsplit(":", 1)[0] if host.count(":") == 1 else host
+def admin_token() -> str:
+    """Return this process's admin token, made when first asked for.
 
-
-def _loopback(address: str | None) -> bool:
-    if not address:
-        return False
-    try:
-        return ipaddress.ip_address(address).is_loopback
-    except ValueError:
-        return False
-
-
-# Headers a proxy adds; a request carrying any of them came through one.
-PROXY_HEADERS = (
-    "Forwarded",
-    "Via",
-    "X-Forwarded-For",
-    "X-Forwarded-Host",
-    "X-Forwarded-Proto",
-    "X-Real-Ip",
-)
-
-
-def _peer_address(request: t.Any) -> str | None:
-    """Return the address of the socket the request came in on, ignoring any xheaders."""
-    raw = getattr(request, "_request", request)
-    context = getattr(getattr(raw, "connection", None), "context", None)
-    address = getattr(context, "address", None)
-    if isinstance(address, (tuple, list)) and address:
-        return str(address[0])
-    if context is not None and hasattr(context, "_orig_remote_ip"):
-        return context._orig_remote_ip
-    return getattr(raw, "remote_ip", None)
-
-
-def is_local_request(request: t.Any = None) -> bool:
-    """Whether the session's page was requested from this computer by its loopback name.
-
-    The socket's peer address and the ``Host`` header have to be loopback,
-    and the request must carry none of the `PROXY_HEADERS`; the peer is read
-    from the socket, never from ``X-Real-Ip`` or ``X-Forwarded-For``. A proxy
-    on the same machine that adds no such header still looks local, so a
-    deployment behind a proxy sets ``FlowDashApp(local_admin=False)``.
+    It is ``FLOWDASH_ADMIN_TOKEN`` when that is set, for scripted setups,
+    and otherwise random and new every time the server starts.
     """
-    if request is None:
-        doc = pn.state.curdoc
-        context = doc.session_context if doc is not None else None
-        request = getattr(context, "request", None)
-    if request is None:
+    global _TOKEN
+    with _TOKEN_LOCK:
+        if _TOKEN is None:
+            _TOKEN = os.environ.get(TOKEN_ENV) or secrets.token_urlsafe(32)
+        return _TOKEN
+
+
+def reset_admin_token() -> None:
+    """Forget the admin token, so the next `admin_token` makes a new one, as a restart does."""
+    global _TOKEN, _LINK_SHOWN
+    with _TOKEN_LOCK:
+        _TOKEN = None
+        _LINK_SHOWN = False
+
+
+def admin_path(prefix: str = "") -> str:
+    """Return the path of the admin link, with the token in its fragment."""
+    return f"{prefix.rstrip('/')}/admin#token={admin_token()}"
+
+
+_LINK_SHOWN = False
+
+
+def show_admin_link(base_url: str = "") -> None:
+    """Print the admin link once per token, e.g. when the server starts.
+
+    It is printed rather than logged, so the token stays out of log files
+    that are kept or shipped elsewhere. *base_url* is the server's address;
+    without it only the path is printed.
+    """
+    global _LINK_SHOWN
+    if _LINK_SHOWN:
+        return
+    _LINK_SHOWN = True
+    print(  # noqa: T201
+        "\nNo one administers this FlowDash project yet. Open this link to become its admin\n"
+        "(valid until the server restarts):\n"
+        f"    {base_url.rstrip('/')}{admin_path()}\n",
+        flush=True,
+    )
+
+
+def check_token(candidate: t.Any) -> bool:
+    """Whether *candidate* is the admin token, compared in constant time."""
+    if not isinstance(candidate, str) or not candidate:
         return False
-    headers = {str(k).lower(): v for k, v in dict(getattr(request, "headers", None) or {}).items()}
-    if any(name.lower() in headers for name in PROXY_HEADERS):
-        return False
-    host = headers.get("host") or ""
-    return _loopback(_peer_address(request)) and _host_name(host) in _LOCAL_HOSTS
+    return hmac.compare_digest(candidate.encode(), admin_token().encode())
 
 
 def is_admin(
     identity: Identity,
     admin_groups: t.Iterable[str],
+    admins: t.Iterable[str] = (),
     *,
-    local: bool = False,
+    token: bool = False,
 ) -> bool:
     """Whether *identity* may open the admin view.
 
-    Members of *admin_groups* may. Without sign-in, everyone is the system
-    user, so the admin view is only offered to a page opened on this
-    computer (*local*).
+    Members of *admin_groups* may, and so may the users *admins* names (the
+    project file's ``general.admins``) and a session that presented the
+    admin token (*token*).
     """
-    if identity.in_groups(admin_groups):
-        return True
-    return identity.oauth_user is None and local
+    return token or identity.in_groups(admin_groups) or identity.user in set(admins)
+
+
+class AdminTokenExchange(JSComponent):
+    """Hands the admin token in the page's URL fragment to the server.
+
+    The fragment is removed from the address bar as soon as it is read.
+    """
+
+    token = param.String(default="", doc="The token the page's URL fragment carried.")
+
+    _esm = """
+    export function render({ model }) {
+      const match = window.location.hash.match(/(?:^#|&)token=([^&]+)/)
+      if (match) {
+        const url = window.location.pathname + window.location.search
+        window.history.replaceState(window.history.state, "", url)
+        model.token = decodeURIComponent(match[1])
+      }
+      return document.createElement("span")
+    }
+    """

@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["Group", "Setting", "SettingsForm", "current_app", "settings_loader"]
 
-KINDS = ("switch", "choice", "select", "number", "text", "color", "slider", "numbers")
+KINDS = ("switch", "choice", "select", "number", "text", "color", "slider", "numbers", "names")
 
 _HEX_COLOR = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")
 
@@ -72,7 +72,8 @@ class Setting:
 
     ``kind`` picks the control: ``"switch"`` (on or off), ``"choice"`` (a
     row of toggle buttons), ``"select"``, ``"number"``, ``"text"``,
-    ``"color"`` (swatches and a hex field), ``"slider"`` or ``"numbers"``,
+    ``"color"`` (swatches and a hex field), ``"slider"``, ``"names"`` (a
+    list of names, e.g. users, with a field to add one) or ``"numbers"``,
     which lays out its ``parts`` (number settings) in a row under the label.
     ``options`` maps labels to values, or is a callable returning that
     mapping when the form is built. ``target`` names the app parameter the
@@ -135,6 +136,12 @@ class Setting:
                 return f"`{self.key}` is at least {low:g}."
             if high is not None and value > high:
                 return f"`{self.key}` is at most {high:g}."
+            return None
+        if self.kind == "names":
+            if not isinstance(value, list) or not all(
+                isinstance(item, str) and item.strip() for item in value
+            ):
+                return f"`{self.key}` is a list of names."
             return None
         if self.kind == "color":
             if not isinstance(value, str) or not _HEX_COLOR.match(value):
@@ -246,12 +253,32 @@ _CHOICE_SX = {
 }
 
 # Kinds whose control goes under the label rather than beside it.
-_STACKED = ("numbers", "color")
+_STACKED = ("numbers", "color", "names")
 
 
 def _code_spans(text: str) -> str:
     """Return escaped *text* with its `backticked` spans as code."""
     return re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+
+
+def current_section(project: Project, name: str) -> t.Any:
+    """Return section *name* as the project file has it now, loaded by its loader.
+
+    The file is read again, so what another process wrote since the project
+    was loaded counts; without a file, or if it cannot be read, the loaded
+    value is returned. None when the section is not in the file.
+    """
+    path = Path(project.path) if project.path else None
+    section = sections().get(name)
+    if path is not None and path.is_file() and section is not None:
+        try:
+            data, _ = _parse(path.read_text(encoding="utf-8"), str(path))
+            if name not in data:
+                return None
+            return section.loader(Section(name, data[name], project))
+        except (OSError, UnicodeDecodeError, ProjectError, SectionError, TypeError, ValueError):
+            logger.warning("Could not read %s again; using the loaded values.", path)
+    return project.get(name)
 
 
 class SettingsForm(Viewer):
@@ -353,26 +380,8 @@ class SettingsForm(Viewer):
 
     def _current(self) -> dict[str, t.Any]:
         """Return the section as the project file has it now, falling back to the loaded one."""
-        path = Path(self.project.path) if self.project.path else None
-        section = sections().get(self.section)
-        if path is not None and path.is_file() and section is not None:
-            try:
-                data, _ = _parse(path.read_text(encoding="utf-8"), str(path))
-                if self.section not in data:
-                    return {}
-                value = section.loader(Section(self.section, data[self.section], self.project))
-                return dict(self._to_form(value))
-            except (
-                OSError,
-                UnicodeDecodeError,
-                ProjectError,
-                SectionError,
-                TypeError,
-                ValueError,
-            ):
-                logger.warning("Could not read %s again; saving over the loaded values.", path)
         try:
-            return dict(self._to_form(self.project.get(self.section)))
+            return dict(self._to_form(current_section(self.project, self.section)))
         except ProjectError:
             return {}
 
@@ -393,6 +402,9 @@ class SettingsForm(Viewer):
         widget = self._widgets[key]
         if leaf.kind in ("text", "select") and value is None:
             value = ""
+        if leaf.kind == "names":
+            value = list(value or [])
+            widget.options = list(dict.fromkeys([*value, *widget.value]))
         widget.value = value
 
     # ------------------------------------------------------------------
@@ -651,6 +663,8 @@ class SettingsForm(Viewer):
             )
         elif kind == "color":
             widget = self._color(setting, value)
+        elif kind == "names":
+            widget = self._names(setting, value)
         else:
             widget = pmui.TextInput(
                 value="" if value is None else str(value),
@@ -693,6 +707,37 @@ class SettingsForm(Viewer):
             styles={"align-items": "center", "flex-wrap": "wrap"},
         )
         return hex_input
+
+    def _names(self, setting: Setting, value: list[str] | None):
+        names = list(value or [])
+        chosen = pmui.MultiChoice(
+            options=names, value=names, width=360, margin=0, placeholder="No one yet"
+        )
+        add = pmui.TextInput(
+            placeholder=f"Add {setting.unit or 'a name'}, then Enter",
+            width=240,
+            margin=(0, 0, 0, 8),
+            size="small",
+        )
+
+        def _add(_event):
+            name = (add.value_input or add.value or "").strip()
+            if name and name not in chosen.value:
+                chosen.options = [*chosen.options, name]
+                chosen.value = [*chosen.value, name]
+            add.value = ""
+
+        def _sync_options(event):
+            # A removed name drops out of the choices, so it is not offered back.
+            chosen.options = [name for name in chosen.options if name in event.new]
+
+        add.param.watch(_add, "enter_pressed")
+        chosen.param.watch(_sync_options, "value")
+        chosen._flowdash_parts = [add]
+        chosen._flowdash_layout = pn.Row(
+            chosen, add, margin=0, styles={"align-items": "center", "flex-wrap": "wrap"}
+        )
+        return chosen
 
     @staticmethod
     def _swatch_sx(color: str, selected: str | None) -> dict:

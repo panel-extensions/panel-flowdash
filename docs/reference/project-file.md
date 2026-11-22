@@ -28,6 +28,7 @@ for pages opened after it is saved.
 
 ```yaml
 general:
+  admins: [philipp]          # users who may open Admin, besides admin_groups
   edit_workspace: split      # dataflow, layout or split (FlowDash.mode)
   home_dashboard: fleet      # a dashboard id or title (home_dashboard)
   live_values: hover         # click, hover or off (popup_trigger)

@@ -18,11 +18,12 @@ from panel.command.serve import Serve as _PanelServe
 from panel.io.application import build_applications
 from panel.io.server import DocHandler, WSHandler
 
+from panel_flowdash.admin.access import show_admin_link
 from panel_flowdash.app import ACCESS_DENIED_ROUTE, FlowDashApp
 from panel_flowdash.auth import AuthConfig, make_authorize_callback
 from panel_flowdash.component_library import ComponentLibraryError
 from panel_flowdash.dashboard_store import BaseDashboardStore, DashboardStore
-from panel_flowdash.project import ProjectError, find_project
+from panel_flowdash.project import PROJECT_FILE, ProjectError, find_project
 from panel_flowdash.registry import PackageResolutionError, build_registry
 
 log = logging.getLogger(__name__)
@@ -34,6 +35,7 @@ _EXCLUDED_ARGS = ("files", "--args")
 # ``sidebar`` and ``contextbar`` are left out because module-level Panel objects
 # would be shared by every session; ``configure_layout`` sets them per session.
 PROJECT_OPTIONS = (
+    "admin_link",
     "agent",
     "agent_approval_rules",
     "agent_authorize",
@@ -50,7 +52,6 @@ PROJECT_OPTIONS = (
     "header_layout",
     "home_dashboard",
     "include_builtin_components",
-    "local_admin",
     "nav_variant",
     "notifications",
     "page_options",
@@ -100,6 +101,17 @@ class _NotFoundHandler(DocHandler):
     async def get(self, *args, **kwargs):
         self.set_status(404)
         await super().get(*args, **kwargs)
+
+
+def _project_admins(project_file: Path | None, project_dir: Path) -> list[str]:
+    """Return the admins the project file names, read without loading its other sections."""
+    from panel_flowdash.admin.sections import project_admins
+    from panel_flowdash.app import _unloaded_project
+
+    path = project_file or project_dir / PROJECT_FILE
+    if not path.is_file():
+        return []
+    return project_admins(_unloaded_project(path, {}))
 
 
 def _resolve_store(
@@ -292,6 +304,17 @@ class Serve(_PanelServe):
                 ),
             ),
         ),
+        (
+            "--admin-link",
+            Argument(
+                action="store_true",
+                default=False,
+                help=(
+                    "Print the link that claims the admin view even when the project "
+                    "already has admins. It is printed by default only while it has none."
+                ),
+            ),
+        ),
         *((name, arg) for name, arg in _PanelServe.args if name not in _EXCLUDED_ARGS),
     )
 
@@ -397,16 +420,17 @@ class Serve(_PanelServe):
             print(f"ERROR: {exc}", file=sys.stderr)  # noqa: T201
             raise SystemExit(1) from None
 
-        if options.get("local_admin", True):
-            log.warning(
-                "The admin view is open to anyone who opens the app at localhost without "
-                "signing in. Behind a proxy on this machine every visitor can look local: "
-                "set `local_admin = False` in __init__.py and use admin_groups with sign-in."
-            )
         log.info(f"Serving FlowDash from '{project_dir}' on port {args.port}")
         log.info(f"Dashboard store: {store_description}")
 
         self._apps = build_applications(routes, title=title, location=True)
+        if options.get("admin_link", True) and (
+            args.admin_link
+            or not (auth_config.admin_groups or _project_admins(project_file, project_dir))
+        ):
+            address = getattr(args, "address", None)
+            host = "localhost" if address in (None, "", "0.0.0.0", "::") else address
+            show_admin_link(f"http://{host}:{args.port}{url_prefix}")
 
         args.files = []
         args.args = None

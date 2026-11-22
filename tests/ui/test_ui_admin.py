@@ -1,13 +1,14 @@
 """UI tests for the admin view at /admin."""
 
+import getpass
 from urllib.parse import urlparse
 
 import pytest
 from panel.tests.util import wait_until
 
 from panel_flowdash import MemoryDashboardStore
+from panel_flowdash.admin import access
 from panel_flowdash.app import FlowDashApp
-from panel_flowdash.auth import AuthConfig
 from panel_flowdash.project import PROJECT_FILE, load_project
 
 from .util import serve_component
@@ -18,8 +19,10 @@ expect = pytest.importorskip("playwright.sync_api").expect
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
 
-def _serve(page, tmp_path, suffix="/admin", **params):
+def _serve(page, tmp_path, suffix="/admin", admin=True, **params):
     store = MemoryDashboardStore()
+    if admin:
+        (tmp_path / PROJECT_FILE).write_text(f"general:\n  admins: [{getpass.getuser()}]\n")
 
     def factory():
         return FlowDashApp(
@@ -47,29 +50,42 @@ def _rail(page, label):
     )
 
 
-def test_admin_rail_item_opens_the_admin_view_on_this_computer(page, tmp_path):
-    _serve(page, tmp_path, suffix="")
+def test_the_admin_link_claims_the_admin_view(page, tmp_path, monkeypatch):
+    monkeypatch.delenv(access.TOKEN_ENV, raising=False)
+    access.reset_admin_token()
+    token = access.admin_token()
+    requests = []
+    page.on("request", lambda request: requests.append(request.url))
+    _serve(page, tmp_path, suffix=f"/#token={token}", admin=False)
+
     admin = _rail(page, "Admin")
     expect(admin).to_be_visible()
-    help_box = _rail(page, "Help").bounding_box()
-    assert admin.bounding_box()["y"] < help_box["y"]
+    assert admin.bounding_box()["y"] < _rail(page, "Help").bounding_box()["y"]
+    # The fragment is gone from the address bar and was never sent to the server.
+    wait_until(lambda: "token" not in page.url, page)
+    assert not [url for url in requests if token in url]
+    user = getpass.getuser()
+    assert load_project(tmp_path / PROJECT_FILE).get("general") == {"admins": [user]}
 
     admin.click()
     wait_until(lambda: urlparse(page.url).path == "/admin", page)
     expect(page.locator(".flowdash-admin-content")).to_contain_text("General")
-    expect(page.get_by_text("On this computer as", exact=False)).to_be_visible()
+    expect(page.locator(".flowdash-setting-admins")).to_contain_text(user)
+    assert "token" not in page.url
 
     page.locator(".flowdash-admin-nav").get_by_role("button", name="Theme").click()
     wait_until(lambda: urlparse(page.url).path == "/admin/theme", page)
     expect(page.locator(".flowdash-admin-content")).to_contain_text("Colour scheme")
     expect(page.locator(".flowdash-theme-preview")).to_be_visible()
+    access.reset_admin_token()
 
 
-def test_no_admin_item_without_admin_rights(page, tmp_path):
-    _serve(page, tmp_path, suffix="/admin", local_admin=False, auth_config=AuthConfig())
+def test_a_wrong_token_is_refused(page, tmp_path):
+    _serve(page, tmp_path, suffix="/admin#token=wrong", admin=False)
     expect(page.get_by_text("You don't have access to Admin")).to_be_visible()
     expect(_rail(page, "Help")).to_be_visible()
     expect(_rail(page, "Admin")).to_have_count(0)
+    assert not (tmp_path / PROJECT_FILE).exists()
 
 
 def test_save_writes_the_project_file_and_shows_field_errors(page, tmp_path):
@@ -84,7 +100,7 @@ def test_save_writes_the_project_file_and_shows_field_errors(page, tmp_path):
     save.click()
     row = page.locator(".flowdash-setting-primary_color")
     expect(row.get_by_role("alert")).to_contain_text("is a hex colour")
-    assert not (tmp_path / PROJECT_FILE).exists()
+    assert "theme" not in load_project(tmp_path / PROJECT_FILE)
 
     field.fill("#006D77")
     field.press("Enter")
@@ -117,4 +133,4 @@ def test_leaving_with_unsaved_settings_asks_first(page, tmp_path):
     expect(dialog).to_contain_text("General settings")
     dialog.get_by_role("button", name="Save and leave").click()
     wait_until(lambda: urlparse(page.url).path == "/components", page)
-    assert load_project(tmp_path / PROJECT_FILE).get("general") == {"tile_titles": True}
+    assert load_project(tmp_path / PROJECT_FILE).get("general")["tile_titles"] is True

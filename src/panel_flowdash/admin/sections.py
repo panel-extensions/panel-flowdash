@@ -19,9 +19,16 @@ import param
 from panel.custom import JSComponent
 from panel.viewable import Viewer
 
-from panel_flowdash.admin.form import Group, Setting, SettingsForm, current_app, settings_loader
+from panel_flowdash.admin.form import (
+    Group,
+    Setting,
+    SettingsForm,
+    current_app,
+    current_section,
+    settings_loader,
+)
 from panel_flowdash.history import BURST_SECONDS, HISTORY_MAX_BYTES
-from panel_flowdash.project import Project, ProjectSection, register_section
+from panel_flowdash.project import Project, ProjectError, ProjectSection, register_section
 
 _MB = 2**20
 
@@ -37,6 +44,20 @@ def _home_options() -> dict[str, t.Any]:
 
 
 GENERAL_GROUPS = (
+    Group(
+        "Administrators",
+        (
+            Setting(
+                "admins",
+                "Admins",
+                "People who may open Admin, besides the admin groups set in code. Without "
+                "sign-in, a name is the account that runs the server.",
+                kind="names",
+                unit="a user",
+                default=[],
+            ),
+        ),
+    ),
     Group(
         "Dashboards",
         (
@@ -374,6 +395,30 @@ def project_overrides(project: Project | None, in_code: Callable[[str], bool]) -
                     continue
             overrides[setting.target] = CONVERT.get(key, lambda v: v)(value)
     return overrides
+
+
+def project_admins(project: Project | None, fresh: bool = False) -> list[str]:
+    """Return the users the project file's ``general.admins`` names.
+
+    With *fresh*, the file is read again rather than the loaded copy used.
+    A section the loader rejects names no one.
+    """
+    if project is None:
+        return []
+    try:
+        general = current_section(project, "general") if fresh else project.get("general")
+    except ProjectError:
+        return []
+    return list((general or {}).get("admins") or [])
+
+
+def add_admin(project: Project, user: str) -> None:
+    """Add *user* to the project file's ``general.admins``, keeping the section's other settings."""
+    general = dict(current_section(project, "general") or {})
+    admins = list(general.get("admins") or [])
+    if user not in admins:
+        general["admins"] = [*admins, user]
+        project.set("general", general)
 
 
 def font_href(font_family: str | None) -> str | None:

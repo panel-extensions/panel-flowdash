@@ -17,8 +17,8 @@ from panel_flowdash.admin import (
     ADMIN_ROUTE,
     AdminPage,
     SettingsForm,
+    access,
     is_admin,
-    is_local_request,
 )
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.auth import AuthConfig, Identity
@@ -49,8 +49,13 @@ def _admin(app, section=None) -> AdminPage:
     return app._admin_view(f"{ADMIN_ROUTE}/{section}" if section else ADMIN_ROUTE)
 
 
-def _request(remote_ip, host):
-    return SimpleNamespace(remote_ip=remote_ip, headers={"Host": host})
+@pytest.fixture
+def token(monkeypatch):
+    """Give the test a fresh admin token, as a server start does."""
+    monkeypatch.delenv(access.TOKEN_ENV, raising=False)
+    access.reset_admin_token()
+    yield access.admin_token()
+    access.reset_admin_token()
 
 
 class TestWhoIsAdmin:
@@ -58,56 +63,94 @@ class TestWhoIsAdmin:
         identity = Identity(user="ana", oauth_user="ana", groups=frozenset({"admins"}))
         assert is_admin(identity, {"admins"})
 
-    def test_a_signed_in_user_outside_the_admin_groups_is_not_even_locally(self):
-        identity = Identity(user="ana", oauth_user="ana", groups=frozenset({"analysts"}))
-        assert not is_admin(identity, {"admins"}, local=True)
-
-    def test_without_sign_in_only_a_local_page_is_admin(self):
+    def test_without_the_token_nobody_else_is(self):
         identity = Identity(user="philipp", system_user="philipp")
-        assert is_admin(identity, (), local=True)
-        assert not is_admin(identity, (), local=False)
+        assert not is_admin(identity, ())
+        assert is_admin(identity, (), token=True)
 
-    @pytest.mark.parametrize(
-        ("remote_ip", "host", "local"),
-        [
-            ("127.0.0.1", "localhost:5006", True),
-            ("::1", "[::1]:5006", True),
-            ("127.0.0.1", "127.0.0.1", True),
-            ("10.0.0.7", "localhost:5006", False),
-            # A proxy on the same machine forwarding a public host name.
-            ("127.0.0.1", "dash.example.org", False),
-            (None, "localhost", False),
-        ],
-    )
-    def test_local_request(self, remote_ip, host, local):
-        assert is_local_request(_request(remote_ip, host)) is local
+    def test_a_missing_or_wrong_token_is_refused(self, tmp_path, sections, token):
+        app = _app(tmp_path, auth_config=AuthConfig())
+        for wrong in ("", token[:-1], token + "x", "x" * len(token)):
+            app._token_exchange.token = wrong
+            assert not app._is_admin
+        assert isinstance(_admin(app), EmptyState)
+        assert not (tmp_path / PROJECT_FILE).exists()
 
-    @pytest.mark.parametrize(
-        "header",
-        [
-            "Forwarded",
-            "Via",
-            "X-Forwarded-For",
-            "X-Forwarded-Host",
-            "X-Forwarded-Proto",
-            "X-Real-Ip",
-        ],
-    )
-    def test_a_request_through_a_proxy_is_not_local(self, header):
-        request = SimpleNamespace(
-            remote_ip="127.0.0.1", headers={"Host": "localhost:5006", header: "127.0.0.1"}
-        )
-        assert not is_local_request(request)
+    def test_the_token_makes_the_local_user_an_admin_on_every_start(
+        self, tmp_path, sections, token
+    ):
+        app = _app(tmp_path, auth_config=AuthConfig())
+        assert "admin" not in [item["key"] for item in app._shell.rail_items()]
+        app._token_exchange.token = token
+        assert app._is_admin
+        assert [item["key"] for item in app._shell.rail_items()][-2:] == ["admin", "help"]
+        assert isinstance(_admin(app), AdminPage)
+        user = getpass.getuser()
+        assert load_project(tmp_path / PROJECT_FILE).get("general") == {"admins": [user]}
 
-    def test_the_peer_is_read_from_the_socket_not_from_xheaders(self):
-        # With xheaders, tornado's remote_ip is what a header claimed, not the socket's peer.
-        connection = SimpleNamespace(context=SimpleNamespace(address=("10.0.0.7", 51234)))
-        request = SimpleNamespace(
-            remote_ip="127.0.0.1", headers={"Host": "localhost"}, connection=connection
-        )
-        assert not is_local_request(request)
-        connection.context.address = ("127.0.0.1", 51234)
-        assert is_local_request(request)
+        # A restart makes a new token, and the recorded user needs none.
+        access.reset_admin_token()
+        assert access.admin_token() != token
+        assert _app(tmp_path, auth_config=AuthConfig())._is_admin
+
+    def test_a_signed_in_user_who_claims_it_is_recorded_and_others_are_not_admin(
+        self, tmp_path, sections, token, monkeypatch
+    ):
+        def signed_in(name):
+            identity = Identity(user=name, oauth_user=name)
+            monkeypatch.setattr("panel_flowdash.app.resolve_identity", lambda config: identity)
+
+        signed_in("alice")
+        app = _app(tmp_path, auth_config=AuthConfig())
+        app._token_exchange.token = token
+        assert load_project(tmp_path / PROJECT_FILE).get("general") == {"admins": ["alice"]}
+
+        access.reset_admin_token()
+        assert _app(tmp_path, auth_config=AuthConfig())._is_admin
+        signed_in("bob")
+        assert not _app(tmp_path, auth_config=AuthConfig())._is_admin
+
+    def test_claiming_keeps_the_other_general_settings(self, tmp_path, sections, token):
+        (tmp_path / PROJECT_FILE).write_text("general:\n  tile_titles: true\n  admins: [ana]\n")
+        _app(tmp_path, auth_config=AuthConfig())._token_exchange.token = token
+        assert load_project(tmp_path / PROJECT_FILE).get("general") == {
+            "tile_titles": True,
+            "admins": ["ana", getpass.getuser()],
+        }
+
+    def test_admins_add_and_remove_others_in_general(self, tmp_path, sections):
+        (tmp_path / PROJECT_FILE).write_text("general:\n  admins: [ana, ben]\n")
+        page = _admin(_app(tmp_path))
+        form = page.view("general")
+        chosen = form._widgets["admins"]
+        assert chosen.value == ["ana", "ben"]
+        chosen.value = ["ana"]
+        add = chosen._flowdash_parts[0]
+        add.value = "cleo"
+        add.param.trigger("enter_pressed")
+        assert chosen.value == ["ana", "cleo"]
+        assert page.save("general")
+        assert load_project(tmp_path / PROJECT_FILE).get("general") == {"admins": ["ana", "cleo"]}
+
+    def test_the_token_can_be_fixed_for_scripted_setups(self, monkeypatch):
+        monkeypatch.setenv(access.TOKEN_ENV, "scripted-token")
+        access.reset_admin_token()
+        try:
+            assert access.admin_token() == "scripted-token"
+            assert access.check_token("scripted-token")
+        finally:
+            access.reset_admin_token()
+
+    def test_the_link_carries_the_token_in_its_fragment(self, token):
+        # Browsers never send the fragment, so the token is in no request line or access log.
+        path = access.admin_path("/app")
+        assert path == f"/app/admin#token={token}"
+        assert token not in path.split("#")[0]
+
+    def test_the_admin_link_can_be_turned_off(self, tmp_path, sections, token):
+        off = _app(tmp_path, auth_config=AuthConfig(), admin_link=False)
+        assert not off._is_admin
+        assert not hasattr(off, "_token_exchange")
 
     def test_the_rail_offers_admin_to_admins_only(self, tmp_path, sections):
         admin = _app(tmp_path)
@@ -118,17 +161,12 @@ class TestWhoIsAdmin:
         assert not other._is_admin
         assert "admin" not in [item["key"] for item in other._shell.rail_items()]
 
-    def test_a_page_opened_elsewhere_without_sign_in_is_refused(self, tmp_path, sections):
+    def test_without_sign_in_or_token_admin_is_refused(self, tmp_path, sections):
         app = _app(tmp_path, auth_config=AuthConfig())
         assert not app._is_admin
         view = _admin(app)
         assert isinstance(view, EmptyState)
         assert "Admin" in view.title
-
-    def test_local_admin_can_be_turned_off(self, tmp_path, sections, monkeypatch):
-        monkeypatch.setattr("panel_flowdash.app.is_local_request", lambda: True)
-        assert _app(tmp_path, auth_config=AuthConfig())._is_admin
-        assert not _app(tmp_path, auth_config=AuthConfig(), local_admin=False)._is_admin
 
 
 class TestSections:
@@ -397,7 +435,9 @@ class TestLocked:
         assert _admin(app).view("theme").locks == {"logo": "--logo"}
 
 
-def test_serve_names_where_each_option_is_set(tmp_path, monkeypatch, sections, caplog):
+def test_serve_names_where_each_option_is_set(
+    tmp_path, monkeypatch, sections, caplog, capsys, token
+):
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
     (project_dir / "__init__.py").write_text(
@@ -423,6 +463,38 @@ def test_serve_names_where_each_option_is_set(tmp_path, monkeypatch, sections, c
     assert app.settings_sources == {"title": "__init__.py", "home_dashboard": "--home-dashboard"}
     assert app._code_setting_source("title") == "title in __init__.py"
     assert app._code_setting_source("home_dashboard") == "set with --home-dashboard"
-    assert "local_admin = False" in caplog.text
+    out = capsys.readouterr().out
+    assert f"/admin#token={access.admin_token()}" in out
+    assert access.admin_token() not in caplog.text
     # Without a project file the admin view writes one in the project directory.
     assert app._settings_project().path == str((project_dir / PROJECT_FILE).resolve())
+
+
+@pytest.mark.parametrize(
+    ("project_file", "argv", "printed"),
+    [
+        (None, [], True),
+        ("general:\n  tile_titles: true\n", [], True),
+        ("general:\n  admins: [ana]\n", [], False),
+        ("general:\n  admins: [ana]\n", ["--admin-link"], True),
+    ],
+)
+def test_serve_prints_the_admin_link_while_no_one_is_admin(
+    tmp_path, monkeypatch, sections, capsys, token, project_file, argv, printed
+):
+    project_dir = tmp_path / "proj"
+    project_dir.mkdir()
+    (project_dir / "__init__.py").write_text(
+        "from panel_flowdash.dashboard_store import MemoryDashboardStore\n"
+        "store = MemoryDashboardStore()\n"
+    )
+    if project_file is not None:
+        (project_dir / PROJECT_FILE).write_text(project_file)
+    monkeypatch.setattr(PanelServe, "invoke", lambda self, args: None)
+    monkeypatch.setattr(pn.config, "authorize_callback", None)
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.chdir(tmp_path)
+    parser = argparse.ArgumentParser()
+    Serve(parser).invoke(parser.parse_args([str(project_dir), "--port", "5999", *argv]))
+    out = capsys.readouterr().out
+    assert (f"http://localhost:5999/admin#token={token}" in out) is printed
