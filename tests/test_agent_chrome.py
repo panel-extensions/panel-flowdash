@@ -180,3 +180,36 @@ async def test_every_tool_and_palette_action_has_a_label(session):
 
     names = set(dashboard_toolset().tools) | {action.name for action in session.actions}
     assert names <= set(TOOL_LABELS)
+
+
+async def test_narrowing_the_window_leaves_one_of_the_drawer_and_the_sidecar_open(session):
+    editor = session.app._editor
+    inspector, drawer = editor._inspector, session.drawer
+    inspector.visible = True
+    editor._split_view.storage.window_width = 1920
+    drawer.open = True
+    assert not inspector.collapsed
+    # Opened last, beside the drawer, while both fit.
+    inspector.collapse_button.clicks += 1
+    inspector.expand_button.clicks += 1
+    assert drawer.open and not inspector.collapsed
+    editor._split_view.storage.window_width = 1280
+    assert drawer.open and inspector.collapsed
+    # Opening the sidecar again takes the slot from the drawer.
+    inspector.expand_button.clicks += 1
+    assert not drawer.open and not inspector.collapsed
+
+
+async def test_below_1600_px_opening_one_folds_the_other(session):
+    editor = session.app._editor
+    inspector, drawer = editor._inspector, session.drawer
+    inspector.visible = True
+    editor._split_view.storage.window_width = 1280
+    drawer.open = True
+    assert inspector.collapsed
+    inspector.expand_button.clicks += 1
+    assert not drawer.open and not inspector.collapsed
+    drawer.open = True
+    assert inspector.collapsed
+    drawer.open = False
+    assert not inspector.collapsed

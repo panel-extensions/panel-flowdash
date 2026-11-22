@@ -37,6 +37,12 @@ def _done(page, editor):
     wait_until(lambda: not editor.editable, timeout=8000)
 
 
+def _select_tile(editor, instance_id):
+    editor._inspector.open_tab(instance_id, "Tile")
+    editor._select_node(instance_id)
+    wait_until(lambda: editor._inspector._shown == ("node", instance_id), timeout=8000)
+
+
 def test_frame_option_in_the_layout_tab_frames_the_tile_in_view_mode(page):
     store = MemoryDashboardStore()
     editor = FlowDash({"Test/chart": chart}, notifications=False, store=store, user="alice")
@@ -48,8 +54,7 @@ def test_frame_option_in_the_layout_tab_frames_the_tile_in_view_mode(page):
 
     page.get_by_role("button", name="Layout", exact=True).click()
     wait_until(lambda: editor.mode == "dashboard", timeout=8000)
-    _pick(page, "Tile", "Divider")
-    wait_until(lambda: editor._layout_panel.selected == divider_id, timeout=8000)
+    _select_tile(editor, divider_id)
     expect(page.get_by_role("combobox", name="Frame")).to_have_text("Default (unframed)")
 
     _done(page, editor)
@@ -61,11 +66,10 @@ def test_frame_option_in_the_layout_tab_frames_the_tile_in_view_mode(page):
     page.get_by_role("button", name="Edit").click()
     wait_until(lambda: editor.editable, timeout=8000)
     page.get_by_role("button", name="Layout", exact=True).click()
-    _pick(page, "Tile", "Divider")
+    _select_tile(editor, divider_id)
     _pick(page, "Frame", "Framed")
     wait_until(lambda: tile_entry(editor, divider_id).get("framed") is True, timeout=8000)
-    _pick(page, "Tile", "Chart")
-    wait_until(lambda: editor._layout_panel.selected == chart_id, timeout=8000)
+    _select_tile(editor, chart_id)
     _pick(page, "Frame", "Unframed")
     wait_until(lambda: tile_entry(editor, chart_id).get("framed") is False, timeout=8000)
 

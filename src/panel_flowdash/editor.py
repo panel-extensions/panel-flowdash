@@ -133,9 +133,10 @@ from panel_flowdash.turns import (
     summary_cut_short,
 )
 from panel_flowdash.ui import tile_layout
-from panel_flowdash.ui.code_panel import HEADER_HEIGHT, CodePanel, DockHandle
+from panel_flowdash.ui.code_panel import HEADER_HEIGHT, CodePanel
 from panel_flowdash.ui.controls_bar import ControlsBar
 from panel_flowdash.ui.dashboard_bar import HIDE_ON_PHONE, PHONE_BREAKPOINT, DashboardBar
+from panel_flowdash.ui.dock_handle import DockHandle
 from panel_flowdash.ui.fullscreen import (
     PRESENTATION_CSS,
     PRESENTING_CLASS,
@@ -154,7 +155,7 @@ from panel_flowdash.ui.inspect_sheet import (
     sheet_header,
     value_status,
 )
-from panel_flowdash.ui.inspector import Inspector
+from panel_flowdash.ui.inspector import DATA, HISTORY, TILE, Inspector
 from panel_flowdash.ui.layout_panel import GRID_EDIT_CSS, LayoutPanel
 from panel_flowdash.ui.node_card import (
     CARD_WIDTH,
@@ -193,6 +194,7 @@ from panel_flowdash.ui.sheet import (
     inspector_sheet,
     sheet_button,
 )
+from panel_flowdash.ui.sidecar import SidecarFold
 from panel_flowdash.ui.split_view import SplitView
 from panel_flowdash.ui.states import StartCard
 from panel_flowdash.ui.status_bar import StatusBar, select_on_canvas
@@ -469,8 +471,6 @@ _SIDE_PANEL_WIDTH = 250
 _PHONE_REVEAL_ZOOM = 0.75
 _PHONE_REVEAL_TOP = 24
 
-# Narrower windows show the Split tab with the inspector folded until something is selected.
-_SPLIT_FOLD_WIDTH = 1600
 # How long after the canvas moves to another tab an empty selection from its page is
 # taken as the old view letting go of it rather than the person clearing it.
 _CANVAS_REMOUNT_GRACE = 3.0
@@ -1612,14 +1612,11 @@ class FlowDash(Viewer):
         self._mode_before_split = "wiring"
         self._split_shown = False
         self._phone = False
+        self._phone_tile_tapped = False
         # Where the canvas is shown ('wiring', 'split' or None when hidden); moving it
         # renders it afresh, and the page then reports an empty selection.
         self._canvas_host: str | None = None
         self._remount_deadline = 0.0
-        # Whether the inspector was folded to make room for the split, rather than by the user.
-        self._inspector_folded = False
-        self._folding = False
-        self._pending_reveal: str | None = None
         self._tile_selection_follows = True
         self._rebuilding_grid = False
         self._inspected_id: str | None = None
@@ -2945,8 +2942,8 @@ class FlowDash(Viewer):
         It shows the request's span (question, model calls, tool calls and
         published versions) while :attr:`agent_state` holds the run's steps,
         and what the turn records otherwise, followed by the turns that
-        changed the node later. On the Dataflow canvas it replaces the
-        inspector's content; elsewhere it opens the side sheet. Requests are
+        changed the node later. In edit mode it opens the sidecar's History tab
+        for the node; in view mode it opens the side sheet. Requests are
         redacted as :meth:`run_redacted` decides, and when the node's
         component is one the person may not use.
         """
@@ -2959,17 +2956,20 @@ class FlowDash(Viewer):
             return runner.state
         return self.agent_state if self.agent_state is not None else self._history.state
 
-    def _render_how_made(self, instance_id: str, turn_id: str | None, *, open_sheet: bool):
-        if not self.made_by_agent(instance_id):
-            return
+    def _how_made_parts(
+        self, instance_id: str, turn_id: str | None
+    ) -> tuple[str, list[Viewable], t.Any]:
+        """Return the caption and content of how a node was made or changed, and its span view.
+
+        The span view, if any, follows the request's steps until released.
+        """
         origin = self.origin_turn(instance_id)
         turn = origin
         if turn_id is not None:
             turn = next((t for t in self.later_turns(instance_id) if t.id == turn_id), origin)
         state = self._run_state(turn.run if turn is not None else None)
-        self._release_span()
         later = self.later_turns(instance_id) if turn is origin else []
-        body, self._span_view = provenance_objects(
+        body, span = provenance_objects(
             turn,
             state,
             redacted=self._turn_redacted(turn, instance_id),
@@ -2977,13 +2977,20 @@ class FlowDash(Viewer):
             more=turn is origin and self._later_turns_may_be_more(instance_id),
             on_open=lambda t: self.show_how_made(instance_id, t.id),
         )
-        title = self._instance_title(instance_id)
         caption = "How this was made" if turn is origin else "How this was changed"
-        if self._inspector.visible and self.surface == "workspace":
-            span, self._span_view = self._span_view, None
-            self._close_inspection_dialog()
-            self._inspector.show_extra(caption, title, body, span.release if span else None)
+        return caption, body, span
+
+    def _render_how_made(self, instance_id: str, turn_id: str | None, *, open_sheet: bool):
+        if not self.made_by_agent(instance_id):
             return
+        # Over the Report view the side sheet shows it, as in view mode.
+        if self._inspector.visible and self.surface == "workspace":
+            self._close_inspection_dialog()
+            self._show_in_sidecar(instance_id, HISTORY, turn_id)
+            return
+        self._release_span()
+        caption, body, self._span_view = self._how_made_parts(instance_id, turn_id)
+        title = self._instance_title(instance_id)
         objects = [sheet_header(title, self._close_inspection_dialog, caption=caption), *body]
         self._how_made_shown = (instance_id, turn_id)
         self._inspected_id = instance_id
@@ -3003,8 +3010,25 @@ class FlowDash(Viewer):
     @param.depends("editable", watch=True)
     def _close_sheet_for_mode(self):
         # The sheet belongs to the mode it was opened in: in edit mode it would cover
-        # the dashboard bar's Save and Done, and the inspector shows the same.
+        # the dashboard bar's Save and Done, so the sidecar takes over what it showed.
+        shown, inspected = self._how_made_shown, self._inspected_id
+        was_open = self._inspect_dialog.open
         self._close_inspection_dialog()
+        if not (self.editable and was_open and inspected is not None):
+            return
+        if shown is not None and shown[0] == inspected:
+            self._show_in_sidecar(inspected, HISTORY, shown[1])
+        elif self._can_inspect():
+            self._show_in_sidecar(inspected, DATA)
+
+    def _show_in_sidecar(self, instance_id: str, tab: str, turn_id: str | None = None):
+        """Select a node and open the sidecar on its *tab*, as the person asked for it."""
+        if not any(node["id"] == instance_id for node in self._flow.nodes):
+            return
+        self._inspector.open_tab(instance_id, tab, turn_id)
+        if self._inspector.visible and self._inspector.collapsed:
+            self._sidecar.user_toggle(True)
+        self._select_node(instance_id)
 
     @param.depends("read_only", watch=True)
     def _reshow_how_made(self):
@@ -3711,6 +3735,7 @@ class FlowDash(Viewer):
         self._dialog_host = pn.Column(margin=0, width=0, height=0, sizing_mode="fixed")
         self._inspector = Inspector(editor=self)
         self._layout_panel = LayoutPanel(editor=self)
+        self._sidecar = SidecarFold(self)
         self._status_bar = StatusBar(editor=self)
         # The Full screen button may sit in an app's top bar, outside the editor.
         toggle_class = f"{TOGGLE_CLASS}-{id(self)}"
@@ -3728,8 +3753,10 @@ class FlowDash(Viewer):
             on_resize=self._fit_canvas,
         )
         self._flow.param.watch(self._sync_tile_selection, "selection")
-        self._inspector.param.watch(self._on_inspector_toggled, "collapsed")
-        self._split_view.events.param.watch(self._on_pane_resized, "pane_size")
+        self._flow.param.watch(self._on_selection_for_sidecar, "selection")
+        self._inspector.param.watch(self._on_sidecar_collapsed, "collapsed")
+        self._inspector.param.watch(self._on_sidecar_resized, "width")
+        self._inspector.param.watch(lambda _event: self._sidecar.sync(), "visible")
         self._split_view.storage.param.watch(self._on_window_resized, "window_width")
         self._code_panel: CodePanel | None = None
         self._code_dock_height = _CODE_PANEL_HEIGHT
@@ -3757,15 +3784,10 @@ class FlowDash(Viewer):
             ],
         )
 
-        # One slot: a row counts the width of hidden children, and only one of
-        # the two panels is shown at a time. The slot is hidden with both,
-        # since an empty Column still takes the width of its scroll button.
+        # The sidecar's slot, hidden with it, since an empty Column still takes
+        # the width of its scroll button.
         self._panel_slot = pn.Column(
-            self._inspector,
-            self._layout_panel,
-            margin=0,
-            sizing_mode="stretch_height",
-            stylesheets=[HIDE_ON_PHONE],
+            self._inspector, margin=0, sizing_mode="stretch_height", stylesheets=[HIDE_ON_PHONE]
         )
 
         self._build_phone_sheets()
@@ -3815,7 +3837,7 @@ class FlowDash(Viewer):
         self._add_button = sheet_button("add", "Add component", "fd-add-component")
         self._add_button.on_click(lambda _event: setattr(self._palette_sheet, "open", True))
         self._layout_button = sheet_button("tune", "Arrange tiles", "fd-arrange-tiles")
-        self._layout_button.on_click(lambda _event: setattr(self._layout_sheet, "open", True))
+        self._layout_button.on_click(lambda _event: self._open_layout_sheet())
         # Like the dialogs, the sheets take no room in the layout. The inspector's
         # sheet, which is always rendered, joins them only on a phone.
         self._sheet_host = pn.Column(
@@ -3835,6 +3857,10 @@ class FlowDash(Viewer):
         self._flow.on("edge_clicked", self._on_phone_tap)
         self._inspector.param.watch(lambda _event: self._sync_inspector_sheet(), "collapsed")
 
+    def _open_layout_sheet(self):
+        self._layout_panel.refresh()
+        self._layout_sheet.open = True
+
     @pn.io.hold()
     def _on_phone_changed(self, event):
         """Move the palette and the side panels into bottom sheets below the phone breakpoint, and back."""
@@ -3843,7 +3869,7 @@ class FlowDash(Viewer):
         # Sized for where they go before they move, so the columns they leave
         # and join keep their own sizing.
         self._palette_panel.touch = phone
-        self._inspector.sheet = self._layout_panel.sheet = phone
+        self._inspector.sheet = phone
         if phone:
             self._side_panel[:] = []
             self._panel_slot[:] = []
@@ -3857,10 +3883,9 @@ class FlowDash(Viewer):
             self._layout_sheet_body[:] = []
             self._palette_sheet_body[:] = []
             self._side_panel[:] = [self._palette_section]
-            self._panel_slot[:] = [self._inspector, self._layout_panel]
-            # A sheet dismissed on the phone is not a fold of the column; the
-            # agent's drawer folds it again if it is open (SessionChrome).
-            self._inspector.collapsed = False
+            self._panel_slot[:] = [self._inspector]
+            # A sheet dismissed on the phone is not a fold of the column.
+            self._sidecar.left_phone()
         self._sync_min_width()
         self._apply_mode_state()
         if self._inspector.visible:
@@ -3871,7 +3896,7 @@ class FlowDash(Viewer):
         """Show the side panels beside the workspace, or on a phone the buttons opening their sheets."""
         phone = self._phone
         self._side_panel.visible = showing_canvas and not phone
-        self._panel_slot.visible = not phone and (self._inspector.visible or layout)
+        self._panel_slot.visible = not phone and self._inspector.visible
         # Shown on phones only, by their stylesheet.
         self._add_button.visible = showing_canvas and self.editable and not self.preview
         self._layout_button.visible = layout
@@ -3910,6 +3935,8 @@ class FlowDash(Viewer):
             and inspector.visible
             and not inspector.collapsed
             and _has_selection(self._flow.selection)
+            # In the Layout tab it opens for a tile tapped there, not over the grid at once.
+            and (self.mode != "dashboard" or self._phone_tile_tapped)
         )
         classes = [c for c in self._add_button.css_classes if c != ABOVE_SHEET_CLASS]
         self._add_button.css_classes = [*classes, ABOVE_SHEET_CLASS] if is_open else classes
@@ -4231,7 +4258,7 @@ class FlowDash(Viewer):
             if self.editable and any(i["instance_id"] == instance_id for i in self._tile_items):
                 moved = tile_layout.move_to_area(self, instance_id, area, before)
         except ValueError as exc:
-            self._notify("info", str(exc), duration=4000)
+            self._notify("info", error_text(exc), duration=4000)
         finally:
             self._end_tile_release(instance_id, recorded=moved)
 
@@ -4298,9 +4325,6 @@ class FlowDash(Viewer):
         """
         selection = self._flow.selection or {}
         nodes = selection.get("nodes") or []
-        if self.editable and self.mode == "split":
-            if self._inspector_folded and (nodes or selection.get("edges")):
-                self._fold_inspector(False)
         target = None
         if self._tiles_selectable:
             current = self._selected_tile_id()
@@ -4332,13 +4356,15 @@ class FlowDash(Viewer):
         if self._rebuilding_grid or not self._tiles_selectable:
             return
         instance_id = self._selected_tile_id()
-        if instance_id is None:
+        if instance_id is None or not self._tile_selection_follows:
             return
-        layout_panel = getattr(self, "_layout_panel", None)
-        if layout_panel is not None:
-            layout_panel.select(instance_id)
-        if self._tile_selection_follows:
-            self._select_node(instance_id)
+        if self.mode == "dashboard":
+            # Entered from the Layout tab, the sidecar shows the tile's options first.
+            self._inspector.open_tab(instance_id, TILE)
+            self._phone_tile_tapped = True
+        self._select_node(instance_id)
+        if self._phone:
+            self._sync_inspector_sheet()
 
     def _clear_selection(self) -> bool:
         """Clear the selection on the canvas and the tile grid; return whether there was one.
@@ -4364,14 +4390,11 @@ class FlowDash(Viewer):
         if selection.get("nodes") == [instance_id] and not selection.get("edges"):
             return
         if self.mode == "split":
-            if self._inspector_folded:
-                # The inspector opens for the selection and narrows the pane, so the
-                # node is revealed once the pane reports its new size.
-                self._pending_reveal = instance_id
-                self._fold_inspector(False)
-            else:
-                self._reveal_node(instance_id)
+            self._reveal_node(instance_id)
         select_on_canvas(self._flow, node_id=instance_id)
+        if self._canvas_host is None:
+            # No canvas is shown to report the selection, e.g. in the Layout tab.
+            self._flow.selection = {"nodes": [instance_id], "edges": []}
 
     def _sized_layout(self, layout: list[dict]) -> list[dict]:
         """Apply the size hints of the tiles on the grid to its positional *layout*."""
@@ -4477,15 +4500,14 @@ class FlowDash(Viewer):
         showing_canvas = split or not showing_grid
         self._dashboard_bar.visible = self.toolbar and not self.fullscreen
         self._dashboard_bar.sync()
-        self._inspector.visible = showing_canvas
+        # The sidecar is one panel in every tab that edits: Dataflow, Split and Layout.
+        self._inspector.visible = showing_canvas or (interactive and showing_grid)
         self._layout_panel.visible = interactive and showing_grid and not split
         self._sync_phone_panels(showing_canvas, self._layout_panel.visible)
         self._status_bar.visible = self.editable and self.surface == "workspace"
         self._split_view.events.active = split
         self._view_controls.param.update(beside_canvas=split, editing=interactive and showing_grid)
-        if split != self._split_shown:
-            self._split_shown = split
-            self._fold_inspector(split)
+        self._split_shown = split
         self._tile_grid.param.update(editable=interactive, card=interactive)
         self._sync_preview_band()
         # Column children rather than Row children, so the dialogs take no flex space.
@@ -4522,6 +4544,9 @@ class FlowDash(Viewer):
             self._fit_placed_nodes()
         self._sync_tile_selection()
         self._sync_tile_drag()
+        self._sidecar.sync()
+        # "Arrange for" is shown in the Layout tab only.
+        self._inspector.refresh_summary()
 
     def _expect_canvas_remount(self):
         """Keep the selection while the canvas moves to another tab, or is hidden.
@@ -4543,6 +4568,7 @@ class FlowDash(Viewer):
 
     @param.depends("mode", watch=True)
     def _remember_mode(self):
+        self._phone_tile_tapped = False
         # A tab chosen before the browser's preferences arrived is not overridden by them.
         self._restore_split = False
         if self.mode != "split":
@@ -4568,6 +4594,7 @@ class FlowDash(Viewer):
     def _on_split_preferences_loaded(self):
         self._restore_split = self._restore_split and self._split_view.preferences.split
         self._apply_stored_split()
+        self._inspector.width = self._split_view.preferences.sidecar_width
         self._sync_code_dock_side()
         if self._code_panel is not None:
             self._sync_code_spec_view()
@@ -4605,7 +4632,9 @@ class FlowDash(Viewer):
             panel.param.watch(self._on_code_dock_moved, "dock")
             # The inspector opening or folding changes the canvas's room beside a panel on the right.
             self._inspector.param.watch(lambda _e: self._sync_code_dock_side(), "visible")
-            self._inspector._panel.param.watch(lambda _e: self._sync_code_dock_side(), "width")
+            self._inspector.param.watch(
+                lambda _e: self._sync_code_dock_side(), ["collapsed", "width"]
+            )
             panel.param.watch(self._sync_code_dock, ["collapsed", "instance_id"])
             panel.param.watch(self._sync_code_panel_node, "instance_id")
             panel.param.watch(self._on_code_drafts, "dirty")
@@ -4737,8 +4766,7 @@ class FlowDash(Viewer):
         width = self._split_view.storage.window_width
         if width is None:
             return True
-        inspector = self._inspector._panel.width if self._inspector.visible else 0
-        room = width - _SIDE_PANEL_WIDTH - inspector - self._code_side_width
+        room = width - _SIDE_PANEL_WIDTH - self._inspector.current_width - self._code_side_width
         return width >= _CODE_PANEL_RIGHT_MIN_WIDTH and room >= _CANVAS_MIN_WIDTH_DOCKED
 
     def _sync_code_dock_side(self):
@@ -4865,6 +4893,7 @@ class FlowDash(Viewer):
     def _on_window_resized(self, _event):
         self._close_code_panel_if_hidden()
         self._sync_code_dock_side()
+        self._sidecar.window_resized()
 
     def _fit_canvas(self):
         self._flow.fit_view()
@@ -4889,40 +4918,18 @@ class FlowDash(Viewer):
             return
         self._flow.fit_view(instance_id, min_zoom=zoom, max_zoom=zoom, duration=300)
 
-    def _fold_inspector(self, split: bool):
-        """Fold the inspector while the split is shown in a narrow window, until it is needed.
+    def _on_selection_for_sidecar(self, event):
+        new = event.new or {}
+        if (new.get("nodes") or new.get("edges")) and new != (event.old or {}):
+            self._sidecar.selection_made()
 
-        Beside the palette and the open inspector, the canvas and the grid would
-        get about 300 px each at 1280 px. The inspector opens again with the
-        first selection, or when the split is left.
-        """
-        width = self._split_view.storage.window_width
-        selection = self._flow.selection or {}
-        if split:
-            fold = (
-                width is not None
-                and width < _SPLIT_FOLD_WIDTH
-                and not self._inspector.collapsed
-                and not (selection.get("nodes") or selection.get("edges"))
-            )
-        else:
-            fold = False
-        if fold or self._inspector_folded:
-            self._folding = True
-            try:
-                self._inspector.collapsed = fold
-            finally:
-                self._folding = False
-            self._inspector_folded = fold
+    def _on_sidecar_collapsed(self, event):
+        self._sidecar.on_collapsed(event.new)
+        self._inspector._sync_badge()
 
-    def _on_inspector_toggled(self, _event):
-        if not self._folding:
-            self._inspector_folded = False
-
-    def _on_pane_resized(self, _event):
-        instance_id, self._pending_reveal = self._pending_reveal, None
-        if instance_id is not None and self.mode == "split":
-            self._reveal_node(instance_id)
+    def _on_sidecar_resized(self, event):
+        self._split_view.preferences.sidecar_width = event.new
+        self._sidecar.sync()
 
     def _sync_placed(self):
         """Show a component added or removed on whichever of the canvas and grid is on screen."""
@@ -7236,13 +7243,7 @@ class FlowDash(Viewer):
     def disconnect(self, source_id: str, source_port: str, target_id: str, target_port: str):
         """Remove the edge between two ports."""
         mapping = (source_id, source_port, target_id, target_port)
-        self._dataflow_graph.remove_edge(*mapping)
-        for edge_id, existing in list(self._edge_id_map.items()):
-            if existing == mapping:
-                del self._edge_id_map[edge_id]
-                self._drop_edge_editor(edge_id)
-                with self._muted_canvas():
-                    self._flow.remove_edge(edge_id)
+        self._remove_edge(mapping)
         self._sync_card_connections(target_id)
         self._settle_nodes()
         self._record_edit(
@@ -7250,6 +7251,31 @@ class FlowDash(Viewer):
             op="disconnect",
             args=self._edge_args(*mapping),
         )
+
+    @pn.io.hold()
+    def disconnect_input(self, instance_id: str, port: str):
+        """Remove every edge into the input *port* of *instance_id*, as one edit."""
+        mappings = [m for m in self._edge_id_map.values() if m[2] == instance_id and m[3] == port]
+        if not mappings:
+            return
+        for mapping in mappings:
+            self._remove_edge(mapping)
+        self._sync_card_connections(instance_id)
+        self._settle_nodes()
+        self._record_edit(
+            *(self._connect_label("Disconnected", *m) for m in mappings),
+            op="disconnect",
+            args=self._edge_args(*mappings[0]),
+        )
+
+    def _remove_edge(self, mapping: tuple[str, str, str, str]):
+        self._dataflow_graph.remove_edge(*mapping)
+        for edge_id, existing in list(self._edge_id_map.items()):
+            if existing == mapping:
+                del self._edge_id_map[edge_id]
+                self._drop_edge_editor(edge_id)
+                with self._muted_canvas():
+                    self._flow.remove_edge(edge_id)
 
     @pn.io.hold()
     def clear(self):
@@ -8218,7 +8244,7 @@ class FlowDash(Viewer):
         try:
             self._restore_model(text, notify=False)
         except PermissionError as exc:
-            return str(exc)
+            return error_text(exc)
         except (ValueError, KeyError, TypeError) as exc:
             return f"That version cannot be read: {error_text(exc)}"
         return None
@@ -8625,10 +8651,10 @@ class FlowDash(Viewer):
         except KeyError:
             self._notify("warning", "Select a valid component first.", duration=3000)
         except PermissionError as exc:
-            self._notify("error", str(exc), duration=5000)
+            self._notify("error", error_text(exc), duration=5000)
         except Exception as exc:
             logger.exception("Failed to add component '%s'", component_id)
-            self._notify("error", f"Failed to add component: {exc}", duration=5000)
+            self._notify("error", f"Failed to add component: {error_text(exc)}", duration=5000)
         else:
             entry = self._component_entries[component_id]
             self._notify("success", f"Added component: {entry.title}", duration=3000)
@@ -8674,7 +8700,9 @@ class FlowDash(Viewer):
         try:
             model = self._imported_model(file.get("content", ""))
         except ValueError as exc:
-            self._notify("error", f"Could not load {file['name']}: {exc}", duration=5000)
+            self._notify(
+                "error", f"Could not load {file['name']}: {error_text(exc)}", duration=5000
+            )
             return
         if not self._tile_items:
             self._apply_import(model)
@@ -8700,7 +8728,9 @@ class FlowDash(Viewer):
                 await self.load_model_async(model)
         except Exception as exc:
             logger.exception("Failed to load dropped dashboard")
-            self._notify("error", f"Could not load the dashboard: {exc}", duration=5000)
+            self._notify(
+                "error", f"Could not load the dashboard: {error_text(exc)}", duration=5000
+            )
             return
         self._record_import(model, before, present)
         if not self._placeholders() and not self._unresolved_edges:
@@ -8820,11 +8850,11 @@ class FlowDash(Viewer):
             model = self.save()
         except DashboardConflictError as exc:
             logger.info("Store refused to save dashboard: %s", exc)
-            self._notify("error", str(exc), duration=5000)
+            self._notify("error", error_text(exc), duration=5000)
             self._show_save_conflict()
         except DashboardStoreError as exc:
             logger.info("Store refused to save dashboard: %s", exc)
-            self._notify("error", str(exc), duration=5000)
+            self._notify("error", error_text(exc), duration=5000)
         except Exception:
             logger.exception("Failed to save dashboard")
             self._notify(
@@ -8922,7 +8952,7 @@ class FlowDash(Viewer):
             model = self.save_as(self._copy_title())
         except DashboardStoreError as exc:
             logger.info("Store refused to save a copy of the dashboard: %s", exc)
-            self._notify("error", str(exc), duration=5000)
+            self._notify("error", error_text(exc), duration=5000)
         except Exception:
             logger.exception("Failed to save a copy of the dashboard")
             self._notify(

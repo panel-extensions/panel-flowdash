@@ -546,14 +546,6 @@ class TestInspector:
         assert not editor.edit_spec(query)
         assert not editor.code_panel_open
 
-    def test_a_narrow_window_keeps_an_extra_view_in_the_inspector(self, setup):
-        editor, query = setup
-        select_on_canvas(editor._flow, node_id=query)
-        editor._inspector.show_extra("How this was made", "Query", [pn.pane.Markdown("steps")])
-        editor._split_view.storage.window_width = 800
-        assert editor._inspector._showing_extra
-        assert "flowdash-inspector-extra" in editor._inspector._body[0].css_classes
-
     def test_a_narrow_window_puts_the_code_field_in_the_inspector(self, setup):
         editor, query = setup
         select_on_canvas(editor._flow, node_id=query)

@@ -11,6 +11,7 @@ import param
 from panel.custom import JSComponent
 
 from panel_flowdash.ui.palette import editor_presets
+from panel_flowdash.value_text import error_text
 
 if t.TYPE_CHECKING:
     from panel_flowdash.app import FlowDashApp
@@ -526,7 +527,7 @@ class CommandPaletteController:
         try:
             done = editor.undo() if action == "undo" else editor.redo()
         except (PermissionError, HistoryBusy) as exc:
-            editor._notify("warning", str(exc), duration=5000)
+            editor._notify("warning", error_text(exc), duration=5000)
             return
         if not done:
             editor._notify("info", f"Nothing to {action}.", duration=2000)

@@ -51,6 +51,7 @@ from panel_flowdash.spec_settings import (
     unrepresented_paths,
 )
 from panel_flowdash.ui.code_field import ACE_OPTIONS, ACE_THEME_CSS, AceOptions
+from panel_flowdash.value_text import error_text
 
 if t.TYPE_CHECKING:
     from panel_flowdash.config_choices import Choices
@@ -553,7 +554,7 @@ class SpecEditor(CompositeWidget):
         try:
             new = setting.write(self.value or {}, value)
         except SpecPathError as exc:
-            self.status.object = str(exc)
+            self.status.object = error_text(exc)
             self._sync_form()
             return
         if new != self.value or list(new) != list(self.value or {}):
@@ -728,10 +729,15 @@ class SpecEditor(CompositeWidget):
         try:
             spec, doc = self._parse(text)
         except SpecTextError as exc:
-            self.error = str(exc)
-            self.status.object = f"Not applied. {exc}"
+            self.error = error_text(exc)
+            self.status.object = f"Not applied. {self.error}"
             self.editor.annotations = [
-                {"row": exc.line - 1, "column": exc.column - 1, "type": "error", "text": str(exc)}
+                {
+                    "row": exc.line - 1,
+                    "column": exc.column - 1,
+                    "type": "error",
+                    "text": self.error,
+                }
             ]
             self._sync_form()
             self._sync_unsent()

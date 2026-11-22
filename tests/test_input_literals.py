@@ -3,6 +3,7 @@
 import dataclasses
 import time
 
+import panel as pn
 import panel_material_ui as pmui
 import param
 import pytest
@@ -647,12 +648,19 @@ class TestInspector:
         editor.connect(num, "value", show, "value")
         inspector = await _inspect(editor, show)
         assert "value" not in inspector._literal_editors
-        texts = [
-            str(c.object)
-            for c in inspector._inputs_column.select(pmui.Typography)
-            if "applies once disconnected" in str(c.object)
+        (ignored,) = [
+            c
+            for c in inspector._inputs_column.select(pn.Column)
+            if "fd-literal-overridden" in c.css_classes
         ]
-        assert texts and "30" in texts[0]
+        (field,) = ignored.select(pmui.TextInput)
+        assert field.disabled and field.value == "30"
+        texts = [str(c.object) for c in ignored.select(pmui.Typography)]
+        assert "Ignored while connected" in texts
+        (button,) = [b for b in ignored.select(pmui.Button) if b.label == "Disconnect to use"]
+        button.clicks += 1
+        assert not editor._edge_id_map
+        assert editor._component_instances[show].value == 30
 
     async def test_choices_for_an_input_fill_its_dropdown(self, editor):
         _, show = _placed(editor)

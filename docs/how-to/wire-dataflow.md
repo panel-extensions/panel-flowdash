@@ -297,7 +297,9 @@ graph.clear_literal("kpi_1", "reference")
 ```
 
 A connection always wins: the literal applies while the input is unwired and
-again once its edge is removed. Only values a dashboard file can hold are
+again once its edge is removed. While connected, the inspector shows the value
+greyed out as *Ignored while connected*, with a **Disconnect to use** button
+that removes the input's connections so the value applies. Only values a dashboard file can hold are
 literals (numbers, text, booleans, lists and mappings, or a selector's
 options), checked against the input like a connected value.
 

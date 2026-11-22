@@ -12,7 +12,7 @@ Switch between them with the *Dataflow* and *Layout* tabs in the dashboard bar
 while editing. To see the dashboard exactly as it will appear when served, press
 *Done* (or choose *View*): view mode is the preview.
 
-![The Layout tab with a selected tile, the controls bar above the grid and the layout panel](../assets/images/dashboard-mode.png)
+![The Layout tab with a selected tile, the controls bar above the grid and the sidecar](../assets/images/dashboard-mode.png)
 
 The slider above the tiles is a component marked `sidebar=True`, shown in the
 controls bar as described [below](#sidebar-components).
@@ -29,7 +29,10 @@ selecting a component on the canvas selects its tile in turn. The selection
 carries over between the *Dataflow*, *Layout* and *Split* tabs, and is not a
 change to save.
 
-The panel on the right arranges the dashboard:
+The sidecar on the right is the same panel as in the *Dataflow* and *Split*
+tabs. Click a tile and it shows that component's tabs, opening on **Tile**;
+*Settings*, *Data* and, for a node the assistant made, *History* are a click
+away. With nothing selected it shows the dashboard:
 
 - **Arrange for** picks the screen size you arrange the tiles for: *Desktop*,
   *Tablet* or *Phone*, one per band of the grid's `breakpoints` (see
@@ -37,25 +40,26 @@ The panel on the right arranges the dashboard:
   main layout, usually *Desktop*. Under it the panel says which sizes follow
   the main layout automatically and which were arranged separately, and
   **Reset to automatic** discards the separate arrangement of the size shown.
-- **Selected tile** picks a tile (it follows the tile selected on the grid)
-  and sets its **Width** in columns of a 12-column
-  grid and its **Height** in pixels, or *Automatic* to size it to its content.
-  The heights offered stay within the component's `min_size` and `max_size`.
-  **Frame** draws the tile as a card in view mode or not, or leaves it to
-  the default, which names what it resolves to (see [Tile frames](#tile-frames)).
-  **Hide tile** takes the tile off the dashboard without removing the
-  component from the dataflow.
 - **Not on the dashboard** lists the placed components that have no tile and
   why: *in top bar* or *in sidebar* for components shown beside the grid (*in
   sidebar* when `controls_bar` is off), with a **Move to grid** action, and
   *hidden* for tiles you hid and for the tiles of sources and transforms the
   agent added, with a **Show** action that puts the tile back.
 
+The **Tile** tab sets the tile's **Width** in columns of the 12-column grid
+(*Half (6/12)*, *Quarter (3/12)* and so on) and its **Height** in pixels, or
+*Automatic* to size it to its content; the heights offered stay within the
+component's `min_size` and `max_size`. **Frame** draws the tile as a card in
+view mode or not, or leaves it to the default, which names what it resolves to
+(see [Tile frames](#tile-frames)). **Show on dashboard** takes the tile off the
+dashboard without removing the component from the dataflow, or puts it back.
+
 The status bar under the grid summarizes it, e.g. "12-column grid, 4 tiles,
-2 components hidden". Changes made in the panel edit the authored layout (see
+2 components hidden". Changes made in the sidecar edit the authored layout (see
 [Responsive layouts](#responsive-layouts)) and, like dragging, mark the
-dashboard as having unsaved changes. Fold the panel with its arrow button to
-give the grid more room.
+dashboard as having unsaved changes. Fold the sidecar with its arrow button to
+give the grid more room, and drag its left edge to make it wider or narrower
+(between 300 and 560 px); the browser remembers the width.
 
 ### Automatic arrangement
 
@@ -139,8 +143,8 @@ component beside the grid by the grip at its left back onto the grid, where it
 goes in front of the tile under the pointer, or to another place in its bar.
 Charts, tables and data previews stay on the grid: they need the room of a tile,
 so their drop targets say so and refuse them. The **Move to grid**, **Move to
-top bar** and **Move to sidebar** buttons in the inspector's *Tile* tab and the
-layout panel do the same from the keyboard.
+top bar** and **Move to sidebar** buttons in the sidecar's *Tile* tab and its
+**Not on the dashboard** list do the same from the keyboard.
 
 Each move is one edit in the history, so undo takes it back, and the dashboard
 saves it as the tile's `area` (see [Dashboard YAML](../reference/dashboard-yaml.md#layout)).
@@ -196,8 +200,7 @@ they settle on is what gets persisted.
 In view mode a tile is drawn as a framed card or as the component's own view.
 Three settings decide which, the first one set wins:
 
-1. The tile's **Frame** option, in the Layout tab's **Selected tile** section
-   or the inspector's *Tile* tab: *Framed*, *Unframed* or *Default*. It is
+1. The tile's **Frame** option, in the sidecar's *Tile* tab: *Framed*, *Unframed* or *Default*. It is
    saved with the tile (`framed` in the [dashboard YAML](../reference/dashboard-yaml.md#layout)).
 2. The component's `framed` hint in `@register`. Components that are layout
    chrome themselves set `framed=False`, like the built-in Divider and Heading,

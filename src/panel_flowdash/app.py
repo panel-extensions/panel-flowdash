@@ -1084,7 +1084,7 @@ class FlowDashApp(Viewer):
         """
         if isinstance(exc, DashboardStoreError):
             logger.info("Store refused to %s dashboard: %s", action, exc)
-            message = str(exc)
+            message = error_text(exc)
         else:
             logger.exception("Failed to %s dashboard", action)
             message = f"Could not {action} the dashboard. The error has been logged."
@@ -1787,7 +1787,7 @@ class FlowDashApp(Viewer):
         try:
             parsed = parse_dashboard_file(content, self._user_id)
         except ValueError as exc:
-            self._notify("error", f"Could not import {filename}: {exc}", duration=5000)
+            self._notify("error", f"Could not import {filename}: {error_text(exc)}", duration=5000)
             return None
         self._editor._guard_restricted(parsed, None)
         title = unique_title(self.store, self._user_id, parsed.title)

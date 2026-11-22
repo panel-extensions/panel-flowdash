@@ -89,9 +89,10 @@ class SessionChrome:
 
     - Below :data:`OVERLAY_BELOW` pixels the drawer overlays the app, and the
       assistant's steps are named with :data:`TOOL_LABELS`.
-    - While the drawer is open the editor's inspector is folded, so the canvas
-      keeps its width; it opens again when the drawer closes, unless the user
-      opened or closed it in the meantime.
+    - The drawer's state is reported to the editor's sidecar, which decides
+      whether the two fit side by side (see :mod:`panel_flowdash.ui.sidecar`)
+      and closes the drawer when the person opens the sidecar in a window
+      where they share one slot.
     - An approval that waits on a surface out of sight shows a notice whose
       Review button brings that surface back: one of the assistant's in full
       screen or while Explore is shown opens the drawer, and one of the
@@ -102,8 +103,6 @@ class SessionChrome:
 
     def __init__(self, session: AgentSession):
         self.session = session
-        self._folded = False
-        self._expected: bool | None = None
         # Which surface the notice's Review button brings back: "drawer" or "explore".
         self._review_target = "drawer"
         # The approvals the notice tells of, and those whose notice the person dismissed.
@@ -151,11 +150,11 @@ class SessionChrome:
             editor._view.append(self.notice)
             editor.param.watch(self._on_fullscreen, "fullscreen")
             editor.param.watch(self._on_explore, "explore")
-            editor._inspector.param.watch(self._on_user_toggle, "collapsed")
-            # Entering edit mode with the drawer open shows the inspector beside it.
-            editor._inspector.param.watch(self._on_inspector_shown, "visible")
-            # Leaving the phone layout unfolds the inspector, beside the open drawer.
-            editor._dashboard_bar._phone_query.param.watch(self._on_phone, "phone")
+            editor._sidecar.on_close_drawer = lambda: setattr(drawer, "open", False)
+            editor._split_view.storage.param.watch(
+                lambda _e: self._report_drawer(), "window_width"
+            )
+            self._report_drawer()
 
         palette = session.app._command_palette
         if palette is not None:
@@ -273,40 +272,19 @@ class SessionChrome:
         self._refresh_notice()
 
     # ------------------------------------------------------------------
-    # The inspector
+    # The sidecar
     # ------------------------------------------------------------------
 
-    def _on_inspector_shown(self, event):
-        if event.new and self.session.drawer.open:
-            self._fold(self.session.app._editor)
-
-    def _on_phone(self, event):
-        if not event.new and self.session.drawer.open:
-            self._fold(self.session.app._editor)
-
-    def _fold(self, editor):
-        inspector = editor._inspector
-        if inspector.visible and not inspector.collapsed:
-            self._set_collapsed(editor, True)
-            self._folded = True
+    def _report_drawer(self):
+        editor = self.session.app._editor
+        sidecar = getattr(editor, "_sidecar", None)
+        if sidecar is None:
+            return
+        drawer = self.session.drawer
+        window = editor._split_view.storage.window_width
+        # Below its overlay width the drawer covers the page rather than taking from it.
+        pushes = window is None or window >= (drawer.overlay_below or 0)
+        sidecar.drawer_changed(drawer.open, drawer.width if pushes else 0)
 
     def _on_open(self, event):
-        editor = self.session.app._editor
-        inspector = getattr(editor, "_inspector", None)
-        if inspector is None:
-            return
-        if event.new:
-            self._fold(editor)
-        elif self._folded:
-            if inspector.collapsed:
-                self._set_collapsed(editor, False)
-            self._folded = False
-
-    def _set_collapsed(self, editor, collapsed: bool):
-        self._expected = collapsed
-        editor._inspector.collapsed = collapsed
-
-    def _on_user_toggle(self, event):
-        if event.new != self._expected:
-            # The user (or the split view) opened or closed it: leave it as it is.
-            self._folded = False
+        self._report_drawer()

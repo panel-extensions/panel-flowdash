@@ -21,6 +21,7 @@ import typing as t
 import param
 
 from panel_flowdash.port_types import ANY, normalize_port_type
+from panel_flowdash.value_text import error_text
 
 if t.TYPE_CHECKING:
     from panel_flowdash.component_spec import InputPort
@@ -155,7 +156,7 @@ def check_literal(port: InputPort, value: t.Any) -> str | None:
     try:
         json.dumps(stored_literal(value))
     except (TypeError, ValueError) as exc:
-        return f"Input '{label}' cannot hold {value!r}: {exc}"
+        return f"Input '{label}' cannot hold {value!r}: {error_text(exc)}"
     converted = port_literal(port, value)
     if (
         isinstance(parameter, param.Range)
@@ -244,7 +245,7 @@ def explain(parameter: param.Parameter, exc: Exception) -> str:
     that breaks a constraint, e.g. a bound or a pattern, gets param's reason
     without the parameter's name.
     """
-    message = str(exc)
+    message = error_text(exc)
     for pattern, words in _BOUNDS:
         if match := pattern.search(message):
             return words(match)

@@ -14,7 +14,9 @@ from .util import center, serve_component, stable_box, tile_sizes_match
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect
 
-pytestmark = pytest.mark.ui
+# The sidecar swaps in new widgets on every selection, so a click can reach
+# Bokeh as a model it already knows, which only warns; see test_ui.py.
+pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
 
 @register(page=False, component=True, sidebar=True, title="Region")
@@ -96,13 +98,6 @@ def _drag_control(page, handle, end, **kwargs):
 
 
 # The role of the element with the keyboard focus, across shadow roots.
-_FOCUSED_ROLE = """() => {
-  let el = document.activeElement
-  while (el?.shadowRoot?.activeElement) { el = el.shadowRoot.activeElement }
-  return el?.getAttribute("role") ?? el?.tagName
-}"""
-
-
 def _grid_box(page):
     return stable_box(page.locator(".muuri-grid").first, page)
 
@@ -251,6 +246,13 @@ def test_a_tile_dropped_above_the_grid_goes_to_an_empty_top_bar(page):
     wait_until(lambda: _areas(editor)[TOP] == ["heading"], page, timeout=8000)
 
 
+_FOCUSED = """() => {
+  let el = document.activeElement
+  while (el?.shadowRoot?.activeElement) { el = el.shadowRoot.activeElement }
+  return el?.textContent
+}"""
+
+
 def test_tiles_keep_their_sizes_when_one_moves_to_the_top_bar(page):
     page.set_viewport_size({"width": 1400, "height": 900})
     editor = _editor()
@@ -258,15 +260,16 @@ def test_tiles_keep_their_sizes_when_one_moves_to_the_top_bar(page):
     serve_component(page, editor)
     wait_until(lambda: tile_sizes_match(page, editor), page, timeout=8000)
     # The KPI leads the grid, so its removal shifts every tile after it.
-    editor._layout_panel.tile_select.value = "kpi"
-    # The panel's buttons are rebuilt for the selected tile; a slow browser may still show the old ones.
+    page.locator(".muuri-grid-item").first.click(position={"x": 30, "y": 30})
+    wait_until(lambda: editor._inspector._shown == ("node", "kpi"), page, timeout=8000)
+    # The sidecar's buttons are rebuilt for the selected tile; a slow browser may still show the old ones.
     page.wait_for_timeout(1500)
-    page.get_by_text("Move to top bar").first.click()
+    page.locator(".fd-tile-options").get_by_text("Move to top bar").click()
     wait_until(lambda: _areas(editor)[TOP] == ["region", "kpi"], page, timeout=8000)
     page.wait_for_timeout(500)
     wait_until(lambda: tile_sizes_match(page, editor), page, timeout=8000)
-    # The pressed button left with the tile, so the focus moves to the tile picker.
-    wait_until(lambda: page.evaluate(_FOCUSED_ROLE) == "combobox", page, timeout=8000)
+    # The pressed button left with the tile's area, so the focus moves to the first move left.
+    wait_until(lambda: "Move to" in (page.evaluate(_FOCUSED) or ""), page, timeout=8000)
 
 
 def test_tiles_keep_their_sizes_when_a_component_is_removed_in_the_split(page):
