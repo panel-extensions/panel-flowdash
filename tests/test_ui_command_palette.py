@@ -511,6 +511,19 @@ class TestShortcuts:
         assert editor.editable
         assert editor._flow.selection == {"nodes": [], "edges": []}
 
+    async def test_escape_clears_a_selection_before_leaving_edit_mode(self, app):
+        _open(app, edit=True)
+        editor = app._editor
+        node = editor.add_component(SELECTOR)
+        editor.dirty = False
+        editor.mode = "dashboard"
+        select_on_canvas(editor._flow, node_id=node)
+        app._command_palette.run("shortcut:escape")
+        assert editor.editable
+        assert editor._flow.selection == {"nodes": [], "edges": []}
+        app._command_palette.run("shortcut:escape")
+        assert not editor.editable
+
     async def test_shortcuts_need_a_dashboard(self, app):
         app._show_edit_mode()
         app._command_palette.run("shortcut:view")
