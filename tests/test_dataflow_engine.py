@@ -897,6 +897,27 @@ class TestRuntimeValidation:
         graph.get_state("s").val = "not_an_int"
         assert typed_state.count == 0
 
+    async def test_a_connect_error_on_a_wire_never_shows_a_password(self):
+        class Connecting(param.Parameter):
+            def _validate(self, val):
+                if val is not None:
+                    raise ConnectionError("cannot connect to postgresql://u:SECRET@h/db")
+
+        class Target(param.Parameterized):
+            value = Connecting(default=None)
+
+        specs = {
+            "src": make_spec("src", outputs=[OutputPort(name="val")]),
+            "tgt": make_spec("tgt", inputs=[InputPort(name="value")]),
+        }
+        graph = DataflowGraph(specs, on_error=lambda *args: None)
+        graph.add_node("s", "src")
+        graph._nodes["t"] = Target(name="t")
+        graph._node_specs["t"] = specs["tgt"]
+        graph.get_state("s").val = 1
+        result = graph.add_edge("s", "val", "t", "value")
+        assert result == "Connection rejected: cannot connect to postgresql://u:***@h/db"
+
     async def test_initial_propagation_failure_rejects_connection(self):
         """A value the target rejects at wire time undoes the edge instead of leaving it broken."""
 

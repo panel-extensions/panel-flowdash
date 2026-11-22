@@ -30,6 +30,7 @@ from panel_flowdash.transforms import (
 from panel_flowdash.ui.node_card import port_label
 from panel_flowdash.ui.text import escape_markdown, text_typography
 from panel_flowdash.util import is_failure
+from panel_flowdash.value_text import error_text
 
 if t.TYPE_CHECKING:
     from panel_flowdash.editor import FlowDash
@@ -281,7 +282,7 @@ def check_steps(steps: list[Transform], value: t.Any) -> list[StepCheck]:
                 need = _NEEDS.get(step.op, "another kind of value")
                 error = (f"{step.label} needs {need}, not {kind(value)}.", None)
             except Exception as exc:
-                error = (f"This step fails: {exc}", None)
+                error = (f"This step fails: {error_text(exc)}", None)
         if error is not None:
             failed = index
             checks.append(StepCheck(value, error=error[0], suggestion=error[1]))
@@ -762,7 +763,7 @@ class TransformEditor(Viewer):
                     )
             setattr(step, name, new)
         except Exception as exc:
-            self._rejection = f"{step.label}: {exc}"
+            self._rejection = f"{step.label}: {error_text(exc)}"
             self._render()
             return
         self._commit()

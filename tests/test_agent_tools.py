@@ -340,6 +340,19 @@ async def test_a_viewers_agent_is_refused(store):
     assert editor._tile_items == [] and not runner.state.artifacts
 
 
+@pytest.mark.parametrize("error", [OperationError, PermissionError])
+async def test_a_connect_error_never_sends_its_password_to_the_model(ops, monkeypatch, error):
+    async def fail(*args, **kwargs):
+        raise error("cannot connect to postgresql://u:SECRET@h/db")
+
+    monkeypatch.setattr(ops, "add_node_async", fail)
+    runner = _runner(ops, ("add_node", {"component": "T/number"}))
+    output = await runner.run("Add a number")
+    sent = [str(part.content) for part in _results(runner.messages)]
+    assert "SECRET" not in output and not any("SECRET" in text for text in sent)
+    assert any("postgresql://u:***@h/db" in text for text in sent)
+
+
 async def test_reverting_a_version_restores_the_dashboard(ops):
     runner = _runner(
         ops,

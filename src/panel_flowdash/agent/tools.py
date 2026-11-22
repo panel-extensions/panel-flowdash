@@ -26,6 +26,7 @@ from panel_flowdash.editor import export_model
 from panel_flowdash.history import ARTIFACT_KIND, artifact_id_for
 from panel_flowdash.transforms import parse_transform
 from panel_flowdash.turns import agent_edits
+from panel_flowdash.value_text import error_text
 
 from .diff import dashboard_changes
 from .live import LiveDashboardOps
@@ -537,12 +538,12 @@ def _guarded(func: t.Callable) -> t.Callable:
                         abort()
                     raise
         except OperationError as exc:
-            raise ModelRetry(str(exc)) from exc
+            raise ModelRetry(error_text(exc)) from exc
         except PermissionError as exc:
-            return f"Refused: {exc}"
+            return f"Refused: {error_text(exc)}"
         except (OutputUnavailable, NothingChanged) as exc:
             prefix = "Not available: " if isinstance(exc, OutputUnavailable) else ""
-            return f"{prefix}{exc}"
+            return f"{prefix}{error_text(exc)}"
         finally:
             deps.ops.editor.edit_history.flush()
         notes = take_notes() if take_notes is not None else None

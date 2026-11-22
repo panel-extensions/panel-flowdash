@@ -203,6 +203,7 @@ from panel_flowdash.util import (
     stepped,
 )
 from panel_flowdash.value_text import (
+    error_text,
     held_table_names,
     is_plain,
     object_label,
@@ -1703,7 +1704,7 @@ class FlowDash(Viewer):
                 self._component_entries[component_id].load()
             except Exception as exc:
                 self._failed_components.add(component_id)
-                errors.append(f"{component_id}: {exc}")
+                errors.append(f"{component_id}: {error_text(exc)}")
         return errors
 
     def _register_specs(self, wanted: list[str], errors: list[str] | None = None):
@@ -1793,7 +1794,7 @@ class FlowDash(Viewer):
         )
         self._notify(
             "error",
-            f"Runtime wiring error ({source_port} → {target_port}): {exc}",
+            f"Runtime wiring error ({source_port} → {target_port}): {error_text(exc)}",
             duration=5000,
         )
 
@@ -2556,7 +2557,7 @@ class FlowDash(Viewer):
         except Exception as exc:
             logger.exception("Inspecting output '%s' of %s failed", port_name, instance_id)
             return text_alert(
-                f"Could not describe this output: {exc}",
+                f"Could not describe this output: {error_text(exc)}",
                 severity="error",
                 margin=(6, 0, 0, 0),
             )
@@ -7608,7 +7609,7 @@ class FlowDash(Viewer):
         except PermissionError as exc:
             return str(exc)
         except (ValueError, KeyError, TypeError) as exc:
-            return f"That version cannot be read: {exc}"
+            return f"That version cannot be read: {error_text(exc)}"
         return None
 
     def _restore_model(self, text: str, notify: bool = True) -> DashboardModel:

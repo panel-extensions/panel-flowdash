@@ -16,6 +16,7 @@ import param
 
 from panel_flowdash.session_state import check_requirements
 from panel_flowdash.ui.waiting import WaitingPlaceholder
+from panel_flowdash.value_text import redact_secrets
 
 if t.TYPE_CHECKING:
     from collections.abc import Callable
@@ -332,6 +333,7 @@ def notify(
     """
     if not enabled:
         return
+    message = redact_secrets(message)
     notifications = pn.state.notifications
     if notifications is None:
         logger.log(_LOG_LEVELS.get(severity, logging.INFO), message)
