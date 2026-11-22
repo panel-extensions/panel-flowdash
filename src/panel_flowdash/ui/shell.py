@@ -131,7 +131,7 @@ _RAIL_ACTIVE_SX = {
     "color": "text.primary",
     "& .MuiButton-startIcon": {
         **_RAIL_ITEM_SX["& .MuiButton-startIcon"],
-        "color": "primary.main",
+        "color": "primary.text",
         "bgcolor": "rgba(var(--mui-palette-primary-mainChannel) / 0.14)",
     },
 }

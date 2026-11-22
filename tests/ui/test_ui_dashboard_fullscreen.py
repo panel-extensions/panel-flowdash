@@ -69,7 +69,7 @@ def _presenting(page, app):
     viewport = page.viewport_size
     wait_until(
         lambda: (
-            page.locator(".fd-presenting").bounding_box()
+            page.locator("[data-pmui-fullscreen]").bounding_box()
             == {"x": 0, "y": 0, "width": viewport["width"], "height": viewport["height"]}
         ),
         page,
@@ -82,7 +82,7 @@ def _presenting(page, app):
 def _restored(page, app):
     wait_until(lambda: not app._editor.fullscreen, page, timeout=10000)
     expect(page.get_by_role("button", name="Refresh")).to_be_visible()
-    expect(page.locator(".fd-presenting")).to_have_count(0)
+    expect(page.locator("[data-pmui-fullscreen]")).to_have_count(0)
     wait_until(lambda: not _native(page), page)
 
 
@@ -119,7 +119,7 @@ def test_overlay_hides_while_the_pointer_rests(page):
     app = _serve(page)
     page.get_by_role("button", name="Full screen").click()
     _presenting(page, app)
-    overlay = page.locator(".fd-fullscreen-overlay")
+    overlay = page.locator(".pmui-fullscreen-overlay")
     page.mouse.move(200, 200)
     expect(overlay).to_have_css("opacity", "1")
     expect(overlay).to_have_css("opacity", "0", timeout=6000)

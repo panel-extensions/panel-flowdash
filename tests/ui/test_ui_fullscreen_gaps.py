@@ -62,12 +62,12 @@ _FOCUS_BEHIND = """() => {
   while (node?.shadowRoot?.activeElement) node = node.shadowRoot.activeElement
   if (!node || node === document.body || node === document.documentElement) return false
   for (; node; node = node.parentNode ?? node.host) {
-    if (node instanceof Element && node.classList.contains("fd-presenting")) return false
+    if (node instanceof Element && node.hasAttribute("data-pmui-fullscreen")) return false
   }
   return true
 }"""
 
-_TOGGLE = "document.dispatchEvent(new CustomEvent('flowdash:fullscreen', {cancelable: true}))"
+_TOGGLE = "document.dispatchEvent(new CustomEvent('pmui:fullscreen-toggle', {cancelable: true}))"
 
 
 def _serve(page, query="", notifications=False):
@@ -119,7 +119,7 @@ def test_focus_stays_in_the_dashboard_in_the_window(page):
 def test_a_tap_or_a_key_reveals_the_overlay(page):
     app = _serve(page, query="?kiosk=1")
     wait_until(lambda: app._editor.fullscreen, page, timeout=10000)
-    overlay = page.locator(".fd-fullscreen-overlay")
+    overlay = page.locator(".pmui-fullscreen-overlay")
     page.mouse.move(200, 200)
     expect(overlay).to_have_css("opacity", "0", timeout=6000)
 

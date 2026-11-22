@@ -52,8 +52,9 @@ dependencies = [
     # 0.1.0b8 shows a version's metadata["detail"] as the history row's tooltip; 0.1.0b9 has SpanView;
     # 0.1.0b13 fits the drawer on a phone screen and makes the single-model label keyboard accessible.
     "panel-agents >=0.1.0b13",
-    # Page.rail and Page.header_color arrived in 0.17.0b3.
-    "panel-material-ui >=0.17.0rc1",
+    # Page.rail and Page.header_color arrived in 0.17.0b3; Dialog actions, the dark mode
+    # primary text tint, the non-modal Popup, button ARIA attributes, Fullscreen and Reveal in 0.17.0rc2.
+    "panel-material-ui >=0.17.0rc2",
     # ReactFlow.fit_view, add_nodes/add_edges, graph validation and handle `top` arrived in
     # 0.6.0b1; 0.6.0b2 shows node views that arrive after their node; 0.6.0b6 reports a
     # connection dropped onto a handle that refuses it; 0.6.0b9 keeps the selection when the

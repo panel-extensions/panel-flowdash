@@ -35,7 +35,7 @@ KIT_CSS = """
 .k .chip.warning { background: rgba(var(--mui-palette-warning-mainChannel) / 0.14);
   color: var(--mui-palette-warning-dark, #e65100); }
 .k .chip.primary { background: rgba(var(--mui-palette-primary-mainChannel) / 0.12);
-  color: var(--mui-palette-primary-main); }
+  color: var(--mui-palette-primary-text, var(--mui-palette-primary-main)); }
 .k .spend { display: flex; justify-content: space-between; gap: 8px; font-size: 0.75rem; }
 .k .bar { height: 4px; border-radius: 2px; margin-top: 4px;
   background: rgba(var(--mui-palette-text-primaryChannel) / 0.12); overflow: hidden; }

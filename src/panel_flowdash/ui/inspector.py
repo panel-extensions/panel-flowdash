@@ -237,7 +237,7 @@ _HEADER_CSS = """
   justify-content: center;
   width: 22px;
   height: 22px;
-  color: var(--mui-palette-primary-main, #0072b5);
+  color: var(--mui-palette-primary-text, var(--mui-palette-primary-main, #0072b5));
 }
 .fd-insp-icon span {
   font-family: "Material Icons";

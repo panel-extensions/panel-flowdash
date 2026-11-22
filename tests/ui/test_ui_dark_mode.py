@@ -73,3 +73,18 @@ def test_code_panel_cursor_line_is_a_neutral_tint(page, dark):
     expect(active).to_be_attached()
     tint = "rgba(255, 255, 255, 0.08)" if dark else "rgba(0, 0, 0, 0.04)"
     assert active.evaluate("el => getComputedStyle(el).backgroundColor") == tint
+
+
+@pytest.mark.parametrize("dark", [True, False])
+def test_primary_text_uses_the_theme_tint(page, dark):
+    import panel_material_ui as pmui
+
+    editor, query = make_editor()
+    page.set_viewport_size({"width": 1440, "height": 900})
+    theme = {"palette": {"primary": {"main": "#0072B5"}}}
+    serve_component(page, pmui.Page(main=[editor], dark_theme=dark, theme_config=theme))
+    page.locator(f".react-flow__node[data-id='{query}']").click()
+    expect(page.locator(".fd-insp-icon").first).to_be_visible(timeout=8000)
+    # #0072B5 reaches only 3.6:1 on the dark background, so text takes pmui's tint there.
+    color = "rgb(89, 163, 207)" if dark else "rgb(0, 114, 181)"
+    assert _style(page, ".fd-insp-icon", "color") == color

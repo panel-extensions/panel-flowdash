@@ -211,7 +211,7 @@ _ITEM_CSS = (
   display: grid;
   place-items: center;
   background: var(--mui-palette-action-selected);
-  color: var(--mui-palette-primary-main);
+  color: var(--mui-palette-primary-text, var(--mui-palette-primary-main));
 }
 .text { min-width: 0; }
 .name {

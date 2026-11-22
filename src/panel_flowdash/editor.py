@@ -141,15 +141,13 @@ from panel_flowdash.turns import (
 from panel_flowdash.ui import tile_layout
 from panel_flowdash.ui.code_panel import HEADER_HEIGHT, CodePanel
 from panel_flowdash.ui.controls_bar import ControlsBar
-from panel_flowdash.ui.dashboard_bar import HIDE_ON_PHONE, PHONE_BREAKPOINT, DashboardBar
-from panel_flowdash.ui.dock_handle import DockHandle
-from panel_flowdash.ui.fullscreen import (
-    PRESENTATION_CSS,
-    PRESENTING_CLASS,
-    TOGGLE_CLASS,
-    FullscreenController,
-    PresentationOverlay,
+from panel_flowdash.ui.dashboard_bar import (
+    HIDE_ON_PHONE,
+    PHONE_BREAKPOINT,
+    DashboardBar,
+    fullscreen_toolbar,
 )
+from panel_flowdash.ui.dock_handle import DockHandle
 from panel_flowdash.ui.global_filters import GlobalFilters
 from panel_flowdash.ui.inspect_sheet import (
     dataframe_preview,
@@ -221,7 +219,6 @@ from panel_flowdash.ui.tile_drag import TileDrag
 from panel_flowdash.ui.transform_offer import TransformOffer, bridge_kind
 from panel_flowdash.util import (
     close_dialog,
-    escape_closes,
     gate_view,
     is_async,
     is_async_gen,
@@ -1756,6 +1753,7 @@ class FlowDash(Viewer):
             ["popup_trigger", "popup_hover_delay"],
         )
         self._view = self._build_component_view()
+        self._fullscreen.object = self._view
         self._sync_min_width()
 
         # Components handed over as live objects need no import, so their specs
@@ -3808,15 +3806,22 @@ class FlowDash(Viewer):
         self._sidecar = SidecarFold(self)
         self._status_bar = StatusBar(editor=self)
         # The Full screen button may sit in an app's top bar, outside the editor.
-        toggle_class = f"{TOGGLE_CLASS}-{id(self)}"
+        toggle_class = f"fd-fullscreen-toggle-{id(self)}"
         bar.fullscreen_button.css_classes = [*bar.fullscreen_button.css_classes, toggle_class]
-        self._fullscreen_controller = FullscreenController(
-            enabled=not self.editable, margin=0, height=0, toggle_class=toggle_class
+        # Wraps the editor's view once it is built; the bar's own button sits
+        # inside it, the toolbar shows the health and an exit button.
+        self._fullscreen = pmui.Fullscreen(
+            disabled=self.editable,
+            placement="bottom-right",
+            show_button=False,
+            toggle_class=toggle_class,
+            toolbar=fullscreen_toolbar(bar.health_chip),
+            margin=0,
+            sizing_mode="stretch_both",
         )
-        self._fullscreen_controller.param.watch(self._on_fullscreen_changed, "active")
-        self._fullscreen_overlay = PresentationOverlay(bar.health_chip)
-        bar.title.param.watch(self._name_fullscreen_overlay, "object")
-        self._name_fullscreen_overlay()
+        self._fullscreen.param.watch(self._on_fullscreen_changed, "active")
+        bar.title.param.watch(self._name_fullscreen_toolbar, "object")
+        self._name_fullscreen_toolbar()
         self._split_view = SplitView(
             on_collapse=self._on_split_collapsed,
             on_load=self._on_split_preferences_loaded,
@@ -3871,8 +3876,6 @@ class FlowDash(Viewer):
             # Under the palette, the canvas and the inspector, so it has the window's width.
             self._code_dock,
             self._status_bar,
-            self._fullscreen_overlay,
-            self._fullscreen_controller,
             self._sheet_host,
             self._tile_drag,
             self._split_view.storage,
@@ -3887,7 +3890,6 @@ class FlowDash(Viewer):
                 sizing_mode="fixed",
             ),
             sizing_mode="stretch_both",
-            stylesheets=[PRESENTATION_CSS],
         )
 
     def _build_phone_sheets(self):
@@ -4076,6 +4078,7 @@ class FlowDash(Viewer):
         """Let the feed, the report and the dashboard narrow to the window; only the canvas and its panels need the room."""
         canvas = self.editable and self.surface == "workspace" and not self._phone
         self._view.min_width = None if canvas else 0
+        self._fullscreen.min_width = self._view.min_width
 
     @param.depends("edited", watch=True)
     def _sync_explore(self):
@@ -4087,9 +4090,9 @@ class FlowDash(Viewer):
     def _on_fullscreen_changed(self, event):
         self.fullscreen = event.new
 
-    def _name_fullscreen_overlay(self, *_):
+    def _name_fullscreen_toolbar(self, *_):
         title = self.dashboard.title if self.dashboard is not None else "Untitled dashboard"
-        self._fullscreen_controller.overlay_label = f"{title}, full screen controls"
+        self._fullscreen.label = f"{title}, full screen controls"
 
     @pn.io.hold()
     @param.depends("fullscreen", "editable", watch=True)
@@ -4099,12 +4102,8 @@ class FlowDash(Viewer):
             self.fullscreen = False
             return
         presenting = self.fullscreen
-        self._fullscreen_controller.param.update(active=presenting, enabled=not self.editable)
-        self._fullscreen_overlay.show(presenting)
+        self._fullscreen.param.update(active=presenting, disabled=self.editable)
         self._dashboard_bar.visible = self.toolbar and not presenting
-        view = self._view
-        classes = [c for c in view.css_classes if c != PRESENTING_CLASS]
-        view.css_classes = [*classes, PRESENTING_CLASS] if presenting else classes
 
     def _mark_rearranged(self, label: str = "Changed the tile layout", op: str = "layout"):
         if self.editable:
@@ -4155,12 +4154,10 @@ class FlowDash(Viewer):
                     "Remove every component and connection from the canvas? "
                     "Unsaved work will be lost."
                 ),
-                pn.Row(pn.layout.HSpacer(), cancel, confirm, sizing_mode="stretch_width"),
             ],
+            actions=[cancel, confirm],
             title="Clear canvas",
             open=False,
-            min_width=400,
-            **escape_closes(),
         )
 
     def _build_import_dialog(self):
@@ -4183,12 +4180,10 @@ class FlowDash(Viewer):
         dialog = pmui.Dialog(
             objects=[
                 self._import_message,
-                pn.Row(pn.layout.HSpacer(), cancel, confirm, sizing_mode="stretch_width"),
             ],
+            actions=[cancel, confirm],
             title="Load dashboard file",
             open=False,
-            min_width=400,
-            **escape_closes(),
         )
         dialog.param.watch(_on_closed, "open")
         return dialog
@@ -9305,4 +9300,4 @@ class FlowDash(Viewer):
 
     def __panel__(self):
         """Render the editor."""
-        return self._view
+        return self._fullscreen

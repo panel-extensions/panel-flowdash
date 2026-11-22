@@ -111,11 +111,17 @@ def test_header_shows_description_health_and_refresh(page, header_layout):
     _serve(page, store, dash, [], header_layout=header_layout)
 
     if header_layout == "compact":
-        page.get_by_role("button", name="About this dashboard").click()
+        button = page.get_by_role("button", name="About this dashboard")
+        expect(button).to_have_attribute("aria-haspopup", "dialog")
+        button.focus()
+        page.keyboard.press("Enter")
         about = page.get_by_role("dialog", name="About this dashboard")
         expect(about.get_by_text("Output per unit, live.")).to_be_visible()
+        expect(button).to_have_attribute("aria-expanded", "true")
         page.keyboard.press("Escape")
         expect(about).to_be_hidden()
+        expect(button).to_be_focused()
+        expect(button).to_have_attribute("aria-expanded", "false")
     else:
         bar = page.locator(".fd-dashboard-bar")
         expect(bar.get_by_text("Output per unit, live.")).to_be_visible()
@@ -192,6 +198,37 @@ def test_issue_banner_scrolls_to_and_highlights_the_waiting_tile(page):
     outlines = page.evaluate(_DEEP_FIND, ISSUE_CLASS)
     assert len(outlines) == 1
     assert "solid" in outlines[0]
+
+
+# The outline and transition of the elements carrying a class, and whether each is in view.
+_DEEP_STYLES = _DEEP_FIND.replace(
+    'found.map((el) => el.style.outline || "none")',
+    """found.map((el) => {
+    const box = el.getBoundingClientRect()
+    return {
+      outline: el.style.outline,
+      transition: el.style.transition,
+      inView: box.bottom > 0 && box.top < window.innerHeight,
+    }
+  })""",
+)
+
+
+def test_show_issues_highlights_without_motion_when_reduced(page):
+    page.emulate_media(reduced_motion="reduce")
+    store, dash = _store()
+    _serve(page, store, dash, [])
+
+    _open_health(page)
+    page.locator(".fd-issue-banner").get_by_role("button", name="Show issues").click()
+    wait_until(
+        lambda: any("solid" in s["outline"] for s in page.evaluate(_DEEP_STYLES, ISSUE_CLASS)),
+        page,
+        timeout=5000,
+    )
+    (styles,) = page.evaluate(_DEEP_STYLES, ISSUE_CLASS)
+    assert styles["transition"] == "none"
+    assert styles["inView"]
 
 
 def test_no_banner_and_all_up_to_date_without_issues(page):

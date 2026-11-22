@@ -15,7 +15,6 @@ import re
 import typing as t
 import weakref
 
-import panel as pn
 import panel_material_ui as pmui
 from panel.viewable import Viewer
 
@@ -130,17 +129,10 @@ class TransformOffer(Viewer):
                 self._column_text,
                 self._how,
                 self._result,
-                pn.Row(
-                    pn.layout.HSpacer(),
-                    self._cancel,
-                    self._confirm,
-                    sizing_mode="stretch_width",
-                    margin=(12, 0, 0, 0),
-                ),
             ],
+            actions=[self._cancel, self._confirm],
             title="Connect with a transform",
             open=False,
-            min_width=420,
             css_classes=["fd-transform-offer"],
         )
         self.dialog.param.watch(self._closed, "open")

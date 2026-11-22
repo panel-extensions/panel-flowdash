@@ -533,7 +533,7 @@ class TestToolbar:
     async def test_clear_confirmation_clears_canvas(self, editor):
         editor.add_component(SELECTOR)
         _click_overflow(editor, "Clear canvas")
-        confirm = editor._clear_dialog.objects[1][-1]
+        confirm = editor._clear_dialog.actions[-1]
         confirm.clicks += 1
         assert not editor._clear_dialog.open
         assert editor._tile_items == []
@@ -541,7 +541,7 @@ class TestToolbar:
     async def test_clear_cancel_keeps_canvas(self, editor):
         editor.add_component(SELECTOR)
         _click_overflow(editor, "Clear canvas")
-        cancel = editor._clear_dialog.objects[1][-2]
+        cancel = editor._clear_dialog.actions[-2]
         cancel.clicks += 1
         assert not editor._clear_dialog.open
         assert len(editor._tile_items) == 1
@@ -3985,7 +3985,7 @@ class TestFileDrop:
         assert "dash.json" in editor._import_message.object
         assert [i["instance_id"] for i in editor._tile_items] == [existing]
 
-        confirm = editor._import_dialog.objects[1][-1]
+        confirm = editor._import_dialog.actions[-1]
         confirm.clicks += 1
         await async_wait_until(lambda: editor._tile_items[0]["instance_id"] == src)
         assert not editor._import_dialog.open
@@ -3994,7 +3994,7 @@ class TestFileDrop:
         existing = editor.add_component(SHOUTER)
         data, _src, _dst = _wired_export()
         _file_drop(editor, ("dash.json", json.dumps(data)))
-        cancel = editor._import_dialog.objects[1][-2]
+        cancel = editor._import_dialog.actions[-2]
         cancel.clicks += 1
         await asyncio.sleep(0.05)
         assert not editor._import_dialog.open

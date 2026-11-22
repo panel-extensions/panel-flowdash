@@ -288,7 +288,7 @@ h2 { font-size: 1.4em; }
 h3 { font-size: 1.2em; }
 h4, h5, h6 { font-size: 1em; }
 a {
-  color: var(--mui-palette-primary-main, var(--panel-primary-color));
+  color: var(--mui-palette-primary-text, var(--mui-palette-primary-main, var(--panel-primary-color)));
 }
 table {
   border-collapse: collapse;
@@ -800,7 +800,7 @@ _NOTES_CSS = """
   --fd-notes-text: var(--mui-palette-text-primary, var(--panel-on-background-color));
   --fd-notes-muted: var(--mui-palette-text-secondary, rgba(127, 127, 127, 0.9));
   --fd-notes-divider: var(--mui-palette-divider, rgba(127, 127, 127, 0.25));
-  --fd-notes-primary: var(--mui-palette-primary-main, var(--panel-primary-color));
+  --fd-notes-primary: var(--mui-palette-primary-text, var(--mui-palette-primary-main, var(--panel-primary-color)));
   --fd-notes-paper: var(--mui-palette-background-paper, var(--panel-background-color));
 }
 .ql-container.ql-bubble,

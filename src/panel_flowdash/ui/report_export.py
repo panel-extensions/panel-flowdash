@@ -6,12 +6,10 @@ import io
 import logging
 import typing as t
 
-import panel as pn
 import panel_material_ui as pmui
 import param
 
 from panel_flowdash.ui.launcher import build_downloader
-from panel_flowdash.util import escape_closes
 
 if t.TYPE_CHECKING:
     from panel_flowdash.export import ExportFile
@@ -74,19 +72,11 @@ class ReportExport(param.Parameterized):
                 self._format,
                 self._pending,
                 self._note,
-                pn.Row(
-                    pn.layout.HSpacer(),
-                    self._cancel,
-                    self._confirm,
-                    margin=(12, 0, 0, 0),
-                    sizing_mode="stretch_width",
-                ),
             ],
+            actions=[self._cancel, self._confirm],
             title="Export report",
             open=False,
-            min_width=380,
             css_classes=["fd-report-export-dialog"],
-            **escape_closes(),
         )
         # The editor mounts the dialog and the download beside its views.
         self.downloader = build_downloader()

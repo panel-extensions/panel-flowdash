@@ -43,7 +43,7 @@ _FOCUSED = """() => {
   if (!node || node === document.body || node === document.documentElement) return "page"
   const label = (node.getAttribute("aria-label") || node.textContent || "").trim()
   for (let el = node; el; el = el.parentNode ?? el.host) {
-    if (el instanceof Element && el.classList.contains("fd-presenting")) return label
+    if (el instanceof Element && el.hasAttribute("data-pmui-fullscreen")) return label
   }
   return "behind"
 }"""

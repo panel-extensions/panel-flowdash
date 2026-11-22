@@ -302,7 +302,9 @@ class TestIssueBanner:
             if ISSUE_CLASS in view.css_classes
         ]
         assert marked == [failed, waiting]
-        assert messages == [{"cls": ISSUE_CLASS}]
+        assert messages == [
+            {"css_class": ISSUE_CLASS, "highlight": True, "focus": False, "block": "center"}
+        ]
 
     async def test_show_issues_unmarks_resolved_tiles(self, editor):
         source = editor.add_component(SELECTOR)

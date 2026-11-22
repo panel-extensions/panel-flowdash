@@ -138,15 +138,15 @@ class TestConfirm:
         dialog = page_dialog()
         assert dialog.close_on_click is False
         assert dialog.show_close_button is False
-        # Releases without ``close_on_escape`` only close on Escape with ``close_on_click``.
-        assert getattr(dialog, "close_on_escape", False) is False
+        assert dialog.close_on_escape is False
 
     def test_a_later_dialog_is_dismissible_with_escape_again(self, doc):
         confirm("Save?", on_confirm=lambda _event: None)
         open_dialog("Details", "body")
         dialog = page_dialog()
         assert dialog.close_on_click is True
-        assert getattr(dialog, "close_on_escape", True) is True
+        assert dialog.close_on_escape is True
+        assert dialog.actions == []
 
     def test_closing_without_an_answer_counts_as_cancel(self, doc):
         seen = []
@@ -170,7 +170,8 @@ class TestConfirm:
 
     def test_content_is_optional(self, doc):
         confirm("Save?", on_confirm=lambda _event: None)
-        assert len(page_dialog().objects) == 1
+        assert page_dialog().objects == []
+        assert [b.label for b in page_dialog().actions] == ["Cancel", "Confirm"]
 
     def test_custom_labels(self, doc):
         confirm("Save?", on_confirm=lambda _event: None, confirm_label="Save", cancel_label="Back")

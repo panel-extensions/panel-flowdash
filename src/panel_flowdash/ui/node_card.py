@@ -92,7 +92,7 @@ _CARD_CSS = (
   --fd-text: var(--mui-palette-text-primary, var(--panel-on-background-color, #1f1f1f));
   --fd-muted: var(--mui-palette-text-secondary, rgba(127, 127, 127, 0.95));
   --fd-divider: var(--mui-palette-divider, rgba(127, 127, 127, 0.22));
-  --fd-primary: var(--mui-palette-primary-main, var(--panel-primary-color, #0072b5));
+  --fd-primary: var(--mui-palette-primary-text, var(--mui-palette-primary-main, var(--panel-primary-color, #0072b5)));
   --fd-surface: var(--mui-palette-action-hover, rgba(127, 127, 127, 0.08));
   --fd-hover: var(--mui-palette-action-selected, rgba(127, 127, 127, 0.14));
   --fd-chip-bg: var(--mui-palette-action-hover, rgba(127, 127, 127, 0.12));

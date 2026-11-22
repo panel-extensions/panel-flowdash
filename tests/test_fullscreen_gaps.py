@@ -4,7 +4,6 @@ import panel as pn
 
 from panel_flowdash import register
 from panel_flowdash.editor import FlowDash
-from panel_flowdash.ui.fullscreen import PRESENTING_CLASS
 from tests.test_dashboard_fullscreen import _open, app  # noqa: F401
 from tests.test_editor import COMPONENTS, SELECTOR
 
@@ -18,22 +17,19 @@ SIDE = "Demo/side"
 
 
 def _presenting(editor) -> bool:
-    return PRESENTING_CLASS in editor._view.css_classes
+    return editor._fullscreen.active
 
 
 class TestConstructor:
     async def test_fullscreen_at_construction_presents_the_dashboard(self):
         editor = FlowDash(COMPONENTS, notifications=False, editable=False, fullscreen=True)
         assert editor.fullscreen
-        assert editor._fullscreen_controller.active
         assert _presenting(editor)
-        assert editor._fullscreen_overlay.visible
         assert not editor._dashboard_bar.__panel__().visible
 
     async def test_fullscreen_at_construction_is_refused_in_edit_mode(self):
         editor = FlowDash(COMPONENTS, notifications=False, editable=True, fullscreen=True)
         assert not editor.fullscreen
-        assert not editor._fullscreen_controller.active
         assert not _presenting(editor)
         # The bar holds Save and Done in edit mode.
         assert editor._dashboard_bar.__panel__().visible
@@ -77,7 +73,7 @@ class TestKioskQuery:
 
     async def test_leaving_kiosk_drops_only_the_kiosk_parameter(self, app):  # noqa: F811
         _open(app, "?theme=dark&kiosk=1")
-        app._editor._fullscreen_controller.active = False
+        app._editor._fullscreen.active = False
         assert pn.state.location.search == "?theme=dark"
 
     async def test_a_kiosk_value_other_than_1_is_not_kiosk(self, app):  # noqa: F811

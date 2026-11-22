@@ -327,7 +327,7 @@ export function render({model, el: root}) {
   // The dialog lives outside the app bar, so neither its stacking nor its
   // inverted palette applies; CSS variables still come from the page.
   const host = document.createElement("div")
-  host.className = "flowdash-command-palette"
+  host.className = "flowdash-command-palette pmui-fullscreen-keep"
   const shadow = host.attachShadow({mode: "open"})
   const dialogStyle = document.createElement("style")
   dialogStyle.textContent = DIALOG_CSS
@@ -409,7 +409,7 @@ export function render({model, el: root}) {
     if (item.id === "action:fullscreen") {
       // Full screen is only granted during the user's gesture, so it is
       // requested here rather than after a round trip to the server.
-      document.dispatchEvent(new CustomEvent("flowdash:fullscreen", {cancelable: true}))
+      document.dispatchEvent(new CustomEvent("pmui:fullscreen-toggle", {cancelable: true}))
       return
     }
     model.send_msg({type: "run", id: item.id})
@@ -558,7 +558,7 @@ export function render({model, el: root}) {
     } else if (key === "e") {
       model.send_msg({type: "shortcut", name: "edit"})
     } else if (key === "f" && !editing()) {
-      document.dispatchEvent(new CustomEvent("flowdash:fullscreen", {cancelable: true}))
+      document.dispatchEvent(new CustomEvent("pmui:fullscreen-toggle", {cancelable: true}))
     } else if (key === "s" && editing()) {
       model.send_msg({type: "shortcut", name: "split"})
     } else if (event.key === "Escape" && editing()) {

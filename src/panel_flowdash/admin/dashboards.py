@@ -526,7 +526,7 @@ class DashboardsAdmin(Viewer):
 
     def _build_bulk_bar(self):
         self._bulk_count = pmui.Typography(
-            "", variant="body2", margin=0, sx={"color": "primary.main", "fontWeight": 500}
+            "", variant="body2", margin=0, sx={"color": "primary.text", "fontWeight": 500}
         )
 
         def button(label, icon, action, color="primary"):
@@ -644,18 +644,11 @@ class DashboardsAdmin(Viewer):
                 self._share_groups,
                 self._owner_input,
                 self._keep_input,
-                pn.Row(
-                    pn.layout.HSpacer(),
-                    cancel,
-                    self._confirm,
-                    margin=(8, 0, 0, 0),
-                    sizing_mode="stretch_width",
-                    styles={"gap": "8px"},
-                ),
                 margin=0,
                 sizing_mode="stretch_width",
-                styles={"gap": "12px", "min-width": "420px"},
+                styles={"gap": "12px"},
             ),
+            actions=[cancel, self._confirm],
             title="",
             open=False,
             close_on_click=True,

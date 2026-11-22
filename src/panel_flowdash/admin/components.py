@@ -40,11 +40,11 @@ _CHIP_SX = {"fontSize": "0.875rem"}
 _ROW_CSS = """
 .k .comp { display: flex; align-items: center; gap: 12px; min-width: 0; cursor: pointer; }
 .k .comp .mi { font-family: 'Material Icons'; font-size: 20px; line-height: 1; flex: 0 0 auto;
-  color: var(--mui-palette-primary-main); font-style: normal; font-weight: normal;
+  color: var(--mui-palette-primary-text, var(--mui-palette-primary-main)); font-style: normal; font-weight: normal;
   -webkit-font-feature-settings: 'liga'; font-feature-settings: 'liga'; }
 .k .comp .text { min-width: 0; }
 .k .off { opacity: 0.6; }
-.k a { color: var(--mui-palette-primary-main); text-decoration: none; }
+.k a { color: var(--mui-palette-primary-text, var(--mui-palette-primary-main)); text-decoration: none; }
 """
 
 _DETAILS_CSS = """
@@ -57,7 +57,7 @@ _DETAILS_CSS = """
   border-radius: 4px 4px 0 0; }
 .k .preset:last-child { border-radius: 0 0 4px 4px; }
 .k .preset:only-child { border-radius: 4px; }
-.k a { color: var(--mui-palette-primary-main); text-decoration: none; }
+.k a { color: var(--mui-palette-primary-text, var(--mui-palette-primary-main)); text-decoration: none; }
 """
 
 _OVERLINE_SX = {
