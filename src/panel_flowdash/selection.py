@@ -971,7 +971,7 @@ def _set(ref, name, value):
         "selection keeps every row. Feed the chart itself the unfiltered data, so it keeps "
         "showing everything with its selection highlighted."
     ),
-    tags=["transform"],
+    tags=["transform", "filter"],
     requires=[
         {"key": "data", "type": "DataFrame", "required": True},
         {"key": "selection", "type": SELECTION_TYPE, "required": False, "blocking": False},

@@ -437,6 +437,20 @@ def _without_removed(report: t.Any, removed: set[str]) -> t.Any:
     return {**report, "blocks": blocks}
 
 
+def _without_excluded(filters: t.Any, removed: set[str]) -> t.Any:
+    if not isinstance(filters, list):
+        return filters or []
+    kept = []
+    for entry in filters:
+        if isinstance(entry, dict) and "exclude" in entry:
+            exclude = [n for n in entry["exclude"] if n not in removed]
+            entry = {k: v for k, v in entry.items() if k != "exclude"}
+            if exclude:
+                entry["exclude"] = exclude
+        kept.append(entry)
+    return kept
+
+
 def change_labels(old: t.Any, new: t.Any) -> list[str]:
     """Describe the change between two dashboard YAML documents as turn summary labels.
 
@@ -475,6 +489,11 @@ def change_labels(old: t.Any, new: t.Any) -> list[str]:
             label = "Changed the tile layout"
         elif path[0] == "settings":
             label = "Changed the settings"
+        elif path[0] == "filters":
+            # A removed node stops being excluded with it.
+            if _without_excluded(change.old, placed) == (change.new or []):
+                continue
+            label = "Changed the filters"
         elif path[0] == "report":
             # The blocks of a removed node go with it.
             if _without_removed(change.old, placed) == change.new:

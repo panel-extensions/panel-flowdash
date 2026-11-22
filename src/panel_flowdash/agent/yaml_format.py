@@ -19,6 +19,7 @@ import yaml
 
 from panel_flowdash.auto_layout import NodeBox, arrange_graph
 from panel_flowdash.dashboard_store import MODEL_VERSION, DashboardModel
+from panel_flowdash.global_filters import FILTER_KEYS, FilterError, check_filters, map_filters
 from panel_flowdash.groups import DashboardGroup, GroupError, check_group_id
 from panel_flowdash.parameters import DashboardParameter, ParameterError, check_name
 from panel_flowdash.report import (
@@ -46,6 +47,7 @@ TOP_LEVEL_KEYS = (
     "title",
     "settings",
     "parameters",
+    "filters",
     "turns",
     "groups",
     "nodes",
@@ -278,6 +280,8 @@ def dashboard_to_dict(
         parameters[name] = entry
     if parameters:
         doc["parameters"] = parameters
+    if filters := map_filters(data.get("filters"), names):
+        doc["filters"] = filters
     turns = [
         {key: turn[key] for key in TURN_KEYS if turn.get(key) is not None}
         for turn in data.get("turns") or []
@@ -967,6 +971,7 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
     parameters = _parameters(doc.get("parameters"), ids)
     groups = _groups(doc.get("groups"), nodes, ids)
     report = _report(doc.get("report"), ids, {group["id"] for group in groups}, turn_ids)
+    filters = _filters(doc.get("filters"), ids)
 
     layout = _mapping(doc.get("layout"), "layout")
     _unknown_keys(layout, LAYOUT_KEYS, "layout")
@@ -997,6 +1002,7 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
         "parameters": parameters,
         "groups": groups,
         **({"report": report} if report is not None else {}),
+        **({"filters": filters} if filters else {}),
     }
 
 
@@ -1047,6 +1053,23 @@ def _groups(value: t.Any, nodes: dict, ids: dict[str, str]) -> list[dict]:
                 "has no nodes; give at least one node 'group: " + group_id + "'.",
             )
     return [group.to_dict() for group in groups.values()]
+
+
+def _filters(value: t.Any, ids: dict[str, str]) -> list[dict]:
+    """Check the global filters of a document and return them as stored, views by instance id."""
+    if value is None:
+        return []
+    for i, entry in enumerate(_sequence(value, "filters")):
+        _unknown_keys(_mapping(entry, f"filters[{i}]"), FILTER_KEYS, f"filters[{i}]")
+    try:
+        filters = check_filters(value)
+    except FilterError as exc:
+        _fail(exc.key, exc.reason)
+    for i, entry in enumerate(filters):
+        for name in entry.get("exclude", ()):
+            if name not in ids:
+                _fail(f"filters[{i}].exclude", f"names no node: {name!r}.")
+    return map_filters(filters, ids)
 
 
 def _report(value: t.Any, ids: dict[str, str], groups: set[str], turns: set[str]) -> dict | None:

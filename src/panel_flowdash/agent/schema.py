@@ -9,6 +9,10 @@ from collections import defaultdict
 import param
 
 from panel_flowdash.component_spec import ComponentSpec
+from panel_flowdash.global_filters import (
+    MAX_LABEL_LENGTH as FILTER_LABEL_LENGTH,
+    WIDGETS as FILTER_WIDGETS,
+)
 from panel_flowdash.groups import GROUP_ID_PATTERN, MAX_LABEL_LENGTH
 from panel_flowdash.input_literals import literal_schema
 from panel_flowdash.parameters import NAME_PATTERN as PARAMETER_NAME, PARAMETER_TYPES
@@ -347,6 +351,29 @@ def dashboard_schema(
                             "type": "array",
                             "items": _tile_schema(names, framed=False),
                         },
+                    },
+                },
+            },
+            "filters": {
+                "type": "array",
+                "description": (
+                    "Global filters: each filters every view the dashboard shows whose data "
+                    "has the column, unless the view is in exclude."
+                ),
+                "items": {
+                    "type": "object",
+                    "required": ["column"],
+                    "patternProperties": _EXTENSIONS,
+                    "additionalProperties": False,
+                    "properties": {
+                        "column": {"type": "string", "minLength": 1, "pattern": "\\S"},
+                        "label": {"type": "string", "maxLength": FILTER_LABEL_LENGTH},
+                        "widget": {"enum": list(FILTER_WIDGETS)},
+                        "value": {
+                            "type": "array",
+                            "items": {"type": ["string", "number", "boolean", "null"]},
+                        },
+                        "exclude": {"type": "array", "items": names},
                     },
                 },
             },

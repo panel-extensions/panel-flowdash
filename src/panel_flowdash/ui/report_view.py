@@ -31,6 +31,7 @@ import param
 from panel.custom import JSComponent
 from panel.viewable import Viewable, Viewer
 
+from panel_flowdash.global_filters import filter_label
 from panel_flowdash.port_types import port_types_compatible
 from panel_flowdash.report import (
     PLACEHOLDER,
@@ -498,8 +499,14 @@ class ReportView(Viewer):
             sx={"color": "text.secondary"},
             stylesheets=[_HIDE_WHEN_NARROW],
         )
+        from panel_flowdash.ui.global_filters import FilterBar
+
+        # The dashboard's global filters, read only here: they are added in the View.
+        self._filter_bar = FilterBar(filters=editor._global_filters)
+        self._filter_bar.param.watch(lambda _event: self._sync_controls(), "has_content")
+        editor._global_filters.param.watch(self._schedule_values, ["filters", "values"])
         self._controls_row = pn.Row(
-            self._controls,
+            pn.Column(self._filter_bar, self._controls, margin=0, sizing_mode="stretch_width"),
             self._controls_hint,
             margin=0,
             sizing_mode="stretch_width",
@@ -858,6 +865,17 @@ class ReportView(Viewer):
                 continue
             title = self._node_title(items[iid])
             parts.append(f"{html.escape(title)}: {html.escape(text)}")
+        filters = editor._global_filters
+        for column, keep in filters.active().items():
+            entry = filters.entry(column) or {"column": column}
+            text = (
+                ", ".join(map(str, keep.values))
+                if keep.op == "in"
+                else " to ".join("…" if v is None else str(v) for v in keep.values)
+            )
+            if len(text) > 60:
+                text = text[:59] + "…"
+            parts.append(f"{html.escape(filter_label(entry))}: {html.escape(text)}")
         summary = f"<span>{' · '.join(parts)}</span>" if parts else ""
         return (
             f'<div class="fd-report-meta"><span class="fd-report-live">Live</span>{summary}</div>'
@@ -886,10 +904,13 @@ class ReportView(Viewer):
         }
         if list(self._controls) != views:
             self._controls[:] = views
-        self._controls_row.visible = bool(views)
-        self._filters_chip.visible = bool(views)
-        self._filters_chip.label = f"Filters · {len(views)}" if views else "Filters"
-        self._phone_row.visible = bool(views) or bool(editor._tile_items)
+        filters = len(editor._global_filters.filters)
+        shown = bool(views) or self._filter_bar.has_content
+        self._controls_row.visible = shown
+        self._filters_chip.visible = shown
+        count = len(views) + filters
+        self._filters_chip.label = f"Filters · {count}" if count else "Filters"
+        self._phone_row.visible = shown or bool(editor._tile_items)
 
     def _toggle_filters(self, _event):
         classes = list(self._controls_row.css_classes)
