@@ -29,7 +29,7 @@ for pages opened after it is saved.
 
 ```yaml
 general:
-  admins: [philipp]          # users who may open Admin, besides admin_groups
+  admins: [local:philipp, auth:ana@example.com]  # who may open Admin, besides admin_groups
   edit_workspace: split      # dataflow, layout or split (FlowDash.mode)
   home_dashboard: fleet      # a dashboard id or title (home_dashboard)
   live_values: hover         # click, hover or off (popup_trigger)
@@ -129,10 +129,19 @@ components:
 The admin view's Dashboards page works on the dashboard store rather than
 the project file: it lists every dashboard with its owner, history and
 access, and lets admins share, change the owner of, download, prune the
-history of and delete several at once. Each change asks for confirmation,
-checks again that the caller is an admin, and is noted with who made it
-and when in the admin log in `.flowdash/usage.json`, which also records
-when each dashboard was last opened.
+history of and delete several at once. Each of these asks for
+confirmation, checks again that the caller is an admin, and is noted with
+who made it and when in the admin log in `.flowdash/usage.json`, which
+also records when each dashboard was last opened. Every save in the other
+sections checks again too, so an admin removed meanwhile cannot save from
+a page left open.
+
+In `general.admins`, `local:<name>` is an account that runs the server
+without sign-in and `auth:<name>` a signed-in user, so turning sign-in on
+later never makes a signed-in user admin because they share a local
+account's name. A name without either prefix, as earlier versions wrote,
+is a local account. A name added in the admin view gets the prefix of how
+the server runs.
 
 Without a project file the admin view writes `flowdash.yaml` in the project
 directory on the first save.

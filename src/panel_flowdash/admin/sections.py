@@ -19,7 +19,12 @@ import param
 from panel.custom import JSComponent
 from panel.viewable import Viewer
 
-from panel_flowdash.admin.access import adding_admins_allowed, check_token, consume_token
+from panel_flowdash.admin.access import (
+    adding_admins_allowed,
+    check_token,
+    consume_token,
+    namespaced_entry,
+)
 from panel_flowdash.admin.form import (
     Group,
     Setting,
@@ -40,6 +45,11 @@ from panel_flowdash.project import (
 _MB = 2**20
 
 
+def _admin_entry(name: str, app: t.Any) -> str:
+    identity = getattr(app, "_identity", None)
+    return namespaced_entry(name, signed_in=bool(identity and identity.oauth_user))
+
+
 def _home_options() -> dict[str, t.Any]:
     options: dict[str, t.Any] = {"Dashboard grid": ""}
     app = current_app()
@@ -57,11 +67,14 @@ GENERAL_GROUPS = (
             Setting(
                 "admins",
                 "Admins",
-                "People who may open Admin, besides the admin groups set in code. Without "
-                "sign-in, a name is the account that runs the server.",
+                "People who may open Admin, besides the admin groups set in code: "
+                "auth:<name> for a signed-in user, local:<name> for the account that runs the "
+                "server without sign-in, which is admin only in a browser on that machine. A "
+                "name you add gets the prefix of how this server runs.",
                 kind="names",
                 unit="a user",
                 default=[],
+                normalize=_admin_entry,
             ),
         ),
     ),
@@ -405,7 +418,7 @@ def project_overrides(project: Project | None, in_code: Callable[[str], bool]) -
 
 
 def project_admins(project: Project | None, fresh: bool = False) -> list[str]:
-    """Return the users the project file's ``general.admins`` names.
+    """Return the entries of the project file's ``general.admins`` (see `access.entry_matches`).
 
     With *fresh*, the file is read again rather than the loaded copy used.
     A section the loader rejects names no one.
@@ -420,7 +433,7 @@ def project_admins(project: Project | None, fresh: bool = False) -> list[str]:
 
 
 def add_admin(project: Project, user: str) -> None:
-    """Add *user* to the project file's ``general.admins``, keeping the section's other settings."""
+    """Add the entry *user* to ``general.admins``, keeping the section's other settings."""
     with _FILE_LOCK:
         general = dict(current_section(project, "general") or {})
         admins = list(general.get("admins") or [])
@@ -432,7 +445,7 @@ def add_admin(project: Project, user: str) -> None:
 def claim_admin(
     project: Project, user: str | None, token: str, admin_groups: t.Iterable[str] = ()
 ) -> str:
-    """Make *user* an admin with the admin *token*; return how it went.
+    """Make *user*, a ``general.admins`` entry, an admin with the admin *token*; return how it went.
 
     ``"claimed"`` when the token was valid and *user* is now recorded (or,
     for no user, admin for the session only), ``"invalid"`` for a wrong or

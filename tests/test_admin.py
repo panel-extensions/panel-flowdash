@@ -88,7 +88,9 @@ class TestWhoIsAdmin:
         assert [item["key"] for item in app._shell.rail_items()][-2:] == ["admin", "help"]
         assert isinstance(_admin(app), AdminPage)
         user = getpass.getuser()
-        assert load_project(tmp_path / PROJECT_FILE).get("general") == {"admins": [user]}
+        assert load_project(tmp_path / PROJECT_FILE).get("general") == {
+            "admins": [f"local:{user}"]
+        }
 
         # A restart makes a new token, and the recorded user needs none.
         access.reset_admin_token()
@@ -105,7 +107,7 @@ class TestWhoIsAdmin:
         signed_in("alice")
         app = _app(tmp_path, auth_config=AuthConfig())
         app._token_exchange.token = token
-        assert load_project(tmp_path / PROJECT_FILE).get("general") == {"admins": ["alice"]}
+        assert load_project(tmp_path / PROJECT_FILE).get("general") == {"admins": ["auth:alice"]}
 
         access.reset_admin_token()
         assert _app(tmp_path, auth_config=AuthConfig())._is_admin
@@ -136,7 +138,7 @@ class TestWhoIsAdmin:
         assert app._is_admin
         assert load_project(tmp_path / PROJECT_FILE).get("general") == {
             "tile_titles": True,
-            "admins": ["ana", getpass.getuser()],
+            "admins": ["ana", f"local:{getpass.getuser()}"],
         }
 
     def test_the_token_works_once(self, tmp_path, sections, token, monkeypatch):
@@ -154,7 +156,7 @@ class TestWhoIsAdmin:
         second._token_exchange.token = token
         assert not second._is_admin
         assert load_project(tmp_path / PROJECT_FILE).get("general") == {
-            "admins": [getpass.getuser()]
+            "admins": [f"local:{getpass.getuser()}"]
         }
 
     def test_of_two_claims_at_once_one_wins_cleanly(self, tmp_path, sections, token):
@@ -183,9 +185,15 @@ class TestWhoIsAdmin:
         add = chosen._flowdash_parts[0]
         add.value = "cleo"
         add.param.trigger("enter_pressed")
-        assert chosen.value == ["ana", "cleo"]
+        # Without sign-in a name added is a local account.
+        assert chosen.value == ["ana", "local:cleo"]
+        add.value = "auth:dan"
+        add.param.trigger("enter_pressed")
+        assert chosen.value == ["ana", "local:cleo", "auth:dan"]
         assert page.save("general")
-        assert load_project(tmp_path / PROJECT_FILE).get("general") == {"admins": ["ana", "cleo"]}
+        assert load_project(tmp_path / PROJECT_FILE).get("general") == {
+            "admins": ["ana", "local:cleo", "auth:dan"]
+        }
 
     def test_the_token_can_be_fixed_for_scripted_setups(self, monkeypatch):
         monkeypatch.setenv(access.TOKEN_ENV, "scripted-token")

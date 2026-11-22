@@ -23,6 +23,7 @@ import panel_material_ui as pmui
 import param
 from panel.viewable import Viewer
 
+from panel_flowdash.admin.access import admin_name
 from panel_flowdash.admin.form import current_app, current_section
 from panel_flowdash.admin.kit import Table, caption, cell, chip, clear_text, esc, heading
 from panel_flowdash.admin.permissions import _AVATAR_COLORS, _PERSON_CSS, _initials
@@ -663,7 +664,7 @@ class DashboardsAdmin(Viewer):
                 people |= set(app._usage_ledger().people())
             except Exception:
                 pass
-            people |= set(app._configured_admins())
+            people |= {admin_name(entry) for entry in app._configured_admins()}
             config = app._code_auth_config
             if config is not None:
                 people |= set(config.user_groups)
@@ -671,13 +672,10 @@ class DashboardsAdmin(Viewer):
         return sorted(people)
 
     def ask(self, action: str, dashboard_ids: t.Sequence[str] | None = None):
-        """Open the confirmation of *action* (``share``, ``owner``, ``prune``, ``delete``)."""
+        """Open the confirmation of *action* (``share``, ``owner``, ``download``, ``prune``, ``delete``)."""
         ids = list(dashboard_ids) if dashboard_ids is not None else sorted(self.selection)
         rows = [r for r in self._rows if r.id in ids]
         if not rows:
-            return
-        if action == "download":
-            self.download(ids)
             return
         n = len(rows)
         noun = f"{n} dashboard{'' if n == 1 else 's'}"
@@ -715,6 +713,15 @@ class DashboardsAdmin(Viewer):
             )
             self._owner_input.options = self._known_people()
             clear_text(self._owner_input)
+        elif action == "download":
+            title, text, label, color = (
+                f"Download {noun} as YAML?",
+                f"The file{'' if n == 1 else 's'} will hold the specs of {esc(titles)}, "
+                "whoever owns them. Items whose component you may not use are left out. The "
+                "download is noted in the admin log.",
+                "Download",
+                "primary",
+            )
         elif action == "prune":
             drop = sum(r.versions for r in rows)
             title, text, label, color = (
@@ -758,6 +765,8 @@ class DashboardsAdmin(Viewer):
         elif action == "owner":
             owner = (self._owner_input.value_input or self._owner_input.value or "").strip()
             done = self.change_owner(ids, owner)
+        elif action == "download":
+            done = self.download(ids)
         elif action == "prune":
             done = self.prune(ids, int(self._keep_input.value or 1))
         elif action == "delete":
@@ -934,9 +943,11 @@ class DashboardsAdmin(Viewer):
 
         store = self._store()
         files = []
+        downloaded = []
         for did in dashboard_ids:
             model = store._load_any(did)
             if model is not None:
+                downloaded.append(did)
                 restricted = self._app._editor._restricted_ids(model)
                 hidden = [
                     e.to_dict() for e in model.edges if {e.source, e.target} & set(restricted)
@@ -965,6 +976,8 @@ class DashboardsAdmin(Viewer):
         downloader.data = None
         downloader.param.update(callback=lambda: payload, filename=name)
         downloader.transfer(download=True)
+        self._record("downloaded", downloaded)
+        self._done(f"Downloaded {len(files)} dashboard{'' if len(files) == 1 else 's'}.")
         return True
 
     def run(self, action: str | None, dashboard_id: str):

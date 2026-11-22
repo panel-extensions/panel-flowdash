@@ -207,6 +207,7 @@ missing or set to `None` keeps its default.
 | `home_dashboard` | `str` | Dashboard id or title shown on the homepage. Overridden by `--home-dashboard`. |
 | `include_builtin_components` | `bool` | Offer the built-in widget components in the editor. Default `True`. |
 | `admin_link` | `bool` | Whether the admin link printed at startup can claim the admin view. Default `True`, see [The admin view](#the-admin-view). |
+| `trusted_proxies` | `list` | IP addresses of reverse proxies whose `X-Forwarded-For` names the client, for the localhost rule of [admin without sign-in](#two-ways-of-working). Default none. |
 | `nav_variant` | `str` | `"rail"` (default), `"left"`, `"right"` or `"menubar"`, see [Navigation](#navigation). Overridden by `--nav-variant`. |
 | `notifications` | `bool` | Show user-facing messages as Panel notifications. Default `True`. |
 | `page_options` | `dict` | Extra keyword arguments for the underlying `panel_material_ui.Page`. |
@@ -252,6 +253,8 @@ project file's settings (see the
 [Project File reference](../reference/project-file.md#built-in-sections)).
 An admin is a member of `admin_groups` or a user named in the project
 file's `general.admins`, which admins can edit under Admin, General.
+Without sign-in, admin rights apply only in a browser on the machine that
+runs the server (see [Two ways of working](#two-ways-of-working)).
 
 ### Claiming a new project
 
@@ -269,7 +272,9 @@ The token is random, kept in memory and new on every start. It travels in
 the URL fragment, which the browser never sends to the server, so it
 appears in no access log, and the page removes it from the address bar
 once it has handed it over. Whoever opens the link is added to
-`general.admins` and is admin on every later start, with no token.
+`general.admins` (as `local:<account>` without sign-in, `auth:<user>`
+with it) and is admin on every later start, with no token. Without
+sign-in the link works only in a browser on the server's machine.
 
 The link claims the project once: the token stops working after its first
 use, and it is refused once the project has an admin or `admin_groups`,
@@ -277,8 +282,11 @@ even if the printed link is still in a console or log. To add an admin
 when the existing ones are away, restart with `--admin-link`, which prints
 a link that adds one more admin, again once. `FLOWDASH_ADMIN_TOKEN` fixes
 the token for scripted setups; it too works once per start and only under
-the same rules. Set `admin_link = False` in `__init__.py` to turn the link
-off entirely.
+the same rules. Unlike the random token it is the same after a restart, so
+it claims the project again on every start until someone is recorded, and
+adds an admin on every start with `--admin-link`: unset it once setup is
+done. Set `admin_link = False` in `__init__.py` to turn the link off
+entirely.
 
 ### The setup wizard
 
@@ -302,15 +310,24 @@ which is then stored encrypted like one saved under Admin, AI.
 version control or on a network drive and each person runs
 `flowdash serve` on their own machine, without sign-in. Without sign-in
 every visitor of a server is the account that runs it (its OS user name),
-so `general.admins` names OS accounts: once `philipp` claimed the project,
-anyone who opens a server that `philipp` started is admin. That is fine on
-your own machine and is not a security boundary: anyone who can reach that
-server, or edit the project file, can make themselves admin.
+so `general.admins` names OS accounts, such as `local:philipp`. Admin
+rights then apply only to a browser on the machine that runs the server:
+a request whose client is a loopback address (`127.0.0.1` or `::1`). A
+visitor from another machine never gets Admin, and the admin link refuses
+them. The client is the socket's peer; a request that came through a
+reverse proxy, i.e. carries `X-Forwarded-For`, `X-Real-Ip` or `Forwarded`,
+is never local, unless the proxy's address is listed in
+`trusted_proxies`, whose forwarded address is then checked instead.
+Everything else is not a security boundary: every visitor still is that
+account, owns the dashboards it made and matches the rules that name it,
+and anyone who can edit the project file can make themselves admin.
 
 **Deployed with sign-in.** Configure OAuth (Panel's `--oauth-provider`
 options) and, if you like, `admin_groups`. The user who opens the admin
-link is recorded by their sign-in name and only they, the other users in
-`general.admins` and the members of `admin_groups` get the admin view. The
+link is recorded by their sign-in name, as `auth:<name>`, and only they,
+the other `auth:` users in `general.admins` and the members of
+`admin_groups` get the admin view; `local:` entries and unprefixed names
+from working without sign-in never match a signed-in user. The
 link works from wherever it is opened, so it is also safe behind a proxy;
 treat it like a password until it has been used.
 

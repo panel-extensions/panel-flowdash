@@ -21,7 +21,9 @@ from panel.viewable import Children, Viewer
 
 from panel_flowdash.admin.access import (
     AdminTokenExchange,
+    admin_entry,
     is_admin,
+    session_is_local,
     show_admin_link,
 )
 from panel_flowdash.admin.page import ADMIN_ROUTE, AdminPage
@@ -35,7 +37,6 @@ from panel_flowdash.admin.sections import (
 from panel_flowdash.admin.wizard import SETUP_SECTION, SetupWizard, project_is_new
 from panel_flowdash.ai import UsageLedger, ledger_for
 from panel_flowdash.auth import (
-    ANONYMOUS_USER,
     AuthConfig,
     Permission,
     entry_authorized,
@@ -101,6 +102,7 @@ from panel_flowdash.ui.states import (
     LoadingSkeleton,
     UnsavedChangesDialog,
     access_denied,
+    admin_needs_this_machine,
     dashboard_not_found,
     describe_changes,
     page_not_found,
@@ -225,7 +227,21 @@ class FlowDashApp(Viewer):
         `panel_flowdash.admin.admin_path`). Whoever opens it is added to the
         project file's ``general.admins`` and is admin from then on: the
         signed-in user, or without sign-in the account that runs the server.
-        Members of the `auth_config`'s ``admin_groups`` are admins either way.""",
+        Members of the `auth_config`'s ``admin_groups`` are admins either way.
+        Without sign-in, admin rights (and the link) apply only to a browser
+        on the machine that runs the server, see `trusted_proxies`.""",
+    )
+
+    trusted_proxies = param.List(
+        default=[],
+        item_type=str,
+        doc="""
+        IP addresses of reverse proxies whose ``X-Forwarded-For`` header
+        names the client. Without sign-in only a client on the server's own
+        machine (a loopback address) gets admin rights, and by default that
+        is decided by the socket's peer alone: a request that came through
+        a proxy, i.e. has forwarding headers, is never local. List the proxy
+        here to have the address it forwards checked instead.""",
     )
 
     agent = param.Parameter(
@@ -555,12 +571,21 @@ class FlowDashApp(Viewer):
         self._session_state = self._session_state_class()
         self._apply_project_permissions()
         self._identity = resolve_identity(self.auth_config)
+        # Without sign-in every visitor is the server's account, so admin rights then
+        # need a browser on the server's machine.
+        self._admin_possible = self._identity.oauth_user is not None or session_is_local(
+            pn.state.curdoc, self.trusted_proxies
+        )
         self._note_visit()
         self._user_id = self._resolve_user_id()
-        self._is_admin = self._permissions_error is None and is_admin(
-            self._identity,
-            self._admin_groups(),
-            self._configured_admins(),
+        self._is_admin = (
+            self._admin_possible
+            and self._permissions_error is None
+            and is_admin(
+                self._identity,
+                self._admin_groups(),
+                self._configured_admins(),
+            )
         )
         self._admin_page: AdminPage | None = None
         self._wizard: SetupWizard | None = None
@@ -880,16 +905,33 @@ class FlowDashApp(Viewer):
         """Make whoever opened the admin link an admin, now and on every later start."""
         if not event.new:
             return
+        token, self._token_exchange.token = event.new, ""
+        try:
+            self._claim_admin(token)
+        except Exception as exc:
+            # Raised from here, Panel would log the event, token included.
+            logger.error("Could not use the admin link: %s", type(exc).__name__)
+            self._notify("error", "The admin link could not be used. See the server log.")
+
+    def _claim_admin(self, token: str):
         location = pn.state.location
         if location is not None and "token=" in (location.hash or ""):
             # Otherwise the next navigation would write the fragment back into the address bar.
             location.hash = ""
-        user = self._identity.user
-        user = user if user and user != ANONYMOUS_USER else None
+        if not self._admin_possible:
+            logger.warning("Refused an admin link opened without sign-in from another machine.")
+            self._notify(
+                "error",
+                "Without sign-in the admin link works only in a browser on the machine that "
+                "runs the server.",
+            )
+            return
+        entry = admin_entry(self._identity)
+        user = self._identity.user if entry else None
         project = self._settings_project()
         new_project = project_is_new(project)
         try:
-            outcome = claim_admin(self._settings_project(), user, event.new, self._admin_groups())
+            outcome = claim_admin(project, entry, token, self._admin_groups())
         except (ProjectError, OSError) as exc:
             logger.warning("Could not record %s as an admin: %s", user, exc)
             self._notify("warning", f"You're admin until the server restarts: {error_text(exc)}")
@@ -928,11 +970,10 @@ class FlowDashApp(Viewer):
     def _still_admin(self) -> bool:
         """Whether this session is still an admin, with the project file read again.
 
-        Asked before every action that changes or removes someone else's
-        dashboards, so an admin removed meanwhile cannot finish one from a
-        page they still have open.
+        Asked before every admin save and action, so an admin removed
+        meanwhile cannot finish one from a page they still have open.
         """
-        if not self._is_admin:
+        if not (self._is_admin and self._admin_possible):
             return False
         if self._admin_by_token:
             return True
@@ -978,6 +1019,8 @@ class FlowDashApp(Viewer):
 
     def _admin_view(self, pathname: str):
         """Return the admin page showing the section *pathname* names, or a refusal."""
+        if not self._admin_possible:
+            return admin_needs_this_machine(on_home=partial(self._request_navigation, "/"))
         if not self._is_admin:
             return self._access_denied_view("Admin")
         if pathname.strip("/") == f"{ADMIN_ROUTE}/{SETUP_SECTION}".strip("/"):
@@ -1224,6 +1267,10 @@ class FlowDashApp(Viewer):
     def _admin_groups(self) -> frozenset[str]:
         return self.auth_config.admin_groups if self.auth_config else frozenset()
 
+    def _session_admin_groups(self) -> frozenset[str]:
+        """Return the admin groups that give this session rights over every dashboard."""
+        return self._admin_groups() if self._admin_possible else frozenset()
+
     def _accessible_page_entries(self) -> dict[str, RegistryEntry]:
         """Page entries the current identity is authorized to see."""
         return {
@@ -1239,14 +1286,18 @@ class FlowDashApp(Viewer):
         second store lookup per dashboard.
         """
         if isinstance(dashboard, DashboardModel):
-            return self.store.can_administer_model(self._identity, dashboard, self._admin_groups())
-        return self.store.can_administer(self._identity, dashboard, self._admin_groups())
+            return self.store.can_administer_model(
+                self._identity, dashboard, self._session_admin_groups()
+            )
+        return self.store.can_administer(self._identity, dashboard, self._session_admin_groups())
 
     def _can_edit_dashboard(self, dashboard: str | DashboardModel) -> bool:
         """Whether the current identity may edit and save a dashboard's contents."""
         if isinstance(dashboard, DashboardModel):
-            return self.store.can_edit_model(self._identity, dashboard, self._admin_groups())
-        return self.store.can_edit(self._identity, dashboard, self._admin_groups())
+            return self.store.can_edit_model(
+                self._identity, dashboard, self._session_admin_groups()
+            )
+        return self.store.can_edit(self._identity, dashboard, self._session_admin_groups())
 
     def _authorize_dashboard(self, dashboard: DashboardModel, access: str) -> bool:
         """Whether the current identity may still view or edit the stored *dashboard*.
