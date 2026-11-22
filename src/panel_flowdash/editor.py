@@ -34,7 +34,11 @@ import panel as pn
 import panel_material_ui as pmui
 import panel_reactflow as pr
 import param
-from panel.viewable import Children, Viewer
+from panel.layout.base import ListLike
+from panel.layout.spacer import Spacer
+from panel.pane.base import ReplacementPane
+from panel.pane.markup import HTMLBasePane
+from panel.viewable import Children, Layoutable, Viewer
 from panel_agents import RunState
 from panel_tiles import TileGrid
 
@@ -131,7 +135,7 @@ from panel_flowdash.turns import (
 from panel_flowdash.ui import tile_layout
 from panel_flowdash.ui.code_panel import HEADER_HEIGHT, CodePanel, DockHandle
 from panel_flowdash.ui.controls_bar import ControlsBar
-from panel_flowdash.ui.dashboard_bar import DashboardBar
+from panel_flowdash.ui.dashboard_bar import HIDE_ON_PHONE, PHONE_BREAKPOINT, DashboardBar
 from panel_flowdash.ui.fullscreen import (
     PRESENTATION_CSS,
     PRESENTING_CLASS,
@@ -182,6 +186,13 @@ from panel_flowdash.ui.provenance import provenance_objects
 from panel_flowdash.ui.report_view import ReportView
 from panel_flowdash.ui.roles import component_role
 from panel_flowdash.ui.settings_dialog import SettingsDialog
+from panel_flowdash.ui.sheet import (
+    ABOVE_SHEET_CLASS,
+    SheetLabel,
+    bottom_sheet,
+    inspector_sheet,
+    sheet_button,
+)
 from panel_flowdash.ui.split_view import SplitView
 from panel_flowdash.ui.states import StartCard
 from panel_flowdash.ui.status_bar import StatusBar, select_on_canvas
@@ -240,6 +251,8 @@ if t.TYPE_CHECKING:
     from panel_flowdash.component_spec import ComponentSpec, InputPort, OutputPort
 
 logger = logging.getLogger("panel_flowdash")
+
+PlacementReason = t.Literal["new", "load", "restore"]
 
 
 def _no_editor(data, schema, *, id, type, on_patch):
@@ -344,12 +357,50 @@ def _bounded(value: float, low: float | None, high: float | None) -> float:
     return value
 
 
-def _size_layout(layout: list[dict], specs: list, reference_width: int) -> list[dict]:
+# The height a tile whose view takes its height from the tile starts at.
+FILL_HEIGHT = 360
+
+_HEIGHT_SIZING = ("stretch_both", "stretch_height", "scale_both", "scale_height")
+
+
+def _fills_tile(view: t.Any, lazy: list | None = None) -> bool:
+    """Whether *view* takes its height from its tile rather than giving the tile one.
+
+    The grid sizes a tile without a height to its content, so such a view, e.g.
+    a Vega-Lite chart sized to its container, would leave the tile a header
+    tall and draw nothing. A layout fills its tile if one of its views does,
+    and a pane that renders another object, e.g. a ``ParamMethod``, if what it
+    rendered does. Those panes are appended to *lazy*, since what they render
+    can change. Text and spacers have a height of their own.
+    """
+    if not isinstance(view, Layoutable) or view.height is not None or view.min_height is not None:
+        return False
+    if isinstance(view, ReplacementPane):
+        if lazy is not None:
+            lazy.append(view)
+        return any(_fills_tile(child, lazy) for child in view._inner_layout)
+    if isinstance(view, ListLike):
+        return any(_fills_tile(child, lazy) for child in view)
+    if isinstance(view, (HTMLBasePane, Spacer)):
+        return False
+    if view.sizing_mode in _HEIGHT_SIZING:
+        return True
+    if isinstance(view, pn.pane.Vega):
+        spec = view.object
+        height = spec.get("height") if isinstance(spec, dict) else getattr(spec, "height", None)
+        return height == "container"
+    return False
+
+
+def _size_layout(
+    layout: list[dict], specs: list, reference_width: int, fills: t.Sequence[bool] = ()
+) -> list[dict]:
     """Apply the size hints of the tiles' *specs* to a positional TileGrid layout.
 
     A tile without an entry starts at its ``default_size``, and every tile's size
     is kept within its ``min_size`` and ``max_size``. Hints are pixels; layout
-    widths are percentages of *reference_width*, heights are pixels.
+    widths are percentages of *reference_width*, heights are pixels. A tile
+    whose view *fills* it and that has no height yet starts at :data:`FILL_HEIGHT`.
     """
 
     def percent(pixels):
@@ -367,6 +418,9 @@ def _size_layout(layout: list[dict], specs: list, reference_width: int) -> list[
                     entry["width"] = percent(default["width"])
                 if "height" in default:
                     entry["height"] = default["height"]
+        if "height" not in entry and i < len(fills) and fills[i]:
+            entry["height"] = FILL_HEIGHT
+        if spec is not None:
             low, high = spec.min_size or {}, spec.max_size or {}
             if isinstance(entry.get("width"), (int, float)):
                 entry["width"] = _bounded(
@@ -411,6 +465,9 @@ _NODE_DEFAULTS = {
     "deletable": True,
 }
 _SIDE_PANEL_WIDTH = 250
+# A node added on a phone is shown at least this large, this far below the canvas's top.
+_PHONE_REVEAL_ZOOM = 0.75
+_PHONE_REVEAL_TOP = 24
 
 # Narrower windows show the Split tab with the inspector folded until something is selected.
 _SPLIT_FOLD_WIDTH = 1600
@@ -432,6 +489,18 @@ _CANVAS_MIN_WIDTH_DOCKED = 560
 # Docked to the right, the panel starts this wide and is never dragged narrower.
 _CODE_PANEL_WIDTH = 520
 _CODE_PANEL_MIN_SIDE_WIDTH = 400
+
+
+def _has_selection(selection: dict | None) -> bool:
+    selection = selection or {}
+    return bool(selection.get("nodes") or selection.get("edges"))
+
+
+# Touch targets on a phone.
+_FLOW_PHONE_CSS = (
+    f"@media (max-width: {PHONE_BREAKPOINT - 0.05}px) {{ "
+    ".react-flow__controls-button { width: 44px; height: 44px; } }"
+)
 
 _FLOW_STYLESHEET = """\
 /* The canvas shares its height with the code panel docked under it. */
@@ -717,6 +786,14 @@ _INSTANTIATING: contextvars.ContextVar[FlowDash | None] = contextvars.ContextVar
 _INSTANTIATING_NODE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "panel_flowdash_instantiating_node", default=None
 )
+# Why the component being created is placed, for `placement_context`.
+_PLACEMENT: contextvars.ContextVar[PlacementReason | None] = contextvars.ContextVar(
+    "panel_flowdash_placement", default=None
+)
+# Why the editor operation in progress places nodes; unset inside a component's creation.
+_PLACING: contextvars.ContextVar[PlacementReason | None] = contextvars.ContextVar(
+    "panel_flowdash_placing", default=None
+)
 # The latest editor of each served session; weak on both sides so a session can end.
 _SESSION_EDITORS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
@@ -765,6 +842,55 @@ def current_node_id() -> str | None:
     return _INSTANTIATING_NODE.get()
 
 
+def _unset(config_state: param.Parameterized, key: str) -> bool:
+    """Whether the config field *key* still holds its declared default."""
+    value, default = getattr(config_state, key), config_state.param[key].default
+    if value is default:
+        return True
+    try:
+        return bool(value == default)
+    except Exception:
+        return False
+
+
+def _next_tick(callback: t.Callable[[], t.Any]):
+    """Call *callback* once the session's current event is handled; outside a session, never."""
+    doc = pn.state.curdoc
+    if doc is not None and doc.session_context is not None:
+        doc.add_next_tick_callback(callback)
+
+
+def placement_context() -> PlacementReason | None:
+    """Return why the component calling this is being created, or None.
+
+    Call it from a component's ``__init__`` or function body:
+
+    - ``'new'``: someone added the node, from the palette, ``add_component``
+      or the agent, so the component may fill in defaults of its own.
+    - ``'load'``: a dashboard is being opened, imported or replaced, and its
+      saved configuration is what the component should show.
+    - ``'restore'``: undo, redo or restoring a version brings the node back as
+      it was.
+
+    Outside the creation of a FlowDash node it returns ``None``, as it does
+    from a thread the component starts, so read it before handing work off.
+    """
+    return _PLACEMENT.get()
+
+
+@contextmanager
+def _placing(reason: PlacementReason):
+    """Create the nodes placed inside the block for *reason*, unless an enclosing block set one."""
+    if _PLACING.get() is not None:
+        yield
+        return
+    token = _PLACING.set(reason)
+    try:
+        yield
+    finally:
+        _PLACING.reset(token)
+
+
 def copy_context(context: t.Mapping[str, t.Any]) -> dict[str, t.Any]:
     """Copy an editor's context one level down, so dicts, lists and sets in it are not shared."""
     return {
@@ -803,7 +929,12 @@ def _drop_repeated_ids(model: DashboardModel) -> int:
 
 
 @contextmanager
-def _creating(editor_ref: weakref.ref[FlowDash], instance_id: str, wiring: list):
+def _creating(
+    editor_ref: weakref.ref[FlowDash],
+    instance_id: str,
+    wiring: list,
+    reason: PlacementReason | None = None,
+):
     """Run one step of an async component body as part of creating *instance_id*.
 
     Like synchronous creation, `current_dashboard` returns the editor and every
@@ -816,9 +947,13 @@ def _creating(editor_ref: weakref.ref[FlowDash], instance_id: str, wiring: list)
     before = editor._subscriptions()
     token = _INSTANTIATING.set(editor)
     node_token = _INSTANTIATING_NODE.set(instance_id)
+    reason_token = _PLACEMENT.set(reason)
+    placing_token = _PLACING.set(None)
     try:
         yield
     finally:
+        _PLACING.reset(placing_token)
+        _PLACEMENT.reset(reason_token)
         _INSTANTIATING_NODE.reset(node_token)
         _INSTANTIATING.reset(token)
         editor._track_subscriptions(instance_id, before, wiring)
@@ -1226,6 +1361,13 @@ class FlowDash(Viewer):
 
     edited = param.Event(doc="Triggered after each edit is recorded in its turn.")
 
+    code_panel_node = param.String(
+        default=None,
+        allow_None=True,
+        constant=True,
+        doc="The id of the node the code panel under the canvas shows, or None while it is closed.",
+    )
+
     node_previews = param.Boolean(
         default=False,
         doc="""
@@ -1456,6 +1598,9 @@ class FlowDash(Viewer):
         self._area_entries: dict[str, tuple[str, dict]] = {}
         # The grid's layout while it waits for the browser to drop removed tiles.
         self._deferred_grid_layout: list[dict] | None = None
+        # Heights the grid shows for tiles whose view fills them, until someone resizes them.
+        self._fill_heights: dict[str, float] = {}
+        self._fill_watched: weakref.WeakSet = weakref.WeakSet()
         # The views shown beside the grid, by area, as (instance id, view) in order.
         self._area_views: dict[str, list] = {}
         # The framed tiles of the grid, by instance id, kept so a grid rebuild
@@ -1466,6 +1611,7 @@ class FlowDash(Viewer):
         # The tab Split returns to when it is toggled off.
         self._mode_before_split = "wiring"
         self._split_shown = False
+        self._phone = False
         # Where the canvas is shown ('wiring', 'split' or None when hidden); moving it
         # renders it afresh, and the page then reports an empty selection.
         self._canvas_host: str | None = None
@@ -1526,6 +1672,8 @@ class FlowDash(Viewer):
         self._layout_released = False
         self._hydrating = False
         self._recording_edit = False
+        # Counts recorded edits, so a default knows whether an edit took it in.
+        self._edit_count = 0
         self.param.watch(self._on_dirty, "dirty", onlychanged=False)
         self._history = EditHistory(self)
         self._restricted_seen: dict[str, DashboardItem] = {}
@@ -1975,7 +2123,7 @@ class FlowDash(Viewer):
             sizing_mode="stretch_both",
             min_height=_CANVAS_MIN_HEIGHT,
             css_classes=[f"fd-canvas-{id(self)}"],
-            stylesheets=[_FLOW_STYLESHEET],
+            stylesheets=[_FLOW_STYLESHEET, _FLOW_PHONE_CSS],
             popup_trigger=self.popup_trigger,
             popup_hover_delay=self.popup_hover_delay,
             drop_types=[_PALETTE_DRAG_TYPE, _FILES_DROP_TYPE],
@@ -3275,6 +3423,10 @@ class FlowDash(Viewer):
         editor = editor_ref()
         if editor is None:
             return
+        config_state = editor._dataflow_graph.get_config_state(node_id)
+        # The config's own value coming back from the sync onto the component is no edit.
+        if config_state is not None and getattr(config_state, event.name, _MISSING) is event.new:
+            return
         if editor.editable and not editor.read_only and not editor.preview:
             editor._apply_config_patch(node_id, {event.name: event.new})
             return
@@ -3314,7 +3466,9 @@ class FlowDash(Viewer):
         # render time, after `_place` has finished tracking.
         node_id = node_state.name
         wiring = self._component_wiring.setdefault(node_id, [])
-        app_fn = stepped(app_fn, partial(_creating, weakref.ref(self), node_id, wiring))
+        app_fn = stepped(
+            app_fn, partial(_creating, weakref.ref(self), node_id, wiring, _PLACEMENT.get())
+        )
         return panel_call(app_fn, **kwargs)
 
     def _instantiate_viewer_for_node(self, viewer_cls, entry, node_state, config_state=None):
@@ -3530,6 +3684,7 @@ class FlowDash(Viewer):
             sizing_mode="stretch_height",
             margin=0,
             sx={"borderRight": 1, "borderColor": "divider"},
+            stylesheets=[HIDE_ON_PHONE],
         )
         self._start_card = StartCard(editor=self)
         self._empty_hint = self._start_card.__panel__()
@@ -3596,8 +3751,14 @@ class FlowDash(Viewer):
         # the two panels is shown at a time. The slot is hidden with both,
         # since an empty Column still takes the width of its scroll button.
         self._panel_slot = pn.Column(
-            self._inspector, self._layout_panel, margin=0, sizing_mode="stretch_height"
+            self._inspector,
+            self._layout_panel,
+            margin=0,
+            sizing_mode="stretch_height",
+            stylesheets=[HIDE_ON_PHONE],
         )
+
+        self._build_phone_sheets()
 
         self._sync_toolbar_extra()
         self._sync_toolbar_state()
@@ -3623,12 +3784,125 @@ class FlowDash(Viewer):
             self._status_bar,
             self._fullscreen_overlay,
             self._fullscreen_controller,
+            self._sheet_host,
             self._tile_drag,
             self._split_view.storage,
             self._card_bridge,
             sizing_mode="stretch_both",
             stylesheets=[PRESENTATION_CSS],
         )
+
+    def _build_phone_sheets(self):
+        """Make the bottom sheets and buttons standing in for the side panels on a phone."""
+        self._palette_sheet, self._palette_sheet_body = bottom_sheet(
+            "Add component", "fd-palette-sheet", "85dvh"
+        )
+        self._layout_sheet, self._layout_sheet_body = bottom_sheet(
+            "Arrange tiles", "fd-layout-sheet", "70dvh"
+        )
+        self._inspector_sheet = inspector_sheet()
+        self._inspector_label = SheetLabel(label="Inspector", width=0, height=0, margin=0)
+        self._add_button = sheet_button("add", "Add component", "fd-add-component")
+        self._add_button.on_click(lambda _event: setattr(self._palette_sheet, "open", True))
+        self._layout_button = sheet_button("tune", "Arrange tiles", "fd-arrange-tiles")
+        self._layout_button.on_click(lambda _event: setattr(self._layout_sheet, "open", True))
+        # Like the dialogs, the sheets take no room in the layout. The inspector's
+        # sheet, which is always rendered, joins them only on a phone.
+        self._sheet_host = pn.Column(
+            self._add_button,
+            self._layout_button,
+            self._palette_sheet,
+            self._layout_sheet,
+            margin=0,
+            width=0,
+            height=0,
+            sizing_mode="fixed",
+        )
+        self._dashboard_bar._phone_query.param.watch(self._on_phone_changed, "phone")
+        self._flow.param.watch(self._on_phone_selection, "selection")
+        # A tap on the selected node or connection opens a dismissed sheet again.
+        self._flow.on("node_clicked", self._on_phone_tap)
+        self._flow.on("edge_clicked", self._on_phone_tap)
+        self._inspector.param.watch(lambda _event: self._sync_inspector_sheet(), "collapsed")
+
+    @pn.io.hold()
+    def _on_phone_changed(self, event):
+        """Move the palette and the side panels into bottom sheets below the phone breakpoint, and back."""
+        phone = self._phone = event.new
+        self._palette_sheet.open = self._layout_sheet.open = False
+        # Sized for where they go before they move, so the columns they leave
+        # and join keep their own sizing.
+        self._palette_panel.touch = phone
+        self._inspector.sheet = self._layout_panel.sheet = phone
+        if phone:
+            self._side_panel[:] = []
+            self._panel_slot[:] = []
+            self._palette_sheet_body[:] = [self._palette_section]
+            self._layout_sheet_body[:] = [self._layout_panel]
+            self._inspector_sheet[:] = [self._inspector_label, self._inspector]
+            self._sheet_host.append(self._inspector_sheet)
+        else:
+            self._sheet_host.remove(self._inspector_sheet)
+            self._inspector_sheet[:] = []
+            self._layout_sheet_body[:] = []
+            self._palette_sheet_body[:] = []
+            self._side_panel[:] = [self._palette_section]
+            self._panel_slot[:] = [self._inspector, self._layout_panel]
+            # A sheet dismissed on the phone is not a fold of the column; the
+            # agent's drawer folds it again if it is open (SessionChrome).
+            self._inspector.collapsed = False
+        self._sync_min_width()
+        self._apply_mode_state()
+        if self._inspector.visible:
+            # Fit to the canvas's new width once the browser has laid it out.
+            pn.state.execute(self._fit_canvas, schedule=True)
+
+    def _sync_phone_panels(self, showing_canvas: bool, layout: bool):
+        """Show the side panels beside the workspace, or on a phone the buttons opening their sheets."""
+        phone = self._phone
+        self._side_panel.visible = showing_canvas and not phone
+        self._panel_slot.visible = not phone and (self._inspector.visible or layout)
+        # Shown on phones only, by their stylesheet.
+        self._add_button.visible = showing_canvas and self.editable and not self.preview
+        self._layout_button.visible = layout
+        if not showing_canvas:
+            self._palette_sheet.open = False
+        if not layout:
+            self._layout_sheet.open = False
+        self._sync_inspector_sheet()
+
+    def _on_phone_tap(self, _payload):
+        if self._phone:
+            self._inspector.collapsed = False
+
+    def _on_phone_selection(self, event):
+        # A new selection opens the sheet again after it was dismissed.
+        if self._phone and _has_selection(event.new) and event.new != event.old:
+            self._inspector.collapsed = False
+        self._sync_inspector_sheet()
+
+    def _reveal_above_sheet(self, instance_id: str):
+        """Pan the canvas so the node of *instance_id* sits at its top, above the inspector's sheet."""
+        node = next((n for n in self._flow.nodes if n["id"] == instance_id), None)
+        width = self._split_view.storage.window_width
+        if node is None or not width:
+            return
+        zoom = max((self._flow.viewport or {}).get("zoom") or 1, _PHONE_REVEAL_ZOOM)
+        x = width / 2 - (node["position"]["x"] + CARD_WIDTH / 2) * zoom
+        y = _PHONE_REVEAL_TOP - node["position"]["y"] * zoom
+        self._flow.viewport = {"x": x, "y": y, "zoom": zoom}
+
+    def _sync_inspector_sheet(self):
+        """Open the inspector's sheet on a phone while something is selected and it is not dismissed."""
+        inspector = self._inspector
+        is_open = self._inspector_sheet.open = (
+            self._phone
+            and inspector.visible
+            and not inspector.collapsed
+            and _has_selection(self._flow.selection)
+        )
+        classes = [c for c in self._add_button.css_classes if c != ABOVE_SHEET_CLASS]
+        self._add_button.css_classes = [*classes, ABOVE_SHEET_CLASS] if is_open else classes
 
     @property
     def explore_feed(self):
@@ -3682,7 +3956,8 @@ class FlowDash(Viewer):
     @param.depends("editable", watch=True)
     def _sync_min_width(self):
         """Let the feed, the report and the dashboard narrow to the window; only the canvas and its panels need the room."""
-        self._view.min_width = None if self.editable and self.surface == "workspace" else 0
+        canvas = self.editable and self.surface == "workspace" and not self._phone
+        self._view.min_width = None if canvas else 0
 
     @param.depends("edited", watch=True)
     def _sync_explore(self):
@@ -3736,6 +4011,11 @@ class FlowDash(Viewer):
                 self._tile_grid.layout = event.old
                 return
             self._auto_tiles.clear()
+            if event.name == "layout":
+                for instance_id, entry in zip(self._grid_ids, event.new, strict=False):
+                    height = self._fill_heights.get(instance_id)
+                    if height is not None and entry.get("height") != height:
+                        del self._fill_heights[instance_id]
             if (release := self._awaiting_tile_drop()) is not None:
                 release["held"] = True
             else:
@@ -4087,8 +4367,45 @@ class FlowDash(Viewer):
         """Apply the size hints of the tiles on the grid to its positional *layout*."""
         items = {item["instance_id"]: item for item in self._tile_items}
         specs = [self._tile_spec(items[i]) if i in items else None for i in self._grid_ids]
+        lazy: list[ReplacementPane] = []
+        fills = []
+        for instance_id in self._grid_ids:
+            tile = self._inspect_tiles.get(instance_id)
+            fills.append(tile is not None and _fills_tile(tile.view, lazy))
+        for pane in lazy:
+            if pane not in self._fill_watched:
+                self._fill_watched.add(pane)
+                pane._inner_layout.param.watch(self._refill_tiles, "objects")
         grid = self._tile_grid
-        return _size_layout(layout, specs, reference_width(grid.reference_width, grid.breakpoints))
+        width = reference_width(grid.reference_width, grid.breakpoints)
+        hinted = _size_layout(layout, specs, width)
+        sized = _size_layout(layout, specs, width, fills)
+        # Heights given only for display, so a layout without them is saved without them.
+        for i, (instance_id, entry) in enumerate(zip(self._grid_ids, sized, strict=False)):
+            if "height" in entry and (i >= len(hinted) or "height" not in hinted[i]):
+                self._fill_heights[instance_id] = entry["height"]
+        return sized
+
+    def _refill_tiles(self, *_events):
+        """Size the tiles again once a pane in one of them rendered what it shows."""
+        if not self._grid_populated:
+            return
+        layout = self._deferred_grid_layout
+        if layout is None:
+            layout = self._tile_grid.layout
+        sized = self._sized_layout(layout)
+        if sized != layout:
+            self._set_grid_layout(sized)
+
+    def _without_fill_heights(self, keyed: list[dict]) -> list[dict]:
+        """Drop the heights the editor gave tiles that fill them and nobody resized."""
+        stripped = []
+        for entry in keyed:
+            height = self._fill_heights.get(entry.get("instance_id"))
+            if height is not None and entry.get("height") == height:
+                entry = {k: v for k, v in entry.items() if k != "height"}
+            stripped.append(entry)
+        return stripped
 
     def _on_tile_layout(self, event):
         # Resizing in the browser bounds only a tile's width, so heights are kept in bounds here.
@@ -4103,7 +4420,9 @@ class FlowDash(Viewer):
             return {
                 "breakpoints": list(grid.breakpoints),
                 "responsive_layouts": {
-                    band: self._placed_layout(_key_layout(layout, self._grid_ids))
+                    band: self._without_fill_heights(
+                        self._placed_layout(_key_layout(layout, self._grid_ids))
+                    )
                     for band, layout in grid.responsive_layouts.items()
                 },
                 "reference_width": grid.reference_width,
@@ -4148,10 +4467,9 @@ class FlowDash(Viewer):
         showing_canvas = split or not showing_grid
         self._dashboard_bar.visible = self.toolbar and not self.fullscreen
         self._dashboard_bar.sync()
-        self._side_panel.visible = showing_canvas
         self._inspector.visible = showing_canvas
         self._layout_panel.visible = interactive and showing_grid and not split
-        self._panel_slot.visible = self._inspector.visible or self._layout_panel.visible
+        self._sync_phone_panels(showing_canvas, self._layout_panel.visible)
         self._status_bar.visible = self.editable and self.surface == "workspace"
         self._split_view.events.active = split
         self._view_controls.param.update(beside_canvas=split, editing=interactive and showing_grid)
@@ -4279,6 +4597,7 @@ class FlowDash(Viewer):
             self._inspector.param.watch(lambda _e: self._sync_code_dock_side(), "visible")
             self._inspector._panel.param.watch(lambda _e: self._sync_code_dock_side(), "width")
             panel.param.watch(self._sync_code_dock, ["collapsed", "instance_id"])
+            panel.param.watch(self._sync_code_panel_node, "instance_id")
             panel.param.watch(self._on_code_drafts, "dirty")
             self._sync_code_spec_view()
             panel.param.watch(self._on_code_spec_view, ["spec_view", "spec_text"])
@@ -4313,6 +4632,10 @@ class FlowDash(Viewer):
                 card.stale = stale
         for instance_id, tile in self._inspect_tiles.items():
             tile.set_stale(states.get(instance_id))
+
+    def _sync_code_panel_node(self, event):
+        with param.edit_constant(self):
+            self.code_panel_node = event.new
 
     @property
     def code_panel_open(self) -> bool:
@@ -4745,7 +5068,7 @@ class FlowDash(Viewer):
             grid_layout = self._deferred_grid_layout
             if grid_layout is None:
                 grid_layout = self._tile_grid.layout
-            keyed = _key_layout(grid_layout, self._grid_ids)
+            keyed = self._without_fill_heights(_key_layout(grid_layout, self._grid_ids))
             ids = {spec["instance_id"] for spec in keyed}
             keyed += [
                 {"instance_id": iid}
@@ -5846,6 +6169,7 @@ class FlowDash(Viewer):
         """
         if not self._hydrating:
             self._prune_parameters()
+            self._edit_count += 1
         turn = None if self._hydrating else self._note_turn(*labels)
         if turn is not None:
             for instance_id in created:
@@ -5868,6 +6192,7 @@ class FlowDash(Viewer):
     def _on_dirty(self, event):
         # Code that marks the canvas changed without `_record_edit` still opens a turn.
         if event.new and not self._recording_edit and not self._hydrating:
+            self._edit_count += 1
             self._history.record("edit", {}, None, self._note_turn())
 
     def _port_ref(self, instance_id: str, port: str) -> str:
@@ -5905,6 +6230,66 @@ class FlowDash(Viewer):
         """
         return next(
             (nid for nid, inst in self._component_instances.items() if inst is component), None
+        )
+
+    def set_default(self, instance_id: str, config: t.Mapping[str, t.Any]) -> bool:
+        """Give the node *instance_id* config values its component chose as a starting point.
+
+        A component calls it for a node :func:`placement_context` reports as
+        ``"new"``, from its ``__init__`` or function body, or later, e.g. once
+        an input arrives. The values are saved with the dashboard like any
+        config, and are part of the edit that brought them about: the
+        placement, or the connection that delivered the input, so one undo
+        takes back both. Values set outside any edit, e.g. by an input that
+        arrives on its own, are recorded as a config edit of their own once
+        the session's current event is handled.
+
+        Only fields still at their declared default take a value, so a node
+        that arrives configured, e.g. one the agent adds or a duplicate, keeps
+        its config. Returns whether any field took one: False, changing
+        nothing, also while a dashboard is loaded or a
+        version restored, to viewers and in a preview, and for a node or a
+        config field the node does not have.
+        """
+        if self._hydrating or self.read_only or self.preview or not self.editable:
+            return False
+        config_state = self._dataflow_graph.get_config_state(instance_id)
+        if config_state is None or any(
+            key == "name" or key not in config_state.param for key in config
+        ):
+            return False
+        config = {key: value for key, value in config.items() if _unset(config_state, key)}
+        if not config:
+            return False
+        if _INSTANTIATING.get() is self and _INSTANTIATING_NODE.get() == instance_id:
+            # `_place` takes config written while the component is created into the node's config.
+            try:
+                config_state.param.update(
+                    {key: config_value(config_state.param[key], v) for key, v in config.items()}
+                )
+            except Exception as exc:
+                logger.warning("Default config rejected on %s: %s", instance_id, exc)
+                return False
+            return True
+        self._hydrating = True
+        try:
+            applied = self._set_config_state(instance_id, dict(config))
+            if applied:
+                self.dirty = True
+        finally:
+            self._hydrating = False
+        if not applied:
+            return False
+        _next_tick(partial(self._record_default, instance_id, sorted(applied), self._edit_count))
+        return True
+
+    def _record_default(self, instance_id: str, keys: list[str], count: int):
+        """Record a default as its own edit, unless an edit since took it in."""
+        if self._edit_count != count or self._dataflow_graph.get_config_state(instance_id) is None:
+            return
+        name = self._node_name(instance_id)
+        self._record_edit(
+            f"Changed the config of {name}", op="set_config", args={"name": name, "keys": keys}
         )
 
     def add_component(
@@ -6177,6 +6562,18 @@ class FlowDash(Viewer):
         before = self._subscriptions()
         token = _INSTANTIATING.set(self)
         node_token = _INSTANTIATING_NODE.set(instance_id)
+        # A node the component adds while it is created is new, whatever placed this one.
+        reason_token = _PLACEMENT.set(_PLACING.get() or "new")
+        placing_token = _PLACING.set(None)
+        # Config a component writes while it is created, e.g. a default for a
+        # new node, is the node's config, so it is saved with the dashboard.
+        written: dict[str, t.Any] = {}
+        config_watcher = None
+        if config_state is not None:
+            config_watcher = config_state.param.watch(
+                lambda *events: written.update({e.name: e.new for e in events}),
+                [name for name in config_state.param if name != "name"],
+            )
         try:
             view = self._instantiate_for_node(entry, node_state, config_state)
         except Exception:
@@ -6185,8 +6582,15 @@ class FlowDash(Viewer):
             self._dispose_component(instance_id)
             raise
         finally:
+            if config_watcher is not None:
+                config_state.param.unwatch(config_watcher)
+            _PLACING.reset(placing_token)
+            _PLACEMENT.reset(reason_token)
             _INSTANTIATING_NODE.reset(node_token)
             _INSTANTIATING.reset(token)
+        if written:
+            config = {**config, **written}
+            config_data.update(written)
         self._track_subscriptions(instance_id, before)
         # The component is instantiated even while blocked, so it can subscribe
         # and publish outputs; only what the tile displays is gated.
@@ -6960,9 +7364,12 @@ class FlowDash(Viewer):
         The model's turns replace the editor's. With *keep_open_turns* the
         turns open to more edits stay open, for a change made by loading a model.
         """
+        # A height the model stores is the model's, even where the editor showed the same one.
+        self._fill_heights.clear()
         self._hydrating = True
         try:
-            self._hydrate(model, keep_open_turns)
+            with _placing("load"):
+                self._hydrate(model, keep_open_turns)
         finally:
             self._hydrating = False
         self._note_parameter_nodes()
@@ -7402,7 +7809,7 @@ class FlowDash(Viewer):
         """
         model = self._restore_model(text)
         self.ensure_components_loaded(self._model_component_ids(model))
-        with self._quiet_history():
+        with self._quiet_history(), _placing("restore"):
             self._hydrating = True
             try:
                 patched = self._patch_canvas(model)
@@ -8169,8 +8576,15 @@ class FlowDash(Viewer):
 
     def _on_palette_clicked(self, item):
         component_id = item.get("component_id") if isinstance(item, dict) else None
-        if component_id is not None:
-            self._add_from_ui(component_id, config=item.get("config"))
+        if component_id is None:
+            return
+        instance_id = self._add_from_ui(component_id, config=item.get("config"))
+        if self._phone and instance_id is not None:
+            # The sheet covers the canvas, so the new node is shown and selected
+            # for its settings to open in the inspector's sheet.
+            self._palette_sheet.open = False
+            self._reveal_above_sheet(instance_id)
+            self._select_node(instance_id)
 
     def _on_component_dropped(self, payload):
         if payload.get("drop_type") == _FILES_DROP_TYPE:
