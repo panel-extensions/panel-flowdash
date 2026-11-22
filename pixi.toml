@@ -28,7 +28,7 @@ markdown-it-py = "*"
 numpy = "*"
 pandas = ">=1.5"
 panel = ">=1.11.0rc0"
-panel-material-ui = ">=0.17.0rc2"
+panel-material-ui = ">=0.17.0rc3"
 panel-splitjs = ">=0.4.0"
 param = ">=2.3.0"
 pyyaml = "*"
@@ -37,8 +37,9 @@ pyyaml = "*"
 [dependencies]
 panel_flowdash = { path = "." }
 # Page's rail and header_color arrived in 0.17.0b3 and Dialog actions, Fullscreen and
-# Reveal in 0.17.0rc2, which are only on the pyviz dev label so far. TODO: Move to the pyviz channel once 0.17.0 is released.
-panel-material-ui = { version = ">=0.17.0rc2", channel = "pyviz/label/dev" }
+# Reveal in 0.17.0rc2 and a Fullscreen focus fix in 0.17.0rc3, which are only on the pyviz dev
+# label so far. TODO: Move to the pyviz channel once 0.17.0 is released.
+panel-material-ui = { version = ">=0.17.0rc3", channel = "pyviz/label/dev" }
 # panel-material-ui 0.17 needs Panel 1.11, which is only on the pyviz dev label so far.
 # TODO: Move to the pyviz channel once 1.11.0 is released.
 panel = { version = ">=1.11.0rc0", channel = "pyviz/label/dev" }
