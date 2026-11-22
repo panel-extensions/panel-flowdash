@@ -130,7 +130,12 @@ options a served project can set this way.
 
 - every `refresh_period` seconds while a dashboard is shown and the period is above 0,
 - when the user clicks **Refresh**, and
-- whenever you call `editor.param.trigger("refresh")`.
+- whenever you call `editor.trigger_refresh()`.
+
+`trigger_refresh()` delivers everything the refresh changes as one propagation
+pass, so a node fed by two sources that both run again runs once, with both new
+values. A bare `editor.param.trigger("refresh")` still fires the event, but each
+changed input then reaches its node on its own.
 
 The timer is a single periodic callback per editor. It starts once the page has
 loaded, restarts when the period changes, stops at 0, and stops when the dashboard

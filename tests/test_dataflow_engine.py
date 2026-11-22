@@ -897,6 +897,27 @@ class TestRuntimeValidation:
         graph.get_state("s").val = "not_an_int"
         assert typed_state.count == 0
 
+    async def test_a_connect_error_on_a_wire_never_shows_a_password(self):
+        class Connecting(param.Parameter):
+            def _validate(self, val):
+                if val is not None:
+                    raise ConnectionError("cannot connect to postgresql://u:SECRET@h/db")
+
+        class Target(param.Parameterized):
+            value = Connecting(default=None)
+
+        specs = {
+            "src": make_spec("src", outputs=[OutputPort(name="val")]),
+            "tgt": make_spec("tgt", inputs=[InputPort(name="value")]),
+        }
+        graph = DataflowGraph(specs, on_error=lambda *args: None)
+        graph.add_node("s", "src")
+        graph._nodes["t"] = Target(name="t")
+        graph._node_specs["t"] = specs["tgt"]
+        graph.get_state("s").val = 1
+        result = graph.add_edge("s", "val", "t", "value")
+        assert result == "Connection rejected: cannot connect to postgresql://u:***@h/db"
+
     async def test_initial_propagation_failure_rejects_connection(self):
         """A value the target rejects at wire time undoes the edge instead of leaving it broken."""
 
@@ -1163,18 +1184,17 @@ class TestBatch:
         assert isinstance(result, str) and "rejects" in result
 
 
-def test_deep_chain_without_event_loop_reports_instead_of_raising():
+def test_deep_chain_without_event_loop_updates_in_one_pass():
+    # A pass delivers each hop from its own shallow stack, so no hop nests the next.
     errors = []
     graph = DataflowGraph(_chain_specs(), on_error=lambda *args: errors.append(args))
     depth = sys.getrecursionlimit() // 5
     source, last = _chain(graph, depth)
     source.out = 1
-    assert last.out != depth + 1
-    assert len(errors) == 1
-    assert isinstance(errors[0][4], RecursionError)
-
+    assert last.out == depth + 1
     source.out = 2
-    assert len(errors) == 2
+    assert last.out == depth + 2
+    assert errors == []
 
 
 async def test_deep_chain_finishes_on_later_ticks():

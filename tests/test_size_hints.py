@@ -8,7 +8,7 @@ from panel.viewable import Viewer
 
 from panel_flowdash import register
 from panel_flowdash.dashboard_store import DashboardItem, DashboardModel
-from panel_flowdash.editor import FlowDash
+from panel_flowdash.editor import FILL_HEIGHT, FlowDash, _fills_tile
 
 
 @register(
@@ -173,3 +173,137 @@ class TestBounds:
         (tile,) = editor._tile_grid.objects
         assert (tile.min_width, tile.max_width) == (240, 960)
         assert tile.inspect_button.visible
+
+
+VEGA = {"$schema": "https://vega.github.io/schema/vega-lite/v5.json", "mark": "bar"}
+CONTAINER = {**VEGA, "width": "container", "height": "container"}
+
+
+@register(page=False, component=True, title="Filling")
+def filling(config):
+    return pn.pane.Vega(CONTAINER)
+
+
+@register(page=False, component=True, title="Filling bounded", max_size={"height": 300})
+def filling_bounded(config):
+    return pn.Column(pn.pane.Markdown("a"), pn.pane.Vega(CONTAINER))
+
+
+@register(page=False, component=True, title="Rendered")
+class Rendered(Viewer):
+    shown = param.Boolean(default=False)
+
+    @param.depends("shown")
+    def _render(self):
+        return pn.pane.Vega(CONTAINER) if self.shown else pn.pane.Markdown("Waiting")
+
+    def __panel__(self):
+        return pn.panel(self._render)
+
+
+FILLING = "Test/filling"
+FILLING_BOUNDED = "Test/filling_bounded"
+RENDERED = "Test/rendered"
+
+
+def _fill_editor():
+    return FlowDash(
+        {
+            SIZED: Sized,
+            PLAIN: plain,
+            FILLING: filling,
+            FILLING_BOUNDED: filling_bounded,
+            RENDERED: Rendered,
+        },
+        notifications=False,
+    )
+
+
+class TestFillHeight:
+    def test_a_view_sized_by_its_tile_starts_at_the_fill_height(self):
+        editor = _fill_editor()
+        editor.add_component(PLAIN)
+        editor.add_component(FILLING)
+        editor.add_component(SIZED)
+        editor.mode = "dashboard"
+
+        assert editor._tile_grid.layout == [
+            {},
+            {"height": FILL_HEIGHT},
+            {"width": 50.0, "height": 300},
+        ]
+
+    def test_the_fill_height_is_kept_within_bounds(self):
+        editor = _fill_editor()
+        editor.add_component(FILLING_BOUNDED)
+        editor.mode = "dashboard"
+
+        assert editor._tile_grid.layout == [{"height": 300}]
+
+    def test_a_stored_height_wins_over_the_fill_height(self):
+        editor = _fill_editor()
+        stored = {"index": 0, "width": 40, "height": 250, "visible": True}
+        editor.load_model(_model([("f", FILLING)], [{**stored, "instance_id": "f"}]))
+        editor.mode = "dashboard"
+
+        assert editor._tile_grid.layout == [stored]
+
+    def test_the_fill_height_is_not_saved(self):
+        editor = _fill_editor()
+        stored = {"index": 0, "width": 40, "visible": True}
+        editor.load_model(_model([("f", FILLING)], [{**stored, "instance_id": "f"}]))
+        editor.mode = "dashboard"
+
+        assert editor._tile_grid.layout == [{**stored, "height": FILL_HEIGHT}]
+        assert editor.to_model().tile_layout == [{**stored, "instance_id": "f"}]
+
+    def test_a_stored_fill_height_survives_reloading_the_dashboard(self):
+        editor = _fill_editor()
+        editor.load_model(_model([("f", FILLING)], [{"index": 0, "instance_id": "f"}]))
+        editor.mode = "dashboard"
+
+        stored = {"index": 0, "width": 50, "height": FILL_HEIGHT, "visible": True}
+        editor.load_model(_model([("f", FILLING)], [{**stored, "instance_id": "f"}]))
+
+        assert editor.to_model().tile_layout == [{**stored, "instance_id": "f"}]
+
+    def test_a_resized_fill_height_is_saved(self):
+        editor = _fill_editor()
+        editor.load_model(_model([("f", FILLING)], [{"index": 0, "instance_id": "f"}]))
+        editor.mode = "dashboard"
+
+        resized = {"index": 0, "width": 50, "height": 420, "visible": True}
+        editor._tile_grid._process_events({"layout": [resized]})
+
+        assert editor.to_model().tile_layout == [{**resized, "instance_id": "f"}]
+
+    def test_a_pane_that_renders_a_chart_later_sizes_its_tile_then(self):
+        editor = _fill_editor()
+        instance_id = editor.add_component(RENDERED)
+        editor.mode = "dashboard"
+        assert editor._tile_grid.layout == []
+
+        editor._component_instances[instance_id].shown = True
+
+        assert editor._tile_grid.layout == [{"height": FILL_HEIGHT}]
+
+    def test_views_that_take_their_height_from_the_tile(self):
+        stretched = pn.pane.Vega({**VEGA, "height": "container"}, sizing_mode="stretch_width")
+        method = pn.panel(lambda: pn.pane.Vega(CONTAINER))
+
+        assert _fills_tile(pn.pane.Vega(CONTAINER))
+        assert _fills_tile(stretched)
+        assert _fills_tile(method)
+        assert _fills_tile(pn.Column(pn.pane.Markdown("a"), method))
+
+    def test_views_with_a_height_of_their_own_are_not_filled(self):
+        sized = pn.pane.Vega({**VEGA, "height": "container"}, height=200)
+        spaced = pn.Column(pn.pane.Markdown("a"), pn.layout.VSpacer(), sizing_mode="stretch_both")
+
+        assert not _fills_tile(sized)
+        assert not _fills_tile(spaced)
+        assert not _fills_tile(pn.pane.Vega({**VEGA, "height": 300}))
+        assert not _fills_tile(pn.pane.Markdown("a", sizing_mode="stretch_both"))
+        assert not _fills_tile(pn.pane.HTML("a", sizing_mode="stretch_both"))
+        assert not _fills_tile(pn.pane.Str("a", sizing_mode="stretch_both"))
+        assert not _fills_tile(pn.panel(lambda: pn.pane.Markdown("a")))

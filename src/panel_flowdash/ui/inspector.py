@@ -39,6 +39,7 @@ from panel_flowdash.transforms import parse_transform, summarize_transform
 from panel_flowdash.ui.choice_widgets import form_widgets, setting_choices, widgets_key
 from panel_flowdash.ui.code_field import CodeField, code_language
 from panel_flowdash.ui.config_draft import ConfigDraft
+from panel_flowdash.ui.dashboard_bar import PHONE_TOUCH_CSS
 from panel_flowdash.ui.input_editor import LiteralEditor
 from panel_flowdash.ui.node_card import (
     STATUS_TEXT,
@@ -347,6 +348,11 @@ _HEADER_ICON_SX = {
     "p": 0,
     "flexShrink": 0,
 }
+
+_PANEL_SX = {"borderLeft": 1, "borderColor": "divider", "bgcolor": "background.paper"}
+
+# In a bottom sheet on a touch screen the header's buttons are 44 px touch targets.
+_SHEET_TARGET_SX = {"width": "44px", "height": "44px", "minWidth": "44px"}
 
 # MenuButton items take no colour, so the destructive last entry is styled by position.
 _DANGER_LAST_ITEM = """
@@ -733,7 +739,7 @@ def summarize_input_html(value: t.Any, port_type: str | None = None) -> str:
             '<span class="fd-inp-text">Failed</span></div>'
         )
     if _is_table(value):
-        cols = [str(c) for c in value.columns]
+        cols = [safe_str(c) for c in value.columns]
         return _table_summary_html(int(value.shape[0]), cols)
 
     try:
@@ -841,6 +847,13 @@ class Inspector(Viewer):
 
     visible = param.Boolean(default=True, doc="Whether the panel is shown.")
 
+    sheet = param.Boolean(
+        default=False,
+        doc="""
+        Whether the panel fills a bottom sheet, as on a phone, rather than a
+        column beside the canvas. Folding it then closes the sheet.""",
+    )
+
     def __init__(self, **params):
         super().__init__(**params)
         self._flow = self.editor._flow
@@ -914,7 +927,7 @@ class Inspector(Viewer):
             scroll="y-auto",
             margin=0,
             visible=self.param.visible,
-            sx={"borderLeft": 1, "borderColor": "divider", "bgcolor": "background.paper"},
+            sx=_PANEL_SX,
         )
         self._sync_collapsed()
         self._flow.param.watch(self._on_selection, "selection")
@@ -1263,7 +1276,7 @@ class Inspector(Viewer):
                 color="default",
                 margin=0,
                 align="center",
-                sx=_OVERFLOW_SX,
+                sx={**_OVERFLOW_SX, **_SHEET_TARGET_SX} if self.sheet else _OVERFLOW_SX,
                 stylesheets=[_DANGER_LAST_ITEM],
                 css_classes=["fd-inspector-menu"],
             )
@@ -1278,7 +1291,7 @@ class Inspector(Viewer):
                 size="small",
                 margin=0,
                 align="center",
-                sx=_HEADER_ICON_SX,
+                sx={**_HEADER_ICON_SX, **_SHEET_TARGET_SX} if self.sheet else _HEADER_ICON_SX,
                 css_classes=["fd-inspector-close"],
             )
             close_btn.on_click(lambda _event: setattr(self, "collapsed", True))
@@ -1610,6 +1623,7 @@ class Inspector(Viewer):
             sizing_mode="stretch_width",
             margin=0,
             sx=_TABS_SX,
+            stylesheets=[PHONE_TOUCH_CSS],
         )
         # The Data tab runs the components' preview hooks, which may query, only while it is shown.
         self._node_tabs = tabs
@@ -2576,10 +2590,35 @@ class Inspector(Viewer):
     @param.depends("collapsed", watch=True)
     def _sync_collapsed(self):
         collapsed = self.collapsed
+        if self.sheet:
+            # The sheet closes when folded, so its body stays as it was.
+            self.collapse_button.visible = not self._has_inline_close
+            self._body.visible = True
+            self.expand_button.visible = False
+            return
         self.collapse_button.visible = not collapsed and not self._has_inline_close
         self._body.visible = not collapsed
         self.expand_button.visible = collapsed
         self._panel.width = _COLLAPSED_WIDTH if collapsed else INSPECTOR_WIDTH
+
+    @pn.io.hold()
+    @param.depends("sheet", watch=True)
+    def _sync_sheet(self):
+        sheet = self.sheet
+        self.collapse_button.param.update(
+            icon="close" if sheet else "keyboard_double_arrow_right",
+            sx=_SHEET_TARGET_SX if sheet else {},
+        )
+        if sheet:
+            self._panel.param.update(
+                width=None, sizing_mode="stretch_width", sx={"bgcolor": "background.paper"}
+            )
+        else:
+            self._panel.param.update(sizing_mode="stretch_height", sx=_PANEL_SX)
+        self._sync_collapsed()
+        # The header's buttons follow the sheet's touch target size.
+        if self.visible:
+            self.refresh(force=True)
 
     def __panel__(self):
         """Render the panel."""

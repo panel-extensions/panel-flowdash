@@ -159,7 +159,7 @@ def test_inspect_sheet_sits_beside_the_tile_on_wide_screens(page):
 
     page.get_by_role("button", name="Inspect data for Turbines").click()
 
-    sheet = page.locator(".MuiDrawer-paper")
+    sheet = page.locator(".flowdash-inspect-sheet .MuiDrawer-paper")
     expect(sheet.get_by_text("30 rows, 10 columns")).to_be_visible()
     expect(sheet.get_by_role("button", name="Download CSV")).to_be_visible()
     expect(sheet.get_by_role("button", name="Copy as Python")).to_be_visible()
@@ -184,7 +184,7 @@ def test_inspect_sheet_covers_the_screen_on_phones(page):
 
     page.get_by_role("button", name="Inspect data for Turbines").click()
 
-    sheet = page.locator(".MuiDrawer-paper")
+    sheet = page.locator(".flowdash-inspect-sheet .MuiDrawer-paper")
     expect(sheet.get_by_text("Inspect data")).to_be_visible()
     wait_until(lambda: sheet.bounding_box()["width"] >= 389, page=page)
 

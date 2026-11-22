@@ -111,6 +111,9 @@ GRID_EDIT_CSS = """
 """
 
 
+_PANEL_SX = {"borderLeft": 1, "borderColor": "divider", "bgcolor": "background.paper"}
+
+
 def _caption(text: str, **kwargs) -> pmui.Typography:
     return pmui.Typography(text, variant="caption", sx={"color": "text.secondary"}, **kwargs)
 
@@ -137,6 +140,11 @@ class LayoutPanel(Viewer):
     )
 
     visible = param.Boolean(default=True, doc="Whether the panel is shown.")
+
+    sheet = param.Boolean(
+        default=False,
+        doc="Whether the panel fills a bottom sheet, as on a phone, rather than a column beside the grid.",
+    )
 
     def __init__(self, **params):
         super().__init__(**params)
@@ -259,7 +267,7 @@ class LayoutPanel(Viewer):
             scroll="y-auto",
             margin=0,
             visible=self.param.visible,
-            sx={"borderLeft": 1, "borderColor": "divider", "bgcolor": "background.paper"},
+            sx=_PANEL_SX,
         )
         self._sync_collapsed()
         # Tiles hidden or resized in the browser arrive as a new layout.
@@ -512,12 +520,24 @@ class LayoutPanel(Viewer):
     # Collapsing
     # ------------------------------------------------------------------
 
-    @param.depends("collapsed", watch=True)
+    @param.depends("collapsed", "sheet", watch=True)
     def _sync_collapsed(self):
+        if self.sheet:
+            # The sheet has its own close button and is never folded.
+            self.collapse_button.visible = self.expand_button.visible = False
+            self._body.visible = True
+            self._panel.param.update(
+                width=None, sizing_mode="stretch_width", sx={"bgcolor": "background.paper"}
+            )
+            return
         collapsed = self.collapsed
         self.collapse_button.visible = self._body.visible = not collapsed
         self.expand_button.visible = collapsed
-        self._panel.width = _COLLAPSED_WIDTH if collapsed else LAYOUT_PANEL_WIDTH
+        self._panel.param.update(
+            width=_COLLAPSED_WIDTH if collapsed else LAYOUT_PANEL_WIDTH,
+            sizing_mode="stretch_height",
+            sx=_PANEL_SX,
+        )
 
     def __panel__(self):
         """Render the panel."""
