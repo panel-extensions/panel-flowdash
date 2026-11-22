@@ -7,8 +7,15 @@ list of contents beside it on wide screens. A node block shows the view
 object the node's tile shows, so the Report view, the Explore view and the
 workspace are never on screen together (see ``FlowDash.surface``). Text
 blocks fill their ``{{ node.port }}`` placeholders from the current outputs
-and follow them as they change. The view is read-only: authoring reports and
-running pending turns come later.
+and follow them as they change.
+
+In edit mode an editor authors the report: Customize makes the derived
+report the dashboard's own, after which every block has a drag handle and a
+menu, an insert bar between blocks adds headings, text, nodes, groups and
+questions, text is edited in place and the title can be changed (see
+:mod:`panel_flowdash.ui.report_editing`). Every change goes through
+``FlowDash.set_report``, so it is one version of the edit history. Viewers,
+and editors outside edit mode, read the report. Running pending turns comes later.
 """
 
 from __future__ import annotations
@@ -16,6 +23,7 @@ from __future__ import annotations
 import html
 import logging
 import typing as t
+from dataclasses import dataclass, field
 
 import panel as pn
 import panel_material_ui as pmui
@@ -27,13 +35,25 @@ from panel_flowdash.port_types import port_types_compatible
 from panel_flowdash.report import (
     PLACEHOLDER,
     block_kind,
+    dashboard_nodes,
     group_members,
+    insert_block,
+    move_block,
     placeholder_text,
+    remove_block,
     render_report_text,
     report_blocks,
+    set_title,
+    update_block,
 )
 from panel_flowdash.ui import tile_layout
 from panel_flowdash.ui.controls_bar import _FIT_CONTENT, _row_width
+from panel_flowdash.ui.report_editing import (
+    KIND_LABELS,
+    BlockDrag,
+    InsertBar,
+    TextBlockEditor,
+)
 from panel_flowdash.ui.text import escape_markdown, text_typography
 
 if t.TYPE_CHECKING:
@@ -56,6 +76,7 @@ BLOCK_HEIGHT = 320
 
 DERIVED_NOTICE = "Built from this dashboard's groups and tile layout."
 CUSTOMIZE_HINT = "Customize it to reorder, write prose or ask questions."
+EDIT_HINT = "Edit the dashboard to customize it."
 PENDING_NOTE = "Not answered yet. Running it asks the assistant to build the answer here."
 EMPTY_TEXT = "This dashboard has nothing to show in a report yet."
 RESTRICTED_TEXT = "This output uses a component you may not see."
@@ -352,6 +373,91 @@ def _icon(name: str, color: str) -> pn.pane.HTML:
     )
 
 
+@dataclass(eq=False)
+class _EditItem:
+    """A block of the report being edited: its layout and the widgets kept while it stays."""
+
+    kind: str
+    key: str | None
+    layout: pn.Column
+    menu: pmui.MenuButton
+    index: int = 0
+    ident: t.Any = None
+    page_break: Viewable | None = None
+    handle: pmui.IconButton | None = None
+    body: pn.Column | None = None
+    label: pmui.Typography | None = None
+    heading: pmui.TextInput | None = None
+    text: TextBlockEditor | None = None
+    caption: pmui.TextInput | None = None
+    caption_open: bool = False
+    updating: bool = False
+    extras: dict = field(default_factory=dict)
+
+
+# The destructive last entry of a block's menu, in the error colour.
+_DANGER_LAST_ITEM = """
+li.MuiMenuItem-root:last-of-type { color: var(--mui-palette-error-main); }
+"""
+
+_MENU_SX = {
+    "minWidth": 0,
+    "px": 0.5,
+    "& .MuiButton-startIcon": {"m": 0},
+    "& .MuiButton-endIcon": {"display": "none"},
+}
+
+_PAGE_BREAK_CSS = """
+:host { width: 100%; }
+.fd-page-break {
+  display: flex; align-items: center; gap: 8px; font: 500 11px var(--mui-typography-fontFamily, Roboto, sans-serif);
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--mui-palette-text-secondary, #666);
+}
+.fd-page-break::before, .fd-page-break::after {
+  content: ""; flex: 1 1 auto; border-top: 1px dashed var(--mui-palette-divider, rgba(0, 0, 0, 0.23));
+}
+"""
+
+# A block's handle sits in the margin left of the column, but on phones.
+_BLOCK_CSS = """
+:host {
+  margin-left: -38px !important;
+  width: calc(100% + 38px) !important;
+  max-width: none !important;
+}
+@media (max-width: 599.95px) {
+  :host { margin-left: 0 !important; width: 100% !important; }
+}
+"""
+
+_HANDLE_CSS = """
+:host { opacity: 0.6; }
+:host(:hover), :host(:focus-within) { opacity: 1; }
+"""
+
+# The place to insert a block shows faintly until pointed at or focused.
+_SLOT_CSS = """
+:host { min-height: 28px; opacity: 0.35; transition: opacity 0.15s; }
+:host(:hover), :host(:focus-within), :host(.fd-report-insert-last) { opacity: 1; }
+@media (hover: none) { :host { opacity: 1; } }
+"""
+
+# Text edited in place reads as text, with its underline only on hover and focus.
+_IN_PLACE_SX = {
+    "& .MuiInput-underline:not(:hover):not(.Mui-focused)::before": {
+        "borderBottomColor": "transparent"
+    },
+}
+
+_NAME_CSS = """
+.fd-report-name {
+  font: 12px/20px "Roboto Mono", monospace; padding: 0 6px; border-radius: 4px; white-space: nowrap;
+  color: var(--mui-palette-text-primary, #212121);
+  background: var(--mui-palette-action-selected, rgba(0, 0, 0, 0.08));
+}
+"""
+
+
 class ReportView(Viewer):
     """The Report view of a :class:`~panel_flowdash.editor.FlowDash` editor."""
 
@@ -433,15 +539,29 @@ class ReportView(Viewer):
             sx={"fontWeight": 400, "fontSize": {"xs": "1.75rem", "sm": "2.125rem"}},
             css_classes=["fd-report-title"],
         )
+        self._title_input = pmui.TextInput(
+            value="",
+            placeholder="Report title",
+            variant="standard",
+            margin=0,
+            sizing_mode="stretch_width",
+            visible=False,
+            sx={
+                **_IN_PLACE_SX,
+                "& .MuiInputBase-input": {"fontSize": {"xs": "1.75rem", "sm": "2.125rem"}},
+            },
+            css_classes=["fd-report-title-input"],
+        )
+        self._title_input.param.watch(self._on_title, "value")
         self._customize = pmui.Button(
             label="Customize",
             variant="text",
             size="small",
-            disabled=True,
             margin=0,
             align="center",
             css_classes=["fd-report-customize"],
         )
+        self._customize.on_click(lambda _event: self._customize_report())
         self._notice_text = pmui.Typography(
             "",
             variant="body2",
@@ -478,15 +598,34 @@ class ReportView(Viewer):
             styles={"gap": "28px"},
             stylesheets=[_FIT_CONTENT],
         )
+        # Edit mode: the blocks with handles and menus, and the bar inserting a block between them.
+        self._edit_items: list[_EditItem] = []
+        self._editors: list[tuple[TextBlockEditor, str]] = []
+        self._insert_bar = InsertBar(
+            on_insert=self._insert, on_ask=self._ask, on_close=self._close_insert
+        )
+        self._edit_blocks = pn.Column(
+            margin=0,
+            sizing_mode="stretch_width",
+            css_classes=["fd-report-blocks"],
+            stylesheets=[_FIT_CONTENT],
+        )
+        self._slots: list[tuple[pn.FlexBox, pmui.IconButton]] = []
+        self._insert_index: int | None = None
+        self._drag = BlockDrag(on_move=self._move)
+        self._open_text: int | None = None
+        self._authoring = False
+        self._header = pn.Column(
+            self._meta,
+            self._title,
+            self._title_input,
+            self._notice,
+            margin=0,
+            sizing_mode="stretch_width",
+            styles={"gap": "12px"},
+        )
         self._article = pmui.Paper(
-            pn.Column(
-                self._meta,
-                self._title,
-                self._notice,
-                margin=0,
-                sizing_mode="stretch_width",
-                styles={"gap": "12px"},
-            ),
+            self._header,
             self._blocks,
             variant="outlined",
             margin=0,
@@ -519,13 +658,14 @@ class ReportView(Viewer):
             self._controls_row,
             self._phone_row,
             self._body,
+            self._drag,
             margin=0,
             scroll="y-auto",
             sizing_mode="stretch_both",
             css_classes=["flowdash-report"],
             stylesheets=[_LAYOUT_CSS],
         )
-        editor.param.watch(self.schedule, ["dashboard", "read_only", "provenance"])
+        editor.param.watch(self.schedule, ["dashboard", "read_only", "provenance", "editable"])
 
     def __panel__(self):
         """Render the view."""
@@ -538,16 +678,30 @@ class ReportView(Viewer):
     @param.depends("shown", watch=True)
     def _on_shown(self):
         if self.shown:
-            self.sync()
+            self.schedule()
         else:
             self._unwatch()
+
+    def _document(self):
+        """Return the server document the view is rendered in, None if it is not on a page yet.
+
+        Rebuilds are scheduled on it rather than on ``pn.state.curdoc``, which
+        is unset or another document when the editor is changed from outside
+        the session, e.g. by an agent or a test, so a rebuild always runs on
+        the session's event loop, under its lock, in one batch.
+        """
+        for model, _parent in list(self._layout._models.values()):
+            doc = model.document
+            if doc is not None and doc.session_context is not None:
+                return doc
+        return None
 
     def schedule(self, *_events):
         """Rebuild the report soon, once for a burst of changes, while it is on screen."""
         if not self.shown or self._pending:
             return
-        doc = pn.state.curdoc
-        if doc is None or doc.session_context is None:
+        doc = self._document()
+        if doc is None:
             self.sync()
             return
         self._pending = True
@@ -561,8 +715,8 @@ class ReportView(Viewer):
     def _schedule_values(self, *_events):
         if not self.shown:
             return
-        doc = pn.state.curdoc
-        if doc is None or doc.session_context is None:
+        doc = self._document()
+        if doc is None:
             self._refill()
             return
         doc.add_next_tick_callback(self._refill)
@@ -572,6 +726,10 @@ class ReportView(Viewer):
             rendered = render_report_text(self.editor, text, VALUE_CLASS)
             if pane.object != rendered:
                 pane.object = rendered
+        for text_editor, text in self._editors:
+            rendered = render_report_text(self.editor, text, VALUE_CLASS)
+            if text_editor.area.html != rendered:
+                text_editor.area.html = rendered
         meta = self._meta_html()
         if self._meta.object != meta:
             self._meta.object = meta
@@ -609,6 +767,7 @@ class ReportView(Viewer):
         editor = self.editor
         resolved = report_blocks(editor)
         self._texts = []
+        self._editors = []
         self._contents_items: list[dict] = []
         self._anchor = 0
         self._used: set[str] = set()
@@ -623,24 +782,37 @@ class ReportView(Viewer):
         self._used.update(self._filters)
         self._sync_controls()
 
+        editing = self._editing()
+        authoring = self._authoring = editing and not resolved.derived
         self._title.object = escape_markdown(resolved.title)
+        self._title.visible = not authoring
+        self._title_input.visible = authoring
+        if authoring and self._title_input.value != resolved.title:
+            self._title_input.value = resolved.title
         self._notice.visible = resolved.derived
-        may_edit = not editor.read_only
-        self._notice_text.object = escape_markdown(
-            f"{DERIVED_NOTICE} {CUSTOMIZE_HINT}" if may_edit else DERIVED_NOTICE
-        )
-        self._customize.visible = may_edit
+        hint = CUSTOMIZE_HINT if editing else "" if editor.read_only else EDIT_HINT
+        self._notice_text.object = escape_markdown(f"{DERIVED_NOTICE} {hint}".strip())
+        self._customize.visible = editing
 
-        objects: list[Viewable] = []
-        for block in resolved.blocks:
-            try:
-                objects += self._block(block)
-            except Exception:
-                logger.exception("Could not show a report block: %r", block)
-        objects = self._row_kpis(objects)
-        if not objects:
-            objects = [self._caption(EMPTY_TEXT)]
-        self._blocks.objects = objects
+        if authoring:
+            self._blocks.objects = []
+            self._sync_editing(resolved.blocks)
+            body = self._edit_blocks
+        else:
+            self._clear_editing()
+            objects: list[Viewable] = []
+            for block in resolved.blocks:
+                try:
+                    objects += self._block(block)
+                except Exception:
+                    logger.exception("Could not show a report block: %r", block)
+            objects = self._row_kpis(objects)
+            if not objects:
+                objects = [self._caption(EMPTY_TEXT)]
+            self._blocks.objects = objects
+            body = self._blocks
+        if self._article.objects[1] is not body:
+            self._article.objects = [self._header, body]
 
         self._wrappers = {k: v for k, v in self._wrappers.items() if k[0] in self._used}
         self._contents.items = self._contents_items
@@ -663,6 +835,13 @@ class ReportView(Viewer):
         spec = editor._component_specs.get(item["component_id"]) if item else None
         return spec.outputs[0].name if spec is not None and spec.outputs else None
 
+    def _node_title(self, item: dict) -> str:
+        """Return the title a node goes by in the report: its label, else its tile's title."""
+        label = (item.get("config") or {}).get("label")
+        if isinstance(label, str) and label.strip():
+            return label.strip()
+        return tile_layout.tile_title(self.editor, item)
+
     def _meta_html(self) -> str:
         """Return the line above the title: live, and the values the controls hold."""
         editor = self.editor
@@ -677,12 +856,7 @@ class ReportView(Viewer):
             text = placeholder_text(value)
             if not text or len(text) > 60:
                 continue
-            label = (items[iid].get("config") or {}).get("label")
-            title = (
-                label
-                if isinstance(label, str) and label
-                else tile_layout.tile_title(editor, items[iid])
-            )
+            title = self._node_title(items[iid])
             parts.append(f"{html.escape(title)}: {html.escape(text)}")
         summary = f"<span>{' · '.join(parts)}</span>" if parts else ""
         return (
@@ -752,6 +926,7 @@ class ReportView(Viewer):
         return text_typography(text, variant="body2", margin=0, sx={"color": "text.secondary"})
 
     def _section(self, *objects: Viewable, gap: int = 14, styles=None, **params) -> pn.Column:
+        # Sections take the height of their content, not of a view that stretches.
         return pn.Column(
             *objects,
             margin=0,
@@ -774,7 +949,8 @@ class ReportView(Viewer):
             return self._group(block["group"])
         return self._turn(block["turn"])
 
-    def _text(self, text: str) -> Viewable:
+    def _watch_text(self, text: str):
+        """Follow the outputs the placeholders of *text* read."""
         from panel_flowdash.agent.yaml_format import node_names
 
         ids = {name: iid for iid, name in node_names(self.editor._tile_items).items()}
@@ -784,6 +960,9 @@ class ReportView(Viewer):
                 spec_port = self._port_of(iid, match.group(2))
                 if spec_port is not None:
                     self._refs.append((iid, spec_port))
+
+    def _text(self, text: str) -> Viewable:
+        self._watch_text(text)
         pane = pn.pane.HTML(
             render_report_text(self.editor, text, VALUE_CLASS),
             margin=0,
@@ -1101,6 +1280,634 @@ class ReportView(Viewer):
             },
             css_classes=["fd-report-pending", anchor],
         )
+
+    # ------------------------------------------------------------------
+    # Authoring
+    # ------------------------------------------------------------------
+
+    def _editing(self) -> bool:
+        """Whether the report can be edited here: in edit mode, by someone who may edit the dashboard."""
+        editor = self.editor
+        return bool(editor.editable and not editor.read_only)
+
+    def _edit(self, report: dict, label: str, coalesce: bool = False) -> bool:
+        """Apply a change to the report as one edit, telling the person if it cannot be made.
+
+        Only typing (*coalesce*) is batched with the quick edits around it;
+        any other gesture is a version of its own, so Undo steps back one at a time.
+        """
+        try:
+            self.editor.set_report(report, label=label, coalesce=coalesce)
+        except ValueError as exc:
+            self.editor._notify(
+                "warning", f"The report could not be changed: {exc}", duration=5000
+            )
+            return False
+        return True
+
+    def _customize_report(self):
+        if self._editing():
+            self.editor.customize_report()
+
+    def _on_title(self, event):
+        if not self._title_input.visible or not self._editing():
+            return
+        report = self.editor.report
+        if report is None:
+            return
+        title = (event.new or "").strip()
+        current = report.get("title")
+        dashboard = self.editor.dashboard
+        own = dashboard.title if dashboard is not None else None
+        wanted = None if not title or title == own else title
+        if wanted != current:
+            self._edit(set_title(report, wanted), "Renamed the report", coalesce=True)
+
+    def _clear_editing(self):
+        self._edit_items = []
+        self._drag.enabled = False
+        self._insert_index = None
+        if self._edit_blocks.objects:
+            self._edit_blocks.objects = []
+
+    def _sync_editing(self, blocks: list[dict]):
+        """Show the blocks with handles and menus, keeping the widgets of the blocks that stayed."""
+        pool: dict[tuple, list[_EditItem]] = {}
+        for item in self._edit_items:
+            pool.setdefault((item.kind, item.ident), []).append(item)
+        reused: set[int] = set()
+        chosen: list[_EditItem | None] = []
+        for block in blocks:
+            kind = block_kind(block)
+            matches = [i for i in pool.get((kind, block[kind]), []) if id(i) not in reused]
+            item = matches[0] if matches else None
+            if item is not None:
+                reused.add(id(item))
+            chosen.append(item)
+        # A block whose text changed keeps the editor it was typed into.
+        for index, block in enumerate(blocks):
+            if chosen[index] is not None or index >= len(self._edit_items):
+                continue
+            old = self._edit_items[index]
+            if old.kind == block_kind(block) and id(old) not in reused:
+                chosen[index] = old
+                reused.add(id(old))
+        items = []
+        labels = []
+        for index, block in enumerate(blocks):
+            item = chosen[index]
+            kind = block_kind(block)
+            key = block[kind] if kind in ("node", "group", "turn") else None
+            if item is None or item.key != key:
+                item = self._make_item(kind, key)
+            try:
+                self._update_item(item, index, block, len(blocks))
+            except Exception:
+                logger.exception("Could not show a report block: %r", block)
+            items.append(item)
+            labels.append(self._block_label(block))
+        self._edit_items = items
+        self._drag.enabled = True
+        if self._insert_index is not None and self._insert_index > len(blocks):
+            self._insert_index = None
+        if self._insert_index is not None:
+            self._sync_insert_choices()
+        self._lay_out_blocks(labels)
+        if self._open_text is not None:
+            index, self._open_text = self._open_text, None
+            if index < len(items) and items[index].text is not None:
+                items[index].text.open()
+
+    def _lay_out_blocks(self, labels: list[str] | None = None):
+        """Show the blocks with a place to insert before each and after the last, or the open insert bar."""
+        items = self._edit_items
+        if labels is None:
+            labels = [item.handle.description.removeprefix("Drag to reorder: ") for item in items]
+        objects: list[Viewable] = []
+        for index in range(len(items) + 1):
+            if index == self._insert_index:
+                objects.append(self._insert_bar.__panel__())
+            else:
+                objects.append(self._slot(index, labels[index - 1] if index else None, len(items)))
+            if index < len(items):
+                objects.append(items[index].layout)
+        if list(self._edit_blocks.objects) != objects:
+            self._edit_blocks.objects = objects
+
+    def _slot(self, index: int, after: str | None, count: int) -> pn.FlexBox:
+        """Return the place to insert a block at *index*, after the block labelled *after*."""
+        while len(self._slots) <= index:
+            position = len(self._slots)
+            button = pmui.IconButton(
+                icon="add",
+                size="small",
+                margin=0,
+                sx={"border": 1, "borderColor": "divider", "width": "28px", "height": "28px"},
+                css_classes=["fd-report-insert-button"],
+            )
+            button.on_click(lambda _event, position=position: self._open_insert(position))
+            slot = pn.FlexBox(
+                button,
+                justify_content="center",
+                align_items="center",
+                margin=0,
+                sizing_mode="stretch_width",
+                css_classes=["fd-report-insert"],
+                stylesheets=[_SLOT_CSS],
+            )
+            self._slots.append((slot, button))
+        slot, button = self._slots[index]
+        description = f"Insert a block after {after}" if after else "Insert a block at the start"
+        if button.description != description:
+            button.description = description
+        last = "fd-report-insert-last"
+        classes = ["fd-report-insert", *([last] if index == count else [])]
+        if slot.css_classes != classes:
+            slot.css_classes = classes
+        return slot
+
+    def _block_label(self, block: dict) -> str:
+        """Return a few words naming a block, for its drag handle."""
+        editor = self.editor
+        kind = block_kind(block)
+        if kind == "heading":
+            return f"heading {block['heading']}"[:80]
+        if kind == "text":
+            text = " ".join((block["text"] or "").split())
+            return f"text {text[:40]}" if text else "empty text"
+        if kind == "node":
+            item = next((i for i in editor._tile_items if i["instance_id"] == block["node"]), None)
+            return (self._node_title(item) if item else block["node"])[:80]
+        if kind == "group":
+            group = editor._groups.get(block["group"])
+            return f"group {group.label if group and group.label else block['group']}"[:80]
+        turn = next((t for t in editor.turns if t.id == block["turn"]), None)
+        return f"question {turn.question}"[:80] if turn and turn.question else "question"
+
+    def _make_item(self, kind: str, key: str | None) -> _EditItem:
+        menu = pmui.MenuButton(
+            label="",
+            icon="more_vert",
+            icon_size="20px",
+            description="Block options",
+            items=[],
+            size="small",
+            variant="text",
+            color="default",
+            margin=0,
+            align="start",
+            sx=_MENU_SX,
+            stylesheets=[_DANGER_LAST_ITEM],
+            css_classes=["fd-report-block-menu"],
+        )
+        page_break = pn.pane.HTML(
+            '<div class="fd-page-break">Page break</div>',
+            margin=(0, 0, 8, 0),
+            sizing_mode="stretch_width",
+            visible=False,
+            stylesheets=[_PAGE_BREAK_CSS],
+        )
+        handle = pmui.IconButton(
+            icon="drag_indicator",
+            size="small",
+            margin=(2, 0, 0, 0),
+            sx={"cursor": "grab", "color": "text.secondary", "touchAction": "none"},
+            css_classes=["fd-report-handle"],
+            stylesheets=[_HANDLE_CSS],
+        )
+        layout = pn.Column(margin=0, sizing_mode="stretch_width", stylesheets=[_FIT_CONTENT])
+        row = pn.FlexBox(
+            handle,
+            layout,
+            flex_wrap="nowrap",
+            align_items="flex-start",
+            gap="8px",
+            margin=0,
+            sizing_mode="stretch_width",
+            css_classes=["fd-report-block", f"fd-report-block-{kind}"],
+            stylesheets=[_BLOCK_CSS],
+        )
+        layout.styles = {"flex": "1 1 auto", "min-width": "0"}
+        item = _EditItem(
+            kind=kind, key=key, layout=row, menu=menu, page_break=page_break, handle=handle
+        )
+        menu.on_click(lambda choice, item=item: self._on_menu(item, choice))
+        if kind == "heading":
+            item.heading = pmui.TextInput(
+                value="",
+                placeholder="Heading",
+                variant="standard",
+                margin=0,
+                sizing_mode="stretch_width",
+                sx={**_IN_PLACE_SX, "& .MuiInputBase-input": {"fontSize": "1.5rem"}},
+                css_classes=["fd-report-heading-input"],
+            )
+            item.heading.param.watch(
+                lambda event, item=item: self._on_heading(item, event), "value"
+            )
+            row = pn.FlexBox(
+                item.heading,
+                menu,
+                flex_wrap="nowrap",
+                align_items="flex-start",
+                gap="4px",
+                margin=0,
+                sizing_mode="stretch_width",
+            )
+            layout.objects = [page_break, row]
+            return item
+        if kind == "text":
+            item.text = TextBlockEditor(
+                "",
+                "",
+                on_commit=lambda text, item=item: self._on_text(item, text),
+                on_open=lambda item=item: self._on_text_opened(item),
+                stylesheets=[_PROSE_CSS],
+            )
+            row = pn.FlexBox(
+                pn.Column(
+                    item.text,
+                    margin=0,
+                    sizing_mode="stretch_width",
+                    styles={"flex": "1 1 auto", "min-width": "0"},
+                ),
+                menu,
+                flex_wrap="nowrap",
+                align_items="flex-start",
+                gap="4px",
+                margin=0,
+                sizing_mode="stretch_width",
+            )
+            layout.objects = [page_break, row]
+            return item
+        item.label = pmui.Typography(
+            "",
+            variant="caption",
+            margin=0,
+            sx={"color": "text.secondary"},
+            styles={"flex": "1 1 auto", "min-width": "0"},
+        )
+        name = pn.pane.HTML(
+            "", margin=0, visible=kind != "turn", stylesheets=[_NAME_CSS], styles={"flex": "none"}
+        )
+        item.extras["name"] = name
+        header = pn.FlexBox(
+            name,
+            item.label,
+            menu,
+            flex_wrap="nowrap",
+            align_items="center",
+            gap="8px",
+            margin=(0, 0, 6, 0),
+            sizing_mode="stretch_width",
+            css_classes=["fd-report-block-header"],
+        )
+        item.body = pn.Column(margin=0, sizing_mode="stretch_width", stylesheets=[_FIT_CONTENT])
+        objects: list[Viewable] = [page_break, header, item.body]
+        if kind == "node":
+            item.caption = pmui.TextInput(
+                value="",
+                label="Caption",
+                placeholder="A line under the output",
+                size="small",
+                margin=(8, 0, 0, 0),
+                sizing_mode="stretch_width",
+                visible=False,
+                css_classes=["fd-report-caption-input"],
+            )
+            item.caption.param.watch(
+                lambda event, item=item: self._on_caption(item, event), "value"
+            )
+            objects.append(item.caption)
+        layout.objects = objects
+        return item
+
+    def _update_item(self, item: _EditItem, index: int, block: dict, count: int):
+        """Show *block* at *index* of *count* in *item*."""
+        editor = self.editor
+        kind = item.kind
+        item.index = index
+        item.ident = block[kind]
+        description = f"Drag to reorder: {self._block_label(block)}"
+        if item.handle.description != description:
+            item.handle.description = description
+        item.page_break.visible = bool(block.get("page_break"))
+        menu = self._menu_items(item, index, block, count)
+        if item.menu.items != menu:
+            item.menu.items = menu
+        item.updating = True
+        try:
+            if kind == "heading":
+                self._heading_anchor(item, block["heading"])
+                if item.heading.value != block["heading"]:
+                    item.heading.value = block["heading"]
+                return
+            if kind == "text":
+                text = block["text"]
+                self._watch_text(text)
+                item.text.update(text, render_report_text(editor, text, VALUE_CLASS))
+                item.text.values = self._value_choices()
+                self._editors.append((item.text, text))
+                return
+            name = item.extras["name"]
+            if kind == "node":
+                iid = block["node"]
+                # The caption is edited below the output, in place of its text.
+                body = self._node(iid, {k: v for k, v in block.items() if k != "caption"})
+                if body is None:
+                    body = self._caption("This node is shown above already.")
+                from panel_flowdash.agent.yaml_format import node_names
+
+                tile = next((i for i in editor._tile_items if i["instance_id"] == iid), None)
+                box_kind = editor._tile_box(tile).kind if tile is not None else "chart"
+                where = (
+                    "also on the dashboard"
+                    if iid in dashboard_nodes(editor)
+                    else "only in the report"
+                )
+                name.object = self._name_html(node_names(editor._tile_items).get(iid, iid))
+                item.label.object = escape_markdown(
+                    f"{KIND_LABELS.get(box_kind, 'Node')} · {where}"
+                )
+                caption = block.get("caption")
+                item.caption.visible = bool(caption) or item.caption_open
+                if item.caption.value != (caption or ""):
+                    item.caption.value = caption or ""
+                objects = [body]
+            elif kind == "group":
+                name.object = self._name_html(block["group"])
+                item.label.object = "Group · follows the group as nodes join or leave"
+                objects = self._group(block["group"]) or [
+                    self._caption(
+                        "The nodes of this group are shown above already."
+                        if group_members(editor, block["group"])
+                        else "This group has no nodes shown on the dashboard yet."
+                    )
+                ]
+            else:
+                turn = next((t for t in editor.turns if t.id == block["turn"]), None)
+                pending = turn is not None and turn.status == "pending"
+                item.label.object = "Question, not run yet" if pending else "Answer"
+                objects = self._turn(block["turn"]) or [
+                    self._caption("This question is no longer here.")
+                ]
+            if list(item.body.objects) != objects:
+                item.body.objects = objects
+        finally:
+            item.updating = False
+
+    @staticmethod
+    def _name_html(name: str) -> str:
+        return f'<code class="fd-report-name">{html.escape(name)}</code>'
+
+    def _heading_anchor(self, item: _EditItem, text: str):
+        classes = [c for c in item.heading.css_classes if not c.startswith("fd-report-anchor-")]
+        classes.append(self._next_anchor(text))
+        item.heading.css_classes = classes
+
+    def _menu_items(self, item: _EditItem, index: int, block: dict, count: int) -> list[dict]:
+        kind = item.kind
+        items: list[dict] = []
+        if kind == "node":
+            if block.get("show") == "table" or self._can_show_table(block["node"]):
+                if block.get("show") == "table":
+                    items.append({"label": "Show as chart", "icon": "bar_chart", "action": "view"})
+                else:
+                    items.append(
+                        {"label": "Show as table", "icon": "table_chart", "action": "table"}
+                    )
+            if block.get("caption"):
+                items.append(
+                    {"label": "Remove caption", "icon": "subtitles_off", "action": "uncaption"}
+                )
+            else:
+                items.append({"label": "Add caption", "icon": "subtitles", "action": "caption"})
+        if block.get("page_break"):
+            items.append(
+                {"label": "Remove page break", "icon": "insert_page_break", "action": "unbreak"}
+            )
+        else:
+            items.append(
+                {"label": "Page break before", "icon": "insert_page_break", "action": "break"}
+            )
+        if kind == "node":
+            items.append({"label": "Select on canvas", "icon": "ads_click", "action": "select"})
+        if index > 0:
+            items.append({"label": "Move up", "icon": "arrow_upward", "action": "up"})
+        if index < count - 1:
+            items.append({"label": "Move down", "icon": "arrow_downward", "action": "down"})
+        items.append({"label": "Remove from report", "icon": "delete", "action": "remove"})
+        return items
+
+    def _can_show_table(self, instance_id: str) -> bool:
+        """Whether a node shows its view by default and has an output a table could show instead."""
+        editor = self.editor
+        item = next((i for i in editor._tile_items if i["instance_id"] == instance_id), None)
+        if item is None or "placeholder" in item or editor._node_restricted(instance_id):
+            return False
+        spec = editor._component_specs.get(item["component_id"])
+        if spec is None or not spec.outputs:
+            return False
+        return editor._tile_box(item).kind not in ("data", "text", "control")
+
+    def _on_menu(self, item: _EditItem, choice: t.Any):
+        action = choice.get("action") if isinstance(choice, dict) else None
+        report = self.editor.report
+        if report is None or not self._editing() or item.index >= len(report["blocks"]):
+            return
+        index = item.index
+        if action == "remove":
+            self._edit(remove_block(report, index), "Removed a block from the report")
+        elif action in ("up", "down"):
+            self._move(index, index - 1 if action == "up" else index + 1)
+        elif action == "table":
+            self._edit(update_block(report, index, show="table"), "Showed a node as a table")
+        elif action == "view":
+            self._edit(update_block(report, index, show=None), "Showed a node as its view")
+        elif action == "caption":
+            item.caption_open = True
+            item.caption.visible = True
+        elif action == "uncaption":
+            item.caption_open = False
+            self._edit(update_block(report, index, caption=None), "Removed a caption")
+        elif action in ("break", "unbreak"):
+            self._edit(
+                update_block(report, index, page_break=True if action == "break" else None),
+                "Added a page break" if action == "break" else "Removed a page break",
+            )
+        elif action == "select" and item.key is not None:
+            self._select_on_canvas(item.key)
+
+    def _select_on_canvas(self, instance_id: str):
+        editor = self.editor
+        with param.parameterized.batch_call_watchers(editor):
+            if editor.mode == "dashboard":
+                editor.mode = "wiring"
+            editor.surface = "workspace"
+        doc = pn.state.curdoc
+        if doc is None or doc.session_context is None:
+            editor._select_node(instance_id)
+            return
+        # Once the canvas is back on the page, so it reports the selection.
+        doc.add_timeout_callback(lambda: editor._select_node(instance_id), 300)
+
+    def _move(self, index: int, to: int):
+        report = self.editor.report
+        if report is None or not self._editing():
+            return
+        if 0 <= index < len(report["blocks"]) and 0 <= to < len(report["blocks"]):
+            self._edit(move_block(report, index, to), "Moved a block in the report")
+
+    def _on_heading(self, item: _EditItem, event):
+        if item.updating or not self._editing():
+            return
+        report = self.editor.report
+        text = (event.new or "").strip()
+        if report is None or item.index >= len(report["blocks"]):
+            return
+        if not text:
+            # A heading needs words; an empty one goes back to what it said.
+            item.updating = True
+            try:
+                item.heading.value = event.old
+            finally:
+                item.updating = False
+            return
+        if report["blocks"][item.index].get("heading") != text:
+            self._edit(
+                update_block(report, item.index, heading=text), "Edited a heading", coalesce=True
+            )
+
+    def _on_text(self, item: _EditItem, text: str):
+        report = self.editor.report
+        if report is None or item.index >= len(report["blocks"]) or not self._editing():
+            return
+        if report["blocks"][item.index].get("text") != text:
+            self._edit(
+                update_block(report, item.index, text=text),
+                "Edited text in the report",
+                coalesce=True,
+            )
+
+    def _on_text_opened(self, item: _EditItem):
+        """Close the other text blocks: one is edited at a time."""
+        for other in self._edit_items:
+            if other is not item and other.text is not None:
+                other.text.close()
+
+    def _on_caption(self, item: _EditItem, event):
+        if item.updating or not self._editing():
+            return
+        report = self.editor.report
+        if report is None or item.index >= len(report["blocks"]):
+            return
+        caption = (event.new or "").strip() or None
+        if report["blocks"][item.index].get("caption") != caption:
+            item.caption_open = caption is not None
+            self._edit(
+                update_block(report, item.index, caption=caption),
+                "Edited a caption",
+                coalesce=True,
+            )
+
+    def _value_choices(self) -> list[dict]:
+        """Return the outputs a text can quote, as Insert value lists them."""
+        from panel_flowdash.agent.yaml_format import node_names
+
+        editor = self.editor
+        names = node_names(editor._tile_items)
+        choices = []
+        for item in editor._tile_items:
+            iid = item["instance_id"]
+            if "placeholder" in item or editor._node_restricted(iid):
+                continue
+            spec = editor._component_specs.get(item["component_id"])
+            if spec is None:
+                continue
+            title = self._node_title(item)
+            for port in spec.outputs:
+                choices.append(
+                    {"label": f"{title}, {port.name}", "ref": f"{names[iid]}.{port.name}"}
+                )
+        return choices
+
+    # The insert bar
+
+    def _open_insert(self, index: int):
+        if not self._editing():
+            return
+        self._insert_bar.reset()
+        self._sync_insert_choices()
+        self._insert_index = index
+        self._lay_out_blocks()
+
+    def _close_insert(self):
+        if self._insert_index is not None:
+            self._insert_index = None
+            self._lay_out_blocks()
+
+    def _sync_insert_choices(self):
+        from panel_flowdash.agent.yaml_format import node_names
+
+        editor = self.editor
+        report = editor.report or {"blocks": []}
+        used_nodes = {b["node"] for b in report["blocks"] if "node" in b}
+        used_groups = {b["group"] for b in report["blocks"] if "group" in b}
+        for group_id in used_groups:
+            used_nodes.update(group_members(editor, group_id))
+        shown = dashboard_nodes(editor)
+        names = node_names(editor._tile_items)
+        nodes = [
+            {
+                "id": item["instance_id"],
+                "title": self._node_title(item),
+                "name": names[item["instance_id"]],
+                "kind": editor._tile_box(item).kind,
+                "on_dashboard": item["instance_id"] in shown,
+            }
+            for item in editor._tile_items
+            if item["instance_id"] not in used_nodes
+        ]
+        nodes.sort(key=lambda node: (not node["on_dashboard"], node["title"].lower()))
+        groups = [
+            {
+                "id": group.id,
+                "label": group.label or group.id,
+                "size": len(group_members(editor, group.id)),
+            }
+            for group in editor._groups.values()
+            if group.id not in used_groups
+        ]
+        self._insert_bar.param.update(nodes=nodes, groups=groups)
+
+    def _insert(self, block: dict):
+        index = self._insert_index
+        report = self.editor.report
+        if index is None or report is None or not self._editing():
+            return
+        self._close_insert()
+        if "text" in block:
+            self._open_text = index
+        labels = {
+            "heading": "Added a heading to the report",
+            "text": "Added text to the report",
+            "node": "Added a node to the report",
+            "group": "Added a group to the report",
+        }
+        if not self._edit(insert_block(report, index, block), labels[block_kind(block)]):
+            self._open_text = None
+
+    def _ask(self, question: str):
+        index = self._insert_index
+        if index is None or not self._editing():
+            return
+        self._close_insert()
+        try:
+            self.editor.ask_in_report(question, index)
+        except ValueError as exc:
+            self.editor._notify(
+                "warning", f"The question could not be added: {exc}", duration=5000
+            )
 
 
 __all__ = ["ReportContents", "ReportView"]

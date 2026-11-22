@@ -110,7 +110,14 @@ from panel_flowdash.placeholders import (
     unresolved_summary,
 )
 from panel_flowdash.registry import RegistryEntry
-from panel_flowdash.report import check_report, map_report, report_turns, without_nodes
+from panel_flowdash.report import (
+    check_report,
+    insert_block,
+    map_report,
+    report_blocks,
+    report_turns,
+    without_nodes,
+)
 from panel_flowdash.selection import release_links
 from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transform_editor import TransformEditor
@@ -5284,10 +5291,21 @@ class FlowDash(Viewer):
             {turn.id for turn in self._turn_log.turns},
         )
 
-    def set_report(self, report: t.Mapping[str, t.Any] | None):
+    def set_report(
+        self,
+        report: t.Mapping[str, t.Any] | None,
+        *,
+        label: str | None = None,
+        coalesce: bool = True,
+    ):
         """Replace the dashboard's report, nodes by instance id, as one undoable edit.
 
         None removes it, so the dashboard reads as its derived report again.
+        *label* describes the edit in the history, "Changed the report" by
+        default. A pending turn the report no longer refers to goes with its
+        block, as it was only ever asked in the report. With *coalesce* False
+        the edit is a version of its own, never batched with the quick edits
+        before or after it, as for a structural change such as moving a block.
 
         Raises
         ------
@@ -5312,8 +5330,56 @@ class FlowDash(Viewer):
                 )
         if checked == self.report:
             return
+        dropped = report_turns(self._report) - report_turns(checked)
         self._report = checked
-        self._record_edit("Changed the report", op="set_report")
+        if dropped:
+            self._turn_log.drop_pending(dropped)
+        if not coalesce:
+            self._history.flush()
+        self._record_edit(label or "Changed the report", op="set_report")
+        if not coalesce:
+            self._history.flush()
+
+    def customize_report(self) -> bool:
+        """Make the report derived from the dashboard its own, to be edited, and return whether it did.
+
+        The derived blocks are written into the report as one undoable edit;
+        the title stays the dashboard's until it is changed. A dashboard that
+        already has a report keeps it.
+        """
+        if self._report is not None:
+            return False
+        self.set_report(
+            {"blocks": report_blocks(self).blocks}, label="Customized the report", coalesce=False
+        )
+        return True
+
+    def ask_in_report(self, question: str, index: int | None = None) -> str:
+        """Add a question to the report, not run yet, before the block at *index* (last for None).
+
+        The question becomes a pending turn and a turn block showing it, in
+        one undoable edit, and its id is returned. A dashboard without a
+        report of its own gets the derived one first.
+
+        Raises
+        ------
+        ValueError
+            If *question* is empty or *index* is not a place in the report.
+        """
+        turn = self._turn_log.add_pending(question)
+        current = self.report
+        if current is None:
+            current = {"blocks": report_blocks(self).blocks}
+        try:
+            self.set_report(
+                insert_block(current, index, {"turn": turn.id}),
+                label="Asked a question in the report",
+                coalesce=False,
+            )
+        except Exception:
+            self._turn_log.drop_pending({turn.id})
+            raise
+        return turn.id
 
     def group_nodes(
         self,
