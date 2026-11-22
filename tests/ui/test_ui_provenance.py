@@ -20,7 +20,7 @@ from panel_flowdash.turns import agent_edits
 from ..test_agent_ops import _editor
 from ..test_agent_tools import scripted
 from .test_ui_shell import _serve_app, _store_with
-from .util import serve_component
+from .util import DASHBOARD_LOAD_TIMEOUT, serve_component
 
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
@@ -136,7 +136,10 @@ def test_the_side_sheet_closes_when_editing_starts(page):
 
     page.get_by_role("button", name="Edit").click()
     wait_until(lambda: editor.editable, page, timeout=8000)
-    expect(sheet.locator(".sv-question")).to_be_hidden()
+    # The sheet closes with the switch to edit mode, which the browser shows once it
+    # has rendered the editor.
+    expect(page.get_by_role("button", name="Done")).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
+    expect(sheet.locator(".sv-question")).to_be_hidden(timeout=DASHBOARD_LOAD_TIMEOUT)
     assert not editor._inspect_dialog.open
     # Save and Done are no longer covered, and the workspace has its width back.
     page.get_by_role("button", name="Done").click(trial=True)

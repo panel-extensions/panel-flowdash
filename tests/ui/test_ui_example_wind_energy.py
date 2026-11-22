@@ -166,7 +166,8 @@ def test_palette_hint_never_covers_an_entry(page, serve_example, height, query):
     serve_example("wind-data-quality")
     _bar_button(page, "Edit").click(timeout=EXAMPLE_LOAD_TIMEOUT)
     search = page.get_by_placeholder("Search components")
-    expect(search).to_be_visible()
+    # The editor is built once Edit is pressed, which takes as long as the first render.
+    expect(search).to_be_visible(timeout=EXAMPLE_LOAD_TIMEOUT)
     if query:
         search.fill(query)
         expect(page.get_by_text("Data Table", exact=True)).to_have_count(0)
