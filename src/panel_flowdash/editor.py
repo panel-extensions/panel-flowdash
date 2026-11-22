@@ -61,6 +61,7 @@ from panel_flowdash.dataflow_engine import (
     DataflowGraph,
     InputFailure,
     _release_refs,
+    connection_type,
     failure_text,
 )
 from panel_flowdash.failure_overlay import FailureMessage, FailureOverlay, with_failure_overlay
@@ -2112,8 +2113,8 @@ class FlowDash(Viewer):
         target = self._port_spec(target_id, target_port, output=False)
         if source is None or target is None:
             return None
-        kind = bridge_kind(source.type, target.type)
-        if kind is None or self._dataflow_graph._is_list_input(target_id, target_port):
+        kind = bridge_kind(source.type, connection_type(target))
+        if kind is None:
             return None
         if self._restricted_input_error(target_id, target_port) is not None:
             return None
