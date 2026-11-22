@@ -1,9 +1,11 @@
 """Tests for the admin view: who gets it, its sections and how they reach the project file."""
 
 import argparse
+import concurrent.futures
 import getpass
 import importlib.metadata
 import sys
+import threading
 import types
 from types import SimpleNamespace
 
@@ -110,13 +112,66 @@ class TestWhoIsAdmin:
         signed_in("bob")
         assert not _app(tmp_path, auth_config=AuthConfig())._is_admin
 
-    def test_claiming_keeps_the_other_general_settings(self, tmp_path, sections, token):
+    def test_a_claim_once_the_project_has_an_admin_is_refused(self, tmp_path, sections, token):
+        path = tmp_path / PROJECT_FILE
+        path.write_text("general:\n  admins: [ana]\n")
+        app = _app(tmp_path, auth_config=AuthConfig())
+        app._token_exchange.token = token
+        assert not app._is_admin
+        assert load_project(path).get("general") == {"admins": ["ana"]}
+
+    def test_a_claim_with_admin_groups_set_in_code_is_refused(self, tmp_path, sections, token):
+        app = _app(tmp_path, auth_config=AuthConfig(admin_groups=frozenset({"admins"})))
+        app._token_exchange.token = token
+        assert not app._is_admin
+        assert not (tmp_path / PROJECT_FILE).exists()
+
+    def test_admin_link_adds_an_admin_and_keeps_the_other_settings(
+        self, tmp_path, sections, token
+    ):
         (tmp_path / PROJECT_FILE).write_text("general:\n  tile_titles: true\n  admins: [ana]\n")
-        _app(tmp_path, auth_config=AuthConfig())._token_exchange.token = token
+        access.allow_adding_admins()
+        app = _app(tmp_path, auth_config=AuthConfig())
+        app._token_exchange.token = token
+        assert app._is_admin
         assert load_project(tmp_path / PROJECT_FILE).get("general") == {
             "tile_titles": True,
             "admins": ["ana", getpass.getuser()],
         }
+
+    def test_the_token_works_once(self, tmp_path, sections, token, monkeypatch):
+        first = _app(tmp_path, auth_config=AuthConfig())
+        first._token_exchange.token = token
+        assert first._is_admin
+
+        # Even when adding admins is allowed, the used token claims nothing more.
+        access.allow_adding_admins()
+        monkeypatch.setattr(
+            "panel_flowdash.app.resolve_identity",
+            lambda config: Identity(user="eve", oauth_user="eve"),
+        )
+        second = _app(tmp_path, auth_config=AuthConfig())
+        second._token_exchange.token = token
+        assert not second._is_admin
+        assert load_project(tmp_path / PROJECT_FILE).get("general") == {
+            "admins": [getpass.getuser()]
+        }
+
+    def test_of_two_claims_at_once_one_wins_cleanly(self, tmp_path, sections, token):
+        from panel_flowdash.admin.sections import claim_admin
+
+        project = _app(tmp_path)._settings_project()
+        barrier = threading.Barrier(8)
+
+        def claim(user):
+            barrier.wait()
+            return claim_admin(project, user, token)
+
+        with concurrent.futures.ThreadPoolExecutor(8) as pool:
+            outcomes = list(pool.map(claim, [f"user{i}" for i in range(8)]))
+        assert sorted(outcomes) == ["claimed"] + ["invalid"] * 7
+        winner = f"user{outcomes.index('claimed')}"
+        assert load_project(tmp_path / PROJECT_FILE).get("general") == {"admins": [winner]}
 
     def test_admins_add_and_remove_others_in_general(self, tmp_path, sections):
         (tmp_path / PROJECT_FILE).write_text("general:\n  admins: [ana, ben]\n")

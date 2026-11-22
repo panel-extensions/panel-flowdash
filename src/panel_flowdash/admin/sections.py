@@ -19,6 +19,7 @@ import param
 from panel.custom import JSComponent
 from panel.viewable import Viewer
 
+from panel_flowdash.admin.access import adding_admins_allowed, check_token, consume_token
 from panel_flowdash.admin.form import (
     Group,
     Setting,
@@ -28,7 +29,13 @@ from panel_flowdash.admin.form import (
     settings_loader,
 )
 from panel_flowdash.history import BURST_SECONDS, HISTORY_MAX_BYTES
-from panel_flowdash.project import Project, ProjectError, ProjectSection, register_section
+from panel_flowdash.project import (
+    _FILE_LOCK,
+    Project,
+    ProjectError,
+    ProjectSection,
+    register_section,
+)
 
 _MB = 2**20
 
@@ -414,11 +421,39 @@ def project_admins(project: Project | None, fresh: bool = False) -> list[str]:
 
 def add_admin(project: Project, user: str) -> None:
     """Add *user* to the project file's ``general.admins``, keeping the section's other settings."""
-    general = dict(current_section(project, "general") or {})
-    admins = list(general.get("admins") or [])
-    if user not in admins:
-        general["admins"] = [*admins, user]
-        project.set("general", general)
+    with _FILE_LOCK:
+        general = dict(current_section(project, "general") or {})
+        admins = list(general.get("admins") or [])
+        if user not in admins:
+            general["admins"] = [*admins, user]
+            project.set("general", general)
+
+
+def claim_admin(
+    project: Project, user: str | None, token: str, admin_groups: t.Iterable[str] = ()
+) -> str:
+    """Make *user* an admin with the admin *token*; return how it went.
+
+    ``"claimed"`` when the token was valid and *user* is now recorded (or,
+    for no user, admin for the session only), ``"invalid"`` for a wrong or
+    already used token, and ``"taken"`` when the project already has admins
+    or admin groups and the server was not started to add one
+    (``--admin-link``). Checking, using the token and recording the user
+    happen under one lock, so of two claims at once only one succeeds. A
+    write that fails raises after the token was used.
+    """
+    with _FILE_LOCK:
+        if not check_token(token):
+            return "invalid"
+        if (list(admin_groups) or project_admins(project, fresh=True)) and not (
+            adding_admins_allowed()
+        ):
+            return "taken"
+        if not consume_token(token):
+            return "invalid"
+        if user:
+            add_admin(project, user)
+        return "claimed"
 
 
 def font_href(font_family: str | None) -> str | None:

@@ -32,7 +32,8 @@ def admin_token() -> str:
     """Return this process's admin token, made when first asked for.
 
     It is ``FLOWDASH_ADMIN_TOKEN`` when that is set, for scripted setups,
-    and otherwise random and new every time the server starts.
+    and otherwise random and new every time the server starts. Either way
+    it claims the admin view once per start (see `consume_token`).
     """
     global _TOKEN
     with _TOKEN_LOCK:
@@ -43,10 +44,12 @@ def admin_token() -> str:
 
 def reset_admin_token() -> None:
     """Forget the admin token, so the next `admin_token` makes a new one, as a restart does."""
-    global _TOKEN, _LINK_SHOWN
+    global _TOKEN, _LINK_SHOWN, _USED, _ADDING
     with _TOKEN_LOCK:
         _TOKEN = None
         _LINK_SHOWN = False
+        _USED = False
+        _ADDING = False
 
 
 def admin_path(prefix: str = "") -> str:
@@ -55,6 +58,22 @@ def admin_path(prefix: str = "") -> str:
 
 
 _LINK_SHOWN = False
+# Whether the token was used: it claims the admin view once.
+_USED = False
+# Whether the token may add an admin to a project that has some (`flowdash serve --admin-link`).
+_ADDING = False
+
+
+def allow_adding_admins(allowed: bool = True) -> None:
+    """Let the admin link add an admin to a project that already has admins, as ``--admin-link`` does."""
+    global _ADDING
+    with _TOKEN_LOCK:
+        _ADDING = allowed
+
+
+def adding_admins_allowed() -> bool:
+    """Whether the admin link may add an admin to a project that already has admins."""
+    return _ADDING
 
 
 def show_admin_link(base_url: str = "") -> None:
@@ -69,18 +88,35 @@ def show_admin_link(base_url: str = "") -> None:
         return
     _LINK_SHOWN = True
     print(  # noqa: T201
-        "\nNo one administers this FlowDash project yet. Open this link to become its admin\n"
-        "(valid until the server restarts):\n"
+        (
+            "\nOpen this link to add yourself as an admin of this FlowDash project\n"
+            if _ADDING
+            else "\nNo one administers this FlowDash project yet. Open this link to become its admin\n"
+        )
+        + "(it works once, until the server restarts):\n"
         f"    {base_url.rstrip('/')}{admin_path()}\n",
         flush=True,
     )
 
 
 def check_token(candidate: t.Any) -> bool:
-    """Whether *candidate* is the admin token, compared in constant time."""
+    """Whether *candidate* is the admin token and unused, compared in constant time."""
     if not isinstance(candidate, str) or not candidate:
         return False
-    return hmac.compare_digest(candidate.encode(), admin_token().encode())
+    token = admin_token()
+    return hmac.compare_digest(candidate.encode(), token.encode()) and not _USED
+
+
+def consume_token(candidate: t.Any) -> bool:
+    """Use the admin token: True the first time *candidate* is the token, False ever after."""
+    global _USED
+    if not check_token(candidate):
+        return False
+    with _TOKEN_LOCK:
+        if _USED:
+            return False
+        _USED = True
+    return True
 
 
 def is_admin(

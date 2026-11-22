@@ -18,7 +18,7 @@ from panel.command.serve import Serve as _PanelServe
 from panel.io.application import build_applications
 from panel.io.server import DocHandler, WSHandler
 
-from panel_flowdash.admin.access import show_admin_link
+from panel_flowdash.admin.access import allow_adding_admins, show_admin_link
 from panel_flowdash.app import ACCESS_DENIED_ROUTE, FlowDashApp
 from panel_flowdash.auth import AuthConfig, make_authorize_callback
 from panel_flowdash.component_library import ComponentLibraryError
@@ -310,8 +310,8 @@ class Serve(_PanelServe):
                 action="store_true",
                 default=False,
                 help=(
-                    "Print the link that claims the admin view even when the project "
-                    "already has admins. It is printed by default only while it has none."
+                    "Print a link that adds one admin even when the project already has "
+                    "admins. By default the link is printed, and works, only while it has none."
                 ),
             ),
         ),
@@ -424,6 +424,8 @@ class Serve(_PanelServe):
         log.info(f"Dashboard store: {store_description}")
 
         self._apps = build_applications(routes, title=title, location=True)
+        if options.get("admin_link", True) and args.admin_link:
+            allow_adding_admins()
         if options.get("admin_link", True) and (
             args.admin_link
             or not (auth_config.admin_groups or _project_admins(project_file, project_dir))

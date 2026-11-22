@@ -21,14 +21,13 @@ from panel.viewable import Children, Viewer
 
 from panel_flowdash.admin.access import (
     AdminTokenExchange,
-    check_token,
     is_admin,
     show_admin_link,
 )
 from panel_flowdash.admin.page import ADMIN_ROUTE, AdminPage
 from panel_flowdash.admin.sections import (
     FontLoader,
-    add_admin,
+    claim_admin,
     font_href,
     project_admins,
     project_overrides,
@@ -783,24 +782,31 @@ class FlowDashApp(Viewer):
         """Make whoever opened the admin link an admin, now and on every later start."""
         if not event.new:
             return
-        if not check_token(event.new):
-            logger.warning("Refused an admin link with a wrong token.")
-            self._notify("error", "This admin link is not valid. Use the one the server printed.")
-            return
         location = pn.state.location
         if location is not None and "token=" in (location.hash or ""):
             # Otherwise the next navigation would write the fragment back into the address bar.
             location.hash = ""
         user = self._identity.user
-        if user and user != ANONYMOUS_USER:
-            try:
-                add_admin(self._settings_project(), user)
-            except (ProjectError, OSError) as exc:
-                logger.warning("Could not record %s as an admin: %s", user, exc)
+        user = user if user and user != ANONYMOUS_USER else None
+        try:
+            outcome = claim_admin(self._settings_project(), user, event.new, self._admin_groups())
+        except (ProjectError, OSError) as exc:
+            logger.warning("Could not record %s as an admin: %s", user, exc)
+            self._notify("warning", f"You're admin until the server restarts: {error_text(exc)}")
+        else:
+            if outcome == "invalid":
+                logger.warning("Refused an admin link with a wrong or used token.")
+                self._notify("error", "This admin link is not valid or was already used.")
+                return
+            if outcome == "taken":
+                logger.warning("Refused an admin link: the project already has admins.")
                 self._notify(
-                    "warning", f"You're admin until the server restarts: {error_text(exc)}"
+                    "error",
+                    "This project already has admins. Ask one of them to add you under "
+                    "Admin, General.",
                 )
-            else:
+                return
+            if user:
                 self._notify("success", f"{user} is now an admin of this project.")
         if self._is_admin:
             return

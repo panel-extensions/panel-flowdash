@@ -51,7 +51,7 @@ flowdash serve <directory> [options]
 | `--warm` | off | Import all modules at startup instead of lazily on first visit. |
 | `--dev` | off | Enable autoreload for development. |
 | `--admin` | off | Enable the Panel admin interface. |
-| `--admin-link` | off | Print the link that claims FlowDash's admin view even when the project already has admins. See [The admin view](#the-admin-view). |
+| `--admin-link` | off | Print a link that adds one admin even when the project already has admins. See [The admin view](#the-admin-view). |
 | `--profiler` | none | Profiler to use (pyinstrument, snakeviz). |
 | `--num-threads` | auto | Thread pool size. |
 | `--allow-websocket-origin` | all | Restrict allowed websocket origins. |
@@ -265,16 +265,20 @@ No one administers this FlowDash project yet. Open this link to become its admin
     http://localhost:5006/admin#token=Xb3...
 ```
 
-The token is random, kept in memory and new on every start;
-`FLOWDASH_ADMIN_TOKEN` fixes it for scripted setups. It travels in the URL
-fragment, which the browser never sends to the server, so it appears in no
-access log, and the page removes it from the address bar once it has
-handed it over. Whoever opens the link is added to `general.admins` and is
-admin on every later start, with no token. A wrong token is refused. Once
-the project has an admin the link is no longer printed; pass
-`--admin-link` to print it anyway, e.g. to add yourself to a project whose
-admins are away, or set `admin_link = False` in `__init__.py` to turn the
-link off.
+The token is random, kept in memory and new on every start. It travels in
+the URL fragment, which the browser never sends to the server, so it
+appears in no access log, and the page removes it from the address bar
+once it has handed it over. Whoever opens the link is added to
+`general.admins` and is admin on every later start, with no token.
+
+The link claims the project once: the token stops working after its first
+use, and it is refused once the project has an admin or `admin_groups`,
+even if the printed link is still in a console or log. To add an admin
+when the existing ones are away, restart with `--admin-link`, which prints
+a link that adds one more admin, again once. `FLOWDASH_ADMIN_TOKEN` fixes
+the token for scripted setups; it too works once per start and only under
+the same rules. Set `admin_link = False` in `__init__.py` to turn the link
+off entirely.
 
 ### Two ways of working
 
