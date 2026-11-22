@@ -341,7 +341,7 @@ class TestControls:
             return {
                 b.label: b
                 for b in inspector._body.select(pmui.Button)
-                if b.label.startswith("Move to")
+                if b.label.startswith("Move to") and b.visible
             }
 
         buttons()["Move to sidebar"].clicks += 1
@@ -357,7 +357,8 @@ class TestControls:
     def test_tile_tab_moves_the_selected_tile_and_back(self, editor):
         select_on_canvas(editor._flow, node_id="kpi")
         options = editor._inspector.tile_options
-        top = next(b for b in options._moves if b.label == "Move to top bar")
+        top = options._move_buttons["top"]
+        assert top.visible and not options._move_buttons["grid"].visible
         top.clicks += 1
         assert area_of(editor, _item(editor, "kpi")) == TOP
         select_on_canvas(editor._flow)
