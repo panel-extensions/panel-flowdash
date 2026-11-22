@@ -176,27 +176,45 @@ class TestBounds:
 
 
 VEGA = {"$schema": "https://vega.github.io/schema/vega-lite/v5.json", "mark": "bar"}
+CONTAINER = {**VEGA, "width": "container", "height": "container"}
 
 
 @register(page=False, component=True, title="Filling")
 def filling(config):
-    return pn.pane.Vega({**VEGA, "width": "container", "height": "container"})
+    return pn.pane.Vega(CONTAINER)
 
 
 @register(page=False, component=True, title="Filling bounded", max_size={"height": 300})
 def filling_bounded(config):
-    return pn.Column(
-        pn.pane.Markdown("a"), pn.Spacer(sizing_mode="stretch_both"), sizing_mode="stretch_both"
-    )
+    return pn.Column(pn.pane.Markdown("a"), pn.pane.Vega(CONTAINER))
+
+
+@register(page=False, component=True, title="Rendered")
+class Rendered(Viewer):
+    shown = param.Boolean(default=False)
+
+    @param.depends("shown")
+    def _render(self):
+        return pn.pane.Vega(CONTAINER) if self.shown else pn.pane.Markdown("Waiting")
+
+    def __panel__(self):
+        return pn.panel(self._render)
 
 
 FILLING = "Test/filling"
 FILLING_BOUNDED = "Test/filling_bounded"
+RENDERED = "Test/rendered"
 
 
 def _fill_editor():
     return FlowDash(
-        {SIZED: Sized, PLAIN: plain, FILLING: filling, FILLING_BOUNDED: filling_bounded},
+        {
+            SIZED: Sized,
+            PLAIN: plain,
+            FILLING: filling,
+            FILLING_BOUNDED: filling_bounded,
+            RENDERED: Rendered,
+        },
         notifications=False,
     )
 
@@ -230,12 +248,52 @@ class TestFillHeight:
 
         assert editor._tile_grid.layout == [stored]
 
+    def test_the_fill_height_is_not_saved(self):
+        editor = _fill_editor()
+        stored = {"index": 0, "width": 40, "visible": True}
+        editor.load_model(_model([("f", FILLING)], [{**stored, "instance_id": "f"}]))
+        editor.mode = "dashboard"
+
+        assert editor._tile_grid.layout == [{**stored, "height": FILL_HEIGHT}]
+        assert editor.to_model().tile_layout == [{**stored, "instance_id": "f"}]
+
+    def test_a_resized_fill_height_is_saved(self):
+        editor = _fill_editor()
+        editor.load_model(_model([("f", FILLING)], [{"index": 0, "instance_id": "f"}]))
+        editor.mode = "dashboard"
+
+        resized = {"index": 0, "width": 50, "height": 420, "visible": True}
+        editor._tile_grid._process_events({"layout": [resized]})
+
+        assert editor.to_model().tile_layout == [{**resized, "instance_id": "f"}]
+
+    def test_a_pane_that_renders_a_chart_later_sizes_its_tile_then(self):
+        editor = _fill_editor()
+        instance_id = editor.add_component(RENDERED)
+        editor.mode = "dashboard"
+        assert editor._tile_grid.layout == []
+
+        editor._component_instances[instance_id].shown = True
+
+        assert editor._tile_grid.layout == [{"height": FILL_HEIGHT}]
+
+    def test_views_that_take_their_height_from_the_tile(self):
+        stretched = pn.pane.Vega({**VEGA, "height": "container"}, sizing_mode="stretch_width")
+        method = pn.panel(lambda: pn.pane.Vega(CONTAINER))
+
+        assert _fills_tile(pn.pane.Vega(CONTAINER))
+        assert _fills_tile(stretched)
+        assert _fills_tile(method)
+        assert _fills_tile(pn.Column(pn.pane.Markdown("a"), method))
+
     def test_views_with_a_height_of_their_own_are_not_filled(self):
         sized = pn.pane.Vega({**VEGA, "height": "container"}, height=200)
-        markdown = pn.Column(pn.pane.Markdown("a"), sizing_mode="stretch_both")
+        spaced = pn.Column(pn.pane.Markdown("a"), pn.layout.VSpacer(), sizing_mode="stretch_both")
 
         assert not _fills_tile(sized)
-        assert not _fills_tile(markdown)
+        assert not _fills_tile(spaced)
         assert not _fills_tile(pn.pane.Vega({**VEGA, "height": 300}))
-        assert not _fills_tile(pn.pane.Markdown("a", sizing_mode="stretch_both", min_height=100))
-        assert _fills_tile(pn.pane.Markdown("a", sizing_mode="stretch_height"))
+        assert not _fills_tile(pn.pane.Markdown("a", sizing_mode="stretch_both"))
+        assert not _fills_tile(pn.pane.HTML("a", sizing_mode="stretch_both"))
+        assert not _fills_tile(pn.pane.Str("a", sizing_mode="stretch_both"))
+        assert not _fills_tile(pn.panel(lambda: pn.pane.Markdown("a")))
