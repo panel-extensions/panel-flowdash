@@ -46,6 +46,14 @@ component sees ``{column: predicate}``. There are two ways to take part:
   ``select`` filter offers, or the ``(min, max)`` a ``range`` filter spans,
   for data FlowDash never sees in memory.
 
+``__flowdash_apply_filters__`` may return the filters it could not apply, as
+``{column: reason}``, e.g. a column its query has but whose type the filter
+does not suit; the tile then says "Not filtered by ..." with the reason, as
+it does when it raises. A component whose columns change after it was
+placed, e.g. when a new query arrives at an input that is not a DataFrame,
+calls :func:`request_filters` to have them read again and its filters handed
+over anew.
+
 Only the filters a component declares a column for reach it, and none it opted
 out of. Function components are not filtered: they read their inputs from the
 node directly.
@@ -69,7 +77,8 @@ WIDGETS = ("select", "range")
 MAX_LABEL_LENGTH = 200
 # Keys starting with this are accepted, and ignored, in a filter.
 EXTENSION_PREFIX = "x-"
-# The most values a select filter offers.
+# The most values a select filter offers, and keeps: every view re-runs with
+# the whole list on each change, so a larger one would cost seconds per view.
 MAX_OPTIONS = 1000
 
 
@@ -89,13 +98,61 @@ class FilterTarget(t.Protocol):
     def __flowdash_columns__(self) -> Iterable[str] | None:
         """Return the columns the component can filter on, or None while it does not know."""
 
-    def __flowdash_apply_filters__(self, filters: Mapping[str, Predicate]) -> None:
-        """Apply *filters*, the predicates that apply to the component by column; empty clears them."""
+    def __flowdash_apply_filters__(
+        self, filters: Mapping[str, Predicate]
+    ) -> Mapping[str, str] | None:
+        """Apply *filters*, the predicates that apply to the component by column; empty clears them.
+
+        Returns the filters the component could not apply, as ``{column: reason}``, or None.
+        """
 
 
 def accepts_filters(component: t.Any) -> bool:
     """Whether *component* applies global filters itself, see :class:`FilterTarget`."""
     return callable(getattr(component, "__flowdash_apply_filters__", None))
+
+
+def request_filters(component: t.Any) -> bool:
+    """Have the dashboards showing *component* read its columns again and hand it its filters anew.
+
+    A :class:`FilterTarget` calls this when ``__flowdash_columns__`` would
+    now answer differently, e.g. once a query arriving at one of its inputs
+    has run. Returns whether a dashboard shows *component*.
+    """
+    from panel_flowdash.ui.global_filters import GlobalFilters
+
+    return GlobalFilters.request(component)
+
+
+def skipped_filters(result: t.Any, filters: Collection[str]) -> dict[str, str]:
+    """Return what ``__flowdash_apply_filters__`` reported it skipped, by column, as text.
+
+    *result* is a mapping ``{column: reason}`` or an iterable of
+    ``(column, reason)`` pairs; columns not among *filters*, the ones handed
+    over, are dropped.
+    """
+    if result is None:
+        return {}
+    if isinstance(result, Mapping):
+        items = result.items()
+    elif isinstance(result, Iterable) and not isinstance(result, (str, bytes)):
+        items = []
+        for item in result:
+            if isinstance(item, str):
+                items.append((item, ""))
+            else:
+                column, reason = item
+                items.append((column, reason))
+    else:
+        raise TypeError(
+            "__flowdash_apply_filters__ returns {column: reason} or None, "
+            f"got {type(result).__name__}."
+        )
+    return {
+        str(column): str(reason or "could not be applied")
+        for column, reason in items
+        if str(column) in filters
+    }
 
 
 # --------------------------------------------------------------------------
@@ -127,6 +184,12 @@ def _check_value(value: t.Any, widget: str | None, key: str) -> t.Any:
             raise FilterError(key, f"a range takes [start, end], got {value!r}.")
         if any(isinstance(v, bool) for v in value):
             raise FilterError(key, "a range's bounds are numbers, dates or null.")
+    elif len(value) > MAX_OPTIONS:
+        raise FilterError(
+            key,
+            f"a selection keeps at most {MAX_OPTIONS} values, got {len(value)}; "
+            "use a range, or a Filter node, to keep more.",
+        )
     return value
 
 
@@ -557,6 +620,8 @@ def column_span(frames: Iterable[pd.DataFrame], column: str) -> tuple[t.Any, t.A
 MISSING = "missing"
 EXCLUDED = "excluded"
 MISMATCHED = "mismatched"
+# The view itself reported it could not apply the filter, see FilterTarget.
+SKIPPED = "skipped"
 
 
 def resolve_view(
@@ -565,6 +630,7 @@ def resolve_view(
     node: str,
     columns: Collection[str] | None,
     mismatched: Mapping[str, str] | None = None,
+    reported: Mapping[str, str] | None = None,
 ) -> tuple[dict[str, Predicate], dict[str, str]]:
     """Return the predicates that reach the view *node*, and why each other active filter does not.
 
@@ -572,9 +638,11 @@ def resolve_view(
     *columns* the view's columns, None while unknown. A filter the view opts
     out of is ``excluded``, one on a column it lacks is ``missing``, and one
     whose values its column cannot be compared with, as *mismatched* says by
-    column, is ``mismatched``.
+    column, is ``mismatched``. One the view itself could not apply, as
+    *reported* says by column, is ``skipped``.
     """
     mismatched = mismatched or {}
+    reported = reported or {}
     applied: dict[str, Predicate] = {}
     skipped: dict[str, str] = {}
     for entry in filters:
@@ -587,6 +655,8 @@ def resolve_view(
             skipped[column] = MISSING
         elif column in mismatched:
             skipped[column] = MISMATCHED
+        elif column in reported:
+            skipped[column] = SKIPPED
         else:
             applied[column] = active[column]
     return applied, skipped
@@ -602,6 +672,7 @@ def hint_detail(
     filters: Iterable[Mapping],
     skipped: Mapping[str, str],
     mismatched: Mapping[str, str] | None = None,
+    reported: Mapping[str, str] | None = None,
 ) -> str:
     """Return why each filter in *skipped* does not reach a view, for its tooltip."""
     reasons = []
@@ -614,4 +685,7 @@ def hint_detail(
         elif reason == MISMATCHED:
             why = (mismatched or {}).get(entry["column"], "cannot be compared with the filter")
             reasons.append(f"{filter_label(entry)}: its column {entry['column']!r} {why}")
+        elif reason == SKIPPED:
+            why = (reported or {}).get(entry["column"], "could not be applied")
+            reasons.append(f"{filter_label(entry)}: {why}")
     return "; ".join(reasons)

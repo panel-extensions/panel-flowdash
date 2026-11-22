@@ -118,6 +118,45 @@ is either `in`, with `values` the values to keep, or `range`, with `values`
 the `(start, end)` bounds, either of which may be `None`; dates arrive as
 `datetime` objects.
 
+A filter the component cannot apply after all, say a column its query has but
+whose type the predicate does not suit, is reported back by returning
+`{column: reason}` from `__flowdash_apply_filters__`. The tile then shows
+"Not filtered by ..." with the reason in its tooltip, instead of looking
+filtered. If `__flowdash_apply_filters__` raises, every filter it was handed
+counts as not applied.
+
+```python
+class SalesTable(Viewer):
+    ...
+
+    def __flowdash_apply_filters__(self, filters):
+        self.filters = {c: p for c, p in filters.items() if c not in self.json_columns}
+        return {c: "is a JSON column" for c in filters if c in self.json_columns}
+```
+
+FlowDash asks for `__flowdash_columns__()` when the dashboard's filters or
+wiring change and whenever a new value arrives at one of the component's
+inputs. A component whose columns change at another time, for example once a
+query it was handed has run, calls `request_filters` to have its columns read
+again and its filters handed over anew:
+
+```python
+from panel_flowdash import request_filters
+
+
+class SalesTable(Viewer):
+    ...
+
+    @param.depends("table", watch=True)
+    def _on_table(self):
+        request_filters(self)
+```
+
+A `select` filter offers and keeps at most 1000 values
+(`panel_flowdash.global_filters.MAX_OPTIONS`). A larger selection is refused
+with an error: every view runs again with the whole list on each change, so
+use a `range` or a Filter node to keep more.
+
 `panel_flowdash.global_filters` has the pieces as functions: `filter_frame`
 applies predicates to a DataFrame, `resolve_view` says which filters reach a
 view and why the others do not, and `check_filters` checks the `filters` of a
