@@ -135,8 +135,38 @@ class TestConfirm:
 
     def test_is_only_dismissed_by_its_buttons(self, doc):
         confirm("Save?", on_confirm=lambda _event: None)
-        assert page_dialog().close_on_click is False
-        assert page_dialog().show_close_button is False
+        dialog = page_dialog()
+        assert dialog.close_on_click is False
+        assert dialog.show_close_button is False
+        # Releases without ``close_on_escape`` only close on Escape with ``close_on_click``.
+        assert getattr(dialog, "close_on_escape", False) is False
+
+    def test_a_later_dialog_is_dismissible_with_escape_again(self, doc):
+        confirm("Save?", on_confirm=lambda _event: None)
+        open_dialog("Details", "body")
+        dialog = page_dialog()
+        assert dialog.close_on_click is True
+        assert getattr(dialog, "close_on_escape", True) is True
+
+    def test_closing_without_an_answer_counts_as_cancel(self, doc):
+        seen = []
+        confirm("Save?", on_confirm=lambda _event: seen.append("confirm"), on_cancel=seen.append)
+
+        close_dialog()
+
+        assert len(seen) == 1
+        assert (seen[0].name, seen[0].new) == ("open", False)
+
+    def test_closing_after_an_answer_does_not_cancel(self, doc):
+        seen = []
+        confirm("Save?", on_confirm=lambda _event: seen.append("confirm"), on_cancel=seen.append)
+        dialog = page_dialog()
+
+        _click(_button(dialog, "Confirm"))
+        dialog.open = True
+        close_dialog()
+
+        assert seen == ["confirm"]
 
     def test_content_is_optional(self, doc):
         confirm("Save?", on_confirm=lambda _event: None)
@@ -225,7 +255,17 @@ class TestConfirm:
         open_dialog("Details", "body")
 
         assert page_dialog().title == "Details"
+        close_dialog()
         assert seen == []
+
+    def test_a_replaced_confirmation_cannot_cancel_its_successor(self, doc):
+        seen = []
+        confirm("Save?", on_confirm=seen.append, on_cancel=lambda _event: seen.append("first"))
+        confirm("Apply?", on_confirm=seen.append, on_cancel=lambda _event: seen.append("second"))
+
+        close_dialog()
+
+        assert seen == ["second"]
 
     def test_a_handler_may_open_the_next_dialog(self, doc):
         confirm("Save?", on_confirm=lambda _event: open_dialog("Saved", "done"))
@@ -255,6 +295,11 @@ class TestConfirm:
         _click(_button(dialog, "Cancel"))
         await async_wait_until(lambda: len(seen) == 2)
         assert seen[1] == ("cancel", False)
+
+        confirm("Save?", on_confirm=on_confirm, on_cancel=on_cancel)
+        close_dialog()
+        await async_wait_until(lambda: len(seen) == 3)
+        assert seen[2] == ("cancel", False)
 
     def test_outside_a_session_warns_and_runs_no_handler(self, caplog):
         calls = []
