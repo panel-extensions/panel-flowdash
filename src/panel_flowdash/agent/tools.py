@@ -37,7 +37,7 @@ from .yaml_format import DashboardYAMLError, dashboard_to_dict, dashboard_to_yam
 logger = logging.getLogger(__name__)
 
 # Tools that change what is stored or who can see it: the user approves each call.
-APPROVAL_TOOLS = ("save_dashboard", "delete_dashboard", "share_dashboard")
+APPROVAL_TOOLS = ("save_dashboard", "delete_dashboard", "share_dashboard", "export_report")
 
 
 # Command palette commands that do the same, run through the run_command action.
@@ -1080,6 +1080,38 @@ def run_pending(ctx: RunContext[FlowDashDeps], turn: str) -> str:
     )
 
 
+async def export_report(
+    ctx: RunContext[FlowDashDeps], format: str = "html", include_pending: bool = False
+) -> str:
+    """Export the report as a file the user's browser saves. The user approves each export.
+
+    The file holds the values as they are now; questions not answered yet
+    are not run, only listed with include_pending.
+
+    Args:
+        format: html, pdf, docx (Word), md (Markdown) or ipynb (Jupyter notebook).
+        include_pending: Whether questions not answered yet are listed as such.
+    """
+    from panel_flowdash.export import ExportUnavailable, Placeholder
+
+    ops = ctx.deps.ops
+    try:
+        file = await ops.export_report(format, include_pending=include_pending)
+    except ExportUnavailable as exc:
+        return f"Not available: {exc}"
+    size = f"{len(file.data) / 1024:,.0f} KB"
+    left_out = sum(isinstance(b, Placeholder) for b in file.document.walk())
+    message = f"Exported the report as {file.filename} ({size})"
+    if ops.send_file(file):
+        message += "; the user's browser is saving it"
+    message += "."
+    if left_out:
+        message += (
+            f" {left_out} item(s) are left out with a note, e.g. restricted or interactive ones."
+        )
+    return message
+
+
 def save_dashboard(ctx: RunContext[FlowDashDeps]) -> str:
     """Save the open dashboard. The user approves each save."""
     deps = ctx.deps
@@ -1250,6 +1282,7 @@ TOOLS = (
     set_report,
     ask_in_report,
     run_pending,
+    export_report,
     save_dashboard,
     delete_dashboard,
     share_dashboard,
@@ -1257,7 +1290,7 @@ TOOLS = (
 
 #: The names of the report tools, for an agent offered a subset of the tools, e.g.
 #: ``create_agent(tools=[..., *REPORT_TOOLS])``. Report edits need no approval;
-#: run_pending answers a question as asking it would.
+#: run_pending answers a question as asking it would, and every export is approved.
 REPORT_TOOLS = (
     "get_report",
     "report_text",
@@ -1265,6 +1298,7 @@ REPORT_TOOLS = (
     "set_report",
     "ask_in_report",
     "run_pending",
+    "export_report",
 )
 
 

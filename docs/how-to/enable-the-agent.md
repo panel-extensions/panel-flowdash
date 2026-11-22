@@ -298,7 +298,7 @@ dashboard, as a record of how it was made.
 ### Report
 
 The assistant writes the dashboard's report, the document the **Report** view shows,
-with six tools: `get_report` returns its blocks as YAML, each numbered by its index,
+with these tools: `get_report` returns its blocks as YAML, each numbered by its index,
 `report_text` returns it as a reader sees it, in Markdown with the `{{ node.port }}`
 placeholders filled in, `edit_report` inserts, updates, moves and removes blocks by
 index in one call, `set_report` replaces the whole report, `ask_in_report` adds a
@@ -325,6 +325,11 @@ asked once. A request that changes nothing leaves the question waiting. Question
 an assistant, or for people who may only view the dashboard, Run is disabled;
 `FlowDash(run_pending=...)` takes your own callable, which answers through
 `FlowDash.answer_pending(turn_id, run_id)`.
+
+`export_report(format, include_pending)` exports the report as a file the user's
+browser saves, as **Export...** in the Report view does: `html`, `pdf`, `docx`, `md` or
+`ipynb`. A file leaves the app, so every export waits for the user's approval, and
+questions not run yet are never run for it.
 
 An agent given a subset of the tools (`create_agent(tools=...)`) gets the report tools
 by name; `panel_flowdash.agent.REPORT_TOOLS` lists them. When it is offered

@@ -59,6 +59,10 @@ pytest-xdist = "*"
 mypy = "*"
 # Stored secrets are encrypted with it (the secrets extra).
 cryptography = "*"
+# Report exports (the export extra).
+nbformat = "*"
+python-docx = "*"
+vl-convert-python = "*"
 
 [feature.test.pypi-dependencies]
 pytest-asyncio = ">=0.23"
