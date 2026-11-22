@@ -11,6 +11,10 @@ import panel_material_ui as pmui
 import param
 from panel.viewable import Viewer
 
+from panel_flowdash.admin import (
+    ai as _ai,  # noqa: F401  (registers the ai section)
+    permissions as _permissions,  # noqa: F401
+)
 from panel_flowdash.admin.form import SettingsForm, using_app
 from panel_flowdash.admin.sections import BUILTIN_SECTIONS
 from panel_flowdash.project import Project, ProjectSection, sections

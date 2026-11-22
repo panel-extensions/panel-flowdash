@@ -32,6 +32,7 @@ from panel_flowdash.admin.sections import (
     project_admins,
     project_overrides,
 )
+from panel_flowdash.ai import UsageLedger, ledger_for
 from panel_flowdash.auth import (
     ANONYMOUS_USER,
     AuthConfig,
@@ -47,6 +48,12 @@ from panel_flowdash.dashboard_store import (
     DashboardStoreError,
 )
 from panel_flowdash.editor import FlowDash
+from panel_flowdash.permissions import (
+    PermissionsUnavailable,
+    auth_code_fields,
+    effective_auth_config,
+    project_permissions,
+)
 from panel_flowdash.project import (
     PROJECT_FILE,
     Project,
@@ -538,9 +545,11 @@ class FlowDashApp(Viewer):
         self._session_state_class = session_state_class
 
         self._session_state = self._session_state_class()
+        self._apply_project_permissions()
         self._identity = resolve_identity(self.auth_config)
+        self._note_visit()
         self._user_id = self._resolve_user_id()
-        self._is_admin = is_admin(
+        self._is_admin = self._permissions_error is None and is_admin(
             self._identity,
             self._admin_groups(),
             self._configured_admins(),
@@ -699,6 +708,8 @@ class FlowDashApp(Viewer):
         ``"editor_options.mode"``.
         """
         top, *path = target.split(".")
+        if top == "auth_config" and path:
+            return self._auth_code_fields().get(path[0])
         if top not in self._explicit or top not in self.param:
             return None
         value = getattr(self, top)
@@ -716,6 +727,8 @@ class FlowDashApp(Viewer):
     def _code_setting_value(self, target: str) -> t.Any:
         """Return the value of the parameter, or the entry of a dict parameter, *target* names."""
         top, *path = target.split(".")
+        if top == "auth_config" and path:
+            return getattr(self._code_auth_config or AuthConfig(), path[0])
         value = getattr(self, top)
         for part in path:
             value = value[part]
@@ -771,6 +784,79 @@ class FlowDashApp(Viewer):
                 updates[name] = self._project_page_options[name]
         page.param.update(updates)
         self._font_loader.href = font_href(self._project_font)
+
+    def _project_section(self, name: str) -> dict[str, t.Any]:
+        """Return the project file's section *name*, or nothing when it cannot be read."""
+        try:
+            return dict(self._settings_project().get(name) or {})
+        except (ProjectError, OSError) as exc:
+            logger.warning("Not using the project file's %s settings: %s", name, exc)
+            return {}
+
+    def _auth_code_fields(self) -> dict[str, str]:
+        """Return the `AuthConfig` fields given in code, each with where."""
+        return auth_code_fields(
+            self._code_auth_config, self.settings_sources, "auth_config" in self._explicit
+        )
+
+    def _read_permissions(self) -> dict[str, t.Any]:
+        """Return the project file's permissions as they are now.
+
+        Raises `PermissionsUnavailable` when the file cannot be read and no
+        permissions were read from it before, so access is denied rather
+        than left to the defaults.
+        """
+        project = self._settings_project()
+        if project.path and pathlib.Path(project.path).exists():
+            return project_permissions(project.path)
+        try:
+            return dict(project.get("permissions") or {})
+        except ProjectError as exc:
+            raise PermissionsUnavailable(str(exc)) from None
+
+    def _apply_project_permissions(self):
+        """Layer the project file's permissions under the `auth_config` given in code.
+
+        When they cannot be read, the session is denied: `_permissions_error` says why.
+        """
+        self._code_auth_config = self.auth_config
+        self._permissions_error: str | None = None
+        try:
+            self._permissions = self._read_permissions()
+        except PermissionsUnavailable as exc:
+            self._permissions = {}
+            self._permissions_error = str(exc)
+        if self._permissions:
+            self.auth_config = effective_auth_config(
+                self.auth_config, self._permissions, self._auth_code_fields()
+            )
+
+    def _assistant_still_allowed(self) -> bool:
+        """Whether the person still gets the assistant, with the permissions read again.
+
+        Checked before each request, so taking the assistant away applies to
+        sessions already open.
+        """
+        try:
+            self._permissions = self._read_permissions()
+        except PermissionsUnavailable as exc:
+            self._permissions_error = str(exc)
+            return False
+        return self._permissions_error is None and self._assistant_allowed()
+
+    def _usage_ledger(self) -> UsageLedger:
+        """Return the ledger of the models' spend and of who opened the app."""
+        project = self._settings_project()
+        directory = project.directory if project.path else self.project_dir
+        return ledger_for(directory)
+
+    def _note_visit(self):
+        if pn.state.curdoc is None or pn.state.curdoc.session_context is None:
+            return
+        try:
+            self._usage_ledger().see(self._identity.user, self._identity.groups)
+        except OSError as exc:
+            logger.warning("Could not note the visit of %s: %s", self._identity.user, exc)
 
     def _configured_admins(self) -> list[str]:
         try:
@@ -1239,8 +1325,44 @@ class FlowDashApp(Viewer):
 
             validate_models(self.agent_models)
 
+    def _code_models(self) -> tuple[list, str | None]:
+        """Return the models and default model given in code or the environment."""
+        from panel_flowdash.agent.models import configured_models
+
+        model = self.agent if isinstance(self.agent, str) else self.agent_model
+        return configured_models(self.agent_models, model)
+
+    def _model_entries(self, ai: dict[str, t.Any]) -> tuple[list, str | None]:
+        """Return the models of the code and the project file's ``ai`` section, and the default."""
+        from panel_flowdash.agent.models import default_model
+        from panel_flowdash.ai import default_model_id, model_entries
+
+        code_models, _ = self._code_models()
+        source = self._code_setting_source("agent_models") or self._code_setting_source(
+            "agent_model"
+        )
+        entries = model_entries(ai, code_models, source)
+        # Only a default named in code wins over the file's; the first model is a default of neither.
+        code_default = (
+            self.agent if isinstance(self.agent, str) else self.agent_model or default_model()
+        )
+        return entries, default_model_id(ai, entries, code_default)
+
+    def _assistant_allowed(self) -> bool:
+        """Whether this session's person gets the assistant: `agent_authorize`, else the project's."""
+        if self.agent_authorize is not None:
+            try:
+                return bool(self.agent_authorize(self._identity))
+            except Exception:
+                logger.exception("agent_authorize failed; leaving the agent out")
+                return False
+        from panel_flowdash.permissions import assistant_allowed
+
+        return assistant_allowed(self._permissions, self._identity)
+
     def _build_agent_session(self):
         """Connect this session to the configured agent, or return None when there is none."""
+        ai = self._project_section("ai")
         if self.agent is False or (
             self.agent is None
             and not (
@@ -1248,17 +1370,12 @@ class FlowDashApp(Viewer):
                 or self.agent_models
                 or os.environ.get("FLOWDASH_AGENT_MODEL")
                 or os.environ.get("FLOWDASH_AGENT_MODELS")
+                or ai.get("models")
             )
         ):
             return None
-        if self.agent_authorize is not None:
-            try:
-                allowed = bool(self.agent_authorize(self._identity))
-            except Exception:
-                logger.exception("agent_authorize failed; leaving the agent out")
-                allowed = False
-            if not allowed:
-                return None
+        if self._permissions_error is not None or not self._assistant_allowed():
+            return None
         try:
             from panel_flowdash.agent.assistant import EDITING
             from panel_flowdash.agent.session import (
@@ -1269,24 +1386,48 @@ class FlowDashApp(Viewer):
         except ImportError as exc:
             logger.error("%s (%s)", AGENT_EXTRA_MISSING, exc)
             return None
-        from panel_flowdash.agent.models import configured_models
+        from panel_flowdash.ai import model_choice
 
-        models, model = configured_models(self.agent_models, self.agent_model)
-        if isinstance(self.agent, str):
-            models, model = configured_models(self.agent_models, self.agent)
+        entries, default = self._model_entries(ai)
+        offered = {
+            surface: [e for e in entries if e.offered(self._identity, surface)]
+            for surface in ("assistant", "explore")
+        }
+        if entries and not offered["assistant"]:
+            return None
+        models = [model_choice(e, ai) for e in offered["assistant"]]
+        ids = [m.id for m in models]
+        model = default if default in ids else next(iter(ids), None)
+        target = next((m.target for m in models if m.id == model), model)
         # With a choice the picker names every request's model, so an unusable default must not fail here.
         checks = {"defer_model_check": True} if len(models) > 1 else {}
-        exploring = self.explore_agent is not False
-        agent = resolve_agent(
-            self.agent, model, **checks, **({"instructions": EDITING} if exploring else {})
-        )
+        exploring = self.explore_agent is not False and (not entries or bool(offered["explore"]))
+        # A model string given as `agent` is the default model, made with the project's provider key.
+        try:
+            agent = resolve_agent(
+                None if isinstance(self.agent, str) else self.agent,
+                target,
+                **checks,
+                **({"instructions": EDITING} if exploring else {}),
+            )
+        except Exception as exc:
+            if not ai.get("models"):
+                raise
+            # A model the admin view added must not keep the app from starting.
+            logger.error("The assistant is off: its model %s cannot be used: %s", model, exc)
+            return None
         if agent is None:
             return None
         made = self.agent is None or self.agent is True or isinstance(self.agent, str)
         # An assistant passed in runs on its own model, and the Explore agent made for it too.
-        explore_agent = resolve_explore_agent(
-            self.explore_agent, agent, model if made else None, **checks
+        explore_agent = (
+            resolve_explore_agent(self.explore_agent, agent, target if made else None, **checks)
+            if exploring
+            else None
         )
+        explore_models = None
+        if entries and [e.id for e in offered["explore"]] != ids:
+            explore_models = [model_choice(e, ai) for e in offered["explore"]]
         # With a single model there is nothing to pick, and an agent passed in keeps its own model.
         # The chat names that model as configured when agent_models lists it or the configured id
         # is the agent's own model, else by the agent's model.
@@ -1295,7 +1436,7 @@ class FlowDashApp(Viewer):
             from panel_flowdash.agent.models import agent_model_choice, same_model
 
             configured = models[0] if models else None
-            if configured is not None and not (made or self.agent_models):
+            if configured is not None and not (made or self.agent_models or ai.get("models")):
                 own = agent_model_choice(agent)
                 if own is None or not same_model(configured.id, own.id):
                     configured = None
@@ -1310,6 +1451,9 @@ class FlowDashApp(Viewer):
             model=model,
             explore_agent=explore_agent,
             explore_model=explore_model,
+            explore_models=explore_models,
+            entries=entries,
+            ledger=self._usage_ledger(),
         )
 
     def _on_editor_sidebar(self, *events):
@@ -1714,6 +1858,17 @@ class FlowDashApp(Viewer):
         # Importing pending pages awaits, so a newer navigation may have started.
         await self._resolve_pending_entries()
         if not self._is_current_navigation(generation):
+            return
+
+        if self._permissions_error is not None:
+            self._leave_dashboard()
+            self._set_sidebar_views([])
+            self._page.main = [
+                alert_pane(
+                    f"**Access is denied.** {escape_markdown(self._permissions_error)}",
+                    alert_type="danger",
+                )
+            ]
             return
 
         if pathname == "/":
