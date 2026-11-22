@@ -362,6 +362,21 @@ class TurnLog:
             turn.summary = summarize(noted)
         return turn
 
+    def add_pending(self, question: str) -> DashboardTurn:
+        """Add a planned turn asking *question*, not run yet, and return it."""
+        text = _question(question)
+        if text is None:
+            raise TurnError("question", "is required for a pending turn.")
+        turn = DashboardTurn(id=self._new_id(), question=text, status="pending")
+        self.turns.append(turn)
+        return turn
+
+    def drop_pending(self, ids: t.Collection[str]):
+        """Drop the pending turns *ids*; turns that ran are kept."""
+        self.turns = [
+            turn for turn in self.turns if not (turn.status == "pending" and turn.id in ids)
+        ]
+
     def prune(self, keep: t.Collection[str]):
         """Drop the oldest closed turns not in *keep* until at most ``MAX_TURNS`` are left."""
         excess = len(self.turns) - MAX_TURNS

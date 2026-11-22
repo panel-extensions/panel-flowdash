@@ -255,6 +255,77 @@ def report_turns(report: Mapping | None) -> set[str]:
 
 
 # --------------------------------------------------------------------------
+# Changing a report's blocks
+# --------------------------------------------------------------------------
+
+
+def _blocks(report: Mapping | None) -> list[dict[str, t.Any]]:
+    return copy.deepcopy(list((report or {}).get("blocks") or []))
+
+
+def _with_blocks(report: Mapping | None, blocks: list[dict[str, t.Any]]) -> dict[str, t.Any]:
+    return {**copy.deepcopy(dict(report or {})), "blocks": blocks}
+
+
+def _index(blocks: list, index: int, key: str = "index") -> int:
+    if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(blocks):
+        raise ReportError(
+            key, f"must be the index of a block, 0 to {len(blocks) - 1}, got {index!r}."
+        )
+    return index
+
+
+def insert_block(report: Mapping | None, index: int | None, block: Mapping) -> dict[str, t.Any]:
+    """Return a copy of *report* with *block* inserted before the block at *index*, or last for None."""
+    blocks = _blocks(report)
+    if index is None:
+        index = len(blocks)
+    if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index <= len(blocks):
+        raise ReportError("index", f"must be 0 to {len(blocks)}, got {index!r}.")
+    blocks.insert(index, check_block(block))
+    return _with_blocks(report, blocks)
+
+
+def move_block(report: Mapping | None, index: int, to: int) -> dict[str, t.Any]:
+    """Return a copy of *report* with the block at *index* moved so that it ends up at index *to*."""
+    blocks = _blocks(report)
+    _index(blocks, index)
+    _index(blocks, to, "to")
+    blocks.insert(to, blocks.pop(index))
+    return _with_blocks(report, blocks)
+
+
+def remove_block(report: Mapping | None, index: int) -> dict[str, t.Any]:
+    """Return a copy of *report* without the block at *index*."""
+    blocks = _blocks(report)
+    del blocks[_index(blocks, index)]
+    return _with_blocks(report, blocks)
+
+
+def update_block(report: Mapping | None, index: int, **changes: t.Any) -> dict[str, t.Any]:
+    """Return a copy of *report* with keys of the block at *index* changed; a None value removes the key."""
+    blocks = _blocks(report)
+    block = blocks[_index(blocks, index)]
+    for key, value in changes.items():
+        if value is None:
+            block.pop(key, None)
+        else:
+            block[key] = value
+    blocks[index] = check_block(block, f"blocks[{index}]")
+    return _with_blocks(report, blocks)
+
+
+def set_title(report: Mapping | None, title: str | None) -> dict[str, t.Any]:
+    """Return a copy of *report* titled *title*; an empty or None title leaves it the dashboard's."""
+    updated = _with_blocks(report, _blocks(report))
+    if title is None or not str(title).strip():
+        updated.pop("title", None)
+    else:
+        updated["title"] = _string(str(title).strip(), "title", MAX_TITLE_LENGTH)
+    return updated
+
+
+# --------------------------------------------------------------------------
 # Reading a report from an editor
 # --------------------------------------------------------------------------
 
@@ -312,6 +383,11 @@ def group_members(editor: FlowDash, group_id: str) -> list[str]:
         for item in _ordered_items(editor)
         if item["instance_id"] in members and not _is_control(editor, item)
     ]
+
+
+def dashboard_nodes(editor: FlowDash) -> set[str]:
+    """Return the instance ids of the nodes the dashboard shows, controls included."""
+    return {item["instance_id"] for item in _ordered_items(editor)}
 
 
 def report_blocks(editor: FlowDash) -> ResolvedReport:
@@ -533,13 +609,19 @@ __all__ = [
     "ResolvedReport",
     "check_block",
     "check_report",
+    "dashboard_nodes",
     "decode_report",
     "fill_report_text",
     "group_members",
+    "insert_block",
     "map_report",
+    "move_block",
     "placeholder_text",
+    "remove_block",
     "render_report_text",
     "report_blocks",
     "report_turns",
+    "set_title",
+    "update_block",
     "without_nodes",
 ]
