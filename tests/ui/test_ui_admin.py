@@ -150,6 +150,14 @@ def test_a_key_typed_in_the_dialog_is_stored_encrypted_and_never_sent_back(
     monkeypatch.setenv(KEY_ENV, fernet_key())
     monkeypatch.setattr("panel_flowdash.secret_store._keyring", lambda: (None, ()))
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    sent = []
+
+    async def fetch(url, headers):
+        # The key is tested after saving; answer for OpenRouter rather than calling it.
+        sent.append(headers.get("Authorization"))
+        return 200, "OK"
+
+    monkeypatch.setattr("panel_flowdash.ai._fetch", fetch)
     (tmp_path / PROJECT_FILE).write_text(
         f"general:\n  admins: [{getpass.getuser()}]\n"
         "ai:\n  models:\n    - id: openrouter:ibm/granite\n      label: Granite\n"
@@ -173,6 +181,8 @@ def test_a_key_typed_in_the_dialog_is_stored_encrypted_and_never_sent_back(
     assert resolve_secret(stored()) == SECRET
     assert SECRET not in (tmp_path / PROJECT_FILE).read_text()
     expect(card).to_contain_text(f"ends in {SECRET[-4:]}")
+    expect(card).to_contain_text("Connected")
+    assert sent == [f"Bearer {SECRET}"]
     assert SECRET not in page.content()
     card.get_by_role("button", name="Replace key").click()
     expect(dialog.get_by_label("API key")).to_have_value("")
