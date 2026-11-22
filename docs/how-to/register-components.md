@@ -402,6 +402,51 @@ If a second `open_dialog` or `confirm` replaces an unanswered confirmation, neit
 
 ---
 
+## Knowing why a component is created
+
+FlowDash creates a component whenever a node appears on the canvas, not only
+when someone adds one. `placement_context()` tells the component why, from its
+`__init__` or function body:
+
+| Value       | When                                                                              |
+|-------------|-----------------------------------------------------------------------------------|
+| `"new"`     | The node was just added: from the palette, by `add_component`, or by the agent    |
+| `"load"`    | A dashboard is being opened, imported or replaced, so the node has saved settings |
+| `"restore"` | Undo, redo or restoring a version brings the node back as it was                  |
+| `None`      | FlowDash is not creating the component, e.g. it is rendered on its own            |
+
+A component that fills in a starting point of its own should do so only for a
+new node, so it never overwrites what a saved dashboard or an undo brings back:
+
+```python
+import panel as pn
+import param
+
+from panel_flowdash import placement_context, register
+
+
+@register(component=True)
+class Query(pn.viewable.Viewer):
+    sql = param.String(default="")
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        if placement_context() == "new" and not self.sql:
+            self.sql = "SELECT * FROM sales LIMIT 100"
+
+    def __panel__(self):
+        return pn.pane.Markdown(self.sql)
+```
+
+The reason belongs to the creation of that one node: a node the component adds
+while it is created is `"new"` again, and placements in other sessions and
+threads have their own. It is a context variable, so a thread the component
+starts does not see it; read it in `__init__` and keep the value if work
+started there needs it. An async function body sees it while it runs, but a
+callback or an output that runs later does not.
+
+---
+
 ## Releasing resources when a component is removed
 
 FlowDash creates one instance of a Viewer component per node. When that node

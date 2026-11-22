@@ -232,6 +232,8 @@ if t.TYPE_CHECKING:
 
 logger = logging.getLogger("panel_flowdash")
 
+PlacementReason = t.Literal["new", "load", "restore"]
+
 
 def _no_editor(data, schema, *, id, type, on_patch):
     return None
@@ -705,6 +707,14 @@ _INSTANTIATING: contextvars.ContextVar[FlowDash | None] = contextvars.ContextVar
 _INSTANTIATING_NODE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "panel_flowdash_instantiating_node", default=None
 )
+# Why the component being created is placed, for `placement_context`.
+_PLACEMENT: contextvars.ContextVar[PlacementReason | None] = contextvars.ContextVar(
+    "panel_flowdash_placement", default=None
+)
+# Why the editor operation in progress places nodes; unset inside a component's creation.
+_PLACING: contextvars.ContextVar[PlacementReason | None] = contextvars.ContextVar(
+    "panel_flowdash_placing", default=None
+)
 # The latest editor of each served session; weak on both sides so a session can end.
 _SESSION_EDITORS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
@@ -734,6 +744,37 @@ def current_node_id() -> str | None:
     use :meth:`FlowDash.node_id` with the component instead.
     """
     return _INSTANTIATING_NODE.get()
+
+
+def placement_context() -> PlacementReason | None:
+    """Return why the component calling this is being created, or None.
+
+    Call it from a component's ``__init__`` or function body:
+
+    - ``'new'``: someone added the node, from the palette, ``add_component``
+      or the agent, so the component may fill in defaults of its own.
+    - ``'load'``: a dashboard is being opened, imported or replaced, and its
+      saved configuration is what the component should show.
+    - ``'restore'``: undo, redo or restoring a version brings the node back as
+      it was.
+
+    Outside the creation of a FlowDash node it returns ``None``, as it does
+    from a thread the component starts, so read it before handing work off.
+    """
+    return _PLACEMENT.get()
+
+
+@contextmanager
+def _placing(reason: PlacementReason):
+    """Create the nodes placed inside the block for *reason*, unless an enclosing block set one."""
+    if _PLACING.get() is not None:
+        yield
+        return
+    token = _PLACING.set(reason)
+    try:
+        yield
+    finally:
+        _PLACING.reset(token)
 
 
 def copy_context(context: t.Mapping[str, t.Any]) -> dict[str, t.Any]:
@@ -774,7 +815,12 @@ def _drop_repeated_ids(model: DashboardModel) -> int:
 
 
 @contextmanager
-def _creating(editor_ref: weakref.ref[FlowDash], instance_id: str, wiring: list):
+def _creating(
+    editor_ref: weakref.ref[FlowDash],
+    instance_id: str,
+    wiring: list,
+    reason: PlacementReason | None = None,
+):
     """Run one step of an async component body as part of creating *instance_id*.
 
     Like synchronous creation, `current_dashboard` returns the editor and every
@@ -787,9 +833,13 @@ def _creating(editor_ref: weakref.ref[FlowDash], instance_id: str, wiring: list)
     before = editor._subscriptions()
     token = _INSTANTIATING.set(editor)
     node_token = _INSTANTIATING_NODE.set(instance_id)
+    reason_token = _PLACEMENT.set(reason)
+    placing_token = _PLACING.set(None)
     try:
         yield
     finally:
+        _PLACING.reset(placing_token)
+        _PLACEMENT.reset(reason_token)
         _INSTANTIATING_NODE.reset(node_token)
         _INSTANTIATING.reset(token)
         editor._track_subscriptions(instance_id, before, wiring)
@@ -3275,7 +3325,9 @@ class FlowDash(Viewer):
         # render time, after `_place` has finished tracking.
         node_id = node_state.name
         wiring = self._component_wiring.setdefault(node_id, [])
-        app_fn = stepped(app_fn, partial(_creating, weakref.ref(self), node_id, wiring))
+        app_fn = stepped(
+            app_fn, partial(_creating, weakref.ref(self), node_id, wiring, _PLACEMENT.get())
+        )
         return panel_call(app_fn, **kwargs)
 
     def _instantiate_viewer_for_node(self, viewer_cls, entry, node_state, config_state=None):
@@ -6038,6 +6090,9 @@ class FlowDash(Viewer):
         before = self._subscriptions()
         token = _INSTANTIATING.set(self)
         node_token = _INSTANTIATING_NODE.set(instance_id)
+        # A node the component adds while it is created is new, whatever placed this one.
+        reason_token = _PLACEMENT.set(_PLACING.get() or "new")
+        placing_token = _PLACING.set(None)
         try:
             view = self._instantiate_for_node(entry, node_state, config_state)
         except Exception:
@@ -6046,6 +6101,8 @@ class FlowDash(Viewer):
             self._dispose_component(instance_id)
             raise
         finally:
+            _PLACING.reset(placing_token)
+            _PLACEMENT.reset(reason_token)
             _INSTANTIATING_NODE.reset(node_token)
             _INSTANTIATING.reset(token)
         self._track_subscriptions(instance_id, before)
@@ -6823,7 +6880,8 @@ class FlowDash(Viewer):
         """
         self._hydrating = True
         try:
-            self._hydrate(model, keep_open_turns)
+            with _placing("load"):
+                self._hydrate(model, keep_open_turns)
         finally:
             self._hydrating = False
         self._note_parameter_nodes()
@@ -7261,7 +7319,7 @@ class FlowDash(Viewer):
         """
         model = self._restore_model(text)
         self.ensure_components_loaded(self._model_component_ids(model))
-        with self._quiet_history():
+        with self._quiet_history(), _placing("restore"):
             self._hydrating = True
             try:
                 patched = self._patch_canvas(model)
