@@ -338,6 +338,21 @@ class TestCardBehavior:
         assert handles_open["in:opt_a"]["hidden"] is False
         assert handles_open["in:opt_a"]["optional"] is True
 
+    async def test_a_connected_optional_input_is_not_called_optional(self):
+        editor = FlowDash(COMPONENTS, notifications=False)
+        src = editor.add_component("Demo/src", instance_id="src")
+        kpi = editor.add_component("Demo/kpi", instance_id="kpi")
+        card = _card(editor, kpi)
+        optional = '<span class="fd-name">Data</span><span class="fd-popt">optional</span>'
+        assert optional in card.__panel__().object
+
+        editor.connect(src, "table", kpi, "data")
+        assert optional not in card.__panel__().object
+        assert '<span class="fd-name">Data</span></div>' in card.__panel__().object
+
+        editor.disconnect(src, "table", kpi, "data")
+        assert optional in card.__panel__().object
+
     async def test_collapse_and_collapse_all_update_height_and_handles(self):
         editor = FlowDash(COMPONENTS, notifications=False, node_previews=True)
         src = editor.add_component("Demo/src", instance_id="turbines")
