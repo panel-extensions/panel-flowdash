@@ -319,6 +319,13 @@ class TurnLog:
             if key[0] != "agent" or (run is not None and key[1] != run)
         }
 
+    def discard(self, run: str | None):
+        """Drop the open turn of request *run*, e.g. once its edits were all taken back."""
+        turn = self._open.pop(("agent", run), None)
+        if turn is not None:
+            self.turns = [t for t in self.turns if t.id != turn.id]
+            self._labels.pop(turn.id, None)
+
     def current(self) -> DashboardTurn:
         """Return the turn an edit made now belongs to, opening it if needed."""
         agent = _agent_source()

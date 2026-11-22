@@ -29,7 +29,7 @@ from panel_flowdash.turns import agent_edits
 
 from .diff import dashboard_changes
 from .live import LiveDashboardOps
-from .ops import DashboardOps, OperationError, OutputUnavailable, read_revision
+from .ops import DashboardOps, NothingChanged, OperationError, OutputUnavailable, read_revision
 from .yaml_format import DashboardYAMLError, dashboard_to_dict, dashboard_to_yaml, parse_yaml
 
 logger = logging.getLogger(__name__)
@@ -472,7 +472,7 @@ def _artifact(ops: DashboardOps, message: str):
     version, stamped with the tool call, so only the message is returned.
     """
     editor = ops.editor
-    if editor.edit_history.active:
+    if editor.edit_history.active or not ops.versioned:
         return message
     current = editor.dashboard
     artifact_id = artifact_id_for(current.dashboard_id if current else None)
@@ -518,21 +518,36 @@ def _guarded(func: t.Callable) -> t.Callable:
                 refusal = deps.check_pin(ctx.run_id)
             if refusal is not None:
                 return refusal
+        # Operations that change more than asked, e.g. Explore copying an earlier answer's
+        # node to edit it, take that back when the call fails and report it when it succeeds.
+        begin, abort = getattr(deps.ops, "begin_call", None), getattr(deps.ops, "abort_call", None)
+        take_notes = getattr(deps.ops, "take_notes", None)
+        if begin is not None:
+            begin()
         listen = func in EDIT_TOOLS and bool(deps.edit_listeners)
         before = _snapshot(deps.ops) if listen else None
         try:
             with agent_edits(current_run_id() or ctx.run_id, deps.question):
-                result = func(ctx, *args, **kwargs)
-                if inspect.isawaitable(result):
-                    result = await result
+                try:
+                    result = func(ctx, *args, **kwargs)
+                    if inspect.isawaitable(result):
+                        result = await result
+                except BaseException:
+                    if abort is not None:
+                        abort()
+                    raise
         except OperationError as exc:
             raise ModelRetry(str(exc)) from exc
         except PermissionError as exc:
             return f"Refused: {exc}"
-        except OutputUnavailable as exc:
-            return f"Not available: {exc}"
+        except (OutputUnavailable, NothingChanged) as exc:
+            prefix = "Not available: " if isinstance(exc, OutputUnavailable) else ""
+            return f"{prefix}{exc}"
         finally:
             deps.ops.editor.edit_history.flush()
+        notes = take_notes() if take_notes is not None else None
+        if notes:
+            result = f"{_text(result)} {notes}"
         if func is open_dashboard:
             deps.repin()
         after = _snapshot(deps.ops) if listen else None
