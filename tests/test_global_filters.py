@@ -346,6 +346,22 @@ class TestLateColumns:
         assert len(query.received) == count + 1
         assert request_filters(object()) is False
 
+    def test_requesting_filters_while_taking_them_hands_them_over_once_more(self, late):
+        query = instance(late, "late")
+        calls = []
+
+        def apply(filters):
+            calls.append(dict(filters))
+            assert request_filters(query) is True
+
+        query.__flowdash_apply_filters__ = apply
+        query.extra = ["state"]
+        request_filters(query)
+        assert calls == [{"state": Predicate("state", "in", ("TX",))}] * 2
+        calls.clear()
+        late.editor.set_filter_value("state", ["OK"])
+        assert calls == [{"state": Predicate("state", "in", ("OK",))}] * 2
+
 
 class TestReportedSkips:
     def test_a_skipped_filter_shows_as_a_hint_with_its_reason(self, late):

@@ -104,6 +104,11 @@ class GlobalFilters(param.Parameterized):
         self._reported: dict[str, dict[str, str]] = {}
         # The columns each view applying filters itself declared when last asked.
         self._declared: dict[str, set[str] | None] = {}
+        # Views whose hand-over is running, those that requested their filters during it,
+        # and those being handed them once more for that request, which ignore further ones.
+        self._handing: set[str] = set()
+        self._deferred: set[str] = set()
+        self._replaying: set[str] = set()
         # What apply() last worked out, which the notes of a single view reuse.
         self._active: dict[str, Predicate] = {}
         self._targets: set[str] = set()
@@ -384,7 +389,22 @@ class GlobalFilters(param.Parameterized):
             self._applied[instance_id] = reaching
         else:
             self._applied.pop(instance_id, None)
-        self._hand_over(instance_id, instance, reaching)
+        self._handing.add(instance_id)
+        try:
+            self._hand_over(instance_id, instance, reaching)
+        finally:
+            self._handing.discard(instance_id)
+        if instance_id in self._deferred:
+            # The view asked for its filters while taking them: hand them over once more.
+            self._deferred.discard(instance_id)
+            self._replaying.add(instance_id)
+            try:
+                targets = set(self.targets()) if self.filters else set()
+                self._update(
+                    instance_id, instance, self._reaching(instance_id, instance, targets), True
+                )
+            finally:
+                self._replaying.discard(instance_id)
 
     def apply(self):
         """Hand every view the predicates that reach it now, and update the notes on its tile."""
@@ -409,6 +429,10 @@ class GlobalFilters(param.Parameterized):
         editor = self.editor
         instance = editor._component_instances.get(instance_id) if editor else None
         if instance is None:
+            return
+        if instance_id in self._handing:
+            if instance_id not in self._replaying:
+                self._deferred.add(instance_id)
             return
         if not self._active and self.filters:
             self._active = self.active()
