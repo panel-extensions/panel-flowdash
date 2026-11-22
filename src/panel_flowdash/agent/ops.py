@@ -1457,15 +1457,24 @@ class DashboardOps:
         self.editor.arrange_canvas()
 
     def arrange_layout(self) -> None:
-        """Lay out every visible tile by kind for each screen size.
+        """Lay out every visible tile by kind for each screen size, see :meth:`arrange_tiles`."""
+        self.arrange_tiles()
 
-        Controls go first, then KPIs in a row, charts two to a row and tables
-        at full width, with headings kept in front of the tile they title.
-        New tiles join their kind on their own; this also rearranges the
-        tiles people laid out, so call it only when asked to tidy the layout.
+    def arrange_tiles(self, order: t.Sequence[str] | None = None, style: str = "grid") -> None:
+        """Lay out every visible tile again in one edit, for each screen size.
+
+        With the ``"grid"`` style controls go first, then KPIs in a row,
+        charts two to a row and tables at full width, with headings kept in
+        front of the tile they title; ``"stack"`` puts the tiles one to a row
+        at full width. *order* names nodes whose tiles go first, in that
+        order within their kind; the others follow in their current order.
+        This also rearranges the tiles people laid out.
         """
         self._require_edit()
-        self.editor.arrange_layout()
+        if style not in ("grid", "stack"):
+            raise OperationError(f"Unknown style {style!r}; use 'grid' or 'stack'.")
+        ids = [self._instance(name) for name in order or ()]
+        self.editor.arrange_layout(order=ids, style=style)
 
     def set_settings(self, settings: dict[str, t.Any]) -> dict[str, t.Any]:
         """Change some dashboard settings and return them all."""

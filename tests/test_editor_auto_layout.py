@@ -407,6 +407,47 @@ class TestTiles:
         widths = {e["instance_id"]: e.get("width") for e in ops.editor.layout}
         assert (widths["kpi"], widths["trend"]) == (25, 75)
 
+    def test_charts_added_to_a_laid_out_dashboard_go_side_by_side(self, ops):
+        _build(ops, GRAPH[:3])
+        ops.place_tile("kpi", width=30, height=200, index=0)
+        for name in ("trend_2", "trend_3", "trend_4"):
+            ops.add_node("V/chart", name=name)
+        ops.add_node("V/table", name="rows")
+        widths = {e["instance_id"]: e.get("width") for e in ops.editor.layout}
+        # The KPI keeps the size it was given and the chart beside it keeps its own.
+        assert (widths["kpi"], widths["trend"]) == (30, 75)
+        assert widths["trend_2"] == widths["trend_3"] == 50
+        assert widths["trend_4"] == widths["rows"] == 100
+        shown = [t["instance_id"] for t in _tiles(ops.editor) if t.get("visible", True)]
+        assert shown == ["kpi", "trend", "trend_2", "trend_3", "trend_4", "rows"]
+
+    def test_arrange_tiles_follows_the_order_given(self, ops):
+        _build(ops)
+        ops.arrange_tiles(order=["split", "rows"])
+        shown = [t["instance_id"] for t in _tiles(ops.editor) if t.get("visible", True)]
+        assert shown == ["factor", "kpi", "split", "trend", "rows"]
+
+    def test_arrange_tiles_stacks_in_one_edit(self, ops):
+        _build(ops)
+        editor = ops.editor
+        editor.end_turn()
+        ops.arrange_tiles(order=["rows", "kpi"], style="stack")
+        assert editor.turns[-1].summary == "Arranged the tile layout."
+        tiles = [t for t in _tiles(editor) if t.get("visible", True)]
+        assert [t["instance_id"] for t in tiles][:2] == ["rows", "kpi"]
+        assert {t["width"] for t in tiles} == {100}
+        ops.add_node("V/chart", name="trend_2")
+        assert next(t for t in _tiles(editor) if t["instance_id"] == "trend_2")["width"] == 100
+
+    def test_arrange_tiles_rejects_an_unknown_style_or_node(self, ops):
+        from panel_flowdash.agent import OperationError
+
+        _build(ops, GRAPH[:3])
+        with pytest.raises(OperationError, match="style"):
+            ops.arrange_tiles(style="masonry")
+        with pytest.raises(OperationError, match="No node 'nope'"):
+            ops.arrange_tiles(order=["nope"])
+
     def test_the_turn_names_only_the_added_node(self, ops):
         _build(ops, GRAPH[:3])
         assert ops.editor.turns[-1].summary == "Added trend. Added source. Added kpi."
@@ -415,11 +456,13 @@ class TestTiles:
 class TestTools:
     def test_the_arrange_tools_are_offered(self):
         names = set(dashboard_toolset().tools)
-        assert {"arrange_canvas", "arrange_layout"} <= names
-        assert set(dashboard_toolset(["arrange_layout"]).tools) == {"arrange_layout"}
+        assert {"arrange_canvas", "arrange_tiles"} <= names
+        assert set(dashboard_toolset(["arrange_tiles"]).tools) == {"arrange_tiles"}
+        # The former name still selects the tool.
+        assert set(dashboard_toolset(["arrange_layout"]).tools) == {"arrange_tiles"}
 
     async def test_an_agent_builds_a_laid_out_dashboard(self, ops):
-        runner = _runner(ops, *GRAPH, ("arrange_canvas", {}), ("arrange_layout", {}))
+        runner = _runner(ops, *GRAPH, ("arrange_canvas", {}), ("arrange_tiles", {}))
         output = await runner.run("Build a dashboard")
         assert output == "Done: Arranged the tile layout."
         editor = ops.editor

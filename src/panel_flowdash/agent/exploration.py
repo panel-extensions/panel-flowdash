@@ -784,7 +784,7 @@ class ExplorationOps(DashboardOps):
             "can add an answer from its card, or ask the assistant."
         )
 
-    place_tile = group_nodes = ungroup = arrange_canvas = arrange_layout = _refused
+    place_tile = group_nodes = ungroup = arrange_canvas = arrange_layout = arrange_tiles = _refused
     set_settings = declare_parameter = remove_parameter = bind_parameters = _refused
     replace_yaml = replace_yaml_async = save = open_dashboard = _refused
     open_dashboard_async = delete_dashboard = share_dashboard = _refused

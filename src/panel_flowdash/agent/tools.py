@@ -872,14 +872,19 @@ def ungroup(ctx: RunContext[FlowDashDeps], name: str) -> t.Any:
     return _artifact(ops, f"Ungrouped '{name}': {', '.join(nodes)}.")
 
 
-def arrange_layout(ctx: RunContext[FlowDashDeps]) -> t.Any:
-    """Lay out every tile by kind: controls, KPIs in a row, charts two per row, tables full width.
+def arrange_tiles(
+    ctx: RunContext[FlowDashDeps], order: list[str] | None = None, style: str = "grid"
+) -> t.Any:
+    """Lay out every tile again in one step: controls, KPIs in a row, charts two per row, tables full width.
 
-    New tiles join their kind already. Use it only when the user asks to tidy
-    the layout, since it also moves the tiles they placed.
+    New tiles join their kind already. It also moves the tiles the user placed.
+
+    Args:
+        order: Node names whose tiles go first, in this order within their kind.
+        style: "grid" lays tiles out by kind as above, "stack" one per row at full width.
     """
     ops = ctx.deps.ops
-    ops.arrange_layout()
+    ops.arrange_tiles(order, style)
     return _artifact(ops, "Arranged the tile layout.")
 
 
@@ -1088,7 +1093,7 @@ EDIT_TOOLS = (
     set_transform,
     place_tile,
     arrange_canvas,
-    arrange_layout,
+    arrange_tiles,
     group_nodes,
     ungroup,
     set_settings,
@@ -1115,7 +1120,7 @@ TOOLS = (
     set_transform,
     place_tile,
     arrange_canvas,
-    arrange_layout,
+    arrange_tiles,
     group_nodes,
     ungroup,
     set_settings,
@@ -1126,6 +1131,10 @@ TOOLS = (
     delete_dashboard,
     share_dashboard,
 )
+
+
+#: Former names of tools, still accepted by `dashboard_toolset`.
+_RENAMED = {"arrange_layout": "arrange_tiles"}
 
 
 def dashboard_toolset(
@@ -1155,6 +1164,8 @@ def dashboard_toolset(
     """
     if isinstance(tools, str):
         raise TypeError(f"tools must be a collection of tool names, not the string {tools!r}.")
+    if tools is not None and not isinstance(tools, str):
+        tools = [_RENAMED.get(name, name) for name in tools]
     names = [func.__name__ for func in TOOLS]
     if tools is not None and (unknown := sorted(set(tools) - set(names))):
         raise ValueError(
