@@ -254,6 +254,8 @@ class AppShell:
             return "dashboards"
         if path == app_module.COMPONENTS_ROUTE:
             return "components"
+        if self._is_admin_route():
+            return "admin"
         if path == "/":
             return "home"
         if path.strip("/") in {e.page_path.strip("/") for e in self._page_entries()}:
@@ -325,6 +327,15 @@ class AppShell:
         pages = self._page_items()
         if pages:
             items.append({"key": "pages", "label": "Pages", "icon": "article", "items": pages})
+        if self._app._is_admin:
+            items.append(
+                {
+                    "key": "admin",
+                    "label": "Admin",
+                    "icon": "admin_panel_settings",
+                    "path": app_module.ADMIN_ROUTE,
+                }
+            )
         items.append({"key": "help", "label": "Help", "icon": "help_outline", "href": DOCS_URL})
         return items
 
@@ -360,7 +371,7 @@ class AppShell:
                     button.param.update(href=item["href"], target="_blank")
                 else:
                     button.on_click(lambda _event, path=item["path"]: self._navigate(path))
-            if item["key"] == "help":
+            if item["key"] == ("admin" if self._app._is_admin else "help"):
                 objects.append(pn.layout.VSpacer())
             self._rail_buttons[item["key"]] = button
             objects.append(button)
@@ -415,6 +426,12 @@ class AppShell:
             return []
         if path == app_module.COMPONENTS_ROUTE:
             return [home, Crumb("Components")]
+        if self._is_admin_route() and self._app._is_admin:
+            page = self._app._admin_page
+            section = page.sections.get(page.section) if page is not None else None
+            if section is None:
+                return [Crumb("Admin")]
+            return [Crumb("Admin", app_module.ADMIN_ROUTE), Crumb(section.label)]
         for entry in self._page_entries():
             if path.strip("/") == entry.page_path.strip("/"):
                 return [home, Crumb(entry.section.replace("_", " ")), Crumb(entry.title)]
@@ -497,6 +514,10 @@ class AppShell:
                 palette.compact = showing
         editing = self._app._editor.editable
         self._app._set_dashboard_header(("edit" if editing else "view") if showing else None)
+
+    def _is_admin_route(self) -> bool:
+        route = app_module.ADMIN_ROUTE
+        return self._path == route or self._path.startswith(f"{route}/")
 
     def _is_dashboard_route(self) -> bool:
         return self._path.startswith(app_module.DASH_ROUTE_PREFIX) or (

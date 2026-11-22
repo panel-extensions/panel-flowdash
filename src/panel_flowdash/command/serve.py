@@ -318,10 +318,12 @@ class Serve(_PanelServe):
 
         init_mod = _load_project_init(project_dir, package)
         options = _project_options(init_mod, project_dir)
+        sources = dict.fromkeys(options, "__init__.py")
         for name in _CLI_OPTIONS:
             value = getattr(args, name)
             if value is not None:
                 options[name] = value
+                sources[name] = "--" + name.replace("_", "-")
         from panel_flowdash.agent.models import configured_models, parse_models
 
         try:
@@ -330,6 +332,7 @@ class Serve(_PanelServe):
                 if models:
                     options["agent_model"] = models[0]["id"]
                     options["agent_models"] = models
+                    sources["agent_model"] = sources["agent_models"] = "--agent-model"
                     # The flag names the default agent's model, also over a project's `agent = "<model>"`.
                     if isinstance(options.get("agent"), str):
                         del options["agent"]
@@ -386,6 +389,7 @@ class Serve(_PanelServe):
                 store=store,
                 registry=registry,
                 auth_config=auth_config,
+                settings_sources=sources,
                 **options,
             )
         except (ComponentLibraryError, ProjectError) as exc:
