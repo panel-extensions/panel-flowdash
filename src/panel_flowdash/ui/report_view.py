@@ -541,7 +541,11 @@ class ReportView(Viewer):
         )
 
         self._meta = pn.pane.HTML(
-            "", margin=0, sizing_mode="stretch_width", stylesheets=[_META_CSS]
+            "",
+            margin=0,
+            sizing_mode="stretch_width",
+            styles={"flex": "1 1 auto", "min-width": "0"},
+            stylesheets=[_META_CSS],
         )
         self._title = pmui.Typography(
             "",
@@ -626,8 +630,18 @@ class ReportView(Viewer):
         self._drag = BlockDrag(on_move=self._move)
         self._open_text: int | None = None
         self._authoring = False
+        self._export = editor._report_export
         self._header = pn.Column(
-            self._meta,
+            pn.FlexBox(
+                self._meta,
+                self._export.button,
+                flex_wrap="nowrap",
+                align_items="center",
+                gap="8px",
+                margin=0,
+                sizing_mode="stretch_width",
+                styles={"min-height": "30px"},
+            ),
             self._title,
             self._title_input,
             self._notice,

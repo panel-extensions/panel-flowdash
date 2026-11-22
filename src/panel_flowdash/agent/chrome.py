@@ -24,6 +24,14 @@ def _keys(config: t.Any) -> str:
     return ", ".join(map(str, config)) if isinstance(config, dict) and config else "its config"
 
 
+_EXPORT_NAMES = {
+    "html": "a web page",
+    "pdf": "a PDF",
+    "docx": "a Word document",
+    "md": "Markdown",
+    "ipynb": "a notebook",
+}
+
 #: The assistant's steps in the user's words, by tool name. Imperative, so a label
 #: reads right whether the step is running, done, failed or waiting for approval.
 TOOL_LABELS: dict[str, str | t.Callable[[dict], str]] = {
@@ -59,6 +67,9 @@ TOOL_LABELS: dict[str, str | t.Callable[[dict], str]] = {
     "set_report": "Write the report",
     "ask_in_report": "Add a question to the report",
     "run_pending": "Answer a question of the report",
+    "export_report": lambda a: (
+        f"Export the report as {_EXPORT_NAMES.get(str(a.get('format', 'html')), 'a file')}"
+    ),
     "save_dashboard": "Save the dashboard",
     "delete_dashboard": lambda a: f"Delete {a['title']}",
     "share_dashboard": "Change who can see the dashboard",

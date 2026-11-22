@@ -407,6 +407,19 @@ every other tile, headings and Markdown included, in the order of the top bar, t
 sidebar and the grid. Controls are not blocks; they are listed as the filters the
 report's values depend on.
 
+**Export...** in the Report view, `panel_flowdash.export.export_report(editor, format)`
+and the agent's `export_report` tool write the report as it is now, as a self-contained
+HTML page with a print stylesheet, a PDF, a Word document, Markdown or a Jupyter
+notebook whose cells load the dashboard and show each node (for someone who may only
+view the dashboard, the notebook holds the exported outputs alone, as it holds no
+dashboard file). `page_break` starts a new
+page in the PDF and Word files, and a node the reader may not use is a note saying it
+is left out. The values the controls and global filters held, the parameters and the
+generation time head the document. Questions not run yet are never run; they are left
+out, or listed as not answered yet. Charts need `vl-convert-python`, Word `python-docx`
+and notebooks `nbformat` (`pip install 'panel-flowdash[export]'`); PDF needs WeasyPrint
+(the `pdf` extra) or Playwright with Chromium.
+
 ## Not in the format
 
 A file describes what a dashboard is built from, not the state it is in:

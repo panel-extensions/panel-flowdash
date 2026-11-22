@@ -1154,6 +1154,20 @@ class KPI(Viewer):
     def _update(self):
         self._pane.object = self._html()
 
+    def __export__(self, ctx):
+        """Return the card as a KPI block of a report export."""
+        from panel_flowdash.export import KPI as KPIBlock
+        from panel_flowdash.text_components import html_to_text
+
+        value = self.value
+        if value is None or not math.isfinite(value):
+            return KPIBlock(label=self.label, value="\N{EN DASH}")
+        text = self.prefix + _format_number(value, self.format) + self.suffix
+        detail = " ".join(
+            part for part in (html_to_text(self._delta_html(value)), self.caption) if part
+        )
+        return KPIBlock(label=self.label, value=text, detail=detail)
+
     def __panel__(self):
         """Return the card."""
         return self._pane
@@ -1268,6 +1282,17 @@ class Image(Viewer):
     @param.depends("default_url", "alt", "fit", "url", "_editing", watch=True)
     def _update(self):
         self._pane.object = self._html()
+
+    def __export__(self, ctx):
+        """Return the image of a base64 data URL, or the link to an http(s) one, for a report export."""
+        from panel_flowdash.export import Placeholder
+        from panel_flowdash.export.build import data_url_image
+
+        url = safe_image_url(self.default_url if self.url is None else self.url)
+        image = data_url_image(url or "", self.alt)
+        if image is None:
+            return [] if url is None else Placeholder("An image on the server is not included.")
+        return image
 
     def __panel__(self):
         """Return the image."""

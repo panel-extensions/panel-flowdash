@@ -88,6 +88,16 @@ secrets = [
     "cryptography",
     "keyring",
 ]
+# Report exports: charts as images, Word documents and notebooks. PDF also needs
+# weasyprint (the pdf extra) or a Chromium that Playwright can drive.
+export = [
+    "nbformat",
+    "python-docx",
+    "vl-convert-python",
+]
+pdf = [
+    "weasyprint",
+]
 dev = [
     "pre-commit",
     "pytest-asyncio>=0.23",

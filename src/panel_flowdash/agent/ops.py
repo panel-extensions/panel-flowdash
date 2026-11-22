@@ -1899,6 +1899,30 @@ class DashboardOps:
         self.editor.answer_pending(turn, run_id)
         return question
 
+    async def export_report(self, format: str = "html", *, include_pending: bool = False):
+        """Export the report as a file, as the Report view's Export does, and return the file.
+
+        Pending questions are never run; with *include_pending* they are
+        written as not answered yet. Raises
+        :class:`~panel_flowdash.export.ExportUnavailable` when the format needs
+        a package that is not installed.
+        """
+        from panel_flowdash.export import check_format, export_report_async
+
+        try:
+            check_format(format)
+        except ValueError as exc:
+            raise OperationError(str(exc)) from None
+        return await export_report_async(self.editor, format, include_pending=include_pending)
+
+    def send_file(self, file) -> bool:
+        """Make the user's browser save an exported *file*; False when there is no page to send it to."""
+        export = getattr(self.editor, "_report_export", None)
+        if export is None or not export.downloader._models:
+            return False
+        export.send(file)
+        return True
+
     # ------------------------------------------------------------------
     # Parameters
     # ------------------------------------------------------------------

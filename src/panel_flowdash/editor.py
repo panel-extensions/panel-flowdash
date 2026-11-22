@@ -3775,6 +3775,9 @@ class FlowDash(Viewer):
         self._settings_button = bar.settings_button
         self._save_button.on_click(lambda _event: self._save_from_button())
         self._clear_dialog = self._build_clear_dialog()
+        from panel_flowdash.ui.report_export import ReportExport
+
+        self._report_export = ReportExport(editor=self)
         self._pending_import: DashboardModel | None = None
         self._import_message = markdown_pane()
         self._import_dialog = self._build_import_dialog()
@@ -3884,6 +3887,15 @@ class FlowDash(Viewer):
             self._tile_drag,
             self._split_view.storage,
             self._card_bridge,
+            # In every view, so an export the assistant makes downloads wherever the user is.
+            pn.Column(
+                self._report_export.dialog,
+                self._report_export.downloader,
+                margin=0,
+                width=0,
+                height=0,
+                sizing_mode="fixed",
+            ),
             sizing_mode="stretch_both",
             stylesheets=[PRESENTATION_CSS],
         )

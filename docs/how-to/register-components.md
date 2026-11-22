@@ -337,6 +337,37 @@ selectable and copyable, and is asked for again whenever the component's
 outputs change. If the hook raises or returns anything else, the error is
 logged and nothing is shown.
 
+### Exporting a component in a report
+
+**Export...** in the Report view writes the report as HTML, PDF, Word, Markdown or a
+Jupyter notebook, with each node as it is now. Without help a node is read from the
+panes its tile shows: Vega and Vega-Lite charts become images (through
+`vl-convert-python`), tables and DataFrames their first 50 rows, Markdown and text
+their text, and anything else, such as a map, a note saying it is left out. A
+component can say what it exports by defining `__export__`:
+
+```python
+from panel_flowdash.export import KPI
+
+
+class Revenue(pn.viewable.Viewer):
+    total = param.Number(default=0)
+
+    def __export__(self, ctx):
+        return KPI(label="Revenue", value=f"${self.total:,.0f}")
+
+    def __panel__(self):
+        return pn.indicators.Number(value=self.param.total, name="Revenue")
+```
+
+The hook is called on the live instance once its inputs have settled, and returns one
+block of `panel_flowdash.export` (`Heading`, `Text`, `KPI`, `Chart`, `Table`, `Image`,
+`Code` or `Placeholder`), a list of them, or `None` to be read from its view.
+`ctx.chart(spec)` draws a Vega-Lite spec as the format needs and `ctx.table(frame)`
+takes a DataFrame's first `ctx.max_rows` rows; `ctx.format` names the format being
+written. Write values as text yourself: the export never writes an object's `repr`,
+and a hook that raises is left out with a note, its message never shown.
+
 ---
 
 ## Decorator overrides on Viewer classes
