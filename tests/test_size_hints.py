@@ -257,6 +257,16 @@ class TestFillHeight:
         assert editor._tile_grid.layout == [{**stored, "height": FILL_HEIGHT}]
         assert editor.to_model().tile_layout == [{**stored, "instance_id": "f"}]
 
+    def test_a_stored_fill_height_survives_reloading_the_dashboard(self):
+        editor = _fill_editor()
+        editor.load_model(_model([("f", FILLING)], [{"index": 0, "instance_id": "f"}]))
+        editor.mode = "dashboard"
+
+        stored = {"index": 0, "width": 50, "height": FILL_HEIGHT, "visible": True}
+        editor.load_model(_model([("f", FILLING)], [{**stored, "instance_id": "f"}]))
+
+        assert editor.to_model().tile_layout == [{**stored, "instance_id": "f"}]
+
     def test_a_resized_fill_height_is_saved(self):
         editor = _fill_editor()
         editor.load_model(_model([("f", FILLING)], [{"index": 0, "instance_id": "f"}]))

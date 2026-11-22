@@ -6846,6 +6846,8 @@ class FlowDash(Viewer):
         The model's turns replace the editor's. With *keep_open_turns* the
         turns open to more edits stay open, for a change made by loading a model.
         """
+        # A height the model stores is the model's, even where the editor showed the same one.
+        self._fill_heights.clear()
         self._hydrating = True
         try:
             self._hydrate(model, keep_open_turns)
