@@ -1,0 +1,56 @@
+flowdash: 1
+title: Table explorer
+settings:
+  description: The rows of the data, narrowed by the filters above the table.
+x-template:
+  name: Table explorer with filters
+  description: One large table under a filter bar of up to three columns.
+  slots:
+    data:
+      kind: data
+      label: Data
+      description: Any table.
+    table:
+      kind: view
+      of: data
+      label: Table
+      description: A view listing the rows.
+    filter_1:
+      kind: column
+      of: data
+      type: category
+      label: First filter
+      description: A column to pick values of, e.g. region.
+      required: false
+    filter_2:
+      kind: column
+      of: data
+      type: category
+      label: Second filter
+      required: false
+    filter_range:
+      kind: column
+      of: data
+      type: any
+      label: Range filter
+      description: A date or numeric column to narrow to a range.
+      required: false
+nodes:
+  data:
+    component: flowdash:slot
+  table:
+    component: flowdash:slot
+edges:
+  - from: data.table
+    to: table.table
+filters:
+  - column: "[[filter_1]]"
+    widget: select
+  - column: "[[filter_2]]"
+    widget: select
+  - column: "[[filter_range]]"
+    widget: range
+layout:
+  tiles:
+    - {node: table, width: 100, height: 640}
+    - {node: data, width: 100, height: 300, visible: false}

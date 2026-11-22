@@ -1,0 +1,69 @@
+flowdash: 1
+title: Trend and breakdown
+settings:
+  description: How the data changes over [[date]] and how it splits by [[category]]. Narrow both with the filters above.
+x-template:
+  name: Trend and breakdown
+  description: A wide trend chart over a breakdown and a detail view, with filters for the date range and the category.
+  slots:
+    data:
+      kind: data
+      label: Data
+      description: A table with a date column and a category.
+    date:
+      kind: column
+      of: data
+      type: date
+      label: Date
+      description: The column the date range filter narrows.
+      required: false
+    category:
+      kind: column
+      of: data
+      type: category
+      label: Category
+      description: The column the category filter picks from.
+      required: false
+    trend:
+      kind: view
+      of: data
+      label: Trend chart
+      description: A view of the data over time.
+    breakdown:
+      kind: view
+      of: data
+      label: Breakdown chart
+      description: A view of the data by category.
+    detail:
+      kind: view
+      of: data
+      label: Detail view
+      description: A second view beside the breakdown, e.g. a table or a map.
+      required: false
+nodes:
+  data:
+    component: flowdash:slot
+  trend:
+    component: flowdash:slot
+  breakdown:
+    component: flowdash:slot
+  detail:
+    component: flowdash:slot
+edges:
+  - from: data.table
+    to: trend.table
+  - from: data.table
+    to: breakdown.table
+  - from: data.table
+    to: detail.table
+filters:
+  - column: "[[date]]"
+    widget: range
+  - column: "[[category]]"
+    widget: select
+layout:
+  tiles:
+    - {node: trend, width: 100, height: 380}
+    - {node: breakdown, width: 50, height: 360}
+    - {node: detail, width: 50, height: 360}
+    - {node: data, width: 100, height: 300, visible: false}

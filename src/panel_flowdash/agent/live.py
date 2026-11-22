@@ -93,6 +93,29 @@ class LiveDashboardOps(DashboardOps):
         self.app._load_dashboard_sync(dashboard_id, edit=True)
         return self.get_dashboard()
 
+    def templates(self) -> list:
+        """Return the templates the app offers this user; none when the admins turned templates off."""
+        return self.app._offered_templates()
+
+    async def new_dashboard_from_template_async(
+        self, template_id: str, bindings: dict[str, t.Any], title: str | None = None
+    ) -> str:
+        """Save a template filled in with *bindings* as a new dashboard of the user and open it.
+
+        Refused while the open dashboard has unsaved changes, which only the
+        user may save or discard.
+        """
+        app = self.app
+        if app._has_unsaved_changes():
+            raise OperationError(
+                "The open dashboard has unsaved changes. Ask the user to save or discard "
+                "them before starting a new dashboard."
+            )
+        template, doc = await self.template_document_async(template_id, bindings)
+        created = app._new_dashboard_from_document(doc, (title or "").strip() or template.name)
+        await self.open_dashboard_async(created.dashboard_id)
+        return f"Created '{created.title}' and opened it. " + self._template_result(template, doc)
+
     def save(self) -> str:
         """Save the open dashboard through the app, as its Save action does."""
         self._require_edit()
