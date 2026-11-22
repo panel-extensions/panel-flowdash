@@ -5,21 +5,26 @@ import logging
 import socket
 from types import SimpleNamespace
 
+import panel as pn
 import pytest
 from bokeh.document import Document
-from panel.io.state import set_curdoc
+from bokeh.server.contexts import _RequestProxy
+from bokeh.util.token import generate_jwt_token
+from panel.io.state import set_curdoc, state
 
 from panel_flowdash import project as project_module
 from panel_flowdash.admin import ADMIN_ROUTE, AdminPage, access
 from panel_flowdash.admin.access import (
     admin_entry,
     admin_name,
+    admin_names,
     client_address,
     entry_matches,
     is_admin,
     is_loopback,
     namespaced_entry,
     session_is_local,
+    shared_password_sign_in,
 )
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.auth import AuthConfig, Identity
@@ -59,12 +64,19 @@ def _request(peer: str | None, headers=None, family=socket.AF_INET):
         cookies={},
         headers=dict(headers or {}),
         connection=SimpleNamespace(context=context),
+        protocol="http",
+        host="127.0.0.1:5006",
+        path="/",
+        uri="/",
     )
 
 
-def _doc(peer: str | None, headers=None):
+def _doc(peer: str | None, headers=None, payload_headers=None):
     doc = Document()
     request = _request(peer, headers)
+    if payload_headers is not None:
+        # As Bokeh builds it for a session: headers from the session token's payload.
+        request = _RequestProxy(request, arguments={}, cookies={}, headers=payload_headers)
     session_context = SimpleNamespace(id="session", request=request, server_context=None)
     doc._session_context = lambda: session_context
     return doc
@@ -117,6 +129,27 @@ class TestClientAddress:
         assert client_address(_request("127.0.0.1"), proxy) is None
         garbled = _request("127.0.0.1", {"X-Forwarded-For": "not-an-ip"})
         assert client_address(garbled, proxy) is None
+
+    def test_forwarding_headers_of_any_proxy_count(self):
+        for header in ("Via", "X-Forwarded-Host", "x-forwarded-proto", "CF-Connecting-IP"):
+            assert client_address(_request("127.0.0.1", {header: "x"})) is None
+            assert client_address(_request("127.0.0.1", {header: "x"}), ["::2"]) is None
+        assert client_address(_request("127.0.0.1", {"True-Client-Ip": REMOTE})) is None
+
+    def test_headers_come_from_the_request_not_the_session_token(self):
+        # The token's payload is written by the client unless sessions are signed.
+        forged = _RequestProxy(
+            _request("127.0.0.1", {"X-Forwarded-For": REMOTE}), headers={}, cookies={}
+        )
+        assert client_address(forged) is None
+        trusted = _RequestProxy(
+            _request("127.0.0.1", {"X-Forwarded-For": REMOTE}),
+            headers={"X-Forwarded-For": "127.0.0.1"},
+            cookies={},
+        )
+        assert client_address(trusted, ["127.0.0.1"]) == REMOTE
+        direct = _RequestProxy(_request("127.0.0.1"), headers={"Via": "x"}, cookies={})
+        assert client_address(direct) == "127.0.0.1"
 
     def test_a_unix_socket_or_a_request_without_a_socket_has_no_client(self):
         assert client_address(_request(None)) is None
@@ -190,6 +223,31 @@ class TestWithoutSignInAdminIsLocal:
         mine = remote.store.create_dashboard(ME, "Mine")
         assert remote._can_administer_dashboard(mine.dashboard_id)
 
+    def test_a_forged_session_token_does_not_make_a_proxied_session_local(
+        self, tmp_path, sections
+    ):
+        text = f"general:\n  admins: [local:{ME}]\n"
+        forged = _doc("127.0.0.1", {"X-Forwarded-For": REMOTE}, payload_headers={})
+        assert not _app(tmp_path, text, doc=forged)._is_admin
+        direct = _doc("127.0.0.1", payload_headers={"X-Forwarded-For": REMOTE})
+        assert _app(tmp_path, text, doc=direct)._is_admin
+
+    def test_a_shared_basic_auth_password_is_not_sign_in(self, tmp_path, sections, monkeypatch):
+        _signed_in(monkeypatch, "alice")
+        text = "general:\n  admins: [auth:alice]\n"
+        monkeypatch.setattr(pn.config, "_basic_auth", "shared-password")
+        assert shared_password_sign_in()
+        assert not _app(tmp_path, text, doc=_doc(REMOTE))._is_admin
+        assert _app(tmp_path, text, doc=_doc("127.0.0.1"))._is_admin
+        users = tmp_path / "users.json"
+        users.write_text('{"alice": "pw"}')
+        monkeypatch.setattr(pn.config, "_basic_auth", str(users))
+        assert not shared_password_sign_in()
+        assert _app(tmp_path, text, doc=_doc(REMOTE))._is_admin
+        monkeypatch.setattr(pn.config, "_basic_auth", None)
+        monkeypatch.setitem(state._server_config, type("App", (), {})(), {"basic_auth": "pw"})
+        assert shared_password_sign_in()
+
     def test_a_signed_in_admin_may_be_anywhere(self, tmp_path, sections, monkeypatch):
         _signed_in(monkeypatch, "alice")
         text = "general:\n  admins: [auth:alice]\n"
@@ -212,6 +270,14 @@ class TestNamespacedAdmins:
         assert namespaced_entry(" bo ", signed_in=False) == "local:bo"
         assert namespaced_entry("bo", signed_in=True) == "auth:bo"
         assert namespaced_entry("local:bo", signed_in=True) == "local:bo"
+        assert namespaced_entry(" Auth: Bo ", signed_in=False) == "auth:Bo"
+
+    def test_prefixes_are_read_in_any_case_and_names_trimmed(self):
+        local = Identity(user=ME, system_user=ME)
+        assert entry_matches(f" LOCAL:{ME} ", local) and entry_matches(f" {ME} ", local)
+        assert entry_matches("Auth: alice", Identity(user="alice", oauth_user="alice"))
+        assert admin_names(["local:a", "b", "AUTH:c", "auth:"], signed_in=False) == {"a", "b"}
+        assert admin_names(["local:a", "b", "AUTH:c", "auth:"], signed_in=True) == {"c"}
 
     def test_an_old_plain_entry_is_a_local_account(self):
         assert is_admin(Identity(user=ME, system_user=ME), (), [ME])
@@ -241,7 +307,9 @@ class TestNamespacedAdmins:
     def test_people_and_known_names_show_names_without_the_prefix(self, tmp_path, sections):
         app = _app(tmp_path, f"general:\n  admins: [local:{ME}, auth:alice]\n")
         people = app._admin_view(f"{ADMIN_ROUTE}/permissions").view("permissions").people()
-        assert people[ME]["role"] == people["alice"]["role"] == "Admin"
+        # Without sign-in only the local entries make someone admin here.
+        assert people[ME]["role"] == "Admin"
+        assert "alice" not in people
         assert not any(":" in name for name in people)
         dashboards = app._admin_view(f"{ADMIN_ROUTE}/dashboards").view("dashboards")
         assert {ME, "alice"} <= set(dashboards._known_people())
@@ -380,3 +448,60 @@ class TestDownloadYaml:
         assert not view.confirm()
         assert view._dialog.open and "Only admins" in view._dialog_alert.object
         assert app._usage_ledger().admin_log() == []
+
+
+class TestRealServer:
+    """Sessions opened against a real Bokeh server, by page and by websocket."""
+
+    @pytest.fixture
+    async def served(self):
+        seen = []
+
+        def app():
+            seen.append(session_is_local(pn.state.curdoc))
+            return pn.pane.Markdown("x")
+
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        server = pn.serve({"app": app}, port=port, address="127.0.0.1", show=False, start=False)
+        server.start()
+        yield port, seen
+        server.stop()
+
+    async def _open_ws(self, port, payload_headers, headers):
+        from tornado.httpclient import HTTPRequest
+        from tornado.websocket import websocket_connect
+
+        token = generate_jwt_token(
+            "forged-session-id", signed=False, extra_payload={"headers": payload_headers}
+        )
+        request = HTTPRequest(
+            f"ws://127.0.0.1:{port}/app/ws",
+            headers={"Origin": f"http://127.0.0.1:{port}", **headers},
+        )
+        conn = await websocket_connect(request, subprotocols=["bokeh", token])
+        await conn.read_message()
+        conn.close()
+
+    async def test_a_websocket_with_a_forged_token_behind_a_proxy_is_not_local(self, served):
+        import asyncio
+
+        port, seen = served
+        await self._open_ws(port, {}, {"X-Forwarded-For": REMOTE})
+        for _ in range(50):
+            if seen:
+                break
+            await asyncio.sleep(0.1)
+        assert seen == [False]
+
+    async def test_a_direct_local_websocket_is_local(self, served):
+        import asyncio
+
+        port, seen = served
+        await self._open_ws(port, {"X-Forwarded-For": REMOTE}, {})
+        for _ in range(50):
+            if seen:
+                break
+            await asyncio.sleep(0.1)
+        assert seen == [True]

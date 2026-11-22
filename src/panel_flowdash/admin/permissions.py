@@ -17,7 +17,7 @@ import typing as t
 import panel as pn
 import panel_material_ui as pmui
 
-from panel_flowdash.admin.access import admin_name
+from panel_flowdash.admin.access import admin_names
 from panel_flowdash.admin.form import Group, Setting, SettingsForm, current_app
 from panel_flowdash.admin.kit import Table, caption, cell, chip, clear_text, esc, heading, lock
 from panel_flowdash.permissions import describe_rule, load_permissions, rule_problems
@@ -352,7 +352,7 @@ class PermissionsForm(SettingsForm):
             for user, groups in (config.user_groups if config else {}).items():
                 code_groups[user] = set(groups)
             seen = app._usage_ledger().people()
-            admins = {admin_name(entry) for entry in app._configured_admins()}
+            admins = admin_names(app._configured_admins(), app._identity.oauth_user is not None)
             try:
                 dashboards = app.store._all_dashboards()
             except Exception:

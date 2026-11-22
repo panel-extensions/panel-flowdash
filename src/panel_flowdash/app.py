@@ -24,6 +24,7 @@ from panel_flowdash.admin.access import (
     admin_entry,
     is_admin,
     session_is_local,
+    shared_password_sign_in,
     show_admin_link,
 )
 from panel_flowdash.admin.page import ADMIN_ROUTE, AdminPage
@@ -241,7 +242,9 @@ class FlowDashApp(Viewer):
         machine (a loopback address) gets admin rights, and by default that
         is decided by the socket's peer alone: a request that came through
         a proxy, i.e. has forwarding headers, is never local. List the proxy
-        here to have the address it forwards checked instead.""",
+        here to have the address it forwards checked instead; it must set
+        or append ``X-Forwarded-For``, e.g. nginx's
+        ``$proxy_add_x_forwarded_for``.""",
     )
 
     agent = param.Parameter(
@@ -571,11 +574,11 @@ class FlowDashApp(Viewer):
         self._session_state = self._session_state_class()
         self._apply_project_permissions()
         self._identity = resolve_identity(self.auth_config)
-        # Without sign-in every visitor is the server's account, so admin rights then
-        # need a browser on the server's machine.
-        self._admin_possible = self._identity.oauth_user is not None or session_is_local(
-            pn.state.curdoc, self.trusted_proxies
-        )
+        # Without sign-in every visitor is the server's account, and with one shared
+        # password any name is accepted, so admin rights then need a browser on the
+        # server's machine.
+        signed_in = self._identity.oauth_user is not None and not shared_password_sign_in()
+        self._admin_possible = signed_in or session_is_local(pn.state.curdoc, self.trusted_proxies)
         self._note_visit()
         self._user_id = self._resolve_user_id()
         self._is_admin = (
@@ -966,6 +969,14 @@ class FlowDashApp(Viewer):
             and (location.pathname or "").startswith(ADMIN_ROUTE)
         ):
             pn.state.execute(self._load_page_layout)
+
+    def still_admin(self) -> bool:
+        """Whether this session is still an admin, with the project file read again.
+
+        A settings view a project section adds (``settings_view``) that
+        saves on its own asks this before every save.
+        """
+        return self._still_admin()
 
     def _still_admin(self) -> bool:
         """Whether this session is still an admin, with the project file read again.

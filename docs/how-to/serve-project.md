@@ -310,24 +310,47 @@ which is then stored encrypted like one saved under Admin, AI.
 version control or on a network drive and each person runs
 `flowdash serve` on their own machine, without sign-in. Without sign-in
 every visitor of a server is the account that runs it (its OS user name),
-so `general.admins` names OS accounts, such as `local:philipp`. Admin
-rights then apply only to a browser on the machine that runs the server:
-a request whose client is a loopback address (`127.0.0.1` or `::1`). A
-visitor from another machine never gets Admin, and the admin link refuses
-them. The client is the socket's peer; a request that came through a
-reverse proxy, i.e. carries `X-Forwarded-For`, `X-Real-Ip` or `Forwarded`,
-is never local, unless the proxy's address is listed in
-`trusted_proxies`, whose forwarded address is then checked instead.
-Everything else is not a security boundary: every visitor still is that
-account, owns the dashboards it made and matches the rules that name it,
-and anyone who can edit the project file can make themselves admin.
+so `general.admins` names OS accounts, such as `local:philipp`.
+
+Admin rights then apply only to a browser on the machine that runs the
+server: a request whose client is a loopback address (`127.0.0.1` or
+`::1`). A visitor from another machine never gets Admin, and the admin
+link refuses them. Loopback includes everyone who reaches the port from
+that machine: other OS users on it, and anyone with an `ssh -L` tunnel or
+another port forward to it.
+
+The client is the socket's peer, and headers are read from the request
+the server received, never from the session token. A request that came
+through a reverse proxy, i.e. carries `Forwarded`, `Via`, `X-Real-Ip`,
+`Cf-Connecting-Ip`, `True-Client-Ip` or any `X-Forwarded-*` header, is
+never local unless the proxy's address is listed in `trusted_proxies`.
+Then the last address in `X-Forwarded-For` that is not a trusted proxy is
+checked instead, so the proxy must set or append that header (nginx:
+`proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;`). A proxy
+that only sets `X-Real-Ip` lets a client send its own
+`X-Forwarded-For: 127.0.0.1`. With `127.0.0.1` in `trusted_proxies`, a
+browser that connects to the server directly on that machine, without the
+proxy, is refused too, since it sends no `X-Forwarded-For`.
+
+Everything else is not a security boundary. Without sign-in, every visitor
+from another machine is the server's account too: they own the dashboards
+it made, match the rules that name it, and can use the assistant with the
+project's model keys. Serve with sign-in for anything reachable from
+other machines. Anyone who can edit the project file can also make
+themselves admin. Never pass `--allow-websocket-origin=*`, which lets any
+web page a local user opens, directly or through DNS rebinding, connect to
+the server as that local browser, and set `BOKEH_SIGN_SESSIONS=yes` with a
+`BOKEH_SECRET_KEY` so clients cannot make up their own session tokens.
 
 **Deployed with sign-in.** Configure OAuth (Panel's `--oauth-provider`
 options) and, if you like, `admin_groups`. The user who opens the admin
 link is recorded by their sign-in name, as `auth:<name>`, and only they,
 the other `auth:` users in `general.admins` and the members of
 `admin_groups` get the admin view; `local:` entries and unprefixed names
-from working without sign-in never match a signed-in user. The
+from working without sign-in never match a signed-in user. Panel's `--basic-auth` with one
+shared password does not count as sign-in here, since it accepts any user
+name: admin rights then need a browser on the server's machine, as without
+sign-in. Basic auth with a JSON file of users and passwords does count. The
 link works from wherever it is opened, so it is also safe behind a proxy;
 treat it like a password until it has been used.
 

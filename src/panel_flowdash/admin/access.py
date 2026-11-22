@@ -141,25 +141,43 @@ def admin_entry(identity: Identity) -> str | None:
     return None
 
 
+def _split(entry: t.Any) -> tuple[str, str]:
+    """Return the kind (``"local"`` or ``"auth"``) and name of a ``general.admins`` entry.
+
+    Prefixes are read in any case and the name is trimmed; an entry without
+    a prefix, as earlier versions wrote, is a local account.
+    """
+    entry = str(entry).strip()
+    lowered = entry.lower()
+    for kind, prefix in (("local", LOCAL_PREFIX), ("auth", SIGNED_IN_PREFIX)):
+        if lowered.startswith(prefix):
+            return kind, entry[len(prefix) :].strip()
+    return "local", entry
+
+
 def admin_name(entry: t.Any) -> str:
     """Return the user name of a ``general.admins`` entry, without its prefix."""
-    entry = str(entry)
-    for prefix in (LOCAL_PREFIX, SIGNED_IN_PREFIX):
-        if entry.startswith(prefix):
-            return entry[len(prefix) :]
-    return entry
+    return _split(entry)[1]
+
+
+def admin_names(entries: t.Iterable[t.Any], signed_in: bool) -> set[str]:
+    """Return the names of the *entries* that apply with sign-in, or without it."""
+    kind = "auth" if signed_in else "local"
+    return {name for k, name in map(_split, entries) if k == kind and name}
 
 
 def namespaced_entry(name: str, signed_in: bool) -> str:
     """Return *name*, typed by an admin, as a ``general.admins`` entry.
 
-    A name that has a prefix already is kept; any other is a signed-in user
-    on a server with sign-in and a local account on one without.
+    A name with a prefix keeps it, written in lower case; any other is a
+    signed-in user on a server with sign-in and a local account on one
+    without.
     """
-    name = name.strip()
-    if name.startswith((LOCAL_PREFIX, SIGNED_IN_PREFIX)):
-        return name
-    return f"{SIGNED_IN_PREFIX if signed_in else LOCAL_PREFIX}{name}"
+    lowered = name.strip().lower()
+    if lowered.startswith((LOCAL_PREFIX, SIGNED_IN_PREFIX)):
+        kind, bare = _split(name)
+        return f"{LOCAL_PREFIX if kind == 'local' else SIGNED_IN_PREFIX}{bare}"
+    return f"{SIGNED_IN_PREFIX if signed_in else LOCAL_PREFIX}{name.strip()}"
 
 
 def entry_matches(entry: t.Any, identity: Identity) -> bool:
@@ -169,12 +187,10 @@ def entry_matches(entry: t.Any, identity: Identity) -> bool:
     sign-in matches ``local:`` entries and unprefixed ones, which earlier
     versions wrote for the local account.
     """
-    entry = str(entry)
+    kind, name = _split(entry)
     if identity.oauth_user:
-        return entry == f"{SIGNED_IN_PREFIX}{identity.oauth_user}"
-    if not identity.system_user:
-        return False
-    return entry in (f"{LOCAL_PREFIX}{identity.system_user}", identity.system_user)
+        return kind == "auth" and name == identity.oauth_user
+    return kind == "local" and bool(identity.system_user) and name == identity.system_user
 
 
 def is_admin(
@@ -198,7 +214,29 @@ def is_admin(
     )
 
 
-_FORWARD_HEADERS = ("X-Forwarded-For", "X-Real-Ip", "Forwarded")
+# Headers a proxy adds; any ``X-Forwarded-*`` header counts too.
+_FORWARD_HEADERS = ("forwarded", "via", "x-real-ip", "cf-connecting-ip", "true-client-ip")
+
+
+def _proxied(headers: t.Mapping[str, t.Any]) -> bool:
+    return any(
+        str(key).lower() in _FORWARD_HEADERS or str(key).lower().startswith("x-forwarded-")
+        for key in headers
+    )
+
+
+def _real_request(request: t.Any) -> t.Any:
+    """Return the HTTP request behind Bokeh's request proxy.
+
+    The proxy's headers and cookies come from the session token's payload,
+    which the client can write unless sessions are signed; the request is
+    what the server received.
+    """
+    try:
+        from bokeh.server.contexts import _RequestProxy
+    except ImportError:
+        return request
+    return request._request if isinstance(request, _RequestProxy) else request
 
 
 def _header(headers: t.Mapping[str, t.Any], name: str) -> str | None:
@@ -240,8 +278,10 @@ def client_address(request: t.Any, trusted_proxies: t.Iterable[str] = ()) -> str
     client is the last address in ``X-Forwarded-For`` that is not a trusted
     proxy. A request with forwarding headers from a peer that is not trusted
     has an unknown client, so a reverse proxy on the same machine never
-    makes its visitors local.
+    makes its visitors local. Headers are read from the request the server
+    received, never from the session token.
     """
+    request = _real_request(request)
     peer = socket_peer(request)
     if peer is None:
         return None
@@ -249,7 +289,7 @@ def client_address(request: t.Any, trusted_proxies: t.Iterable[str] = ()) -> str
     headers = getattr(request, "headers", None) or {}
     peer_ip = _ip(peer)
     if peer_ip is None or peer_ip not in trusted:
-        if any(_header(headers, name) for name in _FORWARD_HEADERS):
+        if _proxied(headers):
             return None
         return peer
     hops = [_ip(hop) for hop in (_header(headers, "X-Forwarded-For") or "").split(",")]
@@ -265,6 +305,33 @@ def is_loopback(address: str | None) -> bool:
     """Whether *address* is a loopback address, e.g. ``127.0.0.1`` or ``::1``."""
     ip = _ip(address) if address else None
     return ip is not None and ip.is_loopback
+
+
+def shared_password_sign_in() -> bool:
+    """Whether users sign in with Panel's basic auth and one shared password.
+
+    With a shared password any user name is accepted, so the name proves
+    nothing and does not count as sign-in for admin rights. Basic auth
+    with a mapping (or JSON file) of users and passwords does count.
+    """
+    import panel as pn
+    from panel.io.state import state
+
+    if pn.config.oauth_provider:
+        return False
+    values = [
+        config.get("basic_auth")
+        for config in getattr(state, "_server_config", {}).values()
+        if isinstance(config, dict)
+    ]
+    values.append(os.environ.get("PANEL_BASIC_AUTH") or getattr(pn.config, "_basic_auth", None))
+    for value in values:
+        if not value or isinstance(value, dict):
+            continue
+        if isinstance(value, str) and os.path.isfile(value):
+            continue
+        return True
+    return False
 
 
 def session_is_local(doc: t.Any, trusted_proxies: t.Iterable[str] = ()) -> bool:

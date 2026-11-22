@@ -190,17 +190,28 @@ A section can also describe its page in the admin view with
 it. Every registered section with a `settings_view` is listed in the admin
 view, after the built-in General and Theme. The view's code runs in the sessions of the app's
 admins, with their rights, so install only extensions you trust. The simplest view is any Panel
-component that saves on its own:
+component that saves on its own. Before each save it asks the app whether
+the viewer is still an admin, since an admin removed meanwhile may still
+have the page open: `current_app()` returns the app while the view is
+built, and its `still_admin()` reads the project file again.
 
 ```python
 import panel_material_ui as pmui
 
+from panel_flowdash.admin import current_app
+
 
 def branding_settings(project, editable):
+    app = current_app()
     branding = project.get("branding") or Branding(logo="")
     logo = pmui.TextInput(label="Logo", value=branding.logo, disabled=not editable)
     save = pmui.Button(label="Save", disabled=not editable)
-    save.on_click(lambda event: project.set("branding", Branding(logo.value, branding.accent)))
+
+    def on_save(event):
+        if app is None or app.still_admin():
+            project.set("branding", Branding(logo.value, branding.accent))
+
+    save.on_click(on_save)
     return pmui.Column(logo, save)
 
 
@@ -215,7 +226,8 @@ BRANDING = ProjectSection(
 ```
 
 A view that returns a [`panel_flowdash.admin.SettingsForm`][panel_flowdash.admin.SettingsForm] gets the admin
-view's Save and Discard and its unsaved-changes dot instead. The form is
+view's Save and Discard and its unsaved-changes dot instead, and its Save
+checks admin itself. The form is
 described by groups of `Setting`s, each a key of the section's mapping;
 Save writes the changed keys with `Project.set`, and the problems of a
 value the loader rejects are shown next to the fields their `keys` name.
