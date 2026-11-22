@@ -1276,10 +1276,14 @@ class ReportView(Viewer):
         editor = self.editor
         return bool(editor.editable and not editor.read_only)
 
-    def _edit(self, report: dict, label: str) -> bool:
-        """Apply a change to the report as one edit, telling the person if it cannot be made."""
+    def _edit(self, report: dict, label: str, coalesce: bool = False) -> bool:
+        """Apply a change to the report as one edit, telling the person if it cannot be made.
+
+        Only typing (*coalesce*) is batched with the quick edits around it;
+        any other gesture is a version of its own, so Undo steps back one at a time.
+        """
         try:
-            self.editor.set_report(report, label=label)
+            self.editor.set_report(report, label=label, coalesce=coalesce)
         except ValueError as exc:
             self.editor._notify(
                 "warning", f"The report could not be changed: {exc}", duration=5000
@@ -1303,7 +1307,7 @@ class ReportView(Viewer):
         own = dashboard.title if dashboard is not None else None
         wanted = None if not title or title == own else title
         if wanted != current:
-            self._edit(set_title(report, wanted), "Renamed the report")
+            self._edit(set_title(report, wanted), "Renamed the report", coalesce=True)
 
     def _clear_editing(self):
         self._edit_items = []
@@ -1741,7 +1745,7 @@ class ReportView(Viewer):
             self._edit(move_block(report, index, to), "Moved a block in the report")
 
     def _on_heading(self, item: _EditItem, event):
-        if item.updating:
+        if item.updating or not self._editing():
             return
         report = self.editor.report
         text = (event.new or "").strip()
@@ -1756,14 +1760,20 @@ class ReportView(Viewer):
                 item.updating = False
             return
         if report["blocks"][item.index].get("heading") != text:
-            self._edit(update_block(report, item.index, heading=text), "Edited a heading")
+            self._edit(
+                update_block(report, item.index, heading=text), "Edited a heading", coalesce=True
+            )
 
     def _on_text(self, item: _EditItem, text: str):
         report = self.editor.report
         if report is None or item.index >= len(report["blocks"]) or not self._editing():
             return
         if report["blocks"][item.index].get("text") != text:
-            self._edit(update_block(report, item.index, text=text), "Edited text in the report")
+            self._edit(
+                update_block(report, item.index, text=text),
+                "Edited text in the report",
+                coalesce=True,
+            )
 
     def _on_text_opened(self, item: _EditItem):
         """Close the other text blocks: one is edited at a time."""
@@ -1772,7 +1782,7 @@ class ReportView(Viewer):
                 other.text.close()
 
     def _on_caption(self, item: _EditItem, event):
-        if item.updating:
+        if item.updating or not self._editing():
             return
         report = self.editor.report
         if report is None or item.index >= len(report["blocks"]):
@@ -1780,7 +1790,11 @@ class ReportView(Viewer):
         caption = (event.new or "").strip() or None
         if report["blocks"][item.index].get("caption") != caption:
             item.caption_open = caption is not None
-            self._edit(update_block(report, item.index, caption=caption), "Edited a caption")
+            self._edit(
+                update_block(report, item.index, caption=caption),
+                "Edited a caption",
+                coalesce=True,
+            )
 
     def _value_choices(self) -> list[dict]:
         """Return the outputs a text can quote, as Insert value lists them."""

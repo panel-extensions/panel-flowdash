@@ -299,6 +299,29 @@ def test_customize_turns_the_derived_report_into_the_dashboards_own(page):
     expect(report.locator(".fd-report-handle")).to_have_count(1)
 
 
+def test_quick_structural_gestures_undo_one_at_a_time(page):
+    editor = _author(report=False)
+    editor.history_coalesce = 3
+    serve_component(page, editor)
+    editor.surface = "report"
+    report = _report(page)
+    report.get_by_role("button", name="Customize").click()
+    _shown(page, 1)
+    report.get_by_role("button", name="Insert a block at the start").click()
+    report.locator(".fd-report-insert-bar").get_by_role("button", name="Heading").click()
+    _shown(page, 2)
+    report.locator(".fd-report-handle button").first.focus()
+    page.keyboard.press("ArrowDown")
+    wait_until(lambda: _kinds(editor) == ["group", "heading"], page)
+
+    assert editor.undo()
+    wait_until(lambda: _kinds(editor) == ["heading", "group"], page)
+    assert editor.undo()
+    wait_until(lambda: _kinds(editor) == ["group"], page)
+    assert editor.undo()
+    wait_until(lambda: editor.report is None, page)
+
+
 def test_insert_each_kind_of_block(page):
     editor = _author(extra=True)
     serve_component(page, editor)

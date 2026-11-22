@@ -4939,13 +4939,21 @@ class FlowDash(Viewer):
             {turn.id for turn in self._turn_log.turns},
         )
 
-    def set_report(self, report: t.Mapping[str, t.Any] | None, *, label: str | None = None):
+    def set_report(
+        self,
+        report: t.Mapping[str, t.Any] | None,
+        *,
+        label: str | None = None,
+        coalesce: bool = True,
+    ):
         """Replace the dashboard's report, nodes by instance id, as one undoable edit.
 
         None removes it, so the dashboard reads as its derived report again.
         *label* describes the edit in the history, "Changed the report" by
         default. A pending turn the report no longer refers to goes with its
-        block, as it was only ever asked in the report.
+        block, as it was only ever asked in the report. With *coalesce* False
+        the edit is a version of its own, never batched with the quick edits
+        before or after it, as for a structural change such as moving a block.
 
         Raises
         ------
@@ -4974,7 +4982,11 @@ class FlowDash(Viewer):
         self._report = checked
         if dropped:
             self._turn_log.drop_pending(dropped)
+        if not coalesce:
+            self._history.flush()
         self._record_edit(label or "Changed the report", op="set_report")
+        if not coalesce:
+            self._history.flush()
 
     def customize_report(self) -> bool:
         """Make the report derived from the dashboard its own, to be edited, and return whether it did.
@@ -4985,7 +4997,9 @@ class FlowDash(Viewer):
         """
         if self._report is not None:
             return False
-        self.set_report({"blocks": report_blocks(self).blocks}, label="Customized the report")
+        self.set_report(
+            {"blocks": report_blocks(self).blocks}, label="Customized the report", coalesce=False
+        )
         return True
 
     def ask_in_report(self, question: str, index: int | None = None) -> str:
@@ -5008,6 +5022,7 @@ class FlowDash(Viewer):
             self.set_report(
                 insert_block(current, index, {"turn": turn.id}),
                 label="Asked a question in the report",
+                coalesce=False,
             )
         except Exception:
             self._turn_log.drop_pending({turn.id})
