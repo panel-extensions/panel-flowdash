@@ -245,7 +245,7 @@ class DashboardModel:
 
     @property
     def owner(self) -> str:
-        """The immutable owner principal (the creating user)."""
+        """The owner principal: the creating user, unless an admin gave it to someone else."""
         return self.user_id
 
     def to_dict(self) -> dict[str, Any]:
@@ -397,6 +397,16 @@ class BaseDashboardStore(ABC):
     @abstractmethod
     def set_permission(self, dashboard_id: str, permission: Permission) -> bool:
         """Persist a new permission set on a dashboard. Returns success."""
+
+    def set_owner(self, dashboard_id: str, owner: str) -> bool:
+        """Give a dashboard to *owner*. Returns whether one was updated.
+
+        Only the admin view calls it, after checking that the caller is an
+        admin. Like renaming, it does not change the dashboard's revision. A
+        store that cannot change owners raises :class:`DashboardStoreError`,
+        as this default does.
+        """
+        raise DashboardStoreError("This dashboard store cannot change a dashboard's owner.")
 
     # ------------------------------------------------------------------
     # Edit history
@@ -652,6 +662,9 @@ class MemoryDashboardStore(BaseDashboardStore):
             revision = check_revision(dashboard, None if stored is None else stored.revision)
             self._dashboards[dashboard.dashboard_id] = copy.deepcopy(dashboard)
             self._dashboards[dashboard.dashboard_id].revision = revision
+            if stored is not None:
+                # Like the SQLite store, saving keeps the owner; only set_owner changes it.
+                self._dashboards[dashboard.dashboard_id].user_id = stored.user_id
             self._dashboards[dashboard.dashboard_id].updated_at = datetime.now(UTC)
             # Re-inserting moves the dashboard to the front of the recency order.
             if dashboard.dashboard_id in self._order:
@@ -716,6 +729,14 @@ class MemoryDashboardStore(BaseDashboardStore):
             return False
         model.permission = copy.deepcopy(permission)
         model.updated_at = datetime.now(UTC)
+        return True
+
+    def set_owner(self, dashboard_id: str, owner: str) -> bool:
+        with self._lock:
+            model = self._dashboards.get(dashboard_id)
+            if model is None:
+                return False
+            model.user_id = owner
         return True
 
 
@@ -1059,6 +1080,13 @@ class DashboardStore(BaseDashboardStore):
                 conn.execute(
                     "DELETE FROM dashboard_history WHERE dashboard_id = ?", (dashboard_id,)
                 )
+        return cursor.rowcount > 0
+
+    def set_owner(self, dashboard_id: str, owner: str) -> bool:
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                "UPDATE dashboards SET user_id = ? WHERE dashboard_id = ?", (owner, dashboard_id)
+            )
         return cursor.rowcount > 0
 
     def rename_dashboard(self, user_id: str, dashboard_id: str, new_title: str) -> bool:

@@ -273,10 +273,12 @@ class TestSections:
             "theme",
             "ai",
             "permissions",
+            "components",
+            "dashboards",
             "sources",
             "limits",
         ]
-        assert list(page._menus) == ["App", "Data", "Extensions"]
+        assert list(page._menus) == ["App", "Content", "Data", "Extensions"]
         assert [item["label"] for item in page._menus["Data"].items] == ["Sources"]
         assert [item["label"] for item in page._menus["Extensions"].items] == ["Limits"]
         page.show("limits")

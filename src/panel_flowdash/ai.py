@@ -36,6 +36,7 @@ pydantic-ai when the agent extra is installed.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import contextlib
 import datetime as dt
 import json
@@ -44,6 +45,7 @@ import math
 import os
 import tempfile
 import threading
+import time
 import typing as t
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -496,10 +498,17 @@ def file_lock(path: Path):
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-class UsageLedger:
-    """What each model cost by month, and who opened the app when, in a JSON file by the project.
+# How many of the admins' destructive actions the ledger keeps.
+ADMIN_LOG_SIZE = 500
 
-    Without a path the spend is kept in memory for the process. Every
+# How often the dashboard opens noted in memory are written to the ledger.
+OPENS_FLUSH_SECONDS = 60.0
+
+
+class UsageLedger:
+    """What models cost, who opened the app and its dashboards, and what admins did, by the project.
+
+    It is a JSON file. Without a path everything is kept in memory for the process. Every
     process serving the project adds to the same file: each change is a
     read-modify-write under an OS file lock (``usage.json.lock``), so
     several workers, or people sharing the project on a network drive, do
@@ -510,6 +519,10 @@ class UsageLedger:
         self.path = Path(path) if path is not None else None
         self._thread_lock = threading.Lock()
         self._memory: dict[str, t.Any] = {}
+        self._opens: dict[str, str] = {}
+        self._opens_lock = threading.Lock()
+        self._opens_flushed = time.monotonic()
+        atexit.register(self.flush_opens)
 
     @contextlib.contextmanager
     def _lock(self):
@@ -594,6 +607,104 @@ class UsageLedger:
         """Return who opened the app, with when they were last seen and their groups then."""
         people = self._locked_read().get("people")
         return dict(people) if isinstance(people, dict) else {}
+
+    def opened(self, dashboard_id: str, when: dt.datetime | None = None) -> None:
+        """Note that someone opened the dashboard *dashboard_id*.
+
+        Opens are kept in memory and written together at most every
+        ``OPENS_FLUSH_SECONDS`` (and when the process exits), so opening a
+        dashboard does not take the file lock each time.
+        """
+        stamp = (when or dt.datetime.now(dt.UTC)).isoformat(timespec="seconds")
+        with self._opens_lock:
+            previous = self._opens.get(dashboard_id)
+            if previous is None or stamp > previous:
+                self._opens[dashboard_id] = stamp
+            due = time.monotonic() - self._opens_flushed >= OPENS_FLUSH_SECONDS
+        if due:
+            self.flush_opens()
+
+    def flush_opens(self) -> None:
+        """Write the opens noted since the last write."""
+        with self._opens_lock:
+            opens, self._opens = self._opens, {}
+            self._opens_flushed = time.monotonic()
+        if not opens:
+            return
+        try:
+            with self._lock():
+                data = self._read()
+                known = data.setdefault("dashboards", {})
+                for dashboard_id, stamp in opens.items():
+                    previous = (known.get(dashboard_id) or {}).get("last_opened")
+                    if not isinstance(previous, str) or stamp > previous:
+                        known[dashboard_id] = {"last_opened": stamp}
+                self._write(data)
+        except OSError as exc:
+            logger.warning("Could not record which dashboards were opened: %s", exc)
+
+    def dashboards(self) -> dict[str, dict[str, t.Any]]:
+        """Return when each dashboard was last opened, by id, including opens not written yet."""
+        dashboards = self._locked_read().get("dashboards")
+        result = dict(dashboards) if isinstance(dashboards, dict) else {}
+        with self._opens_lock:
+            pending = dict(self._opens)
+        for dashboard_id, stamp in pending.items():
+            previous = (result.get(dashboard_id) or {}).get("last_opened")
+            if not isinstance(previous, str) or stamp > previous:
+                result[dashboard_id] = {"last_opened": stamp}
+        return result
+
+    def forget_dashboards(self, dashboard_ids: t.Iterable[str]) -> None:
+        """Drop what is noted about the dashboards *dashboard_ids*, e.g. once deleted."""
+        ids = set(dashboard_ids)
+        with self._opens_lock:
+            for dashboard_id in ids:
+                self._opens.pop(dashboard_id, None)
+        try:
+            with self._lock():
+                data = self._read()
+                opened = data.get("dashboards")
+                if isinstance(opened, dict) and ids & set(opened):
+                    data["dashboards"] = {k: v for k, v in opened.items() if k not in ids}
+                    self._write(data)
+        except OSError as exc:
+            logger.warning("Could not update the record of opened dashboards: %s", exc)
+
+    def record(
+        self,
+        user: str,
+        action: str,
+        dashboards: t.Sequence[t.Mapping[str, str]] = (),
+        when: dt.datetime | None = None,
+        **details: t.Any,
+    ) -> dict[str, t.Any]:
+        """Add an admin's *action* on *dashboards* (each an ``id`` and ``title``) to the admin log."""
+        entry = {
+            "when": (when or dt.datetime.now(dt.UTC)).isoformat(timespec="seconds"),
+            "user": user,
+            "action": action,
+            "dashboards": [dict(d) for d in dashboards],
+            **details,
+        }
+        logger.info(
+            "Admin %s: %s %s", user, action, ", ".join(d.get("id", "") for d in dashboards)
+        )
+        try:
+            with self._lock():
+                data = self._read()
+                log = data.get("admin_log")
+                log = log if isinstance(log, list) else []
+                data["admin_log"] = [*log, entry][-ADMIN_LOG_SIZE:]
+                self._write(data)
+        except OSError as exc:
+            logger.warning("Could not write the admin log: %s", exc)
+        return entry
+
+    def admin_log(self) -> list[dict[str, t.Any]]:
+        """Return the admin log, oldest first."""
+        log = self._locked_read().get("admin_log")
+        return [e for e in log if isinstance(e, dict)] if isinstance(log, list) else []
 
 
 _LEDGERS: dict[str, UsageLedger] = {}

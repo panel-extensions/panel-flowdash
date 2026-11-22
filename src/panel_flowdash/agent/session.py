@@ -263,6 +263,7 @@ class AgentSession:
         sensitive += [
             p for p in permissions.get("sensitive_components") or () if p not in sensitive
         ]
+        sensitive += [cid for cid in app._approval_components() if cid not in sensitive]
         return approval_policy(
             *app.agent_approval_rules,
             *approval_rules(permissions),

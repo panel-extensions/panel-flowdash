@@ -45,6 +45,7 @@ from panel_tiles import TileGrid
 from panel_flowdash import auto_layout
 from panel_flowdash.auth import Permission
 from panel_flowdash.component_library import normalize_components
+from panel_flowdash.component_settings import TURNED_OFF
 from panel_flowdash.component_spec import (
     _flowdash_metadata,
     build_component_specs,
@@ -915,6 +916,10 @@ def dashboard_context() -> t.Mapping[str, t.Any]:
     return MappingProxyType(editor.context if editor is not None else {})
 
 
+class PlacementRefused(PermissionError, ValueError):
+    """An imported dashboard adds components `refuse_placement` keeps this session from adding."""
+
+
 def _drop_repeated_ids(model: DashboardModel) -> int:
     """Keep only the first item of *model* with each instance id, returning how many were dropped."""
     seen: set[str] = set()
@@ -1127,6 +1132,20 @@ class FlowDash(Viewer):
         supplies one that evaluates each component's ``allow_*``/``deny_*``
         rules and ``authorize`` callback against the signed-in user. None
         allows every component.""",
+    )
+
+    refuse_placement = param.Callable(
+        default=None,
+        doc="""
+        Called with a component id to ask whether this session may add new
+        instances of it: None if it may, else why not, e.g. ``"turned off by
+        an admin"``. A refused component is left out of the palette, the
+        command palette and the agent's components, and `add_component`
+        raises `PermissionError` for it. Unlike `authorize_component`, it
+        leaves the instances a dashboard already places alone, and they keep
+        working; editors are told once when a dashboard they edit has some.
+        `FlowDashApp` supplies one from the project file's ``components``
+        section.""",
     )
 
     authorize_dashboard = param.Callable(
@@ -1603,6 +1622,7 @@ class FlowDash(Viewer):
         # notice about them waiting for an editor to see it.
         self._unresolved_edges: list[UnresolvedEdge] = []
         self._unresolved_notice: str | None = None
+        self._turned_off_notice: str | None = None
         # Layout entries keyed by instance id, waiting for the grid to be rendered.
         self._pending_tile_layout: list[dict] = []
         # Instance ids of the tiles currently in the grid, in grid order; None
@@ -2054,7 +2074,7 @@ class FlowDash(Viewer):
         placed = {item["component_id"] for item in self._tile_items}
         entries = []
         for app_id, entry in self._component_entries.items():
-            if not self._component_authorized(app_id):
+            if not self._component_offered(app_id):
                 continue
             spec = self._component_specs.get(app_id)
             base = palette_entry(entry, spec, placed=app_id in placed)
@@ -2075,7 +2095,25 @@ class FlowDash(Viewer):
             logger.exception("authorize_component failed for '%s'; denying it", component_id)
             return False
 
-    @param.depends("authorize_component", watch=True)
+    def _placement_refusal(self, component_id: str) -> str | None:
+        """Return why `refuse_placement` keeps this session from adding *component_id*, or None."""
+        if self.refuse_placement is None:
+            return None
+        try:
+            reason = self.refuse_placement(component_id)
+        except Exception:
+            logger.exception("refuse_placement failed for '%s'; refusing it", component_id)
+            return "its settings could not be read"
+        return str(reason) if reason else None
+
+    def _component_offered(self, component_id: str) -> bool:
+        """Whether this session may add new instances of *component_id*."""
+        return (
+            self._component_authorized(component_id)
+            and self._placement_refusal(component_id) is None
+        )
+
+    @param.depends("authorize_component", "refuse_placement", watch=True)
     def _sync_authorized_palette(self):
         self._sync_toolbar_state()
 
@@ -6577,7 +6615,7 @@ class FlowDash(Viewer):
         ValueError
             If *instance_id* is not a valid node name or is taken.
         PermissionError
-            If `authorize_component` refuses it.
+            If `authorize_component` or `refuse_placement` refuses it.
         """
         if component_id not in self._component_entries:
             raise KeyError(
@@ -6593,6 +6631,10 @@ class FlowDash(Viewer):
         if not self._component_authorized(component_id):
             title = self._component_entries[component_id].title
             raise PermissionError(f"You are not authorized to use '{title}'.")
+        refusal = self._placement_refusal(component_id)
+        if refusal is not None:
+            title = self._component_entries[component_id].title
+            raise PermissionError(f"'{title}' can't be added: {refusal}.")
         if instance_id is not None:
             self._check_instance_id(instance_id)
         automatic = arrange and position is None
@@ -7542,6 +7584,7 @@ class FlowDash(Viewer):
         self._edge_count = 0
         self._unresolved_edges = []
         self._unresolved_notice = None
+        self._turned_off_notice = None
         self._origins = {}
         self._groups = {}
         self._report = None
@@ -7788,6 +7831,7 @@ class FlowDash(Viewer):
         self._unresolved_notice = unresolved_summary(
             len(placeholders), len(self._unresolved_edges)
         )
+        self._turned_off_notice = self._turned_off_summary(model)
         self._draw_groups(model.groups)
         self._report = copy.deepcopy(model.report)
         self._global_filters.load(model.filters)
@@ -7809,6 +7853,7 @@ class FlowDash(Viewer):
         self._apply_mode_state()
         self._sync_toolbar_state()
         self._notify_unresolved()
+        self._notify_turned_off()
 
     def _resolve_port_name(self, instance_id: str, port: str) -> str:
         """Return the current name of a port a saved edge may name by a former name."""
@@ -7929,6 +7974,33 @@ class FlowDash(Viewer):
         if self._unresolved_notice is None or not self.editable or self.read_only:
             return
         message, self._unresolved_notice = self._unresolved_notice, None
+        self._notify("warning", message, duration=8000)
+
+    def _turned_off_summary(self, model: DashboardModel) -> str | None:
+        """Return the notice for the components *model* places that an admin turned off, if any."""
+        aliases = self._component_aliases()
+        titles = []
+        for cid in dict.fromkeys(
+            self._resolve_component_id(item.component_id, aliases) for item in model.items
+        ):
+            entry = self._component_entries.get(cid)
+            if entry is not None and self._placement_refusal(cid) == TURNED_OFF:
+                titles.append(entry.title)
+        if not titles:
+            return None
+        names = ", ".join(titles)
+        verb = "is" if len(titles) == 1 else "are"
+        return (
+            f"{names} {verb} {TURNED_OFF}: the tiles already here keep working, "
+            "but no new ones can be added."
+        )
+
+    @param.depends("editable", "read_only", watch=True)
+    def _notify_turned_off(self):
+        """Tell an editor once that the loaded dashboard places components an admin turned off."""
+        if self._turned_off_notice is None or not self.editable or self.read_only:
+            return
+        message, self._turned_off_notice = self._turned_off_notice, None
         self._notify("warning", message, duration=8000)
 
     def _legacy_layout_ids(self, model: DashboardModel) -> list[str]:
@@ -8818,6 +8890,33 @@ class FlowDash(Viewer):
                 restricted.add(item.instance_id)
         return restricted
 
+    def _refuse_new_placements(self, model: DashboardModel, reference: DashboardModel | None):
+        """Raise `PlacementRefused` if importing *model* would add items `refuse_placement` refuses.
+
+        An item *reference* (the dashboard as stored, or the canvas) already
+        has under its id, of the same component, is not new and is kept, so
+        dashboards keep components an admin turned off since.
+        """
+        aliases = self._component_aliases()
+        before = {
+            item.instance_id: self._resolve_component_id(item.component_id, aliases)
+            for item in (reference.items if reference is not None else ())
+        }
+        refused = []
+        for item in model.items:
+            cid = self._resolve_component_id(item.component_id, aliases)
+            if cid not in self._component_entries or before.get(item.instance_id) == cid:
+                continue
+            reason = self._placement_refusal(cid)
+            if reason is not None:
+                refused.append(
+                    f"{item.instance_id} ({self._component_entries[cid].title}: {reason})"
+                )
+        if refused:
+            raise PlacementRefused(
+                f"It adds components you can't add: {', '.join(refused)}. Nothing was imported."
+            )
+
     def _guard_restricted(self, model: DashboardModel, reference: DashboardModel | None):
         """Keep an imported *model* from adding or changing items this session may not use.
 
@@ -8831,6 +8930,7 @@ class FlowDash(Viewer):
         config nor their wiring. Of several items sharing an id only the first
         is kept, since placing the next would replace it.
         """
+        self._refuse_new_placements(model, reference)
         duplicates = _drop_repeated_ids(model)
         if duplicates:
             self._notify(

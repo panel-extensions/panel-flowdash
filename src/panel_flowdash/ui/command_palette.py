@@ -226,7 +226,7 @@ class CommandPaletteController:
         placed = editor._placed_singletons()
         items = []
         for component_id, entry in editor._component_entries.items():
-            if not editor._component_authorized(component_id):
+            if not editor._component_offered(component_id):
                 continue
             meta = entry.metadata
             if adding and component_id in placed:
@@ -601,7 +601,7 @@ class CommandPaletteController:
     def _run_preset(self, component_id: str, key: str):
         editor = self._editor
         entry = editor._component_entries.get(component_id)
-        if entry is None or not self._editing() or not editor._component_authorized(component_id):
+        if entry is None or not self._editing() or not editor._component_offered(component_id):
             return
         preset = next((p for p in editor_presets(editor, entry) if p["key"] == key), None)
         if preset is not None:
