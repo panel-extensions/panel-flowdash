@@ -819,6 +819,14 @@ class EditHistory:
                 if request.ops:
                     self._publish_request(request)
 
+    def drop_requests(self, run_id: str | None):
+        """Forget the edits request *run_id* made so far without a version, e.g. once taken back."""
+        for key, request in list(self._requests.items()):
+            if request.run_id == run_id:
+                del self._requests[key]
+        if self.active:
+            self._head = self.snapshot()[1]
+
     def _on_event(self, event):
         if isinstance(event, (RunFinished, RunError)) and self._requests:
             self.end_requests(event.run_id)

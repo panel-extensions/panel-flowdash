@@ -144,10 +144,8 @@ def test_a_title_set_in_the_form_updates_the_spec_and_the_chart(page):
     editor, chart = _open(page)
     title = page.get_by_role("textbox", name="Title", exact=True)
     title.fill("Capacity by year")
+    # "Run on change" is on for a spec, so the form edit runs without Run.
     title.press("Enter")
-    wait_until(lambda: editor.code_panel.dirty, page, timeout=8000)
-    assert "title" not in editor._component_instances[chart].spec, "a draft until run"
-    page.locator(".fd-code-run").click()
     wait_until(
         lambda: editor._component_instances[chart].spec.get("title") == "Capacity by year",
         page,
@@ -183,13 +181,12 @@ def test_editing_the_spec_text_updates_the_form(page):
 
 def test_a_key_without_a_control_is_flagged_and_kept(page):
     editor, chart = _open(page)
-    banner = page.locator(".fd-spec-unknown")
+    banner = page.locator(".fd-spec-unshown")
     expect(banner).to_contain_text("encoding.x.axis", timeout=8000)
     expect(banner).to_contain_text("transform")
     x_title = page.locator(".fd-spec-encoding-x-title input")
     x_title.fill("Year")
     x_title.press("Enter")
-    page.locator(".fd-code-run").click()
     wait_until(
         lambda: editor._component_instances[chart].spec["encoding"]["x"].get("title") == "Year",
         page,

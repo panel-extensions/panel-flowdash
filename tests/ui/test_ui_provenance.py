@@ -123,6 +123,27 @@ def test_the_tile_menu_shows_it_and_a_viewer_sees_their_own_request_in_full(page
     expect(page.get_by_role("dialog").locator(".sv-question")).to_have_text("Add another note")
 
 
+def test_the_side_sheet_closes_when_editing_starts(page):
+    editor, _added = _ask_for_a_note(page)
+    page.get_by_role("button", name="Assistant", exact=True).click()
+    page.get_by_role("button", name="Done").click()
+    page.get_by_role("button", name="Save and leave").click()
+    wait_until(lambda: not editor.editable, page, timeout=8000)
+    page.locator(".flowdash-tile").last.hover()
+    page.locator(".flowdash-tile").last.get_by_role("button", name=re.compile("^More for")).click()
+    page.get_by_role("menuitem", name="How was this made?").click()
+    sheet = page.locator(".flowdash-inspect-sheet")
+    expect(sheet.locator(".sv-question")).to_have_text("Add another note")
+
+    page.get_by_role("button", name="Edit").click()
+    wait_until(lambda: editor.editable, page, timeout=8000)
+    expect(sheet.locator(".sv-question")).to_be_hidden()
+    assert not editor._inspect_dialog.open
+    # Save and Done are no longer covered, and the workspace has its width back.
+    page.get_by_role("button", name="Done").click(trial=True)
+    expect(page.locator(".flowdash-inspecting")).to_have_count(0)
+
+
 def test_someone_elses_request_is_redacted_for_viewers_and_for_restricted_nodes(page):
     store = MemoryDashboardStore()
     editor = _editor(store, finance=True)

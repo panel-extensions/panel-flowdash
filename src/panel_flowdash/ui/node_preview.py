@@ -23,7 +23,6 @@ import itertools
 import logging
 import math
 import numbers
-import reprlib
 import threading
 import typing as t
 import weakref
@@ -36,10 +35,12 @@ import panel as pn
 from panel.io.state import set_curdoc
 
 from panel_flowdash.util import is_failure
+from panel_flowdash.value_text import SafeRepr, safe_str
 
 logger = logging.getLogger(__name__)
 
 PREVIEW_HOOK = "__flowdash_preview__"
+DEFINITION_HOOK = "__flowdash_definition__"
 PREVIEW_KIND_KEY = "__flowdash_preview_kind__"
 
 #: The colour of chart marks, in the card thumbnails and the pop-out alike.
@@ -60,7 +61,7 @@ MIN_POINTS = 3
 MAX_LINE_CHARS = 48
 
 # Builds the text of a container item by item, so a large one is never written out whole.
-_REPR = reprlib.Repr()
+_REPR = SafeRepr()
 _REPR.maxstring = MAX_TEXT_CHARS
 _REPR.maxother = MAX_TEXT_CHARS
 _REPR.maxlist = _REPR.maxtuple = _REPR.maxset = _REPR.maxfrozenset = _REPR.maxdict = 8
@@ -419,11 +420,7 @@ def _text(value: t.Any, limit: int) -> str:
         return f"{type(value).__name__} of shape {' x '.join(map(str, shape))}"
     if isinstance(value, (list, tuple, set, frozenset, dict)):
         return _clip(_REPR.repr(value), limit)
-    text = str(value)
-    if text.startswith("<") and text.endswith(">") and " " in text:
-        # A repr such as <Pipeline query_1a2b> says nothing to the user; its type does.
-        return type(value).__name__
-    return _clip(text, limit)
+    return _clip(safe_str(value), limit)
 
 
 def _format_time(value: t.Any) -> str | None:
@@ -1436,6 +1433,39 @@ def call_preview_hook(instance: t.Any, output: str | None = None) -> t.Any:
     except Exception:
         logger.exception("The preview hook of %s failed", type(instance).__name__)
         return None
+
+
+def call_definition_hook(instance: t.Any) -> tuple[str, str] | None:
+    """Return ``(language, text)`` from ``instance.__flowdash_definition__``, or None.
+
+    A component without code or a spec to edit may define the hook to show
+    what defines it, e.g. a data source's spec as YAML, read only in the code
+    panel. The language is an Ace mode such as ``"yaml"``, ``"json"`` or
+    ``"sql"``. The hook returns None to show nothing, and one that fails or
+    returns anything but two strings is logged and shows nothing.
+    """
+    hook = getattr(instance, DEFINITION_HOOK, None)
+    if hook is None or not callable(hook):
+        return None
+    try:
+        definition = hook()
+    except Exception:
+        logger.exception("The definition hook of %s failed", type(instance).__name__)
+        return None
+    if definition is None:
+        return None
+    if (
+        isinstance(definition, tuple)
+        and len(definition) == 2
+        and all(isinstance(part, str) for part in definition)
+    ):
+        return definition
+    logger.warning(
+        "The definition hook of %s returned %s, not a (language, text) tuple",
+        type(instance).__name__,
+        type(definition).__name__,
+    )
+    return None
 
 
 def hook_preview(instance: t.Any, label: str = "", output: str | None = None) -> Preview | None:

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import param
 
 from panel_flowdash.component_spec import ComponentSpec
-from panel_flowdash.dataflow_engine import _is_list_port
+from panel_flowdash.dataflow_engine import _is_list_port, connection_type
 from panel_flowdash.input_literals import check_literal
 from panel_flowdash.port_types import port_types_compatible
 from panel_flowdash.settings import DashboardSettings
@@ -249,6 +249,47 @@ class _Checker:
                     "restricted node; those can be kept but not added or moved.",
                 )
 
+    def check_report(self, doc: dict):
+        """Warn about text placeholders naming no node or output, and tables of nodes without outputs.
+
+        Readers see such a placeholder or block empty, so it loads, but its author should know.
+        """
+        from panel_flowdash.report import placeholder_refs
+
+        nodes = doc.get("nodes") or {}
+        for i, block in enumerate((doc.get("report") or {}).get("blocks") or []):
+            path = f"report.blocks[{i}]"
+            if "text" in block:
+                for name, port in dict.fromkeys(placeholder_refs(block["text"])):
+                    node = nodes.get(name)
+                    if node is None:
+                        self.warn(
+                            f"{path}.text",
+                            f"'{{{{ {name}.{port} }}}}' names no node, so it shows nothing."
+                            + _suggest(name, nodes),
+                        )
+                        continue
+                    if node["component"] == RESTRICTED:
+                        continue
+                    spec = self.spec_for(node["component"])
+                    if spec is None:
+                        continue
+                    outputs = [p.name for p in spec.outputs]
+                    if spec.resolve_name(port) not in outputs:
+                        self.warn(
+                            f"{path}.text",
+                            f"'{{{{ {name}.{port} }}}}': '{name}' has no output '{port}', "
+                            "so it shows nothing." + _suggest(port, outputs),
+                        )
+            elif block.get("show") == "table" and block.get("node") in nodes:
+                node = nodes[block["node"]]
+                spec = self.spec_for(node["component"])
+                if spec is not None and not spec.outputs:
+                    self.warn(
+                        f"{path}.show",
+                        f"'{block['node']}' has no output to show as a table, so it shows nothing.",
+                    )
+
     def check_edges(self, doc: dict):
         nodes = doc.get("nodes") or {}
         components = {name: node["component"] for name, node in nodes.items()}
@@ -339,12 +380,13 @@ class _Checker:
             if output is None or input_ is None:
                 continue
             incoming[(target, input_.name)].append(path)
-            if not transform and not port_types_compatible(output.type, input_.type):
+            expected = connection_type(input_)
+            if not transform and not port_types_compatible(output.type, expected):
                 self.error(
                     path,
                     f"Type mismatch: output '{source_port}' of '{source}' produces "
                     f"'{output.type}' but input '{target_port}' of '{target}' expects "
-                    f"'{input_.type}'. Connect a matching output or add a transform.",
+                    f"'{expected}'. Connect a matching output or add a transform.",
                 )
         for (target, port), paths in incoming.items():
             target_spec = self.spec_for(components[target])
@@ -532,6 +574,7 @@ def validate_dashboard(
     checker.check_restricted(doc)
     checker.check_edges(doc)
     checker.check_layout(doc, set(controls))
+    checker.check_report(doc)
     return checker.issues
 
 

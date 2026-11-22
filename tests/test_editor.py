@@ -501,6 +501,40 @@ def _click_overflow(editor, label):
     editor._dashboard_bar.overflow._handle_msg({"type": "click", "item": index})
 
 
+class TestCanvasRemount:
+    def _report(self, editor, nodes):
+        editor._flow._process_msg({"type": "selection_changed", "nodes": nodes, "edges": []})
+
+    async def test_the_selection_is_kept_as_the_canvas_moves_to_another_tab(self, editor):
+        editor.editable = True
+        node = editor.add_component(SHOUTER)
+        self._report(editor, [node])
+
+        editor.mode = "split"
+        self._report(editor, [])
+
+        assert editor._flow.selection["nodes"] == [node]
+        assert editor._inspector._shown == ("node", node)
+
+    async def test_a_later_empty_selection_clears_it(self, editor):
+        editor.editable = True
+        node = editor.add_component(SHOUTER)
+        self._report(editor, [node])
+        editor.mode = "split"
+        self._report(editor, [])
+
+        self._report(editor, [])
+        assert editor._flow.selection["nodes"] == []
+
+    async def test_without_a_move_an_empty_selection_clears_it(self, editor):
+        editor.editable = True
+        node = editor.add_component(SHOUTER)
+        self._report(editor, [node])
+
+        self._report(editor, [])
+        assert editor._flow.selection["nodes"] == []
+
+
 class TestToolbar:
     async def test_clear_offered_only_with_components(self, editor):
         assert "Clear canvas" not in _overflow_labels(editor)
@@ -2898,6 +2932,18 @@ class TestInspectOutputs:
         editor.load_model(
             DashboardModel(dashboard_id="other", user_id="u", title="Other", items=[])
         )
+
+        assert not editor._inspect_dialog.open
+        assert editor._inspect_dialog.objects == []
+        assert "flowdash-inspecting" not in editor._workspace_area.css_classes
+
+    async def test_switching_to_edit_mode_closes_the_sheet(self, editor):
+        instance_id = editor.add_component(EXPLAINED)
+        _tile(editor)
+        self._click(editor, instance_id)
+        assert editor._inspect_dialog.open
+
+        editor.editable = True
 
         assert not editor._inspect_dialog.open
         assert editor._inspect_dialog.objects == []

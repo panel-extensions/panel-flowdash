@@ -319,6 +319,13 @@ class TurnLog:
             if key[0] != "agent" or (run is not None and key[1] != run)
         }
 
+    def discard(self, run: str | None):
+        """Drop the open turn of request *run*, e.g. once its edits were all taken back."""
+        turn = self._open.pop(("agent", run), None)
+        if turn is not None:
+            self.turns = [t for t in self.turns if t.id != turn.id]
+            self._labels.pop(turn.id, None)
+
     def current(self) -> DashboardTurn:
         """Return the turn an edit made now belongs to, opening it if needed."""
         agent = _agent_source()
@@ -404,6 +411,17 @@ def _node(ref: t.Any) -> str:
     return str(ref).partition(".")[0]
 
 
+def _without_removed(report: t.Any, removed: set[str]) -> t.Any:
+    if not isinstance(report, dict):
+        return report
+    blocks = [
+        block
+        for block in report.get("blocks") or []
+        if not (isinstance(block, dict) and block.get("node") in removed)
+    ]
+    return {**report, "blocks": blocks}
+
+
 def change_labels(old: t.Any, new: t.Any) -> list[str]:
     """Describe the change between two dashboard YAML documents as turn summary labels.
 
@@ -442,6 +460,11 @@ def change_labels(old: t.Any, new: t.Any) -> list[str]:
             label = "Changed the tile layout"
         elif path[0] == "settings":
             label = "Changed the settings"
+        elif path[0] == "report":
+            # The blocks of a removed node go with it.
+            if _without_removed(change.old, placed) == change.new:
+                continue
+            label = "Changed the report"
         else:
             continue
         if label not in labels:

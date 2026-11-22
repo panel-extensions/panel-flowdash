@@ -23,6 +23,7 @@ from panel_flowdash.config_choices import columns_of
 from panel_flowdash.port_types import ANY, normalize_port_type, port_types_compatible
 from panel_flowdash.transforms import apply_transform, parse_transform
 from panel_flowdash.ui.node_card import port_label
+from panel_flowdash.value_text import safe_repr
 
 if t.TYPE_CHECKING:
     from panel_flowdash.editor import FlowDash
@@ -237,7 +238,7 @@ class TransformOffer(Viewer):
                 return
             number = as_number(result)
             if number is None:
-                shown = "nothing" if result is None else repr(result)
+                shown = "nothing" if result is None else safe_repr(result)
                 self._refuse(f"This gives {shown}, not a number the input can show.")
                 return
         reason = editor._validate_connection(*self._mapping, transform=self.steps())

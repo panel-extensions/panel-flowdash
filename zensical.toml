@@ -21,6 +21,7 @@ nav = [
     {"Persist Dashboards" = "how-to/persist-dashboards.md"},
     {"Dashboard Settings and Refresh" = "how-to/dashboard-settings.md"},
     {"Serve a Project" = "how-to/serve-project.md"},
+    {"Add a Project File Section" = "how-to/project-sections.md"},
     {"Embed the Editor" = "how-to/embed-the-editor.md"},
     {"Manage Permissions" = "how-to/manage-permissions.md"},
     {"Enable the AI Agent" = "how-to/enable-the-agent.md"}
@@ -33,7 +34,8 @@ nav = [
   ]},
   {"Reference" = [
     {"API" = "reference/panel_flowdash.md"},
-    {"Dashboard YAML Format" = "reference/dashboard-yaml.md"}
+    {"Dashboard YAML Format" = "reference/dashboard-yaml.md"},
+    {"Project File" = "reference/project-file.md"}
   ]},
   {"Releases" = "releases.md"}
 ]

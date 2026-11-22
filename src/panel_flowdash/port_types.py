@@ -172,6 +172,12 @@ def normalize_port_type(name: str | None) -> str | None:
     return _ALIASES.get(key, key)
 
 
+def is_registered_port_type(name: str | None) -> bool:
+    """Return whether *name* is a registered port type or one of its aliases."""
+    with _LOCK:
+        return name is not None and _key(name) in _ALIASES
+
+
 def _supertypes(canonical: str) -> set[str]:
     seen: set[str] = set()
     stack = [canonical]

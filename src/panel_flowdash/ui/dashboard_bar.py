@@ -65,6 +65,14 @@ _HIDE_ON_PHONE = (
     f"@media (max-width: {PHONE_BREAKPOINT - 0.05}px) {{ :host {{ display: none !important; }} }}"
 )
 
+# Public for the editor's side panels, which the phone's bottom sheets replace, and
+# their inverse for the buttons opening those sheets. CSS, so a phone never shows
+# the wrong ones before the server knows the window's width.
+HIDE_ON_PHONE = _HIDE_ON_PHONE
+SHOW_ON_PHONE = (
+    f"@media (min-width: {PHONE_BREAKPOINT}px) {{ :host {{ display: none !important; }} }}"
+)
+
 # On phones the buttons left on screen are 44 px touch targets, as are tabs.
 PHONE_TOUCH_CSS = (
     f"@media (max-width: {PHONE_BREAKPOINT - 0.05}px) {{ "

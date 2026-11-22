@@ -54,6 +54,18 @@ _TILE_CSS = """
   width: auto !important;
   z-index: 20;
 }
+:host(.flowdash-tile-stale) {
+  position: relative;
+}
+/* Shown over the view's top-left corner while its result does not match its spec in the code panel. */
+.flowdash-tile-stale-mark {
+  left: 8px;
+  pointer-events: none;
+  position: absolute !important;
+  top: 8px;
+  width: auto !important;
+  z-index: 19;
+}
 :host(.flowdash-tile-floating:hover) .flowdash-tile-header,
 :host(.flowdash-tile-floating:focus-within) .flowdash-tile-header {
   opacity: 1;
@@ -65,6 +77,9 @@ _STATUS = {
     "failed": ("Failed", "error"),
     "waiting": ("Waiting", "warning"),
 }
+
+#: What the marker of a tile whose result does not match its spec says, by state.
+_STALE = {"draft": "Not run", "running": "Running…"}
 
 _ACTION_SX = {"color": "text.secondary"}
 
@@ -180,6 +195,19 @@ class Tile(pn.Column):
             visible=False,
             css_classes=["flowdash-tile-status"],
         )
+        self.stale_mark = pmui.Typography(
+            "",
+            variant="caption",
+            margin=0,
+            visible=False,
+            # Opaque, as it sits over the view.
+            sx={
+                **status_chip_sx("warning"),
+                "bgcolor": "color-mix(in srgb, var(--mui-palette-warning-main) 16%, "
+                "var(--mui-palette-background-paper, #fff))",
+            },
+            css_classes=["flowdash-tile-stale-mark"],
+        )
         self.inspect_button = pmui.IconButton(
             icon="data_object",
             description=f"Inspect data for {label}",
@@ -242,6 +270,7 @@ class Tile(pn.Column):
         super().__init__(
             self.header,
             self.body,
+            self.stale_mark,
             self.expand_dialog,
             margin=0,
             sizing_mode="stretch_both",
@@ -305,6 +334,18 @@ class Tile(pn.Column):
             return
         label, color = _STATUS[status]
         self.status.param.update(object=label, sx=status_chip_sx(color), visible=True)
+
+    def set_stale(self, stale: str | None):
+        """Mark the tile while its result does not match its spec: a ``"draft"`` not run, or ``"running"``."""
+        shown = stale is not None
+        if shown:
+            self.stale_mark.object = _STALE[stale]
+        self.stale_mark.visible = shown
+        classes = [c for c in self.css_classes if c != "flowdash-tile-stale"]
+        if shown:
+            classes.append("flowdash-tile-stale")
+        if classes != self.css_classes:
+            self.css_classes = classes
 
     def expand(self, _event=None):
         """Show the tile's view in a full-screen dialog until the dialog closes."""

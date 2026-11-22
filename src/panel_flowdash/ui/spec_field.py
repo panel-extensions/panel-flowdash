@@ -1,21 +1,28 @@
-"""A spec edited as a form over its curated settings and as JSON, kept in sync both ways.
+"""A spec edited as a form over its curated settings and as JSON or YAML, kept in sync both ways.
 
 The inspector uses :class:`SpecEditor` for a ``param.Dict`` that declares
 settings, see :mod:`panel_flowdash.spec_settings`. Changing a control writes
 its path into the spec, and the lines that changed are highlighted in the
-JSON. Editing the JSON (applied on blur or Ctrl+Enter, like a code field)
-reads every path back into the form. Keys no control covers are kept as
-written, marked in the editor's gutter and listed above the form, and while
-the text is not valid JSON the form is disabled and the spec keeps its last
-valid value.
+text. Editing the text (applied on blur or Ctrl+Enter, like a code field, or
+with :attr:`SpecEditor.live` once it parses and typing pauses) reads every
+path back into the form, and the text stays as typed. Keys no control covers
+are kept as written, marked in the editor's gutter and listed at the end of
+the form with a link to their lines, and while the text does not parse the
+form is disabled and the spec keeps its last valid value.
 
-The parts are exposed separately (:attr:`SpecEditor.banner`,
-:attr:`SpecEditor.form`, :attr:`SpecEditor.spec`) for a host laying them out
-itself, e.g. beside a live preview.
+YAML is read as YAML 1.2, so keys like ``on`` stay strings, and its comments
+are kept through edits made in the form.
+
+The parts are exposed separately (:attr:`SpecEditor.form`,
+:attr:`SpecEditor.spec`) for a host laying them out itself, e.g. beside a
+live preview.
 """
 
 from __future__ import annotations
 
+import asyncio
+import html
+import json
 import re
 import typing as t
 from functools import partial
@@ -34,18 +41,27 @@ from panel_flowdash.spec_settings import (
     SpecTextError,
     changed_paths,
     format_spec,
+    format_spec_yaml,
+    get_path,
     parse_spec,
+    parse_spec_yaml,
     path_text,
     shown_in_spec,
+    text_spans,
     unrepresented_paths,
 )
 from panel_flowdash.ui.code_field import ACE_OPTIONS, ACE_THEME_CSS, AceOptions
-from panel_flowdash.ui.text import code_span
 
 if t.TYPE_CHECKING:
     from panel_flowdash.config_choices import Choices
 
 MODES = {"Form": "form", "Form + Spec": "both", "Spec": "spec"}
+
+#: The names of the text syntaxes, as people read them.
+SYNTAX_LABELS = {"json": "JSON", "yaml": "YAML"}
+
+#: Seconds of no typing after which :attr:`SpecEditor.live` applies text that parses.
+APPLY_DELAY = 0.6
 
 _EDITOR_HEIGHT = 300
 
@@ -101,6 +117,15 @@ _EDITOR_CSS = """
 }
 """
 
+_UNSHOWN_CSS = """
+:host { min-width: 0; }
+.fd-spec-path { display: flex; align-items: baseline; gap: 8px; min-width: 0; font-size: 13px;
+  line-height: 20px; color: var(--mui-palette-text-primary); }
+.fd-spec-path code { font-family: var(--fd-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fd-spec-path span { color: var(--mui-palette-text-secondary); font-size: 12px; white-space: nowrap; }
+"""
+
 
 class SpecMarks(JSComponent):
     """Marks lines of the Ace editors beside it: rows only in the spec, and rows just changed.
@@ -112,6 +137,14 @@ class SpecMarks(JSComponent):
     only = param.List(default=[])
 
     changed = param.List(default=[])
+
+    goto = param.Dict(
+        default={},
+        doc="""
+        ``{"row": n, "count": k}``: puts the cursor on line *n* (from 0) of the
+        editor, scrolled into view, and gives it focus; *count* tells requests
+        for the same line apart.""",
+    )
 
     _esm = """
     function editorsUnder(root, found = []) {
@@ -150,11 +183,25 @@ class SpecMarks(JSComponent):
       }
     }
 
+    function goto(el, model, tries = 0) {
+      const editor = siblings(el).find((e) => e.container.offsetParent !== null)
+      if (!editor) {
+        if (tries < 25) setTimeout(() => goto(el, model, tries + 1), 100)
+        return
+      }
+      const row = model.goto.row || 0
+      editor.resize(true)
+      editor.scrollToLine(row, true, false, () => {})
+      editor.gotoLine(row + 1, 0, false)
+      editor.focus()
+    }
+
     export function render({ el, model }) {
       el.style.display = "none"
       const update = () => setTimeout(() => mark(el, model), 0)
       update()
       model.on(["only", "changed"], update)
+      model.on("goto", () => setTimeout(() => goto(el, model), 50))
     }
     """
 
@@ -164,7 +211,7 @@ def _css_name(key: str) -> str:
 
 
 class SpecEditor(CompositeWidget):
-    """A spec dict edited through a form of its settings and as JSON text.
+    """A spec dict edited through a form of its settings and as JSON or YAML text.
 
     Parameters
     ----------
@@ -176,7 +223,12 @@ class SpecEditor(CompositeWidget):
         Choices per setting key, e.g. the columns of an input for
         ``encoding.x.field``, overriding the setting's own options.
     mode
-        Whether the form, the JSON or both are shown.
+        Whether the form, the text or both are shown.
+    syntax
+        Whether the text is JSON or YAML.
+    live
+        Whether typed text is applied once it parses and typing pauses for
+        :data:`APPLY_DELAY` seconds, as well as on blur.
     layout
         ``"stacked"`` puts the JSON under the form, ``"columns"`` beside it.
     """
@@ -190,6 +242,10 @@ class SpecEditor(CompositeWidget):
     mode = param.Selector(default="both", objects=list(MODES.values()))
 
     layout = param.Selector(default="stacked", objects=["stacked", "columns"])
+
+    syntax = param.Selector(default="json", objects=list(SYNTAX_LABELS))
+
+    live = param.Boolean(default=False)
 
     error = param.String(
         default=None,
@@ -216,6 +272,17 @@ class SpecEditor(CompositeWidget):
         super().__init__(**params)
         self._syncing = False
         self._loading = False
+        # Set while the spec is taken from the text, which then stays as typed.
+        self._from_text = False
+        # The text the spec was last shown as or read from.
+        self._applied = ""
+        # The YAML document last shown or read, whose comments are kept.
+        self._doc: t.Any = None
+        # Counts the pauses in typing, so an earlier one does not apply newer text.
+        self._pauses = 0
+        self._unshown_key: tuple | None = None
+        # The paths the last edit changed, marked in the text.
+        self._changed: list = []
         self._controls: dict[str, tuple[SpecSetting, t.Any]] = {}
         self._spans: dict = {}
         self._label = pmui.Typography(
@@ -237,13 +304,17 @@ class SpecEditor(CompositeWidget):
             css_classes=["fd-spec-mode"],
         )
         self.mode_toggle.link(self, value="mode", bidirectional=True)
-        self.banner = pn.Column(
-            margin=0, sizing_mode="stretch_width", css_classes=["fd-spec-banner"]
+        # The paths the form cannot show, each with a link to its lines in the text.
+        self.unshown = pn.Column(
+            margin=(10, 0, 0, 0),
+            sizing_mode="stretch_width",
+            visible=False,
+            css_classes=["fd-spec-unshown"],
         )
         self.form = pn.Column(margin=0, sizing_mode="stretch_width", css_classes=["fd-spec-form"])
         self.editor = CodeEditor(
             value="",
-            language="json",
+            language=self.syntax,
             height=_EDITOR_HEIGHT,
             on_keyup=False,
             indent=2,
@@ -292,6 +363,7 @@ class SpecEditor(CompositeWidget):
         self.param.watch(self._rebuild_form, "settings")
         self.param.watch(lambda _event: self._sync_form(), "choices")
         self.param.watch(self._mode_set, "mode")
+        self.param.watch(self._syntax_set, "syntax")
         self.param.watch(self._layout_set, "layout")
         self.param.watch(self._disabled_set, "disabled")
         self.param.watch(lambda e: setattr(self._label, "object", e.new or ""), "label")
@@ -304,25 +376,28 @@ class SpecEditor(CompositeWidget):
 
     def _mode_set(self, *_events):
         self.mode_toggle.visible = bool(self.settings)
-        self.form.visible = self.banner.visible = self.mode in ("form", "both") and bool(
-            self.settings
-        )
+        self.form.visible = self.mode in ("form", "both") and bool(self.settings)
         self.spec.visible = self.mode in ("spec", "both") or not self.settings
+
+    def _syntax_set(self, *_events):
+        """Show the spec in the new syntax; text typed and not applied is dropped, see :meth:`flush`."""
+        self._pauses += 1
+        self.editor.language = self.syntax
+        # The lines just changed stay marked in the other syntax.
+        self._show_text(self.value, self._changed)
 
     def _layout_set(self, *_events):
         self._mode_set()
         if self.layout == "columns":
             body = pn.Row(
-                pn.Column(
-                    self.banner, self.form, margin=(0, 12, 0, 0), sizing_mode="stretch_width"
-                ),
+                pn.Column(self.form, margin=(0, 12, 0, 0), sizing_mode="stretch_width"),
                 self.spec,
                 margin=0,
                 sizing_mode="stretch_width",
             )
             self._composite[:] = [self.header, body]
         else:
-            self._composite[:] = [self.header, self.banner, self.form, self.spec]
+            self._composite[:] = [self.header, self.form, self.spec]
         self._composite.margin = (5, 22, 5, 10)
 
     # The form
@@ -418,7 +493,7 @@ class SpecEditor(CompositeWidget):
                     )
                 )
             objects.extend(rows)
-        objects.append(self._notes)
+        objects.extend([self._notes, self.unshown])
         self.form[:] = objects
         self._sync_form()
         self._mode_set()
@@ -484,12 +559,16 @@ class SpecEditor(CompositeWidget):
         if new != self.value or list(new) != list(self.value or {}):
             self.value = new
 
-    def load(self, value: dict | None):
+    def load(self, value: dict | None, comments: t.Any = None):
         """Show *value* as a spec loaded afresh, e.g. another node's, rather than as an edit.
 
         Unlike setting :attr:`value`, no line is marked as changed, and text
-        typed but not applied, valid or not, is dropped.
+        typed but not applied, valid or not, is dropped. *comments* is a YAML
+        document, :attr:`yaml_doc` of earlier text of the same spec, whose
+        comments YAML text keeps.
         """
+        self._pauses += 1
+        self._doc = comments
         self._loading = True
         try:
             self.value = value or {}
@@ -504,29 +583,70 @@ class SpecEditor(CompositeWidget):
         self._show_text(self.value)
         self._sync_form()
 
+    @property
+    def yaml_doc(self) -> t.Any:
+        """The YAML document of the text last shown or read, holding its comments, for :meth:`load`."""
+        return self._doc
+
+    @property
+    def syntax_label(self) -> str:
+        """The name of the text's syntax, "JSON" or "YAML"."""
+        return SYNTAX_LABELS[self.syntax]
+
+    def reveal(self, path: tuple[str, ...]):
+        """Show the text with the cursor on the first line of *path*."""
+        if self.mode == "form":
+            self.mode = "spec"
+        row = self._spans.get(tuple(path), (0, 0))[0]
+        self._marks.goto = {"row": row, "count": self._marks.goto.get("count", 0) + 1}
+
+    def flush(self) -> bool:
+        """Apply text typed and not applied yet, returning whether the text is a valid spec."""
+        self._pauses += 1
+        text = self.editor.value_input
+        if text != self._applied or self.error is not None:
+            return self._apply_text(text)
+        return True
+
     # The text
 
     def _value_set(self, event):
         if self._loading:
             return
         changed = changed_paths(event.old or {}, event.new or {})
-        self._show_text(event.new, changed)
+        if self._from_text:
+            # The text holds the spec as typed, so it is not written again.
+            self._mark(event.new or {}, changed)
+        else:
+            self._show_text(event.new, changed)
         self._sync_form()
 
+    def _render(self, spec: dict) -> tuple[str, dict]:
+        if self.syntax == "yaml":
+            text, spans, self._doc = format_spec_yaml(spec, self._doc)
+            return text, spans
+        return format_spec(spec)
+
     def _show_text(self, spec: dict | None, changed: list | None = None):
-        text, spans = format_spec(spec or {})
+        text, spans = self._render(spec or {})
         self._spans = spans
-        if self.editor.value != text:
+        editor = self.editor
+        if editor.value != text or editor.value_input != text:
             self._syncing = True
             try:
-                self.editor.param.update(value=text, value_input=text)
+                if editor.value == text:
+                    # The browser only takes a value that changed, and it holds other typed text.
+                    editor.param.update(value="", value_input="")
+                editor.param.update(value=text, value_input=text)
             finally:
                 self._syncing = False
+        self._applied = text
         self.error = None
         self.unsent = False
         self._mark(spec or {}, changed or [])
 
     def _mark(self, spec: dict, changed: list):
+        self._changed = changed
         unknown = unrepresented_paths(spec, self.settings) if self.settings else []
         self.unknown = [path_text(p) for p in unknown]
         only = sorted({row for p in unknown for row in _rows_of(self._spans.get(p))})
@@ -542,26 +662,71 @@ class SpecEditor(CompositeWidget):
             for p in unknown
             if p in self._spans
         ]
-        if unknown:
-            listed = ", ".join(code_span(path_text(p)) for p in unknown)
-            self.banner[:] = [
-                pmui.Alert(
-                    object=f"Kept as written, no form control: {listed}",
-                    severity="warning",
-                    margin=(0, 0, 6, 0),
-                    sizing_mode="stretch_width",
-                    css_classes=["fd-spec-unknown"],
-                )
-            ]
-        else:
-            self.banner[:] = []
+        self._show_unshown(spec, unknown)
         self.status.object = ""
 
-    def _edited(self, event):
-        if self._syncing:
+    def _show_unshown(self, spec: dict, unknown: list):
+        """List the paths the form cannot show at its end, each with a link to its lines."""
+        key = (self.syntax, tuple(unknown), tuple(_summary(get_path(spec, p)) for p in unknown))
+        if key == self._unshown_key:
             return
+        self._unshown_key = key
+        rows: list = []
+        if unknown:
+            rows.append(
+                pmui.Typography(
+                    "Not in the form",
+                    variant="caption",
+                    sx=_GROUP_SX,
+                    margin=(0, 0, 2, 0),
+                    css_classes=["fd-spec-group"],
+                )
+            )
+        for path in unknown:
+            link = pmui.Button(
+                label=f"Edit in {self.syntax_label}",
+                icon="edit_note",
+                variant="text",
+                size="small",
+                margin=0,
+                align="center",
+                description=f"Edit {path_text(path)} in the {self.syntax_label}",
+                sx={"textTransform": "none", "whiteSpace": "nowrap", "flex": "none"},
+                css_classes=["fd-spec-edit-in-text"],
+            )
+            link.on_click(partial(self._reveal_clicked, path))
+            label = pn.pane.HTML(
+                f'<div class="fd-spec-path"><code>{html.escape(path_text(path))}</code>'
+                f"<span>{html.escape(_summary(get_path(spec, path)))}</span></div>",
+                margin=0,
+                align="center",
+                sizing_mode="stretch_width",
+                stylesheets=[_UNSHOWN_CSS],
+            )
+            rows.append(
+                pn.Row(
+                    label,
+                    link,
+                    margin=(1, 0),
+                    sizing_mode="stretch_width",
+                    align="center",
+                    css_classes=["fd-spec-unshown-row"],
+                )
+            )
+        self.unshown.param.update(objects=rows, visible=bool(rows))
+
+    def _reveal_clicked(self, path: tuple[str, ...], _event):
+        self.reveal(path)
+
+    def _parse(self, text: str) -> tuple[dict, t.Any]:
+        if self.syntax == "yaml":
+            return parse_spec_yaml(text)
+        return parse_spec(text), None
+
+    def _apply_text(self, text: str) -> bool:
+        """Take the spec *text* holds, keeping the text as typed, or say why it is not a spec."""
         try:
-            spec = parse_spec(event.new or "")
+            spec, doc = self._parse(text)
         except SpecTextError as exc:
             self.error = str(exc)
             self.status.object = f"Not applied. {exc}"
@@ -569,22 +734,78 @@ class SpecEditor(CompositeWidget):
                 {"row": exc.line - 1, "column": exc.column - 1, "type": "error", "text": str(exc)}
             ]
             self._sync_form()
-            return
+            self._sync_unsent()
+            return False
+        # Worked out before any state changes, so the editor is never left half-applied.
+        spans = text_spans(text)
+        if self.syntax == "yaml":
+            self._doc = doc
+        self._spans = spans
+        self._applied = text
         self.error = None
-        if spec != self.value or list(spec) != list(self.value or {}):
-            self.value = spec
+        if _differs(spec, self.value or {}):
+            self._from_text = True
+            try:
+                self.value = spec
+            finally:
+                self._from_text = False
         else:
-            self._show_text(spec)
+            self._mark(spec, [])
             self._sync_form()
+        self._sync_unsent()
+        return True
 
-    def _typing(self, *_events):
-        unsent = self.editor.value_input != self.editor.value
+    def _edited(self, event):
+        if self._syncing:
+            return
+        self._pauses += 1
+        self._apply_text(event.new or "")
+
+    def _sync_unsent(self):
+        unsent = self.editor.value_input != self._applied
         if unsent != self.unsent:
             self.unsent = unsent
+
+    def _typing(self, *_events):
+        if self._syncing:
+            return
+        self._sync_unsent()
+        if not self.unsent and self.error is not None:
+            # Typed back to the text applied last, which parses.
+            self._apply_text(self._applied)
+        elif self.unsent and self.live:
+            self._apply_later()
+
+    def _apply_later(self):
+        """Apply the text once typing pauses, if it parses by then."""
+        self._pauses += 1
+        pause = self._pauses
+
+        async def later():
+            await asyncio.sleep(APPLY_DELAY)
+            if pause == self._pauses and self.live and self.editor.value_input != self._applied:
+                self._apply_text(self.editor.value_input)
+
+        param.parameterized.async_executor(later)
 
     def _disabled_set(self, *_events):
         self.editor.readonly = self.disabled
         self._sync_form()
+
+
+def _differs(a: t.Any, b: t.Any) -> bool:
+    """Whether two specs differ, in a value or in the order of keys at any depth."""
+    return json.dumps(a, default=str) != json.dumps(b, default=str)
+
+
+def _summary(value: t.Any) -> str:
+    """Describe a value in a few words, e.g. ``3 keys`` or ``-45``."""
+    if isinstance(value, dict):
+        return f"{len(value)} key{'s' if len(value) != 1 else ''}"
+    if isinstance(value, list):
+        return f"{len(value)} item{'s' if len(value) != 1 else ''}"
+    text = json.dumps(value, ensure_ascii=False, default=str)
+    return text if len(text) <= 32 else f"{text[:31]}…"
 
 
 def _rows_of(span: tuple[int, int] | None, first: bool = False) -> range:

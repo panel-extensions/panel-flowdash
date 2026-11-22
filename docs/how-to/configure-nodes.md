@@ -353,8 +353,8 @@ editor. The text is applied when the editor loses focus, not on every key, so a
 `check_config` runs once per edit. In a JSON schema the same declaration is
 `"x-flowdash": {"widget": "code", "language": "sql"}` on the property.
 
-The code panel's Format button (Shift+Alt+F) lays out JSON specs and JSON code
-fields. Other languages get it once they have a formatter: a function from the
+The code panel's Format button (Shift+Alt+F) lays out specs, as YAML or JSON,
+and JSON code fields. Other languages get it once they have a formatter: a function from the
 text to the formatted text, raising if it cannot format it. Register one for a
 language, or give a single field its own with `"formatter"`:
 
@@ -418,11 +418,16 @@ SETTINGS = [
 spec = param.Dict(default={}, metadata={"flowdash": {"widget": "spec", "settings": SETTINGS}})
 ```
 
-The inspector shows the form beside the spec's JSON and keeps them in sync:
-changing a control writes its path into the spec and highlights the changed
-line, and editing the JSON (applied on blur or Ctrl+Enter) reads every path
-back into the form. Keys no setting covers are kept exactly as written, marked
-in the editor's gutter and listed above the form. Setting a control to its
+The code panel shows the spec as the form, as YAML or as JSON, three views of
+one draft kept in sync, and the browser remembers the view picked. Changing a
+control writes its path into the spec and highlights the changed line, and
+editing the text reads every path back into the form. YAML is read as YAML 1.2,
+so keys like Vega-Lite's `on` stay strings, and its comments are kept through
+edits made in the form. "Run on change" is on for a spec: a form edit runs at
+once, and text runs once it parses and typing pauses, never while it does not
+parse. Keys no setting covers are kept exactly as written, marked in the
+editor's gutter and listed at the end of the form, each with a link to its line
+in the text. Setting a control to its
 `default` removes its path, so the spec says no more than it has to. A setting
 that is not a single path, e.g. Vega-Lite's `mark` given as `"bar"` or as
 `{"type": "bar"}`, takes `get` and `set` functions, and `enabled` can grey a

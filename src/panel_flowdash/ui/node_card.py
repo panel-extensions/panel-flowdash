@@ -69,6 +69,12 @@ _FOLD_OPTIONAL_THRESHOLD = 2
 SHRINK_DELAY = 1.5
 _COLLAPSED_HANDLE_SPACING = 12
 
+#: What a card's marker says while its result does not match its spec, and its icon.
+STALE_TEXT = {
+    "draft": ("Not run: the result shows the previous version of the spec", "edit_note"),
+    "running": ("Running…", "hourglass_top"),
+}
+
 STATUS_TEXT = {
     "ok": "Up to date",
     "waiting": "Waiting for input",
@@ -179,6 +185,15 @@ _CARD_CSS = (
   background: var(--mui-palette-success-main, #2e7d32);
 }
 .fd-waiting .fd-dot { background: var(--mui-palette-warning-main, #ed6c02); }
+.fd-stale-mark {
+  flex: none;
+  font-family: "Material Icons";
+  font-size: 15px;
+  line-height: 1;
+  font-feature-settings: "liga";
+  -webkit-font-smoothing: antialiased;
+  color: var(--mui-palette-warning-main, #ed6c02);
+}
 .fd-failed .fd-dot { background: var(--mui-palette-error-main, #d32f2f); }
 .fd-unavailable .fd-dot { background: var(--fd-muted); }
 .fd-collapse-btn {
@@ -595,6 +610,14 @@ class NodeCard(Viewer):
 
     status_detail = param.String(default="", doc="Why the component has its status.")
 
+    stale = param.Selector(
+        default=None,
+        objects=[None, *STALE_TEXT],
+        doc="""
+        Whether the result does not match the spec in the code panel: a
+        ``"draft"`` not run, or ``"running"``.""",
+    )
+
     subtitle = param.String(default="", doc="Secondary component type label under the title.")
 
     summary = param.String(default="", doc="One line describing the current value.")
@@ -929,6 +952,7 @@ class NodeCard(Viewer):
             f'<span class="fd-title" title="{html.escape(self.title, quote=True)}">'
             f"{html.escape(self.title)}</span>{subtitle_html}"
             "</span>"
+            f"{_stale_mark(self.stale)}"
             f'<span class="fd-dot" role="img" aria-label="{html.escape(detail, quote=True)}" '
             f'title="{html.escape(detail, quote=True)}"></span>'
             f'<button class="fd-collapse-btn fd-card-action" type="button" '
@@ -962,6 +986,16 @@ class NodeCard(Viewer):
     def __panel__(self):
         """Return the card's single view component."""
         return self._pane
+
+
+def _stale_mark(stale: str | None) -> str:
+    if stale is None:
+        return ""
+    text, icon = STALE_TEXT[stale]
+    text = html.escape(text, quote=True)
+    return (
+        f'<span class="fd-stale-mark" role="img" aria-label="{text}" title="{text}">{icon}</span>'
+    )
 
 
 def node_status(

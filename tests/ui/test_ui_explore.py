@@ -63,47 +63,53 @@ def test_a_question_asked_in_explore_shows_its_answer_and_output(page):
     card = page.locator(".artifact-cell", has_text="memo").last
     expect(card).to_be_visible(timeout=20000)
     expect(card.get_by_text("note tile")).to_be_visible()
-    expect(card.locator(".artifact-cell-done")).to_have_text(re.compile("On dashboard"))
+    # The answer stays off the dashboard until it is added.
+    expect(card.get_by_role("button", name="Add to dashboard")).to_be_visible()
     explore = page.locator(".flowdash-explore")
     explore.get_by_text(re.compile(r"Done: Added node 'memo'\.")).wait_for(timeout=20000)
     expect(page.get_by_role("button", name="Stop")).to_have_count(0)
     editor = apps[0]._editor
-    assert editor.editable and editor.explore
+    assert editor.explore and not editor.dirty
+    assert [i["instance_id"] for i in editor._tile_items] == ["n1"]
     assert not apps[0]._agent_session.drawer.open
 
     # The composer sits below the feed, never over its last row.
     last = card.bounding_box()
     assert last["y"] + last["height"] <= composer.bounding_box()["y"]
 
-    # Back on the dashboard, the tile shows the view the card showed.
-    page.get_by_role("button", name="Layout", exact=True).click()
+    # Back on the dashboard, only its own tile is there.
+    page.get_by_role("button", name="View", exact=True).click()
     expect(page.locator(".artifact-cell")).to_have_count(0)
-    expect(page.get_by_text("note tile")).to_have_count(2, timeout=20000)
+    expect(page.get_by_text("note tile")).to_have_count(1, timeout=20000)
     assert errors == []
 
 
-def test_add_to_dashboard_shows_a_hidden_output(page):
+def test_add_to_dashboard_puts_an_answer_on_the_dashboard(page):
     store, (dash,) = _store_with("Plant")
+    # A note like the answer's would be reused rather than added again.
+    model = store._load_any(dash)
+    model.items = []
+    store.save_dashboard(model)
     agent = Agent(
-        scripted(
-            ("add_node", {"component": "Test/note", "name": "memo"}),
-            ("place_tile", {"name": "memo", "visible": False}),
-        ),
+        scripted(("add_node", {"component": "Test/note", "name": "memo"})),
         deps_type=FlowDashDeps,
         toolsets=[dashboard_toolset()],
     )
     apps = []
     _serve_app(page, store, f"/dash/{dash}", apps, agent=agent, explore_agent=agent)
-    page.get_by_text("note tile").first.wait_for()
     _ask(page, apps)
     card = page.locator(".artifact-cell", has_text="memo")
     button = card.get_by_role("button", name="Add to dashboard")
     expect(button).to_be_visible(timeout=20000)
     button.click()
-    expect(card.locator(".artifact-cell-done")).to_have_text(re.compile("On dashboard"))
+    expect(card.locator(".artifact-cell-done")).to_have_text(re.compile("On dashboard as memo$"))
     editor = apps[0]._editor
-    memo = next(i for i in editor._tile_items if i["instance_id"].startswith("memo"))
+    memo = next(i for i in editor._tile_items if i["instance_id"] == "memo")
     assert memo in tile_layout.grid_tiles(editor)
+    # Show leaves Explore for the dashboard, where the answer's tile is.
+    card.get_by_role("button", name="Show").click()
+    expect(page.locator(".flowdash-explore")).to_have_count(0)
+    expect(page.get_by_text("note tile")).to_have_count(1, timeout=20000)
 
 
 def _ask_drawer(page, text):
@@ -253,9 +259,19 @@ def test_cards_stack_within_a_narrow_window(page, width):
         page.get_by_role("button", name="Explore", exact=True).click()
     cards = page.locator(".artifact-cell").filter(has=page.get_by_text("note tile"))
     expect(cards).to_have_count(2)
-    first, second = cards.first.bounding_box(), cards.last.bounding_box()
-    assert second["y"] >= first["y"] + first["height"]
-    assert first["x"] >= 0 and first["x"] + first["width"] <= width
+
+    def stacked():
+        # Under load the feed lays out the second card after both are in the DOM.
+        first, second = cards.first.bounding_box(), cards.last.bounding_box()
+        return (
+            first is not None
+            and second is not None
+            and second["y"] >= first["y"] + first["height"]
+            and first["x"] >= 0
+            and first["x"] + first["width"] <= width
+        )
+
+    wait_until(stacked, page, timeout=10000)
 
 
 def test_a_manual_edit_while_exploring_keeps_the_feed_in_place(page):

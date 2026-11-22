@@ -38,6 +38,8 @@ from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
+from panel_flowdash.value_text import error_text
+
 logger = logging.getLogger("panel_flowdash")
 
 # The types a parameter can have. The scalar ones say how a value given as
@@ -506,7 +508,7 @@ def check_contracts(
             problems = _problems(hook.check(ctx, copy.deepcopy(ctx.parameter.expects)))
         except Exception as exc:
             logger.warning("The contract check of parameter %r failed", name, exc_info=True)
-            problems = [ContractProblem(None, f"Could not check the value: {exc}")]
+            problems = [ContractProblem(None, f"Could not check the value: {error_text(exc)}")]
         if problems:
             found[name] = problems
     return found

@@ -46,6 +46,7 @@ flowdash serve <directory> [options]
 | `--home-dashboard` | none | Dashboard (id or title) to show on the homepage instead of the grid. |
 | `--nav-variant` | `rail` | How navigation is rendered: `rail`, `left`, `right` or `menubar`. See [Navigation](#navigation). |
 | `--package` | none | Serve the project as this importable package, naming modules `<package>.<Section>.<name>` instead of adding the directory to `sys.path`. See [Serving a package](#serving-a-package). |
+| `--project` | `flowdash.yaml` | The project file whose sections configure the app. Without it FlowDash reads `flowdash.yaml` in the project directory. See [Project File](../reference/project-file.md). |
 | `--db-path` | `<dir>/dashboards.db` | Path to the SQLite database. Conflicts with a `store` defined in the project. |
 | `--warm` | off | Import all modules at startup instead of lazily on first visit. |
 | `--dev` | off | Enable autoreload for development. |
@@ -334,7 +335,7 @@ one. Outside text fields these shortcuts also work:
 | <kbd>R</kbd> | Refresh the dashboard |
 | <kbd>E</kbd> | Edit the dashboard, for users who may edit it |
 | <kbd>F</kbd> | Show the dashboard in full screen, or leave it |
-| <kbd>Esc</kbd> | While editing, clear the selection on the dataflow canvas; with nothing selected, back to view mode (asks first when there are unsaved changes) |
+| <kbd>Esc</kbd> | While editing, close what is open first: a menu or dialog, the focus on the code panel's buttons, then the selection (on the canvas or the layout grid); with nothing open, back to view mode (asks first when there are unsaved changes) |
 | <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd> | Save, in edit mode |
 | <kbd>S</kbd> | Show the Dataflow canvas and the Layout grid side by side, or back to one tab, in edit mode |
 | <kbd>?</kbd> | List the keyboard shortcuts |

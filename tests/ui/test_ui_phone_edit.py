@@ -33,7 +33,7 @@ class PhoneLabel(Viewer):
 COMPONENTS = {"Phone/label": PhoneLabel}
 
 
-def _serve(page, width=PHONE):
+def _serve(page, width=PHONE, agent=False):
     store = MemoryDashboardStore()
     model = store.create_dashboard(resolve_identity().user, "Plant")
     model.items = [DashboardItem(instance_id="first", component_id="Phone/label", x=0, y=0)]
@@ -42,8 +42,19 @@ def _serve(page, width=PHONE):
     apps = []
 
     def factory():
+        extra = {}
+        if agent:
+            from pydantic_ai import Agent
+
+            from panel_flowdash.agent.tools import FlowDashDeps, dashboard_toolset
+
+            from ..test_agent_tools import scripted
+
+            extra["agent"] = Agent(
+                scripted(), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()]
+            )
         app = FlowDashApp(
-            registry=normalize_components(COMPONENTS), store=store, notifications=False
+            registry=normalize_components(COMPONENTS), store=store, notifications=False, **extra
         )
         apps.append(app)
         return app
@@ -100,6 +111,7 @@ def test_a_phone_adds_a_node_from_the_palette_sheet_and_edits_it_in_the_inspecto
     page.get_by_role("button", name="Add component").click()
     palette = _sheet(page, "fd-palette-sheet")
     expect(palette).to_be_visible()
+    expect(page.get_by_role("dialog", name="Add component")).to_be_visible()
     entry = palette.get_by_text("Phone Label", exact=True)
     height = entry.evaluate("(el) => el.closest('.MuiListItemButton-root').offsetHeight")
     assert height >= 44
@@ -119,6 +131,10 @@ def test_a_phone_adds_a_node_from_the_palette_sheet_and_edits_it_in_the_inspecto
     expect(sheet.locator(".fd-inspector-header")).to_be_visible()
     wait_until(lambda: editor._inspector._shown == ("node", added), timeout=8000)
     assert _box(node)["y"] + _box(node)["height"] <= _box(sheet)["y"]
+    # The Add component button moves above the sheet, and the sheet is named.
+    add = page.get_by_role("button", name="Add component")
+    wait_until(lambda: _box(add)["y"] + _box(add)["height"] <= _box(sheet)["y"], page)
+    expect(page.get_by_role("region", name="Inspector")).to_be_visible()
 
     title = sheet.get_by_role("textbox", name="Title")
     title.fill("Capacity")
@@ -171,3 +187,20 @@ def test_wider_screens_keep_the_palette_and_inspector_beside_the_canvas(page):
     expect(header).to_be_visible()
     assert _box(header)["x"] > _box(page.locator(".react-flow").first)["x"]
     expect(_sheet(page, "fd-inspector-sheet")).not_to_be_visible()
+
+
+def test_widening_a_phone_with_the_assistant_open_keeps_the_inspector_folded(page):
+    pytest.importorskip("pydantic_ai")
+    editor = _serve(page, agent=True)
+
+    _tap_header(page.locator(".react-flow__node[data-id='first']"))
+    expect(_sheet(page, "fd-inspector-sheet")).to_be_visible()
+    _button(page, "Assistant").click()
+    wait_until(lambda: editor._inspector.collapsed, page)
+
+    page.set_viewport_size({"width": 1280, "height": 844})
+    wait_until(lambda: not editor._phone, page)
+    expect(page.get_by_placeholder("Search components")).to_be_visible()
+    wait_until(lambda: editor._inspector.collapsed, page)
+    flow = page.locator(".react-flow").first
+    wait_until(lambda: _box(flow)["width"] >= 300, page)

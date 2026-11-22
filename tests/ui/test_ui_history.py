@@ -255,3 +255,48 @@ def test_reverting_a_large_dashboard_ends_quickly(page, wind_app, monkeypatch):
     assert restored < 5
     assert not any(i["component_id"] == "Text/Markdown" for i in editor._tile_items)
     assert editor.settings.description == ""
+
+
+def test_escape_does_not_dismiss_the_overwrite_question(page):
+    """Escape cannot leave the agent's apply waiting on a question nobody can answer."""
+    store, (dash,) = _store_with("Plant")
+    agent = Agent(
+        scripted(("add_node", {"component": "Test/note"})),
+        deps_type=FlowDashDeps,
+        toolsets=[dashboard_toolset()],
+    )
+    apps = []
+    _serve_app(page, store, f"/dash/{dash}", apps, agent=agent, editor_options={"history": False})
+
+    page.get_by_text("note tile").first.wait_for()
+    page.get_by_role("button", name="Assistant", exact=True).click()
+    chat = page.get_by_placeholder(re.compile("^Ask the agent"))
+    chat.fill("Add another note")
+    chat.press("Enter")
+    editor = apps[0]._editor
+    wait_until(lambda: len(editor._tile_items) == 2, page, timeout=20000)
+    session = apps[0]._agent_session
+    wait_until(lambda: not session.runner.state.running, page, timeout=20000)
+    # Edits the agent has not seen, so reverting asks before dropping them.
+    editor.add_component("Test/note")
+    chat.fill("Thanks")
+    chat.press("Enter")
+    state = session.runner.state
+    wait_until(lambda: len(state.runs) == 2 and not state.running, page, timeout=20000)
+    editor.add_component("Test/note")
+    wait_until(lambda: len(editor._tile_items) == 4, page, timeout=20000)
+
+    page.get_by_role("button", name="Artifacts").click()
+    # Undo applies v1, the agent's version; the history may group v2 with it or not.
+    page.get_by_role("button", name="Undo", exact=True).click()
+    dialog = page.get_by_role("dialog")
+    expect(dialog.get_by_text("Apply version 1?")).to_be_visible()
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(500)
+    expect(dialog.get_by_text("Apply version 1?")).to_be_visible()
+
+    dialog.get_by_role("button", name="Keep my changes").click()
+    expect(page.get_by_role("dialog")).to_have_count(0)
+    # The apply is answered, so its button stops spinning and the canvas keeps the edit.
+    expect(page.locator(".MuiButton-loading")).to_have_count(0)
+    assert len(editor._tile_items) == 4

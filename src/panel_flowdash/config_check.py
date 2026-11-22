@@ -30,6 +30,7 @@ import weakref
 from collections.abc import Callable, Iterable, Mapping
 
 from panel_flowdash.util import is_failure
+from panel_flowdash.value_text import error_text
 
 if t.TYPE_CHECKING:
     from panel_flowdash.component_spec import ComponentSpec
@@ -305,7 +306,7 @@ def _failure(spec: ComponentSpec, exc: BaseException) -> list[str]:
         message = exc.args[0] if len(exc.args) == 1 and isinstance(exc.args[0], str) else None
         if message and (found := diagnostic(message)) is not None:
             return [found]
-        return [str(exc) or f"'{spec.title}' refused the config."]
+        return [error_text(exc) or f"'{spec.title}' refused the config."]
     logger.error("The config check of %s failed", spec.component_id, exc_info=exc)
     return [f"The config check of '{spec.title}' failed ({type(exc).__name__})."]
 

@@ -21,6 +21,15 @@ from panel_flowdash.auto_layout import NodeBox, arrange_graph
 from panel_flowdash.dashboard_store import MODEL_VERSION, DashboardModel
 from panel_flowdash.groups import DashboardGroup, GroupError, check_group_id
 from panel_flowdash.parameters import DashboardParameter, ParameterError, check_name
+from panel_flowdash.report import (
+    BLOCK_KEYS,
+    BLOCK_KINDS,
+    COMMON_BLOCK_KEYS,
+    REPORT_KEYS,
+    ReportError,
+    check_report,
+    map_report,
+)
 from panel_flowdash.turns import DashboardTurn, TurnError, strip_questions
 from panel_flowdash.ui.node_card import CARD_WIDTH
 
@@ -42,6 +51,7 @@ TOP_LEVEL_KEYS = (
     "nodes",
     "edges",
     "layout",
+    "report",
 )
 NODE_KEYS = (
     "component",
@@ -58,6 +68,9 @@ TURN_KEYS = ("id", "actor", "at", "run", "question", "summary", "status")
 EDGE_KEYS = ("from", "to", "transform")
 LAYOUT_KEYS = ("tiles", "reference_width", "breakpoints", "responsive")
 TILE_KEYS = ("node", "width", "height", "visible", "framed", "area")
+# The report's keys, and those of its blocks: one kind key, the keys of that
+# kind and the keys every block may have, see panel_flowdash.report.
+REPORT_BLOCK_KEYS = {kind: (kind, *keys, *COMMON_BLOCK_KEYS) for kind, keys in BLOCK_KEYS.items()}
 # A tile's frame and area apply at every screen size, so a responsive layout
 # cannot set them.
 RESPONSIVE_TILE_KEYS = tuple(k for k in TILE_KEYS if k not in ("framed", "area"))
@@ -347,6 +360,9 @@ def dashboard_to_dict(
         layout["responsive"] = responsive
     if layout:
         doc["layout"] = layout
+    report = map_report(data.get("report"), names, set(groups), turn_ids)
+    if report is not None:
+        doc["report"] = report
     return doc
 
 
@@ -950,6 +966,7 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
 
     parameters = _parameters(doc.get("parameters"), ids)
     groups = _groups(doc.get("groups"), nodes, ids)
+    report = _report(doc.get("report"), ids, {group["id"] for group in groups}, turn_ids)
 
     layout = _mapping(doc.get("layout"), "layout")
     _unknown_keys(layout, LAYOUT_KEYS, "layout")
@@ -979,6 +996,7 @@ def dashboard_from_dict(doc: dict, *, base: DashboardModel | dict | None = None)
         "turns": turns,
         "parameters": parameters,
         "groups": groups,
+        **({"report": report} if report is not None else {}),
     }
 
 
@@ -1029,6 +1047,32 @@ def _groups(value: t.Any, nodes: dict, ids: dict[str, str]) -> list[dict]:
                 "has no nodes; give at least one node 'group: " + group_id + "'.",
             )
     return [group.to_dict() for group in groups.values()]
+
+
+def _report(value: t.Any, ids: dict[str, str], groups: set[str], turns: set[str]) -> dict | None:
+    """Check the report of a document and return it as stored, nodes by instance id."""
+    if value is None:
+        return None
+    value = _mapping(value, "report")
+    _unknown_keys(value, REPORT_KEYS, "report")
+    for i, block in enumerate(_sequence(value.get("blocks"), "report.blocks")):
+        path = f"report.blocks[{i}]"
+        block = _mapping(block, path)
+        kinds = [kind for kind in BLOCK_KINDS if kind in block]
+        if len(kinds) == 1:
+            _unknown_keys(block, REPORT_BLOCK_KEYS[kinds[0]], path)
+    try:
+        report = check_report(value)
+    except ReportError as exc:
+        _fail(f"report.{exc.key}" if exc.key != "report" else "report", exc.reason)
+    for i, block in enumerate(report["blocks"]):
+        path = f"report.blocks[{i}]"
+        for kind, known in (("node", ids), ("group", groups), ("turn", turns)):
+            if kind in block and block[kind] not in known:
+                _fail(f"{path}.{kind}", f"names no {kind}: {block[kind]!r}.")
+        if block.get("origin") is not None and block["origin"] not in turns:
+            _fail(f"{path}.origin", f"names no turn: {block['origin']!r}.")
+    return map_report(report, ids, groups, turns)
 
 
 def _turns(value: t.Any) -> list[dict]:

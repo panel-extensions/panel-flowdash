@@ -130,6 +130,7 @@ def test_format_json_spec(page):
     page.set_viewport_size(VIEWPORT)
     serve_component(page, editor)
     _open_node(page, node, "")
+    editor.code_panel.run_on_change = False
     expect(page.locator(".fd-code-format button")).to_be_hidden()
     page.locator(".fd-code-spec-view button", has_text="JSON").click()
     button = page.locator(".fd-code-format button")
@@ -270,8 +271,10 @@ def test_a_json_draft_survives_a_move(page, move):
     page.set_viewport_size(WIDE)
     serve_component(page, editor)
     _open_node(page, node, "")
+    editor.code_panel.run_on_change = False
     page.locator(".fd-code-dock-toggle button").click()
     expect(page.locator(".fd-code-side .fd-code-panel")).to_be_visible(timeout=TIMEOUT)
+    page.locator(".fd-code-spec-view button", has_text="JSON").click()
     text = page.locator(".fd-code-panel-spec-json")
     text.locator(".ace_content").click()
     page.keyboard.press("ControlOrMeta+a")
