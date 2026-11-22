@@ -268,7 +268,14 @@ class TestSections:
         monkeypatch.setattr(project_module, "_entry_points_loaded", False)
 
         page = _admin(_app(tmp_path))
-        assert list(page.sections) == ["general", "theme", "sources", "limits"]
+        assert list(page.sections) == [
+            "general",
+            "theme",
+            "ai",
+            "permissions",
+            "sources",
+            "limits",
+        ]
         assert list(page._menus) == ["App", "Data", "Extensions"]
         assert [item["label"] for item in page._menus["Data"].items] == ["Sources"]
         assert [item["label"] for item in page._menus["Extensions"].items] == ["Limits"]
@@ -515,7 +522,11 @@ def test_serve_names_where_each_option_is_set(
     parser = argparse.ArgumentParser()
     Serve(parser).invoke(parser.parse_args([str(project_dir), "--home-dashboard", "fleet"]))
     app = built["routes"]["/"]()
-    assert app.settings_sources == {"title": "__init__.py", "home_dashboard": "--home-dashboard"}
+    assert app.settings_sources == {
+        "title": "__init__.py",
+        "home_dashboard": "--home-dashboard",
+        "auth_config": "__init__.py",
+    }
     assert app._code_setting_source("title") == "title in __init__.py"
     assert app._code_setting_source("home_dashboard") == "set with --home-dashboard"
     out = capsys.readouterr().out

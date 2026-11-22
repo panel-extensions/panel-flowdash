@@ -8,6 +8,7 @@ import importlib.util
 import logging
 import os
 import sys
+import typing as t
 from pathlib import Path
 
 import panel as pn
@@ -112,6 +113,40 @@ def _project_admins(project_file: Path | None, project_dir: Path) -> list[str]:
     if not path.is_file():
         return []
     return project_admins(_unloaded_project(path, {}))
+
+
+def _project_auth_config(
+    auth_config: AuthConfig, in_code: dict[str, str], project_file: Path | None, project_dir: Path
+):
+    """Return a callable giving *auth_config* with the project file's permissions layered under it.
+
+    The file is read again when it changes, so the admin view's changes apply
+    to the next request.
+    """
+    from panel_flowdash.app import _unloaded_project
+    from panel_flowdash.permissions import effective_auth_config
+
+    path = project_file or project_dir / PROJECT_FILE
+    cache: dict[str, t.Any] = {}
+
+    def current() -> AuthConfig:
+        try:
+            stamp = path.stat().st_mtime_ns
+        except OSError:
+            return auth_config
+        if cache.get("stamp") != stamp:
+            try:
+                project = _unloaded_project(path, {})
+                permissions = (project.get("permissions") if project else None) or {}
+            except (ProjectError, OSError) as exc:
+                log.warning("Not using the project file's permissions: %s", exc)
+                permissions = {}
+            cache.update(
+                stamp=stamp, config=effective_auth_config(auth_config, permissions, in_code)
+            )
+        return cache["config"]
+
+    return current
 
 
 def _resolve_store(
@@ -374,6 +409,17 @@ class Serve(_PanelServe):
         title = options.get("title", FlowDashApp.param.title.default)
 
         auth_config = AuthConfig.from_module(init_mod)
+        # The admin view shows the fields the project's __init__.py sets as locked.
+        sources["auth_config"] = "__init__.py"
+        for name in ("default_allow", "admin_groups", "user_groups"):
+            if hasattr(init_mod, name):
+                sources[f"auth_config.{name}"] = "__init__.py"
+        current_auth_config = _project_auth_config(
+            auth_config,
+            {k.split(".", 1)[1]: v for k, v in sources.items() if k.startswith("auth_config.")},
+            project_file,
+            project_dir,
+        )
 
         store, store_description = _resolve_store(init_mod, project_dir, args.db_path)
 
@@ -382,7 +428,7 @@ class Serve(_PanelServe):
         # Refused pages redirect to the app's own access-denied view.
         url_prefix = "/" + args.prefix.strip("/") if getattr(args, "prefix", None) else ""
         pn.config.authorize_callback = make_authorize_callback(
-            registry, auth_config, denied_route=ACCESS_DENIED_ROUTE, url_prefix=url_prefix
+            registry, current_auth_config, denied_route=ACCESS_DENIED_ROUTE, url_prefix=url_prefix
         )
 
         # Pages whose permissions are not literals in the source are imported now
@@ -428,7 +474,9 @@ class Serve(_PanelServe):
             allow_adding_admins()
         if options.get("admin_link", True) and (
             args.admin_link
-            or not (auth_config.admin_groups or _project_admins(project_file, project_dir))
+            or not (
+                current_auth_config().admin_groups or _project_admins(project_file, project_dir)
+            )
         ):
             address = getattr(args, "address", None)
             host = "localhost" if address in (None, "", "0.0.0.0", "::") else address

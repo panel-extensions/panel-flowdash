@@ -1,6 +1,7 @@
 """UI tests for the admin view at /admin."""
 
 import getpass
+import logging
 from urllib.parse import urlparse
 
 import pytest
@@ -134,3 +135,60 @@ def test_leaving_with_unsaved_settings_asks_first(page, tmp_path):
     dialog.get_by_role("button", name="Save and leave").click()
     wait_until(lambda: urlparse(page.url).path == "/components", page)
     assert load_project(tmp_path / PROJECT_FILE).get("general")["tile_titles"] is True
+
+
+SECRET = "sk-or-v1-typed-in-the-browser-0123456789"
+
+
+def test_a_key_typed_in_the_dialog_is_stored_encrypted_and_never_sent_back(
+    page, tmp_path, monkeypatch, caplog
+):
+    from panel_flowdash.secret_store import KEY_ENV, fernet_key, resolve_secret
+
+    pytest.importorskip("cryptography")
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setenv(KEY_ENV, fernet_key())
+    monkeypatch.setattr("panel_flowdash.secret_store._keyring", lambda: (None, ()))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    (tmp_path / PROJECT_FILE).write_text(
+        f"general:\n  admins: [{getpass.getuser()}]\n"
+        "ai:\n  models:\n    - id: openrouter:ibm/granite\n      label: Granite\n"
+    )
+    _serve(page, tmp_path, suffix="/admin/ai", admin=False)
+    card = page.locator(".flowdash-admin-provider-openrouter")
+    expect(card).to_contain_text("Not set up")
+    card.get_by_role("button", name="Set up").click()
+    dialog = page.get_by_role("dialog")
+    expect(dialog).to_contain_text("Replace the OpenRouter key")
+    dialog.get_by_text("Read the key from an environment variable").click()
+    dialog.get_by_label("API key").fill(SECRET)
+    dialog.get_by_role("button", name="Save key").click()
+    expect(dialog).to_be_hidden()
+
+    def stored():
+        ai = load_project(tmp_path / PROJECT_FILE).get("ai") or {}
+        return (ai.get("providers") or {}).get("openrouter", {}).get("api_key")
+
+    wait_until(lambda: isinstance(stored(), dict), page)
+    assert resolve_secret(stored()) == SECRET
+    assert SECRET not in (tmp_path / PROJECT_FILE).read_text()
+    expect(card).to_contain_text(f"ends in {SECRET[-4:]}")
+    assert SECRET not in page.content()
+    card.get_by_role("button", name="Replace key").click()
+    expect(dialog.get_by_label("API key")).to_have_value("")
+    assert SECRET not in caplog.text
+
+
+def test_an_approval_rule_added_on_the_agent_tab_is_saved(page, tmp_path):
+    _serve(page, tmp_path, suffix="/admin/permissions")
+    page.get_by_role("tab", name="Agent").click()
+    rules = page.locator(".flowdash-admin-rules")
+    expect(rules).to_contain_text("save_dashboard")
+    page.get_by_placeholder("Tool, e.g. run_sql").fill("run_sql")
+    page.get_by_role("button", name="Add rule").click()
+    expect(rules).to_contain_text("run_sql")
+    expect(page.get_by_text("Unsaved changes")).to_be_visible()
+    page.get_by_role("button", name="Save").click()
+    expect(page.get_by_text("All changes saved")).to_be_visible()
+    permissions = load_project(tmp_path / PROJECT_FILE).get("permissions")
+    assert permissions == {"approval_rules": [{"tool": "run_sql"}]}

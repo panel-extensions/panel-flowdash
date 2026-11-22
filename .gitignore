@@ -382,3 +382,6 @@ $RECYCLE.BIN/
 
 .pixi
 builtdocs/
+
+# What the admin view counts per project: model spend and who opened the app.
+.flowdash/

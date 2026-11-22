@@ -12,7 +12,8 @@ metrics:          # read by the extension that registered `metrics`
     sum: capacity_mw
 ```
 
-FlowDash registers `general` and `theme`, which the admin view edits;
+FlowDash registers `general`, `theme`, `ai` and `permissions`, which the
+admin view edits;
 extensions add theirs, see
 [Add a Project File Section](../how-to/project-sections.md).
 
@@ -52,6 +53,54 @@ theme:
   border_radius: 6
   title: Wind Energy Explorer
   logo: logo.svg             # a URL, or a path relative to the project file
+```
+
+The `ai` section lists the model providers and the models people may pick
+in the assistant and Explore. Models given in code (`agent_models`,
+`--agent-model`) come first; an entry with the same id adds its offer,
+settings and limit to them. The admin view saves each change to it as it
+is made, and sessions started afterwards use it.
+
+```yaml
+ai:
+  default: openai:gpt-6-luna
+  providers:
+    openrouter:
+      api_key: ${OPENROUTER_API_KEY}   # or a key stored encrypted, see Secrets
+    ollama:
+      base_url: http://127.0.0.1:11434
+  models:
+    - id: openai:gpt-6-luna
+      label: Luna
+      offered_to: [assistant, explore] # the default; [] offers it nowhere
+      groups: [analysts]               # only for these groups; omit for everyone
+      settings: {max_tokens: 1000}     # temperature, max_tokens, timeout
+      monthly_limit: 50                # US dollars
+      fallback: anthropic:claude-haiku-5.5  # used at the limit; without one, requests are refused
+```
+
+The spend counted against `monthly_limit` is kept in `.flowdash/usage.json`
+beside the project file, with who last opened the app.
+
+The `permissions` section is layered under the app's `auth_config`:
+`default_allow` and `admin_groups` apply when the project's `__init__.py`
+does not set them, and the sensitive components and approval rules are
+added to `agent_sensitive_components` and `agent_approval_rules`.
+
+```yaml
+permissions:
+  default_allow: false                # dashboards nobody shared are private
+  admin_groups: [admins]
+  people:
+    ana: {groups: [analysts]}         # added to the groups from code and sign-in
+    priya: {assistant: false}         # no assistant for priya
+  assistant_groups: [analysts, admins]  # who gets the assistant, unless agent_authorize is set
+  sensitive_components: ["Lumen/deckgl"]
+  approval_rules:
+    - tool: run_command
+      when: {command: "action:refresh"}  # argument values; text may use * wildcards
+    - tool: run_sql
+      enabled: false
 ```
 
 Without a project file the admin view writes `flowdash.yaml` in the project
@@ -112,6 +161,17 @@ Sections name secrets by environment variable, `${NAME}` or
 `${NAME:-default}`, and never hold the value. Loaders keep the reference
 and expand it with `expand_env` where it is used, and `dump` writes the
 reference back. See [Secrets](../how-to/project-sections.md#secrets).
+
+A model provider's `api_key` may instead be stored encrypted from the admin
+view (Replace key), which needs `pip install 'panel-flowdash[secrets]'`.
+The file then holds `{encrypted: ..., key_id: ...}`, made with Fernet. The
+key is `FLOWDASH_SECRET_KEY` (several, comma-separated, to rotate: the
+first encrypts and all decrypt), else the OS keyring, else a key file
+made with mode 0600 at `~/.config/flowdash/secret.key`
+(`FLOWDASH_SECRET_KEY_FILE`). Servers sharing a project share
+`FLOWDASH_SECRET_KEY`. A key is never written to the file in plain text,
+shown in the admin view (only its last four characters), logged or put
+into the process environment; it goes to the provider's client.
 
 ---
 

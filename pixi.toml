@@ -57,6 +57,8 @@ pytest = ">=6"
 pytest-cov = "*"
 pytest-xdist = "*"
 mypy = "*"
+# Stored secrets are encrypted with it (the secrets extra).
+cryptography = "*"
 
 [feature.test.pypi-dependencies]
 pytest-asyncio = ">=0.23"
