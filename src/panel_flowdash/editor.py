@@ -746,6 +746,24 @@ def current_node_id() -> str | None:
     return _INSTANTIATING_NODE.get()
 
 
+def _unset(config_state: param.Parameterized, key: str) -> bool:
+    """Whether the config field *key* still holds its declared default."""
+    value, default = getattr(config_state, key), config_state.param[key].default
+    if value is default:
+        return True
+    try:
+        return bool(value == default)
+    except Exception:
+        return False
+
+
+def _next_tick(callback: t.Callable[[], t.Any]):
+    """Call *callback* once the session's current event is handled; outside a session, never."""
+    doc = pn.state.curdoc
+    if doc is not None and doc.session_context is not None:
+        doc.add_next_tick_callback(callback)
+
+
 def placement_context() -> PlacementReason | None:
     """Return why the component calling this is being created, or None.
 
@@ -1235,6 +1253,13 @@ class FlowDash(Viewer):
 
     edited = param.Event(doc="Triggered after each edit is recorded in its turn.")
 
+    code_panel_node = param.String(
+        default=None,
+        allow_None=True,
+        constant=True,
+        doc="The id of the node the code panel under the canvas shows, or None while it is closed.",
+    )
+
     node_previews = param.Boolean(
         default=False,
         doc="""
@@ -1534,6 +1559,8 @@ class FlowDash(Viewer):
         self._layout_released = False
         self._hydrating = False
         self._recording_edit = False
+        # Counts recorded edits, so a default knows whether an edit took it in.
+        self._edit_count = 0
         self.param.watch(self._on_dirty, "dirty", onlychanged=False)
         self._history = EditHistory(self)
         self._restricted_seen: dict[str, DashboardItem] = {}
@@ -3286,6 +3313,10 @@ class FlowDash(Viewer):
         editor = editor_ref()
         if editor is None:
             return
+        config_state = editor._dataflow_graph.get_config_state(node_id)
+        # The config's own value coming back from the sync onto the component is no edit.
+        if config_state is not None and getattr(config_state, event.name, _MISSING) is event.new:
+            return
         if editor.editable and not editor.read_only and not editor.preview:
             editor._apply_config_patch(node_id, {event.name: event.new})
             return
@@ -4259,6 +4290,7 @@ class FlowDash(Viewer):
             self._inspector.param.watch(lambda _e: self._sync_code_dock_side(), "visible")
             self._inspector._panel.param.watch(lambda _e: self._sync_code_dock_side(), "width")
             panel.param.watch(self._sync_code_dock, ["collapsed", "instance_id"])
+            panel.param.watch(self._sync_code_panel_node, "instance_id")
             panel.param.watch(self._on_code_drafts, "dirty")
             self._sync_code_spec_view()
             panel.param.watch(self._on_code_spec_view, ["spec_view", "spec_text"])
@@ -4293,6 +4325,10 @@ class FlowDash(Viewer):
                 card.stale = stale
         for instance_id, tile in self._inspect_tiles.items():
             tile.set_stale(states.get(instance_id))
+
+    def _sync_code_panel_node(self, event):
+        with param.edit_constant(self):
+            self.code_panel_node = event.new
 
     @property
     def code_panel_open(self) -> bool:
@@ -5759,6 +5795,7 @@ class FlowDash(Viewer):
         """
         if not self._hydrating:
             self._prune_parameters()
+            self._edit_count += 1
         turn = None if self._hydrating else self._note_turn(*labels)
         if turn is not None:
             for instance_id in created:
@@ -5781,6 +5818,7 @@ class FlowDash(Viewer):
     def _on_dirty(self, event):
         # Code that marks the canvas changed without `_record_edit` still opens a turn.
         if event.new and not self._recording_edit and not self._hydrating:
+            self._edit_count += 1
             self._history.record("edit", {}, None, self._note_turn())
 
     def _port_ref(self, instance_id: str, port: str) -> str:
@@ -5818,6 +5856,66 @@ class FlowDash(Viewer):
         """
         return next(
             (nid for nid, inst in self._component_instances.items() if inst is component), None
+        )
+
+    def set_default(self, instance_id: str, config: t.Mapping[str, t.Any]) -> bool:
+        """Give the node *instance_id* config values its component chose as a starting point.
+
+        A component calls it for a node :func:`placement_context` reports as
+        ``"new"``, from its ``__init__`` or function body, or later, e.g. once
+        an input arrives. The values are saved with the dashboard like any
+        config, and are part of the edit that brought them about: the
+        placement, or the connection that delivered the input, so one undo
+        takes back both. Values set outside any edit, e.g. by an input that
+        arrives on its own, are recorded as a config edit of their own once
+        the session's current event is handled.
+
+        Only fields still at their declared default take a value, so a node
+        that arrives configured, e.g. one the agent adds or a duplicate, keeps
+        its config. Returns whether any field took one: False, changing
+        nothing, also while a dashboard is loaded or a
+        version restored, to viewers and in a preview, and for a node or a
+        config field the node does not have.
+        """
+        if self._hydrating or self.read_only or self.preview or not self.editable:
+            return False
+        config_state = self._dataflow_graph.get_config_state(instance_id)
+        if config_state is None or any(
+            key == "name" or key not in config_state.param for key in config
+        ):
+            return False
+        config = {key: value for key, value in config.items() if _unset(config_state, key)}
+        if not config:
+            return False
+        if _INSTANTIATING.get() is self and _INSTANTIATING_NODE.get() == instance_id:
+            # `_place` takes config written while the component is created into the node's config.
+            try:
+                config_state.param.update(
+                    {key: config_value(config_state.param[key], v) for key, v in config.items()}
+                )
+            except Exception as exc:
+                logger.warning("Default config rejected on %s: %s", instance_id, exc)
+                return False
+            return True
+        self._hydrating = True
+        try:
+            applied = self._set_config_state(instance_id, dict(config))
+            if applied:
+                self.dirty = True
+        finally:
+            self._hydrating = False
+        if not applied:
+            return False
+        _next_tick(partial(self._record_default, instance_id, sorted(applied), self._edit_count))
+        return True
+
+    def _record_default(self, instance_id: str, keys: list[str], count: int):
+        """Record a default as its own edit, unless an edit since took it in."""
+        if self._edit_count != count or self._dataflow_graph.get_config_state(instance_id) is None:
+            return
+        name = self._node_name(instance_id)
+        self._record_edit(
+            f"Changed the config of {name}", op="set_config", args={"name": name, "keys": keys}
         )
 
     def add_component(
@@ -6093,6 +6191,15 @@ class FlowDash(Viewer):
         # A node the component adds while it is created is new, whatever placed this one.
         reason_token = _PLACEMENT.set(_PLACING.get() or "new")
         placing_token = _PLACING.set(None)
+        # Config a component writes while it is created, e.g. a default for a
+        # new node, is the node's config, so it is saved with the dashboard.
+        written: dict[str, t.Any] = {}
+        config_watcher = None
+        if config_state is not None:
+            config_watcher = config_state.param.watch(
+                lambda *events: written.update({e.name: e.new for e in events}),
+                [name for name in config_state.param if name != "name"],
+            )
         try:
             view = self._instantiate_for_node(entry, node_state, config_state)
         except Exception:
@@ -6101,10 +6208,15 @@ class FlowDash(Viewer):
             self._dispose_component(instance_id)
             raise
         finally:
+            if config_watcher is not None:
+                config_state.param.unwatch(config_watcher)
             _PLACING.reset(placing_token)
             _PLACEMENT.reset(reason_token)
             _INSTANTIATING_NODE.reset(node_token)
             _INSTANTIATING.reset(token)
+        if written:
+            config = {**config, **written}
+            config_data.update(written)
         self._track_subscriptions(instance_id, before)
         # The component is instantiated even while blocked, so it can subscribe
         # and publish outputs; only what the tile displays is gated.

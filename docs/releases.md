@@ -87,7 +87,6 @@ Serving and API:
 - A config check can return or raise `CheckDiagnostic(message, field=, line=, column=, ...)` to say where in a code field a problem is, read back with `CheckResult.diagnostics(field)`, and `@register(config_completions=...)` supplies completion words for code fields, which otherwise complete the node's input column names (`node_completions()`)
 - `@register(palette_presets=...)` takes a callable that gets the editor's `context` and returns preconfigured entries for the component, each a dict with a `title` and a JSON-serializable `config` (and optional `id`, `description`, `tooltip`, `tags` and `icon`). The palette lists them after their component and searches them; clicking, dragging or dropping one places the component with that config, and the command palette offers them as Add items while editing
 - `FlowDash(context={...})` hands host resources such as data sources to components, which read them with `dashboard_context()`, a read-only view that previews see too
-- `placement_context()` tells a component in its `__init__` or function body why it is being created: `"new"` when someone adds the node, `"load"` when a dashboard is opened, imported or replaced, `"restore"` for undo, redo and restoring a version, so a component can fill in defaults only for new nodes
 
 ### Dataflow
 

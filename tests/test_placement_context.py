@@ -2,13 +2,21 @@
 
 import asyncio
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import panel as pn
 import param
 import pytest
 from panel.viewable import Viewer
 
-from panel_flowdash import FlowDash, MemoryDashboardStore, placement_context, register
+from panel_flowdash import (
+    FlowDash,
+    MemoryDashboardStore,
+    current_dashboard,
+    current_node_id,
+    placement_context,
+    register,
+)
 from panel_flowdash.agent import DashboardOps
 
 SEEN: list[tuple[str, str | None]] = []
@@ -42,8 +50,6 @@ async def later(config):
 @register(page=False, component=True, title="Spawner")
 def spawner(config):
     SEEN.append(("spawner", placement_context()))
-    from panel_flowdash import current_dashboard
-
     editor = current_dashboard()
     if "child" not in {item["instance_id"] for item in editor._tile_items}:
         editor.add_component("T/plain", instance_id="child")
@@ -207,3 +213,186 @@ def test_placements_in_other_threads_keep_their_own_reason(editor):
     other.dispose()
     assert not errors
     assert sorted(_reasons("waiting")) == ["load", "new"]
+
+
+@register(page=False, component=True, title="Query", config=["sql"])
+class Query(Viewer):
+    # The example of docs/how-to/register-components.md.
+    sql = param.String(default="")
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        if placement_context() == "new":
+            current_dashboard().set_default(
+                current_node_id(), {"sql": "SELECT * FROM sales LIMIT 100"}
+            )
+
+    def __panel__(self):
+        return pn.pane.Markdown(self.param.sql)
+
+
+@register(page=False, component=True, title="Charted", config=["spec"])
+class Charted(Viewer):
+    """Takes a default from its input once it arrives."""
+
+    n = param.Integer(default=None, allow_None=True)
+    spec = param.Dict(default={})
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        self._editor = current_dashboard()
+
+    @param.depends("n", watch=True)
+    def _default(self):
+        editor = self._editor
+        if editor is not None and self.n is not None:
+            SEEN.append(
+                ("default", editor.set_default(editor.node_id(self), {"spec": {"n": self.n}}))
+            )
+
+    def __panel__(self):
+        return "charted"
+
+
+DEFAULT_SQL = "SELECT * FROM sales LIMIT 100"
+
+
+def _query_editor(store, **params):
+    return FlowDash(
+        components={"T/query": Query, "T/plain": plain, "T/charted": Charted},
+        include_builtin_components=False,
+        notifications=False,
+        store=store,
+        history_coalesce=0,
+        **params,
+    )
+
+
+def _config(editor, instance_id):
+    return next(i["config"] for i in editor._tile_items if i["instance_id"] == instance_id)
+
+
+def test_a_default_set_while_placing_survives_save_and_reopen():
+    store = MemoryDashboardStore()
+    editor = _query_editor(store)
+    editor.new_dashboard("Queries")
+    fresh = editor.add_component("T/query")
+    configured = editor.add_component("T/query", config={"sql": "SELECT 2"})
+    assert editor._component_instances[fresh].sql == DEFAULT_SQL
+    saved = editor.save()
+    editor.dispose()
+    assert {item.instance_id: item.config for item in saved.items} == {
+        fresh: {"sql": DEFAULT_SQL},
+        configured: {"sql": "SELECT 2"},
+    }
+    reopened = _query_editor(store)
+    reopened.load(saved.dashboard_id)
+    shown = {iid: reopened._component_instances[iid].sql for iid in (fresh, configured)}
+    reopened.dispose()
+    assert shown == {fresh: DEFAULT_SQL, configured: "SELECT 2"}
+
+
+def test_one_undo_takes_back_the_node_and_its_default():
+    editor = _query_editor(MemoryDashboardStore())
+    editor.new_dashboard("Queries")
+    editor.add_component("T/plain", instance_id="first")
+    versions = len(editor.edit_history.versions)
+    editor.add_component("T/query")
+    assert len(editor.edit_history.versions) == versions + 1
+    assert editor.undo()
+    assert [item["instance_id"] for item in editor._tile_items] == ["first"]
+    assert editor.redo()
+    assert [item["config"] for item in editor._tile_items] == [{}, {"sql": DEFAULT_SQL}]
+    editor.dispose()
+
+
+def test_a_default_is_not_set_while_loading_or_for_viewers():
+    editor = _query_editor(None)
+    editor.import_dashboard({"items": [{"instance_id": "q", "component_id": "T/query"}]})
+    assert _config(editor, "q") == {}
+    editor.read_only = True
+    assert not editor.set_default("q", {"sql": DEFAULT_SQL})
+    editor.dispose()
+
+
+def test_set_default_refuses_unknown_nodes_and_fields(editor):
+    node = editor.add_component("T/plain")
+    assert not editor.set_default("missing", {"sql": "x"})
+    assert not editor.set_default(node, {"nope": 1})
+
+
+def test_a_default_from_a_connection_is_part_of_it(monkeypatch):
+    ticks = []
+    monkeypatch.setattr("panel_flowdash.editor._next_tick", ticks.append)
+    editor = _query_editor(MemoryDashboardStore())
+    editor.new_dashboard("Charts")
+    source = editor.add_component("T/plain")
+    chart = editor.add_component("T/charted")
+    editor.edit_history.flush()
+    versions = len(editor.edit_history.versions)
+    SEEN.clear()
+    assert editor.connect(source, "n", chart, "n") is True
+    editor.edit_history.flush()
+    assert SEEN == [("default", True)]
+    assert _config(editor, chart) == {"spec": {"n": 1}}
+    assert len(editor.edit_history.versions) == versions + 1
+    assert editor.edit_history.versions[-1].metadata["op"] == "connect"
+    [record] = ticks
+    record()
+    editor.edit_history.flush()
+    assert len(editor.edit_history.versions) == versions + 1
+    assert editor.undo(whole_runs=False)
+    assert _config(editor, chart).get("spec", {}) == {}
+    editor.dispose()
+
+
+def test_a_default_from_an_input_arriving_on_its_own_is_recorded_next_tick(monkeypatch):
+    ticks = []
+    monkeypatch.setattr("panel_flowdash.editor._next_tick", ticks.append)
+    editor = _query_editor(MemoryDashboardStore())
+    editor.new_dashboard("Charts")
+    chart = editor.add_component("T/charted")
+    editor.edit_history.flush()
+    versions = len(editor.edit_history.versions)
+    editor._component_instances[chart].n = 5
+    assert _config(editor, chart) == {"spec": {"n": 5}} and editor.dirty
+    assert len(editor.edit_history.versions) == versions
+    [record] = ticks
+    record()
+    editor.edit_history.flush()
+    assert len(editor.edit_history.versions) == versions + 1
+    assert editor.edit_history.versions[-1].metadata["op"] == "set_config"
+    editor.dispose()
+
+
+def test_code_panel_node_follows_the_code_panel(editor):
+    assert editor.code_panel_node is None
+    editor.code_panel.instance_id = "x"
+    assert editor.code_panel_node == "x"
+    editor.code_panel.instance_id = None
+    assert editor.code_panel_node is None
+
+
+@register(page=False, component=True, title="Offloading")
+async def offloading(config):
+    loop = asyncio.get_running_loop()
+    with ThreadPoolExecutor(1) as pool:
+        in_executor = await loop.run_in_executor(pool, placement_context)
+    SEEN.append(("executor", in_executor))
+    SEEN.append(("to_thread", await asyncio.to_thread(placement_context)))
+    return "offloading"
+
+
+async def test_to_thread_copies_the_reason_and_an_executor_does_not(editor):
+    other = FlowDash(
+        components={"T/offloading": offloading},
+        include_builtin_components=False,
+        notifications=False,
+    )
+    other.add_component("T/offloading", instance_id="o")
+    index = next(i for i, item in enumerate(other._tile_items) if item["instance_id"] == "o")
+    (function,) = other._tile_objects[index].select(pn.param.ParamFunction)
+    await function.object()
+    other.dispose()
+    # Panel may also run the body itself once the loop is free, so count only what is seen.
+    assert set(_reasons("executor")) == {None} and set(_reasons("to_thread")) == {"new"}
