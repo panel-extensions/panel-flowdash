@@ -249,14 +249,37 @@ def _shown(page, count, timeout=10000):
     expect(_report(page).locator(".fd-report-handle button")).to_have_count(count, timeout=timeout)
 
 
+# The first word of each kind's handle label; a node's is its title.
+_HANDLE_WORD = {"turn": "question", "node": None}
+
+
+def _shown_in_order(page, kinds, timeout=10000):
+    """Wait until the edited report shows blocks of *kinds*, in order.
+
+    The blocks are re-rendered a moment after the report changes, so the
+    page can still show the previous order once the report has the new one.
+    """
+    words = [_HANDLE_WORD.get(kind, kind) for kind in kinds]
+    handles = _report(page).locator(".fd-report-handle button")
+
+    def shown():
+        labels = handles.evaluate_all("(els) => els.map((el) => el.getAttribute('aria-label'))")
+        shown = [(label or "").removeprefix("Drag to reorder: ").split(" ")[0] for label in labels]
+        return len(shown) == len(words) and all(
+            w in (None, s) for w, s in zip(words, shown, strict=True)
+        )
+
+    wait_until(shown, page, timeout=timeout)
+
+
 def _undo_redo(page, editor, before, after):
     """Undo and redo the last gesture, checking the blocks each time."""
     assert editor.undo()
     wait_until(lambda: _kinds(editor) == before, page)
-    _shown(page, len(before))
+    _shown_in_order(page, before)
     assert editor.redo()
     wait_until(lambda: _kinds(editor) == after, page)
-    _shown(page, len(after))
+    _shown_in_order(page, after)
 
 
 def _pick(page, index, label, menu=None):
@@ -407,7 +430,7 @@ def test_reorder_by_drag_and_by_menu(page):
     expect(page.locator(".fd-report-drop-line")).to_be_visible()
     page.mouse.up()
     wait_until(lambda: _kinds(editor) == ["text", "heading", "turn", "turn"], page, timeout=10000)
-    _shown(page, 4)
+    _shown_in_order(page, ["text", "heading", "turn", "turn"])
     _undo_redo(
         page, editor, ["heading", "text", "turn", "turn"], ["text", "heading", "turn", "turn"]
     )
@@ -421,6 +444,7 @@ def test_reorder_by_drag_and_by_menu(page):
     report.locator(".fd-report-handle button").first.focus()
     page.keyboard.press("ArrowDown")
     wait_until(lambda: _kinds(editor) == ["text", "heading", "turn", "turn"], page)
+    _shown_in_order(page, ["text", "heading", "turn", "turn"])
     expect(report.locator(".fd-report-handle button").nth(1)).to_be_focused()
 
 
