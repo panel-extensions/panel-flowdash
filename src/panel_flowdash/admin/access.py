@@ -324,7 +324,11 @@ def shared_password_sign_in() -> bool:
         for config in getattr(state, "_server_config", {}).values()
         if isinstance(config, dict)
     ]
-    values.append(os.environ.get("PANEL_BASIC_AUTH") or getattr(pn.config, "_basic_auth", None))
+    try:
+        configured = pn.config.basic_auth
+    except Exception:
+        configured = None
+    values += [os.environ.get("PANEL_BASIC_AUTH"), configured]
     for value in values:
         if not value or isinstance(value, dict):
             continue

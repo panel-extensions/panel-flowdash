@@ -235,16 +235,25 @@ class TestWithoutSignInAdminIsLocal:
     def test_a_shared_basic_auth_password_is_not_sign_in(self, tmp_path, sections, monkeypatch):
         _signed_in(monkeypatch, "alice")
         text = "general:\n  admins: [auth:alice]\n"
-        monkeypatch.setattr(pn.config, "_basic_auth", "shared-password")
-        assert shared_password_sign_in()
-        assert not _app(tmp_path, text, doc=_doc(REMOTE))._is_admin
-        assert _app(tmp_path, text, doc=_doc("127.0.0.1"))._is_admin
         users = tmp_path / "users.json"
         users.write_text('{"alice": "pw"}')
-        monkeypatch.setattr(pn.config, "_basic_auth", str(users))
+        try:
+            # As `panel serve --basic-auth` and a project's code set it, for every session.
+            pn.config.basic_auth = "shared-password"
+            assert shared_password_sign_in()
+            assert not _app(tmp_path, text, doc=_doc(REMOTE))._is_admin
+            assert _app(tmp_path, text, doc=_doc("127.0.0.1"))._is_admin
+            pn.config.basic_auth = str(users)
+            assert not shared_password_sign_in()
+            assert _app(tmp_path, text, doc=_doc(REMOTE))._is_admin
+            pn.config.basic_auth = {"alice": "pw"}
+            assert not shared_password_sign_in()
+        finally:
+            pn.config.basic_auth = None
         assert not shared_password_sign_in()
-        assert _app(tmp_path, text, doc=_doc(REMOTE))._is_admin
-        monkeypatch.setattr(pn.config, "_basic_auth", None)
+        monkeypatch.setenv("PANEL_BASIC_AUTH", "shared-password")
+        assert shared_password_sign_in()
+        monkeypatch.delenv("PANEL_BASIC_AUTH")
         monkeypatch.setitem(state._server_config, type("App", (), {})(), {"basic_auth": "pw"})
         assert shared_password_sign_in()
 
@@ -505,3 +514,24 @@ class TestRealServer:
                 break
             await asyncio.sleep(0.1)
         assert seen == [True]
+
+
+def test_panel_serve_basic_auth_with_a_password_is_a_shared_password(tmp_path, monkeypatch):
+    import argparse
+
+    from panel.command.serve import Serve as PanelServe
+
+    app = tmp_path / "app.py"
+    app.write_text("")
+    parser = argparse.ArgumentParser()
+    command = PanelServe(parser)
+    args = parser.parse_args([str(app), "--basic-auth", "sharedpw", "--cookie-secret", "s"])
+    monkeypatch.delenv("PANEL_BASIC_AUTH", raising=False)
+    try:
+        kwargs = command.customize_kwargs(args, {})
+        assert "auth_provider" in kwargs
+        assert shared_password_sign_in()
+    finally:
+        pn.config.basic_auth = None
+        pn.config.cookie_secret = None
+    assert not shared_password_sign_in()
