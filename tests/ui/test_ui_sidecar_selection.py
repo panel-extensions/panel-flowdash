@@ -101,19 +101,13 @@ def test_the_inspector_keeps_the_selection_as_the_code_panel_moves(page):
 
     toggle = page.locator(".fd-code-dock-toggle button")
     toggle.click()
-    wait_until(lambda: editor.code_panel.dock == "right", page, timeout=TIMEOUT)
-    expect(page.locator(".fd-code-side .fd-code-panel")).to_be_visible()
+    wait_until(lambda: editor.code_panel.dock == "sidecar", page, timeout=TIMEOUT)
+    expect(page.locator(".fd-spec-tab .fd-code-panel")).to_be_visible(timeout=TIMEOUT)
     _shows_node(page, editor, query)
 
-    # Beside the code panel the Split tab has no room for the sidecar too: it folds to
-    # its strip, which marks the selection it keeps.
     page.get_by_role("button", name="Split").click()
     wait_until(lambda: editor.mode == "split", page, timeout=TIMEOUT)
-    wait_until(lambda: editor._inspector.collapsed, page, timeout=TIMEOUT)
     assert editor._inspector._shown == ("node", query)
-    expect(
-        page.get_by_role("button", name="Show inspector, something is selected")
-    ).to_be_visible()
     page.get_by_role("button", name="Dataflow").click()
     wait_until(lambda: editor.mode == "wiring", page, timeout=TIMEOUT)
     _shows_node(page, editor, query)

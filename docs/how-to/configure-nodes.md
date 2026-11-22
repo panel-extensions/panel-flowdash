@@ -346,11 +346,16 @@ instead of a one-line text box:
 sql = param.String(default="", metadata={"flowdash": {"widget": "code", "language": "sql"}})
 ```
 
-The inspector shows a few lines with highlighting for the `language` (any
+The field is edited in the code panel, highlighted for the `language` (any
 language Panel's `CodeEditor` knows, e.g. `sql`, `python`, `markdown` or
-`json`; `text` without one) and a button that opens the same text in a larger
-editor. The text is applied when the editor loses focus, not on every key, so a
-`check_config` runs once per edit. In a JSON schema the same declaration is
+`json`; `text` without one), and applied on Run, so a `check_config` runs once
+per edit. The code panel sits under the canvas in the Dataflow and Split tabs,
+or in the sidecar's Spec tab, which the panel's "Open in sidecar" and "Open
+below the canvas" buttons switch between; the browser remembers the choice. In
+the Layout tab, and in windows narrower than 960 pixels, it is always in the
+Spec tab. There is one code panel, so a draft moves with it rather than being
+edited in two places. A component's own `config_editor` shows a code field as a
+few highlighted lines whose Edit button opens the code panel. In a JSON schema the same declaration is
 `"x-flowdash": {"widget": "code", "language": "sql"}` on the property.
 
 The code panel's Format button (Shift+Alt+F) lays out specs, as YAML or JSON,

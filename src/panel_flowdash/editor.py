@@ -155,7 +155,7 @@ from panel_flowdash.ui.inspect_sheet import (
     sheet_header,
     value_status,
 )
-from panel_flowdash.ui.inspector import DATA, HISTORY, TILE, Inspector
+from panel_flowdash.ui.inspector import DATA, HISTORY, SPEC, TILE, Inspector
 from panel_flowdash.ui.layout_panel import GRID_EDIT_CSS, LayoutPanel
 from panel_flowdash.ui.node_card import (
     CARD_WIDTH,
@@ -189,6 +189,9 @@ from panel_flowdash.ui.roles import component_role
 from panel_flowdash.ui.settings_dialog import SettingsDialog
 from panel_flowdash.ui.sheet import (
     ABOVE_SHEET_CLASS,
+    BEHIND_SHEET_CLASS,
+    INSPECTOR_SHEET_HEIGHT,
+    INSPECTOR_SHEET_TALL_HEIGHT,
     SheetLabel,
     bottom_sheet,
     inspector_sheet,
@@ -479,16 +482,8 @@ _CANVAS_MIN_WIDTH = 160
 # With the code panel under it, the canvas keeps this much and the panel starts this high.
 _CANVAS_MIN_HEIGHT_DOCKED = 160
 _CODE_PANEL_HEIGHT = 400
-# Narrower windows edit code fields in a dialog rather than the code panel under the canvas.
+# Narrower windows show the code panel in the sidecar's Spec tab rather than under the canvas.
 _CODE_PANEL_MIN_WIDTH = 960
-# Narrower windows dock the code panel under the canvas even where it was docked to the right,
-# as do windows leaving the canvas less than its docked minimum beside the palette, the open
-# inspector and the panel.
-_CODE_PANEL_RIGHT_MIN_WIDTH = 1440
-_CANVAS_MIN_WIDTH_DOCKED = 560
-# Docked to the right, the panel starts this wide and is never dragged narrower.
-_CODE_PANEL_WIDTH = 520
-_CODE_PANEL_MIN_SIDE_WIDTH = 400
 
 
 def _has_selection(selection: dict | None) -> bool:
@@ -3769,20 +3764,8 @@ class FlowDash(Viewer):
             # Collapsed to its header, not the smallest height of its editor and result.
             stylesheets=[".fd-code-panel { min-height: 0 !important; }"],
         )
-        self._code_side_width = _CODE_PANEL_WIDTH
-        # Set while the window's width moves the panel, which is not a choice to remember.
+        # Set while the window or the tab moves the panel, which is not a choice to remember.
         self._moving_code_dock = False
-        # The code panel docked to the right of the canvas, beside the inspector.
-        self._code_side = pn.Row(
-            margin=0,
-            sizing_mode="stretch_height",
-            visible=False,
-            css_classes=["fd-code-side"],
-            stylesheets=[
-                ":host { border-left: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.12)); }",
-                ".fd-code-panel { min-width: 0 !important; }",
-            ],
-        )
 
         # The sidecar's slot, hidden with it, since an empty Column still takes
         # the width of its scroll button.
@@ -3798,7 +3781,6 @@ class FlowDash(Viewer):
         self._editor_row = pn.Row(
             self._side_panel,
             self._workspace_area,
-            self._code_side,
             self._panel_slot,
             sizing_mode="stretch_both",
         )
@@ -3856,6 +3838,7 @@ class FlowDash(Viewer):
         self._flow.on("node_clicked", self._on_phone_tap)
         self._flow.on("edge_clicked", self._on_phone_tap)
         self._inspector.param.watch(lambda _event: self._sync_inspector_sheet(), "collapsed")
+        self._inspector.param.watch(self._on_editing_spec, "editing_spec")
 
     def _open_layout_sheet(self):
         self._layout_panel.refresh()
@@ -3888,6 +3871,7 @@ class FlowDash(Viewer):
             self._sidecar.left_phone()
         self._sync_min_width()
         self._apply_mode_state()
+        self._sync_code_dock_side()
         if self._inspector.visible:
             # Fit to the canvas's new width once the browser has laid it out.
             pn.state.execute(self._fit_canvas, schedule=True)
@@ -3927,6 +3911,11 @@ class FlowDash(Viewer):
         y = _PHONE_REVEAL_TOP - node["position"]["y"] * zoom
         self._flow.viewport = {"x": x, "y": y, "zoom": zoom}
 
+    def _on_editing_spec(self, event):
+        height = INSPECTOR_SHEET_TALL_HEIGHT if event.new else INSPECTOR_SHEET_HEIGHT
+        self._inspector_sheet.sx = {**self._inspector_sheet.sx, "height": height}
+        self._sync_inspector_sheet()
+
     def _sync_inspector_sheet(self):
         """Open the inspector's sheet on a phone while something is selected and it is not dismissed."""
         inspector = self._inspector
@@ -3938,8 +3927,16 @@ class FlowDash(Viewer):
             # In the Layout tab it opens for a tile tapped there, not over the grid at once.
             and (self.mode != "dashboard" or self._phone_tile_tapped)
         )
-        classes = [c for c in self._add_button.css_classes if c != ABOVE_SHEET_CLASS]
-        self._add_button.css_classes = [*classes, ABOVE_SHEET_CLASS] if is_open else classes
+        lifted = [ABOVE_SHEET_CLASS]
+        if inspector.editing_spec:
+            # The taller sheet leaves no room above it for the button.
+            lifted.append(BEHIND_SHEET_CLASS)
+        classes = [
+            c
+            for c in self._add_button.css_classes
+            if c not in (ABOVE_SHEET_CLASS, BEHIND_SHEET_CLASS)
+        ]
+        self._add_button.css_classes = [*classes, *lifted] if is_open else classes
 
     @property
     def explore_feed(self):
@@ -4619,22 +4616,8 @@ class FlowDash(Viewer):
             panel = self._code_panel = CodePanel(editor=self, on_close=self.close_code_panel)
             self._code_handle = DockHandle(sizing_mode="stretch_width", height=7, margin=0)
             self._code_handle.param.watch(self._on_code_dock_resized, "size")
-            self._code_side_handle = DockHandle(
-                orientation="vertical",
-                min_size=_CODE_PANEL_MIN_SIDE_WIDTH,
-                max_ratio=0.6,
-                sizing_mode="stretch_height",
-                width=7,
-                margin=0,
-            )
-            self._code_side_handle.param.watch(self._on_code_side_resized, "size")
             self._sync_code_dock_side()
             panel.param.watch(self._on_code_dock_moved, "dock")
-            # The inspector opening or folding changes the canvas's room beside a panel on the right.
-            self._inspector.param.watch(lambda _e: self._sync_code_dock_side(), "visible")
-            self._inspector.param.watch(
-                lambda _e: self._sync_code_dock_side(), ["collapsed", "width"]
-            )
             panel.param.watch(self._sync_code_dock, ["collapsed", "instance_id"])
             panel.param.watch(self._sync_code_panel_node, "instance_id")
             panel.param.watch(self._on_code_drafts, "dirty")
@@ -4678,20 +4661,30 @@ class FlowDash(Viewer):
 
     @property
     def code_panel_open(self) -> bool:
-        """Whether the code panel is docked under the canvas."""
+        """Whether the code panel shows a node, under the canvas or in the sidecar's Spec tab."""
         return self._code_panel is not None and self._code_panel.instance_id is not None
 
     def _code_panel_allowed(self) -> bool:
+        return self.editable and not self.preview
+
+    def _code_bottom_allowed(self) -> bool:
+        """Whether the window is wide enough for the code panel under the canvas."""
         width = self._split_view.storage.window_width
         return (
-            self.editable
-            and not self.preview
+            self._code_panel_allowed()
+            and not self._phone
             and (width is None or width >= _CODE_PANEL_MIN_WIDTH)
         )
 
     def _code_panel_fits(self) -> bool:
+        """Whether the code panel can be shown under the canvas now."""
         showing_canvas = self.mode in ("wiring", "split") and self.surface == "workspace"
-        return self._code_panel_allowed() and showing_canvas
+        return self._code_bottom_allowed() and showing_canvas
+
+    def _code_placement(self) -> str:
+        """Return where the code panel goes: ``"bottom"`` as the browser last chose and where it fits, else ``"sidecar"``."""
+        wanted = self._split_view.preferences.code_dock
+        return "bottom" if wanted == "bottom" and self._code_panel_fits() else "sidecar"
 
     def _primary_spec_field(self, instance_id: str) -> str | None:
         """Return the spec field of the node *instance_id* to edit: one holding a draft, else the first."""
@@ -4706,30 +4699,50 @@ class FlowDash(Viewer):
     def open_code_panel(
         self, instance_id: str, field: str | None = None, *, focus: bool = True
     ) -> bool:
-        """Edit the spec field *field* of the node *instance_id* in the panel under the canvas.
+        """Edit the spec field *field* of the node *instance_id* in the code panel.
 
         *field* defaults to the node's first spec field, a code field or a
-        spec dict; a node without one shows its result only. Returns False,
-        leaving the panel as it was, where it cannot be shown: to viewers,
-        outside the Dataflow and Split tabs, in a narrow window, or for a
-        node or field it cannot edit. Callers then fall back to the field's
-        own editor.
+        spec dict; a node without one shows its result only. The panel opens
+        under the canvas where it was last docked there and fits, otherwise
+        in the sidecar's Spec tab, which then shows the node. Returns False,
+        leaving the panel as it was, where it cannot be shown: to viewers, or
+        for a node or field it cannot edit. Callers then fall back to the
+        field's own editor.
         """
         if field is None:
             field = self._primary_spec_field(instance_id)
-        if not self._code_panel_fits() or not self.code_panel.can_edit(instance_id, field):
+        if not self._code_panel_allowed() or not self.code_panel.can_edit(instance_id, field):
             return False
         docking = not self.code_panel_open
+        self._sync_code_dock_side()
         self.code_panel.open(instance_id, field, focus=focus)
-        if not (self._code_dock.objects or self._code_side.objects):
+        if self._code_panel.dock == "sidecar":
+            self._show_spec_tab(instance_id)
+            self._place_code_panel()
+        elif not self._code_dock.objects:
             # Added once it shows a field, so the browser builds the editor with its language
             # and text: a change arriving before the code/result split has rendered is lost.
             self._place_code_panel()
             if focus:
                 self._code_panel._focus()
-        if docking:
+        if docking and self._code_panel.dock == "bottom":
             self._keep_in_view(instance_id)
         return True
+
+    def _show_spec_tab(self, instance_id: str):
+        """Select the node *instance_id* alone and show its Spec tab in the open sidecar."""
+        selection = self._flow.selection or {}
+        if selection.get("nodes") != [instance_id] or selection.get("edges"):
+            self._select_node(instance_id)
+        self._inspector.open_tab(instance_id, SPEC)
+        if self._inspector.collapsed:
+            self._inspector.fold(False)
+
+    def open_spec_in_sidecar(self, instance_id: str) -> bool:
+        """Move the code panel into the sidecar's Spec tab, remembered for the browser, showing *instance_id*."""
+        self._split_view.preferences.code_dock = "sidecar"
+        self._sync_code_dock_side()
+        return self.open_code_panel(instance_id)
 
     def close_code_panel(self):
         """Close the code panel, holding a draft it shows until the field is opened again."""
@@ -4739,14 +4752,16 @@ class FlowDash(Viewer):
     def edit_spec(self, instance_id: str, field: str | None = None) -> bool:
         """Open the spec of the node *instance_id* in the code panel, showing the canvas if needed.
 
-        Returns False where the panel cannot be shown, to viewers or in a
-        narrow window.
+        Where the browser keeps the panel in the sidecar, or the window is too
+        narrow for it under the canvas, the sidecar's Spec tab shows it in the
+        tab already open. Returns False to viewers.
         """
         if not self._code_panel_allowed():
             return False
-        self.surface = "workspace"
-        if self.mode not in ("wiring", "split"):
-            self.mode = "split"
+        if self._split_view.preferences.code_dock == "bottom" and self._code_bottom_allowed():
+            self.surface = "workspace"
+            if self.mode not in ("wiring", "split"):
+                self.mode = "split"
         return self.open_code_panel(instance_id, field)
 
     def _follow_selection(self, selection: dict | None):
@@ -4761,33 +4776,35 @@ class FlowDash(Viewer):
         if node == panel.instance_id or not panel.can_edit(node):
             return
         panel.open(node, self._primary_spec_field(node), focus=False)
-
-    def _code_dock_right_allowed(self) -> bool:
-        width = self._split_view.storage.window_width
-        if width is None:
-            return True
-        room = width - _SIDE_PANEL_WIDTH - self._inspector.current_width - self._code_side_width
-        return width >= _CODE_PANEL_RIGHT_MIN_WIDTH and room >= _CANVAS_MIN_WIDTH_DOCKED
+        if panel.dock == "sidecar":
+            self._place_code_panel()
 
     def _sync_code_dock_side(self):
-        """Dock the code panel where the browser last had it, under the canvas in a narrower window."""
+        """Show the code panel where the browser last had it, in the sidecar where it does not fit under the canvas."""
         panel = self._code_panel
         if panel is None:
             return
-        allowed = self._code_dock_right_allowed()
-        side = self._split_view.preferences.code_dock if allowed else "bottom"
         self._moving_code_dock = True
         try:
-            panel.param.update(can_dock_right=allowed, dock=side)
+            panel.param.update(
+                can_dock_bottom=self._code_bottom_allowed(), dock=self._code_placement()
+            )
         finally:
             self._moving_code_dock = False
 
     def _on_code_dock_moved(self, event):
         if not self._moving_code_dock:
+            # Moved with its button, as the person chose.
             self._split_view.preferences.code_dock = event.new
-        if self._code_dock.objects or self._code_side.objects:
+            if event.new == "bottom" and not self._code_panel_fits():
+                self.surface = "workspace"
+                self.mode = "split"
+            elif event.new == "sidecar" and self.code_panel_open:
+                self._show_spec_tab(self._code_panel.instance_id)
+            self._sync_code_dock_side()
+        if self._code_dock.objects or self.code_panel_open:
             self._place_code_panel()
-        if self.code_panel_open:
+        if self.code_panel_open and self._code_panel.dock == "bottom":
             # The canvas changes shape, so it may zoom out to keep the whole node in view.
             self._keep_in_view(self._code_panel.instance_id, keep_zoom=False)
 
@@ -4809,33 +4826,25 @@ class FlowDash(Viewer):
 
     @pn.io.hold()
     def _place_code_panel(self):
-        """Put the code panel under the canvas or to its right, as its :attr:`dock` says."""
+        """Put the code panel under the canvas or in the sidecar's Spec tab, as its :attr:`dock` says.
+
+        It is in one place at a time, so a node's spec has one editor.
+        """
         panel = self._code_panel
-        if panel.dock == "right":
+        if panel.dock == "sidecar":
             self._code_dock[:] = []
-            self._code_side[:] = [self._code_side_handle, panel]
-        else:
-            self._code_side[:] = []
+        elif not self._code_dock.objects:
             self._code_dock[:] = [self._code_handle, panel]
+        self._inspector.sync_spec_tab()
         self._sync_code_dock()
 
     @pn.io.hold()
     def _sync_code_dock(self, *_events):
-        """Show the code panel under the canvas, at its size for the session or as its header, or to its right."""
+        """Show the code panel under the canvas, at its size for the session or as its header."""
         panel = self._code_panel
         if panel is None:
             return
-        shown = self.code_panel_open and self._code_panel_fits()
-        right = panel.dock == "right"
-        self._code_side.param.update(
-            visible=shown and right,
-            styles={
-                "flex": "none",
-                "width": f"{self._code_side_width}px",
-                "min-width": f"{self._code_side_width}px",
-            },
-        )
-        shown = shown and not right
+        shown = self.code_panel_open and panel.dock == "bottom" and self._code_panel_fits()
         collapsed = shown and panel.collapsed
         self._code_handle.visible = shown and not collapsed
         height = HEADER_HEIGHT if collapsed else self._code_dock_height
@@ -4862,12 +4871,6 @@ class FlowDash(Viewer):
             css_classes=[*docked, "fd-docked"] if shown else docked,
         )
 
-    def _on_code_side_resized(self, event):
-        if event.new:
-            self._code_side_width = int(event.new)
-            if self.code_panel_open:
-                self._sync_code_dock()
-
     def _on_code_dock_resized(self, event):
         if event.new:
             self._code_dock_height = int(event.new)
@@ -4876,7 +4879,10 @@ class FlowDash(Viewer):
 
     @param.depends("mode", "surface", watch=True)
     def _on_code_dock_tab(self):
-        """Hide the code panel outside the Dataflow and Split tabs, and show it again there."""
+        """Move the code panel into the sidecar outside the Dataflow and Split tabs, and back under the canvas there."""
+        if self._code_panel is None:
+            return
+        self._sync_code_dock_side()
         self._sync_code_dock()
 
     @param.depends("editable", "preview", watch=True)
@@ -4892,8 +4898,14 @@ class FlowDash(Viewer):
 
     def _on_window_resized(self, _event):
         self._close_code_panel_if_hidden()
+        panel = self._code_panel
+        under = panel is not None and self.code_panel_open and self._code_dock.visible
         self._sync_code_dock_side()
         self._sidecar.window_resized()
+        if under and panel.dock == "sidecar":
+            # Narrowed out from under the canvas, the spec being edited moves to the Spec tab.
+            self._show_spec_tab(panel.instance_id)
+            self._place_code_panel()
 
     def _fit_canvas(self):
         self._flow.fit_view()

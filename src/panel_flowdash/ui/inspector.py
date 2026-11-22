@@ -52,6 +52,7 @@ from panel_flowdash.ui.node_card import (
 from panel_flowdash.ui.node_preview import (
     CHART_COLOR,
     CHART_CSS,
+    DEFINITION_HOOK,
     PREVIEW_HOOK,
     PREVIEW_KIND_KEY,
     call_preview_hook,
@@ -87,7 +88,7 @@ if t.TYPE_CHECKING:
 INSPECTOR_WIDTH = SIDECAR_WIDTH
 HANDLE_WIDTH = 7
 
-SETTINGS, DATA, TILE, HISTORY = "Settings", "Data", "Tile", "History"
+SETTINGS, SPEC, DATA, TILE, HISTORY = "Settings", "Spec", "Data", "Tile", "History"
 
 # A dot on the folded strip's button while something is selected.
 _BADGE_CSS = """
@@ -114,7 +115,6 @@ _MAX_CHIP_LEN = 24
 # How many rows of a table the Data tab shows.
 _DATA_ROWS = 15
 _DATA_COLUMNS = 50
-_DATA_TAB = 1
 # A component whose preview arrives later, e.g. once its rows are fetched, bumps this parameter.
 PREVIEW_REVISION = "_preview_rev"
 _MAX_CELL_WIDTH = 220
@@ -367,6 +367,13 @@ li.MuiMenuItem-root:last-of-type:not(:first-of-type) {
 """
 
 _SECTION_SX = {"color": "text.secondary", "fontWeight": 500}
+
+# The code panel in the Spec tab takes the sidecar's height below its header and tabs.
+_SPEC_TAB_CSS = """
+:host { height: max(420px, calc(100dvh - 178px)); }
+:host(.fd-in-sheet) { height: max(320px, calc(85dvh - 120px)); }
+.fd-code-panel { min-width: 0 !important; }
+"""
 
 # The section headings of a component's settings, as small capitals.
 _CAPS_SX = {
@@ -842,9 +849,11 @@ class Inspector(Viewer):
     """The sidecar: a panel beside the canvas or the tile grid showing what is selected.
 
     It is shown in the Dataflow, Split and Layout tabs, follows the editor's
-    one selection, and for a component shows the tabs Settings, Data, Tile and,
-    when the assistant made it, History. Whether it is open or folded is
-    decided by the editor's :class:`~panel_flowdash.ui.sidecar.SidecarFold`.
+    one selection, and for a component shows the tabs Settings, Spec (where it
+    has a spec, or a definition to show), Data, Tile and, when the assistant
+    made it, History. The Spec tab holds the editor's code panel wherever it
+    is not under the canvas, see :meth:`sync_spec_tab`. Whether it is open or
+    folded is decided by the editor's :class:`~panel_flowdash.ui.sidecar.SidecarFold`.
     """
 
     collapsed = param.Boolean(default=False, doc="Whether the panel is folded to a narrow strip.")
@@ -858,6 +867,10 @@ class Inspector(Viewer):
     editor = param.Parameter(doc="The FlowDash editor whose canvas selection is inspected.")
 
     visible = param.Boolean(default=True, doc="Whether the panel is shown.")
+
+    editing_spec = param.Boolean(
+        default=False, doc="Whether a component's Spec tab is shown, which wants more room."
+    )
 
     sheet = param.Boolean(
         default=False,
@@ -906,6 +919,11 @@ class Inspector(Viewer):
         self._tab_labels: list[str] = []
         self._history_column: pn.Column | None = None
         self._history_turn: str | None = None
+        # The Spec tab's content: the code panel, or where to find it.
+        self._spec_column: pn.Column | None = None
+        # What the Spec tab says while the code panel is under the canvas, and for which state.
+        self._spec_note: tuple[tuple, Viewable] | None = None
+        self._opening_spec = False
         self._opening = False
         self._refresh_inputs: t.Callable[[], None] = lambda: None
         # The latest config check started per node, see ConfigDraft.
@@ -1023,6 +1041,9 @@ class Inspector(Viewer):
         """
         if tab == HISTORY:
             self._history_turn = turn_id
+        elif tab == SPEC and (item := self._item(instance_id)) is not None:
+            # Editing a spec in the sidecar, the next node selected shows its spec too.
+            self._tab_memory[self.editor._node_role(item["component_id"])] = SPEC
         if self._shown == ("node", instance_id) and self._node_tabs is not None:
             if tab in self._tab_labels:
                 index = self._tab_labels.index(tab)
@@ -1096,6 +1117,8 @@ class Inspector(Viewer):
             objects = self._group_view(self._shown[1])
         else:
             objects = self._edge_view(self._shown[1])
+        self.editing_spec = self._spec_tab_active()
+        self.sync_spec_tab()
         self._body[:] = objects
         self._sync_save()
 
@@ -1126,6 +1149,7 @@ class Inspector(Viewer):
         self._node_tabs = None
         self._tab_labels = []
         self._history_column = None
+        self._release_spec_tab()
         if self.tile_options is not None:
             self.tile_options.release()
             self.tile_options = None
@@ -1672,6 +1696,14 @@ class Inspector(Viewer):
             (DATA, self._data_column),
             (TILE, self._tile_tab(instance_id, item, spec)),
         ]
+        if self._has_spec_tab(instance_id, spec):
+            self._spec_column = pn.Column(
+                margin=0,
+                sizing_mode="stretch_width",
+                css_classes=["fd-spec-tab", "fd-in-sheet"] if self.sheet else ["fd-spec-tab"],
+                stylesheets=[_SPEC_TAB_CSS],
+            )
+            pages.insert(1, (SPEC, self._spec_column))
         if editor.made_by_agent(instance_id):
             self._history_column = pn.Column(
                 margin=(12, 14, 16, 14), sizing_mode="stretch_width", css_classes=["fd-history"]
@@ -1711,8 +1743,14 @@ class Inspector(Viewer):
             if not owner._opening:
                 owner._tab_memory[kind] = label
                 owner._pending_tab = None
+            if owner._tab_labels[event.old] == SPEC:
+                # Hidden, the tab renders afresh when shown again, from the text applied.
+                owner._keep_spec_text()
             if label == HISTORY:
                 owner._fill_history()
+            elif label == SPEC:
+                owner.sync_spec_tab()
+            owner.editing_spec = label == SPEC
             owner._schedule_data()
 
         watcher = tabs.param.watch(on_tab, "active")
@@ -1721,6 +1759,121 @@ class Inspector(Viewer):
         if tab == HISTORY:
             self._fill_history()
         return [header, tabs]
+
+    # Spec
+
+    def _has_spec_tab(self, instance_id: str, spec: ComponentSpec) -> bool:
+        """Whether the component has a Spec tab: a spec field to edit, or a definition to read."""
+        editor = self.editor
+        if not editor._code_panel_allowed():
+            return False
+        if spec_fields(spec):
+            return True
+        instance = editor._component_instances.get(instance_id)
+        return callable(getattr(instance, DEFINITION_HOOK, None))
+
+    def _spec_tab_active(self) -> bool:
+        tabs = self._node_tabs
+        return tabs is not None and self._tab_labels[tabs.active] == SPEC
+
+    def sync_spec_tab(self):
+        """Fill the shown component's Spec tab: the code panel, or where it is.
+
+        The editor has one code panel, shown in one place at a time. Unless it
+        is under the canvas, this tab holds it, opened on the component when
+        the tab is shown.
+        """
+        column = self._spec_column
+        if column is None or (self._shown or ("",))[0] != "node":
+            return
+        instance_id = self._shown[1]
+        editor = self.editor
+        panel = editor._code_panel
+        if panel is not None and panel.dock == "sidecar" and panel.instance_id == instance_id:
+            objects = [panel._layout]
+        elif editor._code_placement() == "bottom":
+            objects = [self._spec_elsewhere(instance_id)]
+        elif (
+            self._spec_tab_active()
+            and not self._opening_spec
+            # Not while the selection moves on and the tab is about to show another node.
+            and self._selected() == self._shown
+        ):
+            self._opening_spec = True
+            try:
+                opened = editor.open_code_panel(instance_id, focus=False)
+            finally:
+                self._opening_spec = False
+            if opened:
+                # Opening it filled the tab.
+                return
+            objects = []
+        else:
+            objects = []
+        if list(column.objects) != objects:
+            self._keep_spec_text()
+            column[:] = objects
+
+    def _keep_spec_text(self, column: pn.Column | None = None):
+        """Apply text typed in the code panel the Spec tab holds, before it renders afresh."""
+        column = column or self._spec_column
+        panel = self.editor._code_panel
+        if panel is not None and column is not None and panel._layout in column.objects:
+            panel._keep_text()
+
+    def _release_spec_tab(self):
+        """Let go of the code panel, which the Spec tab shown next or the canvas takes."""
+        column, self._spec_column = self._spec_column, None
+        self._spec_note = None
+        if column is not None and column.objects:
+            self._keep_spec_text(column)
+            column[:] = []
+
+    def _spec_elsewhere(self, instance_id: str) -> Viewable:
+        """Say the spec is edited under the canvas, offering to edit it here instead."""
+        editor = self.editor
+        panel = editor._code_panel
+        here = panel is not None and panel.instance_id == instance_id
+        key = (instance_id, here)
+        if self._spec_note is not None and self._spec_note[0] == key:
+            return self._spec_note[1]
+        caption = (
+            "The spec is open in the code panel under the canvas."
+            if here
+            else "Specs open in the code panel under the canvas."
+        )
+        move = pmui.Button(
+            label="Open in sidecar",
+            icon="view_sidebar",
+            variant="outlined",
+            size="small",
+            margin=(0, 0, 4, 0),
+            sx={"textTransform": "none"},
+            css_classes=["fd-spec-open-here"],
+        )
+        move.on_click(lambda _event: editor.open_spec_in_sidecar(instance_id))
+        buttons = [move]
+        if not here:
+            below = pmui.Button(
+                label="Open below",
+                icon="horizontal_split",
+                variant="text",
+                size="small",
+                margin=(0, 0, 4, 8),
+                sx={"textTransform": "none"},
+                css_classes=["fd-spec-open-below"],
+            )
+            below.on_click(lambda _event: editor.edit_spec(instance_id))
+            buttons.append(below)
+        note = pn.Column(
+            _caption(caption, margin=(0, 0, 8, 0)),
+            pn.Row(*buttons, margin=0),
+            margin=(12, 14, 16, 14),
+            sizing_mode="stretch_width",
+            css_classes=["fd-spec-elsewhere"],
+        )
+        self._spec_note = (key, note)
+        return note
 
     def _fill_history(self):
         """Show how the shown component was made, or how a later turn changed it."""
@@ -1821,8 +1974,9 @@ class Inspector(Viewer):
             _caption(
                 panel.param.dock.rx().rx.pipe(
                     lambda dock: (
-                        "Edited in the code panel "
-                        f"{'beside' if dock == 'right' else 'under'} the canvas."
+                        "Edited in the Spec tab."
+                        if dock == "sidecar"
+                        else "Edited in the code panel under the canvas."
                     )
                 ),
                 margin=(0, 0, 8, 0),
@@ -2425,7 +2579,7 @@ class Inspector(Viewer):
         if self._data_column is None:
             return
         tabs = self._node_tabs
-        if tabs is None or tabs.active != _DATA_TAB:
+        if tabs is None or self._tab_labels[tabs.active] != DATA:
             self._data_column[:] = []
             return
         doc = self._document()
@@ -2452,7 +2606,7 @@ class Inspector(Viewer):
         if self._data_column is None or self._data_view is None:
             return
         tabs = self._node_tabs
-        if tabs is None or tabs.active != _DATA_TAB:
+        if tabs is None or self._tab_labels[tabs.active] != DATA:
             # Switched away since the refresh was scheduled; it runs again once shown.
             self._data_column[:] = []
             return

@@ -1,4 +1,4 @@
-"""The code panel docked under the canvas, or to its right: a node's spec beside the node's result.
+"""The code panel docked under the canvas, or in the sidecar's Spec tab: a node's spec beside its result.
 
 The editor opens it for one node, see
 :meth:`~panel_flowdash.editor.FlowDash.open_code_panel`, and while it is open
@@ -94,9 +94,9 @@ HEADER_HEIGHT = 48
 SPLIT_SIZES = (40.0, 60.0)
 #: Narrowest the code or the result may be dragged, in pixels.
 MIN_PANE_WIDTH = 240
-#: Heights of the code and the result in percent of the panel docked to the right.
-STACKED_SIZES = (50.0, 50.0)
-#: Lowest the code or the result may be dragged in the panel docked to the right, in pixels.
+#: Heights of the code and the result in percent of the panel in the sidecar.
+STACKED_SIZES = (60.0, 40.0)
+#: Lowest the code or the result may be dragged in the panel in the sidecar, in pixels.
 MIN_PANE_HEIGHT = 140
 FORMAT_SHORTCUT = "Shift+Alt+F"
 _EDITOR_CLASS = "fd-code-panel-editor"
@@ -141,6 +141,7 @@ _BAR_CSS = """
   font-size: 12px; line-height: 18px; color: var(--mui-palette-text-secondary); white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; }
 .fd-cp-bar b { font-weight: 600; color: var(--mui-palette-text-primary); }
+.fd-cp-origin { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fd-cp-ok { color: var(--mui-palette-success-main, #2e7d32); }
 .fd-cp-error { color: var(--mui-palette-error-main, #d32f2f); }
 .fd-cp-warn { color: var(--mui-palette-warning-main, #ed6c02); }
@@ -158,12 +159,12 @@ _STRIP_CSS = """
   border-bottom: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.12));
   background: var(--mui-palette-background-paper, #fff); }
 :host { flex: none !important; }
-:host(.fd-code-panel-header) { height: 48px !important; min-height: 48px;
+:host(.fd-code-panel-header) { height: 48px !important; min-height: 48px; padding-right: 8px;
   border-top: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.12)); }
 /* The controls on the right keep their size; the title and the fields give way. */
 :host(.fd-code-panel-header) > * { flex: none; }
 :host(.fd-code-panel-header) > .bk-Spacer { flex: 1 1 0; min-width: 0; width: auto !important; }
-/* In a narrow panel, e.g. docked to the right, the node's name keeps its room. */
+/* In a narrow panel, e.g. in the sidecar, the node's name keeps its room. */
 :host(.fd-code-panel-header) > .fd-cp-title-pane { flex: 0 1 auto; min-width: min(150px, 35%); overflow: hidden; }
 :host(.fd-cp-footer) { border-bottom: none; padding: 0 12px;
   border-top: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.12)); }
@@ -250,6 +251,9 @@ class ViewFrame(JSComponent):
 
     object = Child()
 
+    # Charts sized to the container leave room for their axes inside the padding.
+    _stylesheets: t.ClassVar[list[str]] = [":host { padding: 8px 12px; box-sizing: border-box; }"]
+
     _esm = """
     export function render({ el, model }) {
       el.append(model.get_child("object"))
@@ -323,12 +327,15 @@ class CodePanel(Viewer):
 
     dock = param.Selector(
         default="bottom",
-        objects=["bottom", "right"],
-        doc="Where the panel is docked: under the canvas, or in a column to its right.",
+        objects=["bottom", "sidecar"],
+        doc="""
+        Where the panel is shown: under the canvas, or in the sidecar's Spec
+        tab, where its code and result are stacked.""",
     )
 
-    can_dock_right = param.Boolean(
-        default=True, doc="Whether the window is wide enough to offer docking to the right."
+    can_dock_bottom = param.Boolean(
+        default=True,
+        doc="Whether the window is wide enough to offer moving the panel under the canvas.",
     )
 
     def __init__(self, **params):
@@ -432,7 +439,7 @@ class CodePanel(Viewer):
         self.close_button.on_click(lambda _event: self.on_close and self.on_close())
         self.dock_button = pmui.IconButton(
             icon="view_sidebar",
-            description="Dock to the right",
+            description="Open in sidecar",
             size="small",
             margin=(0, 2),
             align="center",
@@ -633,7 +640,11 @@ class CodePanel(Viewer):
             css_classes=["fd-cp-footer", "fd-code-footer-bar"],
         )
         self._code_header = pn.pane.HTML(
-            "", margin=0, align="center", sizing_mode="stretch_width", stylesheets=[_BAR_CSS]
+            "",
+            margin=(0, 8, 0, 0),
+            align="center",
+            sizing_mode="stretch_width",
+            stylesheets=[_BAR_CSS],
         )
         self.format_button = pmui.Button(
             label="Format",
@@ -707,7 +718,12 @@ class CodePanel(Viewer):
             css_classes=["fd-cp-subheader"],
         )
         self._result_body = pn.Column(
-            margin=0, sizing_mode="stretch_both", scroll="y-auto", css_classes=["fd-code-result"]
+            margin=0,
+            sizing_mode="stretch_both",
+            scroll="y-auto",
+            # A scrollbar appearing does not narrow a chart sized to the pane.
+            styles={"scrollbar-gutter": "stable"},
+            css_classes=["fd-code-result"],
         )
         # Says the result does not match the draft, or that a run is in flight.
         self._stale_text = pn.pane.HTML(
@@ -770,15 +786,15 @@ class CodePanel(Viewer):
         self.param.watch(self._run_on_change_set, "run_on_change")
         self.param.watch(lambda *_events: self._sync_stale(), ["running", "dirty", "instance_id"])
         self.param.watch(self._spec_view_set, ["spec_view", "spec_text"])
-        self.param.watch(self._sync_dock, ["dock", "can_dock_right"])
+        self.param.watch(self._sync_dock, ["dock", "can_dock_bottom"])
         self._sync_dock()
         self._sync_collapsed()
         self._sync_kind()
         self._sync_run_button()
 
     def _make_body(self) -> HSplit | VSplit:
-        """Lay out the code and the result side by side, or one above the other when docked right."""
-        if self.dock == "right":
+        """Lay out the code and the result side by side, or one above the other in the sidecar."""
+        if self.dock == "sidecar":
             split, sizes, least = VSplit, STACKED_SIZES, MIN_PANE_HEIGHT
         else:
             split, sizes, least = HSplit, SPLIT_SIZES, MIN_PANE_WIDTH
@@ -798,18 +814,20 @@ class CodePanel(Viewer):
         )
 
     def toggle_dock(self):
-        """Dock the panel to the right of the canvas, or back under it."""
-        self.dock = "bottom" if self.dock == "right" else "right"
+        """Move the panel into the sidecar's Spec tab, or back under the canvas."""
+        self.dock = "bottom" if self.dock == "sidecar" else "sidecar"
 
     @pn.io.hold()
     def _sync_dock(self, *events):
-        right = self.dock == "right"
+        side = self.dock == "sidecar"
         self.dock_button.param.update(
-            icon="horizontal_split" if right else "view_sidebar",
-            description="Dock under the canvas" if right else "Dock to the right",
-            visible=right or self.can_dock_right,
+            icon="horizontal_split" if side else "view_sidebar",
+            description="Open below the canvas" if side else "Open in sidecar",
+            visible=not side or self.can_dock_bottom,
         )
-        if right and self.collapsed:
+        # The sidecar names the node and closes itself.
+        self._title.visible = self.close_button.visible = not side
+        if side and self.collapsed:
             self.collapsed = False
         if any(e.name == "dock" for e in events):
             self._keep_text()
@@ -1285,7 +1303,11 @@ class CodePanel(Viewer):
             (field_label(parameter) or self.field) if parameter is not None else "Nothing to edit"
         )
         origin = f"from {', '.join(sources)}" if sources else ""
-        return _bar(f"<b>{html.escape(label)}</b>", html.escape(origin))
+        origin = html.escape(origin)
+        return _bar(
+            f"<b>{html.escape(label)}</b>",
+            f'<span class="fd-cp-origin" title="{origin}">{origin}</span>' if origin else "",
+        )
 
     @staticmethod
     def _empty_html(spec: ComponentSpec) -> str:
@@ -1311,7 +1333,7 @@ class CodePanel(Viewer):
         )
 
     def _sync_collapsed(self, *_events):
-        # Docked to the right the panel has the window's height, so it is not folded to its header.
+        # In the sidecar the panel has the sidecar's height, so it is not folded to its header.
         foldable = self.dock == "bottom"
         self._body.visible = not self.collapsed
         self.collapse_button.visible = foldable and not self.collapsed

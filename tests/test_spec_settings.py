@@ -501,11 +501,16 @@ class TestCodePanel:
         assert (panel.instance_id, panel.field) == (node, "spec")
         assert panel.spec_editor.value == SPEC
 
-    async def test_a_narrow_window_keeps_the_spec_in_the_inspector(self, editor):
+    async def test_a_narrow_window_edits_the_spec_in_the_spec_tab(self, editor):
         node = editor.add_component("D/plain")
         editor._split_view.storage.window_width = 800
         select_on_canvas(editor._flow, node_id=node)
-        assert len(list(pn.Column(*editor._inspector._body).select(SpecEditor))) == 1
+        # The Settings tab has no editor of its own: the one editor is the code panel.
+        assert not list(pn.Column(*editor._inspector._body).select(SpecEditor))
+        assert editor.edit_spec(node)
+        panel = editor.code_panel
+        assert panel.dock == "sidecar" and (panel.instance_id, panel.field) == (node, "spec")
+        assert editor._inspector._spec_column.objects == [panel._layout]
 
     async def test_form_and_json_are_views_of_one_spec(self, editor):
         node = editor.add_component("D/plain")
@@ -569,13 +574,12 @@ class TestCodePanel:
         node = editor.add_component("D/json")
         field = _field(editor, node)
         panel = editor.code_panel
-        panel.toggle_dock()
         field.editor.value_input = '{"title": "Draft"}'
         if move == "toggle":
             panel.toggle_dock()
         else:
-            editor._split_view.storage.window_width = 1300
-        assert panel.dock == "bottom"
+            editor._split_view.storage.window_width = 900
+        assert panel.dock == "sidecar"
         assert field.editor.value == field.editor.value_input
         assert field.value == {"title": "Draft"}
         assert panel.dirty
@@ -767,10 +771,9 @@ class TestDraftsAcrossChanges:
         assert editor.open_code_panel(node, "sql")
         panel = editor.code_panel
         panel.code.value_input = "SELECT 2"
-        editor._split_view.storage.window_width = 800
+        editor.close_code_panel()
         assert not editor.code_panel_open
         editor._apply_config_patch(node, {"sql": "SELECT 3"})
-        editor._split_view.storage.window_width = 1400
         assert editor.open_code_panel(node, "sql")
         assert panel.code.value_input == "SELECT 3"
         assert panel._stale_notice.visible and panel.dirty
