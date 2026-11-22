@@ -402,6 +402,80 @@ If a second `open_dialog` or `confirm` replaces an unanswered confirmation, neit
 
 ---
 
+## Knowing why a component is created
+
+FlowDash creates a component whenever a node appears on the canvas, not only
+when someone adds one. `placement_context()` tells the component why, from its
+`__init__` or function body:
+
+| Value       | When                                                                              |
+|-------------|-----------------------------------------------------------------------------------|
+| `"new"`     | The node was just added: from the palette, by `add_component`, or by the agent    |
+| `"load"`    | A dashboard is being opened, imported or replaced, so the node has saved settings |
+| `"restore"` | Undo, redo or restoring a version brings the node back as it was                  |
+| `None`      | FlowDash is not creating the component, e.g. it is rendered on its own            |
+
+A component that fills in a starting point of its own, such as a default
+query, gives it to the node with `FlowDash.set_default`, not by setting its own
+param: a param set on the instance only changes what that instance shows,
+while `set_default` writes the node's config, which is saved with the
+dashboard and comes back when it is reopened:
+
+```python
+import panel as pn
+import param
+
+from panel_flowdash import current_dashboard, current_node_id, placement_context, register
+
+
+@register(component=True, config=["sql"])
+class Query(pn.viewable.Viewer):
+    sql = param.String(default="")
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        if placement_context() == "new":
+            current_dashboard().set_default(
+                current_node_id(), {"sql": "SELECT * FROM sales LIMIT 100"}
+            )
+
+    def __panel__(self):
+        return pn.pane.Markdown(self.param.sql)
+```
+
+The rule is a default only for a `"new"` node whose config is still empty.
+Nodes the agent adds, duplicates and nodes copied from Explore are `"new"` too
+but arrive configured, so `set_default` only fills fields still at their
+declared default. A node that `replace_yaml` adds reports `"load"`, and
+`set_default` changes nothing while a dashboard is loaded or a version
+restored, nor for viewers or in a preview. Its return value says whether a
+field took the default.
+
+The default is part of the edit that brought it about, so one undo takes back
+both. Set in `__init__` or a function body, it belongs to the placement. A
+component can also wait for its inputs, e.g. to derive a default from the
+columns of a table it is connected to, and call
+`set_default(editor.node_id(self), ...)` when they arrive: during a connection
+the default is recorded with it, and when an input arrives on its own the
+default is recorded as a config edit once the session's current event is
+handled.
+
+`FlowDash.code_panel_node` holds the id of the node the code panel under the
+canvas shows, or `None`; bind to `editor.param.code_panel_node` to, say, hide
+an "Edit spec" button of yours while the panel already shows the node.
+
+The reason belongs to the creation of that one node: a node the component adds
+while it is created is `"new"` again, and placements in other sessions and
+threads have their own. It is a context variable, so code running elsewhere
+sees `None`: a thread the component starts, and work handed to
+`loop.run_in_executor` or a `ThreadPoolExecutor`, which do not copy the
+context. `asyncio.to_thread` copies it, so a function it runs sees the reason.
+When in doubt, read it once in `__init__` and pass the value on. An async
+function body sees it while it runs, but a callback or an output that runs
+later does not.
+
+---
+
 ## Releasing resources when a component is removed
 
 FlowDash creates one instance of a Viewer component per node. When that node

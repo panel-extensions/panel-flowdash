@@ -14,6 +14,7 @@ from panel.custom import JSComponent
 from panel.viewable import Viewer
 
 from panel_flowdash.groups import component_nodes
+from panel_flowdash.ui.dashboard_bar import PHONE_TOUCH_CSS
 from panel_flowdash.ui.node_card import NodeCard
 from panel_flowdash.ui.tile_layout import GRID_COLUMNS, layout_summary
 
@@ -265,6 +266,7 @@ class StatusBar(Viewer):
                 "minHeight": 0,
                 "& .MuiButton-startIcon": {"ml": 0, "mr": "4px"},
             },
+            stylesheets=[PHONE_TOUCH_CSS],
         )
         self.issues_button.on_click(self._on_issues_clicked)
         self.counts = pmui.Typography(
@@ -318,6 +320,7 @@ class StatusBar(Viewer):
             margin=0,
             align="center",
             styles={"flex": "none"},
+            stylesheets=[PHONE_TOUCH_CSS],
         )
         self.minimap_toggle.link(flow, value="show_minimap", bidirectional=True)
         settings = self.editor.settings
@@ -330,7 +333,7 @@ class StatusBar(Viewer):
             margin=0,
             align="center",
             styles={"flex": "none"},
-            stylesheets=[_VIEW_TOGGLE_CSS],
+            stylesheets=[_VIEW_TOGGLE_CSS, PHONE_TOUCH_CSS],
             sx=_VIEW_TOGGLE_SX,
         )
         # Like the minimap, a view of this session only, which starts from the dashboard's setting.
@@ -353,7 +356,7 @@ class StatusBar(Viewer):
             margin=0,
             align="center",
             styles={"flex": "none"},
-            stylesheets=[_VIEW_TOGGLE_CSS],
+            stylesheets=[_VIEW_TOGGLE_CSS, PHONE_TOUCH_CSS],
             sx=_VIEW_TOGGLE_SX,
         )
         self.collapse_toggle.param.watch(self._on_collapse_toggled, "value")
