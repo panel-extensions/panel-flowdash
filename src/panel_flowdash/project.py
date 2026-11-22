@@ -28,6 +28,7 @@ import re
 import stat
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -155,8 +156,13 @@ _REGISTRY_LOCK = threading.RLock()
 _entry_points_loaded = False
 _entry_points_loading = False
 
-# Serializes the read-modify-write of project files within the process.
-_WRITE_LOCK = threading.Lock()
+# Serializes reads and the read-modify-write of project files within the
+# process: on Windows a file another handle has open cannot be replaced.
+_FILE_LOCK = threading.Lock()
+
+# How long a Windows sharing violation is retried, e.g. while another process
+# or a virus scanner has the file open.
+_SHARING_RETRY_SECONDS = 2.0
 
 
 def register_section(
@@ -385,7 +391,7 @@ class Project:
         """
         section = sections().get(name)
         data = section.dump(value) if section is not None and section.dump is not None else value
-        with _WRITE_LOCK:
+        with _FILE_LOCK:
             target = Path(self.path).resolve() if self.path is not None else None
             text = _read(target) if target is not None else _dump(self.data)
             old_data, old_positions = _parse(text, self.path)
@@ -562,9 +568,27 @@ def _check_written(name: str, value: Any, old: dict, new: dict, source: str | No
         raise ProjectError([Problem(message, source, section=name)])
 
 
+def _retry_sharing(operation: Callable[[], Any]) -> Any:
+    """Run ``operation``, retrying a Windows sharing violation for a bounded time."""
+    if os.name != "nt":
+        return operation()
+    deadline = time.monotonic() + _SHARING_RETRY_SECONDS
+    delay = 0.005
+    while True:
+        try:
+            return operation()
+        except PermissionError:
+            if time.monotonic() + delay > deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 2, 0.1)
+
+
 def _read(path: Path) -> str:
     try:
-        return path.read_text(encoding="utf-8") if path.exists() else ""
+        if not path.exists():
+            return ""
+        return _retry_sharing(lambda: path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError) as exc:
         raise ProjectError([Problem(f"Cannot read the project file: {exc}", str(path))]) from None
 
@@ -584,7 +608,7 @@ def _write_atomically(target: Path, text: str) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.chmod(temporary, mode)
-        os.replace(temporary, target)
+        _retry_sharing(lambda: os.replace(temporary, target))
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise
@@ -612,7 +636,8 @@ def load_project(path: str | os.PathLike, context: Mapping[str, Any] | None = No
     """Read and parse the project file at ``path``, see ``parse_project``."""
     path = Path(path)
     try:
-        text = path.read_text(encoding="utf-8")
+        with _FILE_LOCK:
+            text = _retry_sharing(lambda: path.read_text(encoding="utf-8"))
     except OSError as exc:
         raise ProjectError(
             [Problem(f"Cannot read the project file: {exc.strerror or exc}", str(path))]

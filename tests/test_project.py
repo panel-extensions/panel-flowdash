@@ -5,6 +5,7 @@ import concurrent.futures
 import dataclasses
 import importlib.metadata
 import logging
+import re
 import subprocess
 import sys
 import textwrap
@@ -183,7 +184,7 @@ class TestParse:
     def test_load_project_names_the_file(self, tmp_path, registry):
         register_section("limits", _limits)
         path = _write(tmp_path / PROJECT_FILE, "limits:\n  rows: x\n")
-        with pytest.raises(ProjectError, match=rf"^{path}:2:9: "):
+        with pytest.raises(ProjectError, match=rf"^{re.escape(str(path))}:2:9: "):
             load_project(path)
         assert load_project(_write(path, "limits:\n  rows: 2\n")).directory == tmp_path
 
@@ -382,6 +383,13 @@ class TestWriteBack:
         assert path.read_text() == original
         assert project.get("limits") == {"rows": 1}
 
+    def test_set_leaves_no_temporary_file(self, registry, tmp_path):
+        path = _write(tmp_path / PROJECT_FILE, "a: 1\n")
+        load_project(path).set("b", 2)
+        assert load_project(path).data == {"a": 1, "b": 2}
+        assert [p.name for p in tmp_path.iterdir()] == [PROJECT_FILE]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX file modes and symlinks")
     def test_set_keeps_the_file_mode_and_follows_symlinks(self, registry, tmp_path):
         target = _write(tmp_path / "real.yaml", "a: 1\n")
         target.chmod(0o640)
@@ -392,6 +400,30 @@ class TestWriteBack:
         assert (target.stat().st_mode & 0o777) == 0o640
         assert load_project(target).raw("b") == 2
         assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".")] == []
+
+    def test_sharing_violations_are_retried_on_windows(self, monkeypatch):
+        monkeypatch.setattr(project_module.os, "name", "nt")
+        monkeypatch.setattr(project_module.time, "sleep", lambda seconds: None)
+        attempts = []
+
+        def flaky():
+            attempts.append(1)
+            if len(attempts) < 3:
+                raise PermissionError(13, "Access is denied")
+            return "done"
+
+        assert project_module._retry_sharing(flaky) == "done"
+        assert len(attempts) == 3
+
+    def test_a_lasting_sharing_violation_is_raised(self, monkeypatch):
+        monkeypatch.setattr(project_module.os, "name", "nt")
+        monkeypatch.setattr(project_module, "_SHARING_RETRY_SECONDS", 0.05)
+
+        def locked():
+            raise PermissionError(13, "Access is denied")
+
+        with pytest.raises(PermissionError):
+            project_module._retry_sharing(locked)
 
     def test_concurrent_setters_lose_no_update(self, registry, tmp_path):
         path = _write(tmp_path / PROJECT_FILE, "# shared\n")
