@@ -34,7 +34,23 @@ nav = [
     {"Multi-step Pipeline" = "examples/pipeline.md"}
   ]},
   {"Reference" = [
-    {"API" = "reference/panel_flowdash.md"},
+    {"API" = [
+      {"panel_flowdash" = "reference/panel_flowdash.md"},
+      {"Registry" = "reference/api/registry.md"},
+      {"Component Libraries" = "reference/api/component_library.md"},
+      {"Component Spec" = "reference/api/component_spec.md"},
+      {"Port Types" = "reference/api/port_types.md"},
+      {"Selections" = "reference/api/selection.md"},
+      {"Dataflow Engine" = "reference/api/dataflow_engine.md"},
+      {"Dashboard Store" = "reference/api/dashboard_store.md"},
+      {"Groups" = "reference/api/groups.md"},
+      {"Parameters" = "reference/api/parameters.md"},
+      {"Turns" = "reference/api/turns.md"},
+      {"Edit history" = "reference/api/history.md"},
+      {"Dashboard YAML" = "reference/api/agent.md"},
+      {"App Builder" = "reference/api/app.md"},
+      {"Utilities" = "reference/api/util.md"}
+    ]},
     {"Dashboard YAML Format" = "reference/dashboard-yaml.md"},
     {"Project File" = "reference/project-file.md"}
   ]},
@@ -135,6 +151,7 @@ paths = ["src"]
 [project.plugins.mkdocstrings.handlers.python.options]
 docstring_style = "numpy"
 show_if_no_docstring = true
+show_source = false
 filters = ["!^_"]
 
 # Extra configuration
