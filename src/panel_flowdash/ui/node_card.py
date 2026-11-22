@@ -808,7 +808,8 @@ class NodeCard(Viewer):
             name = html.escape(port["label"])
             # The card ignores the pointer outside its actions, so a tooltip here would never show;
             # the port's handle carries it instead.
-            opt_tag = '<span class="fd-popt">optional</span>' if not port.get("required") else ""
+            optional = not port.get("required") and not port.get("connected")
+            opt_tag = '<span class="fd-popt">optional</span>' if optional else ""
             rows.append(
                 f'<div class="fd-port fd-in" data-port="{html.escape(port["name"], quote=True)}">'
                 f'<span class="fd-name">{name}</span>{opt_tag}</div>'

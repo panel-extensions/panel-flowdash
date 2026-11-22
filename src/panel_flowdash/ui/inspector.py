@@ -20,7 +20,6 @@ from functools import partial
 import panel as pn
 import panel_material_ui as pmui
 import param
-from markdown_it import MarkdownIt
 from panel.io.state import set_curdoc
 from panel.viewable import Viewer
 
@@ -74,7 +73,7 @@ from panel_flowdash.ui.status_bar import (
     connection_title,
     select_on_canvas,
 )
-from panel_flowdash.ui.text import field_label, text_alert, text_typography
+from panel_flowdash.ui.text import field_label, markdown_renderer, text_alert, text_typography
 from panel_flowdash.ui.tile_layout import tile_entry, update_tile
 from panel_flowdash.ui.tile_options import TileOptions
 from panel_flowdash.util import is_failure
@@ -175,6 +174,8 @@ _MARKDOWN_RE = re.compile(
     r"^(#{1,6}\s|\s*([-*+]|\d{1,3}\.)\s|\s*\|.*\|\s*$|\s*```)|\*\*\S|\[[^\]]+\]\([^)]+\)|`[^`\n]+`",
     re.MULTILINE,
 )
+
+_MARKDOWN = markdown_renderer().enable("table")
 
 _MARKDOWN_CSS = """
 :host { font-size: 12px; line-height: 1.45; color: var(--mui-palette-text-secondary, inherit);
@@ -563,7 +564,7 @@ def value_preview(editor: t.Any, value: t.Any, hooked: bool = False) -> list[Vie
 
 def _markdown(text: str) -> pn.pane.HTML:
     """Render a component's Markdown with no outer margins, and its HTML shown as typed."""
-    rendered = MarkdownIt("commonmark", {"html": False}).enable("table").render(text)
+    rendered = _MARKDOWN.render(text)
     return pn.pane.HTML(
         rendered,
         margin=0,

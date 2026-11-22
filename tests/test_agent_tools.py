@@ -30,6 +30,7 @@ from panel_flowdash.agent.live import LiveDashboardOps
 from panel_flowdash.agent.tools import (
     ARTIFACT_KIND,
     FlowDashDeps,
+    _duration,
     approval_policy,
     dashboard_toolset,
 )
@@ -1150,3 +1151,11 @@ class TestTurns:
         first, second = ops.editor.turns
         assert first == failed and second.run == again.run_id != failed.run
         assert ops.editor.node_origin("second") == second.id
+
+
+@pytest.mark.parametrize(
+    "seconds, text",
+    [(0.2, "1 second"), (30, "30 seconds"), (60, "1 minute"), (180, "3 minutes")],
+)
+def test_an_edit_wait_is_named_in_seconds_under_a_minute(seconds, text):
+    assert _duration(seconds) == text

@@ -624,7 +624,10 @@ async def test_adding_while_the_assistant_edits_too_long_is_refused(store, monke
     run = session.explore_runner.run_id
     drawer = asyncio.ensure_future(session.runner.run("A please"))
     await _until(lambda: "a1" in _nodes(app._editor), drawer)
-    with pytest.raises(PermissionError, match="busy with the assistant's edit"):
+    with pytest.raises(
+        PermissionError,
+        match="busy with the assistant's edit, which did not finish within 1 second",
+    ):
         await session.add_answer(run, "twice")
     a_end.set()
     await drawer
