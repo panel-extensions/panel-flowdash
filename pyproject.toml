@@ -67,6 +67,8 @@ dependencies = [
     # Parameter.metadata, read for output port declarations, arrived in 2.3.
     "param >=2.3.0",
     "pyyaml",
+    # Spec text is YAML 1.2, so keys like `on` stay strings, edited with its comments kept.
+    "ruamel.yaml >=0.18",
 ]
 
 [project.scripts]

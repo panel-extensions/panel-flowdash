@@ -27,9 +27,14 @@ held only it, so a spec says no more than it has to.
 from __future__ import annotations
 
 import copy
+import datetime as dt
+import io
 import json
 import typing as t
 from dataclasses import dataclass, field
+
+from ruamel.yaml import YAML, YAMLError
+from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
 Path = tuple[str, ...]
 
@@ -47,7 +52,7 @@ class SpecPathError(ValueError):
 
 
 class SpecTextError(ValueError):
-    """Spec text that is not a JSON object, with the line and column (from 1) at fault."""
+    """Spec text that is not a JSON object or YAML mapping, with the line and column (from 1) at fault."""
 
     def __init__(self, message: str, line: int = 1, column: int = 1):
         super().__init__(message)
@@ -460,3 +465,161 @@ def parse_spec(text: str) -> dict:
     if not isinstance(value, dict):
         raise SpecTextError("The spec must be a JSON object, in { }.")
     return value
+
+
+def _yaml() -> YAML:
+    """Return a YAML 1.2 round-trip reader and writer, so `on` or `no` stay strings and comments are kept."""
+    yaml = YAML()
+    yaml.indent(mapping=2, sequence=4, offset=2)
+    # Long strings, e.g. Vega expressions, stay on one line.
+    yaml.width = 4096
+    yaml.representer.add_representer(
+        type(None), lambda r, _value: r.represent_scalar("tag:yaml.org,2002:null", "null")
+    )
+    return yaml
+
+
+def _as_json(spec: t.Any) -> t.Any:
+    """Return a copy of *spec* holding JSON values only, as :func:`format_spec` writes them."""
+    return json.loads(json.dumps(spec, ensure_ascii=False, default=str))
+
+
+def _plain(value: t.Any) -> t.Any:
+    """Return what YAML read as plain JSON values: dicts, lists, strings, numbers, booleans and None.
+
+    A date, which YAML reads from an unquoted ``2024-01-31``, stays the
+    string it was written as.
+    """
+    if isinstance(value, dict):
+        return {str(k): _plain(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_plain(v) for v in value]
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, (dt.date, dt.datetime)):
+        return value.isoformat()
+    if isinstance(value, int):
+        return int(value)
+    if isinstance(value, float):
+        return float(value)
+    if isinstance(value, str):
+        return str(value)
+    if hasattr(value, "value"):
+        # A tagged scalar, e.g. `!foo bar`, keeps its value.
+        return _plain(value.value)
+    return value
+
+
+def _same(a: t.Any, b: t.Any) -> bool:
+    """Whether two plain values are the same as JSON, so ``1`` and ``True`` differ and key order counts."""
+    try:
+        return json.dumps(a, default=str) == json.dumps(b, default=str)
+    except (TypeError, ValueError):
+        return False
+
+
+def parse_spec_yaml(text: str) -> tuple[dict, t.Any]:
+    """Return the spec YAML 1.2 *text* holds, ``{}`` for blank text, and the document it was read from.
+
+    The document keeps the text's comments and layout, see :func:`format_spec_yaml`.
+
+    Raises
+    ------
+    SpecTextError
+        Saying where the text is not valid YAML, or that it is not a mapping.
+    """
+    if not text.strip():
+        return {}, None
+    try:
+        doc = _yaml().load(text)
+    except YAMLError as exc:
+        mark = getattr(exc, "problem_mark", None) or getattr(exc, "context_mark", None)
+        line, column = (mark.line + 1, mark.column + 1) if mark is not None else (1, 1)
+        problem = getattr(exc, "problem", None) or str(exc).splitlines()[0]
+        raise SpecTextError(f"Line {line}, column {column}: {problem}.", line, column) from exc
+    if doc is None:
+        return {}, None
+    if not isinstance(doc, dict):
+        raise SpecTextError("The spec must be a YAML mapping of keys to values.")
+    return _plain(doc), doc
+
+
+def _merged(node: t.Any, value: t.Any) -> t.Any:
+    """Return *value* written into the YAML *node* in place, keeping the comments of what stays."""
+    if isinstance(node, CommentedMap) and isinstance(value, dict):
+        for key in [k for k in node if str(k) not in value]:
+            del node[key]
+        keys = {str(k): k for k in node}
+        for key, item in value.items():
+            if key in keys:
+                node[keys[key]] = _merged(node[keys[key]], item)
+            else:
+                node[key] = item
+        for key in value:
+            # The spec's order, which a form keeps, wins over the text's.
+            node.move_to_end(keys.get(key, key))
+        return node
+    if isinstance(node, CommentedSeq) and isinstance(value, list) and len(node) == len(value):
+        for i, item in enumerate(value):
+            node[i] = _merged(node[i], item)
+        return node
+    return node if _same(_plain(node), value) else value
+
+
+def format_spec_yaml(
+    spec: t.Any, doc: t.Any = None
+) -> tuple[str, dict[Path, tuple[int, int]], t.Any]:
+    """Return *spec* as YAML 1.2 text, its lines per path, and the document written.
+
+    With the *doc* of earlier text, see :func:`parse_spec_yaml`, the spec is
+    written into it, so the comments and layout of the keys that stay are
+    kept. An empty spec is blank text.
+    """
+    if not spec:
+        return "", {}, None
+    if isinstance(doc, CommentedMap):
+        doc = _merged(doc, _as_json(spec))
+    else:
+        doc = _yaml().load(_dump(_as_json(spec)))
+    text = _dump(doc)
+    return text, text_spans(text), doc
+
+
+def _dump(value: t.Any) -> str:
+    out = io.StringIO()
+    _yaml().dump(value, out)
+    return out.getvalue().rstrip("\n")
+
+
+def text_spans(text: str) -> dict[Path, tuple[int, int]]:
+    """Return the first and last line (from 0) each path takes in spec text, JSON or YAML as written.
+
+    A path ends on the line before the next key or item at its level, so
+    comments after it count as its own, leaving out closing brackets and
+    blank lines. Text that does not parse has no lines.
+    """
+    try:
+        doc = _yaml().load(text) if text.strip() else None
+    except YAMLError:
+        return {}
+    spans: dict[Path, tuple[int, int]] = {}
+    lines = text.splitlines()
+    last = len(text.rstrip().splitlines()) - 1
+
+    def walk(node: t.Any, prefix: Path, end: int):
+        if isinstance(node, CommentedMap):
+            entries = [((*prefix, str(k)), node.lc.key(k)[0], node[k]) for k in node]
+        elif isinstance(node, CommentedSeq):
+            entries = [((*prefix, str(i)), node.lc.item(i)[0], v) for i, v in enumerate(node)]
+        else:
+            return
+        for i, (path, start, value) in enumerate(entries):
+            stop = entries[i + 1][1] - 1 if i + 1 < len(entries) else end
+            # Closing brackets and blank lines after a value are not its own.
+            while stop > start and lines[stop].strip().rstrip(",") in ("", "}", "]"):
+                stop -= 1
+            spans[path] = (start, stop)
+            walk(value, path, stop)
+
+    walk(doc, (), last)
+    return spans

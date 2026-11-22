@@ -637,7 +637,7 @@ class TestRunGuards:
         panel.run_on_change = True
         calls = []
         monkeypatch.setattr(panel, "run", lambda *a: calls.append(a))
-        panel._running = True
+        panel.running = True
         panel.code.value_input = "p_year == 2016"
         await asyncio.sleep(0.2)
         assert calls == []

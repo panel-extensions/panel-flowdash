@@ -2858,6 +2858,7 @@ class FlowDash(Viewer):
             tile = self._inspect_tiles[instance_id] = self._make_tile(item, spec, view, bounds)
         tile.set_chrome(not self._tile_grid.editable)
         tile.set_style(framed=self._tile_framed(item), titled=self.settings.tile_titles)
+        tile.set_stale(self._code_stale(instance_id))
         self._sync_tile(instance_id, tile, spec)
         return tile
 
@@ -4065,6 +4066,8 @@ class FlowDash(Viewer):
         self._restore_split = self._restore_split and self._split_view.preferences.split
         self._apply_stored_split()
         self._sync_code_dock_side()
+        if self._code_panel is not None:
+            self._sync_code_spec_view()
 
     @param.depends("editable", watch=True)
     def _apply_stored_split(self):
@@ -4102,7 +4105,39 @@ class FlowDash(Viewer):
             self._inspector._panel.param.watch(lambda _e: self._sync_code_dock_side(), "width")
             panel.param.watch(self._sync_code_dock, ["collapsed", "instance_id"])
             panel.param.watch(self._on_code_drafts, "dirty")
+            self._sync_code_spec_view()
+            panel.param.watch(self._on_code_spec_view, ["spec_view", "spec_text"])
+            # The held drafts change with "dirty" too.
+            panel.param.watch(self._sync_stale_marks, ["stale", "dirty"])
         return self._code_panel
+
+    def _sync_code_spec_view(self):
+        """Show specs in the code panel in the view the browser last had."""
+        preferences = self._split_view.preferences
+        self._code_panel.param.update(
+            spec_view=preferences.spec_view, spec_text=preferences.spec_text
+        )
+
+    def _on_code_spec_view(self, *_events):
+        panel = self._code_panel
+        self._split_view.preferences.param.update(
+            spec_view=panel.spec_view, spec_text=panel.spec_text
+        )
+
+    def _code_stale(self, instance_id: str) -> str | None:
+        """Return whether the node's result does not match its spec in the code panel: ``"draft"``, ``"running"`` or None."""
+        panel = getattr(self, "_code_panel", None)
+        return panel.stale_states().get(instance_id) if panel is not None else None
+
+    def _sync_stale_marks(self, *_events):
+        """Mark the cards and tiles of the nodes whose result does not match their spec in the code panel."""
+        states = self._code_panel.stale_states()
+        for instance_id, card in self._node_cards().items():
+            stale = states.get(instance_id)
+            if card.stale != stale:
+                card.stale = stale
+        for instance_id, tile in self._inspect_tiles.items():
+            tile.set_stale(states.get(instance_id))
 
     @property
     def code_panel_open(self) -> bool:
@@ -5889,6 +5924,7 @@ class FlowDash(Viewer):
             collapsed=collapsed,
             on_layout=_EditorCall(self, "_on_card_layout", instance_id),
         )
+        card.stale = self._code_stale(instance_id)
         node_dict["view"] = card
         _, css_vars = card.handle_layout()
         if css_vars:

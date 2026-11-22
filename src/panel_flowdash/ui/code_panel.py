@@ -5,21 +5,24 @@ The editor opens it for one node, see
 it follows the node selected on the canvas. It edits the node's spec, what the
 node does rather than its settings, which stay in the inspector: a code field,
 e.g. a query, as text, or a dict declaring a spec form, e.g. a chart spec, as
-a form of its settings or as JSON, see
-:class:`~panel_flowdash.ui.spec_field.SpecEditor`. A node without a spec shows
-its result only.
+a form of its settings, as YAML or as JSON, see
+:class:`~panel_flowdash.ui.spec_field.SpecEditor`. The browser remembers the
+view picked. A node without a spec shows its result only.
 
-Format (Shift+Alt+F) lays out a spec's JSON, or code whose field or
+Format (Shift+Alt+F) lays out a spec's text, or code whose field or
 language has a formatter, see :func:`~panel_flowdash.ui.code_field.register_formatter`,
 as an edit of the draft that Ctrl+Z undoes.
 
 The edit is a draft until Run (or Ctrl+Enter) applies it as one edit. With
-"Run on change" on, a pause in typing runs it too. A component with a
-``check_config`` has the draft checked first, see
+"Run on change" on, the default for a spec, a form edit runs at once, spec
+text once it parses and typing pauses, and code after a pause in typing. A
+component with a ``check_config`` has the draft checked first, see
 :class:`~panel_flowdash.ui.config_draft.ConfigDraft`: a draft that fails stays
 in the editor with the problems marked on their lines, and the result keeps
-showing the node's last good output. Drafts not run are kept per node and
-field while the panel shows another node or is closed.
+showing the node's last good output. While the result does not match the
+draft, or a run is in flight, the result is dimmed under a badge saying so.
+Drafts not run are kept per node and field while the panel shows another
+node or is closed.
 """
 
 from __future__ import annotations
@@ -50,7 +53,9 @@ from panel_flowdash.spec_settings import (
     declared_settings,
     delete_path,
     format_spec,
+    format_spec_yaml,
     parse_spec,
+    parse_spec_yaml,
     set_path,
 )
 from panel_flowdash.ui.choice_widgets import setting_choices
@@ -75,8 +80,12 @@ if t.TYPE_CHECKING:
 
 #: Rows of a DataFrame result shown at most.
 MAX_ROWS = 500
-#: Seconds of no typing after which "Run on change" runs the draft.
+#: Seconds of no typing after which "Run on change" runs a code draft.
 RUN_DELAY = 0.8
+#: Seconds a run, or a draft "Run on change" is about to run, lasts before the result is marked stale.
+STALE_DELAY = 0.3
+#: Whether "Run on change" starts on, by how the field is edited.
+RUN_ON_CHANGE = {"spec": True, "code": False}
 HEADER_HEIGHT = 48
 #: Widths of the code and the result in percent of the panel; a table result wants the room.
 SPLIT_SIZES = (40.0, 60.0)
@@ -89,12 +98,16 @@ MIN_PANE_HEIGHT = 140
 FORMAT_SHORTCUT = "Shift+Alt+F"
 _EDITOR_CLASS = "fd-code-panel-editor"
 _SPEC_TEXT_CLASS = "fd-code-panel-spec-json"
-#: The views of a spec with a form, by label, as :attr:`SpecEditor.mode` values.
-SPEC_VIEWS = {"Form": "form", "JSON": "spec"}
+#: The views of a spec, by label.
+SPEC_VIEWS = {"Form": "form", "YAML": "yaml", "JSON": "json"}
+#: The views of a spec, by label, for a spec without a form.
+TEXT_VIEWS = {"YAML": "yaml", "JSON": "json"}
 # Where a held draft keeps spec text that was typed but is not a valid spec yet.
 _TEXT = object()
 # Where a held draft keeps the field's value it was written against.
 _BASE = object()
+# Where a held draft keeps the syntax its spec text was typed in.
+_SYNTAX = object()
 _MISSING = object()
 logger = logging.getLogger(__name__)
 
@@ -152,6 +165,12 @@ _STRIP_CSS = """
 :host(.fd-cp-footer) { border-bottom: none; padding: 0 12px;
   border-top: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.12)); }
 :host(.fd-cp-subheader) { padding: 0 12px; }
+"""
+
+# The strip over a result that does not match the draft.
+_STALE_CSS = """
+:host(.fd-code-stale-badge) { padding: 0 12px; background: color-mix(in srgb, var(--mui-palette-warning-main, #ed6c02) 12%,
+  var(--mui-palette-background-paper, #fff)); }
 """
 
 _TABLE_CSS = """
@@ -348,7 +367,33 @@ class CodePanel(Viewer):
     )
 
     run_on_change = param.Boolean(
-        default=False, doc="Whether a pause in typing runs the draft, without pressing Run."
+        default=False,
+        doc="""
+        Whether an edit runs the draft without pressing Run, for the field
+        shown. It starts on for a spec and off for code, see
+        :data:`RUN_ON_CHANGE`, and is remembered for each while the panel lives.""",
+    )
+
+    running = param.Boolean(default=False, doc="Whether a run of the draft is in flight.")
+
+    stale = param.Selector(
+        default=None,
+        objects=[None, "draft", "running"],
+        doc="""
+        Whether the result shown does not match the draft: a ``"draft"`` not
+        run, or ``"running"``.""",
+    )
+
+    spec_view = param.Selector(
+        default="form",
+        objects=list(SPEC_VIEWS.values()),
+        doc="The view of a spec: its form, or its text as YAML or JSON.",
+    )
+
+    spec_text = param.Selector(
+        default="yaml",
+        objects=list(TEXT_VIEWS.values()),
+        doc="The syntax of a spec's text, the one last picked; a spec without a form shows it.",
     )
 
     collapsed = param.Boolean(default=False, doc="Whether only the header is shown.")
@@ -384,8 +429,12 @@ class CodePanel(Viewer):
         self._syncing = False
         # Drafts not run yet, per node and field, kept when the panel shows another field or closes.
         self._held: dict[tuple[str, str], dict[str, t.Any]] = {}
-        self._running = False
+        # The YAML documents of specs shown before, per node and field, whose comments are kept.
+        self._yaml_docs: dict[tuple[str, str], t.Any] = {}
+        self._run_on_change = dict(RUN_ON_CHANGE)
         self._run_again = False
+        # Counts the stale states worked out, so a delayed one is not shown once outdated.
+        self._stale_shown = 0
         self._format_error: str | None = None
         # Set while the panel edits the spec itself, e.g. formatting it, which "Run on change" does not run.
         self._hold_run = False
@@ -510,7 +559,7 @@ class CodePanel(Viewer):
             align="center",
         )
         # A spec dict is edited by a SpecEditor whose parts the panel lays out itself.
-        self.spec_editor = SpecEditor(mode="form", margin=0)
+        self.spec_editor = SpecEditor(mode="form", syntax=self.spec_text, margin=0)
         self.spec_editor.editor.param.update(
             height=None,
             min_height=80,
@@ -522,7 +571,7 @@ class CodePanel(Viewer):
         self.spec_editor.status.margin = (4, 12)
         self.spec_editor.param.watch(self._spec_edited, "value")
         self.spec_editor.param.watch(self._spec_typed, ["unsent", "error"])
-        self.spec_editor.param.watch(lambda _event: self._sync_kind(), "mode")
+        self.spec_editor.param.watch(self._spec_mode_set, "mode")
         self.spec_tools = AceTools(
             target_class=_SPEC_TEXT_CLASS,
             options={**ACE_OPTIONS, "wrap": False, "tabSize": 2},
@@ -534,7 +583,7 @@ class CodePanel(Viewer):
         )
         self.view_toggle = pmui.RadioButtonGroup(
             options=SPEC_VIEWS,
-            value=self.spec_editor.mode,
+            value=self.spec_view,
             size="small",
             margin=(0, 12, 0, 0),
             align="center",
@@ -549,9 +598,8 @@ class CodePanel(Viewer):
             },
             css_classes=["fd-code-spec-view"],
         )
-        self.view_toggle.link(self.spec_editor, value="mode", bidirectional=True)
+        self.view_toggle.param.watch(self._view_picked, "value")
         self._spec_form = pn.Column(
-            self.spec_editor.banner,
             self.spec_editor.form,
             margin=0,
             styles={"padding": "8px 16px", "box-sizing": "border-box", "min-height": "0"},
@@ -574,16 +622,16 @@ class CodePanel(Viewer):
             css_classes=["fd-code-empty"],
         )
         self._problems = pn.Column(margin=0, sizing_mode="stretch_width")
-        # Why the form is disabled while the JSON does not parse, shown in the Form view.
+        # Why the form is disabled while the text does not parse, shown in the Form view.
         self.fix_json_button = pmui.Button(
-            label="Fix in JSON",
+            label="Fix in YAML",
             variant="text",
             size="small",
             margin=(0, 12, 4, 12),
             sx={"textTransform": "none"},
             css_classes=["fd-code-fix-json"],
         )
-        self.fix_json_button.on_click(lambda _event: setattr(self.view_toggle, "value", "spec"))
+        self.fix_json_button.on_click(lambda _event: setattr(self, "spec_view", self.spec_text))
         self._json_error = pn.Column(
             margin=0,
             sizing_mode="stretch_width",
@@ -729,6 +777,32 @@ class CodePanel(Viewer):
         self._result_body = pn.Column(
             margin=0, sizing_mode="stretch_both", scroll="y-auto", css_classes=["fd-code-result"]
         )
+        # Says the result does not match the draft, or that a run is in flight.
+        self._stale_text = pn.pane.HTML(
+            "", margin=0, align="center", sizing_mode="stretch_width", stylesheets=[_BAR_CSS]
+        )
+        self.stale_run_button = pmui.Button(
+            label="Run",
+            icon="play_arrow",
+            variant="text",
+            size="small",
+            margin=(0, 4, 0, 0),
+            align="center",
+            description="Run the draft (Ctrl+Enter)",
+            sx={"textTransform": "none", "py": "1px", "fontSize": "0.75rem"},
+            css_classes=["fd-code-stale-run"],
+        )
+        self.stale_run_button.on_click(lambda _event: self.run())
+        self._stale_badge = pn.Row(
+            self._stale_text,
+            self.stale_run_button,
+            height=32,
+            margin=0,
+            visible=False,
+            sizing_mode="stretch_width",
+            stylesheets=[_STRIP_CSS, _STALE_CSS],
+            css_classes=["fd-code-stale-badge"],
+        )
         self._result_footer = pn.pane.HTML(
             "", margin=0, align="center", sizing_mode="stretch_width", stylesheets=[_BAR_CSS]
         )
@@ -742,6 +816,7 @@ class CodePanel(Viewer):
         )
         self._result_column = pn.Column(
             result_header,
+            self._stale_badge,
             self._result_body,
             result_footer,
             margin=0,
@@ -760,6 +835,9 @@ class CodePanel(Viewer):
         )
         self.param.watch(self._sync_collapsed, "collapsed")
         self.param.watch(self._sync_run_button, ["dirty", "run_on_change", "field"])
+        self.param.watch(self._run_on_change_set, "run_on_change")
+        self.param.watch(lambda *_events: self._sync_stale(), ["running", "dirty", "instance_id"])
+        self.param.watch(self._spec_view_set, ["spec_view", "spec_text"])
         self.param.watch(self._sync_dock, ["dock", "can_dock_right"])
         self._sync_dock()
         self._sync_collapsed()
@@ -917,10 +995,13 @@ class CodePanel(Viewer):
                     settings=declared_settings(parameter) or [],
                     choices=setting_choices(choices, field),
                 )
-                self.spec_editor.load(copy.deepcopy(getattr(state, field) or {}))
-                self._language.object = _bar("JSON")
+                self.spec_editor.load(
+                    copy.deepcopy(getattr(state, field) or {}),
+                    comments=self._yaml_docs.get((instance_id, field)),
+                )
             else:
                 self._language.object = _bar("")
+            self.run_on_change = self._run_on_change.get(kind, False)
         finally:
             self._syncing = False
         self._code_header.object = self._code_header_html(spec, parameter)
@@ -976,25 +1057,87 @@ class CodePanel(Viewer):
             self.spec_tools.focus += 1
 
     def _sync_kind(self):
-        """Show the editor for the field shown: code, the spec's form or JSON, or the empty state."""
+        """Show the editor for the field shown: code, the spec's form or text, or the empty state."""
         kind = self._kind()
         has_form = kind == "spec" and bool(self.spec_editor.settings)
         form = has_form and self.spec_editor.mode == "form"
         self.code.visible = self.tools.visible = kind == "code"
         self._spec_form.visible = form
         self._spec_text.visible = self.spec_tools.visible = kind == "spec" and not form
-        self.view_toggle.visible = has_form
+        options = SPEC_VIEWS if has_form else TEXT_VIEWS
+        view = self.spec_view if has_form else self.spec_text
+        syncing, self._syncing = self._syncing, True
+        try:
+            self.view_toggle.param.update(options=options, value=view, visible=kind == "spec")
+        finally:
+            self._syncing = syncing
         self._empty.visible = kind is None
         formatter = self._formatter()
+        label = self.spec_editor.syntax_label
         self.format_button.param.update(
             visible=formatter is not None,
-            description=f"Format the {'JSON' if kind == 'spec' else 'code'} ({FORMAT_SHORTCUT})",
+            description=f"Format the {label if kind == 'spec' else 'code'} ({FORMAT_SHORTCUT})",
         )
         self.tools.can_format = kind == "code" and formatter is not None
         self.spec_tools.can_format = kind == "spec" and formatter is not None
+        self.fix_json_button.label = f"Fix in {label}"
         self._sync_json_error()
         if kind == "spec":
-            self._language.object = _bar("" if form else "JSON")
+            self._language.object = _bar("" if form else label)
+
+    def _view_picked(self, event):
+        """Show the spec's view picked, once text typed in the view left is applied.
+
+        Text that does not parse cannot be shown in the other syntax, so it
+        stays, saying why; the form says why it is disabled.
+        """
+        if self._syncing or event.new is None:
+            return
+        if self._kind() == "spec" and self._spec_text.visible and not self.spec_editor.flush():
+            if event.new != "form":
+                self._syncing = True
+                try:
+                    self.view_toggle.value = event.old
+                finally:
+                    self._syncing = False
+                self.spec_editor.status.object = (
+                    f"Not switched to {event.new.upper()}: the "
+                    f"{self.spec_editor.syntax_label} is not valid. {self.spec_editor.error}"
+                )
+                self._sync_dirty()
+                self._show_status()
+                return
+        self._sync_dirty()
+        self._show_status()
+        if event.new == "form":
+            self.spec_view = "form"
+        elif self.spec_editor.settings or self.spec_view != "form":
+            self.param.update(spec_view=event.new, spec_text=event.new)
+        else:
+            # A spec without a form keeps the view picked for those with one.
+            self.spec_text = event.new
+
+    def _spec_view_set(self, *_events):
+        if self.spec_view != "form" and self.spec_text != self.spec_view:
+            self.spec_text = self.spec_view
+            return
+        self.spec_editor.param.update(
+            mode="form" if self.spec_view == "form" else "spec", syntax=self.spec_text
+        )
+        self._sync_kind()
+
+    def _spec_mode_set(self, event):
+        """Follow the spec editor showing its text, e.g. for a link from the form to a path."""
+        if event.new == "spec" and self.spec_view == "form":
+            self.spec_view = self.spec_text
+        else:
+            self._sync_kind()
+
+    def _run_on_change_set(self, event):
+        kind = self._kind()
+        if not self._syncing and kind is not None:
+            self._run_on_change[kind] = event.new
+        self.spec_editor.live = event.new and kind == "spec"
 
     def _default_output(self, node: param.Parameterized | None, outputs: list[str]) -> str | None:
         """Return the output to show first: a table before a lazy value, e.g. a query's pipeline."""
@@ -1098,8 +1241,15 @@ class CodePanel(Viewer):
                 self.code.param.update(value=text, value_input=text)
             elif kind == "spec":
                 if self.field in held:
-                    self.spec_editor.load(copy.deepcopy(held[self.field]))
+                    self.spec_editor.load(
+                        copy.deepcopy(held[self.field]), comments=self.spec_editor.yaml_doc
+                    )
                 if _TEXT in held:
+                    syntax = held.get(_SYNTAX, self.spec_text)
+                    if syntax != self.spec_text:
+                        # Shown in the syntax it was typed in.
+                        views = {} if self.spec_view == "form" else {"spec_view": syntax}
+                        self.param.update(spec_text=syntax, **views)
                     # Applied as typed, so text that is not a valid spec shows why again.
                     self.spec_editor.editor.value = held[_TEXT]
         finally:
@@ -1121,6 +1271,8 @@ class CodePanel(Viewer):
         """Forget the drafts held for the node *instance_id*, e.g. once it is removed."""
         for key in [k for k in self._held if k[0] == instance_id]:
             del self._held[key]
+        for key in [k for k in self._yaml_docs if k[0] == instance_id]:
+            del self._yaml_docs[key]
         self.param.trigger("dirty")
 
     def discard(self):
@@ -1147,6 +1299,8 @@ class CodePanel(Viewer):
                 draft = self._held_draft()
                 if draft:
                     self._held[(self.instance_id, self.field)] = draft
+            if self._kind() == "spec" and self.spec_editor.yaml_doc is not None:
+                self._yaml_docs[(self.instance_id, self.field)] = self.spec_editor.yaml_doc
         self._stale = None
         self._show_stale()
         self._typing += 1
@@ -1157,7 +1311,8 @@ class CodePanel(Viewer):
             self._draft.on_result = None
         self._draft = None
         self._runs += 1
-        self.param.update(instance_id=None, field=None, dirty=False)
+        # A run still in flight is no longer followed.
+        self.param.update(instance_id=None, field=None, dirty=False, running=False)
         self.param.trigger("dirty")
         self.tools.param.update(diagnostics=[], completions=[])
         self.code.annotations = []
@@ -1239,6 +1394,7 @@ class CodePanel(Viewer):
         draft: dict[t.Any, t.Any] = self._patch()
         if self._kind() == "spec" and self._spec_pending():
             draft[_TEXT] = self.spec_editor.editor.value_input
+            draft[_SYNTAX] = self.spec_editor.syntax
         if draft:
             editor = self._flowdash
             state = editor._dataflow_graph.get_config_state(self.instance_id)
@@ -1256,6 +1412,71 @@ class CodePanel(Viewer):
             or self._stale is not None
         )
         self._show_result_footer()
+        self._sync_stale()
+
+    def _sync_stale(self):
+        """Dim the result under a badge while it does not match the draft, or a run is in flight.
+
+        A run, and a draft that "Run on change" is about to run, are shown
+        only once they last :data:`STALE_DELAY` seconds, so quick runs do not
+        flash.
+        """
+        if self.instance_id is None:
+            state = None
+        elif self.running:
+            state = "running"
+        elif self.dirty:
+            state = "draft"
+        else:
+            state = None
+        self._stale_shown += 1
+        wait = state == "running" or (
+            state == "draft" and self.stale is None and self.run_on_change
+        )
+        if not wait:
+            self._show_stale_state(state)
+            return
+        shown = self._stale_shown
+
+        async def later():
+            await asyncio.sleep(STALE_DELAY)
+            if shown == self._stale_shown:
+                self._show_stale_state(state)
+
+        param.parameterized.async_executor(later)
+
+    def _show_stale_state(self, state: str | None):
+        if state == "running":
+            text = f'<span class="fd-cp-warn">{_icon("hourglass_top")}<span>Running…</span></span>'
+        else:
+            text = (
+                f'<span class="fd-cp-warn">{_icon("edit_note")}'
+                "<span><b>Not run</b>: showing the previous version</span></span>"
+            )
+        self._stale_text.object = _bar(text)
+        self.stale_run_button.visible = state != "running"
+        self._stale_badge.visible = state is not None
+        classes = [c for c in self._result_body.css_classes if c != "fd-code-result-dimmed"]
+        # A result a failed check dims already is not dimmed twice.
+        if state is not None and not self._result:
+            classes.append("fd-code-result-dimmed")
+        if classes != self._result_body.css_classes:
+            self._result_body.param.update(
+                css_classes=classes,
+                styles={"opacity": "0.55"} if "fd-code-result-dimmed" in classes else {},
+            )
+        self.stale = state
+
+    def stale_states(self) -> dict[str, str]:
+        """Return the nodes whose result does not match their spec: ``"draft"`` or ``"running"``.
+
+        A node has a draft not run while it is shown with one, or holds one
+        for later.
+        """
+        states = {instance_id: "draft" for instance_id, _field in self._held}
+        if self.instance_id is not None and self.stale is not None:
+            states[self.instance_id] = self.stale
+        return states
 
     def _typed(self, _event):
         if self._syncing or self._kind() != "code":
@@ -1271,7 +1492,8 @@ class CodePanel(Viewer):
             return
         self._sync_dirty()
         if not self._hold_run:
-            self._run_later()
+            # The text waited for a pause in typing already, and a form edit runs at once.
+            self._run_later(delay=0)
 
     def _spec_typed(self, _event):
         self._sync_json_error()
@@ -1281,13 +1503,14 @@ class CodePanel(Viewer):
         self._show_status()
 
     def _sync_json_error(self):
-        """Say in the Form view why the form is disabled while the JSON does not parse."""
+        """Say in the Form view why the form is disabled while the text does not parse."""
         error = self.spec_editor.error if self._kind() == "spec" else None
         shown = error is not None and self._spec_form.visible
         if shown:
             self._json_error.objects = [
                 text_alert(
-                    f"The JSON is not a valid spec, so the form is disabled. {error}",
+                    f"The {self.spec_editor.syntax_label} is not a valid spec, so the form is "
+                    f"disabled. {error}",
                     severity="error",
                     margin=(8, 12, 4, 12),
                     sizing_mode="stretch_width",
@@ -1298,18 +1521,19 @@ class CodePanel(Viewer):
             self._json_error.objects = []
         self._json_error.visible = shown
 
-    def _run_later(self):
-        """With "Run on change", run the draft once typing pauses, or after a run in flight."""
+    def _run_later(self, delay: float | None = None):
+        """With "Run on change", run the draft after *delay* seconds of no edits, or after a run in flight."""
         if not (self.run_on_change and self.dirty):
             return
+        delay = RUN_DELAY if delay is None else delay
         self._typing += 1
         typing = self._typing
 
         async def later():
-            await asyncio.sleep(RUN_DELAY)
+            await asyncio.sleep(delay)
             if typing != self._typing:
                 return
-            if self._running:
+            if self.running:
                 self._run_again = True
             else:
                 self.run()
@@ -1329,7 +1553,9 @@ class CodePanel(Viewer):
                 and not self._spec_pending()
                 and _same_spec(self.spec_editor.value or {}, event.old or {})
             ):
-                self.spec_editor.load(copy.deepcopy(event.new or {}))
+                self.spec_editor.load(
+                    copy.deepcopy(event.new or {}), comments=self.spec_editor.yaml_doc
+                )
         finally:
             self._syncing = False
         self._sync_dirty()
@@ -1371,9 +1597,9 @@ class CodePanel(Viewer):
         self._close_completions()
         patch = self._patch()
         self._runs += 1
-        self._running = True
         self._run_again = False
         self._started = time.perf_counter()
+        self.running = True
         self._show_result_footer(running=True)
         if self._draft is not None:
             self._draft.propose(patch)
@@ -1397,10 +1623,12 @@ class CodePanel(Viewer):
         param.parameterized.async_executor(apply)
 
     def _formatter(self) -> t.Callable[[str], str] | None:
-        """Return what formats the text shown: the code field's formatter, or JSON's for spec text."""
+        """Return what formats the text shown: the code field's formatter, or the spec text's syntax's."""
         kind = self._kind()
         if kind == "spec":
-            return _format_spec_text if self._spec_text.visible else None
+            if not self._spec_text.visible:
+                return None
+            return _format_spec_yaml if self.spec_editor.syntax == "yaml" else _format_spec_text
         if kind != "code":
             return None
         state = self._flowdash._dataflow_graph.get_config_state(self.instance_id)
@@ -1454,7 +1682,7 @@ class CodePanel(Viewer):
 
     def _format_failed(self, kind: str | None, text: str, error: Exception):
         if kind == "spec":
-            # Applied as typed, so the editor marks where the JSON breaks, as Run would.
+            # Applied as typed, so the editor marks where the text breaks, as Run would.
             self.spec_editor.editor.value = text
             return
         self._format_error = f"Could not format: {error}"
@@ -1482,11 +1710,11 @@ class CodePanel(Viewer):
     def _ran(self, result: CheckResult):
         took = time.perf_counter() - self._started if self._started is not None else None
         self._started = None
-        self._running = False
         self._result = result
         if not result:
             self._ran_at = dt.datetime.now()
             self._took = took
+        self.running = False
         self._sync_dirty()
         self._show_status()
         self._show_result()
@@ -1549,9 +1777,8 @@ class CodePanel(Viewer):
         self._problems[:] = alerts
         invalid = self._kind() == "spec" and self.spec_editor.error is not None
         if invalid:
-            status = (
-                f'<span class="fd-cp-error">{_icon("error")}Not run, the JSON is not valid</span>'
-            )
+            label = self.spec_editor.syntax_label
+            status = f'<span class="fd-cp-error">{_icon("error")}Not run, the {label} is not valid</span>'
         elif result:
             count = len(result)
             status = (
@@ -1748,7 +1975,8 @@ class CodePanel(Viewer):
         elif self._result:
             text = '<span class="fd-cp-error">Not run, the check failed</span>'
         elif self._kind() == "spec" and self.spec_editor.error is not None:
-            text = '<span class="fd-cp-error">Not run, the JSON is not valid</span>'
+            label = self.spec_editor.syntax_label
+            text = f'<span class="fd-cp-error">Not run, the {label} is not valid</span>'
         elif self._stale is not None:
             text = "A draft written against an older version is waiting"
         elif self.dirty:
@@ -1779,6 +2007,12 @@ def _previewed(editor: FlowDash, value: t.Any, hooked: bool = False) -> list:
     except Exception:
         logger.exception("Previewing a %s failed", type(value).__name__)
         return [pn.pane.HTML(_bar(html.escape(summarize_value(value))), stylesheets=[_BAR_CSS])]
+
+
+def _format_spec_yaml(text: str) -> str:
+    """Return spec YAML *text* laid out as the editor shows a spec, keeping its comments."""
+    spec, doc = parse_spec_yaml(text)
+    return format_spec_yaml(spec, doc)[0]
 
 
 def _format_spec_text(text: str) -> str:
