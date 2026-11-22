@@ -177,6 +177,7 @@ from panel_flowdash.ui.palette import (
     preset_entries,
 )
 from panel_flowdash.ui.provenance import provenance_objects
+from panel_flowdash.ui.report_view import ReportView
 from panel_flowdash.ui.roles import component_role
 from panel_flowdash.ui.settings_dialog import SettingsDialog
 from panel_flowdash.ui.sheet import (
@@ -695,6 +696,9 @@ _FAILED_NODE_STYLE = {
 # Stands in for the component of an exported item the exporting user may not
 # use. Importing it back restores the stored item, or drops it.
 RESTRICTED_COMPONENT_ID = "flowdash:restricted"
+
+# What an editor can show: the canvas or the tile grid, the Explore view or the Report view.
+SURFACES = ("workspace", "explore", "report")
 
 # Space between a group's nodes and its frame, in px.
 _GROUP_PADDING = 24
@@ -1328,12 +1332,24 @@ class FlowDash(Viewer):
         on the left. Only meaningful while `editable`.""",
     )
 
+    surface = param.Selector(
+        default="workspace",
+        objects=list(SURFACES),
+        doc="""
+        What the editor shows, in view and in edit mode: 'workspace' for the
+        canvas or the tile grid (as `mode` and `editable` say), 'explore' for
+        the Explore view, the dashboard's turns as a feed with the outputs
+        each made (see :mod:`panel_flowdash.explore`), or 'report' for the
+        Report view, the dashboard read as a document (see
+        :mod:`panel_flowdash.report`). The views of the tiles move between
+        them, so only one is ever on screen.""",
+    )
+
     explore = param.Boolean(
         default=False,
         doc="""
-        Whether the Explore view is shown in place of the canvas and the tile
-        grid, in view and in edit mode: the dashboard's turns as a feed, each
-        with the outputs it made, live. See :mod:`panel_flowdash.explore`.""",
+        Whether the Explore view is shown: the same as ``surface == 'explore'``.
+        Setting it to False returns to the workspace.""",
     )
 
     edited = param.Event(doc="Triggered after each edit is recorded in its turn.")
@@ -1610,6 +1626,7 @@ class FlowDash(Viewer):
         self._turn_log = TurnLog()
         self._origins: dict[str, str] = {}
         self._explore_feed = None
+        self._report_view = None
         # The dashboard's parameters by name, each naming its node by instance id.
         self._parameters: dict[str, DashboardParameter] = {}
         # The component each parameter's node had when it was declared or loaded.
@@ -1647,6 +1664,11 @@ class FlowDash(Viewer):
         self._recording_edit = False
         # Counts recorded edits, so a default knows whether an edit took it in.
         self._edit_count = 0
+        # Defaults set while an edit rewired an input, by node, keys and `_edit_count` then.
+        self._pending_defaults: list[tuple[str, list[str], int]] = []
+        # Defaults set off the session's event loop, applied on it, see `set_default`.
+        self._queued_defaults: list[tuple[str, dict]] = []
+        self._queued_lock = threading.Lock()
         self.param.watch(self._on_dirty, "dirty", onlychanged=False)
         self._history = EditHistory(self)
         self._restricted_seen: dict[str, DashboardItem] = {}
@@ -1661,6 +1683,11 @@ class FlowDash(Viewer):
         self.settings.param.watch(self._on_setting_changed, self._settings_names)
         if pn.state.curdoc is not None:
             _SESSION_EDITORS[pn.state.curdoc] = weakref.ref(self)
+        self._session_doc = (
+            weakref.ref(pn.state.curdoc)
+            if pn.state.curdoc is not None and pn.state.curdoc.session_context is not None
+            else None
+        )
 
         self._dataflow_graph = DataflowGraph(
             {},
@@ -2949,7 +2976,8 @@ class FlowDash(Viewer):
     def _render_how_made(self, instance_id: str, turn_id: str | None, *, open_sheet: bool):
         if not self.made_by_agent(instance_id):
             return
-        if self._inspector.visible:
+        # Over the Report view the side sheet shows it, as in view mode.
+        if self._inspector.visible and self.surface == "workspace":
             self._close_inspection_dialog()
             self._show_in_sidecar(instance_id, HISTORY, turn_id)
             return
@@ -3915,35 +3943,58 @@ class FlowDash(Viewer):
             self._explore_feed = ExploreFeed(self)
         return self._explore_feed
 
-    @pn.io.hold()
+    @property
+    def report_view(self):
+        """The :class:`~panel_flowdash.ui.report_view.ReportView` the Report view shows, made on first use."""
+        if self._report_view is None:
+            # ReportView is imported with the editor: its contents list is a JSComponent,
+            # whose type must be known before the first page is served.
+            self._report_view = ReportView(editor=self)
+        return self._report_view
+
     @param.depends("explore", watch=True)
-    def _show_explore(self):
-        """Show the Explore view or the canvas and tile grid; never both, as they share the tiles' views."""
+    def _explore_to_surface(self):
+        if self.explore:
+            self.surface = "explore"
+        elif self.surface == "explore":
+            self.surface = "workspace"
+
+    @pn.io.hold()
+    @param.depends("surface", watch=True)
+    def _show_surface(self):
+        """Show the Explore view, the Report view or the workspace; one at a time, as they share the tiles' views."""
+        surface = self.surface
+        if self.explore != (surface == "explore"):
+            self.explore = surface == "explore"
         view = self._view
         self._sync_min_width()
-        if self.explore:
-            self.fullscreen = False
-            feed = self.explore_feed
-            view[1] = feed
-            self._status_bar.visible = False
-            feed.shown = True
-        else:
-            if self._explore_feed is not None:
-                self._explore_feed.shown = False
+        away = {"explore": self._explore_feed, "report": self._report_view}
+        for name, shown in away.items():
+            if shown is not None and name != surface:
+                shown.shown = False
+        if surface == "workspace":
             view[1] = self._editor_row
             self._status_bar.visible = self.editable
             self._sync_tile_drag()
+            return
+        self.fullscreen = False
+        shown = self.explore_feed if surface == "explore" else self.report_view
+        view[1] = shown
+        self._status_bar.visible = False
+        shown.shown = True
 
     @param.depends("editable", watch=True)
     def _sync_min_width(self):
-        """Let the feed and the dashboard narrow to the window; only the canvas and its panels need the room."""
-        canvas = self.editable and not self.explore and not self._phone
+        """Let the feed, the report and the dashboard narrow to the window; only the canvas and its panels need the room."""
+        canvas = self.editable and self.surface == "workspace" and not self._phone
         self._view.min_width = None if canvas else 0
 
     @param.depends("edited", watch=True)
     def _sync_explore(self):
         if self._explore_feed is not None:
             self._explore_feed._schedule()
+        if self._report_view is not None:
+            self._report_view.schedule()
 
     def _on_fullscreen_changed(self, event):
         self.fullscreen = event.new
@@ -4446,7 +4497,7 @@ class FlowDash(Viewer):
         self._inspector.visible = showing_canvas or (interactive and showing_grid)
         self._layout_panel.visible = interactive and showing_grid and not split
         self._sync_phone_panels(showing_canvas, self._layout_panel.visible)
-        self._status_bar.visible = self.editable and not self.explore
+        self._status_bar.visible = self.editable and self.surface == "workspace"
         self._split_view.events.active = split
         self._view_controls.param.update(beside_canvas=split, editing=interactive and showing_grid)
         self._split_shown = split
@@ -4523,7 +4574,9 @@ class FlowDash(Viewer):
 
     @property
     def _grid_on_screen(self) -> bool:
-        return not self.explore and (self.mode in ("dashboard", "split") or not self.editable)
+        return self.surface == "workspace" and (
+            self.mode in ("dashboard", "split") or not self.editable
+        )
 
     def _on_split_collapsed(self, pane: int):
         """Fall back to the tab of the pane left over, keeping the split's sizes for next time."""
@@ -4630,7 +4683,7 @@ class FlowDash(Viewer):
         )
 
     def _code_panel_fits(self) -> bool:
-        showing_canvas = self.mode in ("wiring", "split") and not self.explore
+        showing_canvas = self.mode in ("wiring", "split") and self.surface == "workspace"
         return self._code_panel_allowed() and showing_canvas
 
     def _primary_spec_field(self, instance_id: str) -> str | None:
@@ -4684,8 +4737,7 @@ class FlowDash(Viewer):
         """
         if not self._code_panel_allowed():
             return False
-        if self.explore:
-            self.explore = False
+        self.surface = "workspace"
         if self.mode not in ("wiring", "split"):
             self.mode = "split"
         return self.open_code_panel(instance_id, field)
@@ -4815,7 +4867,7 @@ class FlowDash(Viewer):
             if self.code_panel_open and not self._code_panel.collapsed:
                 self._sync_code_dock()
 
-    @param.depends("mode", "explore", watch=True)
+    @param.depends("mode", "surface", watch=True)
     def _on_code_dock_tab(self):
         """Hide the code panel outside the Dataflow and Split tabs, and show it again there."""
         self._sync_code_dock()
@@ -6140,8 +6192,10 @@ class FlowDash(Viewer):
         config, and are part of the edit that brought them about: the
         placement, or the connection that delivered the input, so one undo
         takes back both. Values set outside any edit, e.g. by an input that
-        arrives on its own, are recorded as a config edit of their own once
-        the session's current event is handled.
+        arrives on its own, are recorded right away as a config edit of their
+        own, so undoing a later edit keeps them. Called from a thread other
+        than the session's event loop, they are set and recorded on the loop,
+        as an edit of their own, and before a save.
 
         Only fields still at their declared default take a value, so a node
         that arrives configured, e.g. one the agent adds or a duplicate, keeps
@@ -6150,18 +6204,12 @@ class FlowDash(Viewer):
         version restored, to viewers and in a preview, and for a node or a
         config field the node does not have.
         """
-        if self._hydrating or self.read_only or self.preview or not self.editable:
-            return False
-        config_state = self._dataflow_graph.get_config_state(instance_id)
-        if config_state is None or any(
-            key == "name" or key not in config_state.param for key in config
-        ):
-            return False
-        config = {key: value for key, value in config.items() if _unset(config_state, key)}
+        config = self._unset_config(instance_id, config)
         if not config:
             return False
         if _INSTANTIATING.get() is self and _INSTANTIATING_NODE.get() == instance_id:
             # `_place` takes config written while the component is created into the node's config.
+            config_state = self._dataflow_graph.get_config_state(instance_id)
             try:
                 config_state.param.update(
                     {key: config_value(config_state.param[key], v) for key, v in config.items()}
@@ -6170,6 +6218,45 @@ class FlowDash(Viewer):
                 logger.warning("Default config rejected on %s: %s", instance_id, exc)
                 return False
             return True
+        if (doc := self._off_loop_doc()) is not None:
+            # The canvas and its history change on the session's event loop only.
+            with self._queued_lock:
+                self._queued_defaults.append((instance_id, config))
+            doc.add_next_tick_callback(self._apply_queued_defaults)
+            return True
+        return self._apply_default(instance_id, config)
+
+    def _unset_config(self, instance_id: str, config: t.Mapping[str, t.Any]) -> dict | None:
+        """Return the fields of *config* a default may set on the node, or None if it may set none."""
+        if self._hydrating or self.read_only or self.preview or not self.editable:
+            return None
+        config_state = self._dataflow_graph.get_config_state(instance_id)
+        if config_state is None or any(
+            key == "name" or key not in config_state.param for key in config
+        ):
+            return None
+        return {key: value for key, value in config.items() if _unset(config_state, key)}
+
+    def _off_loop_doc(self):
+        """Return the session's document when called off its event loop, else None."""
+        doc = self._session_doc() if self._session_doc is not None else None
+        if doc is None or doc.session_context is None:
+            return None
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return doc
+        return None
+
+    def _apply_queued_defaults(self):
+        """Set and record the defaults set off the event loop, each as its own edit."""
+        with self._queued_lock:
+            queued, self._queued_defaults = self._queued_defaults, []
+        for instance_id, config in queued:
+            if config := self._unset_config(instance_id, config):
+                self._apply_default(instance_id, config)
+
+    def _apply_default(self, instance_id: str, config: dict) -> bool:
         self._hydrating = True
         try:
             applied = self._set_config_state(instance_id, dict(config))
@@ -6179,12 +6266,24 @@ class FlowDash(Viewer):
             self._hydrating = False
         if not applied:
             return False
-        _next_tick(partial(self._record_default, instance_id, sorted(applied), self._edit_count))
+        if self._dataflow_graph.wiring:
+            # The edit rewiring the input records next and takes the default in.
+            self._pending_defaults.append((instance_id, sorted(applied), self._edit_count))
+            _next_tick(self._record_defaults)
+        else:
+            self._record_default(instance_id, sorted(applied))
         return True
 
-    def _record_default(self, instance_id: str, keys: list[str], count: int):
-        """Record a default as its own edit, unless an edit since took it in."""
-        if self._edit_count != count or self._dataflow_graph.get_config_state(instance_id) is None:
+    def _record_defaults(self):
+        """Record the defaults no edit took in, each as its own edit."""
+        pending, self._pending_defaults = self._pending_defaults, []
+        current = self._edit_count
+        for instance_id, keys, count in pending:
+            if count == current:
+                self._record_default(instance_id, keys)
+
+    def _record_default(self, instance_id: str, keys: list[str]):
+        if self._dataflow_graph.get_config_state(instance_id) is None:
             return
         name = self._node_name(instance_id)
         self._record_edit(
@@ -7296,6 +7395,8 @@ class FlowDash(Viewer):
             self._history.opened()
         if self._explore_feed is not None:
             self._explore_feed.sync()
+        if self._report_view is not None:
+            self._report_view.schedule()
 
     @contextmanager
     def _quiet_history(self):
@@ -7607,6 +7708,8 @@ class FlowDash(Viewer):
         """
         if self.read_only:
             raise _ReadOnlyEditorError("This dashboard is read-only.")
+        self._apply_queued_defaults()
+        self._record_defaults()
         self._compute_expects()
         model = self.to_model(title=title)
         if self.store is not None:
@@ -7644,6 +7747,8 @@ class FlowDash(Viewer):
         """
         if self.read_only:
             raise _ReadOnlyEditorError("This dashboard is read-only.")
+        self._apply_queued_defaults()
+        self._record_defaults()
         model = self.to_model(title=title)
         model.permission = Permission()
         if self.store is not None:
@@ -7733,6 +7838,9 @@ class FlowDash(Viewer):
                 self._hydrating = False
             if not patched:
                 self._hydrate_model(model, keep_open_turns=True)
+        if self._report_view is not None:
+            # The report is restored after the dashboard, which the view follows.
+            self._report_view.schedule()
 
     @pn.io.hold()
     def _patch_canvas(self, model: DashboardModel) -> bool:

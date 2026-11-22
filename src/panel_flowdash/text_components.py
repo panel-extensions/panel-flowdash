@@ -192,32 +192,49 @@ def fill_template(template: str, value: t.Any, escape: t.Callable[[str], str] = 
     return fill_placeholders(template, _PLACEHOLDER, _value_filler(value), escape)
 
 
+# Private-use characters around a filled value, turned into an element after rendering.
+_VALUE_OPEN, _VALUE_CLOSE = "\ue000", "\ue001"
+
+
 def markdown_with_placeholders(
-    template: str, pattern: re.Pattern, fill: t.Callable[[re.Match], str]
+    template: str,
+    pattern: re.Pattern,
+    fill: t.Callable[[re.Match], str],
+    value_class: str | None = None,
 ) -> str:
     """Render *template* as HTML, replacing each match of *pattern* by the text ``fill(match)`` gives.
 
     Placeholders are filled after parsing, so a value is always literal text: it
     cannot add markup, and inside a code span or block it keeps its backslashes.
     A placeholder in a link or image URL is dropped rather than filled, so
-    showing the text never sends upstream data to another site.
+    showing the text never sends upstream data to another site. With
+    *value_class*, each value in the text is a ``<span>`` of that class.
     """
     fills: list[str] = []
     nonce = secrets.token_hex(4)
     budget = _Budget()
+    markers = (_VALUE_OPEN, _VALUE_CLOSE)
+
+    def strip(text: str) -> str:
+        return text.replace(_VALUE_OPEN, "").replace(_VALUE_CLOSE, "")
+
+    if value_class is not None:
+        template = strip(template or "")
 
     def mark(match: re.Match) -> str:
-        fills.append(budget.take(fill(match)))
+        fills.append(strip(budget.take(fill(match))) if value_class else budget.take(fill(match)))
         return f"fdph{nonce}n{len(fills) - 1}e"
 
     marker = re.compile(f"fdph{nonce}n(\\d+)e")
 
-    def filled(text: str) -> str:
+    def filled(text: str, wrap: bool = False) -> str:
+        if wrap and value_class is not None:
+            return marker.sub(lambda m: markers[0] + fills[int(m.group(1))] + markers[1], text)
         return marker.sub(lambda m: fills[int(m.group(1))], text)
 
     def walk(tokens):
         for token in tokens:
-            token.content = filled(token.content)
+            token.content = filled(token.content, wrap=True)
             token.info = marker.sub("", token.info)
             for name, attr in list((token.attrs or {}).items()):
                 if isinstance(attr, str):
@@ -229,7 +246,12 @@ def markdown_with_placeholders(
 
     tokens = _MARKDOWN.parse(pattern.sub(mark, template or ""))
     walk(tokens)
-    return _MARKDOWN.renderer.render(tokens, _MARKDOWN.options, {})
+    rendered = _MARKDOWN.renderer.render(tokens, _MARKDOWN.options, {})
+    if value_class is None:
+        return rendered
+    return rendered.replace(_VALUE_OPEN, f'<span class="{html.escape(value_class)}">').replace(
+        _VALUE_CLOSE, "</span>"
+    )
 
 
 def render_markdown(template: str, value: t.Any) -> str:

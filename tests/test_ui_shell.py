@@ -41,11 +41,12 @@ class TestDashboardBarSections:
         assert bar._actions.objects[0] is bar.mode_tabs
         for item in (bar.settings_button, bar.overflow, bar.discard_button, bar.done_button):
             assert item in bar._actions.objects
-        assert bar._actions.objects[-5:] == [
+        assert bar._actions.objects[-6:] == [
             editor._save_button,
             bar.done_button,
             bar.download_button,
             bar._phone_query,
+            bar._narrow_query,
             bar._overflow_access,
         ]
         assert bar.lead.objects == [bar.title, bar.save_state]
@@ -61,6 +62,7 @@ class TestDashboardBarSections:
             bar.overflow,
             bar.download_button,
             bar._phone_query,
+            bar._narrow_query,
             bar._overflow_access,
         ]
         assert bar.lead.objects == [bar.title]
@@ -86,9 +88,10 @@ class TestDashboardBarSections:
             bar.fullscreen_button,
             bar.download_button,
             bar._phone_query,
+            bar._narrow_query,
             bar._overflow_access,
         ]
-        assert list(bar.mode_toggle.options.values()) == ["explore", "view"]
+        assert list(bar.mode_toggle.options.values()) == ["explore", "report", "view"]
 
     async def test_a_phone_finds_the_view_actions_in_the_overflow_menu(self, editor):
         editor.editable = False
@@ -97,6 +100,7 @@ class TestDashboardBarSections:
         actions = [item["action"] if item else None for item in bar.overflow.items]
         assert actions == [
             "mode:explore",
+            "mode:report",
             "mode:edit",
             "refresh",
             "fullscreen",
@@ -112,6 +116,14 @@ class TestDashboardBarSections:
             "settings",
         ]
 
+    async def test_a_narrow_window_finds_report_in_the_overflow_menu(self, editor):
+        bar = editor._dashboard_bar
+        bar._narrow_query.phone = True
+        assert bar.overflow.items[0]["action"] == "tab:report"
+        bar._on_overflow(bar.overflow.items[0])
+        assert editor.surface == "report"
+        assert all((item or {}).get("action") != "tab:report" for item in bar.overflow.items)
+
     async def test_a_reader_on_a_phone_gets_an_overflow_menu(self, editor):
         editor.param.update(editable=False, read_only=True)
         bar = editor._dashboard_bar
@@ -119,6 +131,7 @@ class TestDashboardBarSections:
         assert bar.overflow in bar._actions.objects
         assert [item["action"] for item in bar.overflow.items] == [
             "mode:explore",
+            "mode:report",
             "refresh",
             "fullscreen",
         ]
@@ -127,8 +140,8 @@ class TestDashboardBarSections:
         bar = editor._dashboard_bar
         editor.mode = "wiring"
         bar._phone_query.phone = True
-        phone = [item["action"] for item in bar.overflow.items[:4]]
-        assert phone == ["tab:explore", "tab:dashboard", "settings", "done"]
+        phone = [item["action"] for item in bar.overflow.items[:5]]
+        assert phone == ["tab:explore", "tab:report", "tab:dashboard", "settings", "done"]
         editor.dirty = True
         assert "discard" in [item["action"] for item in bar.overflow.items if item]
 
