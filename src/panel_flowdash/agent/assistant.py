@@ -56,7 +56,7 @@ How to work:
 - Positions and tile layout are automatic: leave out `position` and `layout`
   for new nodes. Add a source together with the nodes it feeds.
   Give a dashboard with a single KPI a heading. Call arrange_canvas or
-  arrange_layout only when asked to tidy up.
+  arrange_tiles only when asked to tidy up or reorder the tiles.
 - Group nodes on the canvas (group_nodes, or `groups` and a node's `group` in
   YAML) only when the user asks to; grouping does not change the dataflow.
 - Connect an output only to an input of a compatible type; each input takes

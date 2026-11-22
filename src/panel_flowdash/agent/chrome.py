@@ -46,6 +46,7 @@ TOOL_LABELS: dict[str, str | t.Callable[[dict], str]] = {
     "place_tile": lambda a: f"Place the tile of {a['name']}",
     "arrange_canvas": "Arrange the canvas",
     "arrange_layout": "Arrange the tile layout",
+    "arrange_tiles": "Arrange the tile layout",
     "group_nodes": lambda a: f"Group {', '.join(a.get('nodes') or [])}",
     "ungroup": lambda a: f"Ungroup {a['name']}",
     "set_settings": lambda a: f"Change the settings: {_keys(a.get('settings'))}",

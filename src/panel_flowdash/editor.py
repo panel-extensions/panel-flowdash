@@ -1655,6 +1655,8 @@ class FlowDash(Viewer):
         # `_settle_nodes` and `_place_new_tiles`.
         self._floating_nodes: set[str] = set()
         self._auto_tiles: set[str] = set()
+        # Whether the tiles were last arranged as a stack, which new tiles keep.
+        self._stacked = False
         # The tiles released over the top bar or the sidebar and not dropped there
         # yet, oldest first: when, and whether the grid has since sent the layout
         # the drag ended with, which the move's version then holds.
@@ -7057,14 +7059,29 @@ class FlowDash(Viewer):
 
         return [tiles[i] for i in sorted(range(len(tiles)), key=key)]
 
-    def _arrange_tiles(self, hide: t.Collection[str] = ()):
-        """Lay out every visible tile by its kind, hiding the tiles of *hide* first."""
-        boxes = [
-            self._tile_box(item) for item in self._tile_order() if item["instance_id"] not in hide
-        ]
+    def _arrange_tiles(
+        self,
+        hide: t.Collection[str] = (),
+        order: t.Sequence[str] = (),
+        style: str = "grid",
+    ):
+        """Lay out every visible tile, hiding the tiles of *hide* first.
+
+        The tiles of *order*, instance ids, come first in that order and the
+        rest after them in their current order; a heading moves with the tile
+        it titles. The ``"grid"`` style lays them out by kind, ``"stack"`` one
+        to a row in that order.
+        """
+        tiles = [item for item in self._tile_order() if item["instance_id"] not in hide]
+        boxes = [self._tile_box(item) for item in tiles]
+        if order:
+            boxes = self._ordered_sections(boxes, order)
         width, _ = self._tile_bands()
         previous = {e["instance_id"]: e for e in self.layout}
-        layout = auto_layout.arrange_tiles(boxes, width, previous)
+        if style == "stack":
+            layout = auto_layout.stack_tiles(boxes, previous)
+        else:
+            layout = auto_layout.arrange_tiles(boxes, width, previous)
         shown = {box.id for box in boxes}
         hidden = [dict(e) for e in self.layout if e.get("instance_id") not in shown | set(hide)]
         hidden += [{**previous.get(iid, {}), "instance_id": iid, "visible": False} for iid in hide]
@@ -7072,7 +7089,31 @@ class FlowDash(Viewer):
             entry["index"] = index
         # Narrower bands follow the arranged layout, rather than keep layouts made for the old one.
         self._set_tile_layout(layout + hidden, {})
-        self._auto_tiles = shown
+        # A stack is a choice new tiles follow, so the grid's rules no longer rearrange it.
+        self._auto_tiles = shown if style == "grid" else set()
+        self._stacked = style == "stack"
+
+    @staticmethod
+    def _ordered_sections(
+        boxes: list[auto_layout.TileBox], order: t.Sequence[str]
+    ) -> list[auto_layout.TileBox]:
+        """Return *boxes* with the sections of the tiles of *order* first, in that order.
+
+        A section is a tile with the text tiles in front of it, so a heading
+        keeps titling its tile; text after the last tile is a section of its own.
+        """
+        sections: list[list[auto_layout.TileBox]] = [[]]
+        for box in boxes:
+            sections[-1].append(box)
+            if box.kind != "text":
+                sections.append([])
+        sections = [section for section in sections if section]
+        rank = {iid: i for i, iid in enumerate(order)}
+
+        def key(section):
+            return min((rank[b.id] for b in section if b.id in rank), default=len(rank))
+
+        return [box for section in sorted(sections, key=key) for box in section]
 
     def _plumbing(self, instance_ids: t.Iterable[str]) -> list[str]:
         """Return the shown tiles of *instance_ids* that are data sources and transforms.
@@ -7123,10 +7164,19 @@ class FlowDash(Viewer):
         order = [item["instance_id"] for item in self._tile_order()]
         width, bands = self._tile_bands()
 
+        # A stack someone chose stays a stack, so no chart makes room for another.
+        resizable = {
+            iid: self._tile_box(item)
+            for iid, item in tiles.items()
+            if iid in self._auto_tiles and not self._stacked
+        }
+
         def insert(entries, width):
             previous = {e["instance_id"]: e for e in entries if e.get("instance_id") in new}
             entries = [e for e in entries if e.get("instance_id") not in new]
-            return auto_layout.insert_tiles(entries, order, kinds, boxes, width, previous)
+            return auto_layout.insert_tiles(
+                entries, order, kinds, boxes, width, previous, resizable
+            )
 
         layout = insert(self.layout, width)
         responsive = {
@@ -7136,7 +7186,7 @@ class FlowDash(Viewer):
         self._set_tile_layout(layout, responsive)
         self._auto_tiles.update(new)
 
-    def arrange_layout(self):
+    def arrange_layout(self, order: t.Sequence[str] | None = None, style: str = "grid"):
         """Lay out every visible tile by its kind, as one edit.
 
         Controls go first, then KPIs, both at their default width, charts in
@@ -7144,10 +7194,21 @@ class FlowDash(Viewer):
         transforms last; text tiles stay in front of the tile they preceded.
         Hidden tiles stay hidden. Layouts made for narrower breakpoint bands
         are dropped, so those bands follow the arranged layout again.
+
+        Parameters
+        ----------
+        order
+            Instance ids of tiles to put first, in this order within their
+            kind; the other tiles follow in their current order.
+        style
+            ``"grid"`` lays the tiles out by kind as above, ``"stack"`` puts
+            them one to a row at full width in their order.
         """
+        if style not in ("grid", "stack"):
+            raise ValueError(f"Unknown layout style {style!r}; use 'grid' or 'stack'.")
         if not tile_layout.grid_tiles(self):
             return
-        self._arrange_tiles()
+        self._arrange_tiles(order=order or (), style=style)
         self._record_edit("Arranged the tile layout", op="arrange_layout")
 
     def _placed_singletons(self) -> set[str]:
@@ -7392,6 +7453,7 @@ class FlowDash(Viewer):
             self._dataflow_graph.remove_node(node_id)
         self._floating_nodes = set()
         self._auto_tiles = set()
+        self._stacked = False
         self._chosen_visibility = set()
         self._tile_items = []
         self._tile_objects = []
