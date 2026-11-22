@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hmac
 import ipaddress
+import json
 import os
 import secrets
 import socket
@@ -330,11 +331,17 @@ def shared_password_sign_in() -> bool:
         configured = None
     values += [os.environ.get("PANEL_BASIC_AUTH"), configured]
     for value in values:
-        if not value or isinstance(value, dict):
+        if not value:
             continue
         if isinstance(value, str) and os.path.isfile(value):
-            continue
-        return True
+            # Panel reads the file as JSON; anything but a mapping of users is a password.
+            try:
+                with open(value, encoding="utf-8") as file:
+                    value = json.loads(file.read())
+            except (OSError, ValueError):
+                return True
+        if not isinstance(value, dict):
+            return True
     return False
 
 

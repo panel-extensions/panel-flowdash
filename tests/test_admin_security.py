@@ -248,6 +248,13 @@ class TestWithoutSignInAdminIsLocal:
             assert _app(tmp_path, text, doc=_doc(REMOTE))._is_admin
             pn.config.basic_auth = {"alice": "pw"}
             assert not shared_password_sign_in()
+            # Panel reads a file as JSON and uses anything but a mapping as the password.
+            for content in ('"sharedpw"', '["alice", "bob"]', "{not json", ""):
+                users.write_text(content)
+                pn.config.basic_auth = str(users)
+                assert shared_password_sign_in(), content
+            users.write_text('{"alice": "pw", "bob": "pw2"}')
+            assert not shared_password_sign_in()
         finally:
             pn.config.basic_auth = None
         assert not shared_password_sign_in()
