@@ -158,7 +158,8 @@ _entry_points_loading = False
 
 # Serializes reads and the read-modify-write of project files within the
 # process: on Windows a file another handle has open cannot be replaced.
-_FILE_LOCK = threading.Lock()
+# Reentrant, since a section loader run inside Project.set may load a project file.
+_FILE_LOCK = threading.RLock()
 
 # How long a Windows sharing violation is retried, e.g. while another process
 # or a virus scanner has the file open.

@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 import types
 from pathlib import Path
@@ -400,6 +401,26 @@ class TestWriteBack:
         assert (target.stat().st_mode & 0o777) == 0o640
         assert load_project(target).raw("b") == 2
         assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".")] == []
+
+    def test_a_loader_may_load_a_project_file_inside_set(self, registry, tmp_path):
+        other = _write(tmp_path / "other.yaml", "shared: 1\n")
+        register_section("linked", lambda section: load_project(other).raw("shared"))
+        path = _write(tmp_path / PROJECT_FILE, "linked: {}\n")
+        project = load_project(path)
+        errors = []
+
+        def write():
+            try:
+                project.set("linked", {"changed": True})
+            except Exception as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=write, daemon=True)
+        thread.start()
+        thread.join(timeout=10)
+        assert not thread.is_alive(), "Project.set deadlocked"
+        assert errors == []
+        assert project.get("linked") == 1
 
     def test_sharing_violations_are_retried_on_windows(self, monkeypatch):
         monkeypatch.setattr(project_module.os, "name", "nt")
