@@ -13,7 +13,9 @@ from panel.viewable import Viewer
 from panel_flowdash import register
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.ui.inspector import _table_preview
+from panel_flowdash.ui.node_preview import PREVIEW_KIND_KEY
 from panel_flowdash.ui.status_bar import select_on_canvas
+from panel_flowdash.ui.text import escape_markdown
 from tests.test_ui_inspector import ROWS, TABLE, TABLE_COMPONENTS, _texts
 
 FRAME = pd.DataFrame({"case_id": range(40), "state": ["AK", "CA"] * 20})
@@ -94,13 +96,60 @@ class Empty(Viewer):
         return "empty"
 
 
+@register(
+    page=False, component=True, title="Chart", provides=[{"key": "view", "type": "demo.view"}]
+)
+class Chart(Viewer):
+    """Outputs a live view and previews it as a chart, as a Vega-Lite view node does."""
+
+    @param.output(param.Parameter)
+    def view(self):
+        return object()
+
+    def __flowdash_preview__(self, output=None):
+        return {
+            PREVIEW_KIND_KEY: "chart",
+            "format": "vega-lite",
+            "spec": {
+                "mark": "bar",
+                "encoding": {"x": {"field": "state"}, "y": {"field": "n"}},
+            },
+            "data": pd.DataFrame({"state": ["AK", "CA", "TX"], "n": [3, 9, 5]}),
+        }
+
+    def __panel__(self):
+        return "chart"
+
+
+@register(
+    page=False, component=True, title="Summary", provides=[{"key": "summary", "type": "demo.s"}]
+)
+class Summary(Viewer):
+    """Previews its output as the text in ``text``."""
+
+    text = param.String(default="1 table: sales")
+
+    @param.output(param.Parameter)
+    def summary(self):
+        return object()
+
+    def __flowdash_preview__(self, output=None):
+        return self.text
+
+    def __panel__(self):
+        return "summary"
+
+
 LAZY, OPAQUE, BROKEN, EMPTY = "Demo/lazy", "Demo/opaque", "Demo/broken", "Demo/empty"
+CHART, SUMMARY = "Demo/chart", "Demo/summary"
 COMPONENTS = {
     **TABLE_COMPONENTS,
     LAZY: LazyTable,
     OPAQUE: Opaque,
     BROKEN: Broken,
     EMPTY: Empty,
+    CHART: Chart,
+    SUMMARY: Summary,
 }
 
 
@@ -202,6 +251,48 @@ async def test_value_preview_falls_back_to_text_for_values_json_cannot_hold(edit
     with pytest.raises(TypeError):
         json.dumps(Pipeline())
     assert isinstance(editor._value_preview({"a": 1}), pn.pane.JSON)
+    # Shown as typed, without the margins and highlighting of a Markdown code block.
+    assert isinstance(preview, pn.pane.HTML)
+    assert preview.object.startswith('<pre class="fd-value-repr">&lt;')
+
+
+async def test_text_preview_is_a_compact_caption(editor):
+    _, column = _data(editor, SUMMARY)
+    (caption,) = [o for o in column.select(pmui.Typography) if "fd-data-text" in o.css_classes]
+    assert caption.object == escape_markdown("1 table: sales")
+    assert caption.variant == "caption"
+    assert caption.margin == 0
+    assert caption.sx["lineHeight"] == 1.45
+    assert all(isinstance(o, pmui.Typography) for o in column.select(pn.pane.Markdown))
+    assert not [o for o in column.select(pn.pane.HTML) if "fd-data-markdown" in o.css_classes]
+
+
+async def test_text_preview_with_markdown_structure_is_markdown_without_margins(editor):
+    node, _ = _data(editor, SUMMARY)
+    instance = editor._component_instances[node]
+    instance.text = "**2 tables**\n\n- sales\n- <b>regions</b>"
+    instance._preview_rev = 1
+    editor._inspector._node_tabs.active = 0
+    editor._inspector._node_tabs.active = 1
+    column = editor._inspector._data_column
+    (pane,) = [o for o in column.select(pn.pane.HTML) if "fd-data-markdown" in o.css_classes]
+    assert pane.margin == 0
+    assert "<strong>2 tables</strong>" in pane.object
+    assert "<li>sales</li>" in pane.object
+    # A component's text never becomes markup of its own.
+    assert "&lt;b&gt;regions&lt;/b&gt;" in pane.object
+    assert "h6 { margin: 0 0 4px; }" in pane.stylesheets[0]
+    assert ":last-child { margin-bottom: 0; }" in pane.stylesheets[0]
+
+
+async def test_chart_preview_is_the_card_thumbnail(editor):
+    _, column = _data(editor, CHART)
+    assert "bar · 3 bars" in _texts(column)
+    (chart,) = [o for o in column.select(pn.pane.HTML) if "fd-data-chart-pane" in o.css_classes]
+    assert chart.object.startswith('<div class="fd-data-chart"><svg viewBox="0 0 360 180"')
+    assert chart.object.count('class="fd-ch-br"') == 3
+    assert ".fd-ch-br" in chart.stylesheets[0]
+    assert "__flowdash_preview_kind__" not in " ".join(_texts(column))
 
 
 def _columns(frame):

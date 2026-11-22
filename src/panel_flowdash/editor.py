@@ -13,6 +13,7 @@ import asyncio
 import contextvars
 import copy
 import dataclasses
+import html
 import inspect
 import io
 import itertools
@@ -175,7 +176,6 @@ from panel_flowdash.ui.split_view import SplitView
 from panel_flowdash.ui.states import StartCard
 from panel_flowdash.ui.status_bar import StatusBar, select_on_canvas
 from panel_flowdash.ui.text import (
-    code_block,
     escape_markdown,
     markdown_pane,
     text_alert,
@@ -571,6 +571,20 @@ _TRANSFORMED_EDGE_STYLE = {
 _FAILED_EDGE_STYLE = {"stroke": "var(--panel-danger-color, #d32f2f)", "strokeWidth": 2}
 # A narrow window still gets a pop-out wide enough to read a chart or a few columns.
 _POPOUT_MIN_WIDTH = 560
+
+# A value only its repr describes, as compact as the Data tab's captions.
+_REPR_CSS = """
+pre {
+  margin: 0;
+  max-height: 320px;
+  overflow: auto;
+  font-size: 11.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--mui-palette-text-secondary, inherit);
+}
+"""
 
 # Tabulator's sort arrow sits over the title unless the header leaves room for it.
 _POPOUT_TABLE_CSS = """
@@ -2474,7 +2488,12 @@ class FlowDash(Viewer):
             text = repr(value)
             if len(text) > 2000:
                 text = text[:2000] + "…"
-            return markdown_pane(code_block(text))
+            return pn.pane.HTML(
+                f'<pre class="fd-value-repr">{html.escape(text)}</pre>',
+                margin=0,
+                sizing_mode="stretch_width",
+                stylesheets=[_REPR_CSS],
+            )
 
     def _build_value_popup(self, title: str, subtitle: str | None, value: t.Any) -> Viewable:
         header = f"**{escape_markdown(title)}**"

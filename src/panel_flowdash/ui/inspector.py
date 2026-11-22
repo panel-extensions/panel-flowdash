@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import html
+import re
 import threading
 import typing as t
 import weakref
@@ -19,6 +20,7 @@ from functools import partial
 import panel as pn
 import panel_material_ui as pmui
 import param
+from markdown_it import MarkdownIt
 from panel.io.state import set_curdoc
 from panel.viewable import Viewer
 
@@ -46,8 +48,12 @@ from panel_flowdash.ui.node_card import (
     summarize_value,
 )
 from panel_flowdash.ui.node_preview import (
+    CHART_COLOR,
+    CHART_CSS,
     PREVIEW_HOOK,
+    PREVIEW_KIND_KEY,
     call_preview_hook,
+    chart_svg,
     describe_object,
     format_value,
     run_off_loop,
@@ -157,6 +163,55 @@ _TABLE_CSS = f"""
 }}
 :host table.panel-df tbody tr:hover {{ background: var(--mui-palette-action-selected, rgba(0, 0, 0, 0.08)); }}
 """
+
+# A component's own text preview: as tight as a caption, from the left edge of the tables.
+_TEXT_SX = {"whiteSpace": "pre-wrap", "overflowWrap": "anywhere", "lineHeight": 1.45}
+
+# Lines that make a component's text Markdown rather than a caption: a heading, a list
+# item, a table row or a code fence, or bold text, a link or inline code anywhere.
+_MARKDOWN_RE = re.compile(
+    r"^(#{1,6}\s|\s*([-*+]|\d{1,3}\.)\s|\s*\|.*\|\s*$|\s*```)|\*\*\S|\[[^\]]+\]\([^)]+\)|`[^`\n]+`",
+    re.MULTILINE,
+)
+
+_MARKDOWN_CSS = """
+:host { font-size: 12px; line-height: 1.45; color: var(--mui-palette-text-secondary, inherit);
+  overflow-wrap: anywhere; }
+p, ul, ol, pre, table, h1, h2, h3, h4, h5, h6 { margin: 0 0 4px; }
+:is(p, ul, ol, pre, table, h1, h2, h3, h4, h5, h6):last-child { margin-bottom: 0; }
+ul, ol { padding-left: 18px; }
+h1, h2, h3, h4, h5, h6 { font-size: 13px; font-weight: 600;
+  color: var(--mui-palette-text-primary, inherit); }
+code, pre { font-size: 11.5px; }
+pre { white-space: pre-wrap; }
+table { border-collapse: collapse; }
+th, td { padding: 1px 8px 1px 0; text-align: left; }
+"""
+
+# A chart thumbnail as the node card draws it, as wide as the tab.
+_CHART_CSS = (
+    """
+:host {
+  display: block;
+  --fd-muted: var(--mui-palette-text-secondary, rgba(127, 127, 127, 0.95));
+  --fd-divider: var(--mui-palette-divider, rgba(127, 127, 127, 0.22));
+  --fd-card-bg: var(--mui-palette-background-paper, #ffffff);
+  --fd-viz-1: """
+    + CHART_COLOR
+    + """;
+  --fd-viz-1-soft: rgba(42, 157, 143, 0.18);
+}
+.fd-data-chart {
+  box-sizing: border-box;
+  max-width: 480px;
+  border: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.12));
+  border-radius: 6px;
+  padding: 6px;
+}
+.fd-data-chart svg { display: block; width: 100%; height: auto; }
+"""
+    + CHART_CSS
+)
 
 _ICON_CSS = """
 .fd-avatar { display: flex; align-items: center; justify-content: center; width: 36px;
@@ -448,7 +503,8 @@ def value_preview(editor: t.Any, value: t.Any, hooked: bool = False) -> list[Vie
     """Show a table's first rows, a short caption for an empty or failed value, or the value.
 
     *hooked* says *value* is a component's own preview, whose text is shown
-    as a caption.
+    as a caption, or as Markdown when it has Markdown structure. A chart
+    preview is drawn as the thumbnail its node card shows.
     """
     if value is None:
         return [_caption("No value yet. It appears once the component has run.", margin=0)]
@@ -462,7 +518,9 @@ def value_preview(editor: t.Any, value: t.Any, hooked: bool = False) -> list[Vie
     if isinstance(value, str):
         text = value if len(value) <= _MAX_TEXT else value[:_MAX_TEXT] + "…"
         if hooked:
-            return [_caption(text, sx={"whiteSpace": "pre-wrap"}, margin=0)]
+            if _MARKDOWN_RE.search(text):
+                return [_markdown(text)]
+            return [_caption(text, sx=_TEXT_SX, margin=0, css_classes=["fd-data-text"])]
         return [
             text_typography(
                 text or "Empty text",
@@ -471,11 +529,40 @@ def value_preview(editor: t.Any, value: t.Any, hooked: bool = False) -> list[Vie
                 sx={"whiteSpace": "pre-wrap", "overflowWrap": "anywhere"},
             )
         ]
+    if isinstance(value, t.Mapping) and value.get(PREVIEW_KIND_KEY) == "chart":
+        return _chart_preview(value)
     summary = summarize_value(value)
     if isinstance(value, (pn.viewable.Viewable, Viewer)):
         # A live object, which may be on the dashboard already, has no copy to show here.
         return [_caption(f"{summary}. This component gives no preview of it.", margin=0)]
     return [_caption(summary, margin=(0, 0, 4, 0)), editor._value_preview(value)]
+
+
+def _markdown(text: str) -> pn.pane.HTML:
+    """Render a component's Markdown with no outer margins, and its HTML shown as typed."""
+    rendered = MarkdownIt("commonmark", {"html": False}).enable("table").render(text)
+    return pn.pane.HTML(
+        rendered,
+        margin=0,
+        sizing_mode="stretch_width",
+        stylesheets=[_MARKDOWN_CSS],
+        css_classes=["fd-data-markdown"],
+    )
+
+
+def _chart_preview(payload: t.Mapping) -> list[Viewable]:
+    """Draw a component's chart preview as the thumbnail its node card shows, under its caption."""
+    svg, caption = chart_svg(payload, width=360, height=180)
+    chart = pn.pane.HTML(
+        f'<div class="fd-data-chart">{svg}</div>',
+        margin=0,
+        sizing_mode="stretch_width",
+        stylesheets=[_CHART_CSS],
+        css_classes=["fd-data-chart-pane"],
+    )
+    if not caption:
+        return [chart]
+    return [_caption(caption, margin=(0, 0, 6, 0), css_classes=["fd-data-summary"]), chart]
 
 
 def _count(count: t.Any, noun: str) -> str:
