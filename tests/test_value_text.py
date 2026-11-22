@@ -281,6 +281,12 @@ def test_exception_text_masks_credentials():
         ("sent Authorization: Bearer sk-secret", "sent Authorization: Bearer ***"),
         ("sent Authorization: hunter2", "sent Authorization: ***"),
         ("rejected Bearer sk-secret.42 for h", "rejected Bearer *** for h"),
+        ("bad config {'api-key': 'sk-secret'}", "bad config {'api-key': '***'}"),
+        ("sent X-Api-Key: sk-secret", "sent X-Api-Key: ***"),
+        ("login failed, password: hunter2", "login failed, password: ***"),
+        ("login failed, password=hunter2 for u", "login failed, password=*** for u"),
+        ("sent apikey=sk-secret", "sent apikey=***"),
+        ("rejected Bearer abcdefghijklmnopqrst", "rejected Bearer ***"),
     ],
 )
 def test_exception_text_masks_quoted_and_bearer_credentials(message, shown):
@@ -292,7 +298,9 @@ def test_exception_text_masks_quoted_and_bearer_credentials(message, shown):
     [
         "Invalid token",
         "Bearer token required.",
+        "Bearer authentication failed",
         "token: expired",
+        "password must be set",
         '"max_tokens": 5',
         "http://h:8080/x",
     ],
@@ -317,8 +325,22 @@ def test_safe_frame_labels_object_index_values_and_column_labels():
     assert list(shown.index) == [("a", "SecretSource"), ("b", 1)]
     assert list(shown.index.names) == ["SecretText", "k"]
     _assert_no_secrets(shown.to_html())
-    plain = pd.DataFrame({"x": [1]})
+    plain = pd.DataFrame({"x": [1], "s": ["a"]})
     assert safe_frame(plain) is plain
+    plain_nested = plain.set_axis(pd.MultiIndex.from_tuples([("a", 1)], names=["k", "n"]))
+    assert safe_frame(plain_nested) is plain_nested
+
+
+def test_safe_frame_writes_out_tuple_labels():
+    frame = pd.DataFrame([[1, 2]], columns=pd.MultiIndex.from_tuples([("a", 1), ("b", 2)]))
+    shown = safe_frame(frame.set_axis(frame.columns.to_flat_index(), axis=1))
+    assert list(shown.columns) == ["('a', 1)", "('b', 2)"]
+    nested = pd.DataFrame(
+        [[1]], columns=pd.Index([("a", SecretText())], name=("n", 1), tupleize_cols=False)
+    )
+    shown = safe_frame(nested)
+    assert list(shown.columns) == ["('a', SecretText)"]
+    assert shown.columns.name == "('n', 1)"
 
 
 def test_inspector_input_summary_names_object_columns():

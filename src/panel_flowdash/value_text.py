@@ -38,20 +38,23 @@ _PLAIN_TYPES = (
 _CONTAINERS = (list, tuple, set, frozenset, dict)
 _MAX_NAME = 60
 _URL_PASSWORD = re.compile(r"(\b[a-zA-Z][\w+.-]*://[^\s:/@]*:)[^\s@/]+@")
-_SECRET_KEY = r"\b\w*?(?:password|passwd|pwd|secret|token|api_?key)"
+_SECRET_KEY = r"\b\w*?(?:password|passwd|pwd|secret|token|api[_-]?key)"
 _SECRET_PARAM = re.compile(rf"({_SECRET_KEY}=)[^\s&;,'\"]+", re.IGNORECASE)
 # A quoted value of a secret key, as JSON, a dict repr or keyword arguments write it.
 _SECRET_QUOTED = re.compile(
     rf"""(["']?{_SECRET_KEY}["']?\s*[:=]\s*)(["'])(?:\\.|(?!\2).)*?\2""", re.IGNORECASE
 )
-_AUTH_HEADER = re.compile(
-    r"""(\bauthorization["']?\s*[:=]\s*["']?(?:(?:bearer|basic|token)\s+)?)[^\s"',;}]+""",
+# An unquoted "key: value" only for keys that always hold a credential, so "token: expired"
+# stays readable; an Authorization value may follow its scheme.
+_SECRET_HEADER = re.compile(
+    r"""(\b(?:\w*?(?:password|passwd|pwd)|(?:x-)?api[_-]?key|authorization)["']?\s*:\s*["']?"""
+    r"""(?:(?:bearer|basic|token)\s+)?)(?![*"'])[^\s"',;}&]+""",
     re.IGNORECASE,
 )
-# Only a credential-like word after "Bearer", one with a digit or inner token punctuation,
-# so text like "Bearer token required." stays readable.
+# Only a credential-like word after "Bearer": one with a digit or inner token punctuation, or
+# a long run of letters, so text like "Bearer token required." stays readable.
 _BEARER = re.compile(
-    r"\b(bearer\s+)(?=[\w~+/.-]*(?:\d|[~+/.][\w~+/-]))[\w~+/.-]+=*", re.IGNORECASE
+    r"\b(bearer\s+)(?=[\w~+/.-]*(?:\d|[~+/.][\w~+/-])|\w{16})[\w~+/.-]+=*", re.IGNORECASE
 )
 
 
@@ -103,29 +106,36 @@ def redact_secrets(text: str) -> str:
     text = _URL_PASSWORD.sub(r"\1***@", text)
     text = _SECRET_QUOTED.sub(r"\1\2***\2", text)
     text = _SECRET_PARAM.sub(r"\1***", text)
-    text = _AUTH_HEADER.sub(r"\1***", text)
+    text = _SECRET_HEADER.sub(r"\1***", text)
     return _BEARER.sub(r"\1***", text)
 
 
 def _safe_labels(index: t.Any) -> t.Any:
-    """Return a pandas *index* whose labels and level names that are not plain data show their label."""
+    """Return a pandas *index* whose labels and level names that are not plain data show their text.
+
+    The *index* itself is returned when nothing needs to change.
+    """
     import pandas as pd
 
-    names = [n if is_plain(n) else object_label(n) for n in index.names]
+    names = [n if is_plain(n) else safe_repr(n) for n in index.names]
+    renamed = any(new is not old for new, old in zip(names, index.names, strict=True))
     if isinstance(index, pd.MultiIndex):
-        levels = [_safe_labels(index.get_level_values(i)) for i in range(index.nlevels)]
+        values = [index.get_level_values(i) for i in range(index.nlevels)]
+        levels = [_safe_labels(v) for v in values]
+        if not renamed and all(new is old for new, old in zip(levels, values, strict=True)):
+            return index
         return pd.MultiIndex.from_arrays(levels, names=names)
     if index.dtype.kind == "O" and not all(is_plain(v) for v in index):
-        return pd.Index([v if is_plain(v) else object_label(v) for v in index], name=names[0])
-    return index.rename(names[0]) if names[0] is not index.name else index
+        return pd.Index([v if is_plain(v) else safe_repr(v) for v in index], name=names[0])
+    return index.rename(names[0]) if renamed else index
 
 
 def safe_frame(frame: t.Any) -> t.Any:
-    """Return a copy of a pandas *frame* whose objects that are not plain data show their label.
+    """Return a pandas *frame* whose objects that are not plain data show their text.
 
-    That covers object cells, index values, column labels and level names.
-
-    Pass only the rows to show: every object column of *frame* is copied.
+    That covers object cells, index values, column labels and level names. The
+    frame is copied only when one of them needs to change, so pass only the rows
+    to show.
     """
     try:
         import pandas as pd
@@ -134,7 +144,11 @@ def safe_frame(frame: t.Any) -> t.Any:
     if not isinstance(frame, pd.DataFrame):
         return frame
     index, labels = _safe_labels(frame.index), _safe_labels(frame.columns)
-    columns = [i for i, dtype in enumerate(frame.dtypes) if dtype.kind == "O"]
+    columns = [
+        i
+        for i, dtype in enumerate(frame.dtypes)
+        if dtype.kind == "O" and not all(is_plain(v) for v in frame.iloc[:, i])
+    ]
     if not columns and index is frame.index and labels is frame.columns:
         return frame
     frame = frame.copy()
