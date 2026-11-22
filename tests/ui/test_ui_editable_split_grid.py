@@ -139,7 +139,7 @@ def test_tile_options_in_the_split_inspector_edit_the_main_layout(page):
     page.locator(f".react-flow__node[data-id='{chart_id}']").click()
     page.get_by_role("tab", name="Tile").click()
     page.get_by_role("combobox", name="Width").click()
-    page.get_by_role("listbox").get_by_text("Full width", exact=True).click()
+    page.get_by_role("listbox").get_by_text("Full (12/12)", exact=True).click()
     wait_until(lambda: tile_entry(editor, chart_id).get("width") == 100, page, timeout=8000)
     wait_until(lambda: _fraction(page, editor, chart_id)["width"] > 0.95, page, timeout=8000)
     page.get_by_role("switch", name="Show on dashboard").click()
@@ -148,5 +148,6 @@ def test_tile_options_in_the_split_inspector_edit_the_main_layout(page):
     _assert_main_layout(editor)
 
     _open_layout(page, editor)
+    editor._clear_selection()
     expect(page.get_by_text("hidden", exact=True)).to_be_visible()
     expect(_tile(page, editor, chart_id)).to_be_hidden()

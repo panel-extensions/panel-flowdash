@@ -343,7 +343,7 @@ def test_resize_collapse_and_close(page):
     editor, query = make_editor()
     panel, _code = _open(page, editor, query)
     before = panel.bounding_box()["height"]
-    handle = page.locator(".fd-dock-handle")
+    handle = page.get_by_role("separator", name="Resize the code panel")
     box = handle.bounding_box()
     page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
     page.mouse.down()

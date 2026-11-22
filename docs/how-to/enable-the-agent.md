@@ -203,9 +203,10 @@ The agent cannot undo or redo through the command palette; those commands are th
 user's. With `editor_options={"history": False}` each tool call publishes a version
 instead, and applying one that predates the user's own edits asks first.
 
-A node the agent added offers **How was this made?**, in its tile's More menu in view
-mode and as a button in the inspector when the node is selected on the Dataflow canvas.
-It shows the request that created the node, in a side sheet or in the inspector's place:
+A node the agent added offers **How was this made?** in its tile's More menu in view
+mode, and a *History* tab in the sidecar when it is selected while editing. Both show
+the request that created the node, in a side sheet in view mode; a sheet still open
+when you press Edit hands over to the *History* tab. They show
 the question, every model call (model, tokens, the share read from the cache, duration
 and failed attempts) and tool call with its arguments and result, and the versions of
 the dashboard it published. Below it, "Changed later by 2 requests" counts the later

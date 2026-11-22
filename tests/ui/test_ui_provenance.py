@@ -75,13 +75,12 @@ def _ask_for_a_note(page):
     return editor, added
 
 
-def test_the_inspector_shows_how_a_node_the_agent_added_was_made(page):
+def test_the_sidecars_history_tab_shows_how_a_node_the_agent_added_was_made(page):
     _, added = _ask_for_a_note(page)
     page.get_by_role("button", name="Assistant", exact=True).click()
     page.locator(f".react-flow__node[data-id='{added}']").click()
     expect(page.get_by_role("button", name="How was this made?")).to_have_count(0)
-    page.locator(".fd-inspector-menu button, button.fd-inspector-menu").first.click()
-    page.get_by_role("menuitem", name="How was this made?").click()
+    page.locator(".fd-sidecar").get_by_role("tab", name="History").click()
 
     expect(page.get_by_text("How this was made", exact=True)).to_be_visible()
     view = page.locator(".span-view")
@@ -93,8 +92,8 @@ def test_the_inspector_shows_how_a_node_the_agent_added_was_made(page):
     # The Save and Done buttons stay reachable.
     expect(page.get_by_role("button", name="Done")).to_be_visible()
 
-    page.get_by_role("button", name="Back").click()
-    expect(page.locator(".span-view")).to_have_count(0)
+    page.locator(".fd-sidecar").get_by_role("tab", name="Settings").click()
+    expect(page.locator(".span-view")).to_be_hidden()
 
 
 def test_the_tile_menu_shows_it_and_a_viewer_sees_their_own_request_in_full(page):
@@ -142,6 +141,10 @@ def test_the_side_sheet_closes_when_editing_starts(page):
     # Save and Done are no longer covered, and the workspace has its width back.
     page.get_by_role("button", name="Done").click(trial=True)
     expect(page.locator(".flowdash-inspecting")).to_have_count(0)
+    # The sidecar's History tab takes over what the sheet showed.
+    sidecar = page.locator(".fd-sidecar")
+    expect(sidecar.get_by_role("tab", name="History", selected=True)).to_be_visible(timeout=8000)
+    expect(sidecar.locator(".sv-question")).to_have_text("Add another note")
 
 
 def test_someone_elses_request_is_redacted_for_viewers_and_for_restricted_nodes(page):
@@ -185,21 +188,17 @@ def _left_edges_match(*locators):
 
 
 @pytest.mark.parametrize("width", [1280, 900])
-def test_the_title_lines_up_with_the_request_in_the_inspector(page, width):
-    editor, added = _ask_for_a_note(page)
+def test_the_caption_lines_up_with_the_request_in_the_history_tab(page, width):
+    _, added = _ask_for_a_note(page)
     page.get_by_role("button", name="Assistant", exact=True).click()
     page.locator(f".react-flow__node[data-id='{added}']").click()
-    expect(page.get_by_role("button", name="How was this made?")).to_have_count(0)
-    page.locator(".fd-inspector-menu button, button.fd-inspector-menu").first.click()
-    page.get_by_role("menuitem", name="How was this made?").click()
+    page.locator(".fd-sidecar").get_by_role("tab", name="History").click()
     page.set_viewport_size({"width": width, "height": 900})
 
-    header = page.locator(".flowdash-inspector-extra")
-    title = header.get_by_text(editor._instance_title(added), exact=True)
-    caption = header.get_by_text("How this was made", exact=True)
+    caption = page.locator(".fd-history-caption")
     content = page.locator(".span-view .sv-question")
     expect(content).to_be_visible()
-    wait_until(lambda: _left_edges_match(caption, title, content), page, timeout=5000)
+    wait_until(lambda: _left_edges_match(caption, content), page, timeout=5000)
 
 
 @pytest.mark.parametrize("width", [1280, 420])

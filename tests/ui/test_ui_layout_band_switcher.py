@@ -92,6 +92,8 @@ def test_edits_under_tablet_go_to_its_own_layout(page):
     assert editor._tile_grid.layout == base
     assert editor._tile_grid.reference_width is None
     wait_until(lambda: editor.dirty, page, timeout=8000)
+    # The sidecar shows the bands while nothing is selected.
+    editor._clear_selection()
     expect(page.get_by_text("Tablet is arranged separately.")).to_be_visible()
     reset = page.get_by_role("button", name="Reset to automatic")
     expect(reset).to_be_visible()

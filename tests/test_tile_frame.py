@@ -22,6 +22,7 @@ from panel_flowdash.dashboard_store import (
 )
 from panel_flowdash.json_store import JSONFolderDashboardStore
 from panel_flowdash.registry import build_registry
+from panel_flowdash.ui.status_bar import select_on_canvas
 from panel_flowdash.ui.tile import resolve_framed
 from panel_flowdash.ui.tile_layout import FRAME_DEFAULT, frame_choices, update_tile
 
@@ -190,12 +191,8 @@ class TestEditor:
 
     def test_inspector_follows_the_setting_and_frames_set_elsewhere(self):
         editor = _shown(_editor(), _model())
-        tab = editor._inspector._tile_tab(
-            "r",
-            next(i for i in editor._tile_items if i["instance_id"] == "r"),
-            editor._component_specs["T/rule"],
-        )
-        frame = next(o for o in tab.objects if getattr(o, "label", None) == "Frame")
+        select_on_canvas(editor._flow, node_id="r")
+        frame = editor._inspector.tile_options.frame_select
         assert frame.value == FRAME_DEFAULT
 
         update_tile(editor, "r", framed=True)
@@ -205,28 +202,24 @@ class TestEditor:
         editor.settings.tile_cards = False
         assert next(iter(frame.options)) == "Default (unframed)"
         update_tile(editor, "p", framed=None)
-        tab = editor._inspector._tile_tab(
-            "p",
-            next(i for i in editor._tile_items if i["instance_id"] == "p"),
-            editor._component_specs["T/plain"],
-        )
-        frame = next(o for o in tab.objects if getattr(o, "label", None) == "Frame")
+        select_on_canvas(editor._flow, node_id="p")
+        frame = editor._inspector.tile_options.frame_select
         editor.settings.tile_cards = True
         assert next(iter(frame.options)) == "Default (framed)"
 
         frame.value = False
         assert editor._inspect_tiles["p"].framed is False
 
-    def test_layout_panel_sets_the_option(self):
+    def test_tile_tab_sets_the_option(self):
         editor = _shown(_editor(), _model())
-        panel = editor._layout_panel
-        panel.visible = True
-        panel.select("r")
-        assert panel.frame_select.value == FRAME_DEFAULT
-        panel.frame_select.value = True
+        editor.mode = "dashboard"
+        select_on_canvas(editor._flow, node_id="r")
+        frame = editor._inspector.tile_options.frame_select
+        assert frame.value == FRAME_DEFAULT
+        frame.value = True
         assert _frames(editor)["r"] is True
         assert {e["instance_id"]: e for e in editor.layout}["r"]["framed"] is True
-        panel.frame_select.value = FRAME_DEFAULT
+        frame.value = FRAME_DEFAULT
         assert "framed" not in {e["instance_id"]: e for e in editor.layout}.get("r", {})
 
 

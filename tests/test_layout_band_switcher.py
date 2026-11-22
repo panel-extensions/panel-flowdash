@@ -174,7 +174,7 @@ class TestCustomArrangements:
         panel.band_select.value = "sm"
         assert not panel.reset_band_button.visible
         assert "Tablet and Phone follow the Desktop layout" in panel.band_summary.object
-        assert panel.band_hint.visible
+        assert panel.band_hint() == "Width and height set here apply to the Desktop layout."
 
         editor._tile_grid.responsive_layouts = {"sm": _custom_layout(2)}
         assert panel.reset_band_button.visible
@@ -190,7 +190,7 @@ class TestCustomArrangements:
         _layout_tab(editor)
         panel = editor._layout_panel
         assert not panel.reset_band_button.visible
-        assert not panel.band_hint.visible
+        assert panel.band_hint() == ""
 
     async def test_custom_arrangement_is_saved(self, editor):
         map_id, _chart_id = _layout_tab(editor)

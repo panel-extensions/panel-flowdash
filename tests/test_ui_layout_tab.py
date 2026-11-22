@@ -109,76 +109,71 @@ class TestTileLayoutHelpers:
         assert OffGrid(filter_id, "State Filter", "in sidebar", area="top") in off_grid(editor)
 
 
-class TestLayoutPanel:
-    async def test_shown_only_while_arranging(self, editor):
+def _tile_options(editor, instance_id):
+    select_on_canvas(editor._flow, node_id=instance_id)
+    return editor._inspector.tile_options
+
+
+class TestSidecarInLayout:
+    async def test_shown_while_arranging(self, editor):
         editor.mode = "dashboard"
-        assert editor._layout_panel.visible
+        assert editor._inspector.visible and editor._layout_panel.visible
         editor.mode = "wiring"
         assert not editor._layout_panel.visible
         editor.mode = "dashboard"
         editor.editable = False
-        assert not editor._layout_panel.visible
+        assert not editor._inspector.visible
 
-    async def test_selects_the_tile_selected_on_the_canvas(self, editor):
+    async def test_shows_the_tile_selected_on_the_canvas(self, editor):
         editor.mode = "wiring"
         editor.add_component(MAP)
         chart_id = editor.add_component(CHART)
         select_on_canvas(editor._flow, node_id=chart_id)
         editor.mode = "dashboard"
-        panel = editor._layout_panel
-        assert panel.selected == chart_id
-        assert panel.tile_select.value == chart_id
-        assert panel.tile_select.options == {
-            "Map": editor._tile_items[0]["instance_id"],
-            "Chart": chart_id,
-        }
+        assert editor._inspector._shown == ("node", chart_id)
+        assert editor._inspector.tile_options.instance_id == chart_id
 
     async def test_width_and_height_edit_the_selected_tile(self, editor):
         (map_id,) = _place(editor, MAP)
-        panel = editor._layout_panel
-        assert panel.selected == map_id
-        assert panel.width_select.value == 12
-        assert panel.height_select.value == "auto"
+        options = _tile_options(editor, map_id)
+        assert options.width_select.value == "auto"
+        assert options.height_select.value == "auto"
         # Only heights within the component's size hints are offered.
-        assert list(panel.height_select.options.values()) == ["auto", 200, 300, 400, 500, 600]
-        panel.width_select.value = 6
-        panel.height_select.value = 400
+        assert list(options.height_select.options.values()) == ["auto", 200, 300, 400, 500, 600]
+        options.width_select.value = 6
+        options.height_select.value = 400
         entry = editor.to_model().tile_layout[0]
         assert (entry["width"], entry["height"]) == (50.0, 400)
         assert editor.dirty
-        panel.height_select.value = "auto"
+        options.height_select.value = "auto"
         assert "height" not in editor.to_model().tile_layout[0]
 
-    async def test_resized_height_is_offered(self, editor):
-        _place(editor, MAP)
+    async def test_resized_tile_is_shown(self, editor):
+        (map_id,) = _place(editor, MAP)
+        options = _tile_options(editor, map_id)
         editor._tile_grid.layout = [{"index": 0, "width": 50.0, "height": 437}]
-        panel = editor._layout_panel
-        assert panel.height_select.value == 437
-        assert panel.height_select.options["437 px"] == 437
-
-    async def test_tiles_with_the_same_title_are_told_apart(self, editor):
-        first, second = _place(editor, CHART, CHART)
-        assert editor._layout_panel.tile_select.options == {"Chart": first, "Chart (2)": second}
+        assert options.width_select.value == 6
+        assert options.height_select.value == 437
+        assert options.height_select.options["437 px"] == 437
 
     async def test_selecting_another_tile_shows_its_size(self, editor):
         map_id, chart_id = _place(editor, MAP, CHART)
         update_tile(editor, chart_id, width=25.0)
-        panel = editor._layout_panel
-        panel.tile_select.value = chart_id
-        assert panel.selected == chart_id
-        assert panel.width_select.value == 3
+        options = _tile_options(editor, chart_id)
+        assert options.width_select.value == 3
+        assert options.width_select.options["Quarter (3/12)"] == 3
         assert tile_entry(editor, map_id).get("width") is None
 
     async def test_hidden_component_is_listed_and_restorable(self, editor):
         _, chart_id, _ = _place(editor, MAP, CHART, FILTER)
-        panel = editor._layout_panel
-        panel.tile_select.value = chart_id
-        panel.hide_button.clicks += 1
+        _tile_options(editor, chart_id).show_switch.value = False
         assert tile_entry(editor, chart_id)["visible"] is False
-        assert chart_id not in panel.tile_select.options.values()
+        select_on_canvas(editor._flow)
+        panel = editor._layout_panel
         texts = _texts(panel._off_grid)
         assert texts[:2] == ["Chart", HIDDEN]
         assert "State Filter" in texts and "in top bar" in texts
+        assert panel.off_grid_section in editor._inspector._body.objects
         show = [
             b
             for b in panel._off_grid.select(pn.viewable.Viewable)
@@ -187,7 +182,6 @@ class TestLayoutPanel:
         assert len(show) == 1
         show[0].clicks += 1
         assert tile_entry(editor, chart_id)["visible"] is True
-        assert panel.selected == chart_id
         assert "Chart" not in _texts(panel._off_grid)
 
     async def test_tile_hidden_in_the_browser_is_listed(self, editor):
@@ -197,10 +191,14 @@ class TestLayoutPanel:
 
     async def test_empty_grid_explains_itself(self, editor):
         editor.mode = "dashboard"
-        panel = editor._layout_panel
-        assert not panel.tile_select.visible
-        assert panel._no_tile.visible
-        assert "Every placed component has a tile." in _texts(panel._off_grid)
+        assert "Every placed component has a tile." in _texts(editor._layout_panel._off_grid)
+
+    async def test_arrange_for_only_in_the_layout_tab(self, editor):
+        _place(editor, MAP)
+        section = editor._layout_panel.arrange_section
+        assert section in editor._inspector._body.objects
+        editor.mode = "wiring"
+        assert section not in editor._inspector._body.objects
 
 
 class TestLayoutGrid:

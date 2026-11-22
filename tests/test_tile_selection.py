@@ -40,7 +40,7 @@ class TestCanvasToGrid:
         editor, (map_id, chart_id) = placed
         select_on_canvas(editor._flow, node_id=chart_id)
         assert _selected(editor) == chart_id
-        assert editor._layout_panel.selected == chart_id
+        assert editor._inspector._shown == ("node", chart_id)
         select_on_canvas(editor._flow, node_id=map_id)
         assert _selected(editor) == map_id
 
@@ -90,20 +90,11 @@ class TestGridToCanvas:
         editor, (_map_id, chart_id) = placed
         _click(editor, chart_id)
         assert editor._flow.selection == {"nodes": [chart_id], "edges": []}
-        assert editor._layout_panel.selected == chart_id
-        if editor.mode == "split":
-            assert editor._inspector._shown == ("node", chart_id)
-        else:
-            assert editor._layout_panel.tile_select.value == chart_id
-
-    async def test_layout_panel_tile_selects_the_tile_and_node(self, placed):
-        editor, (map_id, chart_id) = placed
-        editor._layout_panel.tile_select.value = chart_id
-        assert _selected(editor) == chart_id
-        assert _nodes(editor) == [chart_id]
-        editor._layout_panel.tile_select.value = map_id
-        assert _selected(editor) == map_id
-        assert _nodes(editor) == [map_id]
+        inspector = editor._inspector
+        assert inspector._shown == ("node", chart_id)
+        # A tile clicked in the Layout tab shows its options first.
+        tab = "Tile" if editor.mode == "dashboard" else "Settings"
+        assert inspector._tab_labels[inspector._node_tabs.active] == tab
 
     async def test_closed_tile_keeps_its_node_selected(self, placed):
         editor, (map_id, _chart_id) = placed
@@ -132,7 +123,7 @@ class TestGridToCanvas:
         editor, (map_id, chart_id) = placed
         _click(editor, map_id)
         select_on_canvas(editor._flow, node_id=chart_id)
-        editor._layout_panel.tile_select.value = map_id
+        _click(editor, map_id)
         assert not editor.dirty
 
 

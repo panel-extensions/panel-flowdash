@@ -241,29 +241,6 @@ def test_a_narrower_window_docks_it_under_the_canvas(page):
     expect(page.locator(".fd-code-side .fd-code-panel")).to_be_visible()
 
 
-def test_the_inspector_back_button_is_named_back(page):
-    import panel as pn
-
-    editor, query = make_editor()
-    page.set_viewport_size(VIEWPORT)
-    serve_component(page, editor)
-    page.locator(f".react-flow__node[data-id='{query}']").click()
-    wait_until(lambda: editor._flow.selection["nodes"] == [query], page, timeout=TIMEOUT)
-    expect(page.locator(".fd-edit-spec").first).to_be_visible(timeout=TIMEOUT)
-    # Opened on the session's own loop, as a click would, not from the test's thread
-    # while the server may still be building the node's view for the selection.
-    model = next(iter(editor._view._models.values()))[0]
-    model.document.add_next_tick_callback(
-        lambda: editor._inspector.show_extra("Caption", "Extra", [pn.pane.Markdown("Extra view")])
-    )
-    back = page.get_by_role("button", name="Back", exact=True)
-    expect(back).to_be_visible(timeout=TIMEOUT)
-    expect(back).to_have_text("Back")
-    assert back.evaluate("e => e.textContent.trim()") == "Back"
-    back.click()
-    expect(page.get_by_text("Extra view")).to_have_count(0)
-
-
 @pytest.mark.parametrize("move", ["toggle", "narrow"])
 def test_a_json_draft_survives_a_move(page, move):
     editor = FlowDash(SPEC_COMPONENTS, notifications=False, include_builtin_components=False)

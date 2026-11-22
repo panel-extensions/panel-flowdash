@@ -39,6 +39,7 @@ from panel_flowdash.transforms import parse_transform, summarize_transform
 from panel_flowdash.ui.choice_widgets import form_widgets, setting_choices, widgets_key
 from panel_flowdash.ui.code_field import CodeField, code_language
 from panel_flowdash.ui.config_draft import ConfigDraft
+from panel_flowdash.ui.dock_handle import DockHandle
 from panel_flowdash.ui.input_editor import LiteralEditor
 from panel_flowdash.ui.node_card import (
     STATUS_TEXT,
@@ -58,6 +59,12 @@ from panel_flowdash.ui.node_preview import (
     format_value,
     run_off_loop,
 )
+from panel_flowdash.ui.sidecar import (
+    FOLDED_WIDTH,
+    SIDECAR_MAX_WIDTH,
+    SIDECAR_MIN_WIDTH,
+    SIDECAR_WIDTH,
+)
 from panel_flowdash.ui.spec_field import SpecEditor
 from panel_flowdash.ui.status_bar import (
     CanvasWatcher,
@@ -66,17 +73,8 @@ from panel_flowdash.ui.status_bar import (
     select_on_canvas,
 )
 from panel_flowdash.ui.text import field_label, text_alert, text_typography
-from panel_flowdash.ui.tile_layout import (
-    AREA_NAMES,
-    FRAME_DEFAULT,
-    GRID,
-    area_of,
-    frame_choices,
-    frame_value,
-    move_buttons,
-    tile_entry,
-    update_tile,
-)
+from panel_flowdash.ui.tile_layout import tile_entry, update_tile
+from panel_flowdash.ui.tile_options import TileOptions
 from panel_flowdash.util import is_failure
 from panel_flowdash.value_text import held_table_names, is_plain, safe_frame, safe_str
 
@@ -85,13 +83,17 @@ if t.TYPE_CHECKING:
 
     from panel_flowdash.component_spec import ComponentSpec
 
-INSPECTOR_WIDTH = 360
-# Material's arrow_back as SVG: the icon font's ligature would put "arrow_back" in the button's text.
-_BACK_ICON = (
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
-    '<path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>'
-)
-_COLLAPSED_WIDTH = 44
+INSPECTOR_WIDTH = SIDECAR_WIDTH
+
+SETTINGS, DATA, TILE, HISTORY = "Settings", "Data", "Tile", "History"
+
+# A dot on the folded strip's button while something is selected.
+_BADGE_CSS = """
+:host(.fd-sidecar-badge) .MuiIconButton-root::after {
+  content: ""; position: absolute; top: 4px; right: 4px; width: 8px; height: 8px;
+  border-radius: 50%; background: var(--mui-palette-primary-main, #0072b5);
+}
+"""
 
 _STATUS_COLOR = {
     "ok": "success",
@@ -102,9 +104,6 @@ _STATUS_COLOR = {
     "refused": "error",
 }
 
-_WIDTHS = {"Full width": 100.0, "Half": 50.0, "Third": 33.33, "Quarter": 25.0}
-_AUTO = "auto"
-_HEIGHTS = (200, 300, 400, 600, 800)
 _MAX_ISSUES = 20
 _MAX_SUMMARY_ITEMS = 3
 _MAX_CHIPS = 6
@@ -833,9 +832,21 @@ def _pair_fields(layout: pn.Column) -> None:
 
 
 class Inspector(Viewer):
-    """A collapsible panel beside the canvas showing what is selected on it."""
+    """The sidecar: a panel beside the canvas or the tile grid showing what is selected.
+
+    It is shown in the Dataflow, Split and Layout tabs, follows the editor's
+    one selection, and for a component shows the tabs Settings, Data, Tile and,
+    when the assistant made it, History. Whether it is open or folded is
+    decided by the editor's :class:`~panel_flowdash.ui.sidecar.SidecarFold`.
+    """
 
     collapsed = param.Boolean(default=False, doc="Whether the panel is folded to a narrow strip.")
+
+    width = param.Integer(
+        default=SIDECAR_WIDTH,
+        bounds=(SIDECAR_MIN_WIDTH, SIDECAR_MAX_WIDTH),
+        doc="The width of the open panel, set by dragging its left edge.",
+    )
 
     editor = param.Parameter(doc="The FlowDash editor whose canvas selection is inspected.")
 
@@ -856,7 +867,6 @@ class Inspector(Viewer):
         self._last_check_status: tuple[str, str] | None = None
         self._code_fields: list[CodeField] = []
         self._has_inline_close = False
-        self._showing_extra = False
         self._no_settings = False
         self._data_column: pn.Column | None = None
         self._data_view: tuple[str, ComponentSpec] | None = None
@@ -872,8 +882,17 @@ class Inspector(Viewer):
         self._literal_editors: dict[str, LiteralEditor] = {}
         self._literal_captions: dict[str, pmui.Typography] = {}
         self._value_panes: dict[str, pn.pane.HTML] = {}
-        # The Move to buttons of the shown Tile tab.
-        self._tile_move_buttons: list = []
+        # The shown Tile tab's options.
+        self.tile_options: TileOptions | None = None
+        # The tab last chosen for each kind of component, by its role.
+        self._tab_memory: dict[str, str] = {}
+        # A tab asked for a component about to be shown: (instance id, tab label).
+        self._pending_tab: tuple[str, str] | None = None
+        # The labels of the shown component's tabs, and the later turn its History shows.
+        self._tab_labels: list[str] = []
+        self._history_column: pn.Column | None = None
+        self._history_turn: str | None = None
+        self._opening = False
         self._refresh_inputs: t.Callable[[], None] = lambda: None
         # The latest config check started per node, see ConfigDraft.
         self._check_runs: dict[str, int] = {}
@@ -900,8 +919,9 @@ class Inspector(Viewer):
             size="small",
             margin=(8, 4),
         )
-        self.collapse_button.on_click(lambda _event: setattr(self, "collapsed", True))
-        self.expand_button.on_click(lambda _event: setattr(self, "collapsed", False))
+        self.expand_button.stylesheets = [_BADGE_CSS]
+        self.collapse_button.on_click(lambda _event: self.fold(True))
+        self.expand_button.on_click(lambda _event: self.fold(False))
         # A Material UI column follows its contents' height as a form grows, e.g. by
         # a row of thresholds, so what follows the tabs moves down with it.
         self._body = pmui.Column(sizing_mode="stretch_width", margin=(0, 16, 16, 16))
@@ -909,12 +929,30 @@ class Inspector(Viewer):
             self.collapse_button,
             self._body,
             self.expand_button,
-            width=INSPECTOR_WIDTH,
+            width=self.width,
             sizing_mode="stretch_height",
             scroll="y-auto",
             margin=0,
-            visible=self.param.visible,
             sx={"borderLeft": 1, "borderColor": "divider", "bgcolor": "background.paper"},
+        )
+        self.handle = DockHandle(
+            orientation="vertical",
+            min_size=SIDECAR_MIN_WIDTH,
+            max_size=SIDECAR_MAX_WIDTH,
+            max_ratio=0.5,
+            label="Resize the side panel",
+            sizing_mode="stretch_height",
+            width=7,
+            margin=0,
+        )
+        self.handle.param.watch(self._on_resized, "size")
+        self._frame = pn.Row(
+            self.handle,
+            self._panel,
+            margin=0,
+            sizing_mode="stretch_height",
+            visible=self.param.visible,
+            css_classes=["fd-sidecar"],
         )
         self._sync_collapsed()
         self._flow.param.watch(self._on_selection, "selection")
@@ -941,6 +979,47 @@ class Inspector(Viewer):
     def _on_selection(self, _event):
         if self.visible:
             self.refresh()
+        self._sync_badge()
+
+    def fold(self, folded: bool):
+        """Fold the panel to its strip or open it, as the person chose."""
+        sidecar = getattr(self.editor, "_sidecar", None)
+        if sidecar is None:
+            self.collapsed = folded
+        else:
+            sidecar.user_toggle(not folded)
+
+    def _on_resized(self, event):
+        if event.new:
+            self.width = max(SIDECAR_MIN_WIDTH, min(SIDECAR_MAX_WIDTH, int(event.new)))
+
+    @property
+    def current_width(self) -> int:
+        """The width the panel takes beside the canvas: open, folded or 0 when hidden."""
+        if not self.visible:
+            return 0
+        return FOLDED_WIDTH if self.collapsed else self.width + 7
+
+    def open_tab(self, instance_id: str, tab: str, turn_id: str | None = None):
+        """Show *tab* of the component *instance_id*, now if it is shown or else once selected.
+
+        *turn_id* names the later turn the History tab shows, None for the request that made it.
+        """
+        if tab == HISTORY:
+            self._history_turn = turn_id
+        if self._shown == ("node", instance_id) and self._node_tabs is not None:
+            if tab in self._tab_labels:
+                index = self._tab_labels.index(tab)
+                if self._node_tabs.active == index and tab == HISTORY:
+                    self._fill_history()
+                # Asked for, not chosen, so the tab kept for the component's kind stays.
+                self._opening = True
+                try:
+                    self._node_tabs.active = index
+                finally:
+                    self._opening = False
+            return
+        self._pending_tab = (instance_id, tab)
 
     @param.depends("visible", watch=True)
     def _sync_visible(self):
@@ -984,7 +1063,6 @@ class Inspector(Viewer):
         if selected == self._shown and not force and selected is not None:
             return
         self._release()
-        self._showing_extra = False
         self._shown = selected
         if selected is not None:
             self._shown = selected if self._exists() else None
@@ -1005,48 +1083,9 @@ class Inspector(Viewer):
         self._body[:] = objects
         self._sync_save()
 
-    def show_extra(
-        self,
-        caption: str,
-        title: str,
-        objects: list[Viewable],
-        release: t.Callable[[], None] | None = None,
-    ):
-        """Show *objects* in place of the selection's view until the selection changes or Back is pressed.
-
-        *release* is called when they are replaced.
-        """
-        self._release()
-        self._showing_extra = True
-        self._has_inline_close = False
-        self._body.margin = (0, 16, 16, 16)
-        self._sync_collapsed()
-        if release is not None:
-            self._releases.append(release)
-        # Back sits on a row of its own, so the caption and title start at
-        # the content's left edge, as in the side sheet.
-        back = pmui.Button(
-            label="Back",
-            icon=_BACK_ICON,
-            variant="text",
-            size="small",
-            margin=(0, 0, 4, 0),
-            sx={"minWidth": 0, "px": 0, "textTransform": "none"},
-        )
-        back.on_click(lambda _event: self.refresh(force=True))
-        header = pn.Column(
-            back,
-            _caption(caption, margin=0),
-            text_typography(title, variant="subtitle1", margin=0, sx={"fontWeight": 500}),
-            margin=(0, 0, 8, 0),
-            sizing_mode="stretch_width",
-            css_classes=["flowdash-inspector-extra"],
-        )
-        self._body[:] = [header, *objects]
-
     def refresh_node(self):
         """Rebuild a node's view if it is shown, e.g. once its spec moves to or from the code panel."""
-        if self.visible and not self._showing_extra and (self._shown or ("",))[0] == "node":
+        if self.visible and (self._shown or ("",))[0] == "node":
             self.refresh(force=True)
 
     def refresh_summary(self):
@@ -1069,6 +1108,11 @@ class Inspector(Viewer):
         self._data_column = None
         self._data_view = None
         self._node_tabs = None
+        self._tab_labels = []
+        self._history_column = None
+        if self.tile_options is not None:
+            self.tile_options.release()
+            self.tile_options = None
         self._data_generation += 1
         self._data_pending = False
         self._inputs_column = None
@@ -1095,6 +1139,12 @@ class Inspector(Viewer):
                 f"{edges} connection{'' if edges == 1 else 's'}"
             ),
         ]
+        layout_panel = getattr(editor, "_layout_panel", None)
+        if layout_panel is not None and editor.mode == "dashboard":
+            layout_panel.sync_bands()
+            section = layout_panel.arrange_section
+            if section.visible:
+                objects += [pmui.Divider(margin=(12, 0, 12, 0)), section]
         issues = canvas_issues(editor)
         objects.append(_heading(f"Issues ({len(issues)})" if issues else "Issues"))
         if not issues:
@@ -1111,10 +1161,13 @@ class Inspector(Viewer):
             objects.append(self._issue_row(issue))
         if len(issues) > _MAX_ISSUES:
             objects.append(_caption(f"and {len(issues) - _MAX_ISSUES} more"))
+        if layout_panel is not None and editor.editable:
+            layout_panel.refresh()
+            objects.append(layout_panel.off_grid_section)
         objects.append(
             _caption(
-                "Select a component to see its settings, its data and how it appears "
-                "on the dashboard. Select a connection to edit its transform.",
+                "Select a component or a tile to see its settings, its data and how it "
+                "appears on the dashboard. Select a connection to edit its transform.",
                 margin=(16, 0, 0, 0),
             )
         )
@@ -1281,7 +1334,7 @@ class Inspector(Viewer):
                 sx=_HEADER_ICON_SX,
                 css_classes=["fd-inspector-close"],
             )
-            close_btn.on_click(lambda _event: setattr(self, "collapsed", True))
+            close_btn.on_click(lambda _event: self.fold(True))
             row_items.append(close_btn)
         row = pmui.Row(
             *row_items,
@@ -1408,9 +1461,7 @@ class Inspector(Viewer):
     def _on_node_menu(self, instance_id: str, event):
         item = getattr(event, "new", event)
         action = item.get("action") if isinstance(item, dict) else None
-        if action == "how_made":
-            self.editor.show_how_made(instance_id)
-        elif action == "duplicate":
+        if action == "duplicate":
             self._duplicate_component(instance_id)
         elif action == "remove":
             self.editor.remove_component(instance_id)
@@ -1548,12 +1599,9 @@ class Inspector(Viewer):
         spec = editor._component_specs[item["component_id"]]
         graph = editor._dataflow_graph
         state, failures = graph.get_state(instance_id), graph.get_failures(instance_id)
-        menu_items: list[dict] = []
-        if editor.made_by_agent(instance_id):
-            menu_items.append(
-                {"label": "How was this made?", "icon": "manage_search", "action": "how_made"}
-            )
-        menu_items.append({"label": "Duplicate", "icon": "content_copy", "action": "duplicate"})
+        menu_items: list[dict] = [
+            {"label": "Duplicate", "icon": "content_copy", "action": "duplicate"}
+        ]
         menu_items.append(
             {"label": "Remove from dashboard", "icon": "delete_outline", "action": "remove"}
         )
@@ -1602,24 +1650,81 @@ class Inspector(Viewer):
             watcher = failures.param.watch(update, "failed")
             self._releases.append(partial(failures.param.unwatch, watcher))
 
+        pages = [
+            (SETTINGS, self._settings_tab(instance_id, item, spec)),
+            (DATA, self._data_column),
+            (TILE, self._tile_tab(instance_id, item, spec)),
+        ]
+        if editor.made_by_agent(instance_id):
+            self._history_column = pn.Column(
+                margin=(12, 14, 16, 14), sizing_mode="stretch_width", css_classes=["fd-history"]
+            )
+            pages.append((HISTORY, self._history_column))
+        self._tab_labels = [label for label, _ in pages]
+        kind = editor._node_role(item["component_id"])
+        tab = self._tab_memory.get(kind, SETTINGS)
+        # Kept while the component stays shown, as its view may be rebuilt meanwhile.
+        pending = self._pending_tab
+        if pending is not None and pending[0] == instance_id:
+            tab = pending[1]
+        else:
+            self._pending_tab = None
+        if tab not in self._tab_labels:
+            tab = SETTINGS
         tabs = pmui.Tabs(
-            ("Settings", self._settings_tab(instance_id, item, spec)),
-            ("Data", self._data_column),
-            ("Tile", self._tile_tab(instance_id, item, spec)),
+            *pages,
+            active=self._tab_labels.index(tab),
             dynamic=True,
             sizing_mode="stretch_width",
             margin=0,
             sx=_TABS_SX,
+            css_classes=["fd-sidecar-tabs"],
         )
         # The Data tab runs the components' preview hooks, which may query, only while it is shown.
         self._node_tabs = tabs
         self._data_view = (instance_id, spec)
         doc = pn.state.curdoc
         self._doc = doc if doc is not None and doc.session_context is not None else None
-        watcher = tabs.param.watch(refresh_data, "active")
+
+        def on_tab(event):
+            if (owner := inspector()) is None or owner._node_tabs is not tabs:
+                return
+            label = owner._tab_labels[event.new]
+            if not owner._opening:
+                owner._tab_memory[kind] = label
+                owner._pending_tab = None
+            if label == HISTORY:
+                owner._fill_history()
+            owner._schedule_data()
+
+        watcher = tabs.param.watch(on_tab, "active")
         self._releases.append(partial(tabs.param.unwatch, watcher))
         update()
+        if tab == HISTORY:
+            self._fill_history()
         return [header, tabs]
+
+    def _fill_history(self):
+        """Show how the shown component was made, or how a later turn changed it."""
+        column = self._history_column
+        if column is None or (self._shown or ("",))[0] != "node":
+            return
+        instance_id = self._shown[1]
+        caption, body, span = self.editor._how_made_parts(instance_id, self._history_turn)
+        if span is not None:
+            self._releases.append(span.release)
+        heading = [_caption(caption, margin=(0, 0, 8, 0), css_classes=["fd-history-caption"])]
+        if self._history_turn is not None:
+            back = pmui.Button(
+                label="Back to how it was made",
+                variant="text",
+                size="small",
+                margin=(0, 0, 4, 0),
+                sx={"minWidth": 0, "px": 0, "textTransform": "none"},
+            )
+            back.on_click(lambda _event: self.open_tab(instance_id, HISTORY))
+            heading.insert(0, back)
+        column[:] = [*heading, *body]
 
     # Settings
 
@@ -2227,14 +2332,7 @@ class Inspector(Viewer):
             value_pane,
         ]
         if port.name in literals:
-            lines.append(
-                _caption(
-                    f"The value set here ({summarize_value(literals[port.name])}) "
-                    "applies once disconnected.",
-                    margin=(4, 0, 0, 0),
-                    css_classes=["fd-literal-overridden"],
-                )
-            )
+            lines.append(self._ignored_literal(instance_id, port, literals[port.name]))
         return pmui.Paper(
             *lines,
             margin=(0, 0, 8, 0),
@@ -2242,6 +2340,53 @@ class Inspector(Viewer):
             variant="outlined",
             sx={"p": "7px 8px 7px 10px", "borderRadius": "6px", "boxShadow": "none"},
             css_classes=["fd-input-row", f"fd-input-{port.name}"],
+        )
+
+    def _ignored_literal(self, instance_id: str, port, value) -> Viewable:
+        """Show the value set on a connected input greyed out, with a way to use it instead."""
+        editor = self.editor
+        field = pmui.TextInput(
+            label="Value",
+            value=summarize_value(value),
+            disabled=True,
+            sizing_mode="stretch_width",
+            margin=(6, 0, 2, 0),
+        )
+        _dense(field)
+        disconnect = pmui.Button(
+            label="Disconnect to use",
+            icon="link_off",
+            variant="text",
+            size="small",
+            margin=0,
+            sx={"textTransform": "none", "flexShrink": 0},
+            css_classes=["fd-literal-disconnect"],
+        )
+
+        def use_literal(_event):
+            for mapping in [
+                m
+                for m in editor._edge_id_map.values()
+                if m[2] == instance_id and m[3] == port.name
+            ]:
+                editor.disconnect(*mapping)
+
+        disconnect.on_click(use_literal)
+        hint = _caption("Ignored while connected", margin=0, sx={"color": "text.secondary"})
+        return pn.Column(
+            field,
+            pn.FlexBox(
+                hint,
+                disconnect,
+                align_items="center",
+                justify_content="space-between",
+                flex_wrap="nowrap",
+                margin=0,
+                sizing_mode="stretch_width",
+            ),
+            margin=0,
+            sizing_mode="stretch_width",
+            css_classes=["fd-literal-overridden"],
         )
 
     def _literal_caption(self, name: str, is_set: bool, port) -> None:
@@ -2355,156 +2500,11 @@ class Inspector(Viewer):
     # Tile
 
     def _tile_tab(self, instance_id: str, item: dict, spec: ComponentSpec) -> Viewable:
-        """Return the tile's options, rebuilt when the component moves to or from the grid."""
-        editor = self.editor
-        holder = pn.Column(sizing_mode="stretch_width", margin=(12, 14, 16, 14))
-        releases: list = []
-        shown = None
-
-        def fill(*_events):
-            nonlocal shown
-            area = area_of(editor, item)
-            if area == shown:
-                return
-            shown = area
-            for release in releases:
-                release()
-            releases.clear()
-            holder[:] = self._tile_options(instance_id, item, spec, area, releases)
-
-        watcher = editor._view_controls.param.watch(fill, "placed")
-        self._releases.append(partial(editor._view_controls.param.unwatch, watcher))
-        self._releases.append(lambda: [release() for release in releases])
-        fill()
-        return holder
-
-    def _tile_options(
-        self, instance_id: str, item: dict, spec: ComponentSpec, area: str | None, releases: list
-    ) -> list[Viewable]:
-        editor = self.editor
-
-        def refocus():
-            # The pressed button went with the rebuilt tab; the first move left takes the focus.
-            button = next(iter(self._tile_move_buttons), None)
-            if button is not None:
-                button.focus()
-
-        moves = move_buttons(editor, item, then=refocus, margin=(12, 8, 0, 0))
-        self._tile_move_buttons = moves
-        if area != GRID:
-            where = AREA_NAMES.get(area, "sidebar")
-            return [
-                _caption(
-                    f"This component is shown in the {where} of the dashboard rather than "
-                    "as a tile.",
-                    margin=(12, 0, 0, 0),
-                ),
-                pn.FlexBox(*moves, margin=0, gap="0px"),
-            ]
-        layout = tile_entry(editor, instance_id)
-        default = spec.default_size or {}
-        show = pmui.Switch(
-            label="Show on dashboard", value=layout.get("visible", True), margin=(4, 0, 4, 0)
+        """Return the tile's options, which follow the grid and the component's area."""
+        self.tile_options = TileOptions(self.editor, instance_id, item, spec, style=_dense)
+        return pn.Column(
+            self.tile_options.layout, sizing_mode="stretch_width", margin=(12, 14, 16, 14)
         )
-        width = layout.get("width")
-        options = {"Automatic": _AUTO, **_WIDTHS}
-        if isinstance(width, (int, float)) and width not in options.values():
-            options[f"{width:g}%"] = width
-        width_select = pmui.Select(
-            label="Width",
-            options=options,
-            value=width if isinstance(width, (int, float)) else _AUTO,
-            sizing_mode="stretch_width",
-            margin=(8, 0),
-        )
-        current = layout.get("height", default.get("height"))
-        heights = {"Automatic": _AUTO, **{f"{h} px": h for h in _HEIGHTS}}
-        if isinstance(current, (int, float)) and current not in heights.values():
-            heights[f"{current:g} px"] = current
-        height = pmui.Select(
-            label="Height",
-            options=heights,
-            value=current if isinstance(current, (int, float)) else _AUTO,
-            sizing_mode="stretch_width",
-            margin=(8, 0),
-        )
-        frame = pmui.Select(
-            label="Frame",
-            options=frame_choices(editor, instance_id),
-            value=frame_value(layout),
-            description="Whether the tile is drawn as a card in view mode",
-            sizing_mode="stretch_width",
-            margin=(12, 0, 8, 0),
-        )
-        for select in (width_select, height, frame):
-            _dense(select)
-        syncing = False
-
-        def set_frame(event):
-            if not syncing:
-                update_tile(
-                    editor, instance_id, framed=None if event.new == FRAME_DEFAULT else event.new
-                )
-
-        def sync_frame(*_events):
-            # Follows the dashboard's Frame tiles setting and frames set elsewhere, e.g. by the agent.
-            nonlocal syncing
-            syncing = True
-            try:
-                frame.param.update(
-                    options=frame_choices(editor, instance_id),
-                    value=frame_value(tile_entry(editor, instance_id)),
-                )
-                frame.param.trigger("value")
-            finally:
-                syncing = False
-
-        for owner, names in ((editor.settings, ["tile_cards"]), (editor._tile_grid, ["objects"])):
-            watcher = owner.param.watch(sync_frame, names)
-            releases.append(partial(owner.param.unwatch, watcher))
-        show.param.watch(lambda e: update_tile(editor, instance_id, visible=e.new), "value")
-        frame.param.watch(set_frame, "value")
-        width_select.param.watch(
-            lambda e: update_tile(editor, instance_id, width=None if e.new == _AUTO else e.new),
-            "value",
-        )
-        height.param.watch(
-            lambda e: update_tile(editor, instance_id, height=None if e.new == _AUTO else e.new),
-            "value",
-        )
-        objects: list[Viewable] = [show, width_select, height]
-        hints = self._size_hints(spec)
-        if hints:
-            objects.append(_caption(hints))
-        objects.append(frame)
-        arrange = pmui.Button(
-            label="Arrange tiles",
-            icon="dashboard",
-            variant="text",
-            size="small",
-            margin=(12, 0, 0, 0),
-        )
-        arrange.on_click(lambda _event: setattr(editor, "mode", "dashboard"))
-        objects.append(arrange)
-        if moves:
-            objects.append(pn.FlexBox(*moves, margin=0, gap="0px"))
-        return objects
-
-    @staticmethod
-    def _size_hints(spec: ComponentSpec) -> str:
-        def size(hint):
-            return " x ".join(f"{hint[k]} px" for k in ("width", "height") if k in hint)
-
-        parts = [
-            f"{label} {size(hint)}"
-            for label, hint in (
-                ("Starts at", spec.default_size),
-                ("at least", spec.min_size),
-                ("at most", spec.max_size),
-            )
-            if hint
-        ]
-        return ("Size hints: " + ", ".join(parts) + ".") if parts else ""
 
     # ------------------------------------------------------------------
     # A selected connection
@@ -2573,14 +2573,33 @@ class Inspector(Viewer):
     # Collapsing
     # ------------------------------------------------------------------
 
-    @param.depends("collapsed", watch=True)
+    @param.depends("collapsed", "width", watch=True)
     def _sync_collapsed(self):
         collapsed = self.collapsed
         self.collapse_button.visible = not collapsed and not self._has_inline_close
         self._body.visible = not collapsed
         self.expand_button.visible = collapsed
-        self._panel.width = _COLLAPSED_WIDTH if collapsed else INSPECTOR_WIDTH
+        self.handle.visible = not collapsed
+        self._panel.width = FOLDED_WIDTH if collapsed else self.width
+        width = FOLDED_WIDTH if collapsed else self.width + 7
+        self._frame.styles = {"flex": "none", "width": f"{width}px", "min-width": f"{width}px"}
+        self._sync_badge()
+
+    def _sync_badge(self):
+        """Mark the folded strip while something is selected, as a selection does not open it."""
+        selection = self._flow.selection or {}
+        selected = bool(selection.get("nodes") or selection.get("edges"))
+        classes = [c for c in self.expand_button.css_classes if c != "fd-sidecar-badge"]
+        if self.collapsed and selected:
+            classes.append("fd-sidecar-badge")
+        if classes != self.expand_button.css_classes:
+            self.expand_button.css_classes = classes
+        self.expand_button.description = (
+            "Show inspector, something is selected"
+            if self.collapsed and selected
+            else "Show inspector"
+        )
 
     def __panel__(self):
         """Render the panel."""
-        return self._panel
+        return self._frame

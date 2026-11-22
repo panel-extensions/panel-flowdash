@@ -243,11 +243,14 @@ class TestCanvasOptions:
 
 
 class TestInspector:
-    async def test_shown_beside_the_canvas_only_while_editing_the_dataflow(self, editor):
+    async def test_shown_in_every_tab_while_editing(self, editor):
         assert editor._inspector.visible and editor._status_bar.visible
         editor.mode = "dashboard"
         # The status bar stays and describes the tile grid in the Layout tab.
-        assert not editor._inspector.visible and editor._status_bar.visible
+        assert editor._inspector.visible and editor._status_bar.visible
+        editor.preview = True
+        assert not editor._inspector.visible
+        editor.preview = False
         editor.mode = "wiring"
         editor.editable = False
         assert not editor._inspector.visible and not editor._status_bar.visible
@@ -371,7 +374,7 @@ class TestInspector:
         entry = tile_entry(editor, "by_state_copy")
         assert (entry["width"], entry["height"]) == (50.0, 400)
 
-    async def test_how_was_this_made_only_in_menu_when_agent_made(self, editor):
+    async def test_history_tab_only_when_agent_made(self, editor):
         from panel_flowdash.turns import agent_edits
 
         with agent_edits(run="r1", question="Add table"):
@@ -388,11 +391,11 @@ class TestInspector:
             for b in body.select(pn.viewable.Viewable)
             if "fd-inspector-menu" in getattr(b, "css_classes", [])
         )
-        assert [item["label"] for item in menu.items] == [
-            "How was this made?",
-            "Duplicate",
-            "Remove from dashboard",
-        ]
+        assert [item["label"] for item in menu.items] == ["Duplicate", "Remove from dashboard"]
+        assert editor._inspector._tab_labels == ["Settings", "Data", "Tile", "History"]
+        mine = editor.add_component(TABLE)
+        select_on_canvas(editor._flow, node_id=mine)
+        assert editor._inspector._tab_labels == ["Settings", "Data", "Tile"]
 
     async def test_summarize_input_html_for_rich_types(self, monkeypatch):
         from panel_flowdash import port_types
@@ -466,13 +469,12 @@ class TestInspector:
     async def test_tile_settings_change_the_saved_layout(self, editor):
         table = editor.add_component(TABLE)
         select_on_canvas(editor._flow, node_id=table)
-        tab = editor._inspector._tile_tab(
-            table, editor._tile_items[0], editor._component_specs[TABLE]
-        )
-        show, width, height = tab[:3]
+        options = editor._inspector.tile_options
+        show, width, height = options.show_switch, options.width_select, options.height_select
         assert height.value == 300
+        assert "Half (6/12)" in width.options and "5/12" in width.options
         show.value = False
-        width.value = 50.0
+        width.value = 6
         height.value = 400
         entry = editor.to_model().tile_layout[0]
         assert (entry["visible"], entry["width"], entry["height"]) == (False, 50.0, 400)
@@ -499,9 +501,11 @@ class TestInspector:
     async def test_collapse(self, editor):
         inspector = editor._inspector
         inspector.collapse_button.clicks += 1
-        assert inspector.collapsed and inspector.__panel__().width < 60
+        assert inspector.collapsed and inspector.current_width < 60
         inspector.expand_button.clicks += 1
-        assert not inspector.collapsed and inspector.__panel__().width == 360
+        assert not inspector.collapsed and inspector.current_width == 367
+        inspector.width = 480
+        assert inspector.__panel__().styles["width"] == "487px"
 
     async def test_placeholder_selection(self, editor):
         editor.load_model(

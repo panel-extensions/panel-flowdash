@@ -188,9 +188,12 @@ status dot, its ports labelled with their types (required inputs are marked
 with `*`) and a one-line summary of its current value, such as the rows and
 columns of a DataFrame or a widget's selection. The component itself is only
 rendered in the tile grid. Selecting a card opens it in the inspector on the
-right: its settings (the config form, or your `config_editor`), the data it
-currently outputs, how its tile is shown on the dashboard, the inputs wired to
-it, and *Remove from dashboard*. With nothing selected the inspector summarizes
+right, the sidecar shared by the *Dataflow*, *Split* and *Layout* tabs: its
+settings (the config form, or your `config_editor`) and the inputs wired to it,
+the data it currently outputs, how its tile is shown on the dashboard and, for a
+node the assistant made, its history, plus *Remove from dashboard*. Each kind of
+component (source, transform, view, widget) opens on the tab you last used for
+that kind. With nothing selected the inspector summarizes
 the dashboard and lists its issues. The status bar under the canvas counts the
 components, connections and issues; clicking the issue count selects the
 first component with one. The canvas follows the page's light or dark theme.
@@ -267,7 +270,7 @@ share = pmui.Button(label="Share", icon="share", variant="text", size="small")
 editor = FlowDash(components, toolbar_extra=[share])
 ```
 
-The *Split* tab (`mode="split"`) shows the canvas and the tile grid side by side with a draggable divider. Selecting a component on either side selects it on the other and in the inspector (clicking, dragging or resizing a tile whose node is out of view pans the canvas to it), and components added or removed on the canvas appear on the grid straight away. Tiles can be dragged, resized and hidden on the grid there as in the *Layout* tab, or sized from the inspector's *Tile* tab. The grid arranges the dashboard's main layout fitted to the pane, so what you arrange is the dashboard's own layout rather than one for a narrow screen. Collapsing a side with the divider's arrows switches to the tab of the side that is left. The browser remembers the pane sizes and whether the Split tab was last used, and in windows narrower than 1600 px the inspector stays folded until something is selected.
+The *Split* tab (`mode="split"`) shows the canvas and the tile grid side by side with a draggable divider. Selecting a component on either side selects it on the other and in the inspector (clicking, dragging or resizing a tile whose node is out of view pans the canvas to it), and components added or removed on the canvas appear on the grid straight away. Tiles can be dragged, resized and hidden on the grid there as in the *Layout* tab, or sized from the inspector's *Tile* tab. The grid arranges the dashboard's main layout fitted to the pane, so what you arrange is the dashboard's own layout rather than one for a narrow screen. Collapsing a side with the divider's arrows switches to the tab of the side that is left. The browser remembers the pane sizes and whether the Split tab was last used, and the inspector folds to its strip where it would leave the two panes less than 980 px together; a dot on the strip shows that something is selected.
 
 Components registered with `sidebar=True` are kept out of the tile grid and
 shown as controls above the tiles, or in a panel to their left with

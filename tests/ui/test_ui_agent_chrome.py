@@ -84,3 +84,45 @@ def test_opening_the_drawer_folds_the_inspector_and_closing_restores_it(page):
     wait_until(lambda: inspector.collapsed, page, timeout=10000)
     page.get_by_role("button", name="Close", exact=True).click()
     wait_until(lambda: not inspector.collapsed, page, timeout=10000)
+
+
+def test_below_1600_px_the_drawer_and_the_sidecar_share_one_slot(page):
+    store, (dash,) = _store_with("Plant")
+    apps = []
+    _serve_app(page, store, f"/dash/{dash}?edit=true", apps, agent=_agent())
+    page.get_by_role("button", name="Done").wait_for()
+    editor = apps[0]._editor
+    inspector, drawer = editor._inspector, apps[0]._agent_session.drawer
+    wait_until(lambda: inspector.visible and not inspector.collapsed, page, timeout=10000)
+
+    page.get_by_role("button", name="Assistant", exact=True).click()
+    wait_until(lambda: drawer.open and inspector.collapsed, page, timeout=10000)
+    # Opening the sidecar again takes the slot back from the drawer.
+    page.get_by_role("button", name="Show inspector").click()
+    wait_until(lambda: not drawer.open and not inspector.collapsed, page, timeout=10000)
+    # The person's choice holds across tabs.
+    inspector.fold(True)
+    page.get_by_role("button", name="Layout").click()
+    wait_until(lambda: editor.mode == "dashboard", page, timeout=10000)
+    page.wait_for_timeout(300)
+    assert inspector.collapsed and not drawer.open
+
+
+def test_in_a_wide_window_the_drawer_opens_beside_the_sidecar(page):
+    page.set_viewport_size({"width": 1920, "height": 900})
+    store, (dash,) = _store_with("Plant")
+    apps = []
+    _serve_app(page, store, f"/dash/{dash}?edit=true", apps, agent=_agent())
+    page.get_by_role("button", name="Done").wait_for()
+    editor = apps[0]._editor
+    inspector, drawer = editor._inspector, apps[0]._agent_session.drawer
+    page.get_by_role("button", name="Dataflow").click()
+    wait_until(lambda: editor.mode == "wiring" and not inspector.collapsed, page, timeout=10000)
+    page.get_by_role("button", name="Assistant", exact=True).click()
+    wait_until(lambda: drawer.open, page, timeout=10000)
+    page.wait_for_timeout(500)
+    assert not inspector.collapsed
+    # The Split tab needs more room than is left beside both, so the sidecar folds there.
+    page.get_by_role("button", name="Split").click()
+    wait_until(lambda: editor.mode == "split" and inspector.collapsed, page, timeout=10000)
+    assert drawer.open

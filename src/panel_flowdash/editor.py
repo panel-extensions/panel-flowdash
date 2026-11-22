@@ -122,9 +122,10 @@ from panel_flowdash.turns import (
     summary_cut_short,
 )
 from panel_flowdash.ui import tile_layout
-from panel_flowdash.ui.code_panel import HEADER_HEIGHT, CodePanel, DockHandle
+from panel_flowdash.ui.code_panel import HEADER_HEIGHT, CodePanel
 from panel_flowdash.ui.controls_bar import ControlsBar
 from panel_flowdash.ui.dashboard_bar import DashboardBar
+from panel_flowdash.ui.dock_handle import DockHandle
 from panel_flowdash.ui.fullscreen import (
     PRESENTATION_CSS,
     PRESENTING_CLASS,
@@ -143,7 +144,7 @@ from panel_flowdash.ui.inspect_sheet import (
     sheet_header,
     value_status,
 )
-from panel_flowdash.ui.inspector import Inspector
+from panel_flowdash.ui.inspector import DATA, HISTORY, TILE, Inspector
 from panel_flowdash.ui.layout_panel import GRID_EDIT_CSS, LayoutPanel
 from panel_flowdash.ui.node_card import (
     CARD_WIDTH,
@@ -174,6 +175,7 @@ from panel_flowdash.ui.palette import (
 from panel_flowdash.ui.provenance import provenance_objects
 from panel_flowdash.ui.roles import component_role
 from panel_flowdash.ui.settings_dialog import SettingsDialog
+from panel_flowdash.ui.sidecar import SidecarFold
 from panel_flowdash.ui.split_view import SplitView
 from panel_flowdash.ui.states import StartCard
 from panel_flowdash.ui.status_bar import StatusBar, select_on_canvas
@@ -404,8 +406,6 @@ _NODE_DEFAULTS = {
 }
 _SIDE_PANEL_WIDTH = 250
 
-# Narrower windows show the Split tab with the inspector folded until something is selected.
-_SPLIT_FOLD_WIDTH = 1600
 # How long after the canvas moves to another tab an empty selection from its page is
 # taken as the old view letting go of it rather than the person clearing it.
 _CANVAS_REMOUNT_GRACE = 3.0
@@ -1447,10 +1447,6 @@ class FlowDash(Viewer):
         # renders it afresh, and the page then reports an empty selection.
         self._canvas_host: str | None = None
         self._remount_deadline = 0.0
-        # Whether the inspector was folded to make room for the split, rather than by the user.
-        self._inspector_folded = False
-        self._folding = False
-        self._pending_reveal: str | None = None
         self._tile_selection_follows = True
         self._rebuilding_grid = False
         self._inspected_id: str | None = None
@@ -2763,8 +2759,8 @@ class FlowDash(Viewer):
         It shows the request's span (question, model calls, tool calls and
         published versions) while :attr:`agent_state` holds the run's steps,
         and what the turn records otherwise, followed by the turns that
-        changed the node later. On the Dataflow canvas it replaces the
-        inspector's content; elsewhere it opens the side sheet. Requests are
+        changed the node later. In edit mode it opens the sidecar's History tab
+        for the node; in view mode it opens the side sheet. Requests are
         redacted as :meth:`run_redacted` decides, and when the node's
         component is one the person may not use.
         """
@@ -2777,17 +2773,20 @@ class FlowDash(Viewer):
             return runner.state
         return self.agent_state if self.agent_state is not None else self._history.state
 
-    def _render_how_made(self, instance_id: str, turn_id: str | None, *, open_sheet: bool):
-        if not self.made_by_agent(instance_id):
-            return
+    def _how_made_parts(
+        self, instance_id: str, turn_id: str | None
+    ) -> tuple[str, list[Viewable], t.Any]:
+        """Return the caption and content of how a node was made or changed, and its span view.
+
+        The span view, if any, follows the request's steps until released.
+        """
         origin = self.origin_turn(instance_id)
         turn = origin
         if turn_id is not None:
             turn = next((t for t in self.later_turns(instance_id) if t.id == turn_id), origin)
         state = self._run_state(turn.run if turn is not None else None)
-        self._release_span()
         later = self.later_turns(instance_id) if turn is origin else []
-        body, self._span_view = provenance_objects(
+        body, span = provenance_objects(
             turn,
             state,
             redacted=self._turn_redacted(turn, instance_id),
@@ -2795,13 +2794,19 @@ class FlowDash(Viewer):
             more=turn is origin and self._later_turns_may_be_more(instance_id),
             on_open=lambda t: self.show_how_made(instance_id, t.id),
         )
-        title = self._instance_title(instance_id)
         caption = "How this was made" if turn is origin else "How this was changed"
-        if self._inspector.visible:
-            span, self._span_view = self._span_view, None
-            self._close_inspection_dialog()
-            self._inspector.show_extra(caption, title, body, span.release if span else None)
+        return caption, body, span
+
+    def _render_how_made(self, instance_id: str, turn_id: str | None, *, open_sheet: bool):
+        if not self.made_by_agent(instance_id):
             return
+        if self._inspector.visible:
+            self._close_inspection_dialog()
+            self._show_in_sidecar(instance_id, HISTORY, turn_id)
+            return
+        self._release_span()
+        caption, body, self._span_view = self._how_made_parts(instance_id, turn_id)
+        title = self._instance_title(instance_id)
         objects = [sheet_header(title, self._close_inspection_dialog, caption=caption), *body]
         self._how_made_shown = (instance_id, turn_id)
         self._inspected_id = instance_id
@@ -2821,8 +2826,25 @@ class FlowDash(Viewer):
     @param.depends("editable", watch=True)
     def _close_sheet_for_mode(self):
         # The sheet belongs to the mode it was opened in: in edit mode it would cover
-        # the dashboard bar's Save and Done, and the inspector shows the same.
+        # the dashboard bar's Save and Done, so the sidecar takes over what it showed.
+        shown, inspected = self._how_made_shown, self._inspected_id
+        was_open = self._inspect_dialog.open
         self._close_inspection_dialog()
+        if not (self.editable and was_open and inspected is not None):
+            return
+        if shown is not None and shown[0] == inspected:
+            self._show_in_sidecar(inspected, HISTORY, shown[1])
+        elif self._can_inspect():
+            self._show_in_sidecar(inspected, DATA)
+
+    def _show_in_sidecar(self, instance_id: str, tab: str, turn_id: str | None = None):
+        """Select a node and open the sidecar on its *tab*, as the person asked for it."""
+        if not any(node["id"] == instance_id for node in self._flow.nodes):
+            return
+        self._inspector.open_tab(instance_id, tab, turn_id)
+        if self._inspector.visible and self._inspector.collapsed:
+            self._sidecar.user_toggle(True)
+        self._select_node(instance_id)
 
     @param.depends("read_only", watch=True)
     def _reshow_how_made(self):
@@ -3522,6 +3544,7 @@ class FlowDash(Viewer):
         self._dialog_host = pn.Column(margin=0, width=0, height=0, sizing_mode="fixed")
         self._inspector = Inspector(editor=self)
         self._layout_panel = LayoutPanel(editor=self)
+        self._sidecar = SidecarFold(self)
         self._status_bar = StatusBar(editor=self)
         # The Full screen button may sit in an app's top bar, outside the editor.
         toggle_class = f"{TOGGLE_CLASS}-{id(self)}"
@@ -3539,8 +3562,10 @@ class FlowDash(Viewer):
             on_resize=self._fit_canvas,
         )
         self._flow.param.watch(self._sync_tile_selection, "selection")
-        self._inspector.param.watch(self._on_inspector_toggled, "collapsed")
-        self._split_view.events.param.watch(self._on_pane_resized, "pane_size")
+        self._flow.param.watch(self._on_selection_for_sidecar, "selection")
+        self._inspector.param.watch(self._on_sidecar_collapsed, "collapsed")
+        self._inspector.param.watch(self._on_sidecar_resized, "width")
+        self._inspector.param.watch(lambda _event: self._sidecar.sync(), "visible")
         self._split_view.storage.param.watch(self._on_window_resized, "window_width")
         self._code_panel: CodePanel | None = None
         self._code_dock_height = _CODE_PANEL_HEIGHT
@@ -3568,12 +3593,9 @@ class FlowDash(Viewer):
             ],
         )
 
-        # One slot: a row counts the width of hidden children, and only one of
-        # the two panels is shown at a time. The slot is hidden with both,
-        # since an empty Column still takes the width of its scroll button.
-        self._panel_slot = pn.Column(
-            self._inspector, self._layout_panel, margin=0, sizing_mode="stretch_height"
-        )
+        # The sidecar's slot, hidden with it, since an empty Column still takes
+        # the width of its scroll button.
+        self._panel_slot = pn.Column(self._inspector, margin=0, sizing_mode="stretch_height")
 
         self._sync_toolbar_extra()
         self._sync_toolbar_state()
@@ -3961,9 +3983,6 @@ class FlowDash(Viewer):
         """
         selection = self._flow.selection or {}
         nodes = selection.get("nodes") or []
-        if self.editable and self.mode == "split":
-            if self._inspector_folded and (nodes or selection.get("edges")):
-                self._fold_inspector(False)
         target = None
         if self._tiles_selectable:
             current = self._selected_tile_id()
@@ -3995,13 +4014,12 @@ class FlowDash(Viewer):
         if self._rebuilding_grid or not self._tiles_selectable:
             return
         instance_id = self._selected_tile_id()
-        if instance_id is None:
+        if instance_id is None or not self._tile_selection_follows:
             return
-        layout_panel = getattr(self, "_layout_panel", None)
-        if layout_panel is not None:
-            layout_panel.select(instance_id)
-        if self._tile_selection_follows:
-            self._select_node(instance_id)
+        if self.mode == "dashboard":
+            # Entered from the Layout tab, the sidecar shows the tile's options first.
+            self._inspector.open_tab(instance_id, TILE)
+        self._select_node(instance_id)
 
     def _clear_selection(self) -> bool:
         """Clear the selection on the canvas and the tile grid; return whether there was one.
@@ -4027,14 +4045,11 @@ class FlowDash(Viewer):
         if selection.get("nodes") == [instance_id] and not selection.get("edges"):
             return
         if self.mode == "split":
-            if self._inspector_folded:
-                # The inspector opens for the selection and narrows the pane, so the
-                # node is revealed once the pane reports its new size.
-                self._pending_reveal = instance_id
-                self._fold_inspector(False)
-            else:
-                self._reveal_node(instance_id)
+            self._reveal_node(instance_id)
         select_on_canvas(self._flow, node_id=instance_id)
+        if self._canvas_host is None:
+            # No canvas is shown to report the selection, e.g. in the Layout tab.
+            self._flow.selection = {"nodes": [instance_id], "edges": []}
 
     def _sized_layout(self, layout: list[dict]) -> list[dict]:
         """Apply the size hints of the tiles on the grid to its positional *layout*."""
@@ -4102,15 +4117,14 @@ class FlowDash(Viewer):
         self._dashboard_bar.visible = self.toolbar and not self.fullscreen
         self._dashboard_bar.sync()
         self._side_panel.visible = showing_canvas
-        self._inspector.visible = showing_canvas
+        # The sidecar is one panel in every tab that edits: Dataflow, Split and Layout.
+        self._inspector.visible = showing_canvas or (interactive and showing_grid)
         self._layout_panel.visible = interactive and showing_grid and not split
-        self._panel_slot.visible = self._inspector.visible or self._layout_panel.visible
+        self._panel_slot.visible = self._inspector.visible
         self._status_bar.visible = self.editable and not self.explore
         self._split_view.events.active = split
         self._view_controls.param.update(beside_canvas=split, editing=interactive and showing_grid)
-        if split != self._split_shown:
-            self._split_shown = split
-            self._fold_inspector(split)
+        self._split_shown = split
         self._tile_grid.param.update(editable=interactive, card=interactive)
         self._sync_preview_band()
         # Column children rather than Row children, so the dialogs take no flex space.
@@ -4147,6 +4161,9 @@ class FlowDash(Viewer):
             self._fit_placed_nodes()
         self._sync_tile_selection()
         self._sync_tile_drag()
+        self._sidecar.sync()
+        # "Arrange for" is shown in the Layout tab only.
+        self._inspector.refresh_summary()
 
     def _expect_canvas_remount(self):
         """Keep the selection while the canvas moves to another tab, or is hidden.
@@ -4191,6 +4208,7 @@ class FlowDash(Viewer):
     def _on_split_preferences_loaded(self):
         self._restore_split = self._restore_split and self._split_view.preferences.split
         self._apply_stored_split()
+        self._inspector.width = self._split_view.preferences.sidecar_width
         self._sync_code_dock_side()
         if self._code_panel is not None:
             self._sync_code_spec_view()
@@ -4228,7 +4246,9 @@ class FlowDash(Viewer):
             panel.param.watch(self._on_code_dock_moved, "dock")
             # The inspector opening or folding changes the canvas's room beside a panel on the right.
             self._inspector.param.watch(lambda _e: self._sync_code_dock_side(), "visible")
-            self._inspector._panel.param.watch(lambda _e: self._sync_code_dock_side(), "width")
+            self._inspector.param.watch(
+                lambda _e: self._sync_code_dock_side(), ["collapsed", "width"]
+            )
             panel.param.watch(self._sync_code_dock, ["collapsed", "instance_id"])
             panel.param.watch(self._on_code_drafts, "dirty")
             self._sync_code_spec_view()
@@ -4356,8 +4376,7 @@ class FlowDash(Viewer):
         width = self._split_view.storage.window_width
         if width is None:
             return True
-        inspector = self._inspector._panel.width if self._inspector.visible else 0
-        room = width - _SIDE_PANEL_WIDTH - inspector - self._code_side_width
+        room = width - _SIDE_PANEL_WIDTH - self._inspector.current_width - self._code_side_width
         return width >= _CODE_PANEL_RIGHT_MIN_WIDTH and room >= _CANVAS_MIN_WIDTH_DOCKED
 
     def _sync_code_dock_side(self):
@@ -4484,6 +4503,7 @@ class FlowDash(Viewer):
     def _on_window_resized(self, _event):
         self._close_code_panel_if_hidden()
         self._sync_code_dock_side()
+        self._sidecar.window_resized()
 
     def _fit_canvas(self):
         self._flow.fit_view()
@@ -4508,40 +4528,18 @@ class FlowDash(Viewer):
             return
         self._flow.fit_view(instance_id, min_zoom=zoom, max_zoom=zoom, duration=300)
 
-    def _fold_inspector(self, split: bool):
-        """Fold the inspector while the split is shown in a narrow window, until it is needed.
+    def _on_selection_for_sidecar(self, event):
+        new = event.new or {}
+        if (new.get("nodes") or new.get("edges")) and new != (event.old or {}):
+            self._sidecar.selection_made()
 
-        Beside the palette and the open inspector, the canvas and the grid would
-        get about 300 px each at 1280 px. The inspector opens again with the
-        first selection, or when the split is left.
-        """
-        width = self._split_view.storage.window_width
-        selection = self._flow.selection or {}
-        if split:
-            fold = (
-                width is not None
-                and width < _SPLIT_FOLD_WIDTH
-                and not self._inspector.collapsed
-                and not (selection.get("nodes") or selection.get("edges"))
-            )
-        else:
-            fold = False
-        if fold or self._inspector_folded:
-            self._folding = True
-            try:
-                self._inspector.collapsed = fold
-            finally:
-                self._folding = False
-            self._inspector_folded = fold
+    def _on_sidecar_collapsed(self, event):
+        self._sidecar.on_collapsed(event.new)
+        self._inspector._sync_badge()
 
-    def _on_inspector_toggled(self, _event):
-        if not self._folding:
-            self._inspector_folded = False
-
-    def _on_pane_resized(self, _event):
-        instance_id, self._pending_reveal = self._pending_reveal, None
-        if instance_id is not None and self.mode == "split":
-            self._reveal_node(instance_id)
+    def _on_sidecar_resized(self, event):
+        self._split_view.preferences.sidecar_width = event.new
+        self._sidecar.sync()
 
     def _sync_placed(self):
         """Show a component added or removed on whichever of the canvas and grid is on screen."""
