@@ -37,10 +37,18 @@ def _done(page, editor):
     wait_until(lambda: not editor.editable, timeout=8000)
 
 
-def _select_tile(editor, instance_id):
-    editor._inspector.open_tab(instance_id, "Tile")
-    editor._select_node(instance_id)
+def _select_tile(page, editor, instance_id):
+    """Click a tile in the Layout tab, which selects its node and shows its Tile tab.
+
+    A click rather than a selection made from the test's thread: the canvas leaving
+    the page as the tab opens reports an empty selection, which could come after it.
+    """
+    key = next(c for c in editor._inspect_tiles[instance_id].css_classes if "-key-" in c)
+    item = page.locator(".muuri-grid-item").filter(has=page.locator(f".{key}"))
+    expect(item).to_be_visible(timeout=8000)
+    item.click(position={"x": 20, "y": 20})
     wait_until(lambda: editor._inspector._shown == ("node", instance_id), timeout=8000)
+    expect(page.get_by_role("tab", name="Tile", selected=True)).to_be_visible(timeout=8000)
 
 
 def test_frame_option_in_the_layout_tab_frames_the_tile_in_view_mode(page):
@@ -54,7 +62,7 @@ def test_frame_option_in_the_layout_tab_frames_the_tile_in_view_mode(page):
 
     page.get_by_role("button", name="Layout", exact=True).click()
     wait_until(lambda: editor.mode == "dashboard", timeout=8000)
-    _select_tile(editor, divider_id)
+    _select_tile(page, editor, divider_id)
     expect(page.get_by_role("combobox", name="Frame")).to_have_text("Default (unframed)")
 
     _done(page, editor)
@@ -66,10 +74,10 @@ def test_frame_option_in_the_layout_tab_frames_the_tile_in_view_mode(page):
     page.get_by_role("button", name="Edit").click()
     wait_until(lambda: editor.editable, timeout=8000)
     page.get_by_role("button", name="Layout", exact=True).click()
-    _select_tile(editor, divider_id)
+    _select_tile(page, editor, divider_id)
     _pick(page, "Frame", "Framed")
     wait_until(lambda: tile_entry(editor, divider_id).get("framed") is True, timeout=8000)
-    _select_tile(editor, chart_id)
+    _select_tile(page, editor, chart_id)
     _pick(page, "Frame", "Unframed")
     wait_until(lambda: tile_entry(editor, chart_id).get("framed") is False, timeout=8000)
 

@@ -15,14 +15,17 @@ import panel as pn
 import panel_material_ui as pmui
 
 from panel_flowdash.ui.tile_layout import (
+    AREA_ICONS,
     AREA_NAMES,
+    AREAS,
     FRAME_DEFAULT,
     GRID,
     GRID_COLUMNS,
     area_of,
     frame_choices,
     frame_value,
-    move_buttons,
+    move_targets,
+    move_to_area,
     tile_entry,
     to_columns,
     to_width,
@@ -144,7 +147,25 @@ class TileOptions:
             sx={"textTransform": "none"},
         )
         self.arrange_button.on_click(lambda _event: setattr(editor, "mode", "dashboard"))
-        self._moves = pn.FlexBox(margin=0, gap="0px 16px")
+        # One button per area, shown for the areas the component can move to. They
+        # and the rest of the tab are kept across moves, as the browser drops the
+        # focus asked for a button it has not rendered yet.
+        self._move_buttons: dict[str, pmui.Button] = {}
+        for area in AREAS:
+            # Without a tooltip: a button with one cannot be given the focus.
+            button = pmui.Button(
+                label=f"Move to {AREA_NAMES[area]}",
+                icon=AREA_ICONS[area],
+                variant="text",
+                size="small",
+                margin=(4, 0, 0, 0),
+                sx={"textTransform": "none"},
+                visible=False,
+            )
+            button.on_click(partial(self._on_move, area))
+            self._move_buttons[area] = button
+        self._moves = pn.FlexBox(*self._move_buttons.values(), margin=0, gap="0px 16px")
+        self._elsewhere = _caption("", margin=(12, 0, 0, 0))
         self.layout = pn.Column(
             margin=0, sizing_mode="stretch_width", css_classes=["fd-tile-options"]
         )
@@ -173,59 +194,68 @@ class TileOptions:
 
     @pn.io.hold()
     def sync(self):
-        """Show the tile's current options, rebuilding the tab when the component changed area."""
+        """Show the tile's current options, and those its component's area allows."""
         editor = self.editor
         area = area_of(editor, self.item)
         self._syncing = True
         try:
-            if area != self._area or not self.layout.objects:
+            if not self.layout.objects:
+                self._grid_options = [
+                    self.show_switch,
+                    pn.Row(
+                        self.width_select,
+                        self.height_select,
+                        margin=0,
+                        sizing_mode="stretch_width",
+                    ),
+                    self.size_hint,
+                    self.band_hint,
+                    self.frame_select,
+                ]
+                self.layout[:] = [
+                    self._elsewhere,
+                    *self._grid_options,
+                    self._moves,
+                    self.arrange_button,
+                ]
+            if area != self._area:
                 self._area = area
-                self.layout[:] = self._objects(area)
+                self._show_area(area)
             if area == GRID:
                 self._sync_values()
         finally:
             self._syncing = False
 
-    def _objects(self, area: str | None) -> list[Viewable]:
-        moves = move_buttons(self.editor, self.item, then=self._refocus, margin=(4, 0, 0, 0))
-        # A button with a tooltip cannot be given the focus, see _refocus.
-        for button in moves:
-            button.description = None
-        self._moves[:] = moves
-        if area != GRID:
-            where = AREA_NAMES.get(area, "sidebar")
-            return [
-                _caption(
-                    f"This component is shown in the {where} of the dashboard rather than "
-                    "as a tile.",
-                    margin=(12, 0, 0, 0),
-                ),
-                self._moves,
-            ]
-        objects: list[Viewable] = [
-            self.show_switch,
-            pn.Row(self.width_select, self.height_select, margin=0, sizing_mode="stretch_width"),
-            self.size_hint,
-            self.band_hint,
-            self.frame_select,
-            self._moves,
-            self.arrange_button,
-        ]
-        return objects
+    def _show_area(self, area: str | None):
+        on_grid = area == GRID
+        self._elsewhere.object = (
+            ""
+            if on_grid
+            else f"This component is shown in the {AREA_NAMES.get(area, 'sidebar')} of the "
+            "dashboard rather than as a tile."
+        )
+        self._elsewhere.visible = not on_grid
+        for widget in self._grid_options:
+            widget.visible = on_grid
+        self.arrange_button.visible = on_grid and self.editor.mode != "dashboard"
+        targets = move_targets(self.editor, self.item)
+        for target, button in self._move_buttons.items():
+            button.visible = target in targets
+
+    def _on_move(self, area: str, _event=None):
+        if move_to_area(self.editor, self.instance_id, area):
+            self._refocus()
 
     def _refocus(self):
-        # The pressed button went with the rebuilt tab, which may be a new one for
-        # the same component; the first move left there takes the focus.
-        def focus():
-            current = getattr(self.editor._inspector, "tile_options", None) or self
-            button = next(iter(current._moves.objects), None)
-            if button is not None:
-                button.focus()
-
+        # The pressed button is hidden with the move; the first move left takes the focus.
+        button = next((b for b in self._move_buttons.values() if b.visible), None)
+        if button is None:
+            return
         if pn.state.curdoc is None or pn.state.curdoc.session_context is None:
-            focus()
+            button.focus()
         else:
-            pn.state.execute(focus, schedule=True)
+            # After the browser has shown it, which the change of area sends first.
+            pn.state.execute(button.focus, schedule=True)
 
     def _sync_values(self):
         editor = self.editor
