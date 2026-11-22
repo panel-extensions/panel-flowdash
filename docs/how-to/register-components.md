@@ -361,7 +361,7 @@ class Revenue(pn.viewable.Viewer):
 ```
 
 The hook is called on the live instance once its inputs have settled, and returns one
-block of `panel_flowdash.export` (`Heading`, `Text`, `KPI`, `Chart`, `Table`, `Image`,
+block of [`panel_flowdash.export`][panel_flowdash.export] (`Heading`, `Text`, `KPI`, `Chart`, `Table`, `Image`,
 `Code` or `Placeholder`), a list of them, or `None` to be read from its view.
 `ctx.chart(spec)` draws a Vega-Lite spec as the format needs and `ctx.table(frame)`
 takes a DataFrame's first `ctx.max_rows` rows; `ctx.format` names the format being

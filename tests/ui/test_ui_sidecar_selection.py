@@ -101,9 +101,12 @@ def test_a_deselect_right_after_a_tab_switch_clears_the_selection(page):
     _shows_node(page, editor, "q")
 
     # Well within the 3 s the canvas's old view once had to let go of its selection.
+    # The clicks wait for the canvas in its new place: a click on the outgoing canvas,
+    # still shown until the page renders the new tab, is not reported.
     quick = 1500
     page.get_by_role("button", name="Split").click()
     wait_until(lambda: editor.mode == "split", page, timeout=TIMEOUT)
+    expect(page.locator(".gutter")).to_be_visible(timeout=TIMEOUT)
     expect(_node(page, "q")).to_have_class(re.compile(r"\bselected\b"), timeout=TIMEOUT)
     page.locator(".react-flow__pane").click(position={"x": 20, "y": 20})
     wait_until(lambda: editor._flow.selection["nodes"] == [], page, timeout=quick)
@@ -113,6 +116,7 @@ def test_a_deselect_right_after_a_tab_switch_clears_the_selection(page):
     _shows_node(page, editor, "q")
     page.get_by_role("button", name="Dataflow").click()
     wait_until(lambda: editor.mode == "wiring", page, timeout=TIMEOUT)
+    expect(page.locator(".gutter")).to_have_count(0, timeout=TIMEOUT)
     expect(_node(page, "q")).to_have_class(re.compile(r"\bselected\b"), timeout=TIMEOUT)
     page.keyboard.press("Escape")
     wait_until(lambda: editor._flow.selection["nodes"] == [], page, timeout=quick)
