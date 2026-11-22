@@ -75,7 +75,7 @@ from panel_flowdash.ui.spec_field import SpecEditor
 from panel_flowdash.ui.split_view import GUTTER_CSS
 from panel_flowdash.ui.text import field_label, text_alert
 from panel_flowdash.util import is_failure
-from panel_flowdash.value_text import safe_frame
+from panel_flowdash.value_text import error_text, safe_frame
 
 if t.TYPE_CHECKING:
     from panel_flowdash.component_spec import ComponentSpec
@@ -1690,7 +1690,9 @@ class CodePanel(Viewer):
                     editor._apply_config_patch(instance_id, patch)
             except Exception as exc:
                 logger.exception("Applying the draft of %s failed", instance_id)
-                result = CheckResult([f"Could not apply the draft: {type(exc).__name__}: {exc}"])
+                result = CheckResult(
+                    [f"Could not apply the draft: {type(exc).__name__}: {error_text(exc)}"]
+                )
             finally:
                 self._ran(result)
 
@@ -1952,7 +1954,7 @@ class CodePanel(Viewer):
                 text_alert(
                     failure_text(value)
                     if is_failure(value)
-                    else f"{type(error).__name__}: {error}",
+                    else f"{type(error).__name__}: {error_text(error)}",
                     severity="error",
                     title="The last run failed, showing the last good result",
                     margin=(8, 12),
