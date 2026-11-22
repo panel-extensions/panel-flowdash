@@ -185,10 +185,12 @@ AGENT = ProjectSection(
 
 ## 5. An admin settings tab
 
-A section can also describe its tab in the admin settings with
+A section can also describe its page in the admin view with
 `settings_view`, a function of the project and whether the viewer may edit
-it, returning a Panel component. The admin view is not built yet; the field
-is part of the interface so a section can ship its tab with it:
+it. Every registered section with a `settings_view` is listed in the admin
+view, after the built-in General and Theme. The view's code runs in the sessions of the app's
+admins, with their rights, so install only extensions you trust. The simplest view is any Panel
+component that saves on its own:
 
 ```python
 import panel_material_ui as pmui
@@ -211,3 +213,39 @@ BRANDING = ProjectSection(
     settings_view=branding_settings,
 )
 ```
+
+A view that returns a `panel_flowdash.admin.SettingsForm` gets the admin
+view's Save and Discard and its unsaved-changes dot instead. The form is
+described by groups of `Setting`s, each a key of the section's mapping;
+Save writes the changed keys with `Project.set`, and the problems of a
+value the loader rejects are shown next to the fields their `keys` name.
+`settings_loader(groups)` checks a section against the same settings:
+
+```python
+from panel_flowdash.admin import Group, Setting, SettingsForm, settings_loader
+
+LIMIT_GROUPS = [
+    Group(
+        "Queries",
+        [
+            Setting("rows", "Row limit", "Rows a query may return.", kind="number",
+                    integer=True, bounds=(1, None), default=10_000),
+            Setting("timeout", "Timeout", kind="number", unit="Seconds", default=30),
+        ],
+    )
+]
+
+LIMITS = ProjectSection(
+    "limits",
+    settings_loader(LIMIT_GROUPS),
+    title="Limits",
+    icon="speed",
+    settings_view=lambda project, editable: SettingsForm(
+        project, "limits", LIMIT_GROUPS, editable=editable
+    ),
+)
+```
+
+A setting whose value comes from somewhere the admin cannot change, such as
+a command-line flag, is shown locked when the loader's context lists it:
+`load_project(path, context={"locked_settings": {"limits": {"rows": "--rows"}}})`.

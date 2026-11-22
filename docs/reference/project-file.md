@@ -12,8 +12,50 @@ metrics:          # read by the extension that registered `metrics`
     sum: capacity_mw
 ```
 
-FlowDash itself registers no sections yet; extensions add theirs, see
+FlowDash registers `general` and `theme`, which the admin view edits;
+extensions add theirs, see
 [Add a Project File Section](../how-to/project-sections.md).
+
+---
+
+## Built-in sections
+
+The admin view (`/admin`, the Admin item at the bottom of the rail) writes
+these. A setting the app is also given in code, in the project's
+`__init__.py`, on the command line or as a `FlowDashApp` parameter, keeps
+the value from code and shows locked in the admin view. Each takes effect
+for pages opened after it is saved.
+
+```yaml
+general:
+  admins: [philipp]          # users who may open Admin, besides admin_groups
+  edit_workspace: split      # dataflow, layout or split (FlowDash.mode)
+  home_dashboard: fleet      # a dashboard id or title (home_dashboard)
+  live_values: hover         # click, hover or off (popup_trigger)
+  history: true
+  history_coalesce: 3        # seconds
+  history_limit: 500         # versions
+  history_max_days: 90
+  history_max_mb: 16
+  explore: read_only         # ask or read_only (explore_agent=False)
+  agent_palette: true
+  provenance: true
+  tile_cards: true           # defaults for dashboards that do not set their own
+  tile_titles: false
+  node_previews: false
+  controls_position: left    # top or left
+
+theme:
+  color_scheme: dark         # light or dark
+  primary_color: "#006D77"
+  font_family: Inter         # Roboto, Inter, IBM Plex Sans, Source Sans 3, Open Sans or System UI
+  border_radius: 6
+  title: Wind Energy Explorer
+  logo: logo.svg             # a URL, or a path relative to the project file
+```
+
+Without a project file the admin view writes `flowdash.yaml` in the project
+directory on the first save.
 
 ---
 

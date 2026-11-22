@@ -135,8 +135,8 @@ class ProjectSection:
     with ``Section.warn``; a ``ValueError`` or ``TypeError`` is reported at
     the section's key. ``dump`` turns a typed value back into plain YAML
     data for ``Project.set``; without it the value is written as it is.
-    ``settings_view(project, editable)``, if given, builds the section's tab
-    in the admin settings.
+    ``settings_view(project, editable)``, if given, builds the section's page
+    in the admin view, listed under the heading ``group``, e.g. ``"Data"``.
     """
 
     name: str
@@ -146,6 +146,7 @@ class ProjectSection:
     description: str = ""
     dump: Dumper | None = None
     settings_view: SettingsView | None = None
+    group: str = "Extensions"
 
     @property
     def label(self) -> str:
