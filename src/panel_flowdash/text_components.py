@@ -20,12 +20,12 @@ import param
 from panel.viewable import Viewer
 
 from panel_flowdash.registry import register
+from panel_flowdash.text_fill import Filled, names_pattern, prepare
 from panel_flowdash.ui.node_card import summarize_value
 from panel_flowdash.ui.text import escape_markdown, markdown_renderer, text_typography
 from panel_flowdash.util import is_failure
-from panel_flowdash.value_text import safe_str
+from panel_flowdash.value_text import is_plain, safe_str
 
-_PLACEHOLDER = re.compile(r"\{\{\s*value(?:\.([\w-]+))?\s*(?::([^{}]*?))?\s*\}\}")
 # A format spec asking for thousands of characters would make the server build them.
 _HUGE_SPEC = re.compile(r"\d{4,}")
 _MAX_FILL = 1000
@@ -41,10 +41,15 @@ _MARKDOWN = markdown_renderer("gfm-like", new_tab=False)
 _APP_MARKDOWN = markdown_renderer("gfm-like")
 
 _TEMPLATE_DOC = """
-Placeholders are filled from the connected `value` input: `{{ value }}` shows
-the value, `{{ value.key }}` a key of a dict or a pandas Series, and a format
-spec after a colon formats a number, e.g. `{{ value:,.0f }}` or
-`{{ value.share:.1%}}`."""
+Placeholders are filled from the connected `value` and `table` inputs:
+`{{ value }}` shows the value, `{{ value.key }}` a key of a dict or a pandas
+Series, and a format spec after a colon formats a number, e.g.
+`{{ value:,.0f }}` or `{{ value.share:.1% }}`. On a table (a DataFrame, e.g. a
+SQL query's `data`) `{{ table.column }}` is the first row's cell,
+`{{ table.column[2] }}` or `{{ table[2].column }}` the third row's and
+`{{ table.column[-1] }}` the last's. `{{#each table limit=5}}- {{ .region }}:
+{{ .share:.1% }}{{/each}}` repeats its text for each row, at most 50.
+Placeholders do not compute: sort, filter and aggregate in the query."""
 
 
 def _lookup(value: t.Any, key: str | None) -> t.Any:
@@ -112,7 +117,8 @@ def _format(value: t.Any, spec: str, depth: int) -> str:
         return ""
     if _huge(value):
         return _scientific(value, spec)
-    if spec and not _HUGE_SPEC.search(spec):
+    # Another object's __format__ could write out whatever it holds.
+    if spec and not _HUGE_SPEC.search(spec) and is_plain(value):
         try:
             return format(value, spec)
         except (TypeError, ValueError, OverflowError):
@@ -165,12 +171,10 @@ class _Budget:
         return text
 
 
-def _value_filler(value: t.Any) -> t.Callable[[re.Match], str]:
-    def fill(match: re.Match) -> str:
-        key, spec = match.group(1), (match.group(2) or "").strip()
-        return format_value(_lookup(value, key), spec)
-
-    return fill
+def _prepare(
+    template: str, tables: t.Mapping[str, t.Any], problems: list[str] | None = None
+) -> Filled:
+    return prepare(template, names_pattern(tables), tables, format_value, _lookup, problems)
 
 
 def fill_placeholders(
@@ -188,9 +192,28 @@ def fill_placeholders(
     return pattern.sub(replace, template or "")
 
 
-def fill_template(template: str, value: t.Any, escape: t.Callable[[str], str] = str) -> str:
-    """Replace the ``{{ value }}`` placeholders of *template*, passing each filled text through *escape*."""
-    return fill_placeholders(template, _PLACEHOLDER, _value_filler(value), escape)
+def fill_text(
+    template: str,
+    tables: t.Mapping[str, t.Any],
+    escape: t.Callable[[str], str] = str,
+    problems: list[str] | None = None,
+) -> str:
+    """Return *template* with its placeholders filled from the values and tables named in *tables*.
+
+    Its blocks are repeated first (see :mod:`panel_flowdash.text_fill`), then
+    each placeholder is replaced by its value passed through *escape*, once:
+    a value is never read as a placeholder. Problems, such as a column a
+    table does not have, are added to *problems*.
+    """
+    filled = _prepare(template, tables, problems)
+    return fill_placeholders(filled.template, filled.pattern, filled.fill, escape)
+
+
+def fill_template(
+    template: str, value: t.Any, escape: t.Callable[[str], str] = str, table: t.Any = None
+) -> str:
+    """Replace the ``{{ value }}`` and ``{{ table }}`` placeholders of *template*, each filled text through *escape*."""
+    return fill_text(template, {"value": value, "table": table}, escape)
 
 
 # Private-use characters around a filled value, turned into an element after rendering.
@@ -255,12 +278,35 @@ def markdown_with_placeholders(
     )
 
 
-def render_markdown(template: str, value: t.Any) -> str:
-    """Render *template* as HTML, filling its ``{{ value }}`` placeholders from *value*.
+def render_text(
+    template: str,
+    tables: t.Mapping[str, t.Any],
+    value_class: str | None = None,
+    problems: list[str] | None = None,
+) -> str:
+    """Render *template* as HTML, filling its placeholders from the values and tables named in *tables*.
 
     See :func:`markdown_with_placeholders` for how values are kept literal.
     """
-    return markdown_with_placeholders(template, _PLACEHOLDER, _value_filler(value))
+    filled = _prepare(template, tables, problems)
+    return markdown_with_placeholders(filled.template, filled.pattern, filled.fill, value_class)
+
+
+def render_markdown(template: str, value: t.Any, table: t.Any = None) -> str:
+    """Render *template* as HTML, filling its ``{{ value }}`` and ``{{ table }}`` placeholders."""
+    return render_text(template, {"value": value, "table": table})
+
+
+def check_text(config: t.Mapping[str, t.Any], inputs: t.Mapping[str, t.Any]) -> list:
+    """Warn about placeholders of a text tile that read a column or row its table does not have."""
+    from panel_flowdash.config_check import CheckWarning
+
+    tables = {"value": inputs.get("value"), "table": inputs.get("table")}
+    problems: list[str] = []
+    for key in ("text", "subtitle"):
+        if isinstance(config.get(key), str):
+            fill_text(config[key], tables, problems=problems)
+    return [CheckWarning(p) for p in problems]
 
 
 _MARKDOWN_CSS = """
@@ -336,10 +382,22 @@ pn.Param.mapping[MultilineText] = MultilineInput
     description=(
         "Text written in Markdown, with headings, emphasis, lists, links, "
         "tables and images; raw HTML is shown as text. Placeholders like {{ value }} "
-        "show the value of the optional Value input."
+        "show the value of the optional Value input, {{ table.column }} a cell of "
+        "the optional Table input and {{#each table limit=5}}...{{/each}} repeats "
+        "text for its rows."
     ),
     config=["text"],
-    requires=[{"key": "value", "label": "Value", "required": False, "blocking": False}],
+    requires=[
+        {"key": "value", "label": "Value", "required": False, "blocking": False},
+        {
+            "key": "table",
+            "label": "Table",
+            "type": "DataFrame",
+            "required": False,
+            "blocking": False,
+        },
+    ],
+    check_config=check_text,
     default_size={"height": 240},
 )
 class Markdown(Viewer):
@@ -354,6 +412,10 @@ class Markdown(Viewer):
 
     value = param.Parameter(default=None, doc="The value filled into the text's placeholders.")
 
+    table = param.Parameter(
+        default=None, doc="The table whose cells and rows fill the text's placeholders."
+    )
+
     def __init__(self, **params):
         super().__init__(**params)
         self._pane = pn.pane.HTML(
@@ -364,9 +426,9 @@ class Markdown(Viewer):
         )
 
     def _render(self) -> str:
-        return render_markdown(self.text, self.value)
+        return render_markdown(self.text, self.value, self.table)
 
-    @param.depends("text", "value", watch=True)
+    @param.depends("text", "value", "table", watch=True)
     def _update(self):
         self._pane.object = self._render()
 
@@ -375,7 +437,7 @@ class Markdown(Viewer):
         from panel_flowdash.export import Text
         from panel_flowdash.export.build import markdown_text
 
-        return Text(fill_template(self.text, self.value, markdown_text))
+        return Text(fill_template(self.text, self.value, markdown_text, self.table))
 
     def __flowdash_preview__(self) -> str:
         """Return the text of the Markdown with its placeholders filled in, without markup."""
@@ -397,10 +459,21 @@ _HEADING_VARIANTS = {"Title": "h3", "Heading": "h4", "Subheading": "h5", "Sectio
     tags=["view"],
     description=(
         "A heading with an optional subtitle, for titling a group of tiles. "
-        "Placeholders like {{ value }} show the value of the optional Value input."
+        "Placeholders like {{ value }} or {{ table.column }} show the value of the "
+        "optional Value input or a cell of the optional Table input."
     ),
     config=["text", "subtitle", "size", "alignment"],
-    requires=[{"key": "value", "label": "Value", "required": False, "blocking": False}],
+    requires=[
+        {"key": "value", "label": "Value", "required": False, "blocking": False},
+        {
+            "key": "table",
+            "label": "Table",
+            "type": "DataFrame",
+            "required": False,
+            "blocking": False,
+        },
+    ],
+    check_config=check_text,
     default_size={"height": 96},
     framed=False,
 )
@@ -427,6 +500,10 @@ class Heading(Viewer):
 
     value = param.Parameter(default=None, doc="The value filled into the text's placeholders.")
 
+    table = param.Parameter(
+        default=None, doc="The table whose cells and rows fill the text's placeholders."
+    )
+
     def __init__(self, **params):
         super().__init__(**params)
         self._title = text_typography("", margin=0)
@@ -436,15 +513,15 @@ class Heading(Viewer):
         )
         self._update()
 
-    @param.depends("text", "subtitle", "size", "alignment", "value", watch=True)
+    @param.depends("text", "subtitle", "size", "alignment", "value", "table", watch=True)
     def _update(self):
         sx = {"textAlign": self.alignment, "width": "100%"}
         self._title.param.update(
-            object=escape_markdown(fill_template(self.text, self.value)),
+            object=escape_markdown(fill_template(self.text, self.value, table=self.table)),
             variant=_HEADING_VARIANTS[self.size],
             sx={**sx, "fontWeight": 500},
         )
-        subtitle = fill_template(self.subtitle, self.value)
+        subtitle = fill_template(self.subtitle, self.value, table=self.table)
         self._subtitle.param.update(
             object=escape_markdown(subtitle),
             visible=bool(subtitle.strip()),
@@ -457,15 +534,15 @@ class Heading(Viewer):
         from panel_flowdash.export.build import markdown_text
 
         level = {"Title": 1, "Heading": 1, "Subheading": 2, "Section": 3}[self.size]
-        blocks = [HeadingBlock(fill_template(self.text, self.value), level)]
-        subtitle = fill_template(self.subtitle, self.value)
+        blocks = [HeadingBlock(fill_template(self.text, self.value, table=self.table), level)]
+        subtitle = fill_template(self.subtitle, self.value, table=self.table)
         if subtitle.strip():
             blocks.append(Text(markdown_text(subtitle)))
         return blocks
 
     def __flowdash_preview__(self) -> str:
         """Return the heading text with its placeholders filled in."""
-        return fill_template(self.text, self.value)
+        return fill_template(self.text, self.value, table=self.table)
 
     def __panel__(self):
         """Return the heading."""

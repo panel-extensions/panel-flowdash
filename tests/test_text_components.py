@@ -245,7 +245,10 @@ class TestMarkdown:
     def test_input_is_optional_and_does_not_gate_the_view(self, editor):
         node = editor.add_component("Text/Markdown")
         spec = editor.component_specs["Text/Markdown"]
-        assert [(p.name, p.required, p.blocking) for p in spec.inputs] == [("value", False, False)]
+        assert [(p.name, p.required, p.blocking) for p in spec.inputs] == [
+            ("value", False, False),
+            ("table", False, False),
+        ]
         assert editor._tile_objects[-1] is editor._component_instances[node]._pane
 
     def test_raw_html_in_the_text_is_shown_as_text(self):

@@ -305,7 +305,13 @@ class TestFilters:
         gallery._on_accepts(
             next(i for i in gallery.accepts_menu.items if i["label"] == "DataFrame")
         )
-        assert set(_visible(gallery)) == {FILTER, CHART, "Data/FilterBySelection"}
+        assert set(_visible(gallery)) == {
+            FILTER,
+            CHART,
+            "Data/FilterBySelection",
+            "Text/Markdown",
+            "Text/Heading",
+        }
         assert gallery.accepts_menu.label == "Accepts DataFrame"
         gallery._on_accepts(gallery.accepts_menu.items[0])
         assert gallery.accepts is None
