@@ -624,7 +624,7 @@ class CommandPaletteController:
         elif dashboard is None:
             return
         elif action == "refresh":
-            editor.param.trigger("refresh")
+            editor.trigger_refresh()
         elif action == "edit" and not editor.editable and self._can_edit():
             editor._dashboard_bar.request_mode("edit")
         elif action == "view" and editor.editable:

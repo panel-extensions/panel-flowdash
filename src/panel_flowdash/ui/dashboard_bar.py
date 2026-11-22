@@ -413,7 +413,7 @@ class DashboardBar(Viewer):
             sx={"borderTopRightRadius": 0, "borderBottomRightRadius": 0},
             stylesheets=[ICON_ONLY_WHEN_COMPACT, _HIDE_ON_PHONE],
         )
-        self.refresh_button.on_click(lambda _event: editor.param.trigger("refresh"))
+        self.refresh_button.on_click(lambda _event: editor.trigger_refresh())
         self.refresh_period = pmui.MenuButton(
             label="Off",
             variant="outlined",
@@ -732,7 +732,7 @@ class DashboardBar(Viewer):
         elif kind == "tab":
             self.mode_tabs.value = value
         elif action == "refresh":
-            self.editor.param.trigger("refresh")
+            self.editor.trigger_refresh()
         elif action == "fullscreen":
             self.editor.fullscreen = True
         elif action == "discard":

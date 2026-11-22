@@ -1184,18 +1184,17 @@ class TestBatch:
         assert isinstance(result, str) and "rejects" in result
 
 
-def test_deep_chain_without_event_loop_reports_instead_of_raising():
+def test_deep_chain_without_event_loop_updates_in_one_pass():
+    # A pass delivers each hop from its own shallow stack, so no hop nests the next.
     errors = []
     graph = DataflowGraph(_chain_specs(), on_error=lambda *args: errors.append(args))
     depth = sys.getrecursionlimit() // 5
     source, last = _chain(graph, depth)
     source.out = 1
-    assert last.out != depth + 1
-    assert len(errors) == 1
-    assert isinstance(errors[0][4], RecursionError)
-
+    assert last.out == depth + 1
     source.out = 2
-    assert len(errors) == 2
+    assert last.out == depth + 2
+    assert errors == []
 
 
 async def test_deep_chain_finishes_on_later_ticks():
