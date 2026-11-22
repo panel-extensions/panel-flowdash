@@ -40,6 +40,7 @@ from panel_flowdash.value_text import SafeRepr, safe_str
 logger = logging.getLogger(__name__)
 
 PREVIEW_HOOK = "__flowdash_preview__"
+DEFINITION_HOOK = "__flowdash_definition__"
 PREVIEW_KIND_KEY = "__flowdash_preview_kind__"
 
 #: The colour of chart marks, in the card thumbnails and the pop-out alike.
@@ -1432,6 +1433,39 @@ def call_preview_hook(instance: t.Any, output: str | None = None) -> t.Any:
     except Exception:
         logger.exception("The preview hook of %s failed", type(instance).__name__)
         return None
+
+
+def call_definition_hook(instance: t.Any) -> tuple[str, str] | None:
+    """Return ``(language, text)`` from ``instance.__flowdash_definition__``, or None.
+
+    A component without code or a spec to edit may define the hook to show
+    what defines it, e.g. a data source's spec as YAML, read only in the code
+    panel. The language is an Ace mode such as ``"yaml"``, ``"json"`` or
+    ``"sql"``. The hook returns None to show nothing, and one that fails or
+    returns anything but two strings is logged and shows nothing.
+    """
+    hook = getattr(instance, DEFINITION_HOOK, None)
+    if hook is None or not callable(hook):
+        return None
+    try:
+        definition = hook()
+    except Exception:
+        logger.exception("The definition hook of %s failed", type(instance).__name__)
+        return None
+    if definition is None:
+        return None
+    if (
+        isinstance(definition, tuple)
+        and len(definition) == 2
+        and all(isinstance(part, str) for part in definition)
+    ):
+        return definition
+    logger.warning(
+        "The definition hook of %s returned %s, not a (language, text) tuple",
+        type(instance).__name__,
+        type(definition).__name__,
+    )
+    return None
 
 
 def hook_preview(instance: t.Any, label: str = "", output: str | None = None) -> Preview | None:

@@ -130,7 +130,37 @@ class LazyQuery(Viewer):
         return "lazy"
 
 
-COMPONENTS = {"D/turbines": Turbines, "D/query": Query, "D/note": Note, "D/lazy": LazyQuery}
+@register(
+    page=False,
+    component=True,
+    title="Defined",
+    config=["table"],
+    provides=[{"key": "data", "type": "DataFrame"}],
+)
+class Defined(Viewer):
+    """A source without a spec field that shows its spec through ``__flowdash_definition__``."""
+
+    table = param.String(default="turbines")
+
+    @param.output(param.DataFrame)
+    @param.depends("table")
+    def data(self):
+        return TURBINES
+
+    def __flowdash_definition__(self):
+        return ("yaml", f"type: file\ntables:\n  {self.table}: turbines.csv\n")
+
+    def __panel__(self):
+        return "defined"
+
+
+COMPONENTS = {
+    "D/turbines": Turbines,
+    "D/query": Query,
+    "D/note": Note,
+    "D/lazy": LazyQuery,
+    "D/defined": Defined,
+}
 
 
 def make_editor(**params):
@@ -726,6 +756,45 @@ class TestFollowsSelection:
         assert not panel.code.visible and not panel.run_button.visible
         assert "6 rows" in panel._summary.object
         assert "fd-code-table" in panel._result_body[0].css_classes
+
+    def test_a_node_without_a_spec_shows_its_definition_read_only(self, setup):
+        editor, query = setup
+        defined = editor.add_component("D/defined", position=(0, 300))
+        editor.open_code_panel(query, "expr")
+        select_on_canvas(editor._flow, node_id=defined)
+        panel = editor.code_panel
+        assert (panel.instance_id, panel.field) == (defined, None)
+        assert panel.definition.visible and panel.definition.readonly
+        assert panel.definition.language == "yaml"
+        assert panel.definition.value == "type: file\ntables:\n  turbines: turbines.csv\n"
+        assert not panel._empty.visible and not panel.code.visible
+        assert not panel.run_button.visible and not panel.format_button.visible
+        assert not panel.view_toggle.visible and not panel.run_switch.visible
+        assert "Read only" in panel._code_header.object
+        assert "YAML" in panel._language.object
+        assert "6 rows" in panel._summary.object
+
+        # A new output, e.g. after a settings change, may come from a new definition.
+        editor._dataflow_graph.get_config_state(defined).table = "sales"
+        assert "  sales: turbines.csv" in panel.definition.value
+
+        select_on_canvas(editor._flow, node_id=query)
+        assert not panel.definition.visible and panel.code.visible
+        assert "Read only" not in panel._code_header.object
+        source = next(
+            i["instance_id"] for i in editor._tile_items if i["component_id"] == "D/turbines"
+        )
+        select_on_canvas(editor._flow, node_id=source)
+        assert not panel.definition.visible and panel._empty.visible
+
+    def test_a_failing_definition_hook_shows_the_empty_state(self, setup, monkeypatch):
+        editor, _query = setup
+        defined = editor.add_component("D/defined", position=(0, 300))
+        instance = editor._component_instances[defined]
+        monkeypatch.setattr(instance, "__flowdash_definition__", lambda: ["yaml", "x"])
+        editor.open_code_panel(defined)
+        panel = editor.code_panel
+        assert not panel.definition.visible and panel._empty.visible
 
     def test_drafts_are_kept_per_node(self, setup):
         editor, query = setup

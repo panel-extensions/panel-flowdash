@@ -315,6 +315,27 @@ while previews are off. Keep it cheap and free of side effects. If it raises,
 the error is logged and the default preview is shown. Function components
 have no instance and so no hook.
 
+### Showing what defines a component in the code panel
+
+The code panel under the canvas edits a node's code or spec field. A component
+without one, such as a data source configured by a name, can show what defines
+it instead, read only, by defining `__flowdash_definition__`:
+
+```python
+class FileSource(pn.viewable.Viewer):
+    path = param.String(default="data.csv")
+
+    def __flowdash_definition__(self):
+        return "yaml", f"type: file\ntables:\n  data: {self.path}\n"
+```
+
+The hook takes no arguments and returns a `(language, text)` tuple, where the
+language is an Ace mode such as `"yaml"`, `"json"` or `"sql"`, or `None` to
+keep the panel's "Nothing to edit" state. The text is shown with highlighting,
+selectable and copyable, and is asked for again whenever the component's
+outputs change. If the hook raises or returns anything else, the error is
+logged and nothing is shown.
+
 ---
 
 ## Decorator overrides on Viewer classes
