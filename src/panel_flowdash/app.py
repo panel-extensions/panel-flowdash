@@ -33,6 +33,7 @@ from panel_flowdash.dashboard_store import (
     DashboardStoreError,
 )
 from panel_flowdash.editor import FlowDash
+from panel_flowdash.project import Project, load_project
 from panel_flowdash.registry import RegistryEntry, build_registry
 from panel_flowdash.session_state import build_session_state_class, check_requirements
 from panel_flowdash.settings import DashboardSettings
@@ -379,6 +380,17 @@ class FlowDashApp(Viewer):
 
     project_dir = param.Path(doc="Path to the project directory.")
 
+    project = param.ClassSelector(
+        class_=(Project, str, os.PathLike),
+        default=None,
+        doc="""
+        The project file (``flowdash.yaml``) whose sections configure the
+        app, as a path or a loaded `panel_flowdash.project.Project`. A path
+        is loaded when the app is created, raising `ProjectError` with the
+        file, line and column of each problem. See the project file
+        reference.""",
+    )
+
     propagate_failures = param.Boolean(
         default=False,
         doc="""
@@ -424,6 +436,9 @@ class FlowDashApp(Viewer):
 
     def __init__(self, registry: dict[str, RegistryEntry] | None = None, **params):
         super().__init__(**params)
+
+        if self.project is not None and not isinstance(self.project, Project):
+            self.project = load_project(self.project)
 
         if self.notifications:
             pn.config.notifications = True
@@ -2374,6 +2389,10 @@ class FlowDashApp(Viewer):
             params.get("component_libraries", ()),
             params.get("include_builtin_components", True),
         )
+        # Loaded once, after the libraries had their chance to register sections.
+        project = params.get("project")
+        if project is not None and not isinstance(project, Project):
+            params["project"] = load_project(project)
 
         def factory():
             return cls(registry=registry, **params)

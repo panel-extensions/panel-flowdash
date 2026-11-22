@@ -22,6 +22,7 @@ from panel_flowdash.app import ACCESS_DENIED_ROUTE, FlowDashApp
 from panel_flowdash.auth import AuthConfig, make_authorize_callback
 from panel_flowdash.component_library import ComponentLibraryError
 from panel_flowdash.dashboard_store import BaseDashboardStore, DashboardStore
+from panel_flowdash.project import ProjectError, find_project
 from panel_flowdash.registry import PackageResolutionError, build_registry
 
 log = logging.getLogger(__name__)
@@ -209,6 +210,19 @@ class Serve(_PanelServe):
             ),
         ),
         (
+            "--project",
+            Argument(
+                action="store",
+                metavar="FILE",
+                type=str,
+                default=None,
+                help=(
+                    "The project file whose sections configure the app. Defaults to "
+                    "flowdash.yaml in DIRECTORY, else in the working directory."
+                ),
+            ),
+        ),
+        (
             "--component-library",
             Argument(
                 action="append",
@@ -286,6 +300,11 @@ class Serve(_PanelServe):
             print(f"ERROR: '{args.directory}' is not a directory.", file=sys.stderr)  # noqa: T201
             raise SystemExit(1)
 
+        if args.project is not None:
+            project_file = Path(args.project).resolve()
+        else:
+            project_file = find_project([project_dir])
+
         package = args.package
         if package is None:
             sys.path.insert(0, str(project_dir))
@@ -322,6 +341,9 @@ class Serve(_PanelServe):
             libraries = list(options.get("component_libraries", ()))
             libraries += [name for name in args.component_library if name not in libraries]
             options["component_libraries"] = libraries
+        if project_file is not None:
+            log.info(f"Project file: {project_file}")
+            options["project"] = project_file
         title = options.get("title", FlowDashApp.param.title.default)
 
         auth_config = AuthConfig.from_module(init_mod)
@@ -366,7 +388,7 @@ class Serve(_PanelServe):
                 auth_config=auth_config,
                 **options,
             )
-        except ComponentLibraryError as exc:
+        except (ComponentLibraryError, ProjectError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)  # noqa: T201
             raise SystemExit(1) from None
 
