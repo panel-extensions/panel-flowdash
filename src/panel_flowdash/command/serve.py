@@ -50,6 +50,7 @@ PROJECT_OPTIONS = (
     "header_layout",
     "home_dashboard",
     "include_builtin_components",
+    "local_admin",
     "nav_variant",
     "notifications",
     "page_options",
@@ -396,6 +397,12 @@ class Serve(_PanelServe):
             print(f"ERROR: {exc}", file=sys.stderr)  # noqa: T201
             raise SystemExit(1) from None
 
+        if options.get("local_admin", True):
+            log.warning(
+                "The admin view is open to anyone who opens the app at localhost without "
+                "signing in. Behind a proxy on this machine every visitor can look local: "
+                "set `local_admin = False` in __init__.py and use admin_groups with sign-in."
+            )
         log.info(f"Serving FlowDash from '{project_dir}' on port {args.port}")
         log.info(f"Dashboard store: {store_description}")
 

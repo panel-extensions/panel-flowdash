@@ -71,11 +71,12 @@ _SAVED_ICON = (
 
 
 def admin_sections() -> list[ProjectSection]:
-    """Return the sections with a settings view: the built-in ones first, then by title."""
+    """Return the sections with a settings view: the built-in ones first, then by group and title."""
     registered = [s for s in sections().values() if s.settings_view is not None]
     builtin = [s for name in BUILTIN_SECTIONS for s in registered if s.name == name]
     others = sorted(
-        (s for s in registered if s.name not in BUILTIN_SECTIONS), key=lambda s: s.label.lower()
+        (s for s in registered if s.name not in BUILTIN_SECTIONS),
+        key=lambda s: (s.group == "Extensions", s.group, s.label.lower()),
     )
     return [*builtin, *others]
 
@@ -210,8 +211,9 @@ class AdminPage(Viewer):
     def _build_nav(self):
         groups: dict[str, list[ProjectSection]] = {}
         for section in self._sections.values():
-            group = "App" if section.name in BUILTIN_SECTIONS else "Extensions"
-            groups.setdefault(group, []).append(section)
+            groups.setdefault(section.group or "Extensions", []).append(section)
+        order = {"App": 0, "Extensions": 2}
+        groups = dict(sorted(groups.items(), key=lambda item: (order.get(item[0], 1), item[0])))
         items: list = [
             pmui.Typography("Admin", variant="h6", margin=(20, 24, 0, 24), sx={"fontWeight": 400}),
             pmui.Typography(

@@ -82,6 +82,33 @@ class TestWhoIsAdmin:
     def test_local_request(self, remote_ip, host, local):
         assert is_local_request(_request(remote_ip, host)) is local
 
+    @pytest.mark.parametrize(
+        "header",
+        [
+            "Forwarded",
+            "Via",
+            "X-Forwarded-For",
+            "X-Forwarded-Host",
+            "X-Forwarded-Proto",
+            "X-Real-Ip",
+        ],
+    )
+    def test_a_request_through_a_proxy_is_not_local(self, header):
+        request = SimpleNamespace(
+            remote_ip="127.0.0.1", headers={"Host": "localhost:5006", header: "127.0.0.1"}
+        )
+        assert not is_local_request(request)
+
+    def test_the_peer_is_read_from_the_socket_not_from_xheaders(self):
+        # With xheaders, tornado's remote_ip is what a header claimed, not the socket's peer.
+        connection = SimpleNamespace(context=SimpleNamespace(address=("10.0.0.7", 51234)))
+        request = SimpleNamespace(
+            remote_ip="127.0.0.1", headers={"Host": "localhost"}, connection=connection
+        )
+        assert not is_local_request(request)
+        connection.context.address = ("127.0.0.1", 51234)
+        assert is_local_request(request)
+
     def test_the_rail_offers_admin_to_admins_only(self, tmp_path, sections):
         admin = _app(tmp_path)
         assert admin._is_admin
@@ -131,18 +158,26 @@ class TestSections:
             description="Row limits.",
             settings_view=limits_view,
         )
+        module.SOURCES = ProjectSection(
+            "sources", dict, title="Sources", settings_view=limits_view, group="Data"
+        )
         monkeypatch.setitem(sys.modules, "fd_admin_ext", module)
         group = project_module.ENTRY_POINT_GROUP
-        entry_point = importlib.metadata.EntryPoint("limits", "fd_admin_ext:LIMITS", group)
+        entry_points = [
+            importlib.metadata.EntryPoint(name.lower(), f"fd_admin_ext:{name}", group)
+            for name in ("LIMITS", "SOURCES")
+        ]
         monkeypatch.setattr(
             importlib.metadata,
             "entry_points",
-            lambda group=None: [entry_point] if group == project_module.ENTRY_POINT_GROUP else [],
+            lambda group=None: entry_points if group == project_module.ENTRY_POINT_GROUP else [],
         )
         monkeypatch.setattr(project_module, "_entry_points_loaded", False)
 
         page = _admin(_app(tmp_path))
-        assert list(page.sections) == ["general", "theme", "limits"]
+        assert list(page.sections) == ["general", "theme", "sources", "limits"]
+        assert list(page._menus) == ["App", "Data", "Extensions"]
+        assert [item["label"] for item in page._menus["Data"].items] == ["Sources"]
         assert [item["label"] for item in page._menus["Extensions"].items] == ["Limits"]
         page.show("limits")
         assert page._title.object == "Limits"
@@ -215,6 +250,69 @@ class TestRoundTrip:
         page.view("general")._widgets["tile_titles"].value = True
         assert app._has_unsaved_changes()
         assert app._unsaved_changes() == [("settings", "General settings")]
+
+
+class TestConcurrentAdmins:
+    def test_two_admins_saving_keep_each_others_changes(self, tmp_path, sections):
+        first = _admin(_app(tmp_path)).view("general")
+        second = _admin(_app(tmp_path)).view("general")
+        first._widgets["tile_cards"].value = False
+        second._widgets["tile_titles"].value = True
+        assert first.save()
+        assert second.save()
+        assert load_project(tmp_path / PROJECT_FILE).get("general") == {
+            "tile_cards": False,
+            "tile_titles": True,
+        }
+
+    def test_a_change_written_by_another_process_is_kept(self, tmp_path, sections):
+        form = _admin(_app(tmp_path)).view("theme")
+        (tmp_path / PROJECT_FILE).write_text("theme:\n  border_radius: 8\n")
+        form._widgets["primary_color"].value = "#5E35B1"
+        assert form.save()
+        assert load_project(tmp_path / PROJECT_FILE).get("theme") == {
+            "border_radius": 8,
+            "primary_color": "#5E35B1",
+        }
+        assert form.values["border_radius"] == 8
+
+    def test_a_setting_both_change_takes_the_last_save(self, tmp_path, sections):
+        first = _admin(_app(tmp_path)).view("general")
+        second = _admin(_app(tmp_path)).view("general")
+        first._widgets["history_limit"].value = 100
+        second._widgets["history_limit"].value = 200
+        assert first.save() and second.save()
+        assert load_project(tmp_path / PROJECT_FILE).get("general") == {"history_limit": 200}
+
+
+class TestLogo:
+    @pytest.mark.parametrize(
+        "logo", ["../outside.svg", "assets/../../outside.svg", "/etc/logo.png", "ftp://x/logo.png"]
+    )
+    def test_a_logo_outside_the_project_directory_is_refused(self, tmp_path, sections, logo):
+        page = _admin(_app(tmp_path))
+        form = page.view("theme")
+        form._widgets["logo"].value = logo
+        assert not page.save("theme")
+        assert "inside the project directory" in form._texts["logo"].object
+        assert not (tmp_path / PROJECT_FILE).exists()
+
+    def test_a_file_written_by_hand_with_such_a_logo_is_not_used(self, tmp_path, sections):
+        from panel_flowdash.admin.sections import project_overrides
+
+        project = project_module.Project(
+            str(tmp_path / PROJECT_FILE), {"theme": {"logo": "../../etc/passwd"}}
+        )
+        project._values["theme"] = {"logo": "../../etc/passwd"}
+        assert project_overrides(project, lambda target: False) == {}
+
+    @pytest.mark.parametrize("logo", ["logo.svg", "assets/logo.svg", "https://x.org/logo.svg"])
+    def test_a_url_or_a_file_inside_is_used(self, tmp_path, sections, logo):
+        page = _admin(_app(tmp_path))
+        page.view("theme")._widgets["logo"].value = logo
+        assert page.save("theme")
+        expected = logo if "://" in logo else str((tmp_path / logo).resolve())
+        assert _app(tmp_path)._page.logo == expected
 
 
 class TestValidation:
@@ -299,7 +397,7 @@ class TestLocked:
         assert _admin(app).view("theme").locks == {"logo": "--logo"}
 
 
-def test_serve_names_where_each_option_is_set(tmp_path, monkeypatch, sections):
+def test_serve_names_where_each_option_is_set(tmp_path, monkeypatch, sections, caplog):
     project_dir = tmp_path / "proj"
     project_dir.mkdir()
     (project_dir / "__init__.py").write_text(
@@ -325,5 +423,6 @@ def test_serve_names_where_each_option_is_set(tmp_path, monkeypatch, sections):
     assert app.settings_sources == {"title": "__init__.py", "home_dashboard": "--home-dashboard"}
     assert app._code_setting_source("title") == "title in __init__.py"
     assert app._code_setting_source("home_dashboard") == "set with --home-dashboard"
+    assert "local_admin = False" in caplog.text
     # Without a project file the admin view writes one in the project directory.
     assert app._settings_project().path == str((project_dir / PROJECT_FILE).resolve())

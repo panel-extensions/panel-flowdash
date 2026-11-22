@@ -28,12 +28,37 @@ def _loopback(address: str | None) -> bool:
         return False
 
 
+# Headers a proxy adds; a request carrying any of them came through one.
+PROXY_HEADERS = (
+    "Forwarded",
+    "Via",
+    "X-Forwarded-For",
+    "X-Forwarded-Host",
+    "X-Forwarded-Proto",
+    "X-Real-Ip",
+)
+
+
+def _peer_address(request: t.Any) -> str | None:
+    """Return the address of the socket the request came in on, ignoring any xheaders."""
+    raw = getattr(request, "_request", request)
+    context = getattr(getattr(raw, "connection", None), "context", None)
+    address = getattr(context, "address", None)
+    if isinstance(address, (tuple, list)) and address:
+        return str(address[0])
+    if context is not None and hasattr(context, "_orig_remote_ip"):
+        return context._orig_remote_ip
+    return getattr(raw, "remote_ip", None)
+
+
 def is_local_request(request: t.Any = None) -> bool:
     """Whether the session's page was requested from this computer by its loopback name.
 
-    Both the peer address and the ``Host`` header have to be loopback, so a
-    page served behind a proxy on the same machine for a public host name
-    does not count as local.
+    The socket's peer address and the ``Host`` header have to be loopback,
+    and the request must carry none of the `PROXY_HEADERS`; the peer is read
+    from the socket, never from ``X-Real-Ip`` or ``X-Forwarded-For``. A proxy
+    on the same machine that adds no such header still looks local, so a
+    deployment behind a proxy sets ``FlowDashApp(local_admin=False)``.
     """
     if request is None:
         doc = pn.state.curdoc
@@ -41,12 +66,11 @@ def is_local_request(request: t.Any = None) -> bool:
         request = getattr(context, "request", None)
     if request is None:
         return False
-    remote_ip = getattr(request, "remote_ip", None)
-    if remote_ip is None and hasattr(request, "_request"):
-        remote_ip = getattr(request._request, "remote_ip", None)
-    headers = getattr(request, "headers", None) or {}
-    host = headers.get("Host") or headers.get("host") or ""
-    return _loopback(remote_ip) and _host_name(host) in _LOCAL_HOSTS
+    headers = {str(k).lower(): v for k, v in dict(getattr(request, "headers", None) or {}).items()}
+    if any(name.lower() in headers for name in PROXY_HEADERS):
+        return False
+    host = headers.get("host") or ""
+    return _loopback(_peer_address(request)) and _host_name(host) in _LOCAL_HOSTS
 
 
 def is_admin(

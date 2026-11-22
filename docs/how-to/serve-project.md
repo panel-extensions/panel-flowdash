@@ -205,6 +205,7 @@ missing or set to `None` keeps its default.
 | `header_layout` | `str` | `"compact"` (default) puts a dashboard's title, health and actions in the top bar, `"full"` in a row of their own under it, see [Navigation](#navigation). Dashboards can override it in their settings. |
 | `home_dashboard` | `str` | Dashboard id or title shown on the homepage. Overridden by `--home-dashboard`. |
 | `include_builtin_components` | `bool` | Offer the built-in widget components in the editor. Default `True`. |
+| `local_admin` | `bool` | Offer the admin view to anyone who opens the app at `localhost` without signing in. Default `True`; set it to `False` behind a proxy, see [The admin view](#the-admin-view). |
 | `nav_variant` | `str` | `"rail"` (default), `"left"`, `"right"` or `"menubar"`, see [Navigation](#navigation). Overridden by `--nav-variant`. |
 | `notifications` | `bool` | Show user-facing messages as Panel notifications. Default `True`. |
 | `page_options` | `dict` | Extra keyword arguments for the underlying `panel_material_ui.Page`. |
@@ -240,6 +241,31 @@ attribute. `editor_options` and `page_options` are shared by every session, so
 create any Panel objects they would hold in an `editor_class` subclass or in
 `configure_layout` instead. `sidebar` and `contextbar` are not read for the same
 reason; set them from `configure_layout`.
+
+---
+
+## The admin view
+
+Admins get an Admin item at the bottom of the rail, which edits the
+project file's settings (see the [Project File reference](../reference/project-file.md#built-in-sections)).
+Members of `admin_groups` are admins. Without sign-in everyone is the
+system user, so the admin view is then only offered to a page opened at
+`localhost`, `127.0.0.1` or `::1` from the same machine, and a request that
+carries a proxy header (`Forwarded`, `Via`, `X-Forwarded-For`,
+`X-Forwarded-Host`, `X-Forwarded-Proto` or `X-Real-Ip`) never counts as
+local. `flowdash serve` logs a warning at startup while this is on.
+
+A proxy on the same machine that forwards requests without adding such a
+header, such as nginx's default `proxy_pass http://127.0.0.1:5006`, makes
+every visitor look local. **Anyone deploying behind a proxy must set
+`local_admin = False`** in `__init__.py` and give admin rights through
+`admin_groups` with sign-in:
+
+```python
+# my_project/__init__.py
+local_admin = False
+admin_groups = ["admins"]
+```
 
 ---
 

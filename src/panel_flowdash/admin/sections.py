@@ -219,6 +219,35 @@ FONTS: dict[str, str | None] = {
     "System UI": None,
 }
 
+
+def _project_directory(project: Project) -> Path | None:
+    if project.directory is not None:
+        return project.directory
+    project_dir = project.context.get("project_dir") if project.context else None
+    return Path(project_dir) if project_dir is not None else None
+
+
+def resolve_logo(value: str, directory: Path | None) -> str | None:
+    """Return the logo *value* names: an http(s) URL, or a file inside *directory*.
+
+    None for anything else, such as a path that leads out of the project
+    directory with ``..``, an absolute path elsewhere or another URL scheme.
+    """
+    if "://" in value:
+        return value if value.lower().startswith(("http://", "https://")) else None
+    if directory is None:
+        return None
+    root = directory.resolve()
+    path = (root / value).resolve()
+    return str(path) if path.is_relative_to(root) else None
+
+
+def _check_logo(value: str, section) -> str | None:
+    if resolve_logo(value, _project_directory(section.project)) is None:
+        return "`logo` is an http(s) URL or the path of a file inside the project directory."
+    return None
+
+
 THEME_GROUPS = (
     Group(
         "Colours",
@@ -291,6 +320,7 @@ THEME_GROUPS = (
                 default=None,
                 allow_none=True,
                 target="page_options.logo",
+                validate=_check_logo,
             ),
         ),
     ),
@@ -338,9 +368,10 @@ def project_overrides(project: Project | None, in_code: Callable[[str], bool]) -
             setting = settings.get(key)
             if setting is None or setting.target is None or in_code(setting.target):
                 continue
-            if key == "logo" and value and project.directory is not None and "://" not in value:
-                path = Path(value)
-                value = str(path if path.is_absolute() else project.directory / path)
+            if key == "logo" and value:
+                value = resolve_logo(value, _project_directory(project))
+                if value is None:
+                    continue
             overrides[setting.target] = CONVERT.get(key, lambda v: v)(value)
     return overrides
 
@@ -583,6 +614,7 @@ GENERAL = ProjectSection(
         "settings still override the dashboard defaults."
     ),
     settings_view=general_settings,
+    group="App",
 )
 
 THEME = ProjectSection(
@@ -592,6 +624,7 @@ THEME = ProjectSection(
     icon="palette",
     description="Colours, type and branding for every page, in light and dark.",
     settings_view=theme_settings,
+    group="App",
 )
 
 BUILTIN_SECTIONS = ("general", "theme")

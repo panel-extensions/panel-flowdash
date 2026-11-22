@@ -188,7 +188,8 @@ AGENT = ProjectSection(
 A section can also describe its page in the admin view with
 `settings_view`, a function of the project and whether the viewer may edit
 it. Every registered section with a `settings_view` is listed in the admin
-view, after the built-in General and Theme. The simplest view is any Panel
+view, after the built-in General and Theme. The view's code runs in the sessions of the app's
+admins, with their rights, so install only extensions you trust. The simplest view is any Panel
 component that saves on its own:
 
 ```python

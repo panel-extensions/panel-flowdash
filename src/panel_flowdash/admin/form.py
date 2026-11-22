@@ -17,13 +17,22 @@ import re
 import typing as t
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 import panel as pn
 import panel_material_ui as pmui
 import param
 from panel.viewable import Viewer
 
-from panel_flowdash.project import Problem, Project, ProjectError, SectionError
+from panel_flowdash.project import (
+    Problem,
+    Project,
+    ProjectError,
+    Section,
+    SectionError,
+    _parse,
+    sections,
+)
 from panel_flowdash.value_text import error_text
 
 if t.TYPE_CHECKING:
@@ -70,6 +79,8 @@ class Setting:
     setting configures, e.g. ``"home_dashboard"`` or
     ``"editor_options.mode"``; one the app was given in code shows locked,
     with the parameter's value turned into the setting's by ``from_target``.
+    ``validate(value, section)`` returns why a value the loader reads is
+    not acceptable, beyond what ``kind`` checks.
     """
 
     key: str
@@ -85,6 +96,7 @@ class Setting:
     allow_none: bool = False
     target: str | None = None
     from_target: Callable[[t.Any], t.Any] | None = None
+    validate: Callable[[t.Any, Section], str | None] | None = None
     parts: tuple[Setting, ...] = ()
     swatches: tuple[str, ...] = ()
 
@@ -173,6 +185,8 @@ def settings_loader(groups: Sequence[Group]) -> Callable:
                 )
                 continue
             message = setting.check(item)
+            if message is None and item is not None and setting.validate is not None:
+                message = setting.validate(item, section)
             if message:
                 problems.append(section.problem((key,), message))
         if problems:
@@ -321,22 +335,46 @@ class SettingsForm(Viewer):
         """Return where each locked setting is set, by key."""
         return dict(self._locks)
 
-    def value(self) -> t.Any:
-        """Return the section's value to write.
+    def changes(self) -> dict[str, t.Any]:
+        """Return the settings changed in the controls since the form was loaded or saved."""
+        return {
+            key: self._widget_value(key)
+            for key in self._leaves
+            if key not in self._locks and self._widget_value(key) != self._effective(key)
+        }
 
-        It keeps the keys the file already sets and adds those changed from
-        their default; a locked setting keeps what the file has.
+    def value(self) -> t.Any:
+        """Return the section's value to write: the `changes` over what the file has now.
+
+        The file is read again, so settings another admin saved since this
+        form was loaded are kept unless this form changed them too.
         """
-        written: dict[str, t.Any] = {}
-        for key, leaf in self._leaves.items():
-            if key in self._locks:
-                if key in self._initial:
-                    written[key] = self._initial[key]
-                continue
-            current = self._widget_value(key)
-            if key in self._initial or current != leaf.default:
-                written[key] = current
-        return self._from_form(written)
+        return self._from_form({**self._current(), **self.changes()})
+
+    def _current(self) -> dict[str, t.Any]:
+        """Return the section as the project file has it now, falling back to the loaded one."""
+        path = Path(self.project.path) if self.project.path else None
+        section = sections().get(self.section)
+        if path is not None and path.is_file() and section is not None:
+            try:
+                data, _ = _parse(path.read_text(encoding="utf-8"), str(path))
+                if self.section not in data:
+                    return {}
+                value = section.loader(Section(self.section, data[self.section], self.project))
+                return dict(self._to_form(value))
+            except (
+                OSError,
+                UnicodeDecodeError,
+                ProjectError,
+                SectionError,
+                TypeError,
+                ValueError,
+            ):
+                logger.warning("Could not read %s again; saving over the loaded values.", path)
+        try:
+            return dict(self._to_form(self.project.get(self.section)))
+        except ProjectError:
+            return {}
 
     def _widget_value(self, key: str) -> t.Any:
         leaf = self._leaves[key]
