@@ -189,6 +189,18 @@ class TestSidecarInLayout:
         editor._tile_grid.layout = [{"index": 0}, {"index": 1, "visible": False}]
         assert _texts(editor._layout_panel._off_grid)[:2] == ["Chart", HIDDEN]
 
+    async def test_a_long_list_is_cut_short(self, editor, monkeypatch):
+        from panel_flowdash.ui import layout_panel
+
+        monkeypatch.setattr(layout_panel, "MAX_OFF_GRID", 1)
+        _, chart_id, _ = _place(editor, MAP, CHART, FILTER)
+        update_tile(editor, chart_id, visible=False)
+        select_on_canvas(editor._flow)
+        editor._layout_panel.refresh()
+        texts = _texts(editor._layout_panel._off_grid)
+        assert texts[0] == "Chart" and "State Filter" not in texts
+        assert any(text.startswith("and 1 more") for text in texts)
+
     async def test_empty_grid_explains_itself(self, editor):
         editor.mode = "dashboard"
         assert "Every placed component has a tile." in _texts(editor._layout_panel._off_grid)

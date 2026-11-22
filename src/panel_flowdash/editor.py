@@ -3802,7 +3802,7 @@ class FlowDash(Viewer):
         self._add_button = sheet_button("add", "Add component", "fd-add-component")
         self._add_button.on_click(lambda _event: setattr(self._palette_sheet, "open", True))
         self._layout_button = sheet_button("tune", "Arrange tiles", "fd-arrange-tiles")
-        self._layout_button.on_click(lambda _event: setattr(self._layout_sheet, "open", True))
+        self._layout_button.on_click(lambda _event: self._open_layout_sheet())
         # Like the dialogs, the sheets take no room in the layout. The inspector's
         # sheet, which is always rendered, joins them only on a phone.
         self._sheet_host = pn.Column(
@@ -3821,6 +3821,10 @@ class FlowDash(Viewer):
         self._flow.on("node_clicked", self._on_phone_tap)
         self._flow.on("edge_clicked", self._on_phone_tap)
         self._inspector.param.watch(lambda _event: self._sync_inspector_sheet(), "collapsed")
+
+    def _open_layout_sheet(self):
+        self._layout_panel.refresh()
+        self._layout_sheet.open = True
 
     @pn.io.hold()
     def _on_phone_changed(self, event):

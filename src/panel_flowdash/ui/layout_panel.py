@@ -91,6 +91,10 @@ GRID_EDIT_CSS = """
 """
 
 
+# The components off the grid listed at most, so a large dashboard's list stays quick to build.
+MAX_OFF_GRID = 20
+
+
 def _caption(text: str, **kwargs) -> pmui.Typography:
     return pmui.Typography(text, variant="caption", sx={"color": "text.secondary"}, **kwargs)
 
@@ -117,6 +121,7 @@ class LayoutPanel(Viewer):
     def __init__(self, **params):
         super().__init__(**params)
         self._syncing = False
+        self._listed: list[OffGrid] | None = None
         self.band_select = pmui.RadioButtonGroup(
             options={}, size="small", sizing_mode="stretch_width", margin=(0, 0, 8, 0)
         )
@@ -166,13 +171,22 @@ class LayoutPanel(Viewer):
         return self._bands
 
     def _on_layout(self, _event):
-        if self.editor.editable and not self._syncing:
+        if self.editor.editable and not self._syncing and self._shown():
             self.refresh()
 
-    @param.depends("visible", watch=True)
-    def _on_visible(self):
-        if self.visible:
-            self.refresh()
+    def _shown(self) -> bool:
+        """Whether the list is on screen: in the sidecar's summary, or the phone's Layout sheet."""
+        editor = self.editor
+        inspector = getattr(editor, "_inspector", None)
+        if getattr(editor, "_phone", False):
+            sheet = getattr(editor, "_layout_sheet", None)
+            return sheet is not None and sheet.open
+        return (
+            inspector is not None
+            and inspector.visible
+            and not inspector.collapsed
+            and inspector._shown is None
+        )
 
     # ------------------------------------------------------------------
     # Screen sizes
@@ -224,14 +238,21 @@ class LayoutPanel(Viewer):
 
     @pn.io.hold()
     def refresh(self):
-        """Re-read the components off the grid."""
-        editor = self.editor
-        listed = off_grid(editor)
-        self._off_grid[:] = (
-            [self._off_grid_row(entry) for entry in listed]
-            if listed
-            else [_caption("Every placed component has a tile.")]
-        )
+        """Re-read the components off the grid, listing the first :data:`MAX_OFF_GRID`."""
+        listed = off_grid(self.editor)
+        if listed == self._listed and self._off_grid.objects:
+            return
+        self._listed = listed
+        rows: list[Viewable] = [self._off_grid_row(entry) for entry in listed[:MAX_OFF_GRID]]
+        if len(listed) > MAX_OFF_GRID:
+            rows.append(
+                _caption(
+                    f"and {len(listed) - MAX_OFF_GRID} more; select one on the canvas to "
+                    "show its tile from its Tile tab.",
+                    margin=(0, 0, 8, 0),
+                )
+            )
+        self._off_grid[:] = rows or [_caption("Every placed component has a tile.")]
 
     def _off_grid_row(self, entry: OffGrid) -> Viewable:
         icon = pn.pane.HTML(
