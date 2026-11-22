@@ -141,6 +141,7 @@ _BAR_CSS = """
   font-size: 12px; line-height: 18px; color: var(--mui-palette-text-secondary); white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; }
 .fd-cp-bar b { font-weight: 600; color: var(--mui-palette-text-primary); }
+.fd-cp-origin { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fd-cp-ok { color: var(--mui-palette-success-main, #2e7d32); }
 .fd-cp-error { color: var(--mui-palette-error-main, #d32f2f); }
 .fd-cp-warn { color: var(--mui-palette-warning-main, #ed6c02); }
@@ -158,7 +159,7 @@ _STRIP_CSS = """
   border-bottom: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.12));
   background: var(--mui-palette-background-paper, #fff); }
 :host { flex: none !important; }
-:host(.fd-code-panel-header) { height: 48px !important; min-height: 48px;
+:host(.fd-code-panel-header) { height: 48px !important; min-height: 48px; padding-right: 8px;
   border-top: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.12)); }
 /* The controls on the right keep their size; the title and the fields give way. */
 :host(.fd-code-panel-header) > * { flex: none; }
@@ -249,6 +250,9 @@ class ViewFrame(JSComponent):
     """
 
     object = Child()
+
+    # Charts sized to the container leave room for their axes inside the padding.
+    _stylesheets: t.ClassVar[list[str]] = [":host { padding: 8px 12px; box-sizing: border-box; }"]
 
     _esm = """
     export function render({ el, model }) {
@@ -636,7 +640,11 @@ class CodePanel(Viewer):
             css_classes=["fd-cp-footer", "fd-code-footer-bar"],
         )
         self._code_header = pn.pane.HTML(
-            "", margin=0, align="center", sizing_mode="stretch_width", stylesheets=[_BAR_CSS]
+            "",
+            margin=(0, 8, 0, 0),
+            align="center",
+            sizing_mode="stretch_width",
+            stylesheets=[_BAR_CSS],
         )
         self.format_button = pmui.Button(
             label="Format",
@@ -710,7 +718,12 @@ class CodePanel(Viewer):
             css_classes=["fd-cp-subheader"],
         )
         self._result_body = pn.Column(
-            margin=0, sizing_mode="stretch_both", scroll="y-auto", css_classes=["fd-code-result"]
+            margin=0,
+            sizing_mode="stretch_both",
+            scroll="y-auto",
+            # A scrollbar appearing does not narrow a chart sized to the pane.
+            styles={"scrollbar-gutter": "stable"},
+            css_classes=["fd-code-result"],
         )
         # Says the result does not match the draft, or that a run is in flight.
         self._stale_text = pn.pane.HTML(
@@ -1290,7 +1303,11 @@ class CodePanel(Viewer):
             (field_label(parameter) or self.field) if parameter is not None else "Nothing to edit"
         )
         origin = f"from {', '.join(sources)}" if sources else ""
-        return _bar(f"<b>{html.escape(label)}</b>", html.escape(origin))
+        origin = html.escape(origin)
+        return _bar(
+            f"<b>{html.escape(label)}</b>",
+            f'<span class="fd-cp-origin" title="{origin}">{origin}</span>' if origin else "",
+        )
 
     @staticmethod
     def _empty_html(spec: ComponentSpec) -> str:

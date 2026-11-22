@@ -1094,9 +1094,9 @@ class TestSpecTab:
         editor.open_spec_in_sidecar(query)
         panel = editor.code_panel
         panel.code.value_input = "p_year > 2015"
-        editor._inspector._node_tabs.active = 0
+        editor._inspector._node_tabs.active = editor._inspector._tab_labels.index("Settings")
         assert panel.code.value == "p_year > 2015"
-        editor._inspector._node_tabs.active = 1
+        editor._inspector._node_tabs.active = editor._inspector._tab_labels.index("Spec")
         assert spec_tab(editor).objects == [panel._layout] and panel.dirty
 
     def test_in_the_spec_tab_it_follows_the_selection(self, setup):

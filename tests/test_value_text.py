@@ -217,7 +217,7 @@ def test_value_popup_shows_type_name_and_tables(editor):
 def test_inspector_never_shows_secrets(editor):
     node = editor.add_component(NODE)
     select_on_canvas(editor._flow, node_id=node)
-    editor._inspector._node_tabs.active = 1
+    editor._inspector._node_tabs.active = editor._inspector._tab_labels.index("Data")
     text = _all_text(editor._inspector._data_column)
     _assert_no_secrets(text + _frame_text(editor._inspector._data_column))
     assert "SecretSource · turbines · turbines, farms" in text

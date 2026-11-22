@@ -162,7 +162,7 @@ def editor():
 def _data(editor, component):
     node = editor.add_component(component)
     select_on_canvas(editor._flow, node_id=node)
-    editor._inspector._node_tabs.active = 1
+    editor._inspector._node_tabs.active = editor._inspector._tab_labels.index("Data")
     return node, editor._inspector._data_column
 
 
@@ -279,8 +279,8 @@ async def test_text_preview_with_markdown_structure_is_markdown_without_margins(
     instance = editor._component_instances[node]
     instance.text = "**2 tables**\n\n- sales\n- <b>regions</b>"
     instance._preview_rev = 1
-    editor._inspector._node_tabs.active = 0
-    editor._inspector._node_tabs.active = 1
+    editor._inspector._node_tabs.active = editor._inspector._tab_labels.index("Settings")
+    editor._inspector._node_tabs.active = editor._inspector._tab_labels.index("Data")
     column = editor._inspector._data_column
     (pane,) = [o for o in column.select(pn.pane.HTML) if "fd-data-markdown" in o.css_classes]
     assert pane.margin == 0
@@ -366,9 +366,9 @@ async def test_data_tab_runs_hooks_only_while_shown(editor):
     select_on_canvas(editor._flow, node_id=node)
     assert instance.calls == []
     assert not len(editor._inspector._data_column)
-    editor._inspector._node_tabs.active = 1
+    editor._inspector._node_tabs.active = editor._inspector._tab_labels.index("Data")
     assert sorted(instance.calls) == ["note", "pipeline"]
-    editor._inspector._node_tabs.active = 0
+    editor._inspector._node_tabs.active = editor._inspector._tab_labels.index("Settings")
     instance._preview_rev += 1
     assert len(instance.calls) == 2
 
@@ -398,7 +398,7 @@ async def test_off_loop_preview_coalesces_and_drops_stale_results(editor, monkey
     monkeypatch.setattr(module, "set_curdoc", lambda doc: contextlib.nullcontext())
     instance = editor._component_instances[node]
 
-    inspector._node_tabs.active = 1
+    inspector._node_tabs.active = inspector._tab_labels.index("Data")
     instance._preview_rev += 1
     instance._preview_rev += 1
     # A burst of changes is one rebuild on the next tick.
@@ -440,9 +440,9 @@ async def test_pending_refresh_skips_hooks_once_the_tab_is_left(editor, monkeypa
     inspector._doc = doc
     instance = editor._component_instances[node]
 
-    inspector._node_tabs.active = 1
+    inspector._node_tabs.active = inspector._tab_labels.index("Data")
     (refresh,) = doc.callbacks
-    inspector._node_tabs.active = 0
+    inspector._node_tabs.active = inspector._tab_labels.index("Settings")
     refresh()
     assert instance.calls == []
     assert not len(inspector._data_column)

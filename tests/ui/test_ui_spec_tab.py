@@ -168,3 +168,26 @@ def test_a_definition_only_node_shows_its_definition_read_only(page):
     page.wait_for_timeout(300)
     expect(definition.locator(".ace_content")).not_to_contain_text("xtype")
     assert editor.code_panel.definition.readonly
+
+
+def test_undo_reaches_edits_made_before_a_move(page):
+    editor, query = make_editor()
+    page.set_viewport_size(WIDE)
+    serve_component(page, editor)
+    _select(page, editor, query)
+    page.locator(".fd-edit-spec").first.click(timeout=TIMEOUT)
+    code = page.locator(".fd-code-dock .fd-code-panel-editor")
+    expect(code.locator(".ace_content")).to_contain_text("p_year > 2014", timeout=TIMEOUT)
+    code.locator(".ace_content").click()
+    page.keyboard.press("ControlOrMeta+End")
+    page.keyboard.type(" and p_cap > 1")
+    wait_until(lambda: editor.code_panel.dirty, page, timeout=TIMEOUT)
+
+    page.locator(".fd-code-dock-toggle button").click()
+    moved = page.locator(".fd-spec-tab .fd-code-panel-editor")
+    expect(moved.locator(".ace_content")).to_contain_text("p_cap > 1", timeout=TIMEOUT)
+    moved.locator(".ace_content").click()
+    page.keyboard.press("ControlOrMeta+z")
+    wait_until(
+        lambda: _ace_text(page, "fd-code-panel-editor") == "p_year > 2014", page, timeout=TIMEOUT
+    )
