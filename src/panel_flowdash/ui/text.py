@@ -109,13 +109,17 @@ def markdown_pane(object: t.Any = "", **params) -> pn.pane.Markdown:
     return _NoMathMarkdown(object, **params)
 
 
-def markdown_renderer(preset: str = "commonmark") -> MarkdownIt:
-    """Return a Markdown renderer that shows raw HTML as typed and opens links in a new tab.
+def markdown_renderer(preset: str = "commonmark", new_tab: bool = True) -> MarkdownIt:
+    """Return a Markdown renderer that shows raw HTML as typed.
 
-    A link followed in the app's own tab would leave the dashboard and any unsaved
-    edits behind; a link to an anchor on the page stays in it.
+    With *new_tab* its links open in a new tab, since a link followed in the
+    app's own tab would leave the dashboard and any unsaved edits behind; a
+    link to an anchor on the page stays in it. Exported documents keep plain
+    links.
     """
     md = MarkdownIt(preset, {"html": False})
+    if not new_tab:
+        return md
 
     def link_open(renderer, tokens, idx, options, env):
         token = tokens[idx]

@@ -489,6 +489,12 @@ class TestSafety:
         assert "<li><strong>two</strong></li>" in rendered
         assert '<code class="language-sql">select 1' in rendered
 
+    def test_html_export_keeps_plain_links(self):
+        from panel_flowdash.export.html import markdown_html
+
+        rendered = markdown_html("[ok](https://example.com)")
+        assert '<a href="https://example.com">ok</a>' in rendered
+
     def test_notebook_markdown_cells_hold_no_html(self, editor):
         nbformat = pytest.importorskip("nbformat")
         editor.set_report({"blocks": [{"text": '<b onmouseover="x()">hi</b> [a](javascript:x)'}]})

@@ -36,7 +36,9 @@ _HUGE_INT = 10**_MAX_DIGITS
 # What all the placeholders of one text may add up to.
 _MAX_TOTAL = 20 * _MAX_FILL
 # Raw HTML is shown as text; math is never typeset since the HTML pane leaves it alone.
-_MARKDOWN = markdown_renderer("gfm-like")
+# Exports render with plain links; the app's own Markdown opens them in a new tab.
+_MARKDOWN = markdown_renderer("gfm-like", new_tab=False)
+_APP_MARKDOWN = markdown_renderer("gfm-like")
 
 _TEMPLATE_DOC = """
 Placeholders are filled from the connected `value` input: `{{ value }}` shows
@@ -243,9 +245,9 @@ def markdown_with_placeholders(
             if token.children:
                 walk(token.children)
 
-    tokens = _MARKDOWN.parse(pattern.sub(mark, template or ""))
+    tokens = _APP_MARKDOWN.parse(pattern.sub(mark, template or ""))
     walk(tokens)
-    rendered = _MARKDOWN.renderer.render(tokens, _MARKDOWN.options, {})
+    rendered = _APP_MARKDOWN.renderer.render(tokens, _APP_MARKDOWN.options, {})
     if value_class is None:
         return rendered
     return rendered.replace(_VALUE_OPEN, f'<span class="{html.escape(value_class)}">').replace(
