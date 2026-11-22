@@ -626,6 +626,9 @@ _FAILED_NODE_STYLE = {
 # use. Importing it back restores the stored item, or drops it.
 RESTRICTED_COMPONENT_ID = "flowdash:restricted"
 
+# What an editor can show: the canvas or the tile grid, the Explore view or the Report view.
+SURFACES = ("workspace", "explore", "report")
+
 # Space between a group's nodes and its frame, in px.
 _GROUP_PADDING = 24
 # The width of a collapsed group's card, as the canvas stylesheet sets it.
@@ -1175,12 +1178,24 @@ class FlowDash(Viewer):
         on the left. Only meaningful while `editable`.""",
     )
 
+    surface = param.Selector(
+        default="workspace",
+        objects=list(SURFACES),
+        doc="""
+        What the editor shows, in view and in edit mode: 'workspace' for the
+        canvas or the tile grid (as `mode` and `editable` say), 'explore' for
+        the Explore view, the dashboard's turns as a feed with the outputs
+        each made (see :mod:`panel_flowdash.explore`), or 'report' for the
+        Report view, the dashboard read as a document (see
+        :mod:`panel_flowdash.report`). The views of the tiles move between
+        them, so only one is ever on screen.""",
+    )
+
     explore = param.Boolean(
         default=False,
         doc="""
-        Whether the Explore view is shown in place of the canvas and the tile
-        grid, in view and in edit mode: the dashboard's turns as a feed, each
-        with the outputs it made, live. See :mod:`panel_flowdash.explore`.""",
+        Whether the Explore view is shown: the same as ``surface == 'explore'``.
+        Setting it to False returns to the workspace.""",
     )
 
     edited = param.Event(doc="Triggered after each edit is recorded in its turn.")
@@ -1449,6 +1464,7 @@ class FlowDash(Viewer):
         self._turn_log = TurnLog()
         self._origins: dict[str, str] = {}
         self._explore_feed = None
+        self._report_view = None
         # The dashboard's parameters by name, each naming its node by instance id.
         self._parameters: dict[str, DashboardParameter] = {}
         # The component each parameter's node had when it was declared or loaded.
@@ -2779,7 +2795,7 @@ class FlowDash(Viewer):
         )
         title = self._instance_title(instance_id)
         caption = "How this was made" if turn is origin else "How this was changed"
-        if self._inspector.visible:
+        if self._inspector.visible and self.surface == "workspace":
             span, self._span_view = self._span_view, None
             self._close_inspection_dialog()
             self._inspector.show_extra(caption, title, body, span.release if span else None)
@@ -3592,34 +3608,57 @@ class FlowDash(Viewer):
             self._explore_feed = ExploreFeed(self)
         return self._explore_feed
 
-    @pn.io.hold()
+    @property
+    def report_view(self):
+        """The :class:`~panel_flowdash.ui.report_view.ReportView` the Report view shows, made on first use."""
+        if self._report_view is None:
+            from panel_flowdash.ui.report_view import ReportView
+
+            self._report_view = ReportView(editor=self)
+        return self._report_view
+
     @param.depends("explore", watch=True)
-    def _show_explore(self):
-        """Show the Explore view or the canvas and tile grid; never both, as they share the tiles' views."""
+    def _explore_to_surface(self):
+        if self.explore:
+            self.surface = "explore"
+        elif self.surface == "explore":
+            self.surface = "workspace"
+
+    @pn.io.hold()
+    @param.depends("surface", watch=True)
+    def _show_surface(self):
+        """Show the Explore view, the Report view or the workspace; one at a time, as they share the tiles' views."""
+        surface = self.surface
+        if self.explore != (surface == "explore"):
+            self.explore = surface == "explore"
         view = self._view
         self._sync_min_width()
-        if self.explore:
-            self.fullscreen = False
-            feed = self.explore_feed
-            view[1] = feed
-            self._status_bar.visible = False
-            feed.shown = True
-        else:
-            if self._explore_feed is not None:
-                self._explore_feed.shown = False
+        away = {"explore": self._explore_feed, "report": self._report_view}
+        for name, shown in away.items():
+            if shown is not None and name != surface:
+                shown.shown = False
+        if surface == "workspace":
             view[1] = self._editor_row
             self._status_bar.visible = self.editable
             self._sync_tile_drag()
+            return
+        self.fullscreen = False
+        shown = self.explore_feed if surface == "explore" else self.report_view
+        view[1] = shown
+        self._status_bar.visible = False
+        shown.shown = True
 
     @param.depends("editable", watch=True)
     def _sync_min_width(self):
-        """Let the feed and the dashboard narrow to the window; only the canvas and its panels need the room."""
-        self._view.min_width = None if self.editable and not self.explore else 0
+        """Let the feed, the report and the dashboard narrow to the window; only the canvas and its panels need the room."""
+        self._view.min_width = None if self.editable and self.surface == "workspace" else 0
 
     @param.depends("edited", watch=True)
     def _sync_explore(self):
         if self._explore_feed is not None:
             self._explore_feed._schedule()
+        if self._report_view is not None:
+            self._report_view.schedule()
 
     def _on_fullscreen_changed(self, event):
         self.fullscreen = event.new
@@ -4082,7 +4121,7 @@ class FlowDash(Viewer):
         self._inspector.visible = showing_canvas
         self._layout_panel.visible = interactive and showing_grid and not split
         self._panel_slot.visible = self._inspector.visible or self._layout_panel.visible
-        self._status_bar.visible = self.editable and not self.explore
+        self._status_bar.visible = self.editable and self.surface == "workspace"
         self._split_view.events.active = split
         self._view_controls.param.update(beside_canvas=split, editing=interactive and showing_grid)
         if split != self._split_shown:
@@ -4157,7 +4196,9 @@ class FlowDash(Viewer):
 
     @property
     def _grid_on_screen(self) -> bool:
-        return not self.explore and (self.mode in ("dashboard", "split") or not self.editable)
+        return self.surface == "workspace" and (
+            self.mode in ("dashboard", "split") or not self.editable
+        )
 
     def _on_split_collapsed(self, pane: int):
         """Fall back to the tab of the pane left over, keeping the split's sizes for next time."""
@@ -4256,7 +4297,7 @@ class FlowDash(Viewer):
         )
 
     def _code_panel_fits(self) -> bool:
-        showing_canvas = self.mode in ("wiring", "split") and not self.explore
+        showing_canvas = self.mode in ("wiring", "split") and self.surface == "workspace"
         return self._code_panel_allowed() and showing_canvas
 
     def _primary_spec_field(self, instance_id: str) -> str | None:
@@ -4310,8 +4351,7 @@ class FlowDash(Viewer):
         """
         if not self._code_panel_allowed():
             return False
-        if self.explore:
-            self.explore = False
+        self.surface = "workspace"
         if self.mode not in ("wiring", "split"):
             self.mode = "split"
         return self.open_code_panel(instance_id, field)
@@ -4442,7 +4482,7 @@ class FlowDash(Viewer):
             if self.code_panel_open and not self._code_panel.collapsed:
                 self._sync_code_dock()
 
-    @param.depends("mode", "explore", watch=True)
+    @param.depends("mode", "surface", watch=True)
     def _on_code_dock_tab(self):
         """Hide the code panel outside the Dataflow and Split tabs, and show it again there."""
         self._sync_code_dock()
@@ -6832,6 +6872,8 @@ class FlowDash(Viewer):
             self._history.opened()
         if self._explore_feed is not None:
             self._explore_feed.sync()
+        if self._report_view is not None:
+            self._report_view.schedule()
 
     @contextmanager
     def _quiet_history(self):

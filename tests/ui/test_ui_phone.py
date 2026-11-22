@@ -114,8 +114,8 @@ def test_the_top_bar_fits_a_phone_screen(page, edit):
 @pytest.mark.parametrize(
     ("edit", "entries"),
     [
-        (False, ["Explore", "Edit", "Refresh now", "Full screen"]),
-        (True, ["Explore", "Layout", "Settings", "Done editing"]),
+        (False, ["Explore", "Report", "Edit", "Refresh now", "Full screen"]),
+        (True, ["Explore", "Report", "Layout", "Settings", "Done editing"]),
     ],
     ids=["view", "edit"],
 )

@@ -510,3 +510,39 @@ class TestOps:
             "report.blocks[6].show",
             "'intro' has no output to show as a table, so it shows nothing.",
         ) in warnings
+
+
+class TestReportView:
+    def test_values_are_marked_as_chips_and_stay_literal(self, editor):
+        html = render_report_text(editor, "In {{ m.label }} x", value_class="v")
+        assert html == '<p>In <span class="v">&lt;b&gt;EMEA&lt;/b&gt;</span> x</p>\n'
+
+    def test_surface_and_explore_follow_each_other(self, editor):
+        editor.surface = "report"
+        assert not editor.explore and editor.report_view.shown
+        editor.explore = True
+        assert editor.surface == "explore" and not editor.report_view.shown
+        editor.explore = False
+        assert editor.surface == "workspace"
+
+    def test_authored_report_blocks(self, editor):
+        editor.surface = "report"
+        view = editor.report_view
+        classes = [obj.css_classes for obj in view._blocks.objects]
+        assert any("fd-report-pending" in c for c in classes)
+        assert not view._notice.visible
+        assert [item["label"] for item in view._contents.items] == [
+            "Summary",
+            "By region",
+            "Which products drove the drop",
+        ]
+        assert view._contents.items[-1]["badge"] == "Not run"
+        assert view._texts[0][0].object == (
+            '<p>Revenue is <span class="fd-report-value">1,234,568</span>.</p>\n'
+        )
+
+    def test_derived_report_shows_the_notice(self, plain_editor):
+        plain_editor.surface = "report"
+        view = plain_editor.report_view
+        assert view._notice.visible and view._customize.disabled
+        assert view._filters == ["pick"]

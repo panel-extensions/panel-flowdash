@@ -484,17 +484,18 @@ def _filler(editor: FlowDash) -> Callable[[re.Match], str]:
     return fill
 
 
-def render_report_text(editor: FlowDash, text: str) -> str:
+def render_report_text(editor: FlowDash, text: str, value_class: str | None = None) -> str:
     """Render a text block as HTML, filling its ``{{ node.port }}`` placeholders from current outputs.
 
     Placeholders are filled as the Markdown component fills its own: after
     the Markdown is parsed, so a value is literal text, and never in a link or
     image URL. A placeholder naming no node or output, a restricted node or a
-    failed output is left empty.
+    failed output is left empty. With *value_class* each value in the text is
+    a ``<span>`` of that class, which the Report view shows as a chip.
     """
     from panel_flowdash.text_components import markdown_with_placeholders
 
-    return markdown_with_placeholders(text, PLACEHOLDER, _filler(editor))
+    return markdown_with_placeholders(text, PLACEHOLDER, _filler(editor), value_class)
 
 
 def fill_report_text(editor: FlowDash, text: str) -> str:
