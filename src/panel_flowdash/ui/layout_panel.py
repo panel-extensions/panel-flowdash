@@ -285,4 +285,6 @@ class LayoutPanel(Viewer):
 
     def __panel__(self):
         """Render the sections, as the sidecar does while nothing is selected."""
-        return pn.Column(self._bands, self.off_grid_section, margin=0, sizing_mode="stretch_width")
+        return pn.Column(
+            self._bands, self.off_grid_section, margin=(0, 16, 16, 16), sizing_mode="stretch_width"
+        )

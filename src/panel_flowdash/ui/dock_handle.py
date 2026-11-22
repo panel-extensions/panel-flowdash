@@ -71,13 +71,31 @@ class DockHandle(JSComponent):
       function extent(rect) {
         return vertical ? rect.width : rect.height
       }
-      function clamp(size, target) {
-        const parent = target.parentElement || (target.getRootNode() && target.getRootNode().host)
-        const room = parent ? extent(parent.getBoundingClientRect()) : (vertical ? window.innerWidth : window.innerHeight)
-        const high = Math.min(room * model.max_ratio, model.max_size == null ? Infinity : model.max_size)
-        return Math.round(Math.max(model.min_size, Math.min(size, high)))
+      function highest(target) {
+        // A panel docked to the side may take a share of the window; one docked
+        // under the page a share of the layout holding it.
+        let room = window.innerWidth
+        if (!vertical) {
+          const parent = target.parentElement || (target.getRootNode() && target.getRootNode().host)
+          room = parent ? extent(parent.getBoundingClientRect()) : window.innerHeight
+        }
+        return Math.round(Math.min(room * model.max_ratio, model.max_size == null ? Infinity : model.max_size))
       }
+      function clamp(size, target) {
+        return Math.round(Math.max(model.min_size, Math.min(size, highest(target))))
+      }
+      function describe(size) {
+        const target = dock()
+        bar.setAttribute("aria-valuemin", String(model.min_size))
+        if (target) bar.setAttribute("aria-valuemax", String(highest(target)))
+        if (size != null) bar.setAttribute("aria-valuenow", String(Math.round(size)))
+      }
+      requestAnimationFrame(() => {
+        const target = dock()
+        describe(target ? extent(target.getBoundingClientRect()) : model.size)
+      })
       function resize(target, size) {
+        describe(size)
         if (vertical) {
           target.style.width = `${size}px`
           target.style.minWidth = `${size}px`

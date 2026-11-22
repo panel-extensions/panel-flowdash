@@ -246,6 +246,13 @@ def test_a_tile_dropped_above_the_grid_goes_to_an_empty_top_bar(page):
     wait_until(lambda: _areas(editor)[TOP] == ["heading"], page, timeout=8000)
 
 
+_FOCUSED = """() => {
+  let el = document.activeElement
+  while (el?.shadowRoot?.activeElement) { el = el.shadowRoot.activeElement }
+  return el?.textContent
+}"""
+
+
 def test_tiles_keep_their_sizes_when_one_moves_to_the_top_bar(page):
     page.set_viewport_size({"width": 1400, "height": 900})
     editor = _editor()
@@ -261,6 +268,8 @@ def test_tiles_keep_their_sizes_when_one_moves_to_the_top_bar(page):
     wait_until(lambda: _areas(editor)[TOP] == ["region", "kpi"], page, timeout=8000)
     page.wait_for_timeout(500)
     wait_until(lambda: tile_sizes_match(page, editor), page, timeout=8000)
+    # The pressed button left with the tile's area, so the focus moves to the first move left.
+    wait_until(lambda: "Move to" in (page.evaluate(_FOCUSED) or ""), page, timeout=8000)
 
 
 def test_tiles_keep_their_sizes_when_a_component_is_removed_in_the_split(page):

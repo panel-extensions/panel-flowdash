@@ -188,6 +188,9 @@ class TileOptions:
 
     def _objects(self, area: str | None) -> list[Viewable]:
         moves = move_buttons(self.editor, self.item, then=self._refocus, margin=(4, 0, 0, 0))
+        # A button with a tooltip cannot be given the focus, see _refocus.
+        for button in moves:
+            button.description = None
         self._moves[:] = moves
         if area != GRID:
             where = AREA_NAMES.get(area, "sidebar")

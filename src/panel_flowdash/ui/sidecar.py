@@ -74,9 +74,21 @@ class SidecarFold(param.Parameterized):
         self.user_open = open_
         if open_:
             self._latest = "sidecar"
-            self._override = True
-            if self.drawer_open and self._shares_slot() and self.on_close_drawer is not None:
-                self.on_close_drawer()
+            # On a phone the drawer covers the page and the sidecar is a sheet over it.
+            if not self._phone():
+                self._override = True
+                if self.drawer_open and self._shares_slot() and self.on_close_drawer is not None:
+                    self.on_close_drawer()
+        self.sync()
+
+    def left_phone(self):
+        """Open the column again after the phone layout, whose sheet the person may have closed.
+
+        Beside an open drawer in a window where they share a slot, the drawer keeps it.
+        """
+        self.user_open = True
+        if self.drawer_open:
+            self._latest = "drawer"
         self.sync()
 
     def drawer_changed(self, open_: bool, width: int = 0):
@@ -95,6 +107,10 @@ class SidecarFold(param.Parameterized):
 
     def window_resized(self):
         self._override = False
+        if self.drawer_open and self._shares_slot():
+            # Narrowed until the two share one slot: the drawer, the person's latest
+            # request beside an open sidecar, keeps it.
+            self._latest = "drawer"
         self.sync()
 
     def on_collapsed(self, collapsed: bool):
@@ -138,10 +154,19 @@ class SidecarFold(param.Parameterized):
         minimum = SPLIT_MIN_WIDTH if self.editor.mode == "split" else CONTENT_MIN_WIDTH
         return room >= minimum
 
+    def _phone(self) -> bool:
+        return bool(getattr(self.editor, "_phone", False))
+
     def folded(self) -> bool:
-        """Whether the sidecar is folded, from the person's choice, the drawer and the budget."""
+        """Whether the sidecar is folded, from the person's choice, the drawer and the budget.
+
+        On a phone it is a bottom sheet over the page, which the person or the
+        drawer opening over it closes.
+        """
         if not self.user_open:
             return True
+        if self._phone():
+            return self.drawer_open and self._latest == "drawer"
         if (
             self.drawer_open
             and self._latest == "drawer"

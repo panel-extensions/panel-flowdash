@@ -1,5 +1,6 @@
 """UI tests: one selection and one sidecar across the tabs, its tabs, and Escape closing one thing at a time."""
 
+import json
 import re
 
 import pytest
@@ -9,6 +10,7 @@ from panel_flowdash import DashboardItem
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.component_library import normalize_components
 from panel_flowdash.dashboard_store import DashboardEdge
+from panel_flowdash.ui.split_view import STORAGE_KEY
 from tests.test_code_panel import COMPONENTS as CODE_COMPONENTS, make_editor
 from tests.ui.test_ui_command_palette import _store_with
 from tests.ui.test_ui_editor_split_mode import _editor, _item
@@ -228,3 +230,63 @@ def test_the_sidecar_opens_each_kind_of_component_on_its_last_tab(page):
     wait_until(lambda: editor.mode == "split", page, timeout=TIMEOUT)
     _shows_node(page, editor, other)
     expect(tab("Data")).to_have_attribute("aria-selected", "true")
+
+
+def _sidecar_box(page):
+    return page.locator(".fd-sidecar").bounding_box()
+
+
+def test_the_sidecar_is_resized_by_dragging_or_the_keyboard_and_remembers_it(page):
+    editor, _ids = _editor()
+    page.set_viewport_size(WIDE)
+    serve_component(page, editor)
+    handle = page.get_by_role("separator", name="Resize the side panel")
+    expect(handle).to_have_attribute("aria-valuenow", "367", timeout=TIMEOUT)
+    expect(handle).to_have_attribute("aria-valuemin", "307")
+    expect(handle).to_have_attribute("aria-valuemax", "567")
+
+    box = handle.bounding_box()
+    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    page.mouse.move(x, y)
+    page.mouse.down()
+    page.mouse.move(x - 100, y, steps=8)
+    page.mouse.up()
+    wait_until(lambda: editor._inspector.width == 460, page, timeout=TIMEOUT)
+    wait_until(lambda: abs(_sidecar_box(page)["width"] - 467) <= 1, page, timeout=TIMEOUT)
+
+    handle.focus()
+    page.keyboard.press("ArrowLeft")
+    wait_until(lambda: editor._inspector.width == 484, page, timeout=TIMEOUT)
+    page.keyboard.press("ArrowRight")
+    page.keyboard.press("ArrowRight")
+    wait_until(lambda: editor._inspector.width == 436, page, timeout=TIMEOUT)
+    expect(handle).to_have_attribute("aria-valuenow", "443")
+    # Never past its bounds.
+    for _ in range(12):
+        page.keyboard.press("ArrowRight")
+    wait_until(lambda: editor._inspector.width == 300, page, timeout=TIMEOUT)
+
+    stored = json.loads(editor._split_view.storage.value)
+    assert stored["sidecar_width"] == 300
+    # Kept across tabs.
+    page.get_by_role("button", name="Layout").click()
+    wait_until(lambda: editor.mode == "dashboard", page, timeout=TIMEOUT)
+    wait_until(lambda: abs(_sidecar_box(page)["width"] - 307) <= 1, page, timeout=TIMEOUT)
+
+
+def test_a_stored_sidecar_width_applies_in_a_new_session(page):
+    editors = []
+
+    def factory():
+        editor, _ids = _editor()
+        editors.append(editor)
+        return editor
+
+    page.set_viewport_size(WIDE)
+    serve_component(page, factory)
+    page.evaluate(f"localStorage.setItem({STORAGE_KEY!r}, JSON.stringify({{sidecar_width: 500}}))")
+    page.reload()
+    wait_until(
+        lambda: len(editors) == 2 and editors[1]._inspector.width == 500, page, timeout=TIMEOUT
+    )
+    wait_until(lambda: abs(_sidecar_box(page)["width"] - 507) <= 1, page, timeout=TIMEOUT)

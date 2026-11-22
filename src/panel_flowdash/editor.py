@@ -124,7 +124,7 @@ from panel_flowdash.turns import (
 from panel_flowdash.ui import tile_layout
 from panel_flowdash.ui.code_panel import HEADER_HEIGHT, CodePanel
 from panel_flowdash.ui.controls_bar import ControlsBar
-from panel_flowdash.ui.dashboard_bar import DashboardBar
+from panel_flowdash.ui.dashboard_bar import HIDE_ON_PHONE, PHONE_BREAKPOINT, DashboardBar
 from panel_flowdash.ui.dock_handle import DockHandle
 from panel_flowdash.ui.fullscreen import (
     PRESENTATION_CSS,
@@ -175,6 +175,13 @@ from panel_flowdash.ui.palette import (
 from panel_flowdash.ui.provenance import provenance_objects
 from panel_flowdash.ui.roles import component_role
 from panel_flowdash.ui.settings_dialog import SettingsDialog
+from panel_flowdash.ui.sheet import (
+    ABOVE_SHEET_CLASS,
+    SheetLabel,
+    bottom_sheet,
+    inspector_sheet,
+    sheet_button,
+)
 from panel_flowdash.ui.sidecar import SidecarFold
 from panel_flowdash.ui.split_view import SplitView
 from panel_flowdash.ui.states import StartCard
@@ -405,6 +412,9 @@ _NODE_DEFAULTS = {
     "deletable": True,
 }
 _SIDE_PANEL_WIDTH = 250
+# A node added on a phone is shown at least this large, this far below the canvas's top.
+_PHONE_REVEAL_ZOOM = 0.75
+_PHONE_REVEAL_TOP = 24
 
 # How long after the canvas moves to another tab an empty selection from its page is
 # taken as the old view letting go of it rather than the person clearing it.
@@ -424,6 +434,18 @@ _CANVAS_MIN_WIDTH_DOCKED = 560
 # Docked to the right, the panel starts this wide and is never dragged narrower.
 _CODE_PANEL_WIDTH = 520
 _CODE_PANEL_MIN_SIDE_WIDTH = 400
+
+
+def _has_selection(selection: dict | None) -> bool:
+    selection = selection or {}
+    return bool(selection.get("nodes") or selection.get("edges"))
+
+
+# Touch targets on a phone.
+_FLOW_PHONE_CSS = (
+    f"@media (max-width: {PHONE_BREAKPOINT - 0.05}px) {{ "
+    ".react-flow__controls-button { width: 44px; height: 44px; } }"
+)
 
 _FLOW_STYLESHEET = """\
 /* The canvas shares its height with the code panel docked under it. */
@@ -1443,6 +1465,8 @@ class FlowDash(Viewer):
         # The tab Split returns to when it is toggled off.
         self._mode_before_split = "wiring"
         self._split_shown = False
+        self._phone = False
+        self._phone_tile_tapped = False
         # Where the canvas is shown ('wiring', 'split' or None when hidden); moving it
         # renders it afresh, and the page then reports an empty selection.
         self._canvas_host: str | None = None
@@ -1947,7 +1971,7 @@ class FlowDash(Viewer):
             sizing_mode="stretch_both",
             min_height=_CANVAS_MIN_HEIGHT,
             css_classes=[f"fd-canvas-{id(self)}"],
-            stylesheets=[_FLOW_STYLESHEET],
+            stylesheets=[_FLOW_STYLESHEET, _FLOW_PHONE_CSS],
             popup_trigger=self.popup_trigger,
             popup_hover_delay=self.popup_hover_delay,
             drop_types=[_PALETTE_DRAG_TYPE, _FILES_DROP_TYPE],
@@ -3528,6 +3552,7 @@ class FlowDash(Viewer):
             sizing_mode="stretch_height",
             margin=0,
             sx={"borderRight": 1, "borderColor": "divider"},
+            stylesheets=[HIDE_ON_PHONE],
         )
         self._start_card = StartCard(editor=self)
         self._empty_hint = self._start_card.__panel__()
@@ -3595,7 +3620,11 @@ class FlowDash(Viewer):
 
         # The sidecar's slot, hidden with it, since an empty Column still takes
         # the width of its scroll button.
-        self._panel_slot = pn.Column(self._inspector, margin=0, sizing_mode="stretch_height")
+        self._panel_slot = pn.Column(
+            self._inspector, margin=0, sizing_mode="stretch_height", stylesheets=[HIDE_ON_PHONE]
+        )
+
+        self._build_phone_sheets()
 
         self._sync_toolbar_extra()
         self._sync_toolbar_state()
@@ -3621,12 +3650,126 @@ class FlowDash(Viewer):
             self._status_bar,
             self._fullscreen_overlay,
             self._fullscreen_controller,
+            self._sheet_host,
             self._tile_drag,
             self._split_view.storage,
             self._card_bridge,
             sizing_mode="stretch_both",
             stylesheets=[PRESENTATION_CSS],
         )
+
+    def _build_phone_sheets(self):
+        """Make the bottom sheets and buttons standing in for the side panels on a phone."""
+        self._palette_sheet, self._palette_sheet_body = bottom_sheet(
+            "Add component", "fd-palette-sheet", "85dvh"
+        )
+        self._layout_sheet, self._layout_sheet_body = bottom_sheet(
+            "Arrange tiles", "fd-layout-sheet", "70dvh"
+        )
+        self._inspector_sheet = inspector_sheet()
+        self._inspector_label = SheetLabel(label="Inspector", width=0, height=0, margin=0)
+        self._add_button = sheet_button("add", "Add component", "fd-add-component")
+        self._add_button.on_click(lambda _event: setattr(self._palette_sheet, "open", True))
+        self._layout_button = sheet_button("tune", "Arrange tiles", "fd-arrange-tiles")
+        self._layout_button.on_click(lambda _event: setattr(self._layout_sheet, "open", True))
+        # Like the dialogs, the sheets take no room in the layout. The inspector's
+        # sheet, which is always rendered, joins them only on a phone.
+        self._sheet_host = pn.Column(
+            self._add_button,
+            self._layout_button,
+            self._palette_sheet,
+            self._layout_sheet,
+            margin=0,
+            width=0,
+            height=0,
+            sizing_mode="fixed",
+        )
+        self._dashboard_bar._phone_query.param.watch(self._on_phone_changed, "phone")
+        self._flow.param.watch(self._on_phone_selection, "selection")
+        # A tap on the selected node or connection opens a dismissed sheet again.
+        self._flow.on("node_clicked", self._on_phone_tap)
+        self._flow.on("edge_clicked", self._on_phone_tap)
+        self._inspector.param.watch(lambda _event: self._sync_inspector_sheet(), "collapsed")
+
+    @pn.io.hold()
+    def _on_phone_changed(self, event):
+        """Move the palette and the side panels into bottom sheets below the phone breakpoint, and back."""
+        phone = self._phone = event.new
+        self._palette_sheet.open = self._layout_sheet.open = False
+        # Sized for where they go before they move, so the columns they leave
+        # and join keep their own sizing.
+        self._palette_panel.touch = phone
+        self._inspector.sheet = phone
+        if phone:
+            self._side_panel[:] = []
+            self._panel_slot[:] = []
+            self._palette_sheet_body[:] = [self._palette_section]
+            self._layout_sheet_body[:] = [self._layout_panel]
+            self._inspector_sheet[:] = [self._inspector_label, self._inspector]
+            self._sheet_host.append(self._inspector_sheet)
+        else:
+            self._sheet_host.remove(self._inspector_sheet)
+            self._inspector_sheet[:] = []
+            self._layout_sheet_body[:] = []
+            self._palette_sheet_body[:] = []
+            self._side_panel[:] = [self._palette_section]
+            self._panel_slot[:] = [self._inspector]
+            # A sheet dismissed on the phone is not a fold of the column.
+            self._sidecar.left_phone()
+        self._sync_min_width()
+        self._apply_mode_state()
+        if self._inspector.visible:
+            # Fit to the canvas's new width once the browser has laid it out.
+            pn.state.execute(self._fit_canvas, schedule=True)
+
+    def _sync_phone_panels(self, showing_canvas: bool, layout: bool):
+        """Show the side panels beside the workspace, or on a phone the buttons opening their sheets."""
+        phone = self._phone
+        self._side_panel.visible = showing_canvas and not phone
+        self._panel_slot.visible = not phone and self._inspector.visible
+        # Shown on phones only, by their stylesheet.
+        self._add_button.visible = showing_canvas and self.editable and not self.preview
+        self._layout_button.visible = layout
+        if not showing_canvas:
+            self._palette_sheet.open = False
+        if not layout:
+            self._layout_sheet.open = False
+        self._sync_inspector_sheet()
+
+    def _on_phone_tap(self, _payload):
+        if self._phone:
+            self._inspector.collapsed = False
+
+    def _on_phone_selection(self, event):
+        # A new selection opens the sheet again after it was dismissed.
+        if self._phone and _has_selection(event.new) and event.new != event.old:
+            self._inspector.collapsed = False
+        self._sync_inspector_sheet()
+
+    def _reveal_above_sheet(self, instance_id: str):
+        """Pan the canvas so the node of *instance_id* sits at its top, above the inspector's sheet."""
+        node = next((n for n in self._flow.nodes if n["id"] == instance_id), None)
+        width = self._split_view.storage.window_width
+        if node is None or not width:
+            return
+        zoom = max((self._flow.viewport or {}).get("zoom") or 1, _PHONE_REVEAL_ZOOM)
+        x = width / 2 - (node["position"]["x"] + CARD_WIDTH / 2) * zoom
+        y = _PHONE_REVEAL_TOP - node["position"]["y"] * zoom
+        self._flow.viewport = {"x": x, "y": y, "zoom": zoom}
+
+    def _sync_inspector_sheet(self):
+        """Open the inspector's sheet on a phone while something is selected and it is not dismissed."""
+        inspector = self._inspector
+        is_open = self._inspector_sheet.open = (
+            self._phone
+            and inspector.visible
+            and not inspector.collapsed
+            and _has_selection(self._flow.selection)
+            # In the Layout tab it opens for a tile tapped there, not over the grid at once.
+            and (self.mode != "dashboard" or self._phone_tile_tapped)
+        )
+        classes = [c for c in self._add_button.css_classes if c != ABOVE_SHEET_CLASS]
+        self._add_button.css_classes = [*classes, ABOVE_SHEET_CLASS] if is_open else classes
 
     @property
     def explore_feed(self):
@@ -3659,7 +3802,8 @@ class FlowDash(Viewer):
     @param.depends("editable", watch=True)
     def _sync_min_width(self):
         """Let the feed and the dashboard narrow to the window; only the canvas and its panels need the room."""
-        self._view.min_width = None if self.editable and not self.explore else 0
+        canvas = self.editable and not self.explore and not self._phone
+        self._view.min_width = None if canvas else 0
 
     @param.depends("edited", watch=True)
     def _sync_explore(self):
@@ -4019,7 +4163,10 @@ class FlowDash(Viewer):
         if self.mode == "dashboard":
             # Entered from the Layout tab, the sidecar shows the tile's options first.
             self._inspector.open_tab(instance_id, TILE)
+            self._phone_tile_tapped = True
         self._select_node(instance_id)
+        if self._phone:
+            self._sync_inspector_sheet()
 
     def _clear_selection(self) -> bool:
         """Clear the selection on the canvas and the tile grid; return whether there was one.
@@ -4116,11 +4263,10 @@ class FlowDash(Viewer):
         showing_canvas = split or not showing_grid
         self._dashboard_bar.visible = self.toolbar and not self.fullscreen
         self._dashboard_bar.sync()
-        self._side_panel.visible = showing_canvas
         # The sidecar is one panel in every tab that edits: Dataflow, Split and Layout.
         self._inspector.visible = showing_canvas or (interactive and showing_grid)
         self._layout_panel.visible = interactive and showing_grid and not split
-        self._panel_slot.visible = self._inspector.visible
+        self._sync_phone_panels(showing_canvas, self._layout_panel.visible)
         self._status_bar.visible = self.editable and not self.explore
         self._split_view.events.active = split
         self._view_controls.param.update(beside_canvas=split, editing=interactive and showing_grid)
@@ -4185,6 +4331,7 @@ class FlowDash(Viewer):
 
     @param.depends("mode", watch=True)
     def _remember_mode(self):
+        self._phone_tile_tapped = False
         # A tab chosen before the browser's preferences arrived is not overridden by them.
         self._restore_split = False
         if self.mode != "split":
@@ -6666,13 +6813,7 @@ class FlowDash(Viewer):
     def disconnect(self, source_id: str, source_port: str, target_id: str, target_port: str):
         """Remove the edge between two ports."""
         mapping = (source_id, source_port, target_id, target_port)
-        self._dataflow_graph.remove_edge(*mapping)
-        for edge_id, existing in list(self._edge_id_map.items()):
-            if existing == mapping:
-                del self._edge_id_map[edge_id]
-                self._drop_edge_editor(edge_id)
-                with self._muted_canvas():
-                    self._flow.remove_edge(edge_id)
+        self._remove_edge(mapping)
         self._sync_card_connections(target_id)
         self._settle_nodes()
         self._record_edit(
@@ -6680,6 +6821,31 @@ class FlowDash(Viewer):
             op="disconnect",
             args=self._edge_args(*mapping),
         )
+
+    @pn.io.hold()
+    def disconnect_input(self, instance_id: str, port: str):
+        """Remove every edge into the input *port* of *instance_id*, as one edit."""
+        mappings = [m for m in self._edge_id_map.values() if m[2] == instance_id and m[3] == port]
+        if not mappings:
+            return
+        for mapping in mappings:
+            self._remove_edge(mapping)
+        self._sync_card_connections(instance_id)
+        self._settle_nodes()
+        self._record_edit(
+            *(self._connect_label("Disconnected", *m) for m in mappings),
+            op="disconnect",
+            args=self._edge_args(*mappings[0]),
+        )
+
+    def _remove_edge(self, mapping: tuple[str, str, str, str]):
+        self._dataflow_graph.remove_edge(*mapping)
+        for edge_id, existing in list(self._edge_id_map.items()):
+            if existing == mapping:
+                del self._edge_id_map[edge_id]
+                self._drop_edge_editor(edge_id)
+                with self._muted_canvas():
+                    self._flow.remove_edge(edge_id)
 
     @pn.io.hold()
     def clear(self):
@@ -8055,8 +8221,15 @@ class FlowDash(Viewer):
 
     def _on_palette_clicked(self, item):
         component_id = item.get("component_id") if isinstance(item, dict) else None
-        if component_id is not None:
-            self._add_from_ui(component_id, config=item.get("config"))
+        if component_id is None:
+            return
+        instance_id = self._add_from_ui(component_id, config=item.get("config"))
+        if self._phone and instance_id is not None:
+            # The sheet covers the canvas, so the new node is shown and selected
+            # for its settings to open in the inspector's sheet.
+            self._palette_sheet.open = False
+            self._reveal_above_sheet(instance_id)
+            self._select_node(instance_id)
 
     def _on_component_dropped(self, payload):
         if payload.get("drop_type") == _FILES_DROP_TYPE:

@@ -39,6 +39,7 @@ from panel_flowdash.transforms import parse_transform, summarize_transform
 from panel_flowdash.ui.choice_widgets import form_widgets, setting_choices, widgets_key
 from panel_flowdash.ui.code_field import CodeField, code_language
 from panel_flowdash.ui.config_draft import ConfigDraft
+from panel_flowdash.ui.dashboard_bar import PHONE_TOUCH_CSS
 from panel_flowdash.ui.dock_handle import DockHandle
 from panel_flowdash.ui.input_editor import LiteralEditor
 from panel_flowdash.ui.node_card import (
@@ -84,6 +85,7 @@ if t.TYPE_CHECKING:
     from panel_flowdash.component_spec import ComponentSpec
 
 INSPECTOR_WIDTH = SIDECAR_WIDTH
+HANDLE_WIDTH = 7
 
 SETTINGS, DATA, TILE, HISTORY = "Settings", "Data", "Tile", "History"
 
@@ -346,6 +348,11 @@ _HEADER_ICON_SX = {
     "p": 0,
     "flexShrink": 0,
 }
+
+_PANEL_SX = {"borderLeft": 1, "borderColor": "divider", "bgcolor": "background.paper"}
+
+# In a bottom sheet on a touch screen the header's buttons are 44 px touch targets.
+_SHEET_TARGET_SX = {"width": "44px", "height": "44px", "minWidth": "44px"}
 
 # MenuButton items take no colour, so the destructive last entry is styled by position.
 _DANGER_LAST_ITEM = """
@@ -852,6 +859,13 @@ class Inspector(Viewer):
 
     visible = param.Boolean(default=True, doc="Whether the panel is shown.")
 
+    sheet = param.Boolean(
+        default=False,
+        doc="""
+        Whether the panel fills a bottom sheet, as on a phone, rather than a
+        column beside the canvas. Folding it then closes the sheet.""",
+    )
+
     def __init__(self, **params):
         super().__init__(**params)
         self._flow = self.editor._flow
@@ -933,16 +947,17 @@ class Inspector(Viewer):
             sizing_mode="stretch_height",
             scroll="y-auto",
             margin=0,
-            sx={"borderLeft": 1, "borderColor": "divider", "bgcolor": "background.paper"},
+            sx=_PANEL_SX,
         )
+        # It resizes the frame holding it and the panel, so its sizes count itself.
         self.handle = DockHandle(
             orientation="vertical",
-            min_size=SIDECAR_MIN_WIDTH,
-            max_size=SIDECAR_MAX_WIDTH,
+            min_size=SIDECAR_MIN_WIDTH + HANDLE_WIDTH,
+            max_size=SIDECAR_MAX_WIDTH + HANDLE_WIDTH,
             max_ratio=0.5,
             label="Resize the side panel",
             sizing_mode="stretch_height",
-            width=7,
+            width=HANDLE_WIDTH,
             margin=0,
         )
         self.handle.param.watch(self._on_resized, "size")
@@ -991,14 +1006,15 @@ class Inspector(Viewer):
 
     def _on_resized(self, event):
         if event.new:
-            self.width = max(SIDECAR_MIN_WIDTH, min(SIDECAR_MAX_WIDTH, int(event.new)))
+            width = int(event.new) - HANDLE_WIDTH
+            self.width = max(SIDECAR_MIN_WIDTH, min(SIDECAR_MAX_WIDTH, width))
 
     @property
     def current_width(self) -> int:
         """The width the panel takes beside the canvas: open, folded or 0 when hidden."""
         if not self.visible:
             return 0
-        return FOLDED_WIDTH if self.collapsed else self.width + 7
+        return FOLDED_WIDTH if self.collapsed else self.width + HANDLE_WIDTH
 
     def open_tab(self, instance_id: str, tab: str, turn_id: str | None = None):
         """Show *tab* of the component *instance_id*, now if it is shown or else once selected.
@@ -1140,7 +1156,8 @@ class Inspector(Viewer):
             ),
         ]
         layout_panel = getattr(editor, "_layout_panel", None)
-        if layout_panel is not None and editor.mode == "dashboard":
+        # On a phone the dashboard's sections have a sheet of their own.
+        if layout_panel is not None and not self.sheet and editor.mode == "dashboard":
             layout_panel.sync_bands()
             section = layout_panel.arrange_section
             if section.visible:
@@ -1161,7 +1178,7 @@ class Inspector(Viewer):
             objects.append(self._issue_row(issue))
         if len(issues) > _MAX_ISSUES:
             objects.append(_caption(f"and {len(issues) - _MAX_ISSUES} more"))
-        if layout_panel is not None and editor.editable:
+        if layout_panel is not None and not self.sheet and editor.editable:
             layout_panel.refresh()
             objects.append(layout_panel.off_grid_section)
         objects.append(
@@ -1316,7 +1333,7 @@ class Inspector(Viewer):
                 color="default",
                 margin=0,
                 align="center",
-                sx=_OVERFLOW_SX,
+                sx={**_OVERFLOW_SX, **_SHEET_TARGET_SX} if self.sheet else _OVERFLOW_SX,
                 stylesheets=[_DANGER_LAST_ITEM],
                 css_classes=["fd-inspector-menu"],
             )
@@ -1331,7 +1348,7 @@ class Inspector(Viewer):
                 size="small",
                 margin=0,
                 align="center",
-                sx=_HEADER_ICON_SX,
+                sx={**_HEADER_ICON_SX, **_SHEET_TARGET_SX} if self.sheet else _HEADER_ICON_SX,
                 css_classes=["fd-inspector-close"],
             )
             close_btn.on_click(lambda _event: self.fold(True))
@@ -1679,6 +1696,7 @@ class Inspector(Viewer):
             margin=0,
             sx=_TABS_SX,
             css_classes=["fd-sidecar-tabs"],
+            stylesheets=[PHONE_TOUCH_CSS],
         )
         # The Data tab runs the components' preview hooks, which may query, only while it is shown.
         self._node_tabs = tabs
@@ -2363,15 +2381,7 @@ class Inspector(Viewer):
             css_classes=["fd-literal-disconnect"],
         )
 
-        def use_literal(_event):
-            for mapping in [
-                m
-                for m in editor._edge_id_map.values()
-                if m[2] == instance_id and m[3] == port.name
-            ]:
-                editor.disconnect(*mapping)
-
-        disconnect.on_click(use_literal)
+        disconnect.on_click(lambda _event: editor.disconnect_input(instance_id, port.name))
         hint = _caption("Ignored while connected", margin=0, sx={"color": "text.secondary"})
         return pn.Column(
             field,
@@ -2576,12 +2586,20 @@ class Inspector(Viewer):
     @param.depends("collapsed", "width", watch=True)
     def _sync_collapsed(self):
         collapsed = self.collapsed
+        if self.sheet:
+            # The sheet closes when folded, so its body stays as it was.
+            self.collapse_button.visible = not self._has_inline_close
+            self._body.visible = True
+            self.expand_button.visible = False
+            self.handle.visible = False
+            self._frame.styles = {}
+            return
         self.collapse_button.visible = not collapsed and not self._has_inline_close
         self._body.visible = not collapsed
         self.expand_button.visible = collapsed
         self.handle.visible = not collapsed
         self._panel.width = FOLDED_WIDTH if collapsed else self.width
-        width = FOLDED_WIDTH if collapsed else self.width + 7
+        width = FOLDED_WIDTH if collapsed else self.width + HANDLE_WIDTH
         self._frame.styles = {"flex": "none", "width": f"{width}px", "min-width": f"{width}px"}
         self._sync_badge()
 
@@ -2599,6 +2617,27 @@ class Inspector(Viewer):
             if self.collapsed and selected
             else "Show inspector"
         )
+
+    @pn.io.hold()
+    @param.depends("sheet", watch=True)
+    def _sync_sheet(self):
+        sheet = self.sheet
+        self.collapse_button.param.update(
+            icon="close" if sheet else "keyboard_double_arrow_right",
+            sx=_SHEET_TARGET_SX if sheet else {},
+        )
+        if sheet:
+            self._panel.param.update(
+                width=None, sizing_mode="stretch_width", sx={"bgcolor": "background.paper"}
+            )
+            self._frame.sizing_mode = "stretch_width"
+        else:
+            self._panel.param.update(sizing_mode="stretch_height", sx=_PANEL_SX)
+            self._frame.sizing_mode = "stretch_height"
+        self._sync_collapsed()
+        # The header's buttons follow the sheet's touch target size.
+        if self.visible:
+            self.refresh(force=True)
 
     def __panel__(self):
         """Render the panel."""
