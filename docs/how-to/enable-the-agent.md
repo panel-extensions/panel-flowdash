@@ -295,6 +295,37 @@ Pass your own pydantic-ai `Agent` taking `FlowDashDeps` to use it as is (its
 Without an Explore agent (or without any agent) Explore shows every recorded turn of the
 dashboard, as a record of how it was made.
 
+### Report
+
+The assistant writes the dashboard's report, the document the **Report** view shows,
+with six tools: `get_report` returns its blocks as YAML, each numbered by its index,
+`report_text` returns it as a reader sees it, in Markdown with the `{{ node.port }}`
+placeholders filled in, `edit_report` inserts, updates, moves and removes blocks by
+index in one call, `set_report` replaces the whole report, `ask_in_report` adds a
+question without answering it, and `run_pending` answers such a question in the
+current request. A dashboard without a report of its own starts from the one derived
+from its groups and tiles. The edits are checked like `replace_dashboard` (blocks must
+name nodes, groups and turns the dashboard has; a placeholder naming no output is a
+warning), need no approval, are one step of Undo per request, and are listed in the
+request's summary ("Wrote a paragraph in the report. Added revenue_kpi to the
+report."). Each block the agent writes or changes records its turn as `origin`. The
+agent is told to put prose about a dashboard in the report, as text blocks with live
+placeholders, rather than in text tiles, unless asked for a tile.
+
+A question not run yet shows in the report with a **Run** button. For people who may
+edit the dashboard, Run sends the question to the assistant as an ordinary request,
+shown in the drawer's chat; the request answers the question's turn, so the nodes it
+builds get that turn as their origin and fill the question's block. A request that
+changes nothing leaves the question waiting. Questions run only in the app. Without
+an assistant, or for people who may only view the dashboard, Run is disabled;
+`FlowDash(run_pending=...)` takes your own callable, which answers through
+`FlowDash.answer_pending(turn_id, run_id)`.
+
+An agent given a subset of the tools (`create_agent(tools=...)`) gets the report tools
+by name; `panel_flowdash.agent.REPORT_TOOLS` lists them. When it is offered
+`edit_report` or `set_report`, its own instructions are followed by the rule about
+where prose goes.
+
 Each request to the agent stays on the dashboard that was open when the user sent it:
 if the user opens another dashboard while the agent works, every further tool call
 and palette command of that request is refused, so the agent stops instead of

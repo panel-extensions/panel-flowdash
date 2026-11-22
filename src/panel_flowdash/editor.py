@@ -1453,6 +1453,16 @@ class FlowDash(Viewer):
         assistant shares when history is on.""",
     )
 
+    run_pending = param.Callable(
+        default=None,
+        allow_None=True,
+        doc="""
+        Called with the id of a pending turn when an editor runs its question
+        from the report, e.g. to ask the assistant, which then answers it
+        through :meth:`answer_pending`. None, the default without an agent,
+        leaves the report's Run buttons disabled.""",
+    )
+
     show_in_editor = param.Callable(
         default=None,
         allow_None=True,
@@ -5295,17 +5305,23 @@ class FlowDash(Viewer):
         self,
         report: t.Mapping[str, t.Any] | None,
         *,
-        label: str | None = None,
+        label: str | t.Sequence[str] | None = None,
         coalesce: bool = True,
     ):
         """Replace the dashboard's report, nodes by instance id, as one undoable edit.
 
         None removes it, so the dashboard reads as its derived report again.
-        *label* describes the edit in the history, "Changed the report" by
-        default. A pending turn the report no longer refers to goes with its
-        block, as it was only ever asked in the report. With *coalesce* False
-        the edit is a version of its own, never batched with the quick edits
-        before or after it, as for a structural change such as moving a block.
+        *label* describes the edit in the history and the turn's summary,
+        "Changed the report" by default, or a list of labels for an edit
+        making several changes. A pending turn the report no longer refers
+        to goes with its block, as it was only ever asked in the report. With
+        *coalesce* False the edit is a version of its own, never batched with
+        the quick edits before or after it, as for a structural change such
+        as moving a block.
+
+        When the agent makes the edit, each block it adds or changes gets
+        its turn as ``origin``, and the blocks it leaves as they were keep
+        theirs, whatever *report* gives.
 
         Raises
         ------
@@ -5328,17 +5344,66 @@ class FlowDash(Viewer):
                 raise ValueError(
                     f"blocks[{missing[0]}]: refers to something the dashboard does not have."
                 )
+        agent = checked is not None and _agent_source() is not None and not self._hydrating
+        if agent:
+            checked, written = self._report_origins(checked)
         if checked == self.report:
             return
+        if agent and written:
+            turn_id = self._turn_log.current().id
+            for index in written:
+                checked["blocks"][index]["origin"] = turn_id
         dropped = report_turns(self._report) - report_turns(checked)
         self._report = checked
         if dropped:
             self._turn_log.drop_pending(dropped)
         if not coalesce:
             self._history.flush()
-        self._record_edit(label or "Changed the report", op="set_report")
+        labels = [label] if isinstance(label, str) else [lbl for lbl in label or () if lbl]
+        self._record_edit(*(labels or ["Changed the report"]), op="set_report")
         if not coalesce:
             self._history.flush()
+
+    def _report_origins(self, report: dict[str, t.Any]) -> tuple[dict[str, t.Any], list[int]]:
+        """Return *report* with the origins of the blocks the agent keeps, and the indices of those it writes.
+
+        A block equal, but for its origin, to one the report shows now keeps
+        that block's origin; every other block loses the origin it gives.
+        """
+
+        def bare(block):
+            return {k: v for k, v in block.items() if k != "origin"}
+
+        current = self.report
+        before = current["blocks"] if current is not None else report_blocks(self).blocks
+        remaining = [(bare(block), block.get("origin")) for block in before]
+        blocks, written = [], []
+        for index, block in enumerate(report["blocks"]):
+            plain = bare(block)
+            match = next((i for i, (b, _) in enumerate(remaining) if b == plain), None)
+            if match is None:
+                written.append(index)
+                blocks.append(plain)
+                continue
+            origin = remaining.pop(match)[1]
+            blocks.append({**plain, "origin": origin} if origin is not None else plain)
+        return {**report, "blocks": blocks}, written
+
+    def answer_pending(self, turn_id: str, run_id: str | None = None) -> DashboardTurn:
+        """Make the pending turn *turn_id* the turn of the agent request *run_id*'s next edits.
+
+        The request's edits so far stay in its own turn. Its next edit runs
+        the pending turn: the turn records the request, and the nodes the
+        request creates get it as their origin, so the question's block in
+        the report shows them as its answer. Without an edit the turn stays
+        pending. The turn is returned.
+
+        Raises
+        ------
+        ValueError
+            If no pending turn has the id *turn_id*.
+        """
+        return self._turn_log.claim_pending(turn_id, run_id)
 
     def customize_report(self) -> bool:
         """Make the report derived from the dashboard its own, to be edited, and return whether it did.
