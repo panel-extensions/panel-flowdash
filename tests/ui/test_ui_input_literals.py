@@ -41,12 +41,15 @@ def test_a_value_typed_for_an_unwired_input_reaches_the_component(page):
     expect(row.get_by_text("Set here; a connection would replace it.")).to_be_visible()
 
     editor.connect(num, "value", show, "value")
-    expect(
-        _row(page, "value").get_by_text("The value set here (42) applies once disconnected.")
-    ).to_be_visible(timeout=8000)
+    row = _row(page, "value")
+    expect(row.get_by_text("Ignored while connected")).to_be_visible(timeout=8000)
+    ignored = row.get_by_role("textbox", name="Value", exact=True)
+    expect(ignored).to_be_disabled()
+    expect(ignored).to_have_value("42")
     wait_until(lambda: editor._component_instances[show].value == 5, timeout=8000)
 
-    editor.disconnect(num, "value", show, "value")
+    row.get_by_role("button", name="Disconnect to use").click()
+    wait_until(lambda: not editor._edge_id_map, timeout=8000)
     expect(_row(page, "value").get_by_role("textbox", name="Value", exact=True)).to_have_value(
         "42", timeout=8000
     )

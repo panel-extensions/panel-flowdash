@@ -243,3 +243,20 @@ async def test_mismatch_behind_a_transform_is_refused(editor):
         "Transform fails on the current value of 'count': Column cannot be applied to a int."
     )
     assert editor.graph.edges == []
+
+
+class TestDisconnectInput:
+    async def test_removes_every_connection_into_the_input_as_one_edit(self, editor):
+        editor.history_coalesce = 0
+        editor.add_component("T/text", instance_id="t2")
+        assert editor.connect("t", "text", "j", "texts") is True
+        assert editor.connect("t2", "text", "j", "texts") is True
+        assert editor.connect("a", "value", "j", "loose") is True
+        before = len(editor.edit_history.versions)
+        editor.disconnect_input("j", "texts")
+        versions = editor.edit_history.versions
+        assert len(versions) == before + 1
+        assert versions[-1].metadata["op"] == "disconnect"
+        assert sorted(m[3] for m in editor._edge_id_map.values()) == ["loose"]
+        assert editor.undo()
+        assert sorted(m[3] for m in editor._edge_id_map.values()) == ["loose", "texts", "texts"]

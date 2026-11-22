@@ -1,9 +1,9 @@
-"""The panel beside the tile grid in the Layout tab of the editor.
+"""The dashboard sections of the sidecar, shown while nothing is selected.
 
-It picks the screen size the tiles are arranged for, changes the size of one
-tile at a time, which is more precise than dragging its corner, and lists the
-placed components that have no tile on the dashboard with the reason, so a
-tile hidden with its close handle can be put back.
+They are the screen size the tiles are arranged for and the placed components
+that have no tile on the dashboard; "Arrange for" is shown in the Layout tab
+only. The options of one tile are in the sidecar's Tile tab, see
+:mod:`panel_flowdash.ui.tile_options`.
 """
 
 from __future__ import annotations
@@ -24,34 +24,14 @@ from panel_flowdash.ui.tile_bands import (
     band_summary,
     base_band,
 )
-from panel_flowdash.ui.tile_layout import (
-    FRAME_DEFAULT,
-    GRID,
-    GRID_COLUMNS,
-    frame_choices,
-    frame_value,
-    grid_tiles,
-    move_buttons,
-    off_grid,
-    tile_entry,
-    tile_title,
-    to_columns,
-    to_width,
-    update_tile,
-)
+from panel_flowdash.ui.tile_layout import GRID, move_buttons, off_grid, update_tile
 
 if t.TYPE_CHECKING:
     from panel.viewable import Viewable
 
     from panel_flowdash.ui.tile_layout import OffGrid
 
-LAYOUT_PANEL_WIDTH = 320
-_COLLAPSED_WIDTH = 44
-
 _SECTION_SX = {"color": "text.secondary", "fontWeight": 500}
-
-_AUTO = "auto"
-_HEIGHTS = (200, 300, 400, 500, 600, 800)
 
 
 _ICON_CSS = """
@@ -111,7 +91,8 @@ GRID_EDIT_CSS = """
 """
 
 
-_PANEL_SX = {"borderLeft": 1, "borderColor": "divider", "bgcolor": "background.paper"}
+# The components off the grid listed at most, so a large dashboard's list stays quick to build.
+MAX_OFF_GRID = 20
 
 
 def _caption(text: str, **kwargs) -> pmui.Typography:
@@ -123,7 +104,7 @@ def _heading(text: str, margin=(16, 0, 8, 0)) -> pmui.Typography:
 
 
 class LayoutPanel(Viewer):
-    """A collapsible panel with the screen size, the selected tile and the components off the grid."""
+    """The bands the tiles are arranged for, and the components off the grid."""
 
     band = param.String(
         default=None,
@@ -131,24 +112,16 @@ class LayoutPanel(Viewer):
         doc="Label of the breakpoint band the tiles are arranged for, or None for the base band.",
     )
 
-    collapsed = param.Boolean(default=False, doc="Whether the panel is folded to a narrow strip.")
-
     editor = param.Parameter(doc="The FlowDash editor whose tile grid is arranged.")
 
-    selected = param.String(
-        default=None, allow_None=True, doc="Instance id of the tile whose options are shown."
-    )
-
-    visible = param.Boolean(default=True, doc="Whether the panel is shown.")
-
-    sheet = param.Boolean(
-        default=False,
-        doc="Whether the panel fills a bottom sheet, as on a phone, rather than a column beside the grid.",
+    visible = param.Boolean(
+        default=True, doc="Whether the Layout tab, which arranges the tiles, is shown."
     )
 
     def __init__(self, **params):
         super().__init__(**params)
         self._syncing = False
+        self._listed: list[OffGrid] | None = None
         self.band_select = pmui.RadioButtonGroup(
             options={}, size="small", sizing_mode="stretch_width", margin=(0, 0, 8, 0)
         )
@@ -166,87 +139,14 @@ class LayoutPanel(Viewer):
             self.band_select,
             self.band_summary,
             self.reset_band_button,
-            pmui.Divider(margin=(16, 0, 16, 0)),
             margin=0,
             sizing_mode="stretch_width",
+            css_classes=["fd-arrange-for"],
         )
         self.band_select.param.watch(self._on_band_selected, "value")
         self.reset_band_button.on_click(self._on_reset_band)
-        self.tile_select = pmui.Select(
-            label="Tile", options={}, sizing_mode="stretch_width", margin=(0, 0, 8, 0)
-        )
-        self.width_select = pmui.Select(
-            label="Width",
-            options={f"{n} of {GRID_COLUMNS}": n for n in range(1, GRID_COLUMNS + 1)},
-            sizing_mode="stretch_width",
-            margin=(8, 4, 8, 0),
-        )
-        self.height_select = pmui.Select(
-            label="Height",
-            options={"Automatic": _AUTO},
-            value=_AUTO,
-            sizing_mode="stretch_width",
-            margin=(8, 0, 8, 4),
-        )
-        self.frame_select = pmui.Select(
-            label="Frame",
-            options={"Default": FRAME_DEFAULT},
-            value=FRAME_DEFAULT,
-            description="Whether the tile is drawn as a card in view mode",
-            sizing_mode="stretch_width",
-            margin=(12, 0, 8, 0),
-        )
-        self.hide_button = pmui.Button(
-            label="Hide tile",
-            icon="visibility_off",
-            variant="text",
-            size="small",
-            margin=(4, 0, 0, 0),
-            sx={"textTransform": "none"},
-        )
-        self.size_hint = _caption("", margin=(0, 0, 4, 0))
-        self.band_hint = _caption("", margin=(0, 0, 4, 0))
-        # Hide and the moves the selected tile allows, in one row that wraps.
-        self._tile_actions = pn.FlexBox(self.hide_button, margin=0, gap="0px 16px")
-        self._tile_options = pn.Column(
-            pn.Row(self.width_select, self.height_select, margin=0, sizing_mode="stretch_width"),
-            self.size_hint,
-            self.band_hint,
-            self.frame_select,
-            self._tile_actions,
-            margin=0,
-            sizing_mode="stretch_width",
-        )
-        self._no_tile = _caption("Place a component with a view to arrange its tile.")
         self._off_grid = pn.Column(margin=0, sizing_mode="stretch_width")
-        self.tile_select.param.watch(self._on_tile_selected, "value")
-        self.width_select.param.watch(self._on_width, "value")
-        self.height_select.param.watch(self._on_height, "value")
-        self.frame_select.param.watch(self._on_frame, "value")
-        self.hide_button.on_click(self._on_hide)
-
-        self.collapse_button = pmui.IconButton(
-            icon="keyboard_double_arrow_right",
-            description="Hide layout panel",
-            size="small",
-            margin=(8, 4, 0, 0),
-            align="end",
-        )
-        self.expand_button = pmui.IconButton(
-            icon="keyboard_double_arrow_left",
-            description="Show layout panel",
-            size="small",
-            margin=(8, 4),
-        )
-        self.collapse_button.on_click(lambda _event: setattr(self, "collapsed", True))
-        self.expand_button.on_click(lambda _event: setattr(self, "collapsed", False))
-        self._body = pn.Column(
-            self._bands,
-            _heading("Selected tile", margin=(0, 0, 12, 0)),
-            self.tile_select,
-            self._tile_options,
-            self._no_tile,
-            pmui.Divider(margin=(16, 0, 0, 0)),
+        self.off_grid_section = pn.Column(
             _heading("Not on the dashboard"),
             _caption(
                 "Placed components without a tile: those shown beside the dashboard "
@@ -255,50 +155,38 @@ class LayoutPanel(Viewer):
                 margin=(0, 0, 8, 0),
             ),
             self._off_grid,
-            sizing_mode="stretch_width",
-            margin=(0, 16, 16, 16),
-        )
-        self._panel = pmui.Column(
-            self.collapse_button,
-            self._body,
-            self.expand_button,
-            width=LAYOUT_PANEL_WIDTH,
-            sizing_mode="stretch_height",
-            scroll="y-auto",
             margin=0,
-            visible=self.param.visible,
-            sx=_PANEL_SX,
+            sizing_mode="stretch_width",
+            css_classes=["fd-off-grid"],
         )
-        self._sync_collapsed()
-        # Tiles hidden or resized in the browser arrive as a new layout.
+        # Tiles hidden in the browser arrive as a new layout.
         self.editor._tile_grid.param.watch(self._on_layout, ["layout", "objects"])
         self.editor._tile_grid.param.watch(lambda _event: self.sync_bands(), "responsive_layouts")
-        self.editor.settings.param.watch(self._on_layout, "tile_cards")
         self.editor._view_controls.param.watch(self._on_layout, "placed")
         self.sync_bands()
 
+    @property
+    def arrange_section(self) -> Viewable:
+        """The band picker, shown only when the grid has more than one band."""
+        return self._bands
+
     def _on_layout(self, _event):
-        if self.visible and not self._syncing:
+        if self.editor.editable and not self._syncing and self._shown():
             self.refresh()
 
-    @param.depends("visible", watch=True)
-    def _on_visible(self):
-        if self.visible:
-            self._follow_canvas_selection()
-            self.refresh()
-
-    def _follow_canvas_selection(self):
-        selected = self.editor._selected_tile_id()
-        if selected is not None:
-            self.selected = selected
-
-    def select(self, instance_id: str):
-        """Show the options of the tile of *instance_id*, e.g. one clicked on the grid."""
-        if instance_id == self.selected:
-            return
-        self.selected = instance_id
-        if self.visible:
-            self.refresh()
+    def _shown(self) -> bool:
+        """Whether the list is on screen: in the sidecar's summary, or the phone's Layout sheet."""
+        editor = self.editor
+        inspector = getattr(editor, "_inspector", None)
+        if getattr(editor, "_phone", False):
+            sheet = getattr(editor, "_layout_sheet", None)
+            return sheet is not None and sheet.open
+        return (
+            inspector is not None
+            and inspector.visible
+            and not inspector.collapsed
+            and inspector._shown is None
+        )
 
     # ------------------------------------------------------------------
     # Screen sizes
@@ -323,13 +211,17 @@ class LayoutPanel(Viewer):
         self._bands.visible = len(names) > 1
         self.band_summary.object = band_summary(names, sources)
         self.reset_band_button.visible = sources.get(band) == CUSTOM
+
+    def band_hint(self) -> str:
+        """Say which band's layout a tile's width and height apply to, if not the one shown."""
+        grid = self.editor._tile_grid
+        names = band_names(grid.breakpoints)
+        sources = band_sources(grid.breakpoints, grid.reference_width, grid.responsive_layouts)
+        band = self.band_select.value
         base = next((names[label] for label, source in sources.items() if source == BASE), None)
-        self.band_hint.object = (
-            f"Width and height set here apply to the {base} layout."
-            if band is not None and sources.get(band) != BASE
-            else ""
-        )
-        self.band_hint.visible = bool(self.band_hint.object)
+        if band is not None and sources.get(band) != BASE and base is not None:
+            return f"Width and height set here apply to the {base} layout."
+        return ""
 
     def _on_band_selected(self, event):
         if self._syncing or event.new is None:
@@ -346,88 +238,21 @@ class LayoutPanel(Viewer):
 
     @pn.io.hold()
     def refresh(self):
-        """Re-read the tiles and the components off the grid."""
-        editor = self.editor
-        tiles = grid_tiles(editor)
-        ids = [item["instance_id"] for item in tiles]
-        if self.selected not in ids:
-            self.selected = ids[0] if ids else None
-        self._syncing = True
-        try:
-            self.tile_select.param.update(
-                options=self._tile_options_for(tiles), value=self.selected
-            )
-            self._sync_tile_options()
-        finally:
-            self._syncing = False
-        self.tile_select.visible = self._tile_options.visible = bool(tiles)
-        self._no_tile.visible = not tiles
-        listed = off_grid(editor)
-        self._off_grid[:] = (
-            [self._off_grid_row(entry) for entry in listed]
-            if listed
-            else [_caption("Every placed component has a tile.")]
-        )
-
-    def _tile_options_for(self, tiles: list[dict]) -> dict[str, str]:
-        options: dict[str, str] = {}
-        for item in tiles:
-            title = label = tile_title(self.editor, item)
-            n = 1
-            while label in options:
-                n += 1
-                label = f"{title} ({n})"
-            options[label] = item["instance_id"]
-        return options
-
-    def _sync_tile_options(self):
-        if self.selected is None:
+        """Re-read the components off the grid, listing the first :data:`MAX_OFF_GRID`."""
+        listed = off_grid(self.editor)
+        if listed == self._listed and self._off_grid.objects:
             return
-        entry = tile_entry(self.editor, self.selected)
-        spec = self._spec(self.selected)
-        height = entry.get("height", ((spec and spec.default_size) or {}).get("height"))
-        low = ((spec and spec.min_size) or {}).get("height", 0)
-        high = ((spec and spec.max_size) or {}).get("height", float("inf"))
-        choices = {h for h in _HEIGHTS if low <= h <= high}
-        if isinstance(height, (int, float)):
-            height = round(height)
-            choices.add(height)
-        else:
-            height = _AUTO
-        self.width_select.value = to_columns(entry.get("width"))
-        self.height_select.param.update(
-            options={"Automatic": _AUTO, **{f"{h} px": h for h in sorted(choices)}},
-            value=height,
-        )
-        self.frame_select.param.update(
-            options=frame_choices(self.editor, self.selected), value=frame_value(entry)
-        )
-        # The browser shows the label of the value, which changing only the options does not resend.
-        self.frame_select.param.trigger("value")
-        self.size_hint.object = self._size_hint(spec)
-        self.size_hint.visible = bool(self.size_hint.object)
-        item = next(i for i in self.editor._tile_items if i["instance_id"] == self.selected)
-        self._tile_actions[:] = [
-            self.hide_button,
-            *move_buttons(self.editor, item, then=self.tile_select.focus, margin=(4, 0, 0, 0)),
-        ]
-
-    def _spec(self, instance_id: str):
-        item = next((i for i in self.editor._tile_items if i["instance_id"] == instance_id), None)
-        if item is None or "placeholder" in item:
-            return None
-        return self.editor._component_specs.get(item["component_id"])
-
-    @staticmethod
-    def _size_hint(spec) -> str:
-        if spec is None:
-            return ""
-        parts = [
-            f"{label} {hint['width']} px wide"
-            for label, hint in (("at least", spec.min_size), ("at most", spec.max_size))
-            if hint and "width" in hint
-        ]
-        return ("Kept " + " and ".join(parts) + ".") if parts else ""
+        self._listed = listed
+        rows: list[Viewable] = [self._off_grid_row(entry) for entry in listed[:MAX_OFF_GRID]]
+        if len(listed) > MAX_OFF_GRID:
+            rows.append(
+                _caption(
+                    f"and {len(listed) - MAX_OFF_GRID} more; select one on the canvas to "
+                    "show its tile from its Tile tab.",
+                    margin=(0, 0, 8, 0),
+                )
+            )
+        self._off_grid[:] = rows or [_caption("Every placed component has a tile.")]
 
     def _off_grid_row(self, entry: OffGrid) -> Viewable:
         icon = pn.pane.HTML(
@@ -461,9 +286,7 @@ class LayoutPanel(Viewer):
             item = next(
                 i for i in self.editor._tile_items if i["instance_id"] == entry.instance_id
             )
-            objects += move_buttons(
-                self.editor, item, areas=[GRID], then=self.tile_select.focus, margin=0
-            )
+            objects += move_buttons(self.editor, item, areas=[GRID], margin=0)
         return pmui.Paper(
             pn.Row(*objects, margin=0, sizing_mode="stretch_width", align="center"),
             variant="outlined",
@@ -472,73 +295,17 @@ class LayoutPanel(Viewer):
             sx={"px": 1.5, "py": 1},
         )
 
-    # ------------------------------------------------------------------
-    # Changes
-    # ------------------------------------------------------------------
-
-    def _update(self, **patch):
-        if self.selected is None:
-            return
+    def show_tile(self, instance_id: str):
+        """Put a hidden tile back on the dashboard."""
         self._syncing = True
         try:
-            update_tile(self.editor, self.selected, **patch)
+            update_tile(self.editor, instance_id, visible=True)
         finally:
             self._syncing = False
         self.refresh()
 
-    def _on_tile_selected(self, event):
-        if not self._syncing and event.new is not None:
-            self.selected = event.new
-            self._syncing = True
-            try:
-                self._sync_tile_options()
-            finally:
-                self._syncing = False
-            self.editor._set_selected_tile(event.new)
-
-    def _on_width(self, event):
-        if not self._syncing and event.new is not None:
-            self._update(width=to_width(event.new))
-
-    def _on_height(self, event):
-        if not self._syncing and event.new is not None:
-            self._update(height=None if event.new == _AUTO else event.new)
-
-    def _on_frame(self, event):
-        if not self._syncing and event.new is not None:
-            self._update(framed=None if event.new == FRAME_DEFAULT else event.new)
-
-    def _on_hide(self, _event):
-        self._update(visible=False)
-
-    def show_tile(self, instance_id: str):
-        """Put a hidden tile back on the dashboard and select it."""
-        self.selected = instance_id
-        self._update(visible=True)
-
-    # ------------------------------------------------------------------
-    # Collapsing
-    # ------------------------------------------------------------------
-
-    @param.depends("collapsed", "sheet", watch=True)
-    def _sync_collapsed(self):
-        if self.sheet:
-            # The sheet has its own close button and is never folded.
-            self.collapse_button.visible = self.expand_button.visible = False
-            self._body.visible = True
-            self._panel.param.update(
-                width=None, sizing_mode="stretch_width", sx={"bgcolor": "background.paper"}
-            )
-            return
-        collapsed = self.collapsed
-        self.collapse_button.visible = self._body.visible = not collapsed
-        self.expand_button.visible = collapsed
-        self._panel.param.update(
-            width=_COLLAPSED_WIDTH if collapsed else LAYOUT_PANEL_WIDTH,
-            sizing_mode="stretch_height",
-            sx=_PANEL_SX,
-        )
-
     def __panel__(self):
-        """Render the panel."""
-        return self._panel
+        """Render the sections, as the sidecar does while nothing is selected."""
+        return pn.Column(
+            self._bands, self.off_grid_section, margin=(0, 16, 16, 16), sizing_mode="stretch_width"
+        )

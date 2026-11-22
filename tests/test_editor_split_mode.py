@@ -184,21 +184,6 @@ class TestRevealingTheNodeOfAClickedTile:
         self._click(editor, map_id)
         assert [a for a, _ in fits] == [(map_id,)]
 
-    async def test_folded_inspector_opens_before_the_node_is_revealed(self, editor, fits):
-        editor._split_view.storage.window_width = 1280
-        editor._split_view.events.pane_size = [700, 600]
-        editor.mode = "split"
-        assert editor._inspector.collapsed
-        map_id = editor.add_component(MAP, position=(2000, 1500))
-        editor._flow.viewport = {"x": 0, "y": 0, "zoom": 1}
-        self._click(editor, map_id)
-        assert not editor._inspector.collapsed
-        assert fits == []
-        editor._split_view.events.pane_size = [400, 600]
-        assert [a for a, _ in fits] == [(map_id,)]
-        editor._split_view.events.pane_size = [500, 600]
-        assert len(fits) == 1
-
     async def test_unknown_pane_size_leaves_the_viewport(self, editor, fits):
         editor.mode = "split"
         map_id = editor.add_component(MAP, position=(5000, 5000))
@@ -206,16 +191,27 @@ class TestRevealingTheNodeOfAClickedTile:
         assert fits == []
 
 
-class TestInspectorInNarrowWindows:
-    async def test_folded_until_something_is_selected(self, editor):
+class TestSidecarInNarrowWindows:
+    async def test_folded_where_the_split_has_no_room(self, editor):
         map_id = editor.add_component(MAP)
         editor._split_view.storage.window_width = 1280
         editor.mode = "split"
         assert editor._inspector.collapsed
+        # A selection opens it, as the person wants to see it.
         select_on_canvas(editor._flow, node_id=map_id)
         assert not editor._inspector.collapsed
         select_on_canvas(editor._flow)
         assert not editor._inspector.collapsed
+
+    async def test_a_selection_marks_the_strip_the_person_folded(self, editor):
+        map_id = editor.add_component(MAP)
+        editor._split_view.storage.window_width = 1920
+        editor._inspector.collapse_button.clicks += 1
+        select_on_canvas(editor._flow, node_id=map_id)
+        assert editor._inspector.collapsed
+        assert "fd-sidecar-badge" in editor._inspector.expand_button.css_classes
+        select_on_canvas(editor._flow)
+        assert "fd-sidecar-badge" not in editor._inspector.expand_button.css_classes
 
     async def test_opened_again_when_leaving_the_split(self, editor):
         editor._split_view.storage.window_width = 1280
@@ -224,6 +220,18 @@ class TestInspectorInNarrowWindows:
         editor.mode = "wiring"
         assert not editor._inspector.collapsed
 
+    async def test_opened_by_the_person_it_stays_open(self, editor):
+        editor._split_view.storage.window_width = 1280
+        editor.mode = "split"
+        editor._inspector.expand_button.clicks += 1
+        assert not editor._inspector.collapsed
+        editor.mode = "wiring"
+        editor.mode = "split"
+        assert not editor._inspector.collapsed
+        # Until the window is resized, when the budget decides again.
+        editor._split_view.storage.window_width = 1300
+        assert editor._inspector.collapsed
+
     async def test_left_as_the_user_set_it(self, editor):
         editor._split_view.storage.window_width = 1280
         editor.mode = "split"
@@ -231,16 +239,21 @@ class TestInspectorInNarrowWindows:
         editor._inspector.collapsed = True
         editor.mode = "wiring"
         assert editor._inspector.collapsed
+        editor.mode = "dashboard"
+        assert editor._inspector.collapsed
 
-    async def test_open_in_wide_windows_and_with_a_selection(self, editor):
-        map_id = editor.add_component(MAP)
+    async def test_open_in_wide_windows(self, editor):
         editor._split_view.storage.window_width = 1920
         editor.mode = "split"
         assert not editor._inspector.collapsed
-        editor.mode = "wiring"
-        editor._split_view.storage.window_width = 1280
-        select_on_canvas(editor._flow, node_id=map_id)
-        editor.mode = "split"
+
+    async def test_folded_where_the_canvas_would_get_too_little(self, editor):
+        editor._split_view.storage.window_width = 1024
+        assert not editor._inspector.collapsed
+        editor._split_view.storage.window_width = 800
+        assert editor._inspector.collapsed
+        # Without the palette the grid has room.
+        editor.mode = "dashboard"
         assert not editor._inspector.collapsed
 
 
@@ -278,6 +291,7 @@ class TestToggleAndCollapse:
             "code_dock": "bottom",
             "spec_view": "form",
             "spec_text": "yaml",
+            "sidecar_width": 360,
         }
         editor.mode = "wiring"
         assert json.loads(split_view.storage.value)["split"] is False
