@@ -2326,7 +2326,7 @@ class FlowDashApp(Viewer):
         return model
 
     def _duplicate_dashboard(self, dashboard_id: str) -> DashboardModel | None:
-        """Copy a dashboard as "<title> copy", owned by the current user and not shared."""
+        """Copy a dashboard as ``"<title> copy"``, owned by the current user and not shared."""
         source = self._copyable_dashboard(dashboard_id)
         if source is None:
             return None

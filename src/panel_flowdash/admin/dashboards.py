@@ -992,7 +992,7 @@ class DashboardsAdmin(Viewer):
             self.make_home(dashboard_id)
 
     def duplicate(self, dashboard_id: str) -> str | None:
-        """Copy a dashboard as "<title> copy", owned by the admin and not shared."""
+        """Copy a dashboard as ``"<title> copy"``, owned by the admin and not shared."""
         if not self._allowed():
             return None
         from panel_flowdash.ui.launcher import copy_dashboard, unique_title

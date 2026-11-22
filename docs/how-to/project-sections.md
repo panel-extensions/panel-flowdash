@@ -214,7 +214,7 @@ BRANDING = ProjectSection(
 )
 ```
 
-A view that returns a `panel_flowdash.admin.SettingsForm` gets the admin
+A view that returns a [`panel_flowdash.admin.SettingsForm`][panel_flowdash.admin.SettingsForm] gets the admin
 view's Save and Discard and its unsaved-changes dot instead. The form is
 described by groups of `Setting`s, each a key of the section's mapping;
 Save writes the changed keys with `Project.set`, and the problems of a
@@ -253,8 +253,8 @@ a command-line flag, is shown locked when the loader's context lists it:
 ## 6. A setup wizard step
 
 A section can add a step to the setup wizard with `wizard_view`, a function
-of the project that returns a `panel_flowdash.admin.SettingsForm` or a
-`panel_flowdash.admin.WizardStep`. The wizard writes nothing until its
+of the project that returns a [`panel_flowdash.admin.SettingsForm`][panel_flowdash.admin.SettingsForm] or a
+[`panel_flowdash.admin.WizardStep`][panel_flowdash.admin.WizardStep]. The wizard writes nothing until its
 Review: there it asks each step's `changes()` for the sections to write and
 shows them, and Finish writes exactly those with `Project.set`, through the
 section's loader. A step in the `"Data"` group takes the place of the
