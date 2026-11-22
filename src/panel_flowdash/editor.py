@@ -697,6 +697,23 @@ _INSTANTIATING_NODE: contextvars.ContextVar[str | None] = contextvars.ContextVar
 _SESSION_EDITORS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
+def _apply_each(instance: param.Parameterized, values: dict[str, t.Any]):
+    """Set *values* on *instance* one by one after a joint update failed, yielding each error.
+
+    The joint update stops dispatching at the first error, and may already
+    have set the values that come before it, so setting those again would not
+    notify their watchers. Those are triggered instead.
+    """
+    for name, value in values.items():
+        try:
+            if getattr(instance, name) is value:
+                instance.param.trigger(name)
+            else:
+                setattr(instance, name, value)
+        except Exception as exc:
+            yield name, exc
+
+
 def current_dashboard() -> FlowDash | None:
     """Return the editor that is showing the component calling this.
 
@@ -3168,11 +3185,8 @@ class FlowDash(Viewer):
                 if len(values) == 1:
                     logger.warning("Config '%s' update failed", events[0].name, exc_info=True)
                     return
-            for name, value in values.items():
-                try:
-                    setattr(instance, name, value)
-                except Exception as exc:
-                    logger.warning("Config '%s' update failed: %s", name, exc)
+            for name, exc in _apply_each(instance, values):
+                logger.warning("Config '%s' update failed: %s", name, exc)
 
         if names:
             watcher = config_state.param.watch(_propagate, names)
@@ -3263,12 +3277,9 @@ class FlowDash(Viewer):
                     return
             # A component rejecting a value, or a watcher of its own raising,
             # must not abort the dispatch to the node's other consumers.
-            for name, value in values.items():
-                try:
-                    setattr(instance, name, value)
-                except Exception as exc:
-                    if (owner := editor()) is not None:
-                        owner._report_input_error(node_id, name, exc)
+            for name, exc in _apply_each(instance, values):
+                if (owner := editor()) is not None:
+                    owner._report_input_error(node_id, name, exc)
 
         if input_names:
             watcher = node_state.param.watch(_propagate_inputs, input_names)

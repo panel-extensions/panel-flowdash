@@ -96,7 +96,32 @@ register(
     requires=[{"key": "a", "type": "int"}, {"key": "b", "type": "int"}],
 )(join_function)
 
+
+@register(page=False, component=True, title="Fragile", config=["c", "d"])
+class Fragile(pn.viewable.Viewer):
+    """A component whose own watcher of its first input, and of its first setting, raises."""
+
+    a = param.Integer(default=0)
+    b = param.Integer(default=0)
+    c = param.Integer(default=0)
+    d = param.Integer(default=0)
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        self.param.watch(self._fail, ["a", "c"])
+        self.param.watch(
+            lambda event: RUNS.setdefault("fragile", []).append(event.name), ["b", "d"]
+        )
+
+    def _fail(self, event):
+        raise RuntimeError(f"{event.name} failed")
+
+    def __panel__(self):
+        return pn.pane.Markdown("fragile")
+
+
 COMPONENTS = {
+    "t/fragile": Fragile,
     "t/number": Number,
     "t/refreshed": Refreshed,
     "t/add": AddOne,
@@ -270,3 +295,26 @@ def test_graph_feedback_within_a_pass_is_reported_instead_of_looping():
     assert len(runs) == _MAX_DELIVERIES
     assert {error[2:4] for error in errors} == {("n", "inp")}
     assert isinstance(errors[0][4], RecursionError)
+
+
+def test_input_watcher_raising_does_not_keep_the_other_inputs_from_the_component():
+    editor = _editor([("f", "fragile")], [])
+    errors = []
+    editor._report_input_error = lambda node_id, port, exc: errors.append((node_id, port))
+
+    editor.graph.get_state("f").param.update(a=1, b=2)
+    instance = editor._component_instances["f"]
+    assert (instance.a, instance.b) == (1, 2)
+    assert RUNS["fragile"] == ["b"]
+    assert errors == [("f", "a")]
+    editor.dispose()
+
+
+def test_config_watcher_raising_does_not_keep_the_other_settings_from_the_component():
+    editor = _editor([("f", "fragile")], [])
+
+    editor.graph.get_config_state("f").param.update(c=1, d=2)
+    instance = editor._component_instances["f"]
+    assert (instance.c, instance.d) == (1, 2)
+    assert RUNS["fragile"] == ["d"]
+    editor.dispose()

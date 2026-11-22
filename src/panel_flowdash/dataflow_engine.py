@@ -556,7 +556,8 @@ class DataflowGraph:
             yield
         finally:
             try:
-                self._deliver_pending()
+                with self._hold():
+                    self._deliver_pending()
             finally:
                 self._pass.pending = None
 
