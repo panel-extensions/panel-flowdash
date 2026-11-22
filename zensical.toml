@@ -17,10 +17,12 @@ nav = [
     {"Wire the Dataflow" = "how-to/wire-dataflow.md"},
     {"Transform Edges" = "how-to/transform-edges.md"},
     {"Link Selections" = "how-to/link-selections.md"},
+    {"Filter Dashboards" = "how-to/filter-dashboards.md"},
     {"Layout & Sizing" = "how-to/layout-and-sizing.md"},
     {"Persist Dashboards" = "how-to/persist-dashboards.md"},
     {"Dashboard Settings and Refresh" = "how-to/dashboard-settings.md"},
     {"Serve a Project" = "how-to/serve-project.md"},
+    {"Add a Project File Section" = "how-to/project-sections.md"},
     {"Embed the Editor" = "how-to/embed-the-editor.md"},
     {"Manage Permissions" = "how-to/manage-permissions.md"},
     {"Enable the AI Agent" = "how-to/enable-the-agent.md"}
@@ -33,7 +35,8 @@ nav = [
   ]},
   {"Reference" = [
     {"API" = "reference/panel_flowdash.md"},
-    {"Dashboard YAML Format" = "reference/dashboard-yaml.md"}
+    {"Dashboard YAML Format" = "reference/dashboard-yaml.md"},
+    {"Project File" = "reference/project-file.md"}
   ]},
   {"Releases" = "releases.md"}
 ]

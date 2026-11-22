@@ -23,6 +23,7 @@ from panel_flowdash.dashboard_store import (
     MemoryDashboardStore,
 )
 from panel_flowdash.json_store import JSONFolderDashboardStore
+from panel_flowdash.ui.status_bar import select_on_canvas
 from panel_flowdash.ui.tile_layout import (
     GRID,
     SIDEBAR,
@@ -340,7 +341,7 @@ class TestControls:
             return {
                 b.label: b
                 for b in inspector._body.select(pmui.Button)
-                if b.label.startswith("Move to")
+                if b.label.startswith("Move to") and b.visible
             }
 
         buttons()["Move to sidebar"].clicks += 1
@@ -353,12 +354,15 @@ class TestControls:
         inspector.refresh(force=True)
         assert buttons() == {}
 
-    def test_layout_panel_moves_the_selected_tile_and_back(self, editor):
-        panel = editor._layout_panel
-        panel.tile_select.value = "kpi"
-        top = next(b for b in panel._tile_actions if b.label == "Move to top bar")
+    def test_tile_tab_moves_the_selected_tile_and_back(self, editor):
+        select_on_canvas(editor._flow, node_id="kpi")
+        options = editor._inspector.tile_options
+        top = options._move_buttons["top"]
+        assert top.visible and not options._move_buttons["grid"].visible
         top.clicks += 1
         assert area_of(editor, _item(editor, "kpi")) == TOP
+        select_on_canvas(editor._flow)
+        panel = editor._layout_panel
         back = [
             b
             for b in panel._off_grid.select(pmui.Button)

@@ -25,9 +25,19 @@ def _framed(tile) -> bool:
     return tile.evaluate("el => getComputedStyle(el).borderTopColor") != "rgba(0, 0, 0, 0)"
 
 
-def _pick(page, label, option):
-    page.get_by_role("combobox", name=label).click()
-    page.get_by_role("listbox").get_by_text(option, exact=True).click()
+def _pick(page, label, option, current):
+    """Pick *option* from the select *label*, once it shows the tile's *current* choice.
+
+    Selecting another tile swaps the Tile tab's controls when the browser gets them;
+    a menu opened on the previous tile's select closes as its select goes.
+    """
+    select = page.get_by_role("combobox", name=label)
+    expect(select).to_have_text(current, timeout=8000)
+    select.click()
+    listbox = page.get_by_role("listbox")
+    expect(listbox).to_be_visible()
+    listbox.get_by_text(option, exact=True).click()
+    expect(select).to_have_text(option)
 
 
 def _done(page, editor):
@@ -35,6 +45,22 @@ def _done(page, editor):
     if editor.dirty:
         page.get_by_role("dialog").get_by_role("button", name="Save", exact=True).click()
     wait_until(lambda: not editor.editable, timeout=8000)
+
+
+def _select_tile(page, editor, instance_id):
+    """Click a tile in the Layout tab, which selects its node and shows its Tile tab.
+
+    A click rather than a selection made from the test's thread: the canvas leaving
+    the page as the tab opens reports an empty selection, which could come after it.
+    """
+    # The grid is filled once the Layout tab is shown. An unframed tile has no frame
+    # of its own to find it by, so it is found by its place.
+    wait_until(lambda: instance_id in editor._grid_ids, timeout=8000)
+    item = page.locator(".muuri-grid-item").nth(editor._grid_ids.index(instance_id))
+    expect(item).to_be_visible(timeout=8000)
+    item.click(position={"x": 20, "y": 20})
+    wait_until(lambda: editor._inspector._shown == ("node", instance_id), timeout=8000)
+    expect(page.get_by_role("tab", name="Tile", selected=True)).to_be_visible(timeout=8000)
 
 
 def test_frame_option_in_the_layout_tab_frames_the_tile_in_view_mode(page):
@@ -48,8 +74,7 @@ def test_frame_option_in_the_layout_tab_frames_the_tile_in_view_mode(page):
 
     page.get_by_role("button", name="Layout", exact=True).click()
     wait_until(lambda: editor.mode == "dashboard", timeout=8000)
-    _pick(page, "Tile", "Divider")
-    wait_until(lambda: editor._layout_panel.selected == divider_id, timeout=8000)
+    _select_tile(page, editor, divider_id)
     expect(page.get_by_role("combobox", name="Frame")).to_have_text("Default (unframed)")
 
     _done(page, editor)
@@ -61,12 +86,11 @@ def test_frame_option_in_the_layout_tab_frames_the_tile_in_view_mode(page):
     page.get_by_role("button", name="Edit").click()
     wait_until(lambda: editor.editable, timeout=8000)
     page.get_by_role("button", name="Layout", exact=True).click()
-    _pick(page, "Tile", "Divider")
-    _pick(page, "Frame", "Framed")
+    _select_tile(page, editor, divider_id)
+    _pick(page, "Frame", "Framed", "Default (unframed)")
     wait_until(lambda: tile_entry(editor, divider_id).get("framed") is True, timeout=8000)
-    _pick(page, "Tile", "Chart")
-    wait_until(lambda: editor._layout_panel.selected == chart_id, timeout=8000)
-    _pick(page, "Frame", "Unframed")
+    _select_tile(page, editor, chart_id)
+    _pick(page, "Frame", "Unframed", "Default (framed)")
     wait_until(lambda: tile_entry(editor, chart_id).get("framed") is False, timeout=8000)
 
     _done(page, editor)

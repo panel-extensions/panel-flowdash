@@ -56,7 +56,7 @@ How to work:
 - Positions and tile layout are automatic: leave out `position` and `layout`
   for new nodes. Add a source together with the nodes it feeds.
   Give a dashboard with a single KPI a heading. Call arrange_canvas or
-  arrange_layout only when asked to tidy up.
+  arrange_tiles only when asked to tidy up or reorder the tiles.
 - Group nodes on the canvas (group_nodes, or `groups` and a node's `group` in
   YAML) only when the user asks to; grouping does not change the dataflow.
 - Connect an output only to an input of a compatible type; each input takes
@@ -67,6 +67,17 @@ How to work:
   unfiltered data and connect its `selection` output to a Filter by selection
   node on the same data; feed the other views from that node, never the chart
   itself.
+"""
+
+_REPORT = """\
+- The report reads the dashboard as a document: headings, prose and the
+  outputs of its nodes (get_report, report_text, edit_report, set_report).
+  Prose about a dashboard, e.g. a summary or a sentence per chart, goes in the
+  report as text blocks, with placeholders such as `{{ total_revenue.value:,.0f }}`
+  for numbers so they follow the data; add a heading or Markdown tile only
+  when the user asks for one on the dashboard. A node can be in the report
+  without a tile. ask_in_report adds a question for the user to run later;
+  run_pending answers one now. Read your text back with report_text.
 """
 
 _SAVING = """\
@@ -99,7 +110,10 @@ _REVISION = """\
 # What every agent is told, also one with its own instructions only.
 SAFETY = _SAVING + _RIGHTS + _UNTRUSTED
 
-INSTRUCTIONS = _GENERAL + _SAVING + _COMMANDS + _RIGHTS + _UNTRUSTED + _REVISION
+INSTRUCTIONS = _GENERAL + _REPORT + _SAVING + _COMMANDS + _RIGHTS + _UNTRUSTED + _REVISION
+
+#: The report tools whose offer adds the rule about prose to an agent's own instructions.
+_REPORT_WRITERS = ("edit_report", "set_report")
 
 #: Added to the assistant's instructions when the Explore view has an agent of its own.
 EDITING = """\
@@ -260,7 +274,9 @@ def create_agent(
         and the catalogue. When replace_dashboard is offered, the rule to
         keep the revision line of get_dashboard's YAML, and to read the
         dashboard again once a replacement is refused as outdated, follows
-        ``SAFETY``, which saves a refused call. The line about the command
+        ``SAFETY``, which saves a refused call; when edit_report or
+        set_report is, so does the rule that prose about the dashboard goes
+        in the report rather than in text tiles. The line about the command
         palette is left out, since create_agent cannot tell whether a
         session adds those tools.
     catalogue
@@ -289,6 +305,8 @@ def create_agent(
         text = (f"{instructions}\n\n" if instructions else "") + SAFETY
         if tools is None or "replace_dashboard" in tools:
             text += _REVISION
+        if tools is None or any(name in tools for name in _REPORT_WRITERS):
+            text += _REPORT
     agent = Agent(
         model,
         deps_type=FlowDashDeps,

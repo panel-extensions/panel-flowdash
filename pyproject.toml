@@ -83,6 +83,21 @@ Source = "https://github.com/panel-extensions/panel-flowdash"
 agent = [
     "panel-agents[pydantic-ai]>=0.1.0b13",
 ]
+# Provider keys entered in the admin view, stored encrypted; the key can live in the OS keyring.
+secrets = [
+    "cryptography",
+    "keyring",
+]
+# Report exports: charts as images, Word documents and notebooks. PDF also needs
+# weasyprint (the pdf extra) or a Chromium that Playwright can drive.
+export = [
+    "nbformat",
+    "python-docx",
+    "vl-convert-python",
+]
+pdf = [
+    "weasyprint",
+]
 dev = [
     "pre-commit",
     "pytest-asyncio>=0.23",

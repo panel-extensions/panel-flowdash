@@ -343,7 +343,7 @@ def test_resize_collapse_and_close(page):
     editor, query = make_editor()
     panel, _code = _open(page, editor, query)
     before = panel.bounding_box()["height"]
-    handle = page.locator(".fd-dock-handle")
+    handle = page.get_by_role("separator", name="Resize the code panel")
     box = handle.bounding_box()
     page.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
     page.mouse.down()
@@ -363,16 +363,6 @@ def test_resize_collapse_and_close(page):
     wait_until(lambda: panel.bounding_box()["height"] > before + 50, timeout=8000)
     page.locator(".fd-code-close").click()
     expect(page.locator(".fd-code-panel")).to_be_hidden(timeout=8000)
-    assert not editor.code_panel_open
-
-
-def test_narrow_windows_use_the_dialog(page):
-    editor, query = make_editor()
-    page.set_viewport_size({"width": 900, "height": 800})
-    serve_component(page, editor)
-    page.locator(f".react-flow__node[data-id='{query}']").click()
-    page.locator(".fd-code-expand").first.click(timeout=8000)
-    expect(page.locator(".fd-code-field-large")).to_have_count(1, timeout=8000)
     assert not editor.code_panel_open
 
 

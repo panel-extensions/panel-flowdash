@@ -98,6 +98,11 @@ _PALETTE_SX = {
     "& > .MuiListItemButton-root .MuiIconButton-root": {"p": 0.25, "color": "text.secondary"},
 }
 
+_TOUCH_PALETTE_SX = {
+    **_PALETTE_SX,
+    "& .MuiListItemButton-root": {**_PALETTE_SX["& .MuiListItemButton-root"], "minHeight": 48},
+}
+
 
 @dataclass(frozen=True)
 class PalettePort:
@@ -466,6 +471,14 @@ class ComponentPalette(Viewer):
 
     query = param.String(default="", doc="Current search text.")
 
+    touch = param.Boolean(
+        default=False,
+        doc="""
+        Whether the palette is laid out for a touch screen, as in the phone's
+        bottom sheet: entries are 48 px touch targets and the hint about
+        dragging is hidden, since an entry is added with a tap there.""",
+    )
+
     def __init__(
         self,
         *,
@@ -552,6 +565,14 @@ class ComponentPalette(Viewer):
 
     def _on_search_input(self, event):
         self.query = event.new or ""
+
+    @param.depends("touch", watch=True)
+    def _sync_touch(self):
+        self._hint.visible = not self.touch
+        self.menu.sx = _TOUCH_PALETTE_SX if self.touch else _PALETTE_SX
+        # The sheet scrolls as a whole, so the list takes its natural height there.
+        sizing = "stretch_width" if self.touch else "stretch_both"
+        self._list.sizing_mode = self._layout.sizing_mode = sizing
 
     @param.depends("query", watch=True)
     def _sync_search(self):

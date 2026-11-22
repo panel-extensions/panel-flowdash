@@ -104,8 +104,8 @@ async def editor():
 
 
 def _field(editor, node_id, name):
-    """Return the code field the inspector shows where the code panel cannot, in a narrow window."""
-    editor._split_view.storage.window_width = 800
+    """Return the code field the inspector shows where the code panel cannot edit it."""
+    editor._code_panel_allowed = lambda: False
     select_on_canvas(editor._flow, node_id=node_id)
     fields = [
         w

@@ -203,9 +203,10 @@ The agent cannot undo or redo through the command palette; those commands are th
 user's. With `editor_options={"history": False}` each tool call publishes a version
 instead, and applying one that predates the user's own edits asks first.
 
-A node the agent added offers **How was this made?**, in its tile's More menu in view
-mode and as a button in the inspector when the node is selected on the Dataflow canvas.
-It shows the request that created the node, in a side sheet or in the inspector's place:
+A node the agent added offers **How was this made?** in its tile's More menu in view
+mode, and a *History* tab in the sidecar when it is selected while editing. Both show
+the request that created the node, in a side sheet in view mode; a sheet still open
+when you press Edit hands over to the *History* tab. They show
 the question, every model call (model, tokens, the share read from the cache, duration
 and failed attempts) and tool call with its arguments and result, and the versions of
 the dashboard it published. Below it, "Changed later by 2 requests" counts the later
@@ -294,6 +295,47 @@ Pass your own pydantic-ai `Agent` taking `FlowDashDeps` to use it as is (its
 Without an Explore agent (or without any agent) Explore shows every recorded turn of the
 dashboard, as a record of how it was made.
 
+### Report
+
+The assistant writes the dashboard's report, the document the **Report** view shows,
+with these tools: `get_report` returns its blocks as YAML, each numbered by its index,
+`report_text` returns it as a reader sees it, in Markdown with the `{{ node.port }}`
+placeholders filled in, `edit_report` inserts, updates, moves and removes blocks by
+index in one call, `set_report` replaces the whole report, `ask_in_report` adds a
+question without answering it, and `run_pending` answers such a question in the
+current request. A dashboard without a report of its own starts from the one derived
+from its groups and tiles. `get_report` starts with a `# revision:` line; `edit_report`
+given that token, and `set_report` given YAML keeping the line, refuse the edit if the
+report changed since, so a person's edit never shifts the indices under the agent. The
+report's text is handed to the model between random markers, as data written by people.
+The edits are checked like `replace_dashboard` (blocks must
+name nodes, groups and turns the dashboard has; a placeholder naming no output is a
+warning), need no approval, are one step of Undo per request, and are listed in the
+request's summary ("Wrote a paragraph in the report. Added revenue_kpi to the
+report."). Each block the agent writes or changes records its turn as `origin`. The
+agent is told to put prose about a dashboard in the report, as text blocks with live
+placeholders, rather than in text tiles, unless asked for a tile.
+
+A question not run yet shows in the report with a **Run** button. For people who may
+edit the dashboard, Run sends the question to the assistant as an ordinary request,
+shown in the drawer's chat; the request answers the question's turn, so the nodes it
+builds get that turn as their origin and fill the question's block. From the click until
+the request ends the button reads "Running" and cannot be pressed again, so a question is
+asked once. A request that changes nothing leaves the question waiting. Questions run only in the app. Without
+an assistant, or for people who may only view the dashboard, Run is disabled;
+`FlowDash(run_pending=...)` takes your own callable, which answers through
+`FlowDash.answer_pending(turn_id, run_id)`.
+
+`export_report(format, include_pending)` exports the report as a file the user's
+browser saves, as **Export...** in the Report view does: `html`, `pdf`, `docx`, `md` or
+`ipynb`. A file leaves the app, so every export waits for the user's approval, and
+questions not run yet are never run for it.
+
+An agent given a subset of the tools (`create_agent(tools=...)`) gets the report tools
+by name; `panel_flowdash.agent.REPORT_TOOLS` lists them. When it is offered
+`edit_report` or `set_report`, its own instructions are followed by the rule about
+where prose goes.
+
 Each request to the agent stays on the dashboard that was open when the user sent it:
 if the user opens another dashboard while the agent works, every further tool call
 and palette command of that request is refused, so the agent stops instead of
@@ -368,7 +410,8 @@ print(ops.preview()["nodes"]["total_capacity"]["status"])
 Without a `position`, `add_node` lets the editor place the node by its dataflow and its
 tile with the tiles of its kind, see
 [Automatic arrangement](layout-and-sizing.md#automatic-arrangement), and
-`ops.arrange_canvas()` and `ops.arrange_layout()` rearrange everything on request.
+`ops.arrange_canvas()` and `ops.arrange_tiles()` rearrange everything on request;
+`ops.arrange_tiles(order=[...], style="stack")` also puts named tiles first or stacks them.
 Without `name`, `add_node` gives the node a generated name such as `kpi_3fa2c1` and
 returns it. A chosen name follows the rules for
 [node names](../reference/dashboard-yaml.md#nodes) and is at most 64 characters long,

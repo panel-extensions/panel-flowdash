@@ -37,10 +37,38 @@ _PLAIN_TYPES = (
 )
 _CONTAINERS = (list, tuple, set, frozenset, dict)
 _MAX_NAME = 60
-_URL_PASSWORD = re.compile(r"(\b[a-zA-Z][\w+.-]*://[^\s:/@]+:)[^\s@/]+@")
-_SECRET_PARAM = re.compile(
-    r"(\b(?:password|passwd|pwd|secret|token|access_token|api_key|apikey)=)[^\s&;,'\"]+",
+_URL_PASSWORD = re.compile(r"(\b[a-zA-Z][\w+.-]*://[^\s:/@]*:)[^\s@/]+@")
+_SECRET_KEY = r"\b\w*?(?:password|passwd|pwd|secret|token|api[_-]?key)"
+_SECRET_PARAM = re.compile(rf"({_SECRET_KEY}=)[^\s&;,'\"]+", re.IGNORECASE)
+# A quoted value of a secret key, as JSON, a dict repr or keyword arguments write it.
+_SECRET_QUOTED = re.compile(
+    rf"""(["']?{_SECRET_KEY}["']?\s*[:=]\s*)(["'])(?:\\.|(?!\2).)*?\2""", re.IGNORECASE
+)
+# An unquoted header-style value. Authorization may also be a keyword argument or a dict
+# value, and its value may follow its scheme. The value after Bearer or Basic is always
+# masked; a word like "required" after the header or "token" is English, as in
+# "Authorization: token required", and stays.
+_HEADER_WORD = (
+    r"(?:required|missing|invalid|expired|needed|denied|rejected|failed|empty|header"
+    r"|is|was|not|must)(?![^\s\"',;}&])"
+)
+_SECRET_HEADER = re.compile(
+    r"""(\b(?:(?:x-)?api[_-]?key["']?\s*:|authorization["']?\s*[:=])\s*"""
+    r"""(?:["'](?:(?:bearer|basic|token)\s+)?|(?:bearer|basic)\s+"""
+    rf"""|token\s+(?!{_HEADER_WORD})|(?!(?:bearer|basic|token)\s)(?!{_HEADER_WORD})))"""
+    r"""(?![*"'])[^\s"',;}&]+""",
     re.IGNORECASE,
+)
+# An unquoted "password: value" takes one word, and none that starts a sentence such as
+# "Password: must be set"; "token: expired" is never masked.
+_PASSWORD_PLAIN = re.compile(
+    r"""(\b\w*?(?:password|passwd|pwd)\s*:\s*)(?![*"'])[^\s"',;}&]+(?![^\s"',;}&])(?!\s+(?-i:[a-z]))""",
+    re.IGNORECASE,
+)
+# Only a credential-like word after "Bearer": one with a digit or inner token punctuation, or
+# a long run of letters, so text like "Bearer token required." stays readable.
+_BEARER = re.compile(
+    r"\b(bearer\s+)(?=[\w~+/.-]*(?:\d|[~+/.][\w~+/-])|\w{16})[\w~+/.-]+=*", re.IGNORECASE
 )
 
 
@@ -87,16 +115,47 @@ def held_table_names(value: t.Any) -> list[str] | None:
     return None
 
 
+def error_text(exc: BaseException) -> str:
+    """Return an exception's message with its credentials masked, to show a user or an agent."""
+    return redact_secrets(str(exc))
+
+
 def redact_secrets(text: str) -> str:
-    """Mask a URL's password and ``password=``/``token=`` style values, e.g. in an error message."""
+    """Mask a URL's password, secret keys' values and bearer tokens, e.g. in an error message."""
     text = _URL_PASSWORD.sub(r"\1***@", text)
-    return _SECRET_PARAM.sub(r"\1***", text)
+    text = _SECRET_QUOTED.sub(r"\1\2***\2", text)
+    text = _SECRET_PARAM.sub(r"\1***", text)
+    text = _SECRET_HEADER.sub(r"\1***", text)
+    text = _PASSWORD_PLAIN.sub(r"\1***", text)
+    return _BEARER.sub(r"\1***", text)
+
+
+def _safe_labels(index: t.Any) -> t.Any:
+    """Return a pandas *index* whose labels and level names that are not plain data show their text.
+
+    The *index* itself is returned when nothing needs to change.
+    """
+    import pandas as pd
+
+    names = [n if is_plain(n) else safe_repr(n) for n in index.names]
+    renamed = any(new is not old for new, old in zip(names, index.names, strict=True))
+    if isinstance(index, pd.MultiIndex):
+        values = [index.get_level_values(i) for i in range(index.nlevels)]
+        levels = [_safe_labels(v) for v in values]
+        if not renamed and all(new is old for new, old in zip(levels, values, strict=True)):
+            return index
+        return pd.MultiIndex.from_arrays(levels, names=names)
+    if index.dtype.kind == "O" and not all(is_plain(v) for v in index):
+        return pd.Index([v if is_plain(v) else safe_repr(v) for v in index], name=names[0])
+    return index.rename(names[0]) if renamed else index
 
 
 def safe_frame(frame: t.Any) -> t.Any:
-    """Return a copy of a pandas *frame* whose object cells that are not plain data show their label.
+    """Return a pandas *frame* whose objects that are not plain data show their text.
 
-    Pass only the rows to show: every object column of *frame* is copied.
+    That covers object cells, index values, column labels and level names. The
+    frame is copied only when one of them needs to change, so pass only the rows
+    to show.
     """
     try:
         import pandas as pd
@@ -104,12 +163,18 @@ def safe_frame(frame: t.Any) -> t.Any:
         return frame
     if not isinstance(frame, pd.DataFrame):
         return frame
-    columns = [i for i, dtype in enumerate(frame.dtypes) if dtype.kind == "O"]
-    if not columns:
+    index, labels = _safe_labels(frame.index), _safe_labels(frame.columns)
+    columns = [
+        i
+        for i, dtype in enumerate(frame.dtypes)
+        if dtype.kind == "O" and not all(is_plain(v) for v in frame.iloc[:, i])
+    ]
+    if not columns and index is frame.index and labels is frame.columns:
         return frame
     frame = frame.copy()
     for i in columns:
         frame.isetitem(i, frame.iloc[:, i].map(lambda v: v if is_plain(v) else safe_repr(v)))
+    frame.index, frame.columns = index, labels
     return frame
 
 

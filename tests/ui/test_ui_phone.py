@@ -15,7 +15,7 @@ from panel_flowdash.component_library import normalize_components
 from ..test_agent_tools import scripted
 from .test_ui_header_overflow import _HITS_ITSELF, _button, _store
 from .test_ui_view_header import COMPONENTS
-from .util import serve_component, stable_box
+from .util import DASHBOARD_LOAD_TIMEOUT, serve_component, stable_box
 
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
@@ -69,7 +69,9 @@ def _serve(page, width, edit):
     suffix = f"/dash/{dash}" + ("?edit=true" if edit else "")
     serve_component(page, {"/": factory, "/dash/[^/]+": factory}, suffix=suffix)
     if edit:
-        expect(page.locator(".react-flow__node").first).to_be_visible()
+        expect(page.locator(".react-flow__node").first).to_be_visible(
+            timeout=DASHBOARD_LOAD_TIMEOUT
+        )
     else:
         page.locator(".flowdash-tile").filter(visible=True).first.wait_for()
     for name in _PHONE_TOP_BAR[edit]:
@@ -114,8 +116,8 @@ def test_the_top_bar_fits_a_phone_screen(page, edit):
 @pytest.mark.parametrize(
     ("edit", "entries"),
     [
-        (False, ["Explore", "Edit", "Refresh now", "Full screen"]),
-        (True, ["Explore", "Layout", "Settings", "Done editing"]),
+        (False, ["Explore", "Report", "Edit", "Refresh now", "Full screen"]),
+        (True, ["Explore", "Report", "Layout", "Settings", "Done editing"]),
     ],
     ids=["view", "edit"],
 )

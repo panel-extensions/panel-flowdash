@@ -489,6 +489,14 @@ class TestAgentTools:
         assert "nodes.q.config: Only SELECT statements are allowed." in output
 
 
+async def _check_started(sql, timeout=10):
+    """Wait until a check of *sql* is running, however long the caller took to start it."""
+    deadline = time.monotonic() + timeout
+    while not any(call[0].get("sql") == sql for call in CALLS):
+        assert time.monotonic() < deadline, f"no check of {sql!r} started"
+        await asyncio.sleep(0.01)
+
+
 async def _settle(seconds=0.3):
     deadline = time.monotonic() + seconds
     while time.monotonic() < deadline:
@@ -729,7 +737,7 @@ class TestRaces:
         else:
             task = ops.add_node_async(QUERY, {"sql": "SELECT SLOW"}, name="n")
         task = asyncio.ensure_future(task)
-        await asyncio.sleep(0.1)
+        await _check_started("SELECT SLOW")
         ops.editor.new_dashboard("Second")
         with pytest.raises(PermissionError, match="opened another dashboard"):
             await task
@@ -742,7 +750,7 @@ class TestRaces:
         ops = DashboardOps(editor)
         runner = _runner(ops, ("add_node", {"component": QUERY, "config": {"sql": "SELECT SLOW"}}))
         task = asyncio.ensure_future(runner.run("Add"))
-        await asyncio.sleep(0.25)
+        await _check_started("SELECT SLOW")
         editor.new_dashboard("Second")
         assert "Refused: the user opened another dashboard" in await task
         assert editor._tile_items == []

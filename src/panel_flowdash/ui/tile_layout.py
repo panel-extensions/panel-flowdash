@@ -28,7 +28,7 @@ FRAME_DEFAULT = "default"
 GRID, TOP, SIDEBAR = "grid", "top", "sidebar"
 AREAS = (GRID, TOP, SIDEBAR)
 AREA_NAMES = {GRID: "grid", TOP: "top bar", SIDEBAR: "sidebar"}
-_AREA_ICONS = {GRID: "dashboard", TOP: "vertical_align_top", SIDEBAR: "view_sidebar"}
+AREA_ICONS = {GRID: "dashboard", TOP: "vertical_align_top", SIDEBAR: "view_sidebar"}
 
 # The tile kinds that stay legible beside the grid, in a 240 px slot of the top
 # bar or the sidebar's column. Charts, tables and data previews need the room of
@@ -319,7 +319,7 @@ def move_buttons(
         button = pmui.Button(
             label=f"Move to {AREA_NAMES[area]}",
             description=f"Move {tile_title(editor, item)} to the {AREA_NAMES[area]}",
-            icon=_AREA_ICONS[area],
+            icon=AREA_ICONS[area],
             variant="text",
             size="small",
             sx={"textTransform": "none"},

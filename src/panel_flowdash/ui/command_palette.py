@@ -11,6 +11,7 @@ import param
 from panel.custom import JSComponent
 
 from panel_flowdash.ui.palette import editor_presets
+from panel_flowdash.value_text import error_text
 
 if t.TYPE_CHECKING:
     from panel_flowdash.app import FlowDashApp
@@ -170,7 +171,7 @@ class CommandPaletteController:
         return (
             editor.editable
             and editor.mode != "dashboard"
-            and not getattr(editor, "explore", False)
+            and getattr(editor, "surface", "workspace") == "workspace"
             and getattr(editor, "_status_bar", None) is not None
         )
 
@@ -225,7 +226,7 @@ class CommandPaletteController:
         placed = editor._placed_singletons()
         items = []
         for component_id, entry in editor._component_entries.items():
-            if not editor._component_authorized(component_id):
+            if not editor._component_offered(component_id):
                 continue
             meta = entry.metadata
             if adding and component_id in placed:
@@ -526,7 +527,7 @@ class CommandPaletteController:
         try:
             done = editor.undo() if action == "undo" else editor.redo()
         except (PermissionError, HistoryBusy) as exc:
-            editor._notify("warning", str(exc), duration=5000)
+            editor._notify("warning", error_text(exc), duration=5000)
             return
         if not done:
             editor._notify("info", f"Nothing to {action}.", duration=2000)
@@ -600,7 +601,7 @@ class CommandPaletteController:
     def _run_preset(self, component_id: str, key: str):
         editor = self._editor
         entry = editor._component_entries.get(component_id)
-        if entry is None or not self._editing() or not editor._component_authorized(component_id):
+        if entry is None or not self._editing() or not editor._component_offered(component_id):
             return
         preset = next((p for p in editor_presets(editor, entry) if p["key"] == key), None)
         if preset is not None:
@@ -624,7 +625,7 @@ class CommandPaletteController:
         elif dashboard is None:
             return
         elif action == "refresh":
-            editor.param.trigger("refresh")
+            editor.trigger_refresh()
         elif action == "edit" and not editor.editable and self._can_edit():
             editor._dashboard_bar.request_mode("edit")
         elif action == "view" and editor.editable:

@@ -33,6 +33,7 @@ from panel.viewable import Viewer
 
 from panel_flowdash.port_types import register_port_type
 from panel_flowdash.registry import register
+from panel_flowdash.value_text import error_text
 
 SELECTION_TYPE = register_port_type("Selection")
 
@@ -970,7 +971,7 @@ def _set(ref, name, value):
         "selection keeps every row. Feed the chart itself the unfiltered data, so it keeps "
         "showing everything with its selection highlighted."
     ),
-    tags=["transform"],
+    tags=["transform", "filter"],
     requires=[
         {"key": "data", "type": "DataFrame", "required": True},
         {"key": "selection", "type": SELECTION_TYPE, "required": False, "blocking": False},
@@ -1005,7 +1006,7 @@ class SelectionFilter(Viewer):
         try:
             kept = len(self.selection.filter(self.data))
         except (ValueError, TypeError) as exc:
-            return str(exc)
+            return error_text(exc)
         return f"{kept:,} of {total:,} rows: {self.selection}"
 
     def __panel__(self):

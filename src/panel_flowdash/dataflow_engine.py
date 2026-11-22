@@ -11,6 +11,12 @@ before the hold releases anything. The binding checks each value against the
 target first; a rejected value, like a failing transform step, is reported via
 the error callback and skipped, which leaves the target on its last good value.
 
+A change entering the graph opens a propagation pass, see
+:meth:`DataflowGraph.propagation`. Within it the values reaching a node's inputs
+are held and delivered together once every node upstream of it in the pass has
+run, in topological order, so a node runs once per pass and never sees a mix
+of new and old inputs.
+
 With ``propagate_failures`` a failure is carried along the edge instead, as a
 ``param.ReactiveError`` value. An input that handles failures receives it on
 its port; any other input keeps its last good value, records the failure in the
@@ -24,11 +30,12 @@ import asyncio
 import copy
 import logging
 import sys
+import threading
 from collections import deque
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
-from functools import partial
+from functools import partial, wraps
 from typing import Any
 
 import param
@@ -40,9 +47,14 @@ from panel_flowdash.port_types import (
     normalize_port_type,
     port_types_compatible,
 )
-from panel_flowdash.transforms import Transform, apply_transform, parse_transform
+from panel_flowdash.transforms import (
+    StepInputError,
+    Transform,
+    apply_transform,
+    parse_transform,
+)
 from panel_flowdash.util import ReactiveError, is_failure
-from panel_flowdash.value_text import redact_secrets
+from panel_flowdash.value_text import error_text
 
 logger = logging.getLogger("panel_flowdash")
 
@@ -51,6 +63,11 @@ _RESERVED_PARAMS = set(param.Parameterized.param)
 EdgeKey = tuple[str, str, str, str]
 
 _NO_LITERAL = object()
+_NOT_FORWARDED = object()
+
+# Deliveries to one node within one pass after which it is taken to be fed back
+# by its own consumers, e.g. two components that keep setting each other.
+_MAX_DELIVERIES = 100
 
 # Frames left free below the recursion limit when an update has to stop, for
 # the hop already in progress to finish.
@@ -99,7 +116,7 @@ def failure_text(error: param.ReactiveError) -> str:
 
 def exception_text(exc: BaseException) -> str:
     """Describe an exception as ``Type: message``."""
-    message = redact_secrets(str(exc))
+    message = error_text(exc)
     return f"{type(exc).__name__}: {message}" if message else type(exc).__name__
 
 
@@ -180,6 +197,20 @@ def _stack_deeper_than(depth: int) -> bool:
 
 
 _iterative_updates = getattr(param, "batch", nullcontext)
+
+
+def _rewires(method):
+    """Mark the graph as wiring while *method* changes what feeds an input, see `DataflowGraph.wiring`."""
+
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        self._wiring_depth += 1
+        try:
+            return method(self, *args, **kwargs)
+        finally:
+            self._wiring_depth -= 1
+
+    return wrapper
 
 
 # holoviz/param#1232 makes param drop these watchers itself when a reference is
@@ -322,11 +353,18 @@ class DataflowGraph:
         self._edges: dict[EdgeKey, Edge] = {}
         self._hold = hold
         self._relays: dict[tuple[str, str], tuple[_Relay, Callable[[], None]]] = {}
+        # The relays of each node by port, and the values forwarded ahead of their
+        # own watcher call, see `_forward_siblings`.
+        self._node_relays: dict[str, dict[str, _Relay]] = {}
+        self._forwarded: dict[tuple[str, str], Any] = {}
+        # Per thread, since a threaded component's change is its own pass.
+        self._pass = threading.local()
         # Indexes over `_edges`, kept in step by `_store_edge` and `_drop_edge`.
         self._incoming_edges: dict[tuple[str, str], dict[EdgeKey, Edge]] = {}
         self._successors: dict[str, dict[str, int]] = {}
         self._on_error = on_error
         self._batch_depth = 0
+        self._wiring_depth = 0
         self._pending_lists: dict[tuple[str, str], None] = {}
         # Edges replaced inside batch() whose target is rebound only when the
         # pending list inputs are flushed, so they are released after that.
@@ -502,24 +540,138 @@ class DataflowGraph:
         hold = self._hold
 
         def _forward(event):
+            ahead = self._forwarded.pop((node_id, port), _NOT_FORWARDED)
+            if event.type != "triggered" and ahead is event.new:
+                return
+            local = self._pass
+            opened = getattr(local, "pending", None) is None
             with hold():
-                if event.type == "triggered":
-                    # A trigger, e.g. after mutating a list in place, carries a
-                    # value equal to the relay's, which assigning would not forward.
-                    with param.discard_events(relay):
+                if opened:
+                    local.pending = {}
+                try:
+                    if event.type == "triggered":
+                        # A trigger, e.g. after mutating a list in place, carries a
+                        # value equal to the relay's, which assigning would not forward.
+                        with param.discard_events(relay):
+                            relay.value = event.new
+                        relay.param.trigger("value")
+                    else:
                         relay.value = event.new
-                    relay.param.trigger("value")
-                else:
-                    relay.value = event.new
+                        if len(self._node_relays[node_id]) > 1:
+                            self._forward_siblings(node_id, port)
+                finally:
+                    if opened:
+                        try:
+                            self._deliver_pending()
+                        finally:
+                            local.pending = None
 
         watcher = state.param.watch(_forward, port)
         self._relays[(node_id, port)] = (relay, partial(state.param.unwatch, watcher))
+        self._node_relays.setdefault(node_id, {})[port] = relay
         return relay
+
+    def _forward_siblings(self, node_id: str, port: str):
+        """Forward the other outputs of a node that changed in the same update.
+
+        A node setting several outputs at once has them all set before any of
+        their watchers runs, so a consumer of two of them would otherwise run
+        once with the first new value and the second old one.
+        """
+        state = self._nodes.get(node_id)
+        for name, relay in self._node_relays.get(node_id, {}).items():
+            if name == port or state is None:
+                continue
+            value = getattr(state, name, None)
+            if relay.value is not value:
+                self._forwarded[(node_id, name)] = value
+                relay.value = value
 
     def _release_relay(self, source: tuple[str, str]):
         entry = self._relays.pop(source, None)
         if entry is not None:
             entry[1]()
+            relays = self._node_relays.get(source[0], {})
+            relays.pop(source[1], None)
+            if not relays:
+                self._node_relays.pop(source[0], None)
+            self._forwarded.pop(source, None)
+
+    @contextmanager
+    def propagation(self) -> Iterator[None]:
+        """Deliver the values reaching node inputs inside this block as one pass.
+
+        Every value an edge carries to an input is held until the block exits,
+        then each node receives all of its held values in one update, upstream
+        nodes first, so a node whose inputs change together runs once with all
+        of them. Values the nodes produce meanwhile join the same pass. A change
+        of an output opens a pass of its own; wrap a change of several nodes at
+        once, such as a refresh that runs every source again, in this block.
+        Nested blocks join the outer pass.
+        """
+        if getattr(self._pass, "pending", None) is not None:
+            yield
+            return
+        self._pass.pending = {}
+        try:
+            yield
+        finally:
+            try:
+                with self._hold():
+                    self._deliver_pending()
+            finally:
+                self._pass.pending = None
+
+    def _deliver_pending(self):
+        """Deliver the held input values, a node only once nothing upstream of it is held."""
+        pending: dict[str, dict[str, Any]] = self._pass.pending
+        delivered: dict[str, int] = {}
+        while pending:
+            if len(pending) == 1:
+                ready = list(pending)
+            else:
+                blocked = self._downstream_of(pending)
+                ready = [node for node in pending if node not in blocked] or list(pending)[:1]
+            for node_id in ready:
+                values = pending.pop(node_id)
+                state = self._nodes.get(node_id)
+                if state is None:
+                    continue
+                delivered[node_id] = count = delivered.get(node_id, 0) + 1
+                if count > _MAX_DELIVERIES:
+                    if self._on_error:
+                        exc = RecursionError(
+                            "The node keeps receiving new inputs from its own consumers."
+                        )
+                        for port in values:
+                            self._on_error("", "", node_id, port, exc)
+                    continue
+                values = {
+                    port: value
+                    for port, value in values.items()
+                    if self._incoming(node_id, port) or self._is_list_input(node_id, port)
+                }
+                if values:
+                    # Syncing keeps the inputs bound to their edges, as when
+                    # param resolves the references itself.
+                    with param.parameterized._syncing(state, values):
+                        state.param.update(values)
+
+    def _downstream_of(self, nodes) -> set[str]:
+        """Return every node strictly downstream of any of *nodes*."""
+        seen: set[str] = set()
+        queue = deque(target for node in nodes for target in self._successors.get(node, ()))
+        while queue:
+            node = queue.popleft()
+            if node not in seen:
+                seen.add(node)
+                queue.extend(self._successors.get(node, ()))
+        return seen
+
+    @property
+    def wiring(self) -> bool:
+        """Whether an edge or literal is being changed, so the inputs it sets change because of an edit."""
+        return bool(self._wiring_depth)
 
     @contextmanager
     def batch(self) -> Iterator[None]:
@@ -540,6 +692,7 @@ class DataflowGraph:
             if not self._batch_depth:
                 self._flush_pending_lists()
 
+    @_rewires
     def _flush_pending_lists(self, before: str | None = None):
         """Bind the pending list inputs, or only if node *before* is downstream of one."""
         if not self._pending_lists:
@@ -658,7 +811,7 @@ class DataflowGraph:
         try:
             return parse_transform(transform), None
         except ValueError as exc:
-            return [], f"Invalid transform: {exc}"
+            return [], f"Invalid transform: {error_text(exc)}"
 
     def _edge_value(self, key: EdgeKey, steps: list[Transform]):
         """Return the source's current value run through *steps*, raising if a step fails."""
@@ -684,6 +837,7 @@ class DataflowGraph:
         error_source = ("", "") if is_list else next(iter(incoming))[:2]
         first_call = [skip_initial_none]
         keys = list(incoming)
+        binding = [True]
 
         def _guard(*values):
             initial = bool(first_call) and first_call.pop()
@@ -698,15 +852,20 @@ class DataflowGraph:
             if self._defer_binding(target_id, target_port, error_source):
                 raise param.Skip
             if failure is not None:
-                return self._receive_failure(target_id, target_port, *failure)
-            try:
-                self._check_target_value(target_id, target_port, value)
-            except Exception as exc:
-                if self._on_error:
-                    self._on_error(*error_source, target_id, target_port, exc)
-                raise param.Skip from exc
-            self._set_failure(target_id, target_port, None)
-            return value
+                value = self._receive_failure(target_id, target_port, *failure)
+            else:
+                try:
+                    self._check_target_value(target_id, target_port, value)
+                except Exception as exc:
+                    if self._on_error:
+                        self._on_error(*error_source, target_id, target_port, exc)
+                    raise param.Skip from exc
+                self._set_failure(target_id, target_port, None)
+            pending = None if binding else getattr(self._pass, "pending", None)
+            if pending is None:
+                return value
+            pending.setdefault(target_id, {})[target_port] = value
+            raise param.Skip
 
         # Set on the instance's own copy of the param, so states this graph did
         # not build can be wired too.
@@ -715,7 +874,10 @@ class DataflowGraph:
         # Without process_failures param skips the call instead of handing the
         # guard a failure; it is only passed when set, as older param lacks it.
         options = {"process_failures": True} if self.propagate_failures else {}
-        setattr(target, target_port, param.bind(_guard, *exprs, **options))
+        try:
+            setattr(target, target_port, param.bind(_guard, *exprs, **options))
+        finally:
+            binding.clear()
 
     def _receive_failure(self, target_id: str, target_port: str, key: EdgeKey, error):
         """Hand a failure to an input that handles it, or hold it for the node otherwise.
@@ -779,13 +941,19 @@ class DataflowGraph:
         try:
             value = self._edge_value((source_id, source_port, target_id, target_port), steps)
         except Exception as exc:
-            return f"Transform fails on the current value of '{source_port}': {exc}"
+            # A list input fails as a whole, so an edge whose transform fails
+            # on this value is wired and the failure reaches the input like any
+            # later one. A step that cannot take this kind of value never will.
+            if is_list and not isinstance(exc, StepInputError):
+                return None
+            return f"Transform fails on the current value of '{source_port}': {error_text(exc)}"
         port = next(p for p in target_spec.inputs if p.name == target_port)
         reason = _check_item(port, value) if is_list else port.check_value(value)
         if reason:
             return f"Input '{target_port}' rejects the current value of '{source_port}': {reason}"
         return None
 
+    @_rewires
     def add_edge(
         self,
         source_id: str,
@@ -811,6 +979,7 @@ class DataflowGraph:
         key = (source_id, source_port, target_id, target_port)
         return self._wire(key, parse_transform(transform))
 
+    @_rewires
     def set_edge_transform(
         self,
         source_id: str,
@@ -841,7 +1010,7 @@ class DataflowGraph:
             try:
                 self._check_target_value(target_id, target_port, self._edge_value(key, steps))
             except Exception as exc:
-                return f"Connection rejected: {exc}"
+                return f"Connection rejected: {error_text(exc)}"
 
         previous = self._edges.get(key)
         self._store_edge(key, self._build_edge(key, steps))
@@ -901,6 +1070,7 @@ class DataflowGraph:
             f"but input '{target_port}' expects '{target_type}'."
         )
 
+    @_rewires
     def remove_edge(self, source_id: str, source_port: str, target_id: str, target_port: str):
         """Remove an edge and reset the target input to its literal or its default, see `_default`."""
         edge = self._drop_edge((source_id, source_port, target_id, target_port))
@@ -927,6 +1097,7 @@ class DataflowGraph:
         """Return a copy of the literal values set on a node's inputs, by port."""
         return copy.deepcopy(self._literals.get(instance_id, {}))
 
+    @_rewires
     def set_literal(self, instance_id: str, port: str, value: Any):
         """Give the input *port* of a node a literal value, used while no edge feeds it.
 
@@ -948,6 +1119,7 @@ class DataflowGraph:
         if not self._incoming(instance_id, port):
             self._unbind_to_literal(instance_id, port)
 
+    @_rewires
     def clear_literal(self, instance_id: str, port: str):
         """Remove the literal value of an input; an unwired input goes back to its default.
 

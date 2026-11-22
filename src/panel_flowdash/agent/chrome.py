@@ -24,6 +24,14 @@ def _keys(config: t.Any) -> str:
     return ", ".join(map(str, config)) if isinstance(config, dict) and config else "its config"
 
 
+_EXPORT_NAMES = {
+    "html": "a web page",
+    "pdf": "a PDF",
+    "docx": "a Word document",
+    "md": "Markdown",
+    "ipynb": "a notebook",
+}
+
 #: The assistant's steps in the user's words, by tool name. Imperative, so a label
 #: reads right whether the step is running, done, failed or waiting for approval.
 TOOL_LABELS: dict[str, str | t.Callable[[dict], str]] = {
@@ -46,12 +54,22 @@ TOOL_LABELS: dict[str, str | t.Callable[[dict], str]] = {
     "place_tile": lambda a: f"Place the tile of {a['name']}",
     "arrange_canvas": "Arrange the canvas",
     "arrange_layout": "Arrange the tile layout",
+    "arrange_tiles": "Arrange the tile layout",
     "group_nodes": lambda a: f"Group {', '.join(a.get('nodes') or [])}",
     "ungroup": lambda a: f"Ungroup {a['name']}",
     "set_settings": lambda a: f"Change the settings: {_keys(a.get('settings'))}",
     "declare_parameter": lambda a: f"Make {a.get('node')}.{a.get('field')} a parameter",
     "remove_parameter": lambda a: f"Remove parameter {a.get('name')}",
     "replace_dashboard": "Rewrite the dashboard",
+    "get_report": "Read the report",
+    "report_text": "Read the report",
+    "edit_report": "Edit the report",
+    "set_report": "Write the report",
+    "ask_in_report": "Add a question to the report",
+    "run_pending": "Answer a question of the report",
+    "export_report": lambda a: (
+        f"Export the report as {_EXPORT_NAMES.get(str(a.get('format', 'html')), 'a file')}"
+    ),
     "save_dashboard": "Save the dashboard",
     "delete_dashboard": lambda a: f"Delete {a['title']}",
     "share_dashboard": "Change who can see the dashboard",
@@ -89,9 +107,10 @@ class SessionChrome:
 
     - Below :data:`OVERLAY_BELOW` pixels the drawer overlays the app, and the
       assistant's steps are named with :data:`TOOL_LABELS`.
-    - While the drawer is open the editor's inspector is folded, so the canvas
-      keeps its width; it opens again when the drawer closes, unless the user
-      opened or closed it in the meantime.
+    - The drawer's state is reported to the editor's sidecar, which decides
+      whether the two fit side by side (see :mod:`panel_flowdash.ui.sidecar`)
+      and closes the drawer when the person opens the sidecar in a window
+      where they share one slot.
     - An approval that waits on a surface out of sight shows a notice whose
       Review button brings that surface back: one of the assistant's in full
       screen or while Explore is shown opens the drawer, and one of the
@@ -102,14 +121,13 @@ class SessionChrome:
 
     def __init__(self, session: AgentSession):
         self.session = session
-        self._folded = False
-        self._expected: bool | None = None
         # Which surface the notice's Review button brings back: "drawer" or "explore".
         self._review_target = "drawer"
         # The approvals the notice tells of, and those whose notice the person dismissed.
         self._shown: set[str] = set()
         self._dismissed: set[str] = set()
-        self._queued: list[str] = []
+        # Questions asked while the assistant is busy, each with the pending turn it answers, if any.
+        self._queued: list[tuple[str, str | None]] = []
         drawer = session.drawer
         drawer.overlay_below = OVERLAY_BELOW
         drawer.chat.tool_labels = TOOL_LABELS
@@ -151,9 +169,11 @@ class SessionChrome:
             editor._view.append(self.notice)
             editor.param.watch(self._on_fullscreen, "fullscreen")
             editor.param.watch(self._on_explore, "explore")
-            editor._inspector.param.watch(self._on_user_toggle, "collapsed")
-            # Entering edit mode with the drawer open shows the inspector beside it.
-            editor._inspector.param.watch(self._on_inspector_shown, "visible")
+            editor._sidecar.on_close_drawer = lambda: setattr(drawer, "open", False)
+            editor._split_view.storage.param.watch(
+                lambda _e: self._report_drawer(), "window_width"
+            )
+            self._report_drawer()
 
         palette = session.app._command_palette
         if palette is not None:
@@ -163,29 +183,39 @@ class SessionChrome:
     # Asking from the palette
     # ------------------------------------------------------------------
 
-    def ask(self, text: str):
-        """Open the drawer on the chat and send *text* to the assistant."""
+    def ask(self, text: str, turn: str | None = None):
+        """Open the drawer on the chat and send *text* to the assistant.
+
+        With *turn*, the id of a pending turn asking *text*, the request answers that turn.
+        """
         text = text.strip()
         if not text:
             return
         drawer = self.session.drawer
         drawer.param.update(open=True, tab="chat")
         if self.session.runner.state.running:
-            self._queued.append(text)
+            self._queued.append((text, turn))
             return
-        self._submit(text)
+        self._submit(text, turn)
 
-    def _submit(self, text: str):
+    def _submit(self, text: str, turn: str | None = None):
         chat = self.session.drawer.chat
+        runner = self.session.runner
 
         async def submit():
-            await chat.submit(text)
+            runner.answering = turn
+            try:
+                await chat.submit(text)
+            finally:
+                runner.answering = None
+                if turn is not None:
+                    self.session.pending_done(turn)
 
         pn.state.execute(submit)
 
     def _on_running(self, event):
         if not event.new and self._queued:
-            self._submit(self._queued.pop(0))
+            self._submit(*self._queued.pop(0))
 
     # ------------------------------------------------------------------
     # Full screen
@@ -271,36 +301,19 @@ class SessionChrome:
         self._refresh_notice()
 
     # ------------------------------------------------------------------
-    # The inspector
+    # The sidecar
     # ------------------------------------------------------------------
 
-    def _on_inspector_shown(self, event):
-        if event.new and self.session.drawer.open:
-            self._fold(self.session.app._editor)
-
-    def _fold(self, editor):
-        inspector = editor._inspector
-        if inspector.visible and not inspector.collapsed:
-            self._set_collapsed(editor, True)
-            self._folded = True
+    def _report_drawer(self):
+        editor = self.session.app._editor
+        sidecar = getattr(editor, "_sidecar", None)
+        if sidecar is None:
+            return
+        drawer = self.session.drawer
+        window = editor._split_view.storage.window_width
+        # Below its overlay width the drawer covers the page rather than taking from it.
+        pushes = window is None or window >= (drawer.overlay_below or 0)
+        sidecar.drawer_changed(drawer.open, drawer.width if pushes else 0)
 
     def _on_open(self, event):
-        editor = self.session.app._editor
-        inspector = getattr(editor, "_inspector", None)
-        if inspector is None:
-            return
-        if event.new:
-            self._fold(editor)
-        elif self._folded:
-            if inspector.collapsed:
-                self._set_collapsed(editor, False)
-            self._folded = False
-
-    def _set_collapsed(self, editor, collapsed: bool):
-        self._expected = collapsed
-        editor._inspector.collapsed = collapsed
-
-    def _on_user_toggle(self, event):
-        if event.new != self._expected:
-            # The user (or the split view) opened or closed it: leave it as it is.
-            self._folded = False
+        self._report_drawer()

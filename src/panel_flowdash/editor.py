@@ -34,13 +34,18 @@ import panel as pn
 import panel_material_ui as pmui
 import panel_reactflow as pr
 import param
-from panel.viewable import Children, Viewer
+from panel.layout.base import ListLike
+from panel.layout.spacer import Spacer
+from panel.pane.base import ReplacementPane
+from panel.pane.markup import HTMLBasePane
+from panel.viewable import Children, Layoutable, Viewer
 from panel_agents import RunState
 from panel_tiles import TileGrid
 
 from panel_flowdash import auto_layout
 from panel_flowdash.auth import Permission
 from panel_flowdash.component_library import normalize_components
+from panel_flowdash.component_settings import TURNED_OFF
 from panel_flowdash.component_spec import (
     _flowdash_metadata,
     build_component_specs,
@@ -65,6 +70,11 @@ from panel_flowdash.dataflow_engine import (
     failure_text,
 )
 from panel_flowdash.failure_overlay import FailureMessage, FailureOverlay, with_failure_overlay
+from panel_flowdash.global_filters import (
+    check_filters,
+    map_filters,
+    without_nodes as without_filtered_nodes,
+)
 from panel_flowdash.groups import (
     GROUP_HEADER_HEIGHT,
     GROUP_PORT_ROW_HEIGHT,
@@ -106,7 +116,14 @@ from panel_flowdash.placeholders import (
     unresolved_summary,
 )
 from panel_flowdash.registry import RegistryEntry
-from panel_flowdash.report import check_report, map_report, report_turns, without_nodes
+from panel_flowdash.report import (
+    check_report,
+    insert_block,
+    map_report,
+    report_blocks,
+    report_turns,
+    without_nodes,
+)
 from panel_flowdash.selection import release_links
 from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transform_editor import TransformEditor
@@ -122,9 +139,10 @@ from panel_flowdash.turns import (
     summary_cut_short,
 )
 from panel_flowdash.ui import tile_layout
-from panel_flowdash.ui.code_panel import HEADER_HEIGHT, CodePanel, DockHandle
+from panel_flowdash.ui.code_panel import HEADER_HEIGHT, CodePanel
 from panel_flowdash.ui.controls_bar import ControlsBar
-from panel_flowdash.ui.dashboard_bar import DashboardBar
+from panel_flowdash.ui.dashboard_bar import HIDE_ON_PHONE, PHONE_BREAKPOINT, DashboardBar
+from panel_flowdash.ui.dock_handle import DockHandle
 from panel_flowdash.ui.fullscreen import (
     PRESENTATION_CSS,
     PRESENTING_CLASS,
@@ -132,6 +150,7 @@ from panel_flowdash.ui.fullscreen import (
     FullscreenController,
     PresentationOverlay,
 )
+from panel_flowdash.ui.global_filters import GlobalFilters
 from panel_flowdash.ui.inspect_sheet import (
     dataframe_preview,
     describe_value,
@@ -143,7 +162,7 @@ from panel_flowdash.ui.inspect_sheet import (
     sheet_header,
     value_status,
 )
-from panel_flowdash.ui.inspector import Inspector
+from panel_flowdash.ui.inspector import DATA, HISTORY, SPEC, TILE, Inspector
 from panel_flowdash.ui.layout_panel import GRID_EDIT_CSS, LayoutPanel
 from panel_flowdash.ui.node_card import (
     CARD_WIDTH,
@@ -172,8 +191,20 @@ from panel_flowdash.ui.palette import (
     preset_entries,
 )
 from panel_flowdash.ui.provenance import provenance_objects
+from panel_flowdash.ui.report_view import ReportView
 from panel_flowdash.ui.roles import component_role
 from panel_flowdash.ui.settings_dialog import SettingsDialog
+from panel_flowdash.ui.sheet import (
+    ABOVE_SHEET_CLASS,
+    BEHIND_SHEET_CLASS,
+    INSPECTOR_SHEET_HEIGHT,
+    INSPECTOR_SHEET_TALL_HEIGHT,
+    SheetLabel,
+    bottom_sheet,
+    inspector_sheet,
+    sheet_button,
+)
+from panel_flowdash.ui.sidecar import SidecarFold
 from panel_flowdash.ui.split_view import SplitView
 from panel_flowdash.ui.states import StartCard
 from panel_flowdash.ui.status_bar import StatusBar, select_on_canvas
@@ -203,6 +234,7 @@ from panel_flowdash.util import (
     stepped,
 )
 from panel_flowdash.value_text import (
+    error_text,
     held_table_names,
     is_plain,
     object_label,
@@ -231,6 +263,8 @@ if t.TYPE_CHECKING:
     from panel_flowdash.component_spec import ComponentSpec, InputPort, OutputPort
 
 logger = logging.getLogger("panel_flowdash")
+
+PlacementReason = t.Literal["new", "load", "restore"]
 
 
 def _no_editor(data, schema, *, id, type, on_patch):
@@ -335,12 +369,50 @@ def _bounded(value: float, low: float | None, high: float | None) -> float:
     return value
 
 
-def _size_layout(layout: list[dict], specs: list, reference_width: int) -> list[dict]:
+# The height a tile whose view takes its height from the tile starts at.
+FILL_HEIGHT = 360
+
+_HEIGHT_SIZING = ("stretch_both", "stretch_height", "scale_both", "scale_height")
+
+
+def _fills_tile(view: t.Any, lazy: list | None = None) -> bool:
+    """Whether *view* takes its height from its tile rather than giving the tile one.
+
+    The grid sizes a tile without a height to its content, so such a view, e.g.
+    a Vega-Lite chart sized to its container, would leave the tile a header
+    tall and draw nothing. A layout fills its tile if one of its views does,
+    and a pane that renders another object, e.g. a ``ParamMethod``, if what it
+    rendered does. Those panes are appended to *lazy*, since what they render
+    can change. Text and spacers have a height of their own.
+    """
+    if not isinstance(view, Layoutable) or view.height is not None or view.min_height is not None:
+        return False
+    if isinstance(view, ReplacementPane):
+        if lazy is not None:
+            lazy.append(view)
+        return any(_fills_tile(child, lazy) for child in view._inner_layout)
+    if isinstance(view, ListLike):
+        return any(_fills_tile(child, lazy) for child in view)
+    if isinstance(view, (HTMLBasePane, Spacer)):
+        return False
+    if view.sizing_mode in _HEIGHT_SIZING:
+        return True
+    if isinstance(view, pn.pane.Vega):
+        spec = view.object
+        height = spec.get("height") if isinstance(spec, dict) else getattr(spec, "height", None)
+        return height == "container"
+    return False
+
+
+def _size_layout(
+    layout: list[dict], specs: list, reference_width: int, fills: t.Sequence[bool] = ()
+) -> list[dict]:
     """Apply the size hints of the tiles' *specs* to a positional TileGrid layout.
 
     A tile without an entry starts at its ``default_size``, and every tile's size
     is kept within its ``min_size`` and ``max_size``. Hints are pixels; layout
-    widths are percentages of *reference_width*, heights are pixels.
+    widths are percentages of *reference_width*, heights are pixels. A tile
+    whose view *fills* it and that has no height yet starts at :data:`FILL_HEIGHT`.
     """
 
     def percent(pixels):
@@ -358,6 +430,9 @@ def _size_layout(layout: list[dict], specs: list, reference_width: int) -> list[
                     entry["width"] = percent(default["width"])
                 if "height" in default:
                     entry["height"] = default["height"]
+        if "height" not in entry and i < len(fills) and fills[i]:
+            entry["height"] = FILL_HEIGHT
+        if spec is not None:
             low, high = spec.min_size or {}, spec.max_size or {}
             if isinstance(entry.get("width"), (int, float)):
                 entry["width"] = _bounded(
@@ -402,9 +477,10 @@ _NODE_DEFAULTS = {
     "deletable": True,
 }
 _SIDE_PANEL_WIDTH = 250
+# A node added on a phone is shown at least this large, this far below the canvas's top.
+_PHONE_REVEAL_ZOOM = 0.75
+_PHONE_REVEAL_TOP = 24
 
-# Narrower windows show the Split tab with the inspector folded until something is selected.
-_SPLIT_FOLD_WIDTH = 1600
 # How long after the canvas moves to another tab an empty selection from its page is
 # taken as the old view letting go of it rather than the person clearing it.
 _CANVAS_REMOUNT_GRACE = 3.0
@@ -413,16 +489,20 @@ _CANVAS_MIN_WIDTH = 160
 # With the code panel under it, the canvas keeps this much and the panel starts this high.
 _CANVAS_MIN_HEIGHT_DOCKED = 160
 _CODE_PANEL_HEIGHT = 400
-# Narrower windows edit code fields in a dialog rather than the code panel under the canvas.
+# Narrower windows show the code panel in the sidecar's Spec tab rather than under the canvas.
 _CODE_PANEL_MIN_WIDTH = 960
-# Narrower windows dock the code panel under the canvas even where it was docked to the right,
-# as do windows leaving the canvas less than its docked minimum beside the palette, the open
-# inspector and the panel.
-_CODE_PANEL_RIGHT_MIN_WIDTH = 1440
-_CANVAS_MIN_WIDTH_DOCKED = 560
-# Docked to the right, the panel starts this wide and is never dragged narrower.
-_CODE_PANEL_WIDTH = 520
-_CODE_PANEL_MIN_SIDE_WIDTH = 400
+
+
+def _has_selection(selection: dict | None) -> bool:
+    selection = selection or {}
+    return bool(selection.get("nodes") or selection.get("edges"))
+
+
+# Touch targets on a phone.
+_FLOW_PHONE_CSS = (
+    f"@media (max-width: {PHONE_BREAKPOINT - 0.05}px) {{ "
+    ".react-flow__controls-button { width: 44px; height: 44px; } }"
+)
 
 _FLOW_STYLESHEET = """\
 /* The canvas shares its height with the code panel docked under it. */
@@ -626,6 +706,9 @@ _FAILED_NODE_STYLE = {
 # use. Importing it back restores the stored item, or drops it.
 RESTRICTED_COMPONENT_ID = "flowdash:restricted"
 
+# What an editor can show: the canvas or the tile grid, the Explore view or the Report view.
+SURFACES = ("workspace", "explore", "report")
+
 # Space between a group's nodes and its frame, in px.
 _GROUP_PADDING = 24
 # The width of a collapsed group's card, as the canvas stylesheet sets it.
@@ -705,8 +788,33 @@ _INSTANTIATING: contextvars.ContextVar[FlowDash | None] = contextvars.ContextVar
 _INSTANTIATING_NODE: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "panel_flowdash_instantiating_node", default=None
 )
+# Why the component being created is placed, for `placement_context`.
+_PLACEMENT: contextvars.ContextVar[PlacementReason | None] = contextvars.ContextVar(
+    "panel_flowdash_placement", default=None
+)
+# Why the editor operation in progress places nodes; unset inside a component's creation.
+_PLACING: contextvars.ContextVar[PlacementReason | None] = contextvars.ContextVar(
+    "panel_flowdash_placing", default=None
+)
 # The latest editor of each served session; weak on both sides so a session can end.
 _SESSION_EDITORS: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _apply_each(instance: param.Parameterized, values: dict[str, t.Any]):
+    """Set *values* on *instance* one by one after a joint update failed, yielding each error.
+
+    The joint update stops dispatching at the first error, and may already
+    have set the values that come before it, so setting those again would not
+    notify their watchers. Those are triggered instead.
+    """
+    for name, value in values.items():
+        try:
+            if getattr(instance, name) is value:
+                instance.param.trigger(name)
+            else:
+                setattr(instance, name, value)
+        except Exception as exc:
+            yield name, exc
 
 
 def current_dashboard() -> FlowDash | None:
@@ -736,6 +844,55 @@ def current_node_id() -> str | None:
     return _INSTANTIATING_NODE.get()
 
 
+def _unset(config_state: param.Parameterized, key: str) -> bool:
+    """Whether the config field *key* still holds its declared default."""
+    value, default = getattr(config_state, key), config_state.param[key].default
+    if value is default:
+        return True
+    try:
+        return bool(value == default)
+    except Exception:
+        return False
+
+
+def _next_tick(callback: t.Callable[[], t.Any]):
+    """Call *callback* once the session's current event is handled; outside a session, never."""
+    doc = pn.state.curdoc
+    if doc is not None and doc.session_context is not None:
+        doc.add_next_tick_callback(callback)
+
+
+def placement_context() -> PlacementReason | None:
+    """Return why the component calling this is being created, or None.
+
+    Call it from a component's ``__init__`` or function body:
+
+    - ``'new'``: someone added the node, from the palette, ``add_component``
+      or the agent, so the component may fill in defaults of its own.
+    - ``'load'``: a dashboard is being opened, imported or replaced, and its
+      saved configuration is what the component should show.
+    - ``'restore'``: undo, redo or restoring a version brings the node back as
+      it was.
+
+    Outside the creation of a FlowDash node it returns ``None``, as it does
+    from a thread the component starts, so read it before handing work off.
+    """
+    return _PLACEMENT.get()
+
+
+@contextmanager
+def _placing(reason: PlacementReason):
+    """Create the nodes placed inside the block for *reason*, unless an enclosing block set one."""
+    if _PLACING.get() is not None:
+        yield
+        return
+    token = _PLACING.set(reason)
+    try:
+        yield
+    finally:
+        _PLACING.reset(token)
+
+
 def copy_context(context: t.Mapping[str, t.Any]) -> dict[str, t.Any]:
     """Copy an editor's context one level down, so dicts, lists and sets in it are not shared."""
     return {
@@ -759,6 +916,10 @@ def dashboard_context() -> t.Mapping[str, t.Any]:
     return MappingProxyType(editor.context if editor is not None else {})
 
 
+class PlacementRefused(PermissionError, ValueError):
+    """An imported dashboard adds components `refuse_placement` keeps this session from adding."""
+
+
 def _drop_repeated_ids(model: DashboardModel) -> int:
     """Keep only the first item of *model* with each instance id, returning how many were dropped."""
     seen: set[str] = set()
@@ -774,7 +935,12 @@ def _drop_repeated_ids(model: DashboardModel) -> int:
 
 
 @contextmanager
-def _creating(editor_ref: weakref.ref[FlowDash], instance_id: str, wiring: list):
+def _creating(
+    editor_ref: weakref.ref[FlowDash],
+    instance_id: str,
+    wiring: list,
+    reason: PlacementReason | None = None,
+):
     """Run one step of an async component body as part of creating *instance_id*.
 
     Like synchronous creation, `current_dashboard` returns the editor and every
@@ -787,9 +953,13 @@ def _creating(editor_ref: weakref.ref[FlowDash], instance_id: str, wiring: list)
     before = editor._subscriptions()
     token = _INSTANTIATING.set(editor)
     node_token = _INSTANTIATING_NODE.set(instance_id)
+    reason_token = _PLACEMENT.set(reason)
+    placing_token = _PLACING.set(None)
     try:
         yield
     finally:
+        _PLACING.reset(placing_token)
+        _PLACEMENT.reset(reason_token)
         _INSTANTIATING_NODE.reset(node_token)
         _INSTANTIATING.reset(token)
         editor._track_subscriptions(instance_id, before, wiring)
@@ -962,6 +1132,20 @@ class FlowDash(Viewer):
         supplies one that evaluates each component's ``allow_*``/``deny_*``
         rules and ``authorize`` callback against the signed-in user. None
         allows every component.""",
+    )
+
+    refuse_placement = param.Callable(
+        default=None,
+        doc="""
+        Called with a component id to ask whether this session may add new
+        instances of it: None if it may, else why not, e.g. ``"turned off by
+        an admin"``. A refused component is left out of the palette, the
+        command palette and the agent's components, and `add_component`
+        raises `PermissionError` for it. Unlike `authorize_component`, it
+        leaves the instances a dashboard already places alone, and they keep
+        working; editors are told once when a dashboard they edit has some.
+        `FlowDashApp` supplies one from the project file's ``components``
+        section.""",
     )
 
     authorize_dashboard = param.Callable(
@@ -1175,15 +1359,34 @@ class FlowDash(Viewer):
         on the left. Only meaningful while `editable`.""",
     )
 
+    surface = param.Selector(
+        default="workspace",
+        objects=list(SURFACES),
+        doc="""
+        What the editor shows, in view and in edit mode: 'workspace' for the
+        canvas or the tile grid (as `mode` and `editable` say), 'explore' for
+        the Explore view, the dashboard's turns as a feed with the outputs
+        each made (see :mod:`panel_flowdash.explore`), or 'report' for the
+        Report view, the dashboard read as a document (see
+        :mod:`panel_flowdash.report`). The views of the tiles move between
+        them, so only one is ever on screen.""",
+    )
+
     explore = param.Boolean(
         default=False,
         doc="""
-        Whether the Explore view is shown in place of the canvas and the tile
-        grid, in view and in edit mode: the dashboard's turns as a feed, each
-        with the outputs it made, live. See :mod:`panel_flowdash.explore`.""",
+        Whether the Explore view is shown: the same as ``surface == 'explore'``.
+        Setting it to False returns to the workspace.""",
     )
 
     edited = param.Event(doc="Triggered after each edit is recorded in its turn.")
+
+    code_panel_node = param.String(
+        default=None,
+        allow_None=True,
+        constant=True,
+        doc="The id of the node the code panel under the canvas shows, or None while it is closed.",
+    )
 
     node_previews = param.Boolean(
         default=False,
@@ -1273,6 +1476,25 @@ class FlowDash(Viewer):
         The panel-agents ``RunState`` holding the agent's runs, which
         "How was this made?" shows. None uses the edit history's, which an
         assistant shares when history is on.""",
+    )
+
+    run_pending = param.Callable(
+        default=None,
+        allow_None=True,
+        doc="""
+        Called with the id of a pending turn when an editor runs its question
+        from the report, e.g. to ask the assistant, which then answers it
+        through :meth:`answer_pending`. None, the default without an agent,
+        leaves the report's Run buttons disabled.""",
+    )
+
+    running_pending = param.List(
+        default=[],
+        item_type=str,
+        doc="""
+        The ids of the pending turns whose question is being run, from the
+        click on Run until the request answering it ends. Their Run buttons
+        show that they are running and cannot be pressed again.""",
     )
 
     show_in_editor = param.Callable(
@@ -1400,6 +1622,7 @@ class FlowDash(Viewer):
         # notice about them waiting for an editor to see it.
         self._unresolved_edges: list[UnresolvedEdge] = []
         self._unresolved_notice: str | None = None
+        self._turned_off_notice: str | None = None
         # Layout entries keyed by instance id, waiting for the grid to be rendered.
         self._pending_tile_layout: list[dict] = []
         # Instance ids of the tiles currently in the grid, in grid order; None
@@ -1415,6 +1638,9 @@ class FlowDash(Viewer):
         self._area_entries: dict[str, tuple[str, dict]] = {}
         # The grid's layout while it waits for the browser to drop removed tiles.
         self._deferred_grid_layout: list[dict] | None = None
+        # Heights the grid shows for tiles whose view fills them, until someone resizes them.
+        self._fill_heights: dict[str, float] = {}
+        self._fill_watched: weakref.WeakSet = weakref.WeakSet()
         # The views shown beside the grid, by area, as (instance id, view) in order.
         self._area_views: dict[str, list] = {}
         # The framed tiles of the grid, by instance id, kept so a grid rebuild
@@ -1425,14 +1651,12 @@ class FlowDash(Viewer):
         # The tab Split returns to when it is toggled off.
         self._mode_before_split = "wiring"
         self._split_shown = False
+        self._phone = False
+        self._phone_tile_tapped = False
         # Where the canvas is shown ('wiring', 'split' or None when hidden); moving it
         # renders it afresh, and the page then reports an empty selection.
         self._canvas_host: str | None = None
         self._remount_deadline = 0.0
-        # Whether the inspector was folded to make room for the split, rather than by the user.
-        self._inspector_folded = False
-        self._folding = False
-        self._pending_reveal: str | None = None
         self._tile_selection_follows = True
         self._rebuilding_grid = False
         self._inspected_id: str | None = None
@@ -1449,6 +1673,7 @@ class FlowDash(Viewer):
         self._turn_log = TurnLog()
         self._origins: dict[str, str] = {}
         self._explore_feed = None
+        self._report_view = None
         # The dashboard's parameters by name, each naming its node by instance id.
         self._parameters: dict[str, DashboardParameter] = {}
         # The component each parameter's node had when it was declared or loaded.
@@ -1458,6 +1683,9 @@ class FlowDash(Viewer):
         # The dashboard read as a document, nodes by instance id, or None for
         # the report derived from the layout; see panel_flowdash.report.
         self._report: dict[str, t.Any] | None = None
+        # The dashboard's global filters and the views they reach, see
+        # panel_flowdash.global_filters.
+        self._global_filters = GlobalFilters(self)
         # The nodes expanding a group pushed aside, by group id: their position
         # after the push and before it, so collapsing can move them back.
         self._pushed: dict[str, dict[str, tuple[tuple[float, float], tuple[float, float]]]] = {}
@@ -1466,6 +1694,8 @@ class FlowDash(Viewer):
         # `_settle_nodes` and `_place_new_tiles`.
         self._floating_nodes: set[str] = set()
         self._auto_tiles: set[str] = set()
+        # Whether the tiles were last arranged as a stack, which new tiles keep.
+        self._stacked = False
         # The tiles released over the top bar or the sidebar and not dropped there
         # yet, oldest first: when, and whether the grid has since sent the layout
         # the drag ended with, which the move's version then holds.
@@ -1484,6 +1714,13 @@ class FlowDash(Viewer):
         self._layout_released = False
         self._hydrating = False
         self._recording_edit = False
+        # Counts recorded edits, so a default knows whether an edit took it in.
+        self._edit_count = 0
+        # Defaults set while an edit rewired an input, by node, keys and `_edit_count` then.
+        self._pending_defaults: list[tuple[str, list[str], int]] = []
+        # Defaults set off the session's event loop, applied on it, see `set_default`.
+        self._queued_defaults: list[tuple[str, dict]] = []
+        self._queued_lock = threading.Lock()
         self.param.watch(self._on_dirty, "dirty", onlychanged=False)
         self._history = EditHistory(self)
         self._restricted_seen: dict[str, DashboardItem] = {}
@@ -1498,6 +1735,11 @@ class FlowDash(Viewer):
         self.settings.param.watch(self._on_setting_changed, self._settings_names)
         if pn.state.curdoc is not None:
             _SESSION_EDITORS[pn.state.curdoc] = weakref.ref(self)
+        self._session_doc = (
+            weakref.ref(pn.state.curdoc)
+            if pn.state.curdoc is not None and pn.state.curdoc.session_context is not None
+            else None
+        )
 
         self._dataflow_graph = DataflowGraph(
             {},
@@ -1703,7 +1945,7 @@ class FlowDash(Viewer):
                 self._component_entries[component_id].load()
             except Exception as exc:
                 self._failed_components.add(component_id)
-                errors.append(f"{component_id}: {exc}")
+                errors.append(f"{component_id}: {error_text(exc)}")
         return errors
 
     def _register_specs(self, wanted: list[str], errors: list[str] | None = None):
@@ -1793,7 +2035,7 @@ class FlowDash(Viewer):
         )
         self._notify(
             "error",
-            f"Runtime wiring error ({source_port} → {target_port}): {exc}",
+            f"Runtime wiring error ({source_port} → {target_port}): {error_text(exc)}",
             duration=5000,
         )
 
@@ -1832,7 +2074,7 @@ class FlowDash(Viewer):
         placed = {item["component_id"] for item in self._tile_items}
         entries = []
         for app_id, entry in self._component_entries.items():
-            if not self._component_authorized(app_id):
+            if not self._component_offered(app_id):
                 continue
             spec = self._component_specs.get(app_id)
             base = palette_entry(entry, spec, placed=app_id in placed)
@@ -1853,7 +2095,25 @@ class FlowDash(Viewer):
             logger.exception("authorize_component failed for '%s'; denying it", component_id)
             return False
 
-    @param.depends("authorize_component", watch=True)
+    def _placement_refusal(self, component_id: str) -> str | None:
+        """Return why `refuse_placement` keeps this session from adding *component_id*, or None."""
+        if self.refuse_placement is None:
+            return None
+        try:
+            reason = self.refuse_placement(component_id)
+        except Exception:
+            logger.exception("refuse_placement failed for '%s'; refusing it", component_id)
+            return "its settings could not be read"
+        return str(reason) if reason else None
+
+    def _component_offered(self, component_id: str) -> bool:
+        """Whether this session may add new instances of *component_id*."""
+        return (
+            self._component_authorized(component_id)
+            and self._placement_refusal(component_id) is None
+        )
+
+    @param.depends("authorize_component", "refuse_placement", watch=True)
     def _sync_authorized_palette(self):
         self._sync_toolbar_state()
 
@@ -1933,7 +2193,7 @@ class FlowDash(Viewer):
             sizing_mode="stretch_both",
             min_height=_CANVAS_MIN_HEIGHT,
             css_classes=[f"fd-canvas-{id(self)}"],
-            stylesheets=[_FLOW_STYLESHEET],
+            stylesheets=[_FLOW_STYLESHEET, _FLOW_PHONE_CSS],
             popup_trigger=self.popup_trigger,
             popup_hover_delay=self.popup_hover_delay,
             drop_types=[_PALETTE_DRAG_TYPE, _FILES_DROP_TYPE],
@@ -2209,6 +2469,11 @@ class FlowDash(Viewer):
         self._forget_layout(node_id)
         self._drop_from_groups(node_id)
         self._report = without_nodes(self._report, {node_id})
+        self._global_filters.forget(node_id)
+        if any(node_id in f.get("exclude", ()) for f in self._global_filters.filters):
+            self._global_filters.filters = without_filtered_nodes(
+                self._global_filters.filters, {node_id}
+            )
         self._floating_nodes.discard(node_id)
         self._auto_tiles.discard(node_id)
         self._chosen_visibility.discard(node_id)
@@ -2556,7 +2821,7 @@ class FlowDash(Viewer):
         except Exception as exc:
             logger.exception("Inspecting output '%s' of %s failed", port_name, instance_id)
             return text_alert(
-                f"Could not describe this output: {exc}",
+                f"Could not describe this output: {error_text(exc)}",
                 severity="error",
                 margin=(6, 0, 0, 0),
             )
@@ -2745,8 +3010,8 @@ class FlowDash(Viewer):
         It shows the request's span (question, model calls, tool calls and
         published versions) while :attr:`agent_state` holds the run's steps,
         and what the turn records otherwise, followed by the turns that
-        changed the node later. On the Dataflow canvas it replaces the
-        inspector's content; elsewhere it opens the side sheet. Requests are
+        changed the node later. In edit mode it opens the sidecar's History tab
+        for the node; in view mode it opens the side sheet. Requests are
         redacted as :meth:`run_redacted` decides, and when the node's
         component is one the person may not use.
         """
@@ -2759,17 +3024,20 @@ class FlowDash(Viewer):
             return runner.state
         return self.agent_state if self.agent_state is not None else self._history.state
 
-    def _render_how_made(self, instance_id: str, turn_id: str | None, *, open_sheet: bool):
-        if not self.made_by_agent(instance_id):
-            return
+    def _how_made_parts(
+        self, instance_id: str, turn_id: str | None
+    ) -> tuple[str, list[Viewable], t.Any]:
+        """Return the caption and content of how a node was made or changed, and its span view.
+
+        The span view, if any, follows the request's steps until released.
+        """
         origin = self.origin_turn(instance_id)
         turn = origin
         if turn_id is not None:
             turn = next((t for t in self.later_turns(instance_id) if t.id == turn_id), origin)
         state = self._run_state(turn.run if turn is not None else None)
-        self._release_span()
         later = self.later_turns(instance_id) if turn is origin else []
-        body, self._span_view = provenance_objects(
+        body, span = provenance_objects(
             turn,
             state,
             redacted=self._turn_redacted(turn, instance_id),
@@ -2777,13 +3045,20 @@ class FlowDash(Viewer):
             more=turn is origin and self._later_turns_may_be_more(instance_id),
             on_open=lambda t: self.show_how_made(instance_id, t.id),
         )
-        title = self._instance_title(instance_id)
         caption = "How this was made" if turn is origin else "How this was changed"
-        if self._inspector.visible:
-            span, self._span_view = self._span_view, None
-            self._close_inspection_dialog()
-            self._inspector.show_extra(caption, title, body, span.release if span else None)
+        return caption, body, span
+
+    def _render_how_made(self, instance_id: str, turn_id: str | None, *, open_sheet: bool):
+        if not self.made_by_agent(instance_id):
             return
+        # Over the Report view the side sheet shows it, as in view mode.
+        if self._inspector.visible and self.surface == "workspace":
+            self._close_inspection_dialog()
+            self._show_in_sidecar(instance_id, HISTORY, turn_id)
+            return
+        self._release_span()
+        caption, body, self._span_view = self._how_made_parts(instance_id, turn_id)
+        title = self._instance_title(instance_id)
         objects = [sheet_header(title, self._close_inspection_dialog, caption=caption), *body]
         self._how_made_shown = (instance_id, turn_id)
         self._inspected_id = instance_id
@@ -2803,8 +3078,25 @@ class FlowDash(Viewer):
     @param.depends("editable", watch=True)
     def _close_sheet_for_mode(self):
         # The sheet belongs to the mode it was opened in: in edit mode it would cover
-        # the dashboard bar's Save and Done, and the inspector shows the same.
+        # the dashboard bar's Save and Done, so the sidecar takes over what it showed.
+        shown, inspected = self._how_made_shown, self._inspected_id
+        was_open = self._inspect_dialog.open
         self._close_inspection_dialog()
+        if not (self.editable and was_open and inspected is not None):
+            return
+        if shown is not None and shown[0] == inspected:
+            self._show_in_sidecar(inspected, HISTORY, shown[1])
+        elif self._can_inspect():
+            self._show_in_sidecar(inspected, DATA)
+
+    def _show_in_sidecar(self, instance_id: str, tab: str, turn_id: str | None = None):
+        """Select a node and open the sidecar on its *tab*, as the person asked for it."""
+        if not any(node["id"] == instance_id for node in self._flow.nodes):
+            return
+        self._inspector.open_tab(instance_id, tab, turn_id)
+        if self._inspector.visible and self._inspector.collapsed:
+            self._sidecar.user_toggle(True)
+        self._select_node(instance_id)
 
     @param.depends("read_only", watch=True)
     def _reshow_how_made(self):
@@ -2924,6 +3216,7 @@ class FlowDash(Viewer):
         tile.set_chrome(not self._tile_grid.editable)
         tile.set_style(framed=self._tile_framed(item), titled=self.settings.tile_titles)
         tile.set_stale(self._code_stale(instance_id))
+        tile.set_filters(*self._global_filters.notes(instance_id))
         self._sync_tile(instance_id, tile, spec)
         return tile
 
@@ -3214,11 +3507,8 @@ class FlowDash(Viewer):
                 if len(values) == 1:
                     logger.warning("Config '%s' update failed", events[0].name, exc_info=True)
                     return
-            for name, value in values.items():
-                try:
-                    setattr(instance, name, value)
-                except Exception as exc:
-                    logger.warning("Config '%s' update failed: %s", name, exc)
+            for name, exc in _apply_each(instance, values):
+                logger.warning("Config '%s' update failed: %s", name, exc)
 
         if names:
             watcher = config_state.param.watch(_propagate, names)
@@ -3235,6 +3525,10 @@ class FlowDash(Viewer):
     def _config_edited_by_component(editor_ref, node_id, event):
         editor = editor_ref()
         if editor is None:
+            return
+        config_state = editor._dataflow_graph.get_config_state(node_id)
+        # The config's own value coming back from the sync onto the component is no edit.
+        if config_state is not None and getattr(config_state, event.name, _MISSING) is event.new:
             return
         if editor.editable and not editor.read_only and not editor.preview:
             editor._apply_config_patch(node_id, {event.name: event.new})
@@ -3275,7 +3569,9 @@ class FlowDash(Viewer):
         # render time, after `_place` has finished tracking.
         node_id = node_state.name
         wiring = self._component_wiring.setdefault(node_id, [])
-        app_fn = stepped(app_fn, partial(_creating, weakref.ref(self), node_id, wiring))
+        app_fn = stepped(
+            app_fn, partial(_creating, weakref.ref(self), node_id, wiring, _PLACEMENT.get())
+        )
         return panel_call(app_fn, **kwargs)
 
     def _instantiate_viewer_for_node(self, viewer_cls, entry, node_state, config_state=None):
@@ -3292,21 +3588,37 @@ class FlowDash(Viewer):
 
         # Weak, so a component kept by the app does not keep a discarded editor alive.
         editor = weakref.ref(self)
-        input_names = [p.name for p in spec.inputs] if spec else []
-        for name in input_names:
-            if not hasattr(instance.param, name):
-                continue
+        input_names = [
+            p.name for p in (spec.inputs if spec else ()) if hasattr(instance.param, p.name)
+        ]
 
-            def _propagate_input(event, _name=name):
-                # A component rejecting a value, or a watcher of its own raising,
-                # must not abort the dispatch to the node's other consumers.
+        def _propagate_inputs(*events):
+            # Inputs changed together arrive together, so the component runs once.
+            values = {event.name: event.new for event in events}
+            if (owner := editor()) is not None:
                 try:
-                    setattr(instance, _name, event.new)
+                    values = owner._global_filters.filter_inputs(node_id, values)
                 except Exception as exc:
+                    # A global filter must never keep a view from its data.
+                    logger.error("Global filters of %r failed: %s", node_id, exc)
+            try:
+                instance.param.update(values)
+                if (owner := editor()) is not None:
+                    owner._global_filters.inputs_changed(node_id, values)
+                return
+            except Exception as exc:
+                if len(values) == 1:
                     if (owner := editor()) is not None:
-                        owner._report_input_error(node_id, _name, exc)
+                        owner._report_input_error(node_id, events[0].name, exc)
+                    return
+            # A component rejecting a value, or a watcher of its own raising,
+            # must not abort the dispatch to the node's other consumers.
+            for name, exc in _apply_each(instance, values):
+                if (owner := editor()) is not None:
+                    owner._report_input_error(node_id, name, exc)
 
-            watcher = node_state.param.watch(_propagate_input, name)
+        if input_names:
+            watcher = node_state.param.watch(_propagate_inputs, input_names)
             wiring.append(partial(node_state.param.unwatch, watcher))
 
         failures = self._output_failures[node_id] = {}
@@ -3463,6 +3775,9 @@ class FlowDash(Viewer):
         self._settings_button = bar.settings_button
         self._save_button.on_click(lambda _event: self._save_from_button())
         self._clear_dialog = self._build_clear_dialog()
+        from panel_flowdash.ui.report_export import ReportExport
+
+        self._report_export = ReportExport(editor=self)
         self._pending_import: DashboardModel | None = None
         self._import_message = markdown_pane()
         self._import_dialog = self._build_import_dialog()
@@ -3483,6 +3798,7 @@ class FlowDash(Viewer):
             sizing_mode="stretch_height",
             margin=0,
             sx={"borderRight": 1, "borderColor": "divider"},
+            stylesheets=[HIDE_ON_PHONE],
         )
         self._start_card = StartCard(editor=self)
         self._empty_hint = self._start_card.__panel__()
@@ -3499,6 +3815,7 @@ class FlowDash(Viewer):
         self._dialog_host = pn.Column(margin=0, width=0, height=0, sizing_mode="fixed")
         self._inspector = Inspector(editor=self)
         self._layout_panel = LayoutPanel(editor=self)
+        self._sidecar = SidecarFold(self)
         self._status_bar = StatusBar(editor=self)
         # The Full screen button may sit in an app's top bar, outside the editor.
         toggle_class = f"{TOGGLE_CLASS}-{id(self)}"
@@ -3516,8 +3833,10 @@ class FlowDash(Viewer):
             on_resize=self._fit_canvas,
         )
         self._flow.param.watch(self._sync_tile_selection, "selection")
-        self._inspector.param.watch(self._on_inspector_toggled, "collapsed")
-        self._split_view.events.param.watch(self._on_pane_resized, "pane_size")
+        self._flow.param.watch(self._on_selection_for_sidecar, "selection")
+        self._inspector.param.watch(self._on_sidecar_collapsed, "collapsed")
+        self._inspector.param.watch(self._on_sidecar_resized, "width")
+        self._inspector.param.watch(lambda _event: self._sidecar.sync(), "visible")
         self._split_view.storage.param.watch(self._on_window_resized, "window_width")
         self._code_panel: CodePanel | None = None
         self._code_dock_height = _CODE_PANEL_HEIGHT
@@ -3530,27 +3849,16 @@ class FlowDash(Viewer):
             # Collapsed to its header, not the smallest height of its editor and result.
             stylesheets=[".fd-code-panel { min-height: 0 !important; }"],
         )
-        self._code_side_width = _CODE_PANEL_WIDTH
-        # Set while the window's width moves the panel, which is not a choice to remember.
+        # Set while the window or the tab moves the panel, which is not a choice to remember.
         self._moving_code_dock = False
-        # The code panel docked to the right of the canvas, beside the inspector.
-        self._code_side = pn.Row(
-            margin=0,
-            sizing_mode="stretch_height",
-            visible=False,
-            css_classes=["fd-code-side"],
-            stylesheets=[
-                ":host { border-left: 1px solid var(--mui-palette-divider, rgba(0, 0, 0, 0.12)); }",
-                ".fd-code-panel { min-width: 0 !important; }",
-            ],
+
+        # The sidecar's slot, hidden with it, since an empty Column still takes
+        # the width of its scroll button.
+        self._panel_slot = pn.Column(
+            self._inspector, margin=0, sizing_mode="stretch_height", stylesheets=[HIDE_ON_PHONE]
         )
 
-        # One slot: a row counts the width of hidden children, and only one of
-        # the two panels is shown at a time. The slot is hidden with both,
-        # since an empty Column still takes the width of its scroll button.
-        self._panel_slot = pn.Column(
-            self._inspector, self._layout_panel, margin=0, sizing_mode="stretch_height"
-        )
+        self._build_phone_sheets()
 
         self._sync_toolbar_extra()
         self._sync_toolbar_state()
@@ -3558,7 +3866,6 @@ class FlowDash(Viewer):
         self._editor_row = pn.Row(
             self._side_panel,
             self._workspace_area,
-            self._code_side,
             self._panel_slot,
             sizing_mode="stretch_both",
         )
@@ -3576,12 +3883,154 @@ class FlowDash(Viewer):
             self._status_bar,
             self._fullscreen_overlay,
             self._fullscreen_controller,
+            self._sheet_host,
             self._tile_drag,
             self._split_view.storage,
             self._card_bridge,
+            # In every view, so an export the assistant makes downloads wherever the user is.
+            pn.Column(
+                self._report_export.dialog,
+                self._report_export.downloader,
+                margin=0,
+                width=0,
+                height=0,
+                sizing_mode="fixed",
+            ),
             sizing_mode="stretch_both",
             stylesheets=[PRESENTATION_CSS],
         )
+
+    def _build_phone_sheets(self):
+        """Make the bottom sheets and buttons standing in for the side panels on a phone."""
+        self._palette_sheet, self._palette_sheet_body = bottom_sheet(
+            "Add component", "fd-palette-sheet", "85dvh"
+        )
+        self._layout_sheet, self._layout_sheet_body = bottom_sheet(
+            "Arrange tiles", "fd-layout-sheet", "70dvh"
+        )
+        self._inspector_sheet = inspector_sheet()
+        self._inspector_label = SheetLabel(label="Inspector", width=0, height=0, margin=0)
+        self._add_button = sheet_button("add", "Add component", "fd-add-component")
+        self._add_button.on_click(lambda _event: setattr(self._palette_sheet, "open", True))
+        self._layout_button = sheet_button("tune", "Arrange tiles", "fd-arrange-tiles")
+        self._layout_button.on_click(lambda _event: self._open_layout_sheet())
+        # Like the dialogs, the sheets take no room in the layout. The inspector's
+        # sheet, which is always rendered, joins them only on a phone.
+        self._sheet_host = pn.Column(
+            self._add_button,
+            self._layout_button,
+            self._palette_sheet,
+            self._layout_sheet,
+            margin=0,
+            width=0,
+            height=0,
+            sizing_mode="fixed",
+        )
+        self._dashboard_bar._phone_query.param.watch(self._on_phone_changed, "phone")
+        self._flow.param.watch(self._on_phone_selection, "selection")
+        # A tap on the selected node or connection opens a dismissed sheet again.
+        self._flow.on("node_clicked", self._on_phone_tap)
+        self._flow.on("edge_clicked", self._on_phone_tap)
+        self._inspector.param.watch(lambda _event: self._sync_inspector_sheet(), "collapsed")
+        self._inspector.param.watch(self._on_editing_spec, "editing_spec")
+
+    def _open_layout_sheet(self):
+        self._layout_panel.refresh()
+        self._layout_sheet.open = True
+
+    @pn.io.hold()
+    def _on_phone_changed(self, event):
+        """Move the palette and the side panels into bottom sheets below the phone breakpoint, and back."""
+        phone = self._phone = event.new
+        self._palette_sheet.open = self._layout_sheet.open = False
+        # Sized for where they go before they move, so the columns they leave
+        # and join keep their own sizing.
+        self._palette_panel.touch = phone
+        self._inspector.sheet = phone
+        if phone:
+            self._side_panel[:] = []
+            self._panel_slot[:] = []
+            self._palette_sheet_body[:] = [self._palette_section]
+            self._layout_sheet_body[:] = [self._layout_panel]
+            self._inspector_sheet[:] = [self._inspector_label, self._inspector]
+            self._sheet_host.append(self._inspector_sheet)
+        else:
+            self._sheet_host.remove(self._inspector_sheet)
+            self._inspector_sheet[:] = []
+            self._layout_sheet_body[:] = []
+            self._palette_sheet_body[:] = []
+            self._side_panel[:] = [self._palette_section]
+            self._panel_slot[:] = [self._inspector]
+            # A sheet dismissed on the phone is not a fold of the column.
+            self._sidecar.left_phone()
+        self._sync_min_width()
+        self._apply_mode_state()
+        self._sync_code_dock_side()
+        if self._inspector.visible:
+            # Fit to the canvas's new width once the browser has laid it out.
+            pn.state.execute(self._fit_canvas, schedule=True)
+
+    def _sync_phone_panels(self, showing_canvas: bool, layout: bool):
+        """Show the side panels beside the workspace, or on a phone the buttons opening their sheets."""
+        phone = self._phone
+        self._side_panel.visible = showing_canvas and not phone
+        self._panel_slot.visible = not phone and self._inspector.visible
+        # Shown on phones only, by their stylesheet.
+        self._add_button.visible = showing_canvas and self.editable and not self.preview
+        self._layout_button.visible = layout
+        if not showing_canvas:
+            self._palette_sheet.open = False
+        if not layout:
+            self._layout_sheet.open = False
+        self._sync_inspector_sheet()
+
+    def _on_phone_tap(self, _payload):
+        if self._phone:
+            self._inspector.collapsed = False
+
+    def _on_phone_selection(self, event):
+        # A new selection opens the sheet again after it was dismissed.
+        if self._phone and _has_selection(event.new) and event.new != event.old:
+            self._inspector.collapsed = False
+        self._sync_inspector_sheet()
+
+    def _reveal_above_sheet(self, instance_id: str):
+        """Pan the canvas so the node of *instance_id* sits at its top, above the inspector's sheet."""
+        node = next((n for n in self._flow.nodes if n["id"] == instance_id), None)
+        width = self._split_view.storage.window_width
+        if node is None or not width:
+            return
+        zoom = max((self._flow.viewport or {}).get("zoom") or 1, _PHONE_REVEAL_ZOOM)
+        x = width / 2 - (node["position"]["x"] + CARD_WIDTH / 2) * zoom
+        y = _PHONE_REVEAL_TOP - node["position"]["y"] * zoom
+        self._flow.viewport = {"x": x, "y": y, "zoom": zoom}
+
+    def _on_editing_spec(self, event):
+        height = INSPECTOR_SHEET_TALL_HEIGHT if event.new else INSPECTOR_SHEET_HEIGHT
+        self._inspector_sheet.sx = {**self._inspector_sheet.sx, "height": height}
+        self._sync_inspector_sheet()
+
+    def _sync_inspector_sheet(self):
+        """Open the inspector's sheet on a phone while something is selected and it is not dismissed."""
+        inspector = self._inspector
+        is_open = self._inspector_sheet.open = (
+            self._phone
+            and inspector.visible
+            and not inspector.collapsed
+            and _has_selection(self._flow.selection)
+            # In the Layout tab it opens for a tile tapped there, not over the grid at once.
+            and (self.mode != "dashboard" or self._phone_tile_tapped)
+        )
+        lifted = [ABOVE_SHEET_CLASS]
+        if inspector.editing_spec:
+            # The taller sheet leaves no room above it for the button.
+            lifted.append(BEHIND_SHEET_CLASS)
+        classes = [
+            c
+            for c in self._add_button.css_classes
+            if c not in (ABOVE_SHEET_CLASS, BEHIND_SHEET_CLASS)
+        ]
+        self._add_button.css_classes = [*classes, *lifted] if is_open else classes
 
     @property
     def explore_feed(self):
@@ -3592,34 +4041,58 @@ class FlowDash(Viewer):
             self._explore_feed = ExploreFeed(self)
         return self._explore_feed
 
-    @pn.io.hold()
+    @property
+    def report_view(self):
+        """The :class:`~panel_flowdash.ui.report_view.ReportView` the Report view shows, made on first use."""
+        if self._report_view is None:
+            # ReportView is imported with the editor: its contents list is a JSComponent,
+            # whose type must be known before the first page is served.
+            self._report_view = ReportView(editor=self)
+        return self._report_view
+
     @param.depends("explore", watch=True)
-    def _show_explore(self):
-        """Show the Explore view or the canvas and tile grid; never both, as they share the tiles' views."""
+    def _explore_to_surface(self):
+        if self.explore:
+            self.surface = "explore"
+        elif self.surface == "explore":
+            self.surface = "workspace"
+
+    @pn.io.hold()
+    @param.depends("surface", watch=True)
+    def _show_surface(self):
+        """Show the Explore view, the Report view or the workspace; one at a time, as they share the tiles' views."""
+        surface = self.surface
+        if self.explore != (surface == "explore"):
+            self.explore = surface == "explore"
         view = self._view
         self._sync_min_width()
-        if self.explore:
-            self.fullscreen = False
-            feed = self.explore_feed
-            view[1] = feed
-            self._status_bar.visible = False
-            feed.shown = True
-        else:
-            if self._explore_feed is not None:
-                self._explore_feed.shown = False
+        away = {"explore": self._explore_feed, "report": self._report_view}
+        for name, shown in away.items():
+            if shown is not None and name != surface:
+                shown.shown = False
+        if surface == "workspace":
             view[1] = self._editor_row
             self._status_bar.visible = self.editable
             self._sync_tile_drag()
+            return
+        self.fullscreen = False
+        shown = self.explore_feed if surface == "explore" else self.report_view
+        view[1] = shown
+        self._status_bar.visible = False
+        shown.shown = True
 
     @param.depends("editable", watch=True)
     def _sync_min_width(self):
-        """Let the feed and the dashboard narrow to the window; only the canvas and its panels need the room."""
-        self._view.min_width = None if self.editable and not self.explore else 0
+        """Let the feed, the report and the dashboard narrow to the window; only the canvas and its panels need the room."""
+        canvas = self.editable and self.surface == "workspace" and not self._phone
+        self._view.min_width = None if canvas else 0
 
     @param.depends("edited", watch=True)
     def _sync_explore(self):
         if self._explore_feed is not None:
             self._explore_feed._schedule()
+        if self._report_view is not None:
+            self._report_view.schedule()
 
     def _on_fullscreen_changed(self, event):
         self.fullscreen = event.new
@@ -3666,6 +4139,11 @@ class FlowDash(Viewer):
                 self._tile_grid.layout = event.old
                 return
             self._auto_tiles.clear()
+            if event.name == "layout":
+                for instance_id, entry in zip(self._grid_ids, event.new, strict=False):
+                    height = self._fill_heights.get(instance_id)
+                    if height is not None and entry.get("height") != height:
+                        del self._fill_heights[instance_id]
             if (release := self._awaiting_tile_drop()) is not None:
                 release["held"] = True
             else:
@@ -3871,7 +4349,7 @@ class FlowDash(Viewer):
             if self.editable and any(i["instance_id"] == instance_id for i in self._tile_items):
                 moved = tile_layout.move_to_area(self, instance_id, area, before)
         except ValueError as exc:
-            self._notify("info", str(exc), duration=4000)
+            self._notify("info", error_text(exc), duration=4000)
         finally:
             self._end_tile_release(instance_id, recorded=moved)
 
@@ -3938,9 +4416,6 @@ class FlowDash(Viewer):
         """
         selection = self._flow.selection or {}
         nodes = selection.get("nodes") or []
-        if self.editable and self.mode == "split":
-            if self._inspector_folded and (nodes or selection.get("edges")):
-                self._fold_inspector(False)
         target = None
         if self._tiles_selectable:
             current = self._selected_tile_id()
@@ -3972,13 +4447,15 @@ class FlowDash(Viewer):
         if self._rebuilding_grid or not self._tiles_selectable:
             return
         instance_id = self._selected_tile_id()
-        if instance_id is None:
+        if instance_id is None or not self._tile_selection_follows:
             return
-        layout_panel = getattr(self, "_layout_panel", None)
-        if layout_panel is not None:
-            layout_panel.select(instance_id)
-        if self._tile_selection_follows:
-            self._select_node(instance_id)
+        if self.mode == "dashboard":
+            # Entered from the Layout tab, the sidecar shows the tile's options first.
+            self._inspector.open_tab(instance_id, TILE)
+            self._phone_tile_tapped = True
+        self._select_node(instance_id)
+        if self._phone:
+            self._sync_inspector_sheet()
 
     def _clear_selection(self) -> bool:
         """Clear the selection on the canvas and the tile grid; return whether there was one.
@@ -4004,21 +4481,55 @@ class FlowDash(Viewer):
         if selection.get("nodes") == [instance_id] and not selection.get("edges"):
             return
         if self.mode == "split":
-            if self._inspector_folded:
-                # The inspector opens for the selection and narrows the pane, so the
-                # node is revealed once the pane reports its new size.
-                self._pending_reveal = instance_id
-                self._fold_inspector(False)
-            else:
-                self._reveal_node(instance_id)
+            self._reveal_node(instance_id)
         select_on_canvas(self._flow, node_id=instance_id)
+        if self._canvas_host is None:
+            # No canvas is shown to report the selection, e.g. in the Layout tab.
+            self._flow.selection = {"nodes": [instance_id], "edges": []}
 
     def _sized_layout(self, layout: list[dict]) -> list[dict]:
         """Apply the size hints of the tiles on the grid to its positional *layout*."""
         items = {item["instance_id"]: item for item in self._tile_items}
         specs = [self._tile_spec(items[i]) if i in items else None for i in self._grid_ids]
+        lazy: list[ReplacementPane] = []
+        fills = []
+        for instance_id in self._grid_ids:
+            tile = self._inspect_tiles.get(instance_id)
+            fills.append(tile is not None and _fills_tile(tile.view, lazy))
+        for pane in lazy:
+            if pane not in self._fill_watched:
+                self._fill_watched.add(pane)
+                pane._inner_layout.param.watch(self._refill_tiles, "objects")
         grid = self._tile_grid
-        return _size_layout(layout, specs, reference_width(grid.reference_width, grid.breakpoints))
+        width = reference_width(grid.reference_width, grid.breakpoints)
+        hinted = _size_layout(layout, specs, width)
+        sized = _size_layout(layout, specs, width, fills)
+        # Heights given only for display, so a layout without them is saved without them.
+        for i, (instance_id, entry) in enumerate(zip(self._grid_ids, sized, strict=False)):
+            if "height" in entry and (i >= len(hinted) or "height" not in hinted[i]):
+                self._fill_heights[instance_id] = entry["height"]
+        return sized
+
+    def _refill_tiles(self, *_events):
+        """Size the tiles again once a pane in one of them rendered what it shows."""
+        if not self._grid_populated:
+            return
+        layout = self._deferred_grid_layout
+        if layout is None:
+            layout = self._tile_grid.layout
+        sized = self._sized_layout(layout)
+        if sized != layout:
+            self._set_grid_layout(sized)
+
+    def _without_fill_heights(self, keyed: list[dict]) -> list[dict]:
+        """Drop the heights the editor gave tiles that fill them and nobody resized."""
+        stripped = []
+        for entry in keyed:
+            height = self._fill_heights.get(entry.get("instance_id"))
+            if height is not None and entry.get("height") == height:
+                entry = {k: v for k, v in entry.items() if k != "height"}
+            stripped.append(entry)
+        return stripped
 
     def _on_tile_layout(self, event):
         # Resizing in the browser bounds only a tile's width, so heights are kept in bounds here.
@@ -4033,7 +4544,9 @@ class FlowDash(Viewer):
             return {
                 "breakpoints": list(grid.breakpoints),
                 "responsive_layouts": {
-                    band: self._placed_layout(_key_layout(layout, self._grid_ids))
+                    band: self._without_fill_heights(
+                        self._placed_layout(_key_layout(layout, self._grid_ids))
+                    )
                     for band, layout in grid.responsive_layouts.items()
                 },
                 "reference_width": grid.reference_width,
@@ -4078,16 +4591,14 @@ class FlowDash(Viewer):
         showing_canvas = split or not showing_grid
         self._dashboard_bar.visible = self.toolbar and not self.fullscreen
         self._dashboard_bar.sync()
-        self._side_panel.visible = showing_canvas
-        self._inspector.visible = showing_canvas
+        # The sidecar is one panel in every tab that edits: Dataflow, Split and Layout.
+        self._inspector.visible = showing_canvas or (interactive and showing_grid)
         self._layout_panel.visible = interactive and showing_grid and not split
-        self._panel_slot.visible = self._inspector.visible or self._layout_panel.visible
-        self._status_bar.visible = self.editable and not self.explore
+        self._sync_phone_panels(showing_canvas, self._layout_panel.visible)
+        self._status_bar.visible = self.editable and self.surface == "workspace"
         self._split_view.events.active = split
         self._view_controls.param.update(beside_canvas=split, editing=interactive and showing_grid)
-        if split != self._split_shown:
-            self._split_shown = split
-            self._fold_inspector(split)
+        self._split_shown = split
         self._tile_grid.param.update(editable=interactive, card=interactive)
         self._sync_preview_band()
         # Column children rather than Row children, so the dialogs take no flex space.
@@ -4124,6 +4635,9 @@ class FlowDash(Viewer):
             self._fit_placed_nodes()
         self._sync_tile_selection()
         self._sync_tile_drag()
+        self._sidecar.sync()
+        # "Arrange for" is shown in the Layout tab only.
+        self._inspector.refresh_summary()
 
     def _expect_canvas_remount(self):
         """Keep the selection while the canvas moves to another tab, or is hidden.
@@ -4145,6 +4659,7 @@ class FlowDash(Viewer):
 
     @param.depends("mode", watch=True)
     def _remember_mode(self):
+        self._phone_tile_tapped = False
         # A tab chosen before the browser's preferences arrived is not overridden by them.
         self._restore_split = False
         if self.mode != "split":
@@ -4157,7 +4672,9 @@ class FlowDash(Viewer):
 
     @property
     def _grid_on_screen(self) -> bool:
-        return not self.explore and (self.mode in ("dashboard", "split") or not self.editable)
+        return self.surface == "workspace" and (
+            self.mode in ("dashboard", "split") or not self.editable
+        )
 
     def _on_split_collapsed(self, pane: int):
         """Fall back to the tab of the pane left over, keeping the split's sizes for next time."""
@@ -4168,6 +4685,7 @@ class FlowDash(Viewer):
     def _on_split_preferences_loaded(self):
         self._restore_split = self._restore_split and self._split_view.preferences.split
         self._apply_stored_split()
+        self._inspector.width = self._split_view.preferences.sidecar_width
         self._sync_code_dock_side()
         if self._code_panel is not None:
             self._sync_code_spec_view()
@@ -4192,21 +4710,10 @@ class FlowDash(Viewer):
             panel = self._code_panel = CodePanel(editor=self, on_close=self.close_code_panel)
             self._code_handle = DockHandle(sizing_mode="stretch_width", height=7, margin=0)
             self._code_handle.param.watch(self._on_code_dock_resized, "size")
-            self._code_side_handle = DockHandle(
-                orientation="vertical",
-                min_size=_CODE_PANEL_MIN_SIDE_WIDTH,
-                max_ratio=0.6,
-                sizing_mode="stretch_height",
-                width=7,
-                margin=0,
-            )
-            self._code_side_handle.param.watch(self._on_code_side_resized, "size")
             self._sync_code_dock_side()
             panel.param.watch(self._on_code_dock_moved, "dock")
-            # The inspector opening or folding changes the canvas's room beside a panel on the right.
-            self._inspector.param.watch(lambda _e: self._sync_code_dock_side(), "visible")
-            self._inspector._panel.param.watch(lambda _e: self._sync_code_dock_side(), "width")
             panel.param.watch(self._sync_code_dock, ["collapsed", "instance_id"])
+            panel.param.watch(self._sync_code_panel_node, "instance_id")
             panel.param.watch(self._on_code_drafts, "dirty")
             self._sync_code_spec_view()
             panel.param.watch(self._on_code_spec_view, ["spec_view", "spec_text"])
@@ -4242,22 +4749,36 @@ class FlowDash(Viewer):
         for instance_id, tile in self._inspect_tiles.items():
             tile.set_stale(states.get(instance_id))
 
+    def _sync_code_panel_node(self, event):
+        with param.edit_constant(self):
+            self.code_panel_node = event.new
+
     @property
     def code_panel_open(self) -> bool:
-        """Whether the code panel is docked under the canvas."""
+        """Whether the code panel shows a node, under the canvas or in the sidecar's Spec tab."""
         return self._code_panel is not None and self._code_panel.instance_id is not None
 
     def _code_panel_allowed(self) -> bool:
+        return self.editable and not self.preview
+
+    def _code_bottom_allowed(self) -> bool:
+        """Whether the window is wide enough for the code panel under the canvas."""
         width = self._split_view.storage.window_width
         return (
-            self.editable
-            and not self.preview
+            self._code_panel_allowed()
+            and not self._phone
             and (width is None or width >= _CODE_PANEL_MIN_WIDTH)
         )
 
     def _code_panel_fits(self) -> bool:
-        showing_canvas = self.mode in ("wiring", "split") and not self.explore
-        return self._code_panel_allowed() and showing_canvas
+        """Whether the code panel can be shown under the canvas now."""
+        showing_canvas = self.mode in ("wiring", "split") and self.surface == "workspace"
+        return self._code_bottom_allowed() and showing_canvas
+
+    def _code_placement(self) -> str:
+        """Return where the code panel goes: ``"bottom"`` as the browser last chose and where it fits, else ``"sidecar"``."""
+        wanted = self._split_view.preferences.code_dock
+        return "bottom" if wanted == "bottom" and self._code_panel_fits() else "sidecar"
 
     def _primary_spec_field(self, instance_id: str) -> str | None:
         """Return the spec field of the node *instance_id* to edit: one holding a draft, else the first."""
@@ -4272,30 +4793,50 @@ class FlowDash(Viewer):
     def open_code_panel(
         self, instance_id: str, field: str | None = None, *, focus: bool = True
     ) -> bool:
-        """Edit the spec field *field* of the node *instance_id* in the panel under the canvas.
+        """Edit the spec field *field* of the node *instance_id* in the code panel.
 
         *field* defaults to the node's first spec field, a code field or a
-        spec dict; a node without one shows its result only. Returns False,
-        leaving the panel as it was, where it cannot be shown: to viewers,
-        outside the Dataflow and Split tabs, in a narrow window, or for a
-        node or field it cannot edit. Callers then fall back to the field's
-        own editor.
+        spec dict; a node without one shows its result only. The panel opens
+        under the canvas where it was last docked there and fits, otherwise
+        in the sidecar's Spec tab, which then shows the node. Returns False,
+        leaving the panel as it was, where it cannot be shown: to viewers, or
+        for a node or field it cannot edit. Callers then fall back to the
+        field's own editor.
         """
         if field is None:
             field = self._primary_spec_field(instance_id)
-        if not self._code_panel_fits() or not self.code_panel.can_edit(instance_id, field):
+        if not self._code_panel_allowed() or not self.code_panel.can_edit(instance_id, field):
             return False
         docking = not self.code_panel_open
+        self._sync_code_dock_side()
         self.code_panel.open(instance_id, field, focus=focus)
-        if not (self._code_dock.objects or self._code_side.objects):
+        if self._code_panel.dock == "sidecar":
+            self._show_spec_tab(instance_id)
+            self._place_code_panel()
+        elif not self._code_dock.objects:
             # Added once it shows a field, so the browser builds the editor with its language
             # and text: a change arriving before the code/result split has rendered is lost.
             self._place_code_panel()
             if focus:
                 self._code_panel._focus()
-        if docking:
+        if docking and self._code_panel.dock == "bottom":
             self._keep_in_view(instance_id)
         return True
+
+    def _show_spec_tab(self, instance_id: str):
+        """Select the node *instance_id* alone and show its Spec tab in the open sidecar."""
+        selection = self._flow.selection or {}
+        if selection.get("nodes") != [instance_id] or selection.get("edges"):
+            self._select_node(instance_id)
+        self._inspector.open_tab(instance_id, SPEC)
+        if self._inspector.collapsed:
+            self._inspector.fold(False)
+
+    def open_spec_in_sidecar(self, instance_id: str) -> bool:
+        """Move the code panel into the sidecar's Spec tab, remembered for the browser, showing *instance_id*."""
+        self._split_view.preferences.code_dock = "sidecar"
+        self._sync_code_dock_side()
+        return self.open_code_panel(instance_id)
 
     def close_code_panel(self):
         """Close the code panel, holding a draft it shows until the field is opened again."""
@@ -4305,15 +4846,16 @@ class FlowDash(Viewer):
     def edit_spec(self, instance_id: str, field: str | None = None) -> bool:
         """Open the spec of the node *instance_id* in the code panel, showing the canvas if needed.
 
-        Returns False where the panel cannot be shown, to viewers or in a
-        narrow window.
+        Where the browser keeps the panel in the sidecar, or the window is too
+        narrow for it under the canvas, the sidecar's Spec tab shows it in the
+        tab already open. Returns False to viewers.
         """
         if not self._code_panel_allowed():
             return False
-        if self.explore:
-            self.explore = False
-        if self.mode not in ("wiring", "split"):
-            self.mode = "split"
+        if self._split_view.preferences.code_dock == "bottom" and self._code_bottom_allowed():
+            self.surface = "workspace"
+            if self.mode not in ("wiring", "split"):
+                self.mode = "split"
         return self.open_code_panel(instance_id, field)
 
     def _follow_selection(self, selection: dict | None):
@@ -4328,34 +4870,35 @@ class FlowDash(Viewer):
         if node == panel.instance_id or not panel.can_edit(node):
             return
         panel.open(node, self._primary_spec_field(node), focus=False)
-
-    def _code_dock_right_allowed(self) -> bool:
-        width = self._split_view.storage.window_width
-        if width is None:
-            return True
-        inspector = self._inspector._panel.width if self._inspector.visible else 0
-        room = width - _SIDE_PANEL_WIDTH - inspector - self._code_side_width
-        return width >= _CODE_PANEL_RIGHT_MIN_WIDTH and room >= _CANVAS_MIN_WIDTH_DOCKED
+        if panel.dock == "sidecar":
+            self._place_code_panel()
 
     def _sync_code_dock_side(self):
-        """Dock the code panel where the browser last had it, under the canvas in a narrower window."""
+        """Show the code panel where the browser last had it, in the sidecar where it does not fit under the canvas."""
         panel = self._code_panel
         if panel is None:
             return
-        allowed = self._code_dock_right_allowed()
-        side = self._split_view.preferences.code_dock if allowed else "bottom"
         self._moving_code_dock = True
         try:
-            panel.param.update(can_dock_right=allowed, dock=side)
+            panel.param.update(
+                can_dock_bottom=self._code_bottom_allowed(), dock=self._code_placement()
+            )
         finally:
             self._moving_code_dock = False
 
     def _on_code_dock_moved(self, event):
         if not self._moving_code_dock:
+            # Moved with its button, as the person chose.
             self._split_view.preferences.code_dock = event.new
-        if self._code_dock.objects or self._code_side.objects:
+            if event.new == "bottom" and not self._code_panel_fits():
+                self.surface = "workspace"
+                self.mode = "split"
+            elif event.new == "sidecar" and self.code_panel_open:
+                self._show_spec_tab(self._code_panel.instance_id)
+            self._sync_code_dock_side()
+        if self._code_dock.objects or self.code_panel_open:
             self._place_code_panel()
-        if self.code_panel_open:
+        if self.code_panel_open and self._code_panel.dock == "bottom":
             # The canvas changes shape, so it may zoom out to keep the whole node in view.
             self._keep_in_view(self._code_panel.instance_id, keep_zoom=False)
 
@@ -4377,33 +4920,25 @@ class FlowDash(Viewer):
 
     @pn.io.hold()
     def _place_code_panel(self):
-        """Put the code panel under the canvas or to its right, as its :attr:`dock` says."""
+        """Put the code panel under the canvas or in the sidecar's Spec tab, as its :attr:`dock` says.
+
+        It is in one place at a time, so a node's spec has one editor.
+        """
         panel = self._code_panel
-        if panel.dock == "right":
+        if panel.dock == "sidecar":
             self._code_dock[:] = []
-            self._code_side[:] = [self._code_side_handle, panel]
-        else:
-            self._code_side[:] = []
+        elif not self._code_dock.objects:
             self._code_dock[:] = [self._code_handle, panel]
+        self._inspector.sync_spec_tab()
         self._sync_code_dock()
 
     @pn.io.hold()
     def _sync_code_dock(self, *_events):
-        """Show the code panel under the canvas, at its size for the session or as its header, or to its right."""
+        """Show the code panel under the canvas, at its size for the session or as its header."""
         panel = self._code_panel
         if panel is None:
             return
-        shown = self.code_panel_open and self._code_panel_fits()
-        right = panel.dock == "right"
-        self._code_side.param.update(
-            visible=shown and right,
-            styles={
-                "flex": "none",
-                "width": f"{self._code_side_width}px",
-                "min-width": f"{self._code_side_width}px",
-            },
-        )
-        shown = shown and not right
+        shown = self.code_panel_open and panel.dock == "bottom" and self._code_panel_fits()
         collapsed = shown and panel.collapsed
         self._code_handle.visible = shown and not collapsed
         height = HEADER_HEIGHT if collapsed else self._code_dock_height
@@ -4430,21 +4965,18 @@ class FlowDash(Viewer):
             css_classes=[*docked, "fd-docked"] if shown else docked,
         )
 
-    def _on_code_side_resized(self, event):
-        if event.new:
-            self._code_side_width = int(event.new)
-            if self.code_panel_open:
-                self._sync_code_dock()
-
     def _on_code_dock_resized(self, event):
         if event.new:
             self._code_dock_height = int(event.new)
             if self.code_panel_open and not self._code_panel.collapsed:
                 self._sync_code_dock()
 
-    @param.depends("mode", "explore", watch=True)
+    @param.depends("mode", "surface", watch=True)
     def _on_code_dock_tab(self):
-        """Hide the code panel outside the Dataflow and Split tabs, and show it again there."""
+        """Move the code panel into the sidecar outside the Dataflow and Split tabs, and back under the canvas there."""
+        if self._code_panel is None:
+            return
+        self._sync_code_dock_side()
         self._sync_code_dock()
 
     @param.depends("editable", "preview", watch=True)
@@ -4460,7 +4992,14 @@ class FlowDash(Viewer):
 
     def _on_window_resized(self, _event):
         self._close_code_panel_if_hidden()
+        panel = self._code_panel
+        under = panel is not None and self.code_panel_open and self._code_dock.visible
         self._sync_code_dock_side()
+        self._sidecar.window_resized()
+        if under and panel.dock == "sidecar":
+            # Narrowed out from under the canvas, the spec being edited moves to the Spec tab.
+            self._show_spec_tab(panel.instance_id)
+            self._place_code_panel()
 
     def _fit_canvas(self):
         self._flow.fit_view()
@@ -4485,40 +5024,18 @@ class FlowDash(Viewer):
             return
         self._flow.fit_view(instance_id, min_zoom=zoom, max_zoom=zoom, duration=300)
 
-    def _fold_inspector(self, split: bool):
-        """Fold the inspector while the split is shown in a narrow window, until it is needed.
+    def _on_selection_for_sidecar(self, event):
+        new = event.new or {}
+        if (new.get("nodes") or new.get("edges")) and new != (event.old or {}):
+            self._sidecar.selection_made()
 
-        Beside the palette and the open inspector, the canvas and the grid would
-        get about 300 px each at 1280 px. The inspector opens again with the
-        first selection, or when the split is left.
-        """
-        width = self._split_view.storage.window_width
-        selection = self._flow.selection or {}
-        if split:
-            fold = (
-                width is not None
-                and width < _SPLIT_FOLD_WIDTH
-                and not self._inspector.collapsed
-                and not (selection.get("nodes") or selection.get("edges"))
-            )
-        else:
-            fold = False
-        if fold or self._inspector_folded:
-            self._folding = True
-            try:
-                self._inspector.collapsed = fold
-            finally:
-                self._folding = False
-            self._inspector_folded = fold
+    def _on_sidecar_collapsed(self, event):
+        self._sidecar.on_collapsed(event.new)
+        self._inspector._sync_badge()
 
-    def _on_inspector_toggled(self, _event):
-        if not self._folding:
-            self._inspector_folded = False
-
-    def _on_pane_resized(self, _event):
-        instance_id, self._pending_reveal = self._pending_reveal, None
-        if instance_id is not None and self.mode == "split":
-            self._reveal_node(instance_id)
+    def _on_sidecar_resized(self, event):
+        self._split_view.preferences.sidecar_width = event.new
+        self._sidecar.sync()
 
     def _sync_placed(self):
         """Show a component added or removed on whichever of the canvas and grid is on screen."""
@@ -4563,6 +5080,7 @@ class FlowDash(Viewer):
         if self._view_controls.sync():
             self._place_controls()
         self._sync_tile_drag()
+        self._global_filters.apply()
         bar = self._dashboard_bar
         bar.health.track()
         bar.health_popover.sync()
@@ -4674,7 +5192,7 @@ class FlowDash(Viewer):
             grid_layout = self._deferred_grid_layout
             if grid_layout is None:
                 grid_layout = self._tile_grid.layout
-            keyed = _key_layout(grid_layout, self._grid_ids)
+            keyed = self._without_fill_heights(_key_layout(grid_layout, self._grid_ids))
             ids = {spec["instance_id"] for spec in keyed}
             keyed += [
                 {"instance_id": iid}
@@ -4784,7 +5302,7 @@ class FlowDash(Viewer):
         self._stop_refresh_timer()
         if period_ms:
             self._refresh_timer = pn.state.add_periodic_callback(
-                partial(self.param.trigger, "refresh"), period=period_ms
+                self.trigger_refresh, period=period_ms
             )
             self._refresh_ms = period_ms
             self._refresh_started = time.time()
@@ -4794,6 +5312,15 @@ class FlowDash(Viewer):
             self._refresh_timer.stop()
             self._refresh_timer = None
         self._refresh_ms = 0
+
+    def trigger_refresh(self):
+        """Trigger `refresh` with every change it causes delivered as one propagation pass.
+
+        A node fed by two sources that both run again then runs once, with
+        both new values, instead of once per source.
+        """
+        with self._dataflow_graph.propagation():
+            self.param.trigger("refresh")
 
     @param.depends("refresh", watch=True)
     def _stamp_refresh(self):
@@ -4859,10 +5386,27 @@ class FlowDash(Viewer):
             {turn.id for turn in self._turn_log.turns},
         )
 
-    def set_report(self, report: t.Mapping[str, t.Any] | None):
+    def set_report(
+        self,
+        report: t.Mapping[str, t.Any] | None,
+        *,
+        label: str | t.Sequence[str] | None = None,
+        coalesce: bool = True,
+    ):
         """Replace the dashboard's report, nodes by instance id, as one undoable edit.
 
         None removes it, so the dashboard reads as its derived report again.
+        *label* describes the edit in the history and the turn's summary,
+        "Changed the report" by default, or a list of labels for an edit
+        making several changes. A pending turn the report no longer refers
+        to goes with its block, as it was only ever asked in the report. With
+        *coalesce* False the edit is a version of its own, never batched with
+        the quick edits before or after it, as for a structural change such
+        as moving a block.
+
+        When the agent makes the edit, each block it adds or changes gets
+        its turn as ``origin``, and the blocks it leaves as they were keep
+        theirs, whatever *report* gives.
 
         Raises
         ------
@@ -4885,10 +5429,107 @@ class FlowDash(Viewer):
                 raise ValueError(
                     f"blocks[{missing[0]}]: refers to something the dashboard does not have."
                 )
+        agent = checked is not None and _agent_source() is not None and not self._hydrating
+        if agent:
+            checked, written = self._report_origins(checked)
         if checked == self.report:
             return
+        if agent and written:
+            turn_id = self._turn_log.current().id
+            for index in written:
+                checked["blocks"][index]["origin"] = turn_id
+        dropped = report_turns(self._report) - report_turns(checked)
         self._report = checked
-        self._record_edit("Changed the report", op="set_report")
+        if dropped:
+            self._turn_log.drop_pending(dropped)
+        if not coalesce:
+            self._history.flush()
+        labels = [label] if isinstance(label, str) else [lbl for lbl in label or () if lbl]
+        self._record_edit(*(labels or ["Changed the report"]), op="set_report")
+        if not coalesce:
+            self._history.flush()
+
+    def _report_origins(self, report: dict[str, t.Any]) -> tuple[dict[str, t.Any], list[int]]:
+        """Return *report* with the origins of the blocks the agent keeps, and the indices of those it writes.
+
+        A block equal, but for its origin, to one the report shows now keeps
+        that block's origin; every other block loses the origin it gives.
+        """
+
+        def bare(block):
+            return {k: v for k, v in block.items() if k != "origin"}
+
+        current = self.report
+        before = current["blocks"] if current is not None else report_blocks(self).blocks
+        remaining = [(bare(block), block.get("origin")) for block in before]
+        blocks, written = [], []
+        for index, block in enumerate(report["blocks"]):
+            plain = bare(block)
+            match = next((i for i, (b, _) in enumerate(remaining) if b == plain), None)
+            if match is None:
+                written.append(index)
+                blocks.append(plain)
+                continue
+            origin = remaining.pop(match)[1]
+            blocks.append({**plain, "origin": origin} if origin is not None else plain)
+        return {**report, "blocks": blocks}, written
+
+    def answer_pending(self, turn_id: str, run_id: str | None = None) -> DashboardTurn:
+        """Make the pending turn *turn_id* the turn of the agent request *run_id*'s next edits.
+
+        The request's edits so far stay in its own turn. Its next edit runs
+        the pending turn: the turn records the request, and the nodes the
+        request creates get it as their origin, so the question's block in
+        the report shows them as its answer. Without an edit the turn stays
+        pending. The turn is returned.
+
+        Raises
+        ------
+        ValueError
+            If no pending turn has the id *turn_id*.
+        """
+        return self._turn_log.claim_pending(turn_id, run_id)
+
+    def customize_report(self) -> bool:
+        """Make the report derived from the dashboard its own, to be edited, and return whether it did.
+
+        The derived blocks are written into the report as one undoable edit;
+        the title stays the dashboard's until it is changed. A dashboard that
+        already has a report keeps it.
+        """
+        if self._report is not None:
+            return False
+        self.set_report(
+            {"blocks": report_blocks(self).blocks}, label="Customized the report", coalesce=False
+        )
+        return True
+
+    def ask_in_report(self, question: str, index: int | None = None) -> str:
+        """Add a question to the report, not run yet, before the block at *index* (last for None).
+
+        The question becomes a pending turn and a turn block showing it, in
+        one undoable edit, and its id is returned. A dashboard without a
+        report of its own gets the derived one first.
+
+        Raises
+        ------
+        ValueError
+            If *question* is empty or *index* is not a place in the report.
+        """
+        turn = self._turn_log.add_pending(question)
+        current = self.report
+        if current is None:
+            current = {"blocks": report_blocks(self).blocks}
+        try:
+            self.set_report(
+                insert_block(current, index, {"turn": turn.id}),
+                label="Asked a question in the report",
+                coalesce=False,
+            )
+        except Exception:
+            self._turn_log.drop_pending({turn.id})
+            raise
+        return turn.id
 
     def group_nodes(
         self,
@@ -5691,6 +6332,67 @@ class FlowDash(Viewer):
             self._fit_pending = False
             self._flow.fit_view()
 
+    # ------------------------------------------------------------------
+    # Global filters
+    # ------------------------------------------------------------------
+
+    @property
+    def filters(self) -> list[dict[str, t.Any]]:
+        """The dashboard's global filters as a copy, the views they exclude by instance id.
+
+        See :mod:`panel_flowdash.global_filters`.
+        """
+        return map_filters(
+            self._global_filters.filters,
+            {item["instance_id"]: item["instance_id"] for item in self._tile_items},
+        )
+
+    def set_filters(self, filters: t.Iterable[t.Mapping[str, t.Any]], *, label: str | None = None):
+        """Replace the dashboard's global filters, views they exclude by instance id, as one undoable edit.
+
+        Raises
+        ------
+        ValueError
+            If *filters* are malformed or exclude a node the dashboard does not have.
+        """
+        checked = check_filters(list(filters))
+        placed = {item["instance_id"] for item in self._tile_items}
+        for i, entry in enumerate(checked):
+            missing = [n for n in entry.get("exclude", ()) if n not in placed]
+            if missing:
+                raise ValueError(f"filters[{i}].exclude: names no node: {missing[0]!r}.")
+        if checked == self.filters:
+            return
+        self._global_filters.load(checked)
+        # Each change is a version of its own, so undo takes back one opt-out, not a burst.
+        self._history.flush()
+        self._record_edit(label or "Changed the filters", op="set_filters")
+        self._history.flush()
+
+    def set_filter_value(self, column: str, value: t.Any):
+        """Change what the global filter on *column* keeps for whoever is viewing, without an edit.
+
+        *value* is a list of values for a ``select`` filter, ``[start, end]``
+        for a ``range``, or None to keep every row.
+        """
+        self._global_filters.set_value(column, value)
+
+    def exclude_from_filter(self, column: str, instance_id: str, excluded: bool = True):
+        """Opt the view *instance_id* out of the global filter on *column*, or back in."""
+        filters = self.filters
+        entry = next((f for f in filters if f["column"] == column), None)
+        if entry is None:
+            raise KeyError(f"The dashboard has no filter on {column!r}.")
+        exclude = [n for n in entry.get("exclude", ()) if n != instance_id]
+        if excluded:
+            exclude.append(instance_id)
+        entry.pop("exclude", None)
+        if exclude:
+            entry["exclude"] = exclude
+        title = self._instance_title(instance_id)
+        action = f"Excluded {title} from" if excluded else f"Included {title} in"
+        self.set_filters(filters, label=f"{action} the {column} filter")
+
     def _record_edit(
         self,
         *labels: str,
@@ -5707,6 +6409,7 @@ class FlowDash(Viewer):
         """
         if not self._hydrating:
             self._prune_parameters()
+            self._edit_count += 1
         turn = None if self._hydrating else self._note_turn(*labels)
         if turn is not None:
             for instance_id in created:
@@ -5719,6 +6422,9 @@ class FlowDash(Viewer):
         if turn is not None:
             self._history.record(op, args or {}, label_for(labels), turn)
             self.param.trigger("edited")
+        if not self._hydrating:
+            # A new connection can put a view behind a Filter node, or give it other columns.
+            self._global_filters.apply()
         return turn
 
     def _note_turn(self, *labels: str) -> DashboardTurn:
@@ -5729,6 +6435,7 @@ class FlowDash(Viewer):
     def _on_dirty(self, event):
         # Code that marks the canvas changed without `_record_edit` still opens a turn.
         if event.new and not self._recording_edit and not self._hydrating:
+            self._edit_count += 1
             self._history.record("edit", {}, None, self._note_turn())
 
     def _port_ref(self, instance_id: str, port: str) -> str:
@@ -5766,6 +6473,113 @@ class FlowDash(Viewer):
         """
         return next(
             (nid for nid, inst in self._component_instances.items() if inst is component), None
+        )
+
+    def set_default(self, instance_id: str, config: t.Mapping[str, t.Any]) -> bool:
+        """Give the node *instance_id* config values its component chose as a starting point.
+
+        A component calls it for a node :func:`placement_context` reports as
+        ``"new"``, from its ``__init__`` or function body, or later, e.g. once
+        an input arrives. The values are saved with the dashboard like any
+        config, and are part of the edit that brought them about: the
+        placement, or the connection that delivered the input, so one undo
+        takes back both. Values set outside any edit, e.g. by an input that
+        arrives on its own, are recorded right away as a config edit of their
+        own, so undoing a later edit keeps them. Called from a thread other
+        than the session's event loop, they are set and recorded on the loop,
+        as an edit of their own, and before a save.
+
+        Only fields still at their declared default take a value, so a node
+        that arrives configured, e.g. one the agent adds or a duplicate, keeps
+        its config. Returns whether any field took one: False, changing
+        nothing, also while a dashboard is loaded or a
+        version restored, to viewers and in a preview, and for a node or a
+        config field the node does not have.
+        """
+        config = self._unset_config(instance_id, config)
+        if not config:
+            return False
+        if _INSTANTIATING.get() is self and _INSTANTIATING_NODE.get() == instance_id:
+            # `_place` takes config written while the component is created into the node's config.
+            config_state = self._dataflow_graph.get_config_state(instance_id)
+            try:
+                config_state.param.update(
+                    {key: config_value(config_state.param[key], v) for key, v in config.items()}
+                )
+            except Exception as exc:
+                logger.warning("Default config rejected on %s: %s", instance_id, exc)
+                return False
+            return True
+        if (doc := self._off_loop_doc()) is not None:
+            # The canvas and its history change on the session's event loop only.
+            with self._queued_lock:
+                self._queued_defaults.append((instance_id, config))
+            doc.add_next_tick_callback(self._apply_queued_defaults)
+            return True
+        return self._apply_default(instance_id, config)
+
+    def _unset_config(self, instance_id: str, config: t.Mapping[str, t.Any]) -> dict | None:
+        """Return the fields of *config* a default may set on the node, or None if it may set none."""
+        if self._hydrating or self.read_only or self.preview or not self.editable:
+            return None
+        config_state = self._dataflow_graph.get_config_state(instance_id)
+        if config_state is None or any(
+            key == "name" or key not in config_state.param for key in config
+        ):
+            return None
+        return {key: value for key, value in config.items() if _unset(config_state, key)}
+
+    def _off_loop_doc(self):
+        """Return the session's document when called off its event loop, else None."""
+        doc = self._session_doc() if self._session_doc is not None else None
+        if doc is None or doc.session_context is None:
+            return None
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return doc
+        return None
+
+    def _apply_queued_defaults(self):
+        """Set and record the defaults set off the event loop, each as its own edit."""
+        with self._queued_lock:
+            queued, self._queued_defaults = self._queued_defaults, []
+        for instance_id, config in queued:
+            if config := self._unset_config(instance_id, config):
+                self._apply_default(instance_id, config)
+
+    def _apply_default(self, instance_id: str, config: dict) -> bool:
+        self._hydrating = True
+        try:
+            applied = self._set_config_state(instance_id, dict(config))
+            if applied:
+                self.dirty = True
+        finally:
+            self._hydrating = False
+        if not applied:
+            return False
+        if self._dataflow_graph.wiring:
+            # The edit rewiring the input records next and takes the default in.
+            self._pending_defaults.append((instance_id, sorted(applied), self._edit_count))
+            _next_tick(self._record_defaults)
+        else:
+            self._record_default(instance_id, sorted(applied))
+        return True
+
+    def _record_defaults(self):
+        """Record the defaults no edit took in, each as its own edit."""
+        pending, self._pending_defaults = self._pending_defaults, []
+        current = self._edit_count
+        for instance_id, keys, count in pending:
+            if count == current:
+                self._record_default(instance_id, keys)
+
+    def _record_default(self, instance_id: str, keys: list[str]):
+        if self._dataflow_graph.get_config_state(instance_id) is None:
+            return
+        name = self._node_name(instance_id)
+        self._record_edit(
+            f"Changed the config of {name}", op="set_config", args={"name": name, "keys": keys}
         )
 
     def add_component(
@@ -5813,7 +6627,7 @@ class FlowDash(Viewer):
         ValueError
             If *instance_id* is not a valid node name or is taken.
         PermissionError
-            If `authorize_component` refuses it.
+            If `authorize_component` or `refuse_placement` refuses it.
         """
         if component_id not in self._component_entries:
             raise KeyError(
@@ -5829,6 +6643,10 @@ class FlowDash(Viewer):
         if not self._component_authorized(component_id):
             title = self._component_entries[component_id].title
             raise PermissionError(f"You are not authorized to use '{title}'.")
+        refusal = self._placement_refusal(component_id)
+        if refusal is not None:
+            title = self._component_entries[component_id].title
+            raise PermissionError(f"'{title}' can't be added: {refusal}.")
         if instance_id is not None:
             self._check_instance_id(instance_id)
         automatic = arrange and position is None
@@ -6038,6 +6856,18 @@ class FlowDash(Viewer):
         before = self._subscriptions()
         token = _INSTANTIATING.set(self)
         node_token = _INSTANTIATING_NODE.set(instance_id)
+        # A node the component adds while it is created is new, whatever placed this one.
+        reason_token = _PLACEMENT.set(_PLACING.get() or "new")
+        placing_token = _PLACING.set(None)
+        # Config a component writes while it is created, e.g. a default for a
+        # new node, is the node's config, so it is saved with the dashboard.
+        written: dict[str, t.Any] = {}
+        config_watcher = None
+        if config_state is not None:
+            config_watcher = config_state.param.watch(
+                lambda *events: written.update({e.name: e.new for e in events}),
+                [name for name in config_state.param if name != "name"],
+            )
         try:
             view = self._instantiate_for_node(entry, node_state, config_state)
         except Exception:
@@ -6046,8 +6876,15 @@ class FlowDash(Viewer):
             self._dispose_component(instance_id)
             raise
         finally:
+            if config_watcher is not None:
+                config_state.param.unwatch(config_watcher)
+            _PLACING.reset(placing_token)
+            _PLACEMENT.reset(reason_token)
             _INSTANTIATING_NODE.reset(node_token)
             _INSTANTIATING.reset(token)
+        if written:
+            config = {**config, **written}
+            config_data.update(written)
         self._track_subscriptions(instance_id, before)
         # The component is instantiated even while blocked, so it can subscribe
         # and publish outputs; only what the tile displays is gated.
@@ -6350,14 +7187,29 @@ class FlowDash(Viewer):
 
         return [tiles[i] for i in sorted(range(len(tiles)), key=key)]
 
-    def _arrange_tiles(self, hide: t.Collection[str] = ()):
-        """Lay out every visible tile by its kind, hiding the tiles of *hide* first."""
-        boxes = [
-            self._tile_box(item) for item in self._tile_order() if item["instance_id"] not in hide
-        ]
+    def _arrange_tiles(
+        self,
+        hide: t.Collection[str] = (),
+        order: t.Sequence[str] = (),
+        style: str = "grid",
+    ):
+        """Lay out every visible tile, hiding the tiles of *hide* first.
+
+        The tiles of *order*, instance ids, come first in that order and the
+        rest after them in their current order; a heading moves with the tile
+        it titles. The ``"grid"`` style lays them out by kind, ``"stack"`` one
+        to a row in that order.
+        """
+        tiles = [item for item in self._tile_order() if item["instance_id"] not in hide]
+        boxes = [self._tile_box(item) for item in tiles]
+        if order:
+            boxes = self._ordered_sections(boxes, order)
         width, _ = self._tile_bands()
         previous = {e["instance_id"]: e for e in self.layout}
-        layout = auto_layout.arrange_tiles(boxes, width, previous)
+        if style == "stack":
+            layout = auto_layout.stack_tiles(boxes, previous)
+        else:
+            layout = auto_layout.arrange_tiles(boxes, width, previous)
         shown = {box.id for box in boxes}
         hidden = [dict(e) for e in self.layout if e.get("instance_id") not in shown | set(hide)]
         hidden += [{**previous.get(iid, {}), "instance_id": iid, "visible": False} for iid in hide]
@@ -6365,7 +7217,31 @@ class FlowDash(Viewer):
             entry["index"] = index
         # Narrower bands follow the arranged layout, rather than keep layouts made for the old one.
         self._set_tile_layout(layout + hidden, {})
-        self._auto_tiles = shown
+        # A stack is a choice new tiles follow, so the grid's rules no longer rearrange it.
+        self._auto_tiles = shown if style == "grid" else set()
+        self._stacked = style == "stack"
+
+    @staticmethod
+    def _ordered_sections(
+        boxes: list[auto_layout.TileBox], order: t.Sequence[str]
+    ) -> list[auto_layout.TileBox]:
+        """Return *boxes* with the sections of the tiles of *order* first, in that order.
+
+        A section is a tile with the text tiles in front of it, so a heading
+        keeps titling its tile; text after the last tile is a section of its own.
+        """
+        sections: list[list[auto_layout.TileBox]] = [[]]
+        for box in boxes:
+            sections[-1].append(box)
+            if box.kind != "text":
+                sections.append([])
+        sections = [section for section in sections if section]
+        rank = {iid: i for i, iid in enumerate(order)}
+
+        def key(section):
+            return min((rank[b.id] for b in section if b.id in rank), default=len(rank))
+
+        return [box for section in sorted(sections, key=key) for box in section]
 
     def _plumbing(self, instance_ids: t.Iterable[str]) -> list[str]:
         """Return the shown tiles of *instance_ids* that are data sources and transforms.
@@ -6416,10 +7292,19 @@ class FlowDash(Viewer):
         order = [item["instance_id"] for item in self._tile_order()]
         width, bands = self._tile_bands()
 
+        # A stack someone chose stays a stack, so no chart makes room for another.
+        resizable = {
+            iid: self._tile_box(item)
+            for iid, item in tiles.items()
+            if iid in self._auto_tiles and not self._stacked
+        }
+
         def insert(entries, width):
             previous = {e["instance_id"]: e for e in entries if e.get("instance_id") in new}
             entries = [e for e in entries if e.get("instance_id") not in new]
-            return auto_layout.insert_tiles(entries, order, kinds, boxes, width, previous)
+            return auto_layout.insert_tiles(
+                entries, order, kinds, boxes, width, previous, resizable
+            )
 
         layout = insert(self.layout, width)
         responsive = {
@@ -6429,7 +7314,7 @@ class FlowDash(Viewer):
         self._set_tile_layout(layout, responsive)
         self._auto_tiles.update(new)
 
-    def arrange_layout(self):
+    def arrange_layout(self, order: t.Sequence[str] | None = None, style: str = "grid"):
         """Lay out every visible tile by its kind, as one edit.
 
         Controls go first, then KPIs, both at their default width, charts in
@@ -6437,10 +7322,21 @@ class FlowDash(Viewer):
         transforms last; text tiles stay in front of the tile they preceded.
         Hidden tiles stay hidden. Layouts made for narrower breakpoint bands
         are dropped, so those bands follow the arranged layout again.
+
+        Parameters
+        ----------
+        order
+            Instance ids of tiles to put first, in this order within their
+            kind; the other tiles follow in their current order.
+        style
+            ``"grid"`` lays the tiles out by kind as above, ``"stack"`` puts
+            them one to a row at full width in their order.
         """
+        if style not in ("grid", "stack"):
+            raise ValueError(f"Unknown layout style {style!r}; use 'grid' or 'stack'.")
         if not tile_layout.grid_tiles(self):
             return
-        self._arrange_tiles()
+        self._arrange_tiles(order=order or (), style=style)
         self._record_edit("Arranged the tile layout", op="arrange_layout")
 
     def _placed_singletons(self) -> set[str]:
@@ -6636,13 +7532,7 @@ class FlowDash(Viewer):
     def disconnect(self, source_id: str, source_port: str, target_id: str, target_port: str):
         """Remove the edge between two ports."""
         mapping = (source_id, source_port, target_id, target_port)
-        self._dataflow_graph.remove_edge(*mapping)
-        for edge_id, existing in list(self._edge_id_map.items()):
-            if existing == mapping:
-                del self._edge_id_map[edge_id]
-                self._drop_edge_editor(edge_id)
-                with self._muted_canvas():
-                    self._flow.remove_edge(edge_id)
+        self._remove_edge(mapping)
         self._sync_card_connections(target_id)
         self._settle_nodes()
         self._record_edit(
@@ -6650,6 +7540,31 @@ class FlowDash(Viewer):
             op="disconnect",
             args=self._edge_args(*mapping),
         )
+
+    @pn.io.hold()
+    def disconnect_input(self, instance_id: str, port: str):
+        """Remove every edge into the input *port* of *instance_id*, as one edit."""
+        mappings = [m for m in self._edge_id_map.values() if m[2] == instance_id and m[3] == port]
+        if not mappings:
+            return
+        for mapping in mappings:
+            self._remove_edge(mapping)
+        self._sync_card_connections(instance_id)
+        self._settle_nodes()
+        self._record_edit(
+            *(self._connect_label("Disconnected", *m) for m in mappings),
+            op="disconnect",
+            args=self._edge_args(*mappings[0]),
+        )
+
+    def _remove_edge(self, mapping: tuple[str, str, str, str]):
+        self._dataflow_graph.remove_edge(*mapping)
+        for edge_id, existing in list(self._edge_id_map.items()):
+            if existing == mapping:
+                del self._edge_id_map[edge_id]
+                self._drop_edge_editor(edge_id)
+                with self._muted_canvas():
+                    self._flow.remove_edge(edge_id)
 
     @pn.io.hold()
     def clear(self):
@@ -6666,6 +7581,7 @@ class FlowDash(Viewer):
             self._dataflow_graph.remove_node(node_id)
         self._floating_nodes = set()
         self._auto_tiles = set()
+        self._stacked = False
         self._chosen_visibility = set()
         self._tile_items = []
         self._tile_objects = []
@@ -6680,9 +7596,11 @@ class FlowDash(Viewer):
         self._edge_count = 0
         self._unresolved_edges = []
         self._unresolved_notice = None
+        self._turned_off_notice = None
         self._origins = {}
         self._groups = {}
         self._report = None
+        self._global_filters.load([])
         self._pushed = {}
         self._rebuild_sidebar()
         with self._muted_canvas():
@@ -6770,6 +7688,7 @@ class FlowDash(Viewer):
             {group.id for group in model.groups},
             {turn.id for turn in model.turns},
         )
+        model.filters = map_filters(self._global_filters.filters, {iid: iid for iid in placed})
         model.edges = [
             DashboardEdge(
                 source=edge["source"],
@@ -6821,9 +7740,12 @@ class FlowDash(Viewer):
         The model's turns replace the editor's. With *keep_open_turns* the
         turns open to more edits stay open, for a change made by loading a model.
         """
+        # A height the model stores is the model's, even where the editor showed the same one.
+        self._fill_heights.clear()
         self._hydrating = True
         try:
-            self._hydrate(model, keep_open_turns)
+            with _placing("load"):
+                self._hydrate(model, keep_open_turns)
         finally:
             self._hydrating = False
         self._note_parameter_nodes()
@@ -6832,6 +7754,8 @@ class FlowDash(Viewer):
             self._history.opened()
         if self._explore_feed is not None:
             self._explore_feed.sync()
+        if self._report_view is not None:
+            self._report_view.schedule()
 
     @contextmanager
     def _quiet_history(self):
@@ -6919,8 +7843,10 @@ class FlowDash(Viewer):
         self._unresolved_notice = unresolved_summary(
             len(placeholders), len(self._unresolved_edges)
         )
+        self._turned_off_notice = self._turned_off_summary(model)
         self._draw_groups(model.groups)
         self._report = copy.deepcopy(model.report)
+        self._global_filters.load(model.filters)
 
         legacy_ids = self._legacy_layout_ids(model)
         self._grid_populated = False
@@ -6939,6 +7865,7 @@ class FlowDash(Viewer):
         self._apply_mode_state()
         self._sync_toolbar_state()
         self._notify_unresolved()
+        self._notify_turned_off()
 
     def _resolve_port_name(self, instance_id: str, port: str) -> str:
         """Return the current name of a port a saved edge may name by a former name."""
@@ -7061,6 +7988,33 @@ class FlowDash(Viewer):
         message, self._unresolved_notice = self._unresolved_notice, None
         self._notify("warning", message, duration=8000)
 
+    def _turned_off_summary(self, model: DashboardModel) -> str | None:
+        """Return the notice for the components *model* places that an admin turned off, if any."""
+        aliases = self._component_aliases()
+        titles = []
+        for cid in dict.fromkeys(
+            self._resolve_component_id(item.component_id, aliases) for item in model.items
+        ):
+            entry = self._component_entries.get(cid)
+            if entry is not None and self._placement_refusal(cid) == TURNED_OFF:
+                titles.append(entry.title)
+        if not titles:
+            return None
+        names = ", ".join(titles)
+        verb = "is" if len(titles) == 1 else "are"
+        return (
+            f"{names} {verb} {TURNED_OFF}: the tiles already here keep working, "
+            "but no new ones can be added."
+        )
+
+    @param.depends("editable", "read_only", watch=True)
+    def _notify_turned_off(self):
+        """Tell an editor once that the loaded dashboard places components an admin turned off."""
+        if self._turned_off_notice is None or not self.editable or self.read_only:
+            return
+        message, self._turned_off_notice = self._turned_off_notice, None
+        self._notify("warning", message, duration=8000)
+
     def _legacy_layout_ids(self, model: DashboardModel) -> list[str]:
         """Return the tiles an untagged layout saved with *model* lines up with, in grid order.
 
@@ -7143,6 +8097,8 @@ class FlowDash(Viewer):
         """
         if self.read_only:
             raise _ReadOnlyEditorError("This dashboard is read-only.")
+        self._apply_queued_defaults()
+        self._record_defaults()
         self._compute_expects()
         model = self.to_model(title=title)
         if self.store is not None:
@@ -7180,6 +8136,8 @@ class FlowDash(Viewer):
         """
         if self.read_only:
             raise _ReadOnlyEditorError("This dashboard is read-only.")
+        self._apply_queued_defaults()
+        self._record_defaults()
         model = self.to_model(title=title)
         model.permission = Permission()
         if self.store is not None:
@@ -7261,7 +8219,7 @@ class FlowDash(Viewer):
         """
         model = self._restore_model(text)
         self.ensure_components_loaded(self._model_component_ids(model))
-        with self._quiet_history():
+        with self._quiet_history(), _placing("restore"):
             self._hydrating = True
             try:
                 patched = self._patch_canvas(model)
@@ -7269,6 +8227,9 @@ class FlowDash(Viewer):
                 self._hydrating = False
             if not patched:
                 self._hydrate_model(model, keep_open_turns=True)
+        if self._report_view is not None:
+            # The report is restored after the dashboard, which the view follows.
+            self._report_view.schedule()
 
     @pn.io.hold()
     def _patch_canvas(self, model: DashboardModel) -> bool:
@@ -7420,6 +8381,7 @@ class FlowDash(Viewer):
             self._apply_mode_state()
         self._draw_groups(model.groups)
         self._report = copy.deepcopy(model.report)
+        self._global_filters.load(model.filters)
         self._sync_placed()
         self._sync_toolbar_state()
         return True
@@ -7606,9 +8568,9 @@ class FlowDash(Viewer):
         try:
             self._restore_model(text, notify=False)
         except PermissionError as exc:
-            return str(exc)
+            return error_text(exc)
         except (ValueError, KeyError, TypeError) as exc:
-            return f"That version cannot be read: {exc}"
+            return f"That version cannot be read: {error_text(exc)}"
         return None
 
     def _restore_model(self, text: str, notify: bool = True) -> DashboardModel:
@@ -7940,6 +8902,33 @@ class FlowDash(Viewer):
                 restricted.add(item.instance_id)
         return restricted
 
+    def _refuse_new_placements(self, model: DashboardModel, reference: DashboardModel | None):
+        """Raise `PlacementRefused` if importing *model* would add items `refuse_placement` refuses.
+
+        An item *reference* (the dashboard as stored, or the canvas) already
+        has under its id, of the same component, is not new and is kept, so
+        dashboards keep components an admin turned off since.
+        """
+        aliases = self._component_aliases()
+        before = {
+            item.instance_id: self._resolve_component_id(item.component_id, aliases)
+            for item in (reference.items if reference is not None else ())
+        }
+        refused = []
+        for item in model.items:
+            cid = self._resolve_component_id(item.component_id, aliases)
+            if cid not in self._component_entries or before.get(item.instance_id) == cid:
+                continue
+            reason = self._placement_refusal(cid)
+            if reason is not None:
+                refused.append(
+                    f"{item.instance_id} ({self._component_entries[cid].title}: {reason})"
+                )
+        if refused:
+            raise PlacementRefused(
+                f"It adds components you can't add: {', '.join(refused)}. Nothing was imported."
+            )
+
     def _guard_restricted(self, model: DashboardModel, reference: DashboardModel | None):
         """Keep an imported *model* from adding or changing items this session may not use.
 
@@ -7953,6 +8942,7 @@ class FlowDash(Viewer):
         config nor their wiring. Of several items sharing an id only the first
         is kept, since placing the next would replace it.
         """
+        self._refuse_new_placements(model, reference)
         duplicates = _drop_repeated_ids(model)
         if duplicates:
             self._notify(
@@ -8013,10 +9003,10 @@ class FlowDash(Viewer):
         except KeyError:
             self._notify("warning", "Select a valid component first.", duration=3000)
         except PermissionError as exc:
-            self._notify("error", str(exc), duration=5000)
+            self._notify("error", error_text(exc), duration=5000)
         except Exception as exc:
             logger.exception("Failed to add component '%s'", component_id)
-            self._notify("error", f"Failed to add component: {exc}", duration=5000)
+            self._notify("error", f"Failed to add component: {error_text(exc)}", duration=5000)
         else:
             entry = self._component_entries[component_id]
             self._notify("success", f"Added component: {entry.title}", duration=3000)
@@ -8025,8 +9015,15 @@ class FlowDash(Viewer):
 
     def _on_palette_clicked(self, item):
         component_id = item.get("component_id") if isinstance(item, dict) else None
-        if component_id is not None:
-            self._add_from_ui(component_id, config=item.get("config"))
+        if component_id is None:
+            return
+        instance_id = self._add_from_ui(component_id, config=item.get("config"))
+        if self._phone and instance_id is not None:
+            # The sheet covers the canvas, so the new node is shown and selected
+            # for its settings to open in the inspector's sheet.
+            self._palette_sheet.open = False
+            self._reveal_above_sheet(instance_id)
+            self._select_node(instance_id)
 
     def _on_component_dropped(self, payload):
         if payload.get("drop_type") == _FILES_DROP_TYPE:
@@ -8055,7 +9052,9 @@ class FlowDash(Viewer):
         try:
             model = self._imported_model(file.get("content", ""))
         except ValueError as exc:
-            self._notify("error", f"Could not load {file['name']}: {exc}", duration=5000)
+            self._notify(
+                "error", f"Could not load {file['name']}: {error_text(exc)}", duration=5000
+            )
             return
         if not self._tile_items:
             self._apply_import(model)
@@ -8081,7 +9080,9 @@ class FlowDash(Viewer):
                 await self.load_model_async(model)
         except Exception as exc:
             logger.exception("Failed to load dropped dashboard")
-            self._notify("error", f"Could not load the dashboard: {exc}", duration=5000)
+            self._notify(
+                "error", f"Could not load the dashboard: {error_text(exc)}", duration=5000
+            )
             return
         self._record_import(model, before, present)
         if not self._placeholders() and not self._unresolved_edges:
@@ -8201,11 +9202,11 @@ class FlowDash(Viewer):
             model = self.save()
         except DashboardConflictError as exc:
             logger.info("Store refused to save dashboard: %s", exc)
-            self._notify("error", str(exc), duration=5000)
+            self._notify("error", error_text(exc), duration=5000)
             self._show_save_conflict()
         except DashboardStoreError as exc:
             logger.info("Store refused to save dashboard: %s", exc)
-            self._notify("error", str(exc), duration=5000)
+            self._notify("error", error_text(exc), duration=5000)
         except Exception:
             logger.exception("Failed to save dashboard")
             self._notify(
@@ -8303,7 +9304,7 @@ class FlowDash(Viewer):
             model = self.save_as(self._copy_title())
         except DashboardStoreError as exc:
             logger.info("Store refused to save a copy of the dashboard: %s", exc)
-            self._notify("error", str(exc), duration=5000)
+            self._notify("error", error_text(exc), duration=5000)
         except Exception:
             logger.exception("Failed to save a copy of the dashboard")
             self._notify(

@@ -191,32 +191,49 @@ def fill_template(template: str, value: t.Any, escape: t.Callable[[str], str] = 
     return fill_placeholders(template, _PLACEHOLDER, _value_filler(value), escape)
 
 
+# Private-use characters around a filled value, turned into an element after rendering.
+_VALUE_OPEN, _VALUE_CLOSE = "\ue000", "\ue001"
+
+
 def markdown_with_placeholders(
-    template: str, pattern: re.Pattern, fill: t.Callable[[re.Match], str]
+    template: str,
+    pattern: re.Pattern,
+    fill: t.Callable[[re.Match], str],
+    value_class: str | None = None,
 ) -> str:
     """Render *template* as HTML, replacing each match of *pattern* by the text ``fill(match)`` gives.
 
     Placeholders are filled after parsing, so a value is always literal text: it
     cannot add markup, and inside a code span or block it keeps its backslashes.
     A placeholder in a link or image URL is dropped rather than filled, so
-    showing the text never sends upstream data to another site.
+    showing the text never sends upstream data to another site. With
+    *value_class*, each value in the text is a ``<span>`` of that class.
     """
     fills: list[str] = []
     nonce = secrets.token_hex(4)
     budget = _Budget()
+    markers = (_VALUE_OPEN, _VALUE_CLOSE)
+
+    def strip(text: str) -> str:
+        return text.replace(_VALUE_OPEN, "").replace(_VALUE_CLOSE, "")
+
+    if value_class is not None:
+        template = strip(template or "")
 
     def mark(match: re.Match) -> str:
-        fills.append(budget.take(fill(match)))
+        fills.append(strip(budget.take(fill(match))) if value_class else budget.take(fill(match)))
         return f"fdph{nonce}n{len(fills) - 1}e"
 
     marker = re.compile(f"fdph{nonce}n(\\d+)e")
 
-    def filled(text: str) -> str:
+    def filled(text: str, wrap: bool = False) -> str:
+        if wrap and value_class is not None:
+            return marker.sub(lambda m: markers[0] + fills[int(m.group(1))] + markers[1], text)
         return marker.sub(lambda m: fills[int(m.group(1))], text)
 
     def walk(tokens):
         for token in tokens:
-            token.content = filled(token.content)
+            token.content = filled(token.content, wrap=True)
             token.info = marker.sub("", token.info)
             for name, attr in list((token.attrs or {}).items()):
                 if isinstance(attr, str):
@@ -228,7 +245,12 @@ def markdown_with_placeholders(
 
     tokens = _MARKDOWN.parse(pattern.sub(mark, template or ""))
     walk(tokens)
-    return _MARKDOWN.renderer.render(tokens, _MARKDOWN.options, {})
+    rendered = _MARKDOWN.renderer.render(tokens, _MARKDOWN.options, {})
+    if value_class is None:
+        return rendered
+    return rendered.replace(_VALUE_OPEN, f'<span class="{html.escape(value_class)}">').replace(
+        _VALUE_CLOSE, "</span>"
+    )
 
 
 def render_markdown(template: str, value: t.Any) -> str:
@@ -346,6 +368,13 @@ class Markdown(Viewer):
     def _update(self):
         self._pane.object = self._render()
 
+    def __export__(self, ctx):
+        """Return the Markdown, its placeholders filled with literal values, for a report export."""
+        from panel_flowdash.export import Text
+        from panel_flowdash.export.build import markdown_text
+
+        return Text(fill_template(self.text, self.value, markdown_text))
+
     def __flowdash_preview__(self) -> str:
         """Return the text of the Markdown with its placeholders filled in, without markup."""
         return html_to_text(self._render())
@@ -420,6 +449,18 @@ class Heading(Viewer):
             sx=sx,
         )
 
+    def __export__(self, ctx):
+        """Return the heading, and its subtitle as text, for a report export."""
+        from panel_flowdash.export import Heading as HeadingBlock, Text
+        from panel_flowdash.export.build import markdown_text
+
+        level = {"Title": 1, "Heading": 1, "Subheading": 2, "Section": 3}[self.size]
+        blocks = [HeadingBlock(fill_template(self.text, self.value), level)]
+        subtitle = fill_template(self.subtitle, self.value)
+        if subtitle.strip():
+            blocks.append(Text(markdown_text(subtitle)))
+        return blocks
+
     def __flowdash_preview__(self) -> str:
         """Return the heading text with its placeholders filled in."""
         return fill_template(self.text, self.value)
@@ -460,6 +501,12 @@ class Divider(Viewer):
     def _update(self):
         self._label.object = escape_markdown(self.label)
         self._divider.objects = [self._label] if self.label else []
+
+    def __export__(self, ctx):
+        """Return the label as a heading of a report export; a rule without one exports nothing."""
+        from panel_flowdash.export import Heading as HeadingBlock
+
+        return [HeadingBlock(self.label, 3)] if self.label.strip() else []
 
     def __panel__(self):
         """Return the rule."""
@@ -708,6 +755,44 @@ def notes_lines(markup: str) -> list[tuple]:
     return parser.lines
 
 
+def notes_markdown(markup: str) -> str:
+    """Return notes as Markdown: headings, lists, quotes, bold, italic, code and links."""
+    from panel_flowdash.export.build import markdown_text
+
+    lines = []
+    for (kind, _classes), runs in notes_lines(markup):
+        parts = []
+        for formats, raw in runs:
+            core = raw.strip(" ")
+            if not core:
+                parts.append(raw)
+                continue
+            text = markdown_text(core)
+            tags = dict(formats)
+            if "code" in tags:
+                text = f"`{text}`"
+            if "em" in tags:
+                text = f"*{text}*"
+            if "strong" in tags:
+                text = f"**{text}**"
+            if tags.get("a"):
+                text = f"[{text}](<{tags['a'].replace('>', '%3E')}>)"
+            lead, trail = raw[: len(raw) - len(raw.lstrip(" "))], raw[len(raw.rstrip(" ")) :]
+            parts.append(lead + text + trail)
+        text = "".join(parts)
+        if isinstance(kind, tuple):
+            _, listed, depth = kind
+            marker = "1." if listed == "ordered" else "-"
+            lines.append("   " * max(depth - 1, 0) + f"{marker} {text}")
+        elif kind in ("h1", "h2", "h3"):
+            lines.append(f"\n{'#' * (int(kind[1]) + 1)} {text}\n")
+        elif kind == "blockquote":
+            lines.append(f"> {text}\n")
+        else:
+            lines.append(f"{text}\n")
+    return "\n".join(lines).strip()
+
+
 _NOTES_CSS = """
 :host {
   --fd-notes-text: var(--mui-palette-text-primary, var(--panel-on-background-color));
@@ -872,6 +957,12 @@ class Notes(Viewer):
     @param.depends("placeholder", watch=True)
     def _update_placeholder(self):
         self._sync_editable()
+
+    def __export__(self, ctx):
+        """Return the notes as Markdown for a report export."""
+        from panel_flowdash.export import Text
+
+        return Text(notes_markdown(self.text))
 
     def __flowdash_preview__(self) -> str:
         """Return the text of the notes, without formatting."""

@@ -19,7 +19,23 @@ import panel_material_ui as pmui
 import param
 from panel.viewable import Children, Viewer
 
+from panel_flowdash.admin.access import (
+    AdminTokenExchange,
+    is_admin,
+    show_admin_link,
+)
+from panel_flowdash.admin.page import ADMIN_ROUTE, AdminPage
+from panel_flowdash.admin.sections import (
+    FontLoader,
+    claim_admin,
+    font_href,
+    project_admins,
+    project_overrides,
+)
+from panel_flowdash.admin.wizard import SETUP_SECTION, SetupWizard, project_is_new
+from panel_flowdash.ai import UsageLedger, ledger_for
 from panel_flowdash.auth import (
+    ANONYMOUS_USER,
     AuthConfig,
     Permission,
     entry_authorized,
@@ -27,12 +43,31 @@ from panel_flowdash.auth import (
     resolve_identity,
 )
 from panel_flowdash.component_library import merge_libraries
+from panel_flowdash.component_settings import (
+    ComponentSettingsUnavailable,
+    approval_ids,
+    placement_refusal,
+    project_components,
+)
 from panel_flowdash.dashboard_store import (
     BaseDashboardStore,
     DashboardModel,
     DashboardStoreError,
 )
 from panel_flowdash.editor import FlowDash
+from panel_flowdash.permissions import (
+    PermissionsUnavailable,
+    auth_code_fields,
+    effective_auth_config,
+    project_permissions,
+)
+from panel_flowdash.project import (
+    PROJECT_FILE,
+    Project,
+    ProjectError,
+    _parse as parse_project_data,
+    load_project,
+)
 from panel_flowdash.registry import RegistryEntry, build_registry
 from panel_flowdash.session_state import build_session_state_class, check_requirements
 from panel_flowdash.settings import DashboardSettings
@@ -79,6 +114,7 @@ from panel_flowdash.ui.text import (
     markdown_pane,
 )
 from panel_flowdash.util import notify, page_dialog, panel_call, panel_viewer
+from panel_flowdash.value_text import error_text, redact_secrets
 from panel_flowdash.widgets import BUILTIN_COMPONENTS
 
 logger = logging.getLogger("panel_flowdash")
@@ -95,6 +131,35 @@ COMPONENTS_ROUTE = "/components"
 DASH_ROUTE_PREFIX = "/dash/"
 #: Opens a dashboard in the full screen layout, e.g. for a wall display.
 KIOSK_QUERY = "kiosk=1"
+
+
+def _merged(base: dict | None, update: dict | None) -> dict:
+    """Return *base* with *update* merged into it, nested dicts merged key by key."""
+    merged = dict(base or {})
+    for key, value in (update or {}).items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merged(merged[key], value)
+        else:
+            merged[key] = value
+    return merged
+
+
+# The project file each served directory writes when it has none yet, shared by its sessions.
+_SETTINGS_PROJECTS: dict[str, Project] = {}
+
+
+def _unloaded_project(path: pathlib.Path, context: dict) -> Project | None:
+    """Read the project file at *path* without loading its sections.
+
+    Each section is loaded when it is first asked for, so one the file gets
+    wrong is reported where it is used rather than stopping the app.
+    """
+    try:
+        data, positions = parse_project_data(path.read_text(encoding="utf-8"), str(path))
+    except (OSError, UnicodeDecodeError, ProjectError) as exc:
+        logger.warning("Not reading the project file %s: %s", path, exc)
+        return None
+    return Project(str(path), data, positions, context)
 
 
 def _is_kiosk(search: str | None) -> bool:
@@ -150,6 +215,18 @@ AGENT_EXTRA_MISSING = (
 
 class FlowDashApp(Viewer):
     """FlowDash application: scans a project directory and serves its pages and components."""
+
+    admin_link = param.Boolean(
+        default=True,
+        doc="""
+        Whether the admin link can claim the admin view: ``/admin#token=...``
+        with the server's admin token, which `flowdash serve` prints at
+        startup while the project has no admin (see
+        `panel_flowdash.admin.admin_path`). Whoever opens it is added to the
+        project file's ``general.admins`` and is admin from then on: the
+        signed-in user, or without sign-in the account that runs the server.
+        Members of the `auth_config`'s ``admin_groups`` are admins either way.""",
+    )
 
     agent = param.Parameter(
         default=None,
@@ -379,12 +456,33 @@ class FlowDashApp(Viewer):
 
     project_dir = param.Path(doc="Path to the project directory.")
 
+    project = param.ClassSelector(
+        class_=(Project, str, os.PathLike),
+        default=None,
+        doc="""
+        The project file (``flowdash.yaml``) whose sections configure the
+        app, as a path or a loaded `panel_flowdash.project.Project`. A path
+        is loaded when the app is created, with the project directory and
+        the component registry as the loaders' context, raising
+        `ProjectError` with the file, line and column of each problem. See
+        the project file reference.""",
+    )
+
     propagate_failures = param.Boolean(
         default=False,
         doc="""
         Carry a failing output or edge transform downstream instead of leaving
         the connected inputs on their last value. Passed to the embedded
         editor, see `FlowDash.propagate_failures`.""",
+    )
+
+    settings_sources = param.Dict(
+        default={},
+        doc="""
+        Where parameters given in code come from, by name, e.g.
+        ``{"home_dashboard": "__init__.py", "title": "--title"}``. The admin
+        view names it on each setting the parameter locks. `flowdash serve`
+        fills it in.""",
     )
 
     settings_class = param.ClassSelector(
@@ -418,12 +516,15 @@ class FlowDashApp(Viewer):
         "authorize_dashboard",
         "components",
         "include_page_dialog",
+        "refuse_placement",
         "store",
         "user",
     )
 
     def __init__(self, registry: dict[str, RegistryEntry] | None = None, **params):
         super().__init__(**params)
+        # The parameters given in code, which win over the project file's settings.
+        self._explicit = frozenset(params)
 
         if self.notifications:
             pn.config.notifications = True
@@ -436,6 +537,12 @@ class FlowDashApp(Viewer):
         registry = self._with_libraries(
             registry, self.component_libraries, self.include_builtin_components
         )
+        if self.project is not None and not isinstance(self.project, Project):
+            self.project = load_project(
+                self.project, self._project_context(registry, self.project_dir)
+            )
+        self._registry = registry
+        self._apply_project_settings()
         page_entries = {k: v for k, v in registry.items() if v.metadata.page}
         # Session state is built from AST metadata — no imports needed.
         session_state_class = build_session_state_class(registry)
@@ -446,8 +553,20 @@ class FlowDashApp(Viewer):
         self._session_state_class = session_state_class
 
         self._session_state = self._session_state_class()
+        self._apply_project_permissions()
         self._identity = resolve_identity(self.auth_config)
+        self._note_visit()
         self._user_id = self._resolve_user_id()
+        self._is_admin = self._permissions_error is None and is_admin(
+            self._identity,
+            self._admin_groups(),
+            self._configured_admins(),
+        )
+        self._admin_page: AdminPage | None = None
+        self._wizard: SetupWizard | None = None
+        # Whether this session is admin through the admin link alone, having no user
+        # name to record in `general.admins`.
+        self._admin_by_token = False
         # Views of the open dashboard's sidebar components, shown after `sidebar`.
         self._sidebar_views: list = []
         self._sidebar_open_before_fullscreen: bool | None = None
@@ -509,6 +628,25 @@ class FlowDashApp(Viewer):
         shared_dialog = page_dialog()
         self._page_dialogs = [] if shared_dialog is None else [shared_dialog]
         self._page_dialogs.append(self._build_downloader())
+        self._font_loader = FontLoader(
+            href=font_href(self._project_font), width=0, height=0, margin=0, visible=False
+        )
+        self._page_dialogs.append(self._font_loader)
+        if self.admin_link:
+            doc = pn.state.curdoc
+            if (
+                doc is not None
+                and doc.session_context is not None
+                and not self._admin_groups()
+                and not self._configured_admins()
+            ):
+                # Served some other way than `flowdash serve`, which prints it at startup.
+                show_admin_link()
+            self._token_exchange = AdminTokenExchange(
+                width=0, height=0, margin=0, styles={"display": "none"}
+            )
+            self._token_exchange.param.watch(self._on_admin_token, "token")
+            self._page_dialogs.append(self._token_exchange)
         self._leave_page_guard = LeavePageGuard()
         self._editor.param.watch(
             self._sync_leave_page_guard, ["dashboard", "dirty", "code_drafts"]
@@ -516,7 +654,10 @@ class FlowDashApp(Viewer):
         self._page_dialogs.append(self._leave_page_guard)
         page_kwargs = {
             "title": self.title,
-            "theme_config": {"palette": {"primary": {"main": "#0072B5"}}},
+            "theme_config": _merged(
+                {"palette": {"primary": {"main": "#0072B5"}}}, self._project_theme_config
+            ),
+            **self._project_page_options,
             "sidebar_open": False,
             "sidebar": list(self.sidebar),
             "contextbar": self.param.contextbar.rx(),
@@ -532,7 +673,9 @@ class FlowDashApp(Viewer):
                 rail=self._shell.rail_content,
                 sx=HEADER_SX,
             )
+        theme_config = _merged(page_kwargs["theme_config"], self.page_options.get("theme_config"))
         page_kwargs.update(self.page_options)
+        page_kwargs["theme_config"] = theme_config
         if self._shell is None and self._agent_session is not None:
             page_kwargs["header"] = [
                 *page_kwargs.get("header", []),
@@ -542,6 +685,314 @@ class FlowDashApp(Viewer):
         self._page = pmui.Page(**{**page_kwargs, "sx": self._header_sx()})
         self.param.watch(self._sync_page_sidebar, "sidebar")
         pn.state.onload(self._load_page_layout)
+
+    # ------------------------------------------------------------------
+    # Project file settings and the admin view
+    # ------------------------------------------------------------------
+
+    def _settings_project(self) -> Project:
+        """Return the project the admin view writes: `project`, or the project directory's file.
+
+        Without a project file, the admin view writes ``flowdash.yaml`` in
+        the project directory, created on the first save.
+        """
+        if isinstance(self.project, Project):
+            return self.project
+        if getattr(self, "_own_project", None) is not None:
+            return self._own_project
+        if self.project_dir is None:
+            self._own_project = Project(context=self._project_context(self._registry, None))
+            return self._own_project
+        path = pathlib.Path(self.project_dir).resolve() / PROJECT_FILE
+        key = str(path)
+        project = _SETTINGS_PROJECTS.get(key)
+        if project is None:
+            context = self._project_context(self._registry, self.project_dir)
+            project = _unloaded_project(path, context) if path.is_file() else None
+            project = project or Project(key, context=context)
+            project = _SETTINGS_PROJECTS.setdefault(key, project)
+        return project
+
+    def _code_setting_source(self, target: str) -> str | None:
+        """Return where the parameter *target* names was given in code, or None.
+
+        *target* is a parameter name or a path into a dict parameter, e.g.
+        ``"editor_options.mode"``.
+        """
+        top, *path = target.split(".")
+        if top == "auth_config" and path:
+            return self._auth_code_fields().get(path[0])
+        if top not in self._explicit or top not in self.param:
+            return None
+        value = getattr(self, top)
+        for part in path:
+            if not isinstance(value, dict) or part not in value:
+                return None
+            value = value[part]
+        source = self.settings_sources.get(top)
+        if source is None:
+            return f"{top} set in code"
+        if source.startswith("-"):
+            return f"set with {source}"
+        return f"{top} in {source}"
+
+    def _code_setting_value(self, target: str) -> t.Any:
+        """Return the value of the parameter, or the entry of a dict parameter, *target* names."""
+        top, *path = target.split(".")
+        if top == "auth_config" and path:
+            return getattr(self._code_auth_config or AuthConfig(), path[0])
+        value = getattr(self, top)
+        for part in path:
+            value = value[part]
+        return value
+
+    def _apply_project_settings(self):
+        """Use the project file's settings for the parameters not given in code."""
+        self._project_editor_options: dict[str, t.Any] = {}
+        self._project_page_options: dict[str, t.Any] = {}
+        self._project_theme_config: dict[str, t.Any] = {}
+        self._project_font: str | None = None
+        try:
+            project = self._settings_project()
+            overrides = project_overrides(
+                project, lambda target: self._code_setting_source(target) is not None
+            )
+        except (ProjectError, OSError) as exc:
+            logger.warning("Not using the project file's settings: %s", exc)
+            return
+        updates = {}
+        for target, value in overrides.items():
+            top, *path = target.split(".")
+            if top == "editor_options":
+                self._project_editor_options[path[0]] = value
+            elif top == "page_options" and path[0] == "theme_config":
+                nested = value
+                for part in reversed(path[1:]):
+                    nested = {part: nested}
+                self._project_theme_config = _merged(self._project_theme_config, nested)
+            elif top == "page_options":
+                self._project_page_options[path[0]] = value
+            elif top in self.param:
+                updates[top] = value
+        self._project_font = (
+            ((project.get("theme") or {}).get("font_family"))
+            if "fontFamily" in self._project_theme_config.get("typography", {})
+            else None
+        )
+        if updates:
+            self.param.update(updates)
+
+    def _apply_theme(self):
+        """Show the theme the project file now sets on this page."""
+        self._apply_project_settings()
+        page = self._page
+        theme_config = _merged(
+            _merged({"palette": {"primary": {"main": "#0072B5"}}}, self._project_theme_config),
+            self.page_options.get("theme_config"),
+        )
+        updates = {"theme_config": theme_config, "title": self.title}
+        for name in ("logo", "dark_theme"):
+            if name in self._project_page_options and name not in self.page_options:
+                updates[name] = self._project_page_options[name]
+        page.param.update(updates)
+        self._font_loader.href = font_href(self._project_font)
+
+    def _project_section(self, name: str) -> dict[str, t.Any]:
+        """Return the project file's section *name*, or nothing when it cannot be read."""
+        try:
+            return dict(self._settings_project().get(name) or {})
+        except (ProjectError, OSError) as exc:
+            logger.warning("Not using the project file's %s settings: %s", name, exc)
+            return {}
+
+    def _auth_code_fields(self) -> dict[str, str]:
+        """Return the `AuthConfig` fields given in code, each with where."""
+        return auth_code_fields(
+            self._code_auth_config, self.settings_sources, "auth_config" in self._explicit
+        )
+
+    def _read_permissions(self) -> dict[str, t.Any]:
+        """Return the project file's permissions as they are now.
+
+        Raises `PermissionsUnavailable` when the file cannot be read and no
+        permissions were read from it before, so access is denied rather
+        than left to the defaults.
+        """
+        project = self._settings_project()
+        if project.path and pathlib.Path(project.path).exists():
+            return project_permissions(project.path)
+        try:
+            return dict(project.get("permissions") or {})
+        except ProjectError as exc:
+            raise PermissionsUnavailable(str(exc)) from None
+
+    def _apply_project_permissions(self):
+        """Layer the project file's permissions under the `auth_config` given in code.
+
+        When they cannot be read, the session is denied: `_permissions_error` says why.
+        """
+        self._code_auth_config = self.auth_config
+        self._permissions_error: str | None = None
+        try:
+            self._permissions = self._read_permissions()
+        except PermissionsUnavailable as exc:
+            self._permissions = {}
+            self._permissions_error = str(exc)
+        if self._permissions:
+            self.auth_config = effective_auth_config(
+                self.auth_config, self._permissions, self._auth_code_fields()
+            )
+
+    def _assistant_still_allowed(self) -> bool:
+        """Whether the person still gets the assistant, with the permissions read again.
+
+        Checked before each request, so taking the assistant away applies to
+        sessions already open.
+        """
+        try:
+            self._permissions = self._read_permissions()
+        except PermissionsUnavailable as exc:
+            self._permissions_error = str(exc)
+            return False
+        return self._permissions_error is None and self._assistant_allowed()
+
+    def _usage_ledger(self) -> UsageLedger:
+        """Return the ledger of the models' spend and of who opened the app."""
+        project = self._settings_project()
+        directory = project.directory if project.path else self.project_dir
+        return ledger_for(directory)
+
+    def _note_visit(self):
+        if pn.state.curdoc is None or pn.state.curdoc.session_context is None:
+            return
+        try:
+            self._usage_ledger().see(self._identity.user, self._identity.groups)
+        except OSError as exc:
+            logger.warning("Could not note the visit of %s: %s", self._identity.user, exc)
+
+    def _configured_admins(self) -> list[str]:
+        try:
+            return project_admins(self._settings_project())
+        except (ProjectError, OSError):
+            return []
+
+    def _on_admin_token(self, event):
+        """Make whoever opened the admin link an admin, now and on every later start."""
+        if not event.new:
+            return
+        location = pn.state.location
+        if location is not None and "token=" in (location.hash or ""):
+            # Otherwise the next navigation would write the fragment back into the address bar.
+            location.hash = ""
+        user = self._identity.user
+        user = user if user and user != ANONYMOUS_USER else None
+        project = self._settings_project()
+        new_project = project_is_new(project)
+        try:
+            outcome = claim_admin(self._settings_project(), user, event.new, self._admin_groups())
+        except (ProjectError, OSError) as exc:
+            logger.warning("Could not record %s as an admin: %s", user, exc)
+            self._notify("warning", f"You're admin until the server restarts: {error_text(exc)}")
+        else:
+            if outcome == "invalid":
+                logger.warning("Refused an admin link with a wrong or used token.")
+                self._notify("error", "This admin link is not valid or was already used.")
+                return
+            if outcome == "taken":
+                logger.warning("Refused an admin link: the project already has admins.")
+                self._notify(
+                    "error",
+                    "This project already has admins. Ask one of them to add you under "
+                    "Admin, General.",
+                )
+                return
+            if user:
+                self._notify("success", f"{user} is now an admin of this project.")
+        # Someone with a name is recorded in `general.admins` and checked there like any
+        # admin; only a session without one stays admin through the token alone.
+        self._admin_by_token = user is None
+        was_admin = self._is_admin
+        self._is_admin = True
+        if not was_admin and self._shell is not None:
+            self._shell.refresh()
+        if new_project:
+            # The first admin of a project with no settings yet is walked through setup.
+            self._navigate_to(f"{ADMIN_ROUTE}/{SETUP_SECTION}")
+        elif (
+            not was_admin
+            and location is not None
+            and (location.pathname or "").startswith(ADMIN_ROUTE)
+        ):
+            pn.state.execute(self._load_page_layout)
+
+    def _still_admin(self) -> bool:
+        """Whether this session is still an admin, with the project file read again.
+
+        Asked before every action that changes or removes someone else's
+        dashboards, so an admin removed meanwhile cannot finish one from a
+        page they still have open.
+        """
+        if not self._is_admin:
+            return False
+        if self._admin_by_token:
+            return True
+        try:
+            permissions = self._read_permissions()
+        except PermissionsUnavailable:
+            return False
+        config = effective_auth_config(
+            self._code_auth_config, permissions, self._auth_code_fields()
+        )
+        try:
+            admins = project_admins(self._settings_project(), fresh=True)
+        except OSError:
+            admins = []
+        return is_admin(self._identity, config.admin_groups, admins)
+
+    def _on_admin_saved(self, section: str):
+        if section == "theme":
+            self._apply_theme()
+
+    def _show_admin_section(self, section: str):
+        self._navigate_to(f"{ADMIN_ROUTE}/{section}")
+
+    def _setup_wizard(self) -> SetupWizard:
+        """Return the setup wizard, a new one unless it is open already."""
+        if self._wizard is None:
+            self._wizard = SetupWizard(
+                self, self._settings_project(), on_close=self._close_setup_wizard
+            )
+        return self._wizard
+
+    def _close_setup_wizard(self, finished: bool):
+        wizard, self._wizard = self._wizard, None
+        if finished and wizard is not None:
+            for section in wizard.written:
+                self._on_admin_saved(section)
+            if self._admin_page is not None:
+                # Its forms show what the file had before setup.
+                self._admin_page = None
+            self._navigate_to("/")
+        else:
+            self._navigate_to(f"{ADMIN_ROUTE}/general")
+
+    def _admin_view(self, pathname: str):
+        """Return the admin page showing the section *pathname* names, or a refusal."""
+        if not self._is_admin:
+            return self._access_denied_view("Admin")
+        if pathname.strip("/") == f"{ADMIN_ROUTE}/{SETUP_SECTION}".strip("/"):
+            return self._setup_wizard()
+        if self._admin_page is None:
+            self._admin_page = AdminPage(
+                self,
+                self._settings_project(),
+                on_select=self._show_admin_section,
+                on_saved=self._on_admin_saved,
+            )
+            self._admin_page.param.watch(self._sync_leave_page_guard, "dirty")
+        section = pathname[len(ADMIN_ROUTE) :].strip("/") or None
+        self._admin_page.show(section)
+        return self._admin_page
 
     def _set_sidebar_views(self, views: list):
         self._sidebar_views = list(views)
@@ -707,6 +1158,32 @@ class FlowDashApp(Viewer):
         widgets) usable. Never imports, like :meth:`_can_access_entry`.
         """
         return entry_authorized(entry, self._identity, default_allow=True, load=False)
+
+    def _component_settings(self) -> dict[str, dict[str, t.Any]] | None:
+        """Return the project file's ``components`` section as it is now.
+
+        None when it cannot be read and was never read, which callers treat
+        as refusing every component rather than offering every one.
+        """
+        try:
+            return project_components(self._settings_project())
+        except ComponentSettingsUnavailable:
+            return None
+
+    def _placement_refusal(self, component_id: str) -> str | None:
+        """Return why the current identity may not add *component_id* to a dashboard, or None."""
+        settings = self._component_settings()
+        if settings is None:
+            return "the component settings in the project file cannot be read"
+        return placement_refusal(settings, component_id, self._identity)
+
+    def _approval_components(self) -> list[str]:
+        """Return the components the project file says the agent needs approval to place.
+
+        Every component, when the settings cannot be read.
+        """
+        settings = self._component_settings()
+        return ["*"] if settings is None else approval_ids(settings)
 
     @staticmethod
     def _unresolved(entry: RegistryEntry) -> bool:
@@ -895,7 +1372,7 @@ class FlowDashApp(Viewer):
             logger.exception("Error rendering page '%s'", "/".join(key))
             err_name = type(e).__name__
             return alert_pane(
-                f"**{err_name}**: {escape_markdown(e)}\n<hr>\n<pre> {escape_html(traceback.format_exc())}</pre>\n",
+                f"**{err_name}**: {escape_markdown(error_text(e))}\n<hr>\n<pre> {escape_html(redact_secrets(traceback.format_exc()))}</pre>\n",
                 alert_type="danger",
                 styles={"color": "black"},
             )
@@ -915,6 +1392,7 @@ class FlowDashApp(Viewer):
         editor = self.editor_class(
             authorize_component=self._can_use_component,
             authorize_dashboard=self._authorize_dashboard,
+            refuse_placement=self._placement_refusal,
             components=self._registry,
             include_page_dialog=False,
             store=self.store,
@@ -927,6 +1405,7 @@ class FlowDashApp(Viewer):
                 "header_layout": self.header_layout,
                 "propagate_failures": self.propagate_failures,
                 "settings_class": self.settings_class,
+                **self._project_editor_options,
                 **options,
                 "toolbar_extra": toolbar_extra,
             },
@@ -942,8 +1421,44 @@ class FlowDashApp(Viewer):
 
             validate_models(self.agent_models)
 
+    def _code_models(self) -> tuple[list, str | None]:
+        """Return the models and default model given in code or the environment."""
+        from panel_flowdash.agent.models import configured_models
+
+        model = self.agent if isinstance(self.agent, str) else self.agent_model
+        return configured_models(self.agent_models, model)
+
+    def _model_entries(self, ai: dict[str, t.Any]) -> tuple[list, str | None]:
+        """Return the models of the code and the project file's ``ai`` section, and the default."""
+        from panel_flowdash.agent.models import default_model
+        from panel_flowdash.ai import default_model_id, model_entries
+
+        code_models, _ = self._code_models()
+        source = self._code_setting_source("agent_models") or self._code_setting_source(
+            "agent_model"
+        )
+        entries = model_entries(ai, code_models, source)
+        # Only a default named in code wins over the file's; the first model is a default of neither.
+        code_default = (
+            self.agent if isinstance(self.agent, str) else self.agent_model or default_model()
+        )
+        return entries, default_model_id(ai, entries, code_default)
+
+    def _assistant_allowed(self) -> bool:
+        """Whether this session's person gets the assistant: `agent_authorize`, else the project's."""
+        if self.agent_authorize is not None:
+            try:
+                return bool(self.agent_authorize(self._identity))
+            except Exception:
+                logger.exception("agent_authorize failed; leaving the agent out")
+                return False
+        from panel_flowdash.permissions import assistant_allowed
+
+        return assistant_allowed(self._permissions, self._identity)
+
     def _build_agent_session(self):
         """Connect this session to the configured agent, or return None when there is none."""
+        ai = self._project_section("ai")
         if self.agent is False or (
             self.agent is None
             and not (
@@ -951,17 +1466,12 @@ class FlowDashApp(Viewer):
                 or self.agent_models
                 or os.environ.get("FLOWDASH_AGENT_MODEL")
                 or os.environ.get("FLOWDASH_AGENT_MODELS")
+                or ai.get("models")
             )
         ):
             return None
-        if self.agent_authorize is not None:
-            try:
-                allowed = bool(self.agent_authorize(self._identity))
-            except Exception:
-                logger.exception("agent_authorize failed; leaving the agent out")
-                allowed = False
-            if not allowed:
-                return None
+        if self._permissions_error is not None or not self._assistant_allowed():
+            return None
         try:
             from panel_flowdash.agent.assistant import EDITING
             from panel_flowdash.agent.session import (
@@ -972,24 +1482,48 @@ class FlowDashApp(Viewer):
         except ImportError as exc:
             logger.error("%s (%s)", AGENT_EXTRA_MISSING, exc)
             return None
-        from panel_flowdash.agent.models import configured_models
+        from panel_flowdash.ai import model_choice
 
-        models, model = configured_models(self.agent_models, self.agent_model)
-        if isinstance(self.agent, str):
-            models, model = configured_models(self.agent_models, self.agent)
+        entries, default = self._model_entries(ai)
+        offered = {
+            surface: [e for e in entries if e.offered(self._identity, surface)]
+            for surface in ("assistant", "explore")
+        }
+        if entries and not offered["assistant"]:
+            return None
+        models = [model_choice(e, ai) for e in offered["assistant"]]
+        ids = [m.id for m in models]
+        model = default if default in ids else next(iter(ids), None)
+        target = next((m.target for m in models if m.id == model), model)
         # With a choice the picker names every request's model, so an unusable default must not fail here.
         checks = {"defer_model_check": True} if len(models) > 1 else {}
-        exploring = self.explore_agent is not False
-        agent = resolve_agent(
-            self.agent, model, **checks, **({"instructions": EDITING} if exploring else {})
-        )
+        exploring = self.explore_agent is not False and (not entries or bool(offered["explore"]))
+        # A model string given as `agent` is the default model, made with the project's provider key.
+        try:
+            agent = resolve_agent(
+                None if isinstance(self.agent, str) else self.agent,
+                target,
+                **checks,
+                **({"instructions": EDITING} if exploring else {}),
+            )
+        except Exception as exc:
+            if not ai.get("models"):
+                raise
+            # A model the admin view added must not keep the app from starting.
+            logger.error("The assistant is off: its model %s cannot be used: %s", model, exc)
+            return None
         if agent is None:
             return None
         made = self.agent is None or self.agent is True or isinstance(self.agent, str)
         # An assistant passed in runs on its own model, and the Explore agent made for it too.
-        explore_agent = resolve_explore_agent(
-            self.explore_agent, agent, model if made else None, **checks
+        explore_agent = (
+            resolve_explore_agent(self.explore_agent, agent, target if made else None, **checks)
+            if exploring
+            else None
         )
+        explore_models = None
+        if entries and [e.id for e in offered["explore"]] != ids:
+            explore_models = [model_choice(e, ai) for e in offered["explore"]]
         # With a single model there is nothing to pick, and an agent passed in keeps its own model.
         # The chat names that model as configured when agent_models lists it or the configured id
         # is the agent's own model, else by the agent's model.
@@ -998,7 +1532,7 @@ class FlowDashApp(Viewer):
             from panel_flowdash.agent.models import agent_model_choice, same_model
 
             configured = models[0] if models else None
-            if configured is not None and not (made or self.agent_models):
+            if configured is not None and not (made or self.agent_models or ai.get("models")):
                 own = agent_model_choice(agent)
                 if own is None or not same_model(configured.id, own.id):
                     configured = None
@@ -1013,6 +1547,9 @@ class FlowDashApp(Viewer):
             model=model,
             explore_agent=explore_agent,
             explore_model=explore_model,
+            explore_models=explore_models,
+            entries=entries,
+            ledger=self._usage_ledger(),
         )
 
     def _on_editor_sidebar(self, *events):
@@ -1066,7 +1603,7 @@ class FlowDashApp(Viewer):
         """
         if isinstance(exc, DashboardStoreError):
             logger.info("Store refused to %s dashboard: %s", action, exc)
-            message = str(exc)
+            message = error_text(exc)
         else:
             logger.exception("Failed to %s dashboard", action)
             message = f"Could not {action} the dashboard. The error has been logged."
@@ -1103,8 +1640,17 @@ class FlowDashApp(Viewer):
         self._editor.dirty = value
 
     def _has_unsaved_changes(self) -> bool:
+        if self._admin_dirty():
+            return True
         unsaved = self._dirty or self._editor.code_drafts
         return unsaved and self._current_dashboard is not None
+
+    def _admin_dirty(self) -> bool:
+        """Whether the admin page is shown with unsaved settings."""
+        if self._admin_page is None or not self._admin_page.dirty or pn.state.location is None:
+            return False
+        path = pn.state.location.pathname or ""
+        return path == ADMIN_ROUTE or path.startswith(f"{ADMIN_ROUTE}/")
 
     def _sync_leave_page_guard(self, *_events):
         self._leave_page_guard.active = self._has_unsaved_changes()
@@ -1221,6 +1767,22 @@ class FlowDashApp(Viewer):
             self._unsaved_dialog,
             *self._page_dialogs,
         ]
+        self._note_opened(dashboard_id)
+        opening = (parse_qs((search or "").lstrip("?")).get("open") or [None])[0]
+        if opening is not None:
+            pn.state.execute(partial(self._open_on_load, opening, edit), schedule=True)
+
+    def _open_on_load(self, what: str, edit: bool):
+        """Open what a dashboard link's ``open`` asks for: ``settings`` or ``history``."""
+        if what == "settings" and edit:
+            self._editor._settings_view.show("general")
+        elif what == "history" and self._agent_session is not None:
+            self._agent_session.drawer.open = True
+
+    def _note_opened(self, dashboard_id: str):
+        if pn.state.curdoc is None or pn.state.curdoc.session_context is None:
+            return
+        self._usage_ledger().opened(dashboard_id)
 
     def _create_new_dashboard(self, title_str: str) -> bool:
         """Create a dashboard and open it for editing, returning whether it was created."""
@@ -1410,6 +1972,17 @@ class FlowDashApp(Viewer):
         if not self._is_current_navigation(generation):
             return
 
+        if self._permissions_error is not None:
+            self._leave_dashboard()
+            self._set_sidebar_views([])
+            self._page.main = [
+                alert_pane(
+                    f"**Access is denied.** {escape_markdown(self._permissions_error)}",
+                    alert_type="danger",
+                )
+            ]
+            return
+
         if pathname == "/":
             if self.home_dashboard and await self._show_home_dashboard(generation):
                 return
@@ -1447,6 +2020,22 @@ class FlowDashApp(Viewer):
                 self._unsaved_dialog,
                 *self._page_dialogs,
             ]
+            return
+
+        if pathname == ADMIN_ROUTE or pathname.startswith(f"{ADMIN_ROUTE}/"):
+            self._leave_dashboard()
+            self._reset_canvas()
+            self._set_sidebar_views([])
+            view = self._admin_view(pathname)
+            self._apply_layout_config(view, pathname)
+            self._page.main = [
+                self._nav_content(view),
+                self._dialog,
+                self._unsaved_dialog,
+                *self._page_dialogs,
+            ]
+            if self._shell is not None:
+                self._shell.sync(pathname)
             return
 
         if pathname.startswith(DASH_ROUTE_PREFIX):
@@ -1769,9 +2358,13 @@ class FlowDashApp(Viewer):
         try:
             parsed = parse_dashboard_file(content, self._user_id)
         except ValueError as exc:
-            self._notify("error", f"Could not import {filename}: {exc}", duration=5000)
+            self._notify("error", f"Could not import {filename}: {error_text(exc)}", duration=5000)
             return None
-        self._editor._guard_restricted(parsed, None)
+        try:
+            self._editor._guard_restricted(parsed, None)
+        except PermissionError as exc:
+            self._notify("error", f"Could not import {filename}: {error_text(exc)}", duration=8000)
+            return None
         title = unique_title(self.store, self._user_id, parsed.title)
         try:
             model = copy_dashboard(self.store, parsed, self._user_id, title)
@@ -2081,6 +2674,12 @@ class FlowDashApp(Viewer):
             return pending
 
         def _on_leave():
+            if self._admin_dirty():
+                self._admin_page.discard_all()
+                pending = _take_pending()
+                if pending:
+                    pending()
+                return
             self._dirty = False
             self._editor.drop_code_drafts()
             pending = _take_pending()
@@ -2088,6 +2687,14 @@ class FlowDashApp(Viewer):
                 pending()
 
         def _on_save():
+            if self._admin_dirty():
+                if not self._admin_page.save_all():
+                    _take_pending()
+                    return
+                pending = _take_pending()
+                if pending:
+                    pending()
+                return
             if not self._save_current_dashboard():
                 _take_pending()
                 return
@@ -2108,6 +2715,10 @@ class FlowDashApp(Viewer):
 
     def _unsaved_changes(self) -> list[tuple[str, str]]:
         """List what the canvas changed since the dashboard was loaded or saved."""
+        if self._admin_dirty():
+            return [
+                ("settings", f"{label} settings") for label in self._admin_page.dirty_sections()
+            ]
         editor = self._editor
         saved = editor.dashboard
         if saved is not None:
@@ -2358,6 +2969,14 @@ class FlowDashApp(Viewer):
         """Render the app."""
         return self._page
 
+    @staticmethod
+    def _project_context(registry, project_dir) -> dict[str, t.Any]:
+        """Return the context section loaders get: the project directory and the registry."""
+        return {
+            "project_dir": pathlib.Path(project_dir) if project_dir is not None else None,
+            "registry": registry,
+        }
+
     @classmethod
     def build_routes(
         cls,
@@ -2374,6 +2993,14 @@ class FlowDashApp(Viewer):
             params.get("component_libraries", ()),
             params.get("include_builtin_components", True),
         )
+        # Loaded once, after the libraries had their chance to register sections.
+        project = params.get("project")
+        if project is not None and not isinstance(project, Project):
+            params["project"] = load_project(project, cls._project_context(registry, project_dir))
+
+        if project_dir is not None and pathlib.Path(project_dir).is_dir():
+            # The admin view writes the project file there when there is none yet.
+            params.setdefault("project_dir", project_dir)
 
         def factory():
             return cls(registry=registry, **params)
@@ -2382,6 +3009,8 @@ class FlowDashApp(Viewer):
             "/": factory,
             ACCESS_DENIED_ROUTE: factory,
             COMPONENTS_ROUTE: factory,
+            ADMIN_ROUTE: factory,
+            f"{ADMIN_ROUTE}/[^/]+": factory,
             f"{DASH_ROUTE_PREFIX}[^/]+": factory,
         }
         for app_id, v in registry.items():

@@ -24,6 +24,8 @@ from panel.custom import JSComponent
 from panel.viewable import Viewer
 from panel_splitjs import HSplit
 
+from panel_flowdash.ui.sidecar import SIDECAR_MAX_WIDTH, SIDECAR_MIN_WIDTH, SIDECAR_WIDTH
+
 STORAGE_KEY = "panel-flowdash.editor.split"
 
 # panel-splitjs draws the divider in --panel-border-color, which stays light in the dark theme.
@@ -67,8 +69,8 @@ class SplitPreferences(param.Parameterized):
 
     code_dock = param.Selector(
         default="bottom",
-        objects=["bottom", "right"],
-        doc="Where the code panel is docked: under the canvas or to its right.",
+        objects=["bottom", "sidecar"],
+        doc="Where the code panel is docked: under the canvas or in the sidecar's Spec tab.",
     )
 
     spec_view = param.Selector(
@@ -83,6 +85,12 @@ class SplitPreferences(param.Parameterized):
         doc="The syntax of a spec's text in the code panel.",
     )
 
+    sidecar_width = param.Integer(
+        default=SIDECAR_WIDTH,
+        bounds=(SIDECAR_MIN_WIDTH, SIDECAR_MAX_WIDTH),
+        doc="The width of the editor's sidecar, set by dragging its left edge.",
+    )
+
     def to_json(self) -> str:
         """Return the preferences as stored in the browser."""
         return json.dumps(
@@ -92,6 +100,7 @@ class SplitPreferences(param.Parameterized):
                 "code_dock": self.code_dock,
                 "spec_view": self.spec_view,
                 "spec_text": self.spec_text,
+                "sidecar_width": self.sidecar_width,
             }
         )
 
@@ -114,12 +123,17 @@ class SplitPreferences(param.Parameterized):
         sizes = valid_sizes(stored.get("sizes"))
         if sizes is not None:
             update["sizes"] = sizes
-        if stored.get("code_dock") in ("bottom", "right"):
-            update["code_dock"] = stored["code_dock"]
+        dock = stored.get("code_dock")
+        if dock in ("bottom", "sidecar", "right"):
+            # Docked to the right of the canvas before the sidecar had a Spec tab.
+            update["code_dock"] = "sidecar" if dock == "right" else dock
         if stored.get("spec_view") in self.param.spec_view.objects:
             update["spec_view"] = stored["spec_view"]
         if stored.get("spec_text") in self.param.spec_text.objects:
             update["spec_text"] = stored["spec_text"]
+        width = stored.get("sidecar_width")
+        if isinstance(width, int) and not isinstance(width, bool):
+            update["sidecar_width"] = max(SIDECAR_MIN_WIDTH, min(SIDECAR_MAX_WIDTH, width))
         if update:
             self.param.update(update)
         return bool(update)
@@ -363,7 +377,7 @@ class SplitView(Viewer):
             legacy_key=None if key == STORAGE_KEY else STORAGE_KEY,
         )
         self.preferences.param.watch(
-            self._store, ["split", "sizes", "code_dock", "spec_view", "spec_text"]
+            self._store, ["split", "sizes", "code_dock", "spec_view", "spec_text", "sidecar_width"]
         )
 
     def _on_split_changed(self, *_events):

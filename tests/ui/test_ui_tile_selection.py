@@ -51,7 +51,8 @@ def test_clicking_a_tile_in_the_layout_tab_selects_its_node(page):
     _item(page, editor, chart_id).click()
     wait_until(lambda: _nodes(editor) == [chart_id], page, timeout=8000)
     expect(_item(page, editor, chart_id)).to_have_class(SELECTED)
-    expect(page.get_by_role("combobox", name="Tile")).to_have_text(re.compile("Chart"))
+    wait_until(lambda: editor._inspector._shown == ("node", chart_id), page, timeout=8000)
+    expect(page.get_by_role("tab", name="Tile", selected=True)).to_be_visible()
 
     _item(page, editor, map_id).click()
     wait_until(lambda: _nodes(editor) == [map_id], page, timeout=8000)
@@ -78,11 +79,8 @@ def test_node_selected_on_the_canvas_outlines_its_tile_in_the_layout_tab(page):
     expect(_item(page, editor, chart_id)).to_have_class(SELECTED)
     expect(_item(page, editor, map_id)).not_to_have_class(SELECTED)
 
-    # Picking a tile in the layout panel selects it on the grid too.
-    page.get_by_role("combobox", name="Tile").click()
-    page.get_by_role("listbox").get_by_text("Map").click()
-    expect(_item(page, editor, map_id)).to_have_class(SELECTED)
-    wait_until(lambda: _nodes(editor) == [map_id], page, timeout=8000)
+    # The sidecar shows the same node.
+    wait_until(lambda: editor._inspector._shown == ("node", chart_id), page, timeout=8000)
 
 
 def test_split_tile_click_and_node_click_select_each_other(page):

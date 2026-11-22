@@ -284,6 +284,10 @@ class TurnLog:
         self.turns: list[DashboardTurn] = []
         self._open: dict[tuple, DashboardTurn] = {}
         self._labels: dict[str, list[str]] = {}
+        # The pending turn each agent request answers, by run, see claim_pending.
+        self._claims: dict[str | None, str] = {}
+        # Pending turns a request took over, as they were, to give back if its edits are taken back.
+        self._claimed: dict[str, DashboardTurn] = {}
 
     def reset(self, turns: t.Iterable[DashboardTurn], *, keep_open: bool = False):
         """Replace the turns, e.g. with a loaded dashboard's; *keep_open* keeps the open ones open."""
@@ -292,6 +296,11 @@ class TurnLog:
         if keep_open:
             by_id = {turn.id: turn for turn in self.turns}
             self._open = {k: by_id[turn.id] for k, turn in self._open.items() if turn.id in ids}
+            # Undo can take a claimed turn back to pending; the request's next edit takes it again.
+            for key, turn in list(self._open.items()):
+                if key[0] == "agent" and turn.status == "pending":
+                    del self._open[key]
+                    self._claims[key[1]] = turn.id
         else:
             self._open = {}
         labels = {}
@@ -312,19 +321,55 @@ class TurnLog:
         self._open.pop(("user",), None)
 
     def end_agent_turns(self, run: str | None = None):
-        """Close the agent's open turns, or only request *run*'s, so the next request's edits open a new one."""
-        self._open = {
-            key: turn
-            for key, turn in self._open.items()
-            if key[0] != "agent" or (run is not None and key[1] != run)
-        }
+        """Close the agent's open turns, or only request *run*'s, so the next request's edits open a new one.
+
+        A pending turn the request claimed but made no edit for stays pending.
+        """
+        closed = [
+            key for key in self._open if key[0] == "agent" and (run is None or key[1] == run)
+        ]
+        for key in closed:
+            self._claimed.pop(self._open.pop(key).id, None)
+        if run is None:
+            self._claims.clear()
+        else:
+            self._claims.pop(run, None)
 
     def discard(self, run: str | None):
-        """Drop the open turn of request *run*, e.g. once its edits were all taken back."""
+        """Drop the open turn of request *run*, e.g. once its edits were all taken back.
+
+        A pending turn the request took over is pending again, as it was.
+        """
         turn = self._open.pop(("agent", run), None)
-        if turn is not None:
+        if turn is None:
+            return
+        self._labels.pop(turn.id, None)
+        original = self._claimed.pop(turn.id, None)
+        if original is not None:
+            self.turns = [original if t.id == turn.id else t for t in self.turns]
+            self._claims[run] = turn.id
+        else:
             self.turns = [t for t in self.turns if t.id != turn.id]
-            self._labels.pop(turn.id, None)
+
+    def claim_pending(self, turn_id: str, run: str | None) -> DashboardTurn:
+        """Make the pending turn *turn_id* the turn of request *run*'s next edits, and return it.
+
+        The request's turn so far is closed. The pending turn stays pending
+        until the request's first edit, which makes it the request's turn:
+        the nodes it creates get it as their origin, so its question in the
+        report shows them as its answer.
+
+        Raises
+        ------
+        TurnError
+            If no pending turn has the id *turn_id*.
+        """
+        turn = next((t for t in self.turns if t.id == turn_id), None)
+        if turn is None or turn.status != "pending":
+            raise TurnError("turn", f"{turn_id!r} is not a question waiting to be run.")
+        self._open.pop(("agent", run), None)
+        self._claims[run] = turn_id
+        return turn
 
     def current(self) -> DashboardTurn:
         """Return the turn an edit made now belongs to, opening it if needed."""
@@ -336,6 +381,8 @@ class TurnLog:
             self.end_user_turn()
             key = ("agent", agent.run)
         turn = self._open.get(key)
+        if turn is None and agent is not None:
+            turn = self._take_claim(agent)
         if turn is None:
             turn = DashboardTurn(
                 id=self._new_id(),
@@ -351,6 +398,22 @@ class TurnLog:
             turn.question = _question(agent.question)
         return turn
 
+    def _take_claim(self, agent: _AgentEdits) -> DashboardTurn | None:
+        """Open the pending turn request *agent* answers for its edits, if it claimed one."""
+        turn_id = self._claims.pop(agent.run, None)
+        turn = next((t for t in self.turns if t.id == turn_id), None)
+        if turn is None or turn.status != "pending":
+            return None
+        self._claimed[turn.id] = copy.deepcopy(turn)
+        turn.status = None
+        turn.actor = "agent"
+        turn.at = _now()
+        turn.run = agent.run
+        turn.summary = None
+        self._open[("agent", agent.run)] = turn
+        self._labels[turn.id] = []
+        return turn
+
     def record(self, *labels: str) -> DashboardTurn:
         """Note an edit, described by *labels*, in the turn it belongs to, and return that turn."""
         turn = self.current()
@@ -361,6 +424,21 @@ class TurnLog:
         if noted:
             turn.summary = summarize(noted)
         return turn
+
+    def add_pending(self, question: str) -> DashboardTurn:
+        """Add a planned turn asking *question*, not run yet, and return it."""
+        text = _question(question)
+        if text is None:
+            raise TurnError("question", "is required for a pending turn.")
+        turn = DashboardTurn(id=self._new_id(), question=text, status="pending")
+        self.turns.append(turn)
+        return turn
+
+    def drop_pending(self, ids: t.Collection[str]):
+        """Drop the pending turns *ids*; turns that ran are kept."""
+        self.turns = [
+            turn for turn in self.turns if not (turn.status == "pending" and turn.id in ids)
+        ]
 
     def prune(self, keep: t.Collection[str]):
         """Drop the oldest closed turns not in *keep* until at most ``MAX_TURNS`` are left."""
@@ -422,6 +500,20 @@ def _without_removed(report: t.Any, removed: set[str]) -> t.Any:
     return {**report, "blocks": blocks}
 
 
+def _without_excluded(filters: t.Any, removed: set[str]) -> t.Any:
+    if not isinstance(filters, list):
+        return filters or []
+    kept = []
+    for entry in filters:
+        if isinstance(entry, dict) and "exclude" in entry:
+            exclude = [n for n in entry["exclude"] if n not in removed]
+            entry = {k: v for k, v in entry.items() if k != "exclude"}
+            if exclude:
+                entry["exclude"] = exclude
+        kept.append(entry)
+    return kept
+
+
 def change_labels(old: t.Any, new: t.Any) -> list[str]:
     """Describe the change between two dashboard YAML documents as turn summary labels.
 
@@ -460,6 +552,11 @@ def change_labels(old: t.Any, new: t.Any) -> list[str]:
             label = "Changed the tile layout"
         elif path[0] == "settings":
             label = "Changed the settings"
+        elif path[0] == "filters":
+            # A removed node stops being excluded with it.
+            if _without_excluded(change.old, placed) == (change.new or []):
+                continue
+            label = "Changed the filters"
         elif path[0] == "report":
             # The blocks of a removed node go with it.
             if _without_removed(change.old, placed) == change.new:

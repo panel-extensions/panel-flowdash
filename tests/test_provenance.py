@@ -68,15 +68,32 @@ def test_how_it_was_made_shows_the_span_of_the_run(viewing):
     assert viewing._inspected_id == "double"
 
 
-def test_on_the_canvas_it_replaces_the_inspectors_content(editor):
+def test_in_edit_mode_it_opens_the_sidecars_history_tab(editor):
     editor.agent_state = RunState.from_events(_run())
     editor.show_how_made("double")
     assert not _sheet(editor).open
-    body = editor._inspector._body.objects
-    assert "flowdash-inspector-extra" in body[0].css_classes and "span-view" in body[1].css_classes
-    span = editor._inspector._releases[0].__self__
-    editor._inspector.refresh(force=True)
+    inspector = editor._inspector
+    assert editor._flow.selection["nodes"] == ["double"]
+    assert inspector._shown == ("node", "double")
+    assert inspector._tab_labels[inspector._node_tabs.active] == "History"
+    history = inspector._history_column.objects
+    assert "fd-history-caption" in history[0].css_classes
+    assert "span-view" in history[1].css_classes
+    span = inspector._releases[-1].__self__
+    assert not span._released
+    inspector.refresh(force=True)
     assert span._released
+
+
+def test_a_side_sheet_open_when_editing_starts_hands_over_to_the_history_tab(viewing):
+    viewing.agent_state = RunState.from_events(_run())
+    viewing.show_how_made("double")
+    assert _sheet(viewing).open
+    viewing.editable = True
+    assert not _sheet(viewing).open
+    inspector = viewing._inspector
+    assert inspector._shown == ("node", "double")
+    assert inspector._tab_labels[inspector._node_tabs.active] == "History"
 
 
 def test_viewers_see_someone_elses_request_redacted_and_their_own_in_full(viewing):

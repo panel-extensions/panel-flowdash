@@ -13,10 +13,11 @@ import uuid
 
 import panel as pn
 import panel_material_ui as pmui
-from panel_agents import AgentDrawer, RunState
+from panel_agents import AgentDrawer, ModelChoice, RunState
 from panel_agents.adapters.pydantic_ai import ActionToolset, AgentRunner
 from panel_agents.events import RunStarted
 
+from panel_flowdash.ai import ModelEntry, UsageLedger, model_choice, select_model
 from panel_flowdash.explore import EXPLORE_RUN_PREFIX, is_explore_run
 from panel_flowdash.ui.text import text_typography
 from panel_flowdash.util import confirm
@@ -24,6 +25,7 @@ from panel_flowdash.util import confirm
 logger = logging.getLogger(__name__)
 
 from panel_flowdash.history import components_of
+from panel_flowdash.value_text import error_text
 
 from .actions import palette_actions
 from .assistant import create_agent, create_explore_agent
@@ -115,8 +117,19 @@ class AgentSession:
         model: str | None = None,
         explore_agent: Agent | None = None,
         explore_model: t.Any = None,
+        explore_models: list | None = None,
+        entries: t.Sequence[ModelEntry] = (),
+        ledger: UsageLedger | None = None,
     ):
         self.app = app
+        # The models' limits, fallbacks and settings, by id, and where their spend is counted.
+        self.entries = {entry.id: entry for entry in entries}
+        self.ledger = ledger
+        self._choices = {
+            choice.id: choice
+            for choice in [*(models or ()), *(explore_models or ())]
+            if isinstance(choice, ModelChoice)
+        }
         self.ops = LiveDashboardOps(app)
         # With the Explore view's agent too, one request at a time edits the dashboard.
         self.edit_lock = AgentEditLock() if explore_agent is not None else None
@@ -171,7 +184,23 @@ class AgentSession:
             chat_params=chat_params,
         )
         if self.explore_runner is not None:
-            if len(models or ()) > 1:
+            if explore_models is not None:
+                # Explore is offered other models than the assistant, so it keeps its own pick.
+                explore_params = {
+                    "models": list(explore_models),
+                    "model_id": explore_models[0].id if explore_models else None,
+                }
+                if len(explore_models) > 1:
+                    explore_params["remember_model"] = f"{MODEL_KEY}-explore"
+                editor.explore_feed.attach(
+                    self.explore_runner,
+                    chat_params=explore_params,
+                    foreign=self._drawer_run,
+                    explorations=self.explorations,
+                    add=self.add_answer,
+                    show=self.show_answer,
+                )
+            elif len(models or ()) > 1:
                 # The Explore view's composer offers the same models and shares the drawer's pick.
                 editor.explore_feed.attach(
                     self.explore_runner,
@@ -197,6 +226,7 @@ class AgentSession:
         self._on_explore()
         self.highlighter = ChangeHighlighter(self)
         self.chrome = SessionChrome(self)
+        editor.run_pending = self.run_pending
         self.history_notice = pmui.Alert(
             text_typography("", variant="body2", margin=0),
             severity="warning",
@@ -225,12 +255,64 @@ class AgentSession:
         return [self.runner] + ([self.explore_runner] if self.explore_runner is not None else [])
 
     def _approval_policy(self):
+        from panel_flowdash.permissions import approval_rules
+
         app = self.app
+        permissions = getattr(app, "_permissions", None) or {}
+        sensitive = list(app.agent_sensitive_components)
+        sensitive += [
+            p for p in permissions.get("sensitive_components") or () if p not in sensitive
+        ]
+        sensitive += [cid for cid in app._approval_components() if cid not in sensitive]
         return approval_policy(
             *app.agent_approval_rules,
-            sensitive_components=app.agent_sensitive_components,
+            *approval_rules(permissions),
+            sensitive_components=sensitive,
             ops=self.ops,
         )
+
+    def model_id(self, target: t.Any) -> str | None:
+        """Return the id of the offered model a runner's ``model`` is, or None."""
+        if target is None:
+            return None
+        for choice in self._choices.values():
+            if choice.target is target or choice.target == target or choice.id == target:
+                return choice.id
+        return target if isinstance(target, str) else None
+
+    def plan_request(self, target: t.Any) -> tuple[str | None, dict[str, t.Any], str | None]:
+        """Return the model id a request picked as *target* runs with, its run arguments and a note.
+
+        A model over its monthly limit gives way to its fallback, noted for
+        the person; the id is None when the request is refused.
+        """
+        picked = self.model_id(target)
+        if picked is None or not self.entries:
+            return picked, {}, None
+        spent = self.ledger.spent if self.ledger is not None else (lambda _model: 0.0)
+        chosen, note = select_model(self.entries, picked, spent)
+        if chosen is None:
+            return None, {}, note
+        kwargs: dict[str, t.Any] = {}
+        if chosen != picked:
+            choice = self._choices.get(chosen)
+            entry = self.entries.get(chosen)
+            if choice is None and entry is not None:
+                choice = model_choice(entry, self.app._project_section("ai"))
+            kwargs["model"] = choice.target if choice is not None else chosen
+        entry = self.entries.get(chosen)
+        if entry is not None and entry.settings:
+            kwargs["model_settings"] = {**(self.app.agent_model_settings or {}), **entry.settings}
+        return chosen, kwargs, note
+
+    def record_spend(self, model_id: str | None, runner: AgentRunner, run_id: str):
+        """Count the cost of run *run_id* against *model_id*'s monthly spend."""
+        if model_id is None or self.ledger is None:
+            return
+        run = runner.state.runs.get(run_id)
+        if run is None:
+            return
+        self.ledger.add(model_id, run.cost_usd)
 
     def _on_explore(self, *_events):
         """Close the drawer while Explore shows the chat, and bring back an approval left pending there."""
@@ -256,6 +338,32 @@ class AgentSession:
         )
         self.publish_agent_layout(run)
         return name
+
+    def run_pending(self, turn_id: str):
+        """Ask the assistant the question of the pending turn *turn_id*, as the turn's request.
+
+        The request is an ordinary one, shown in the drawer's chat, and its
+        edits answer the turn, so the question's block in the report shows
+        the nodes it builds. Only editors may run a question; one asked while
+        the assistant is busy is sent once it is done. A question already
+        asked and not yet answered is not asked again.
+        """
+        editor = self.app._editor
+        if editor.read_only:
+            raise PermissionError("Only editors can run the report's questions.")
+        if turn_id in editor.running_pending:
+            return
+        turn = next((t for t in editor.turns if t.id == turn_id), None)
+        if turn is None or turn.status != "pending" or not turn.question:
+            raise ValueError(f"{turn_id!r} is not a question waiting to be run.")
+        editor.running_pending = [*editor.running_pending, turn_id]
+        self.chrome.ask(turn.question, turn=turn_id)
+
+    def pending_done(self, turn_id: str):
+        """Note that the request asking the pending turn *turn_id*'s question ended, or never started."""
+        editor = self.app._editor
+        if turn_id in editor.running_pending:
+            editor.running_pending = [t for t in editor.running_pending if t != turn_id]
 
     def show_answer(self, name: str):
         """Leave the Explore view for the tiles and mark the dashboard node *name*, e.g. an answer just added."""
@@ -404,7 +512,9 @@ class AgentSession:
             await editor.ensure_components_loaded_async(components_of(version.value))
             history.restore(artifact, version)
         except Exception as exc:
-            self.app._notify("error", f"v{version.version} was not restored: {exc}", duration=8000)
+            self.app._notify(
+                "error", f"v{version.version} was not restored: {error_text(exc)}", duration=8000
+            )
             raise
         task = asyncio.ensure_future(self._report_checks(version))
         self._checks.add(task)
@@ -478,6 +588,8 @@ class _SessionRunner(AgentRunner):
     def __init__(self, session: AgentSession, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._session = session
+        #: The id of the pending turn the next request answers, if any, see ``FlowDash.answer_pending``.
+        self.answering: str | None = None
 
     def _note_artifact_change(self, event):
         # A request's own version is published as its run ends; the model made those edits.
@@ -494,14 +606,35 @@ class _SessionRunner(AgentRunner):
         # The id is known before the run starts, so its turn, version and tile layout are
         # kept apart from those of the other surface's runner if both run at once.
         run_id = kwargs["run_id"] = self._run_id(kwargs.get("run_id"))
+        app = self._session.app
+        if not app._assistant_still_allowed():
+            app._notify("error", "You no longer have access to the assistant.", duration=8000)
+            return None
+        # Approval rules and sensitive components changed in the admin view apply from this request.
+        self.approval_policy = self._session._approval_policy()
+        model_id, model_kwargs, note = self._session.plan_request(kwargs.get("model", self.model))
+        if note:
+            self._session.app._notify("warning" if model_id else "error", note, duration=8000)
+        if model_id is None and note:
+            return None
+        # The limit's fallback wins over a model the caller passed.
+        kwargs = {**kwargs, **model_kwargs}
         self._session.ops.editor.end_turn()
         self._session.publish_user_edits()
         self.deps.start_request(prompt if isinstance(prompt, str) else None, run_id)
+        answering, self.answering = self.answering, None
+        if answering is not None:
+            try:
+                self._session.ops.editor.answer_pending(answering, run_id)
+            except ValueError:
+                # Taken back or answered meanwhile: the request runs as an ordinary one.
+                pass
         try:
             return await super().run(prompt, **kwargs)
         finally:
             self.deps.end_request()
             self._session.publish_agent_layout(run_id)
+            self._session.record_spend(model_id, self, run_id)
 
 
 class _ExploreRunner(_SessionRunner):

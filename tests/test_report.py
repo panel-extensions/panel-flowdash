@@ -20,9 +20,14 @@ from panel_flowdash.report import (
     ReportError,
     check_report,
     fill_report_text,
+    insert_block,
+    move_block,
     placeholder_text,
+    remove_block,
     render_report_text,
     report_blocks,
+    set_title,
+    update_block,
 )
 from panel_flowdash.turns import change_labels
 
@@ -510,3 +515,267 @@ class TestOps:
             "report.blocks[6].show",
             "'intro' has no output to show as a table, so it shows nothing.",
         ) in warnings
+
+
+class TestReportView:
+    def test_values_are_marked_as_chips_and_stay_literal(self, editor):
+        html = render_report_text(editor, "In {{ m.label }} x", value_class="v")
+        assert html == '<p>In <span class="v">&lt;b&gt;EMEA&lt;/b&gt;</span> x</p>\n'
+
+    def test_surface_and_explore_follow_each_other(self, editor):
+        editor.surface = "report"
+        assert not editor.explore and editor.report_view.shown
+        editor.explore = True
+        assert editor.surface == "explore" and not editor.report_view.shown
+        editor.explore = False
+        assert editor.surface == "workspace"
+
+    def test_authored_report_blocks(self, editor):
+        editor.editable = False
+        editor.surface = "report"
+        view = editor.report_view
+        classes = [obj.css_classes for obj in view._blocks.objects]
+        assert any("fd-report-pending" in c for c in classes)
+        assert not view._notice.visible
+        assert [item["label"] for item in view._contents.items] == [
+            "Summary",
+            "By region",
+            "Which products drove the drop",
+        ]
+        assert view._contents.items[-1]["badge"] == "Not run"
+        assert view._texts[0][0].object == (
+            '<p>Revenue is <span class="fd-report-value">1,234,568</span>.</p>\n'
+        )
+
+    def test_derived_report_shows_the_notice(self, plain_editor):
+        plain_editor.surface = "report"
+        view = plain_editor.report_view
+        assert view._notice.visible and view._customize.visible
+        assert view._filters == ["pick"]
+        plain_editor.editable = False
+        assert view._notice.visible and not view._customize.visible
+        assert "Edit the dashboard" in view._notice_text.object
+
+
+class TestProseValues:
+    def test_a_pair_reads_as_a_range_and_years_have_no_separator(self):
+        assert placeholder_text((1981, 2022)) == "1981 to 2022"
+        assert placeholder_text([0.25, 0.5], ".0%") == "25% to 50%"
+        assert placeholder_text(2022) == "2022"
+        assert placeholder_text(2022, ",") == "2,022"
+        assert placeholder_text(12345) == "12,345"
+        assert placeholder_text(True) == placeholder_text(True, "")
+        assert placeholder_text([1, 2, 3]) == "1, 2, 3"
+
+
+BLOCKS_REPORT = {"title": "T", "blocks": [{"heading": "A"}, {"text": "b"}, {"node": "c"}]}
+
+
+class TestBlockOperations:
+    def test_insert_move_remove_and_update_return_copies(self):
+        report = BLOCKS_REPORT
+        assert insert_block(report, 1, {"heading": "New"})["blocks"][1] == {"heading": "New"}
+        assert insert_block(report, None, {"text": ""})["blocks"][-1] == {"text": ""}
+        assert [next(iter(b)) for b in move_block(report, 0, 2)["blocks"]] == [
+            "text",
+            "node",
+            "heading",
+        ]
+        assert remove_block(report, 1)["blocks"] == [{"heading": "A"}, {"node": "c"}]
+        updated = update_block(report, 2, show="table", caption="Hi", page_break=True)
+        assert updated["blocks"][2] == {
+            "node": "c",
+            "show": "table",
+            "caption": "Hi",
+            "page_break": True,
+        }
+        assert update_block(updated, 2, caption=None)["blocks"][2].get("caption") is None
+        assert report == {"title": "T", "blocks": [{"heading": "A"}, {"text": "b"}, {"node": "c"}]}
+
+    def test_titles(self):
+        assert set_title(BLOCKS_REPORT, "  New  ")["title"] == "New"
+        assert "title" not in set_title(BLOCKS_REPORT, "")
+        assert "title" not in set_title(BLOCKS_REPORT, None)
+
+    @pytest.mark.parametrize(
+        "change",
+        [
+            lambda r: insert_block(r, 4, {"text": ""}),
+            lambda r: insert_block(r, 0, {"nope": 1}),
+            lambda r: move_block(r, 0, 3),
+            lambda r: remove_block(r, -1),
+            lambda r: update_block(r, 0, show="table"),
+            lambda r: update_block(r, 0, heading=""),
+        ],
+    )
+    def test_malformed_changes_are_refused(self, change):
+        with pytest.raises(ReportError):
+            change(BLOCKS_REPORT)
+
+
+class TestAuthoring:
+    def test_customize_writes_the_derived_blocks_as_one_edit(self, plain_editor):
+        derived = report_blocks(plain_editor).blocks
+        versions = len(plain_editor._history.versions)
+        assert plain_editor.customize_report()
+        assert plain_editor.report == {"blocks": derived}
+        assert len(plain_editor._history.versions) == versions + 1
+        assert not plain_editor.customize_report()
+        assert plain_editor.undo(whole_runs=False)
+        assert plain_editor.report is None
+        assert plain_editor.redo()
+        assert plain_editor.report == {"blocks": derived}
+
+    def test_asking_adds_a_pending_turn_and_its_block_in_one_edit(self, editor):
+        versions = len(editor._history.versions)
+        turn_id = editor.ask_in_report("  Why did March drop?  ", 1)
+        assert _blocks(editor)[1] == {"turn": turn_id}
+        turn = next(t for t in editor.turns if t.id == turn_id)
+        assert (turn.status, turn.question) == ("pending", "Why did March drop?")
+        assert len(editor._history.versions) == versions + 1
+        assert editor.undo(whole_runs=False)
+        assert all(t.id != turn_id for t in editor.turns)
+        assert {"turn": turn_id} not in _blocks(editor)
+        assert editor.redo()
+        assert {"turn": turn_id} in _blocks(editor)
+
+    def test_asking_nothing_or_out_of_place_changes_nothing(self, editor):
+        turns = [t.id for t in editor.turns]
+        with pytest.raises(ValueError):
+            editor.ask_in_report("   ")
+        with pytest.raises(ValueError):
+            editor.ask_in_report("Why?", 99)
+        assert [t.id for t in editor.turns] == turns
+
+    def test_asking_in_a_derived_report_customizes_it(self, plain_editor):
+        derived = report_blocks(plain_editor).blocks
+        turn_id = plain_editor.ask_in_report("Why?")
+        assert _blocks(plain_editor) == [*derived, {"turn": turn_id}]
+
+    def test_removing_a_pending_question_drops_its_turn(self, editor):
+        report = editor.report
+        index = report["blocks"].index({"turn": "t2"})
+        editor.set_report(remove_block(report, index))
+        assert all(t.id != "t2" for t in editor.turns)
+        assert editor.undo(whole_runs=False)
+        assert any(t.id == "t2" and t.status == "pending" for t in editor.turns)
+
+    def test_labels_name_the_gesture(self, editor):
+        editor.set_report(move_block(editor.report, 0, 1), label="Moved a block in the report")
+        assert editor.edit_history.undo_label.endswith("Moved a block in the report")
+
+
+@pytest.fixture
+def author(editor):
+    editor.editable = True
+    editor.surface = "report"
+    return editor
+
+
+class TestAuthoringView:
+    def _kinds(self, editor):
+        return [next(iter(b)) for b in _blocks(editor)]
+
+    def test_blocks_get_handles_menus_and_places_to_insert(self, author):
+        view = author.report_view
+        assert [item.kind for item in view._edit_items] == self._kinds(author)
+        assert view._article.objects[1] is view._edit_blocks
+        assert view._title_input.visible and view._title_input.value == "Q3 review"
+        slots = [o for o in view._edit_blocks.objects if "fd-report-insert" in o.css_classes]
+        assert len(slots) == len(_blocks(author)) + 1
+        node = view._edit_items[2]
+        labels = [entry["label"] for entry in node.menu.items]
+        assert labels == [
+            "Show as chart",
+            "Remove caption",
+            "Remove page break",
+            "Select on canvas",
+            "Move up",
+            "Move down",
+            "Remove from report",
+        ]
+
+    def test_readers_and_view_mode_get_the_document(self, author):
+        view = author.report_view
+        author.read_only = True
+        assert not view._edit_items and view._article.objects[1] is view._blocks
+        author.read_only = False
+        author.editable = False
+        assert not view._edit_items and not view._title_input.visible
+
+    def test_gestures_are_one_version_each_and_undo(self, author):
+        view = author.report_view
+        history = author._history
+        start = self._kinds(author)
+
+        versions = len(history.versions)
+        view._move(0, 3)
+        assert self._kinds(author) == [start[1], start[2], start[3], start[0], start[4]]
+        assert len(history.versions) == versions + 1
+        assert author.undo(whole_runs=False)
+        assert self._kinds(author) == start
+
+        view._open_insert(1)
+        assert view._insert_bar.__panel__() in view._edit_blocks.objects
+        view._insert({"heading": "Notes"})
+        assert _blocks(author)[1] == {"heading": "Notes"}
+        assert view._insert_bar.__panel__() not in view._edit_blocks.objects
+
+        view._open_insert(0)
+        view._insert({"text": ""})
+        text = view._edit_items[0].text
+        assert text.area.active
+        text.area.value = "Total is {{ m.total }}"
+        assert _blocks(author)[0] == {"text": "Total is {{ m.total }}"}
+        assert "1,234,567.891" in text.area.html
+
+        view._on_menu(view._edit_items[0], {"action": "remove"})
+        assert _blocks(author)[0] == {"heading": "Summary", "level": 1}
+        assert author.undo(whole_runs=False)
+        assert _blocks(author)[0]["text"] == "Total is {{ m.total }}"
+
+    def test_menu_actions(self, author):
+        view = author.report_view
+        node = next(item for item in view._edit_items if item.kind == "node")
+        view._on_menu(node, {"action": "view"})
+        assert "show" not in _blocks(author)[node.index]
+        view._on_menu(node, {"action": "uncaption"})
+        assert "caption" not in _blocks(author)[node.index]
+        view._on_menu(node, {"action": "caption"})
+        assert node.caption.visible
+        node.caption.value = "Fresh"
+        assert _blocks(author)[node.index]["caption"] == "Fresh"
+        view._on_menu(node, {"action": "unbreak"})
+        assert "page_break" not in _blocks(author)[node.index]
+        assert not node.page_break.visible
+        index = node.index
+        view._on_menu(node, {"action": "up"})
+        assert _blocks(author)[index - 1]["node"] == "solo"
+
+    def test_title_and_headings_edit_in_place(self, author):
+        view = author.report_view
+        view._title_input.value = "Revenue"
+        # The dashboard's own title is no title of the report's.
+        assert "title" not in author.report
+        view._title_input.value = "Board pack"
+        assert author.report["title"] == "Board pack"
+        heading = view._edit_items[0]
+        heading.heading.value = "Overview"
+        assert _blocks(author)[0]["heading"] == "Overview"
+        heading.heading.value = "  "
+        assert _blocks(author)[0]["heading"] == "Overview"
+        assert heading.heading.value == "Overview"
+
+    def test_the_pickers_offer_what_the_report_does_not_show(self, author):
+        view = author.report_view
+        view._open_insert(0)
+        nodes = {node["id"]: node for node in view._insert_bar.nodes}
+        # Nodes the report shows, by themselves or in a group, are not offered again.
+        assert not {"solo", "east", "west"} & set(nodes)
+        assert nodes["pick"]["on_dashboard"] and not nodes["m"]["on_dashboard"]
+        assert view._insert_bar.groups == []
+        refs = [value["ref"] for value in view._value_choices()]
+        assert "m.total" in refs
+        view._ask("Where next?")
+        turn_id = _blocks(author)[0]["turn"]
+        assert next(t for t in author.turns if t.id == turn_id).status == "pending"

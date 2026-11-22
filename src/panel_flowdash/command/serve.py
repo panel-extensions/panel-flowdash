@@ -18,10 +18,12 @@ from panel.command.serve import Serve as _PanelServe
 from panel.io.application import build_applications
 from panel.io.server import DocHandler, WSHandler
 
+from panel_flowdash.admin.access import allow_adding_admins, show_admin_link
 from panel_flowdash.app import ACCESS_DENIED_ROUTE, FlowDashApp
 from panel_flowdash.auth import AuthConfig, make_authorize_callback
 from panel_flowdash.component_library import ComponentLibraryError
 from panel_flowdash.dashboard_store import BaseDashboardStore, DashboardStore
+from panel_flowdash.project import PROJECT_FILE, ProjectError, find_project
 from panel_flowdash.registry import PackageResolutionError, build_registry
 
 log = logging.getLogger(__name__)
@@ -33,6 +35,7 @@ _EXCLUDED_ARGS = ("files", "--args")
 # ``sidebar`` and ``contextbar`` are left out because module-level Panel objects
 # would be shared by every session; ``configure_layout`` sets them per session.
 PROJECT_OPTIONS = (
+    "admin_link",
     "agent",
     "agent_approval_rules",
     "agent_authorize",
@@ -98,6 +101,45 @@ class _NotFoundHandler(DocHandler):
     async def get(self, *args, **kwargs):
         self.set_status(404)
         await super().get(*args, **kwargs)
+
+
+def _project_admins(project_file: Path | None, project_dir: Path) -> list[str]:
+    """Return the admins the project file names, read without loading its other sections."""
+    from panel_flowdash.admin.sections import project_admins
+    from panel_flowdash.app import _unloaded_project
+
+    path = project_file or project_dir / PROJECT_FILE
+    if not path.is_file():
+        return []
+    return project_admins(_unloaded_project(path, {}))
+
+
+def _project_auth_config(
+    auth_config: AuthConfig, in_code: dict[str, str], project_file: Path | None, project_dir: Path
+):
+    """Return a callable giving *auth_config* with the project file's permissions layered under it.
+
+    The file is read again when it changes, so the admin view's changes apply
+    to the next request. A file that cannot be read keeps the permissions last
+    read from it, and with none, page requests are denied.
+    """
+    from panel_flowdash.permissions import effective_auth_config, project_permissions
+
+    path = project_file or project_dir / PROJECT_FILE
+
+    def current() -> AuthConfig:
+        # Raises PermissionsUnavailable for a broken file with nothing read before; the
+        # authorize callback then denies.
+        return effective_auth_config(auth_config, project_permissions(path), in_code)
+
+    return current
+
+
+def _admin_groups(current) -> frozenset[str]:
+    try:
+        return current().admin_groups
+    except Exception:
+        return frozenset()
 
 
 def _resolve_store(
@@ -209,6 +251,19 @@ class Serve(_PanelServe):
             ),
         ),
         (
+            "--project",
+            Argument(
+                action="store",
+                metavar="FILE",
+                type=str,
+                default=None,
+                help=(
+                    "The project file whose sections configure the app, relative to the "
+                    "working directory. Defaults to flowdash.yaml in DIRECTORY."
+                ),
+            ),
+        ),
+        (
             "--component-library",
             Argument(
                 action="append",
@@ -277,6 +332,17 @@ class Serve(_PanelServe):
                 ),
             ),
         ),
+        (
+            "--admin-link",
+            Argument(
+                action="store_true",
+                default=False,
+                help=(
+                    "Print a link that adds one admin even when the project already has "
+                    "admins. By default the link is printed, and works, only while it has none."
+                ),
+            ),
+        ),
         *((name, arg) for name, arg in _PanelServe.args if name not in _EXCLUDED_ARGS),
     )
 
@@ -285,6 +351,11 @@ class Serve(_PanelServe):
         if not project_dir.is_dir():
             print(f"ERROR: '{args.directory}' is not a directory.", file=sys.stderr)  # noqa: T201
             raise SystemExit(1)
+
+        if args.project is not None:
+            project_file = Path(args.project).resolve()
+        else:
+            project_file = find_project(cwd=project_dir)
 
         package = args.package
         if package is None:
@@ -299,10 +370,12 @@ class Serve(_PanelServe):
 
         init_mod = _load_project_init(project_dir, package)
         options = _project_options(init_mod, project_dir)
+        sources = dict.fromkeys(options, "__init__.py")
         for name in _CLI_OPTIONS:
             value = getattr(args, name)
             if value is not None:
                 options[name] = value
+                sources[name] = "--" + name.replace("_", "-")
         from panel_flowdash.agent.models import configured_models, parse_models
 
         try:
@@ -311,6 +384,7 @@ class Serve(_PanelServe):
                 if models:
                     options["agent_model"] = models[0]["id"]
                     options["agent_models"] = models
+                    sources["agent_model"] = sources["agent_models"] = "--agent-model"
                     # The flag names the default agent's model, also over a project's `agent = "<model>"`.
                     if isinstance(options.get("agent"), str):
                         del options["agent"]
@@ -322,9 +396,23 @@ class Serve(_PanelServe):
             libraries = list(options.get("component_libraries", ()))
             libraries += [name for name in args.component_library if name not in libraries]
             options["component_libraries"] = libraries
+        if project_file is not None:
+            log.info(f"Project file: {project_file}")
+            options["project"] = project_file
         title = options.get("title", FlowDashApp.param.title.default)
 
         auth_config = AuthConfig.from_module(init_mod)
+        # The admin view shows the fields the project's __init__.py sets as locked.
+        sources["auth_config"] = "__init__.py"
+        for name in ("default_allow", "admin_groups", "user_groups"):
+            if hasattr(init_mod, name):
+                sources[f"auth_config.{name}"] = "__init__.py"
+        current_auth_config = _project_auth_config(
+            auth_config,
+            {k.split(".", 1)[1]: v for k, v in sources.items() if k.startswith("auth_config.")},
+            project_file,
+            project_dir,
+        )
 
         store, store_description = _resolve_store(init_mod, project_dir, args.db_path)
 
@@ -333,7 +421,7 @@ class Serve(_PanelServe):
         # Refused pages redirect to the app's own access-denied view.
         url_prefix = "/" + args.prefix.strip("/") if getattr(args, "prefix", None) else ""
         pn.config.authorize_callback = make_authorize_callback(
-            registry, auth_config, denied_route=ACCESS_DENIED_ROUTE, url_prefix=url_prefix
+            registry, current_auth_config, denied_route=ACCESS_DENIED_ROUTE, url_prefix=url_prefix
         )
 
         # Pages whose permissions are not literals in the source are imported now
@@ -364,9 +452,10 @@ class Serve(_PanelServe):
                 store=store,
                 registry=registry,
                 auth_config=auth_config,
+                settings_sources=sources,
                 **options,
             )
-        except ComponentLibraryError as exc:
+        except (ComponentLibraryError, ProjectError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)  # noqa: T201
             raise SystemExit(1) from None
 
@@ -374,6 +463,17 @@ class Serve(_PanelServe):
         log.info(f"Dashboard store: {store_description}")
 
         self._apps = build_applications(routes, title=title, location=True)
+        if options.get("admin_link", True) and args.admin_link:
+            allow_adding_admins()
+        if options.get("admin_link", True) and (
+            args.admin_link
+            or not (
+                _admin_groups(current_auth_config) or _project_admins(project_file, project_dir)
+            )
+        ):
+            address = getattr(args, "address", None)
+            host = "localhost" if address in (None, "", "0.0.0.0", "::") else address
+            show_admin_link(f"http://{host}:{args.port}{url_prefix}")
 
         args.files = []
         args.args = None

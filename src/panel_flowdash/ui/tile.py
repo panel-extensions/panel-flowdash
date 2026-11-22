@@ -249,6 +249,17 @@ class Tile(pn.Column):
             sizing_mode="stretch_width",
         )
         self.body = pn.Column(view, margin=(0, 8, 8, 8), sizing_mode="stretch_both")
+        # The Filter nodes feeding the view, and the global filters that do not reach it.
+        self.filter_notes = pn.FlexBox(
+            margin=(0, 12, 4, 16),
+            gap="6px",
+            flex_wrap="wrap",
+            align_items="center",
+            sizing_mode="stretch_width",
+            visible=False,
+            css_classes=["flowdash-tile-filters"],
+        )
+        self._filter_notes: tuple = ((), "", "")
         self._expanded_note = pmui.Typography(
             "Shown in full screen",
             variant="body2",
@@ -269,6 +280,7 @@ class Tile(pn.Column):
         params.setdefault("css_classes", ["flowdash-tile"])
         super().__init__(
             self.header,
+            self.filter_notes,
             self.body,
             self.stale_mark,
             self.expand_dialog,
@@ -308,6 +320,8 @@ class Tile(pn.Column):
         self.header.visible = shown
         self.header.margin = (10, 8, 6, 16) if titled else 0
         self.body.margin = (0, 8, 8, 8) if titled else 8
+        # While arranging, the grid's drag handle sits on the tile's top edge.
+        self.filter_notes.margin = (0, 12, 4, 16) if shown else (24, 12, 0, 16)
         classes = [
             c
             for c in self.css_classes
@@ -346,6 +360,46 @@ class Tile(pn.Column):
             classes.append("flowdash-tile-stale")
         if classes != self.css_classes:
             self.css_classes = classes
+
+    def set_filters(self, chips=(), hint: str = "", detail: str = ""):
+        """Show the Filter nodes feeding the view as chips, ``(instance_id, title)``, and *hint*.
+
+        *hint* says which active global filters do not reach the view, e.g.
+        "Not filtered by State", and *detail* why, as its tooltip.
+        """
+        notes = (tuple(chips), hint, detail)
+        if notes == self._filter_notes:
+            return
+        self._filter_notes = notes
+        objects = [
+            pmui.Chip(
+                label=title,
+                icon="filter_alt",
+                color="default",
+                size="small",
+                variant="outlined",
+                description=f"Filtered by {title}",
+                margin=0,
+                css_classes=["flowdash-tile-filter-chip"],
+            )
+            for _, title in chips
+        ]
+        if hint:
+            objects.append(
+                pmui.Chip(
+                    label=hint,
+                    icon="filter_alt_off",
+                    color="default",
+                    size="small",
+                    variant="outlined",
+                    description=detail or None,
+                    margin=0,
+                    sx={"borderStyle": "dashed", "color": "text.secondary"},
+                    css_classes=["flowdash-tile-filter-hint"],
+                )
+            )
+        self.filter_notes[:] = objects
+        self.filter_notes.visible = bool(objects)
 
     def expand(self, _event=None):
         """Show the tile's view in a full-screen dialog until the dialog closes."""

@@ -92,6 +92,7 @@ layout:
 | `nodes` | no | The placed components, a mapping from node name to node. |
 | `edges` | no | The connections between ports, a list. |
 | `layout` | no | How the tiles are arranged on the dashboard. |
+| `filters` | no | Global filters: each filters every view the dashboard shows whose data has its column, a list. |
 | `report` | no | The dashboard read as a document: a title and an ordered list of blocks. |
 
 Keys not listed here are rejected, except keys starting with `x-`, which are accepted
@@ -308,6 +309,39 @@ the same at every screen size. Other keys are rejected, except `x-` keys, which 
 ignored. Nodes without a tile entry get their component's default size, after the
 listed tiles.
 
+## Filters
+
+Global filters sit in a bar above the tiles. Each names a column, and while it has a
+value every view the dashboard shows (a tile on the grid, or a component in the top
+bar or the sidebar) whose data has a column of that name keeps only the matching
+rows. Sources and transforms are not filtered, so a Filter node keeps seeing all the
+rows, and a view gets the global filters and whatever its own inputs filtered. See
+[Filter Dashboards](../how-to/filter-dashboards.md).
+
+```yaml
+filters:
+- column: t_state
+  label: State
+  widget: select
+  value: [TX, OK]
+- column: p_year
+  widget: range
+  value: [2010, null]
+  exclude: [fleet_total]
+```
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `column` | yes | The column the filter applies to, matched by name. A column may have one filter. |
+| `label` | no | The name the filter bar shows; the column's name without one. |
+| `widget` | no | `select`, keeping the rows whose value is one of `value`, or `range`, keeping the rows between the two bounds of `value`. Without one, numbers and dates get a range and anything else a select. |
+| `value` | no | The filter's starting value: a list of values for a select, `[start, end]` for a range, where either bound may be `null` and dates are ISO strings. Without one the filter keeps every row. |
+| `exclude` | no | The nodes that opt out of the filter, e.g. a chart of the whole fleet for reference. |
+
+`exclude` must name nodes of the file. Other keys are rejected, except `x-` keys,
+which are ignored. What a viewer chooses in the filter bar is not saved; only
+`value` is.
+
 ## Report
 
 A report is the dashboard read as a document: headings and prose around the nodes'
@@ -372,6 +406,19 @@ block for each group with a shown tile, where its first tile is, and a node bloc
 every other tile, headings and Markdown included, in the order of the top bar, the
 sidebar and the grid. Controls are not blocks; they are listed as the filters the
 report's values depend on.
+
+**Export...** in the Report view, `panel_flowdash.export.export_report(editor, format)`
+and the agent's `export_report` tool write the report as it is now, as a self-contained
+HTML page with a print stylesheet, a PDF, a Word document, Markdown or a Jupyter
+notebook whose cells load the dashboard and show each node (for someone who may only
+view the dashboard, the notebook holds the exported outputs alone, as it holds no
+dashboard file). `page_break` starts a new
+page in the PDF and Word files, and a node the reader may not use is a note saying it
+is left out. The values the controls and global filters held, the parameters and the
+generation time head the document. Questions not run yet are never run; they are left
+out, or listed as not answered yet. Charts need `vl-convert-python`, Word `python-docx`
+and notebooks `nbformat` (`pip install 'panel-flowdash[export]'`); PDF needs WeasyPrint
+(the `pdf` extra) or Playwright with Chromium.
 
 ## Not in the format
 

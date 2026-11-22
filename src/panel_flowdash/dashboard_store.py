@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from panel_flowdash.auth import Identity, Permission, can_administer, can_edit, is_authorized
+from panel_flowdash.global_filters import decode_filters
 from panel_flowdash.groups import DashboardGroup, decode_groups
 from panel_flowdash.parameters import DashboardParameter, decode_parameters
 from panel_flowdash.report import decode_report
@@ -34,8 +35,8 @@ _RANDOM_ID = re.compile(r"[0-9a-f]{12}")
 _AMBIGUOUS_TITLES: set[str] = set()
 
 # The version of :class:`DashboardModel` this release writes. Version 3 is the
-# last released one; version 4 adds turns, node origins, parameters, groups and
-# the report, which older models load without. Changes made before a release
+# last released one; version 4 adds turns, node origins, parameters, groups,
+# the report and global filters, which older models load without. Changes made before a release
 # that ships them do not bump it: development builds wrote some version 4
 # models as 5.
 MODEL_VERSION = 4
@@ -233,6 +234,9 @@ class DashboardModel:
     # The dashboard read as a document, nodes by instance id, see
     # panel_flowdash.report; None reads as the report derived from the layout.
     report: dict[str, Any] | None = None
+    # The dashboard's global filters, views they exclude by instance id, see
+    # panel_flowdash.global_filters.
+    filters: list[dict[str, Any]] = field(default_factory=list)
     # Bumped by the store on every save; None saves without a conflict check.
     revision: int | None = None
     # When the store last wrote the dashboard (UTC), filled in by the store on
@@ -241,7 +245,7 @@ class DashboardModel:
 
     @property
     def owner(self) -> str:
-        """The immutable owner principal (the creating user)."""
+        """The owner principal: the creating user, unless an admin gave it to someone else."""
         return self.user_id
 
     def to_dict(self) -> dict[str, Any]:
@@ -266,6 +270,8 @@ class DashboardModel:
         # Left out without one, so dashboards without a report are written as before.
         if self.report is not None:
             data["report"] = copy.deepcopy(self.report)
+        if self.filters:
+            data["filters"] = copy.deepcopy(self.filters)
         return data
 
     @classmethod
@@ -292,6 +298,7 @@ class DashboardModel:
             parameters=decode_parameters(data.get("parameters")),
             groups=decode_groups(data.get("groups")),
             report=decode_report(data.get("report")),
+            filters=decode_filters(data.get("filters")),
             revision=_decode_revision(data.get("revision")),
         )
 
@@ -390,6 +397,16 @@ class BaseDashboardStore(ABC):
     @abstractmethod
     def set_permission(self, dashboard_id: str, permission: Permission) -> bool:
         """Persist a new permission set on a dashboard. Returns success."""
+
+    def set_owner(self, dashboard_id: str, owner: str) -> bool:
+        """Give a dashboard to *owner*. Returns whether one was updated.
+
+        Only the admin view calls it, after checking that the caller is an
+        admin. Like renaming, it does not change the dashboard's revision. A
+        store that cannot change owners raises :class:`DashboardStoreError`,
+        as this default does.
+        """
+        raise DashboardStoreError("This dashboard store cannot change a dashboard's owner.")
 
     # ------------------------------------------------------------------
     # Edit history
@@ -645,6 +662,9 @@ class MemoryDashboardStore(BaseDashboardStore):
             revision = check_revision(dashboard, None if stored is None else stored.revision)
             self._dashboards[dashboard.dashboard_id] = copy.deepcopy(dashboard)
             self._dashboards[dashboard.dashboard_id].revision = revision
+            if stored is not None:
+                # Like the SQLite store, saving keeps the owner; only set_owner changes it.
+                self._dashboards[dashboard.dashboard_id].user_id = stored.user_id
             self._dashboards[dashboard.dashboard_id].updated_at = datetime.now(UTC)
             # Re-inserting moves the dashboard to the front of the recency order.
             if dashboard.dashboard_id in self._order:
@@ -709,6 +729,14 @@ class MemoryDashboardStore(BaseDashboardStore):
             return False
         model.permission = copy.deepcopy(permission)
         model.updated_at = datetime.now(UTC)
+        return True
+
+    def set_owner(self, dashboard_id: str, owner: str) -> bool:
+        with self._lock:
+            model = self._dashboards.get(dashboard_id)
+            if model is None:
+                return False
+            model.user_id = owner
         return True
 
 
@@ -828,6 +856,7 @@ class DashboardStore(BaseDashboardStore):
                 ("parameters_json", "'{}'"),
                 ("groups_json", "'[]'"),
                 ("report_json", "'null'"),
+                ("filters_json", "'[]'"),
             ]
             for col, default in migrations:
                 try:
@@ -1011,6 +1040,7 @@ class DashboardStore(BaseDashboardStore):
             ),
             "groups_json": json.dumps([group.to_dict() for group in dashboard.groups]),
             "report_json": json.dumps(dashboard.report),
+            "filters_json": json.dumps(dashboard.filters),
         }
         with self._get_conn() as conn:
             # Writing first takes the database's write lock, so the revision
@@ -1050,6 +1080,13 @@ class DashboardStore(BaseDashboardStore):
                 conn.execute(
                     "DELETE FROM dashboard_history WHERE dashboard_id = ?", (dashboard_id,)
                 )
+        return cursor.rowcount > 0
+
+    def set_owner(self, dashboard_id: str, owner: str) -> bool:
+        with self._get_conn() as conn:
+            cursor = conn.execute(
+                "UPDATE dashboards SET user_id = ? WHERE dashboard_id = ?", (owner, dashboard_id)
+            )
         return cursor.rowcount > 0
 
     def rename_dashboard(self, user_id: str, dashboard_id: str, new_title: str) -> bool:
@@ -1112,6 +1149,7 @@ class DashboardStore(BaseDashboardStore):
             parameters=self._row_parameters(row) if "parameters_json" in keys else {},
             groups=self._row_groups(row) if "groups_json" in keys else [],
             report=self._row_report(row) if "report_json" in keys else None,
+            filters=self._row_filters(row) if "filters_json" in keys else [],
             revision=row["revision"] if "revision" in keys else 0,
             updated_at=_parse_sqlite_time(row["updated_at"]),
         )
@@ -1180,3 +1218,16 @@ class DashboardStore(BaseDashboardStore):
                     "Ignoring malformed report of dashboard %r (%r)", row["dashboard_id"], exc
                 )
             return None
+
+    def _row_filters(self, row: sqlite3.Row) -> list[dict[str, Any]]:
+        """Decode a row's global filters, or log (once per revision) and drop them if malformed."""
+        try:
+            return decode_filters(json.loads(row["filters_json"]))
+        except MALFORMED_ERRORS as exc:
+            key = (row["dashboard_id"], row["updated_at"], "filters")
+            if key not in self._warned:
+                self._warned.add(key)
+                logger.warning(
+                    "Ignoring malformed filters of dashboard %r (%r)", row["dashboard_id"], exc
+                )
+            return []

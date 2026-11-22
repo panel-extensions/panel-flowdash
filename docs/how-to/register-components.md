@@ -317,7 +317,8 @@ have no instance and so no hook.
 
 ### Showing what defines a component in the code panel
 
-The code panel under the canvas edits a node's code or spec field. A component
+The code panel, under the canvas or in the sidecar's Spec tab, edits a node's
+code or spec field. A component
 without one, such as a data source configured by a name, can show what defines
 it instead, read only, by defining `__flowdash_definition__`:
 
@@ -335,6 +336,37 @@ keep the panel's "Nothing to edit" state. The text is shown with highlighting,
 selectable and copyable, and is asked for again whenever the component's
 outputs change. If the hook raises or returns anything else, the error is
 logged and nothing is shown.
+
+### Exporting a component in a report
+
+**Export...** in the Report view writes the report as HTML, PDF, Word, Markdown or a
+Jupyter notebook, with each node as it is now. Without help a node is read from the
+panes its tile shows: Vega and Vega-Lite charts become images (through
+`vl-convert-python`), tables and DataFrames their first 50 rows, Markdown and text
+their text, and anything else, such as a map, a note saying it is left out. A
+component can say what it exports by defining `__export__`:
+
+```python
+from panel_flowdash.export import KPI
+
+
+class Revenue(pn.viewable.Viewer):
+    total = param.Number(default=0)
+
+    def __export__(self, ctx):
+        return KPI(label="Revenue", value=f"${self.total:,.0f}")
+
+    def __panel__(self):
+        return pn.indicators.Number(value=self.param.total, name="Revenue")
+```
+
+The hook is called on the live instance once its inputs have settled, and returns one
+block of `panel_flowdash.export` (`Heading`, `Text`, `KPI`, `Chart`, `Table`, `Image`,
+`Code` or `Placeholder`), a list of them, or `None` to be read from its view.
+`ctx.chart(spec)` draws a Vega-Lite spec as the format needs and `ctx.table(frame)`
+takes a DataFrame's first `ctx.max_rows` rows; `ctx.format` names the format being
+written. Write values as text yourself: the export never writes an object's `repr`,
+and a hook that raises is left out with a note, its message never shown.
 
 ---
 
@@ -399,6 +431,80 @@ def editor(config):
 If a second `open_dialog` or `confirm` replaces an unanswered confirmation, neither of its handlers is called.
 
 `FlowDashApp` places the dialog on every page and closes it when the user navigates to another page, which drops an unanswered confirmation. Outside a served session (a plain script, a unit test, a notebook) there is no dialog to show: `open_dialog` and `confirm` log a warning and do nothing, as `notify` falls back to the logger, so a `confirm` handler never runs without an answer. To embed the editor in your own page, see [Embed the Editor](embed-the-editor.md#where-the-page-dialog-goes).
+
+---
+
+## Knowing why a component is created
+
+FlowDash creates a component whenever a node appears on the canvas, not only
+when someone adds one. `placement_context()` tells the component why, from its
+`__init__` or function body:
+
+| Value       | When                                                                              |
+|-------------|-----------------------------------------------------------------------------------|
+| `"new"`     | The node was just added: from the palette, by `add_component`, or by the agent    |
+| `"load"`    | A dashboard is being opened, imported or replaced, so the node has saved settings |
+| `"restore"` | Undo, redo or restoring a version brings the node back as it was                  |
+| `None`      | FlowDash is not creating the component, e.g. it is rendered on its own            |
+
+A component that fills in a starting point of its own, such as a default
+query, gives it to the node with `FlowDash.set_default`, not by setting its own
+param: a param set on the instance only changes what that instance shows,
+while `set_default` writes the node's config, which is saved with the
+dashboard and comes back when it is reopened:
+
+```python
+import panel as pn
+import param
+
+from panel_flowdash import current_dashboard, current_node_id, placement_context, register
+
+
+@register(component=True, config=["sql"])
+class Query(pn.viewable.Viewer):
+    sql = param.String(default="")
+
+    def __init__(self, **params):
+        super().__init__(**params)
+        if placement_context() == "new":
+            current_dashboard().set_default(
+                current_node_id(), {"sql": "SELECT * FROM sales LIMIT 100"}
+            )
+
+    def __panel__(self):
+        return pn.pane.Markdown(self.param.sql)
+```
+
+The rule is a default only for a `"new"` node whose config is still empty.
+Nodes the agent adds, duplicates and nodes copied from Explore are `"new"` too
+but arrive configured, so `set_default` only fills fields still at their
+declared default. A node that `replace_yaml` adds reports `"load"`, and
+`set_default` changes nothing while a dashboard is loaded or a version
+restored, nor for viewers or in a preview. Its return value says whether a
+field took the default.
+
+The default is part of the edit that brought it about, so one undo takes back
+both. Set in `__init__` or a function body, it belongs to the placement. A
+component can also wait for its inputs, e.g. to derive a default from the
+columns of a table it is connected to, and call
+`set_default(editor.node_id(self), ...)` when they arrive: during a connection
+the default is recorded with it, and when an input arrives on its own the
+default is recorded as a config edit once the session's current event is
+handled.
+
+`FlowDash.code_panel_node` holds the id of the node the code panel shows, under
+the canvas or in the sidecar's Spec tab, or `None`; bind to `editor.param.code_panel_node` to, say, hide
+an "Edit spec" button of yours while the panel already shows the node.
+
+The reason belongs to the creation of that one node: a node the component adds
+while it is created is `"new"` again, and placements in other sessions and
+threads have their own. It is a context variable, so code running elsewhere
+sees `None`: a thread the component starts, and work handed to
+`loop.run_in_executor` or a `ThreadPoolExecutor`, which do not copy the
+context. `asyncio.to_thread` copies it, so a function it runs sees the reason.
+When in doubt, read it once in `__init__` and pass the value on. An async
+function body sees it while it runs, but a callback or an output that runs
+later does not.
 
 ---
 

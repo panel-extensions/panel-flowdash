@@ -255,6 +255,77 @@ def report_turns(report: Mapping | None) -> set[str]:
 
 
 # --------------------------------------------------------------------------
+# Changing a report's blocks
+# --------------------------------------------------------------------------
+
+
+def _blocks(report: Mapping | None) -> list[dict[str, t.Any]]:
+    return copy.deepcopy(list((report or {}).get("blocks") or []))
+
+
+def _with_blocks(report: Mapping | None, blocks: list[dict[str, t.Any]]) -> dict[str, t.Any]:
+    return {**copy.deepcopy(dict(report or {})), "blocks": blocks}
+
+
+def _index(blocks: list, index: int, key: str = "index") -> int:
+    if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index < len(blocks):
+        raise ReportError(
+            key, f"must be the index of a block, 0 to {len(blocks) - 1}, got {index!r}."
+        )
+    return index
+
+
+def insert_block(report: Mapping | None, index: int | None, block: Mapping) -> dict[str, t.Any]:
+    """Return a copy of *report* with *block* inserted before the block at *index*, or last for None."""
+    blocks = _blocks(report)
+    if index is None:
+        index = len(blocks)
+    if isinstance(index, bool) or not isinstance(index, int) or not 0 <= index <= len(blocks):
+        raise ReportError("index", f"must be 0 to {len(blocks)}, got {index!r}.")
+    blocks.insert(index, check_block(block))
+    return _with_blocks(report, blocks)
+
+
+def move_block(report: Mapping | None, index: int, to: int) -> dict[str, t.Any]:
+    """Return a copy of *report* with the block at *index* moved so that it ends up at index *to*."""
+    blocks = _blocks(report)
+    _index(blocks, index)
+    _index(blocks, to, "to")
+    blocks.insert(to, blocks.pop(index))
+    return _with_blocks(report, blocks)
+
+
+def remove_block(report: Mapping | None, index: int) -> dict[str, t.Any]:
+    """Return a copy of *report* without the block at *index*."""
+    blocks = _blocks(report)
+    del blocks[_index(blocks, index)]
+    return _with_blocks(report, blocks)
+
+
+def update_block(report: Mapping | None, index: int, **changes: t.Any) -> dict[str, t.Any]:
+    """Return a copy of *report* with keys of the block at *index* changed; a None value removes the key."""
+    blocks = _blocks(report)
+    block = blocks[_index(blocks, index)]
+    for key, value in changes.items():
+        if value is None:
+            block.pop(key, None)
+        else:
+            block[key] = value
+    blocks[index] = check_block(block, f"blocks[{index}]")
+    return _with_blocks(report, blocks)
+
+
+def set_title(report: Mapping | None, title: str | None) -> dict[str, t.Any]:
+    """Return a copy of *report* titled *title*; an empty or None title leaves it the dashboard's."""
+    updated = _with_blocks(report, _blocks(report))
+    if title is None or not str(title).strip():
+        updated.pop("title", None)
+    else:
+        updated["title"] = _string(str(title).strip(), "title", MAX_TITLE_LENGTH)
+    return updated
+
+
+# --------------------------------------------------------------------------
 # Reading a report from an editor
 # --------------------------------------------------------------------------
 
@@ -312,6 +383,36 @@ def group_members(editor: FlowDash, group_id: str) -> list[str]:
         for item in _ordered_items(editor)
         if item["instance_id"] in members and not _is_control(editor, item)
     ]
+
+
+def dashboard_nodes(editor: FlowDash) -> set[str]:
+    """Return the instance ids of the nodes the dashboard shows, controls included."""
+    return {item["instance_id"] for item in _ordered_items(editor)}
+
+
+def turn_outputs(editor: FlowDash, turn_id: str) -> list[str]:
+    """Return the nodes a turn made that no other node it made reads from, in dashboard order.
+
+    They are the turn's answer, which its block in the report shows.
+    """
+    from panel_flowdash.ui import tile_layout
+
+    made = [
+        item["instance_id"]
+        for item in editor._tile_items
+        if editor.node_origin(item["instance_id"]) == turn_id
+    ]
+    feeding = {
+        edge["source"]
+        for edge in editor._dataflow_graph.edges
+        if edge["source"] in made and edge["target"] in made
+    }
+    leaves = [iid for iid in made if iid not in feeding]
+    order = {
+        item["instance_id"]: i
+        for i, item in enumerate(tile_layout.area_items(editor, tile_layout.GRID))
+    }
+    return sorted(leaves, key=lambda iid: order.get(iid, len(order)))
 
 
 def report_blocks(editor: FlowDash) -> ResolvedReport:
@@ -427,7 +528,9 @@ def placeholder_text(value: t.Any, spec: str = "") -> str:
     Text, numbers, dates and lists and mappings of them are formatted as the
     Markdown component formats them, by *spec* if it applies. Any other
     object gives only its type's name, so a value that holds a credential
-    never shows it.
+    never shows it. Prose reads two values as a range ("1981 to 2022"), and a
+    whole number from 1000 to 9999 as a year, without a thousands separator,
+    unless *spec* says otherwise.
     """
     from panel_flowdash.text_components import format_value
     from panel_flowdash.util import is_failure
@@ -437,7 +540,17 @@ def placeholder_text(value: t.Any, spec: str = "") -> str:
         return ""
     if not _plain(value):
         return type(value).__name__
+    if type(value) in (list, tuple) and len(value) == 2:
+        ends = [_unwrap(v) for v in value]
+        if all(_scalar(v) for v in ends):
+            return " to ".join(placeholder_text(v, spec) for v in ends)
+    if not spec and type(value) is int and 1000 <= value <= 9999:
+        return str(value)
     return format_value(value, spec)
+
+
+def _scalar(value: t.Any) -> bool:
+    return value is not None and type(value) not in (list, tuple, dict)
 
 
 def output_value(
@@ -484,17 +597,18 @@ def _filler(editor: FlowDash) -> Callable[[re.Match], str]:
     return fill
 
 
-def render_report_text(editor: FlowDash, text: str) -> str:
+def render_report_text(editor: FlowDash, text: str, value_class: str | None = None) -> str:
     """Render a text block as HTML, filling its ``{{ node.port }}`` placeholders from current outputs.
 
     Placeholders are filled as the Markdown component fills its own: after
     the Markdown is parsed, so a value is literal text, and never in a link or
     image URL. A placeholder naming no node or output, a restricted node or a
-    failed output is left empty.
+    failed output is left empty. With *value_class* each value in the text is
+    a ``<span>`` of that class, which the Report view shows as a chip.
     """
     from panel_flowdash.text_components import markdown_with_placeholders
 
-    return markdown_with_placeholders(text, PLACEHOLDER, _filler(editor))
+    return markdown_with_placeholders(text, PLACEHOLDER, _filler(editor), value_class)
 
 
 def fill_report_text(editor: FlowDash, text: str) -> str:
@@ -520,13 +634,20 @@ __all__ = [
     "ResolvedReport",
     "check_block",
     "check_report",
+    "dashboard_nodes",
     "decode_report",
     "fill_report_text",
     "group_members",
+    "insert_block",
     "map_report",
+    "move_block",
     "placeholder_text",
+    "remove_block",
     "render_report_text",
     "report_blocks",
     "report_turns",
+    "set_title",
+    "turn_outputs",
+    "update_block",
     "without_nodes",
 ]

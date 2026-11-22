@@ -3,6 +3,7 @@
 import datetime as dt
 import json
 from dataclasses import dataclass
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -11,15 +12,16 @@ import param
 import pytest
 from panel.viewable import Viewer
 
-from panel_flowdash import editor as editor_module, register
+from panel_flowdash import editor as editor_module, register, util as util_module
 from panel_flowdash.agent.preview import preview_editor, sample_value
 from panel_flowdash.dataflow_engine import exception_text
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.text_components import fill_template
 from panel_flowdash.ui.inspect_sheet import python_literal
+from panel_flowdash.ui.inspector import summarize_input_html
 from panel_flowdash.ui.node_preview import format_value, summarize_value
 from panel_flowdash.ui.status_bar import select_on_canvas
-from panel_flowdash.util import ReactiveError
+from panel_flowdash.util import ReactiveError, notify
 from panel_flowdash.value_text import (
     held_table_names,
     is_plain,
@@ -215,7 +217,7 @@ def test_value_popup_shows_type_name_and_tables(editor):
 def test_inspector_never_shows_secrets(editor):
     node = editor.add_component(NODE)
     select_on_canvas(editor._flow, node_id=node)
-    editor._inspector._node_tabs.active = 1
+    editor._inspector._node_tabs.active = editor._inspector._tab_labels.index("Data")
     text = _all_text(editor._inspector._data_column)
     _assert_no_secrets(text + _frame_text(editor._inspector._data_column))
     assert "SecretSource · turbines · turbines, farms" in text
@@ -264,6 +266,114 @@ def test_exception_text_masks_credentials():
     assert exception_text(KeyError("password=hunter2")) == "KeyError: 'password=***'"
 
 
+@pytest.mark.parametrize(
+    "message, shown",
+    [
+        ("cannot reach redis://:hunter2@h/0", "cannot reach redis://:***@h/0"),
+        (
+            'bad config {"password": "hunter2", "user": "u"}',
+            'bad config {"password": "***", "user": "u"}',
+        ),
+        (
+            "bad config {'secret': 'sk-secret', 'api_key': 'sk-secret'}",
+            "bad config {'secret': '***', 'api_key': '***'}",
+        ),
+        ("connect(password='hunter2')", "connect(password='***')"),
+        ("sent Authorization: Bearer sk-secret", "sent Authorization: Bearer ***"),
+        ("sent Authorization: hunter2", "sent Authorization: ***"),
+        ("rejected Bearer sk-secret.42 for h", "rejected Bearer *** for h"),
+        ("bad config {'api-key': 'sk-secret'}", "bad config {'api-key': '***'}"),
+        ("sent X-Api-Key: sk-secret", "sent X-Api-Key: ***"),
+        ("login failed, password: hunter2", "login failed, password: ***"),
+        ("login failed, password=hunter2 for u", "login failed, password=*** for u"),
+        ("sent apikey=sk-secret", "sent apikey=***"),
+        ("rejected Bearer abcdefghijklmnopqrst", "rejected Bearer ***"),
+        ("connect(authorization='Basic sk-secret')", "connect(authorization='Basic ***')"),
+        (
+            'headers {"authorization": "Bearer sk-secret"}',
+            'headers {"authorization": "Bearer ***"}',
+        ),
+        ("sent authorization=Bearer sk-secret", "sent authorization=Bearer ***"),
+        ("sent Authorization: Token abc123", "sent Authorization: Token ***"),
+        ("sent X-Api-Key: Secret", "sent X-Api-Key: ***"),
+        ("connect(authorization='hunter')", "connect(authorization='***')"),
+        ("sent Authorization: Bearer abcdef", "sent Authorization: Bearer ***"),
+        ("sent Authorization: bEaReR abcdef", "sent Authorization: bEaReR ***"),
+        ("sent Authorization: Basic abc", "sent Authorization: Basic ***"),
+        ("sent Authorization: Basic dXNlcjpwYXNzd29yZA==", "sent Authorization: Basic ***"),
+        ("sent Authorization: BASIC dXNlcjpwYXNzd29yZA==", "sent Authorization: BASIC ***"),
+        ("sent Authorization: Token abcdef", "sent Authorization: Token ***"),
+        ("sent Authorization: abcdef", "sent Authorization: ***"),
+        ("sent X-Api-Key: secretkey", "sent X-Api-Key: ***"),
+    ],
+)
+def test_exception_text_masks_quoted_and_bearer_credentials(message, shown):
+    assert exception_text(ValueError(message)) == f"ValueError: {shown}"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Invalid token",
+        "Bearer token required.",
+        "Bearer authentication failed",
+        "token: expired",
+        "Authorization: token required",
+        "Authorization: required",
+        "Authorization: Token required",
+        "Authorization header missing",
+        "X-Api-Key: missing",
+        "password must be set",
+        "Password: must be at least 8 characters",
+        '"max_tokens": 5',
+        "http://h:8080/x",
+    ],
+)
+def test_exception_text_keeps_messages_without_credentials(message):
+    assert exception_text(ValueError(message)) == f"ValueError: {message}"
+
+
+def test_safe_frame_labels_object_index_values_and_column_labels():
+    frame = pd.DataFrame(
+        [[1, 2], [3, 4]], index=[SecretSource(), "b"], columns=["x", SecretText()]
+    )
+    shown = safe_frame(frame)
+    assert list(shown.index) == ["SecretSource", "b"]
+    assert list(shown.columns) == ["x", "SecretText"]
+    assert isinstance(frame.index[0], SecretSource)
+    _assert_no_secrets(shown.to_html() + shown.to_string())
+    nested = frame.set_axis(
+        pd.MultiIndex.from_tuples([("a", SecretSource()), ("b", 1)], names=[SecretText(), "k"])
+    )
+    shown = safe_frame(nested)
+    assert list(shown.index) == [("a", "SecretSource"), ("b", 1)]
+    assert list(shown.index.names) == ["SecretText", "k"]
+    _assert_no_secrets(shown.to_html())
+    plain = pd.DataFrame({"x": [1], "s": ["a"]})
+    assert safe_frame(plain) is plain
+    plain_nested = plain.set_axis(pd.MultiIndex.from_tuples([("a", 1)], names=["k", "n"]))
+    assert safe_frame(plain_nested) is plain_nested
+
+
+def test_safe_frame_writes_out_tuple_labels():
+    frame = pd.DataFrame([[1, 2]], columns=pd.MultiIndex.from_tuples([("a", 1), ("b", 2)]))
+    shown = safe_frame(frame.set_axis(frame.columns.to_flat_index(), axis=1))
+    assert list(shown.columns) == ["('a', 1)", "('b', 2)"]
+    nested = pd.DataFrame(
+        [[1]], columns=pd.Index([("a", SecretText())], name=("n", 1), tupleize_cols=False)
+    )
+    shown = safe_frame(nested)
+    assert list(shown.columns) == ["('a', SecretText)"]
+    assert shown.columns.name == "('n', 1)"
+
+
+def test_inspector_input_summary_names_object_columns():
+    frame = pd.DataFrame([[1, 2]], columns=["x", SecretText()])
+    html = summarize_input_html(frame, "DataFrame")
+    _assert_no_secrets(html)
+    assert "SecretText" in html
+
+
 def test_card_popout_table_never_shows_secrets(editor, monkeypatch):
     shown = []
     monkeypatch.setattr(editor_module, "open_dialog", lambda title, body, **kw: shown.append(body))
@@ -283,3 +393,38 @@ def test_failed_output_message_never_shows_secrets(editor):
     _assert_no_secrets(_all_text(editor._value_preview(error)))
     report = preview_editor(editor, {node: "secret"})
     _assert_no_secrets(json.dumps(report, default=str))
+
+
+CONNECT_ERROR = "cannot connect to postgresql://u:SECRET@h/db"
+
+
+class Notifications:
+    def __init__(self):
+        self.shown = []
+
+    def error(self, message, duration):
+        self.shown.append(message)
+
+
+def test_a_toast_never_shows_a_password(monkeypatch, caplog):
+    area = Notifications()
+    monkeypatch.setattr(
+        util_module, "pn", SimpleNamespace(state=SimpleNamespace(notifications=area))
+    )
+    notify("error", f"Could not load the dashboard: {CONNECT_ERROR}")
+    assert area.shown == [
+        "Could not load the dashboard: cannot connect to postgresql://u:***@h/db"
+    ]
+    monkeypatch.setattr(
+        util_module, "pn", SimpleNamespace(state=SimpleNamespace(notifications=None))
+    )
+    notify("error", CONNECT_ERROR)
+    assert "SECRET" not in caplog.text and "u:***@h" in caplog.text
+
+
+def test_a_rejected_value_names_no_credential():
+    from panel_flowdash.agent.validation import _check_value
+
+    message = _check_value(param.Selector(objects=["a"]), "password=hunter2")
+    assert "password=***" in message
+    assert "hunter2" not in message

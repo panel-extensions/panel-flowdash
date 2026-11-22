@@ -166,7 +166,8 @@ def test_palette_hint_never_covers_an_entry(page, serve_example, height, query):
     serve_example("wind-data-quality")
     _bar_button(page, "Edit").click(timeout=EXAMPLE_LOAD_TIMEOUT)
     search = page.get_by_placeholder("Search components")
-    expect(search).to_be_visible()
+    # The editor is built once Edit is pressed, which takes as long as the first render.
+    expect(search).to_be_visible(timeout=EXAMPLE_LOAD_TIMEOUT)
     if query:
         search.fill(query)
         expect(page.get_by_text("Data Table", exact=True)).to_have_count(0)
@@ -222,7 +223,7 @@ def test_tiles_keep_their_sizes_after_a_top_bar_move_its_undo_and_a_reorder(
     wait_until(lambda: tile_sizes_match(page, editor), page, timeout=EXAMPLE_LOAD_TIMEOUT)
 
     _tile_by_id(page, editor, "kpi_capacity").click()
-    wait_until(lambda: editor._layout_panel.selected == "kpi_capacity", page, timeout=8000)
+    wait_until(lambda: editor._inspector._shown == ("node", "kpi_capacity"), page, timeout=8000)
     # The panel's buttons are rebuilt for the selected tile; a slow browser may still show the old ones.
     page.wait_for_timeout(1500)
     page.get_by_text("Move to top bar").first.click()
@@ -313,7 +314,7 @@ def test_moving_a_tile_from_the_middle_of_a_row_leaves_no_overlap(
     assert not _tiles_overlap(page)
 
     _tile_by_id(page, editor, "kpi_checked").click()
-    wait_until(lambda: editor._layout_panel.selected == "kpi_checked", page, timeout=8000)
+    wait_until(lambda: editor._inspector._shown == ("node", "kpi_checked"), page, timeout=8000)
     page.wait_for_timeout(1500)
     page.get_by_text("Move to top bar").first.click()
     wait_until(lambda: "kpi_checked" not in editor._grid_ids, page, timeout=20000)

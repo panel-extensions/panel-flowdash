@@ -784,7 +784,7 @@ class ExplorationOps(DashboardOps):
             "can add an answer from its card, or ask the assistant."
         )
 
-    place_tile = group_nodes = ungroup = arrange_canvas = arrange_layout = _refused
+    place_tile = group_nodes = ungroup = arrange_canvas = arrange_layout = arrange_tiles = _refused
     set_settings = declare_parameter = remove_parameter = bind_parameters = _refused
     replace_yaml = replace_yaml_async = save = open_dashboard = _refused
     open_dashboard_async = delete_dashboard = share_dashboard = _refused
@@ -897,16 +897,18 @@ class ExplorationOps(DashboardOps):
                 )
             editor.end_turn()
             editor._defer_tile_layout(run)
-            try:
-                with agent_edits(run, question):
-                    name = self._write(exploration, plan, node, dashboard_id)
-            except BaseException:
-                if _open_id(editor) == dashboard_id:
-                    # Its nodes were taken back, so the turn and the version would record nothing.
-                    editor._discard_agent_turn(run)
-                raise
-            finally:
-                editor.end_agent_turns(run)
+            # The writes do not yield, so the version is taken once, when the turn ends.
+            with editor._history.batched():
+                try:
+                    with agent_edits(run, question):
+                        name = self._write(exploration, plan, node, dashboard_id)
+                except BaseException:
+                    if _open_id(editor) == dashboard_id:
+                        # Its nodes were taken back, so the turn and the version would record nothing.
+                        editor._discard_agent_turn(run)
+                    raise
+                finally:
+                    editor.end_agent_turns(run)
         finally:
             if edit_lock is not None:
                 edit_lock.release(token)

@@ -546,6 +546,10 @@ class AceTools(JSComponent):
       return found
     }
 
+    // The undo history of an editor that is rendered again elsewhere on the page, e.g. the
+    // code panel moving between the canvas and the sidecar, by its target class.
+    const HISTORY = new Map()
+
     function find(model) {
       return editorsUnder(document).find(
         ([host]) => host && host.classList.contains(model.target_class)
@@ -685,6 +689,11 @@ class AceTools(JSComponent):
             model.send_msg({type: "format", text: ed.getValue()})
           },
         })
+        const kept = HISTORY.get(model.target_class)
+        HISTORY.delete(model.target_class)
+        if (kept && kept.text === editor.getValue()) {
+          editor.session.setUndoManager(kept.undo)
+        }
         editor.selection.on("changeCursor", position)
         position()
         replace()
@@ -713,7 +722,11 @@ class AceTools(JSComponent):
       model.on("options", () => editor && editor.setOptions(model.options))
       model.on("focus", () => editor && (editor.focus(), editor.navigateFileEnd()))
       model.on("closing", () => editor && editor.completer && editor.completer.detach())
-      model.on("remove", () => editor && clear())
+      model.on("remove", () => {
+        if (!editor) return
+        clear()
+        HISTORY.set(model.target_class, {undo: editor.session.getUndoManager(), text: editor.getValue()})
+      })
     }
     """
 
