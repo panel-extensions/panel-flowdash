@@ -3246,21 +3246,32 @@ class FlowDash(Viewer):
 
         # Weak, so a component kept by the app does not keep a discarded editor alive.
         editor = weakref.ref(self)
-        input_names = [p.name for p in spec.inputs] if spec else []
-        for name in input_names:
-            if not hasattr(instance.param, name):
-                continue
+        input_names = [
+            p.name for p in (spec.inputs if spec else ()) if hasattr(instance.param, p.name)
+        ]
 
-            def _propagate_input(event, _name=name):
-                # A component rejecting a value, or a watcher of its own raising,
-                # must not abort the dispatch to the node's other consumers.
+        def _propagate_inputs(*events):
+            # Inputs changed together arrive together, so the component runs once.
+            values = {event.name: event.new for event in events}
+            try:
+                instance.param.update(values)
+                return
+            except Exception as exc:
+                if len(values) == 1:
+                    if (owner := editor()) is not None:
+                        owner._report_input_error(node_id, events[0].name, exc)
+                    return
+            # A component rejecting a value, or a watcher of its own raising,
+            # must not abort the dispatch to the node's other consumers.
+            for name, value in values.items():
                 try:
-                    setattr(instance, _name, event.new)
+                    setattr(instance, name, value)
                 except Exception as exc:
                     if (owner := editor()) is not None:
-                        owner._report_input_error(node_id, _name, exc)
+                        owner._report_input_error(node_id, name, exc)
 
-            watcher = node_state.param.watch(_propagate_input, name)
+        if input_names:
+            watcher = node_state.param.watch(_propagate_inputs, input_names)
             wiring.append(partial(node_state.param.unwatch, watcher))
 
         failures = self._output_failures[node_id] = {}
@@ -4700,7 +4711,7 @@ class FlowDash(Viewer):
         self._stop_refresh_timer()
         if period_ms:
             self._refresh_timer = pn.state.add_periodic_callback(
-                partial(self.param.trigger, "refresh"), period=period_ms
+                self.trigger_refresh, period=period_ms
             )
             self._refresh_ms = period_ms
             self._refresh_started = time.time()
@@ -4710,6 +4721,15 @@ class FlowDash(Viewer):
             self._refresh_timer.stop()
             self._refresh_timer = None
         self._refresh_ms = 0
+
+    def trigger_refresh(self):
+        """Trigger `refresh` with every change it causes delivered as one propagation pass.
+
+        A node fed by two sources that both run again then runs once, with
+        both new values, instead of once per source.
+        """
+        with self._dataflow_graph.propagation():
+            self.param.trigger("refresh")
 
     @param.depends("refresh", watch=True)
     def _stamp_refresh(self):
