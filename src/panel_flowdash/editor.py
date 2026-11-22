@@ -34,7 +34,11 @@ import panel as pn
 import panel_material_ui as pmui
 import panel_reactflow as pr
 import param
-from panel.viewable import Children, Viewer
+from panel.layout.base import ListLike
+from panel.layout.spacer import Spacer
+from panel.pane.base import ReplacementPane
+from panel.pane.markup import HTMLBasePane
+from panel.viewable import Children, Layoutable, Viewer
 from panel_agents import RunState
 from panel_tiles import TileGrid
 
@@ -345,12 +349,50 @@ def _bounded(value: float, low: float | None, high: float | None) -> float:
     return value
 
 
-def _size_layout(layout: list[dict], specs: list, reference_width: int) -> list[dict]:
+# The height a tile whose view takes its height from the tile starts at.
+FILL_HEIGHT = 360
+
+_HEIGHT_SIZING = ("stretch_both", "stretch_height", "scale_both", "scale_height")
+
+
+def _fills_tile(view: t.Any, lazy: list | None = None) -> bool:
+    """Whether *view* takes its height from its tile rather than giving the tile one.
+
+    The grid sizes a tile without a height to its content, so such a view, e.g.
+    a Vega-Lite chart sized to its container, would leave the tile a header
+    tall and draw nothing. A layout fills its tile if one of its views does,
+    and a pane that renders another object, e.g. a ``ParamMethod``, if what it
+    rendered does. Those panes are appended to *lazy*, since what they render
+    can change. Text and spacers have a height of their own.
+    """
+    if not isinstance(view, Layoutable) or view.height is not None or view.min_height is not None:
+        return False
+    if isinstance(view, ReplacementPane):
+        if lazy is not None:
+            lazy.append(view)
+        return any(_fills_tile(child, lazy) for child in view._inner_layout)
+    if isinstance(view, ListLike):
+        return any(_fills_tile(child, lazy) for child in view)
+    if isinstance(view, (HTMLBasePane, Spacer)):
+        return False
+    if view.sizing_mode in _HEIGHT_SIZING:
+        return True
+    if isinstance(view, pn.pane.Vega):
+        spec = view.object
+        height = spec.get("height") if isinstance(spec, dict) else getattr(spec, "height", None)
+        return height == "container"
+    return False
+
+
+def _size_layout(
+    layout: list[dict], specs: list, reference_width: int, fills: t.Sequence[bool] = ()
+) -> list[dict]:
     """Apply the size hints of the tiles' *specs* to a positional TileGrid layout.
 
     A tile without an entry starts at its ``default_size``, and every tile's size
     is kept within its ``min_size`` and ``max_size``. Hints are pixels; layout
-    widths are percentages of *reference_width*, heights are pixels.
+    widths are percentages of *reference_width*, heights are pixels. A tile
+    whose view *fills* it and that has no height yet starts at :data:`FILL_HEIGHT`.
     """
 
     def percent(pixels):
@@ -368,6 +410,9 @@ def _size_layout(layout: list[dict], specs: list, reference_width: int) -> list[
                     entry["width"] = percent(default["width"])
                 if "height" in default:
                     entry["height"] = default["height"]
+        if "height" not in entry and i < len(fills) and fills[i]:
+            entry["height"] = FILL_HEIGHT
+        if spec is not None:
             low, high = spec.min_size or {}, spec.max_size or {}
             if isinstance(entry.get("width"), (int, float)):
                 entry["width"] = _bounded(
@@ -1530,6 +1575,9 @@ class FlowDash(Viewer):
         self._area_entries: dict[str, tuple[str, dict]] = {}
         # The grid's layout while it waits for the browser to drop removed tiles.
         self._deferred_grid_layout: list[dict] | None = None
+        # Heights the grid shows for tiles whose view fills them, until someone resizes them.
+        self._fill_heights: dict[str, float] = {}
+        self._fill_watched: weakref.WeakSet = weakref.WeakSet()
         # The views shown beside the grid, by area, as (instance id, view) in order.
         self._area_views: dict[str, list] = {}
         # The framed tiles of the grid, by instance id, kept so a grid rebuild
@@ -3916,6 +3964,11 @@ class FlowDash(Viewer):
                 self._tile_grid.layout = event.old
                 return
             self._auto_tiles.clear()
+            if event.name == "layout":
+                for instance_id, entry in zip(self._grid_ids, event.new, strict=False):
+                    height = self._fill_heights.get(instance_id)
+                    if height is not None and entry.get("height") != height:
+                        del self._fill_heights[instance_id]
             if (release := self._awaiting_tile_drop()) is not None:
                 release["held"] = True
             else:
@@ -4267,8 +4320,45 @@ class FlowDash(Viewer):
         """Apply the size hints of the tiles on the grid to its positional *layout*."""
         items = {item["instance_id"]: item for item in self._tile_items}
         specs = [self._tile_spec(items[i]) if i in items else None for i in self._grid_ids]
+        lazy: list[ReplacementPane] = []
+        fills = []
+        for instance_id in self._grid_ids:
+            tile = self._inspect_tiles.get(instance_id)
+            fills.append(tile is not None and _fills_tile(tile.view, lazy))
+        for pane in lazy:
+            if pane not in self._fill_watched:
+                self._fill_watched.add(pane)
+                pane._inner_layout.param.watch(self._refill_tiles, "objects")
         grid = self._tile_grid
-        return _size_layout(layout, specs, reference_width(grid.reference_width, grid.breakpoints))
+        width = reference_width(grid.reference_width, grid.breakpoints)
+        hinted = _size_layout(layout, specs, width)
+        sized = _size_layout(layout, specs, width, fills)
+        # Heights given only for display, so a layout without them is saved without them.
+        for i, (instance_id, entry) in enumerate(zip(self._grid_ids, sized, strict=False)):
+            if "height" in entry and (i >= len(hinted) or "height" not in hinted[i]):
+                self._fill_heights[instance_id] = entry["height"]
+        return sized
+
+    def _refill_tiles(self, *_events):
+        """Size the tiles again once a pane in one of them rendered what it shows."""
+        if not self._grid_populated:
+            return
+        layout = self._deferred_grid_layout
+        if layout is None:
+            layout = self._tile_grid.layout
+        sized = self._sized_layout(layout)
+        if sized != layout:
+            self._set_grid_layout(sized)
+
+    def _without_fill_heights(self, keyed: list[dict]) -> list[dict]:
+        """Drop the heights the editor gave tiles that fill them and nobody resized."""
+        stripped = []
+        for entry in keyed:
+            height = self._fill_heights.get(entry.get("instance_id"))
+            if height is not None and entry.get("height") == height:
+                entry = {k: v for k, v in entry.items() if k != "height"}
+            stripped.append(entry)
+        return stripped
 
     def _on_tile_layout(self, event):
         # Resizing in the browser bounds only a tile's width, so heights are kept in bounds here.
@@ -4283,7 +4373,9 @@ class FlowDash(Viewer):
             return {
                 "breakpoints": list(grid.breakpoints),
                 "responsive_layouts": {
-                    band: self._placed_layout(_key_layout(layout, self._grid_ids))
+                    band: self._without_fill_heights(
+                        self._placed_layout(_key_layout(layout, self._grid_ids))
+                    )
                     for band, layout in grid.responsive_layouts.items()
                 },
                 "reference_width": grid.reference_width,
@@ -4928,7 +5020,7 @@ class FlowDash(Viewer):
             grid_layout = self._deferred_grid_layout
             if grid_layout is None:
                 grid_layout = self._tile_grid.layout
-            keyed = _key_layout(grid_layout, self._grid_ids)
+            keyed = self._without_fill_heights(_key_layout(grid_layout, self._grid_ids))
             ids = {spec["instance_id"] for spec in keyed}
             keyed += [
                 {"instance_id": iid}
@@ -7165,6 +7257,8 @@ class FlowDash(Viewer):
         The model's turns replace the editor's. With *keep_open_turns* the
         turns open to more edits stay open, for a change made by loading a model.
         """
+        # A height the model stores is the model's, even where the editor showed the same one.
+        self._fill_heights.clear()
         self._hydrating = True
         try:
             with _placing("load"):
