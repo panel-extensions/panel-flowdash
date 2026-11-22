@@ -154,6 +154,8 @@ class SessionChrome:
             editor._inspector.param.watch(self._on_user_toggle, "collapsed")
             # Entering edit mode with the drawer open shows the inspector beside it.
             editor._inspector.param.watch(self._on_inspector_shown, "visible")
+            # Leaving the phone layout unfolds the inspector, beside the open drawer.
+            editor._dashboard_bar._phone_query.param.watch(self._on_phone, "phone")
 
         palette = session.app._command_palette
         if palette is not None:
@@ -276,6 +278,10 @@ class SessionChrome:
 
     def _on_inspector_shown(self, event):
         if event.new and self.session.drawer.open:
+            self._fold(self.session.app._editor)
+
+    def _on_phone(self, event):
+        if not event.new and self.session.drawer.open:
             self._fold(self.session.app._editor)
 
     def _fold(self, editor):
