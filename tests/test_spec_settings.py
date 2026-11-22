@@ -1290,3 +1290,61 @@ class TestRunOnChangeHistory:
         assert "title" not in editor._component_instances[node].spec
         assert "title" not in field.value and not editor.code_panel.dirty
         assert editor.code_panel.stale is None
+
+
+class TestYamlAliases:
+    def test_merge_keys_have_spans_and_apply(self):
+        text = "base: &b {a: 1}\nx:\n  <<: *b\n  c: 2\n"
+        spans = text_spans(text)
+        assert spans[("x",)][0] == 1 and spans[("x", "c")] == (3, 3)
+        field = SpecEditor(value={}, settings=SETTINGS, syntax="yaml")
+        field.editor.value = text
+        assert field.error is None
+        assert field.value == {"base": {"a": 1}, "x": {"c": 2, "a": 1}}
+
+    def test_an_edit_under_an_alias_changes_that_path_only(self):
+        spec, doc = parse_spec_yaml("base: &b {a: 1}\nx: *b\n")
+        spec["x"]["a"] = 2
+        text = format_spec_yaml(spec, doc)[0]
+        assert parse_spec_yaml(text)[0] == {"base": {"a": 1}, "x": {"a": 2}}
+        spec, doc = parse_spec_yaml("base: &b {a: 1}\nx:\n  <<: *b\n  c: 2\n")
+        spec["x"]["a"] = 5
+        assert parse_spec_yaml(format_spec_yaml(spec, doc)[0])[0] == spec
+
+    def test_an_unchanged_alias_is_kept(self):
+        spec, doc = parse_spec_yaml("base: &b {a: 1}\nx: *b\n")
+        spec["title"] = "T"
+        assert format_spec_yaml(spec, doc)[0] == "base: &b {a: 1}\nx: *b\ntitle: T"
+
+    def test_a_form_edit_under_an_alias_keeps_text_and_spec_in_step(self):
+        field = SpecEditor(value={}, settings=SETTINGS, syntax="yaml")
+        field.editor.value = "encoding: &e {x: {title: A}}\nlayer: [{encoding: *e}]\n"
+        field._controls["encoding.x.title"][1].value = "B"
+        assert field.value["layer"][0]["encoding"] == {"x": {"title": "A"}}
+        assert parse_spec_yaml(field.editor.value)[0] == field.value
+
+    def test_anchored_scalars_keep_their_type(self):
+        spec, _doc = parse_spec_yaml("a: &t true\nb: *t\nf: &f 1.5\ni: &i 3\n")
+        assert spec == {"a": True, "b": True, "f": 1.5, "i": 3}
+        assert [type(v) for v in spec.values()] == [bool, bool, float, int]
+
+
+class TestRunFailure:
+    async def test_a_failing_apply_finishes_the_run_and_says_why(self, editor, monkeypatch):
+        node = editor.add_component("D/plain")
+        field = _field(editor, node, run_on_change=True)
+        panel = editor.code_panel
+
+        def fail(*_args):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(editor, "_apply_config_patch", fail)
+        field._controls["title"][1].value = "X"
+        await _settle(0.5)
+        assert not panel.running and panel.stale == "draft"
+        assert "boom" in panel._problems[0].object
+        monkeypatch.undo()
+        field._controls["title"][1].value = "Y"
+        await _settle(0.5)
+        assert editor._component_instances[node].spec["title"] == "Y"
+        assert not panel.running and panel.stale is None

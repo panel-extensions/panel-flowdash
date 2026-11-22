@@ -736,9 +736,11 @@ class SpecEditor(CompositeWidget):
             self._sync_form()
             self._sync_unsent()
             return False
+        # Worked out before any state changes, so the editor is never left half-applied.
+        spans = text_spans(text)
         if self.syntax == "yaml":
             self._doc = doc
-        self._spans = text_spans(text)
+        self._spans = spans
         self._applied = text
         self.error = None
         if _differs(spec, self.value or {}):

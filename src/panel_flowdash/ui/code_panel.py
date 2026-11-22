@@ -1606,19 +1606,27 @@ class CodePanel(Viewer):
             return
         instance_id = self.instance_id
 
+        def finish(applies: bool):
+            # The run always finishes, so a failing apply does not leave it running.
+            result = CheckResult()
+            try:
+                if applies:
+                    editor._apply_config_patch(instance_id, patch)
+            except Exception as exc:
+                logger.exception("Applying the draft of %s failed", instance_id)
+                result = CheckResult([f"Could not apply the draft: {type(exc).__name__}: {exc}"])
+            finally:
+                self._ran(result)
+
         async def apply():
             # A turn of the loop first, so "Running…" reaches the page before a slow refresh.
             await asyncio.sleep(0)
-            if patch and self.instance_id == instance_id:
-                editor._apply_config_patch(instance_id, patch)
-            self._ran(CheckResult())
+            finish(bool(patch) and self.instance_id == instance_id)
 
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            if patch:
-                editor._apply_config_patch(instance_id, patch)
-            self._ran(CheckResult())
+            finish(bool(patch))
             return
         param.parameterized.async_executor(apply)
 

@@ -35,6 +35,7 @@ from dataclasses import dataclass, field
 
 from ruamel.yaml import YAML, YAMLError
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from ruamel.yaml.scalarbool import ScalarBoolean
 
 Path = tuple[str, ...]
 
@@ -496,6 +497,9 @@ def _plain(value: t.Any) -> t.Any:
         return [_plain(v) for v in value]
     if isinstance(value, bool) or value is None:
         return value
+    if isinstance(value, ScalarBoolean):
+        # An anchored boolean, an int subclass.
+        return bool(value)
     if isinstance(value, (dt.date, dt.datetime)):
         return value.isoformat()
     if isinstance(value, int):
@@ -544,26 +548,65 @@ def parse_spec_yaml(text: str) -> tuple[dict, t.Any]:
     return _plain(doc), doc
 
 
-def _merged(node: t.Any, value: t.Any) -> t.Any:
-    """Return *value* written into the YAML *node* in place, keeping the comments of what stays."""
+def _shared(doc: t.Any) -> set[int]:
+    """Return the ids of the YAML nodes *doc* reaches more than once, through an alias or a merge key."""
+    seen: set[int] = set()
+    shared: set[int] = set()
+
+    def walk(node: t.Any):
+        if not isinstance(node, (CommentedMap, CommentedSeq)):
+            return
+        if id(node) in seen:
+            shared.add(id(node))
+            return
+        seen.add(id(node))
+        for item in node.values() if isinstance(node, CommentedMap) else node:
+            walk(item)
+
+    walk(doc)
+    return shared
+
+
+def _merged(node: t.Any, value: t.Any, shared: set[int]) -> t.Any:
+    """Return *value* written into the YAML *node*, keeping the comments of what stays.
+
+    A node is changed in place, unless *shared* says other paths reach it,
+    through an alias or a merge key: then a copy is, so only this path
+    changes. A value that did not change keeps its node, alias and all.
+    """
+    if not isinstance(node, (CommentedMap, CommentedSeq)) or _same(_plain(node), value):
+        return node if _same(_plain(node), value) else value
+    if id(node) in shared:
+        node = copy.deepcopy(node)
+        node.anchor.value = None
+        if isinstance(node, CommentedMap) and node.merge:
+            # The merged keys become the copy's own.
+            own = CommentedMap((k, node[k]) for k in node)
+            own.copy_attributes(node)
+            node = own
     if isinstance(node, CommentedMap) and isinstance(value, dict):
         for key in [k for k in node if str(k) not in value]:
             del node[key]
         keys = {str(k): k for k in node}
         for key, item in value.items():
-            if key in keys:
-                node[keys[key]] = _merged(node[keys[key]], item)
-            else:
+            if key not in keys:
                 node[key] = item
+                continue
+            old = node[keys[key]]
+            new = _merged(old, item, shared)
+            if new is not old:
+                node[keys[key]] = new
         for key in value:
             # The spec's order, which a form keeps, wins over the text's.
             node.move_to_end(keys.get(key, key))
         return node
     if isinstance(node, CommentedSeq) and isinstance(value, list) and len(node) == len(value):
         for i, item in enumerate(value):
-            node[i] = _merged(node[i], item)
+            new = _merged(node[i], item, shared)
+            if new is not node[i]:
+                node[i] = new
         return node
-    return node if _same(_plain(node), value) else value
+    return value
 
 
 def format_spec_yaml(
@@ -578,7 +621,7 @@ def format_spec_yaml(
     if not spec:
         return "", {}, None
     if isinstance(doc, CommentedMap):
-        doc = _merged(doc, _as_json(spec))
+        doc = _merged(doc, _as_json(spec), _shared(doc))
     else:
         doc = _yaml().load(_dump(_as_json(spec)))
     text = _dump(doc)
@@ -608,7 +651,10 @@ def text_spans(text: str) -> dict[Path, tuple[int, int]]:
 
     def walk(node: t.Any, prefix: Path, end: int):
         if isinstance(node, CommentedMap):
-            entries = [((*prefix, str(k)), node.lc.key(k)[0], node[k]) for k in node]
+            # Keys a merge key brings in have no lines of their own.
+            entries = [
+                ((*prefix, str(k)), node.lc.data[k][0], node[k]) for k in node if k in node.lc.data
+            ]
         elif isinstance(node, CommentedSeq):
             entries = [((*prefix, str(i)), node.lc.item(i)[0], v) for i, v in enumerate(node)]
         else:
@@ -621,5 +667,8 @@ def text_spans(text: str) -> dict[Path, tuple[int, int]]:
             spans[path] = (start, stop)
             walk(value, path, stop)
 
-    walk(doc, (), last)
+    try:
+        walk(doc, (), last)
+    except Exception:
+        return {}
     return spans
