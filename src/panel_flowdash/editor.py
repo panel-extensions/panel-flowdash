@@ -69,6 +69,11 @@ from panel_flowdash.dataflow_engine import (
     failure_text,
 )
 from panel_flowdash.failure_overlay import FailureMessage, FailureOverlay, with_failure_overlay
+from panel_flowdash.global_filters import (
+    check_filters,
+    map_filters,
+    without_nodes as without_filtered_nodes,
+)
 from panel_flowdash.groups import (
     GROUP_HEADER_HEIGHT,
     GROUP_PORT_ROW_HEIGHT,
@@ -144,6 +149,7 @@ from panel_flowdash.ui.fullscreen import (
     FullscreenController,
     PresentationOverlay,
 )
+from panel_flowdash.ui.global_filters import GlobalFilters
 from panel_flowdash.ui.inspect_sheet import (
     dataframe_preview,
     describe_value,
@@ -1638,6 +1644,9 @@ class FlowDash(Viewer):
         # The dashboard read as a document, nodes by instance id, or None for
         # the report derived from the layout; see panel_flowdash.report.
         self._report: dict[str, t.Any] | None = None
+        # The dashboard's global filters and the views they reach, see
+        # panel_flowdash.global_filters.
+        self._global_filters = GlobalFilters(self)
         # The nodes expanding a group pushed aside, by group id: their position
         # after the push and before it, so collapsing can move them back.
         self._pushed: dict[str, dict[str, tuple[tuple[float, float], tuple[float, float]]]] = {}
@@ -2401,6 +2410,11 @@ class FlowDash(Viewer):
         self._forget_layout(node_id)
         self._drop_from_groups(node_id)
         self._report = without_nodes(self._report, {node_id})
+        self._global_filters.forget(node_id)
+        if any(node_id in f.get("exclude", ()) for f in self._global_filters.filters):
+            self._global_filters.filters = without_filtered_nodes(
+                self._global_filters.filters, {node_id}
+            )
         self._floating_nodes.discard(node_id)
         self._auto_tiles.discard(node_id)
         self._chosen_visibility.discard(node_id)
@@ -3143,6 +3157,7 @@ class FlowDash(Viewer):
         tile.set_chrome(not self._tile_grid.editable)
         tile.set_style(framed=self._tile_framed(item), titled=self.settings.tile_titles)
         tile.set_stale(self._code_stale(instance_id))
+        tile.set_filters(*self._global_filters.notes(instance_id))
         self._sync_tile(instance_id, tile, spec)
         return tile
 
@@ -3521,8 +3536,12 @@ class FlowDash(Viewer):
         def _propagate_inputs(*events):
             # Inputs changed together arrive together, so the component runs once.
             values = {event.name: event.new for event in events}
+            if (owner := editor()) is not None:
+                values = owner._global_filters.filter_inputs(node_id, values)
             try:
                 instance.param.update(values)
+                if (owner := editor()) is not None:
+                    owner._global_filters.inputs_changed(node_id, values)
                 return
             except Exception as exc:
                 if len(values) == 1:
@@ -4986,6 +5005,7 @@ class FlowDash(Viewer):
         if self._view_controls.sync():
             self._place_controls()
         self._sync_tile_drag()
+        self._global_filters.apply()
         bar = self._dashboard_bar
         bar.health.track()
         bar.health_popover.sync()
@@ -6182,6 +6202,67 @@ class FlowDash(Viewer):
             self._fit_pending = False
             self._flow.fit_view()
 
+    # ------------------------------------------------------------------
+    # Global filters
+    # ------------------------------------------------------------------
+
+    @property
+    def filters(self) -> list[dict[str, t.Any]]:
+        """The dashboard's global filters as a copy, the views they exclude by instance id.
+
+        See :mod:`panel_flowdash.global_filters`.
+        """
+        return map_filters(
+            self._global_filters.filters,
+            {item["instance_id"]: item["instance_id"] for item in self._tile_items},
+        )
+
+    def set_filters(self, filters: t.Iterable[t.Mapping[str, t.Any]], *, label: str | None = None):
+        """Replace the dashboard's global filters, views they exclude by instance id, as one undoable edit.
+
+        Raises
+        ------
+        ValueError
+            If *filters* are malformed or exclude a node the dashboard does not have.
+        """
+        checked = check_filters(list(filters))
+        placed = {item["instance_id"] for item in self._tile_items}
+        for i, entry in enumerate(checked):
+            missing = [n for n in entry.get("exclude", ()) if n not in placed]
+            if missing:
+                raise ValueError(f"filters[{i}].exclude: names no node: {missing[0]!r}.")
+        if checked == self.filters:
+            return
+        self._global_filters.load(checked)
+        # Each change is a version of its own, so undo takes back one opt-out, not a burst.
+        self._history.flush()
+        self._record_edit(label or "Changed the filters", op="set_filters")
+        self._history.flush()
+
+    def set_filter_value(self, column: str, value: t.Any):
+        """Change what the global filter on *column* keeps for whoever is viewing, without an edit.
+
+        *value* is a list of values for a ``select`` filter, ``[start, end]``
+        for a ``range``, or None to keep every row.
+        """
+        self._global_filters.set_value(column, value)
+
+    def exclude_from_filter(self, column: str, instance_id: str, excluded: bool = True):
+        """Opt the view *instance_id* out of the global filter on *column*, or back in."""
+        filters = self.filters
+        entry = next((f for f in filters if f["column"] == column), None)
+        if entry is None:
+            raise KeyError(f"The dashboard has no filter on {column!r}.")
+        exclude = [n for n in entry.get("exclude", ()) if n != instance_id]
+        if excluded:
+            exclude.append(instance_id)
+        entry.pop("exclude", None)
+        if exclude:
+            entry["exclude"] = exclude
+        title = self._instance_title(instance_id)
+        action = f"Excluded {title} from" if excluded else f"Included {title} in"
+        self.set_filters(filters, label=f"{action} the {column} filter")
+
     def _record_edit(
         self,
         *labels: str,
@@ -7321,6 +7402,7 @@ class FlowDash(Viewer):
         self._origins = {}
         self._groups = {}
         self._report = None
+        self._global_filters.load([])
         self._pushed = {}
         self._rebuild_sidebar()
         with self._muted_canvas():
@@ -7408,6 +7490,7 @@ class FlowDash(Viewer):
             {group.id for group in model.groups},
             {turn.id for turn in model.turns},
         )
+        model.filters = map_filters(self._global_filters.filters, {iid: iid for iid in placed})
         model.edges = [
             DashboardEdge(
                 source=edge["source"],
@@ -7564,6 +7647,7 @@ class FlowDash(Viewer):
         )
         self._draw_groups(model.groups)
         self._report = copy.deepcopy(model.report)
+        self._global_filters.load(model.filters)
 
         legacy_ids = self._legacy_layout_ids(model)
         self._grid_populated = False
@@ -8070,6 +8154,7 @@ class FlowDash(Viewer):
             self._apply_mode_state()
         self._draw_groups(model.groups)
         self._report = copy.deepcopy(model.report)
+        self._global_filters.load(model.filters)
         self._sync_placed()
         self._sync_toolbar_state()
         return True

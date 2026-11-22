@@ -32,7 +32,7 @@ class TestControlsInTheSplit:
         assert controls._row in pane and controls._row.visible
         assert controls._panel not in pane and not controls._panel.visible
         assert editor._tile_grid in pane
-        assert controls._row.objects[0].objects == list(controls._wrappers.values())
+        assert controls._controls.objects == list(controls._wrappers.values())
 
     def test_switching_to_left_in_the_split_keeps_the_controls(self):
         editor = _editor()

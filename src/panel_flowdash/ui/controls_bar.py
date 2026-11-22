@@ -203,7 +203,18 @@ class ControlsBar(Viewer):
             # The widgets' own margins space them as far apart as the tiles.
             gap="0px",
         )
+        from panel_flowdash.ui.global_filters import FilterBar
+
+        # The dashboard's global filters, first in the row.
+        self._filter_bar = FilterBar(
+            filters=self.editor._global_filters, editable=self.editor.editable
+        )
+        self.editor.param.watch(
+            lambda event: setattr(self._filter_bar, "editable", event.new), "editable"
+        )
+        self._filter_bar.param.watch(lambda _event: self.sync(), "has_content")
         self._row = pn.Column(
+            self._filter_bar,
             self._controls,
             # Widgets keep a 10px margin of their own, so the outlines start
             # where the tiles do.
@@ -346,7 +357,7 @@ class ControlsBar(Viewer):
             wrapper.param.update(width=None, sizing_mode="stretch_width")
         if list(self._controls) != top:
             self._controls[:] = top
-        self._row.visible = bool(top)
+        self._row.visible = bool(top) or (shown and self._filter_bar.has_content)
         classes = [c for c in self._row.css_classes if c != _STICKY]
         self._row.css_classes = [*classes, _STICKY] if self.editing else classes
         body = side if not self.collapsed else []

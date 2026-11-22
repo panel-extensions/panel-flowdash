@@ -31,6 +31,7 @@ from panel_flowdash.dashboard_store import (
     check_revision,
     decode_settings,
 )
+from panel_flowdash.global_filters import decode_filters
 from panel_flowdash.groups import decode_groups
 from panel_flowdash.parameters import decode_parameters
 from panel_flowdash.report import decode_report
@@ -432,13 +433,14 @@ class JSONFolderDashboardStore(BaseDashboardStore):
         data = path.read_bytes()
         try:
             fields = json.loads(data.decode("utf-8"))
-            # Settings, turns, parameters, groups and the report are optional, so bad ones are dropped below
+            # Settings, turns, parameters, groups, the report and the filters are optional, so bad ones are dropped below
             # instead of the file.
             settings = fields.pop("settings", None) if isinstance(fields, dict) else None
             turns = fields.pop("turns", None) if isinstance(fields, dict) else None
             parameters = fields.pop("parameters", None) if isinstance(fields, dict) else None
             groups = fields.pop("groups", None) if isinstance(fields, dict) else None
             report = fields.pop("report", None) if isinstance(fields, dict) else None
+            filters = fields.pop("filters", None) if isinstance(fields, dict) else None
             model = DashboardModel.from_dict(fields)
         except MALFORMED_ERRORS as exc:
             self._warn_once(path, mtime, "Skipping dashboard file %s: malformed (%r)", exc)
@@ -470,6 +472,12 @@ class JSONFolderDashboardStore(BaseDashboardStore):
         except MALFORMED_ERRORS as exc:
             self._warn_once(
                 path, mtime, "Ignoring malformed report in dashboard file %s (%r)", exc
+            )
+        try:
+            model.filters = decode_filters(filters)
+        except MALFORMED_ERRORS as exc:
+            self._warn_once(
+                path, mtime, "Ignoring malformed filters in dashboard file %s (%r)", exc
             )
         if model.revision is None:
             model.revision = 0

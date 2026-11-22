@@ -145,6 +145,9 @@ class TileOptions:
         )
         self.arrange_button.on_click(lambda _event: setattr(editor, "mode", "dashboard"))
         self._moves = pn.FlexBox(margin=0, gap="0px 16px")
+        # A switch for each global filter, off where the view opts out of it.
+        self._filter_switches: dict[str, pmui.Switch] = {}
+        self.filters = pn.Column(margin=(12, 0, 0, 0), sizing_mode="stretch_width", visible=False)
         self.layout = pn.Column(
             margin=0, sizing_mode="stretch_width", css_classes=["fd-tile-options"]
         )
@@ -157,6 +160,7 @@ class TileOptions:
             (editor.settings, ["tile_cards"]),
             (editor._view_controls, ["placed"]),
             (editor, ["mode"]),
+            (editor._global_filters, ["filters"]),
         ):
             watcher = owner.param.watch(self._on_changed, names)
             self._releases.append(partial(owner.param.unwatch, watcher))
@@ -183,6 +187,7 @@ class TileOptions:
                 self.layout[:] = self._objects(area)
             if area == GRID:
                 self._sync_values()
+            self._sync_filters()
         finally:
             self._syncing = False
 
@@ -201,6 +206,7 @@ class TileOptions:
                     margin=(12, 0, 0, 0),
                 ),
                 self._moves,
+                self.filters,
             ]
         objects: list[Viewable] = [
             self.show_switch,
@@ -208,6 +214,7 @@ class TileOptions:
             self.size_hint,
             self.band_hint,
             self.frame_select,
+            self.filters,
             self._moves,
             self.arrange_button,
         ]
@@ -258,6 +265,52 @@ class TileOptions:
         self.band_hint.object = band
         self.band_hint.visible = bool(band)
         self.arrange_button.visible = editor.mode != "dashboard"
+
+    def _sync_filters(self):
+        """Show a switch per global filter, on unless this view opts out of it."""
+        from panel_flowdash.global_filters import filter_label
+
+        filters = self.editor._global_filters.filters
+        switches = []
+        for entry in filters:
+            column = entry["column"]
+            switch = self._filter_switches.get(column)
+            if switch is None:
+                switch = self._filter_switches[column] = pmui.Switch(
+                    margin=(0, 0, 0, 0), css_classes=["fd-tile-filter-switch"]
+                )
+                switch.param.watch(partial(self._on_filter, column), "value")
+            switch.label = f"Filtered by {filter_label(entry)}"
+            switch.value = self.instance_id not in entry.get("exclude", ())
+            switches.append(switch)
+        self._filter_switches = {
+            c: w
+            for c, w in self._filter_switches.items()
+            if any(f["column"] == c for f in filters)
+        }
+        objects = []
+        if switches:
+            objects = [
+                pmui.Typography("Global filters", variant="subtitle2", margin=(0, 0, 2, 0)),
+                *switches,
+                _caption(
+                    "Turn a filter off for a view that should always show every row, "
+                    "such as a reference chart.",
+                    margin=(2, 0, 0, 0),
+                ),
+            ]
+        if [o for o in self.filters if isinstance(o, pmui.Switch)] != switches:
+            self.filters[:] = objects
+        self.filters.visible = bool(switches)
+
+    def _on_filter(self, column: str, event):
+        if self._syncing:
+            return
+        self._syncing = True
+        try:
+            self.editor.exclude_from_filter(column, self.instance_id, excluded=not event.new)
+        finally:
+            self._syncing = False
 
     # ------------------------------------------------------------------
     # Changes
