@@ -16,7 +16,8 @@ pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference alrea
 def test_sql_is_edited_over_several_lines_and_applied_on_blur(page):
     editor = FlowDash(COMPONENTS, notifications=False, include_builtin_components=False)
     node = editor.add_component("D/query", position=(0, 0))
-    # Wider windows open the code panel under the canvas instead of the dialog.
+    # Where the code panel cannot edit a field, the inspector's code field edits it.
+    editor._code_panel_allowed = lambda: False
     page.set_viewport_size({"width": 900, "height": 800})
     serve_component(page, editor)
 
@@ -48,7 +49,8 @@ def test_sql_is_edited_over_several_lines_and_applied_on_blur(page):
 def test_the_expand_button_opens_a_large_editor(page):
     editor = FlowDash(COMPONENTS, notifications=False, include_builtin_components=False)
     node = editor.add_component("D/query", position=(0, 0))
-    # Wider windows open the code panel under the canvas instead.
+    # Where the code panel cannot edit a field, the inspector's code field edits it.
+    editor._code_panel_allowed = lambda: False
     page.set_viewport_size({"width": 900, "height": 800})
     serve_component(page, editor)
 
@@ -78,7 +80,8 @@ def test_save_while_typing_stores_the_checked_text(page):
     editor = _saved_editor()
     node = editor.add_component("D/checked", position=(0, 0))
     editor.save()
-    # Wider windows open the code panel under the canvas instead of the dialog.
+    # Where the code panel cannot edit a field, the inspector's code field edits it.
+    editor._code_panel_allowed = lambda: False
     page.set_viewport_size({"width": 900, "height": 800})
     serve_component(page, editor)
 
@@ -109,7 +112,8 @@ def test_save_while_typing_stores_the_checked_text(page):
 def test_escape_then_tab_leaves_the_editor(page):
     editor = FlowDash(COMPONENTS, notifications=False, include_builtin_components=False)
     node = editor.add_component("D/query", position=(0, 0))
-    # Wider windows open the code panel under the canvas instead of the dialog.
+    # Where the code panel cannot edit a field, the inspector's code field edits it.
+    editor._code_panel_allowed = lambda: False
     page.set_viewport_size({"width": 900, "height": 800})
     serve_component(page, editor)
 
@@ -136,6 +140,8 @@ def test_escape_then_tab_leaves_the_editor(page):
 def test_the_large_editor_closes_on_escape(page):
     editor = FlowDash(COMPONENTS, notifications=False, include_builtin_components=False)
     node = editor.add_component("D/query", position=(0, 0))
+    # Where the code panel cannot edit a field, the inspector's code field edits it.
+    editor._code_panel_allowed = lambda: False
     page.set_viewport_size({"width": 900, "height": 800})
     serve_component(page, editor)
 
@@ -159,7 +165,8 @@ def test_typing_then_deleting_leaves_save_disabled(page):
     editor = _saved_editor()
     node = editor.add_component("D/query", position=(0, 0))
     editor.save()
-    # Wider windows open the code panel under the canvas instead of the dialog.
+    # Where the code panel cannot edit a field, the inspector's code field edits it.
+    editor._code_panel_allowed = lambda: False
     page.set_viewport_size({"width": 900, "height": 800})
     serve_component(page, editor)
 

@@ -15,9 +15,13 @@ SHEET_SX = {"borderTopLeftRadius": 12, "borderTopRightRadius": 12, "overflowY": 
 TOUCH_TARGET_SX = {"width": "44px", "height": "44px"}
 
 INSPECTOR_SHEET_HEIGHT = "55dvh"
+# Taller while it edits a spec, which needs the room more than the canvas above.
+INSPECTOR_SHEET_TALL_HEIGHT = "85dvh"
 
 # Set on a sheet button while the inspector's sheet is open, to lift it above the sheet.
 ABOVE_SHEET_CLASS = "fd-above-sheet"
+# Set on a sheet button while the inspector's sheet is at its tall height.
+BEHIND_SHEET_CLASS = "fd-behind-sheet"
 
 # Over the canvas's bottom right corner, clear of the status bar and the canvas
 # attribution, or above the inspector's sheet while it is open. Over that sheet
@@ -26,6 +30,7 @@ _BUTTON_CSS = f"""
 :host {{ position: fixed !important; right: 16px; bottom: 60px; z-index: 1250;
   transition: bottom 225ms cubic-bezier(0, 0, 0.2, 1); }}
 :host(.{ABOVE_SHEET_CLASS}) {{ bottom: calc({INSPECTOR_SHEET_HEIGHT} + 16px); }}
+:host(.{BEHIND_SHEET_CLASS}) {{ visibility: hidden; }}
 """
 
 

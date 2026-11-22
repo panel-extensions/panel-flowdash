@@ -69,8 +69,8 @@ class SplitPreferences(param.Parameterized):
 
     code_dock = param.Selector(
         default="bottom",
-        objects=["bottom", "right"],
-        doc="Where the code panel is docked: under the canvas or to its right.",
+        objects=["bottom", "sidecar"],
+        doc="Where the code panel is docked: under the canvas or in the sidecar's Spec tab.",
     )
 
     spec_view = param.Selector(
@@ -123,8 +123,10 @@ class SplitPreferences(param.Parameterized):
         sizes = valid_sizes(stored.get("sizes"))
         if sizes is not None:
             update["sizes"] = sizes
-        if stored.get("code_dock") in ("bottom", "right"):
-            update["code_dock"] = stored["code_dock"]
+        dock = stored.get("code_dock")
+        if dock in ("bottom", "sidecar", "right"):
+            # Docked to the right of the canvas before the sidecar had a Spec tab.
+            update["code_dock"] = "sidecar" if dock == "right" else dock
         if stored.get("spec_view") in self.param.spec_view.objects:
             update["spec_view"] = stored["spec_view"]
         if stored.get("spec_text") in self.param.spec_text.objects:

@@ -317,7 +317,8 @@ have no instance and so no hook.
 
 ### Showing what defines a component in the code panel
 
-The code panel under the canvas edits a node's code or spec field. A component
+The code panel, under the canvas or in the sidecar's Spec tab, edits a node's
+code or spec field. A component
 without one, such as a data source configured by a name, can show what defines
 it instead, read only, by defining `__flowdash_definition__`:
 
@@ -460,8 +461,8 @@ the default is recorded with it, and when an input arrives on its own the
 default is recorded as a config edit once the session's current event is
 handled.
 
-`FlowDash.code_panel_node` holds the id of the node the code panel under the
-canvas shows, or `None`; bind to `editor.param.code_panel_node` to, say, hide
+`FlowDash.code_panel_node` holds the id of the node the code panel shows, under
+the canvas or in the sidecar's Spec tab, or `None`; bind to `editor.param.code_panel_node` to, say, hide
 an "Edit spec" button of yours while the panel already shows the node.
 
 The reason belongs to the creation of that one node: a node the component adds

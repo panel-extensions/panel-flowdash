@@ -1,8 +1,8 @@
 """Whether the editor's sidecar is open or folded to its strip, decided in one place.
 
 The sidecar (:class:`~panel_flowdash.ui.inspector.Inspector`) shares the
-window's width with the palette, the canvas or the tile grid, the code panel
-docked to the right and the assistant's drawer. Three things decide whether
+window's width with the palette, the canvas or the tile grid and the
+assistant's drawer. Three things decide whether
 it is open:
 
 - The person's choice, made with its fold and unfold buttons. It is kept
@@ -141,8 +141,6 @@ class SidecarFold(param.Parameterized):
         taken = editor._inspector.width
         if editor._side_panel.visible:
             taken += editor._side_panel.width or 0
-        if editor._code_side.visible:
-            taken += editor._code_side_width
         if self.drawer_open:
             taken += self.drawer_width
         return width - taken

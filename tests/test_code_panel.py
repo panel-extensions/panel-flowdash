@@ -1,4 +1,4 @@
-"""The code panel docked under the canvas: draft, Run, problems on their lines and the result."""
+"""The code panel under the canvas or in the sidecar's Spec tab: draft, Run, problems on their lines and the result."""
 
 import asyncio
 import json
@@ -282,21 +282,30 @@ class TestOpening:
         editor, query = make_editor(editable=False)
         assert not editor.open_code_panel(query, "expr")
 
-    def test_not_in_the_dashboard_tab(self, setup):
+    def test_the_layout_tab_opens_it_in_the_spec_tab(self, setup):
         editor, query = setup
         editor.mode = "dashboard"
-        assert not editor.open_code_panel(query, "expr")
+        assert editor.open_code_panel(query, "expr")
+        assert editor.mode == "dashboard"
+        assert editor.code_panel.dock == "sidecar"
+        assert not editor._code_dock.visible
+        assert spec_tab(editor).objects == [editor.code_panel._layout]
 
-    def test_not_in_a_narrow_window(self, setup):
+    def test_a_narrow_window_opens_it_in_the_spec_tab(self, setup):
         editor, query = setup
         editor._split_view.storage.window_width = 800
-        assert not editor.open_code_panel(query, "expr")
+        assert editor.open_code_panel(query, "expr")
+        assert editor.code_panel.dock == "sidecar"
+        assert not editor._code_dock.visible
 
-    def test_a_narrowed_window_closes_it(self, setup):
+    def test_a_narrowed_window_moves_it_into_the_spec_tab(self, setup):
         editor, query = setup
         editor.open_code_panel(query, "expr")
         editor._split_view.storage.window_width = 800
-        assert not editor.code_panel_open
+        assert editor.code_panel_open
+        assert editor.code_panel.dock == "sidecar"
+        assert spec_tab(editor).objects == [editor.code_panel._layout]
+        assert not editor._code_dock.visible and not editor._code_dock.objects
 
     @pytest.mark.parametrize("field", ["limit", "nope"])
     def test_not_for_other_fields(self, setup, field):
@@ -540,30 +549,23 @@ class TestInspector:
         assert editor.mode == "split"
         assert editor._code_dock.visible
 
-    def test_edit_is_refused_where_the_panel_cannot_show(self, setup):
-        editor, query = setup
-        editor._split_view.storage.window_width = 800
+    def test_edit_is_refused_to_viewers(self):
+        editor, query = make_editor(editable=False)
         assert not editor.edit_spec(query)
         assert not editor.code_panel_open
 
-    def test_a_narrow_window_puts_the_code_field_in_the_inspector(self, setup):
-        editor, query = setup
-        select_on_canvas(editor._flow, node_id=query)
-        editor._split_view.storage.window_width = 800
-        body = pn.Column(*editor._inspector._body)
-        assert list(body.select(CodeField))
-        editor._split_view.storage.window_width = 1440
-        body = pn.Column(*editor._inspector._body)
-        assert not list(body.select(CodeField))
-
-    def test_it_falls_back_to_the_dialog(self, setup):
+    def test_a_narrow_window_edits_in_the_spec_tab_not_a_dialog(self, setup):
         editor, query = setup
         editor._split_view.storage.window_width = 700
         select_on_canvas(editor._flow, node_id=query)
-        field = next(iter(pn.Column(*editor._inspector._body).select(CodeField)))
-        field._open()
-        assert not editor.code_panel_open
-        assert field._dialog.open
+        body = pn.Column(*editor._inspector._body)
+        assert not list(body.select(CodeField))
+        button = next(b for b in body.select(pmui.Button) if "fd-edit-spec" in b.css_classes)
+        button.clicks += 1
+        assert editor.mode == "wiring"
+        assert active_tab(editor) == "Spec"
+        assert spec_tab(editor).objects == [editor.code_panel._layout]
+        assert editor.code_panel.field == "expr"
 
 
 class TestDrafts:
@@ -587,9 +589,8 @@ class TestDrafts:
         [
             lambda editor: editor.close_code_panel(),
             lambda editor: setattr(editor, "editable", False),
-            lambda editor: setattr(editor._split_view.storage, "window_width", 800),
         ],
-        ids=["close", "done", "narrow"],
+        ids=["close", "done"],
     )
     async def test_a_draft_survives_the_panel_closing(self, setup, leave):
         editor, query = setup
@@ -947,66 +948,86 @@ class TestFormat:
         assert not editor.code_panel_open
 
 
-class TestDock:
-    def test_docks_to_the_right_of_the_canvas(self, setup):
+def spec_tab(editor) -> pn.Column:
+    """Return the shown component's Spec tab in the sidecar."""
+    column = editor._inspector._spec_column
+    assert column is not None
+    return column
+
+
+def active_tab(editor) -> str:
+    inspector = editor._inspector
+    return inspector._tab_labels[inspector._node_tabs.active]
+
+
+class TestSpecTab:
+    def test_moves_into_the_spec_tab_and_back(self, setup):
         editor, query = setup
+        select_on_canvas(editor._flow, node_id=query)
         editor.open_code_panel(query, "expr")
         panel = editor.code_panel
-        assert panel.dock_button.visible
+        assert panel.dock_button.description == "Open in sidecar"
+        assert editor._inspector._tab_labels == ["Settings", "Spec", "Data", "Tile"]
+        assert "fd-spec-elsewhere" in spec_tab(editor)[0].css_classes
         panel.dock_button.clicks += 1
-        assert panel.dock == "right"
-        row = list(editor._editor_row)
-        assert row.index(editor._code_side) == row.index(editor._workspace_area) + 1
-        assert editor._code_side.visible and not editor._code_dock.visible
-        assert editor._code_side[1] is panel._layout and not editor._code_dock.objects
-        assert editor._code_side.styles["width"] == "520px"
+        assert panel.dock == "sidecar"
+        assert active_tab(editor) == "Spec"
+        assert spec_tab(editor).objects == [panel._layout]
+        assert not editor._code_dock.visible and not editor._code_dock.objects
         assert editor._flow.min_height == 600
         assert type(panel._body).__name__ == "VSplit"
-        assert panel.dock_button.description == "Dock under the canvas"
+        assert panel.dock_button.description == "Open below the canvas"
+        assert not panel.close_button.visible and not panel._title.visible
         panel.dock_button.clicks += 1
         assert panel.dock == "bottom"
-        assert editor._code_dock.visible and not editor._code_side.visible
+        assert editor._code_dock.visible and panel._layout in editor._code_dock.objects
+        assert panel._layout not in spec_tab(editor).objects
         assert type(panel._body).__name__ == "HSplit"
 
-    def test_the_side_is_remembered_for_the_browser(self, setup):
+    def test_the_place_is_remembered_for_the_browser(self, setup):
         editor, query = setup
         editor.open_code_panel(query, "expr")
         editor.code_panel.toggle_dock()
-        assert json.loads(editor._split_view.storage.value)["code_dock"] == "right"
+        assert json.loads(editor._split_view.storage.value)["code_dock"] == "sidecar"
         other, query = make_editor()
         other._split_view._on_stored(editor._split_view.storage.value)
         other.open_code_panel(query, "expr")
-        assert other.code_panel.dock == "right"
-        assert other._code_side.visible
+        assert other.code_panel.dock == "sidecar"
+        assert spec_tab(other).objects == [other.code_panel._layout]
 
-    def test_a_narrower_window_docks_it_under_the_canvas(self, setup):
+    def test_docked_right_before_opens_in_the_spec_tab(self, setup):
+        editor, query = setup
+        editor._split_view._on_stored(json.dumps({"code_dock": "right"}))
+        assert editor._split_view.preferences.code_dock == "sidecar"
+        editor.open_code_panel(query, "expr")
+        assert editor.code_panel.dock == "sidecar"
+
+    def test_a_narrower_window_keeps_the_choice_of_under_the_canvas(self, setup):
         editor, query = setup
         editor.open_code_panel(query, "expr")
         panel = editor.code_panel
-        panel.toggle_dock()
-        editor._split_view.storage.window_width = 1200
-        assert panel.dock == "bottom" and not panel.dock_button.visible
-        assert editor._code_dock.visible and not editor._code_side.visible
-        # Remembered: widening the window docks it to the right again.
-        assert editor._split_view.preferences.code_dock == "right"
-        editor._split_view.storage.window_width = 1800
-        assert panel.dock == "right" and editor._code_side.visible
-
-    def test_the_open_inspector_needs_a_wider_window(self, setup):
-        editor, query = setup
-        editor._split_view.storage.window_width = 1600
-        editor.open_code_panel(query, "expr")
-        panel = editor.code_panel
-        assert editor._inspector.visible
-        assert not panel.can_dock_right and not panel.dock_button.visible
-        editor._inspector.collapsed = True
-        assert panel.can_dock_right
-        panel.toggle_dock()
-        assert editor._code_side.visible
-        editor._inspector.collapsed = False
+        editor._split_view.storage.window_width = 800
+        assert panel.dock == "sidecar" and not panel.dock_button.visible
+        assert editor._split_view.preferences.code_dock == "bottom"
+        editor._split_view.storage.window_width = 1440
         assert panel.dock == "bottom" and editor._code_dock.visible
-        editor._inspector.visible = False
-        assert panel.dock == "right" and editor._code_side.visible
+
+    def test_the_layout_tab_moves_it_into_the_spec_tab_and_back(self, setup):
+        editor, query = setup
+        select_on_canvas(editor._flow, node_id=query)
+        editor.open_code_panel(query, "expr")
+        panel = editor.code_panel
+        panel.code.value_input = "p_year > 2015"
+        editor.mode = "dashboard"
+        assert panel.dock == "sidecar" and panel.dock_button.visible
+        assert panel.code.value == "p_year > 2015" and panel.dirty
+        editor._inspector.open_tab(query, "Spec")
+        assert spec_tab(editor).objects == [panel._layout]
+        # Open below goes back to the canvas.
+        panel.dock_button.clicks += 1
+        assert editor.mode == "split"
+        assert panel.dock == "bottom" and editor._code_dock.visible
+        assert editor._split_view.preferences.code_dock == "bottom"
 
     def test_the_inspector_says_where_the_panel_is(self, setup):
         editor, query = setup
@@ -1021,34 +1042,40 @@ class TestDock:
         )
         assert "under the canvas" in caption.object
         editor.code_panel.toggle_dock()
-        assert "beside the canvas" in caption.object
+        assert "Spec tab" in caption.object
 
-    def test_a_narrow_window_still_uses_the_dialog(self, setup):
+    def test_showing_the_spec_tab_opens_the_panel_on_the_node(self, setup):
         editor, query = setup
-        editor.open_code_panel(query, "expr")
-        editor.code_panel.toggle_dock()
         editor._split_view.storage.window_width = 800
+        select_on_canvas(editor._flow, node_id=query)
         assert not editor.code_panel_open
-        assert not editor.open_code_panel(query, "expr")
+        editor._inspector.open_tab(query, "Spec")
+        assert editor.code_panel.instance_id == query
+        assert spec_tab(editor).objects == [editor.code_panel._layout]
 
-    def test_docked_right_it_is_not_collapsed(self, setup):
+    def test_the_spec_tab_offers_to_open_a_spec_under_the_canvas_here(self, setup):
         editor, query = setup
+        select_on_canvas(editor._flow, node_id=query)
+        editor._inspector.open_tab(query, "Spec")
+        assert not editor.code_panel_open
+        note = spec_tab(editor)[0]
+        buttons = {b.label: b for b in note.select(pmui.Button)}
+        assert set(buttons) == {"Open in sidecar", "Open below"}
+        buttons["Open in sidecar"].clicks += 1
+        assert editor.code_panel.dock == "sidecar"
+        assert spec_tab(editor).objects == [editor.code_panel._layout]
+        assert editor._split_view.preferences.code_dock == "sidecar"
+
+    def test_one_editor_at_a_time(self, setup):
+        editor, query = setup
+        select_on_canvas(editor._flow, node_id=query)
         editor.open_code_panel(query, "expr")
         panel = editor.code_panel
-        panel.collapsed = True
-        panel.toggle_dock()
-        assert not panel.collapsed
-        assert not panel.collapse_button.visible
-
-    def test_the_width_is_remembered_for_the_session(self, setup):
-        editor, query = setup
-        editor.open_code_panel(query, "expr")
-        editor.code_panel.toggle_dock()
-        editor._code_side_handle.size = 640
-        assert editor._code_side.styles["width"] == "640px"
-        editor.close_code_panel()
-        editor.open_code_panel(query, "expr")
-        assert editor._code_side.styles["width"] == "640px"
+        for _ in range(2):
+            panel.toggle_dock()
+            in_tab = panel._layout in spec_tab(editor).objects
+            under = panel._layout in editor._code_dock.objects
+            assert in_tab != under
 
     def test_the_draft_survives_the_move(self, setup):
         editor, query = setup
@@ -1058,15 +1085,53 @@ class TestDock:
         panel.toggle_dock()
         assert panel.code.value == "p_year > 2015"
         assert panel.dirty
+        panel.toggle_dock()
+        assert panel.code.value == "p_year > 2015"
+        assert panel.dirty
 
-    def test_docked_right_it_follows_the_selection(self, setup):
+    def test_typed_text_is_kept_when_leaving_the_spec_tab(self, setup):
+        editor, query = setup
+        editor.open_spec_in_sidecar(query)
+        panel = editor.code_panel
+        panel.code.value_input = "p_year > 2015"
+        editor._inspector._node_tabs.active = 0
+        assert panel.code.value == "p_year > 2015"
+        editor._inspector._node_tabs.active = 1
+        assert spec_tab(editor).objects == [panel._layout] and panel.dirty
+
+    def test_in_the_spec_tab_it_follows_the_selection(self, setup):
         editor, query = setup
         other = editor.add_component("D/query", position=(640, 0))
-        editor.open_code_panel(query, "expr")
-        editor.code_panel.toggle_dock()
+        editor.open_spec_in_sidecar(query)
         select_on_canvas(editor._flow, node_id=other)
         assert editor.code_panel.instance_id == other
-        assert editor._code_side.visible
+        assert active_tab(editor) == "Spec"
+        assert spec_tab(editor).objects == [editor.code_panel._layout]
+
+    def test_a_definition_is_shown_read_only(self, setup):
+        editor, _query = setup
+        defined = editor.add_component("D/defined", position=(0, 300))
+        editor._split_view.storage.window_width = 800
+        select_on_canvas(editor._flow, node_id=defined)
+        assert "Spec" in editor._inspector._tab_labels
+        editor._inspector.open_tab(defined, "Spec")
+        panel = editor.code_panel
+        assert spec_tab(editor).objects == [panel._layout]
+        assert panel.definition.visible and panel.definition.readonly
+        assert "tables:" in panel.definition.value
+        assert not panel.run_button.visible
+
+    def test_no_spec_tab_without_a_spec_or_a_definition(self, setup):
+        editor, _query = setup
+        source = next(
+            i["instance_id"] for i in editor._tile_items if i["component_id"] == "D/turbines"
+        )
+        select_on_canvas(editor._flow, node_id=source)
+        assert "Spec" not in editor._inspector._tab_labels
+
+    def test_no_spec_tab_for_viewers(self):
+        editor, query = make_editor(editable=False)
+        assert not editor._inspector._has_spec_tab(query, editor._component_specs["D/query"])
 
 
 class Opaque:
