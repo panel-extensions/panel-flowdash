@@ -8,7 +8,7 @@ expect = pytest.importorskip("playwright.sync_api").expect
 
 from panel_flowdash import FlowDash
 
-from .util import serve_component
+from .util import DASHBOARD_LOAD_TIMEOUT, serve_component, stable_box
 
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
@@ -239,8 +239,9 @@ def _kinds(editor):
     return [next(iter(block)) for block in editor.report["blocks"]]
 
 
-def _shown(page, count):
-    expect(_report(page).locator(".fd-report-handle")).to_have_count(count)
+def _shown(page, count, timeout=10000):
+    """Wait until the edited report shows *count* blocks, each with its handle."""
+    expect(_report(page).locator(".fd-report-handle button")).to_have_count(count, timeout=timeout)
 
 
 def _undo_redo(page, editor, before, after):
@@ -387,17 +388,21 @@ def test_reorder_by_drag_and_by_menu(page):
     serve_component(page, editor)
     editor.surface = "report"
     report = _report(page)
-    handles = report.locator(".fd-report-handle")
-    expect(handles).to_have_count(4)
+    # The first page a worker opens can take a while to render the edited blocks.
+    _shown(page, 4, timeout=DASHBOARD_LOAD_TIMEOUT)
 
-    # Drag the heading below the text.
-    handle = handles.first.bounding_box()
-    target = report.locator(".fd-report-insert").nth(2).bounding_box()
-    page.mouse.move(handle["x"] + 10, handle["y"] + 10)
+    # Drag the heading below the text, once the blocks have stopped moving.
+    handle = stable_box(report.locator(".fd-report-handle button").first, page)
+    target = stable_box(report.locator(".fd-report-insert").nth(2), page)
+    x, y = handle["x"] + handle["width"] / 2, handle["y"] + handle["height"] / 2
+    page.mouse.move(x, y)
     page.mouse.down()
-    page.mouse.move(handle["x"] + 10, target["y"] + target["height"] / 2, steps=8)
+    page.mouse.move(x, y + 5)
+    page.mouse.move(x, target["y"] + target["height"] / 2, steps=10)
+    expect(page.locator(".fd-report-drop-line")).to_be_visible()
     page.mouse.up()
-    wait_until(lambda: _kinds(editor) == ["text", "heading", "turn", "turn"], page)
+    wait_until(lambda: _kinds(editor) == ["text", "heading", "turn", "turn"], page, timeout=10000)
+    _shown(page, 4)
     _undo_redo(
         page, editor, ["heading", "text", "turn", "turn"], ["text", "heading", "turn", "turn"]
     )
