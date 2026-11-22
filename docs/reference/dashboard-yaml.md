@@ -410,7 +410,9 @@ report's values depend on.
 **Export...** in the Report view, `panel_flowdash.export.export_report(editor, format)`
 and the agent's `export_report` tool write the report as it is now, as a self-contained
 HTML page with a print stylesheet, a PDF, a Word document, Markdown or a Jupyter
-notebook whose cells load the dashboard and show each node. `page_break` starts a new
+notebook whose cells load the dashboard and show each node (for someone who may only
+view the dashboard, the notebook holds the exported outputs alone, as it holds no
+dashboard file). `page_break` starts a new
 page in the PDF and Word files, and a node the reader may not use is a note saying it
 is left out. The values the controls and global filters held, the parameters and the
 generation time head the document. Questions not run yet are never run; they are left

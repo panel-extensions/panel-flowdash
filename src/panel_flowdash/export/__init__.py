@@ -102,13 +102,21 @@ def check_format(format: str) -> ExportFormat:
     return found
 
 
-def dashboard_yaml(editor: FlowDash) -> str:
-    """Return the dashboard as its YAML file, as Download writes it, credentials in it masked."""
+def dashboard_yaml(editor: FlowDash) -> str | None:
+    """Return the dashboard as its YAML file, as Download writes it, credentials in it masked.
+
+    None for someone who may only view the dashboard, who cannot download it
+    either. The questions asked are left out when any of them is hidden from
+    the user, see :meth:`~panel_flowdash.FlowDash.run_redacted`.
+    """
     from panel_flowdash.agent.yaml_format import editor_restricted_edges
     from panel_flowdash.editor import export_text
     from panel_flowdash.value_text import redact_secrets
 
-    data = editor.export_dashboard()
+    if editor.read_only:
+        return None
+    redacted = any(turn.run is not None and editor.run_redacted(turn.run) for turn in editor.turns)
+    data = editor.export_dashboard(questions=not redacted)
     return redact_secrets(export_text(data, "yaml", editor_restricted_edges(editor)))
 
 

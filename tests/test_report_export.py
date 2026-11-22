@@ -2,6 +2,7 @@
 
 import io
 import json
+import re
 import types
 import zipfile
 
@@ -152,6 +153,7 @@ title: Sales
 turns:
 - {id: t1, actor: user, at: '2026-11-22T10:00:00Z'}
 - {id: t2, status: pending, question: Which region grew fastest}
+- {id: t3, actor: agent, run: r3, at: '2026-11-22T11:00:00Z', question: How much is in the vault}
 groups:
   detail: {label: Detail by region}
 nodes:
@@ -164,7 +166,7 @@ nodes:
   bars: {component: E/bars, group: detail, position: [600, 0]}
   leak: {component: E/leak, position: [600, 200]}
   own: {component: E/own, position: [600, 400]}
-  vault: {component: E/vault, position: [900, 0]}
+  vault: {component: E/vault, origin: t3, position: [900, 0]}
 edges:
 - {from: sales.total, to: kpi.value}
 - {from: sales.total, to: note.value}
@@ -449,6 +451,113 @@ class TestWriters:
     def test_restricted_node_in_every_format(self, restricted):
         for format in ("html", "md"):
             assert RESTRICTED_TEXT in export_report(restricted, format).data.decode()
+
+
+class TestSafety:
+    def test_viewers_notebook_holds_outputs_not_the_dashboard(self, editor):
+        nbformat = pytest.importorskip("nbformat")
+        editor.read_only = True
+        notebook = nbformat.reads(export_report(editor, "ipynb").data.decode(), as_version=4)
+        sources = "\n".join(cell.source for cell in notebook.cells)
+        assert all(cell.cell_type == "markdown" for cell in notebook.cells)
+        assert "DASHBOARD" not in sources and "component: E/sales" not in sources
+        assert "| R2 | 2,001 | Credentials |" in sources
+
+    def test_hidden_questions_are_left_out_of_the_notebook(self, editor, restricted):
+        from panel_flowdash.export import dashboard_yaml
+
+        assert "How much is in the vault" in dashboard_yaml(editor)
+        assert restricted.run_redacted("r3")
+        text = dashboard_yaml(restricted)
+        assert "How much is in the vault" not in text and "Which region grew fastest" not in text
+
+    def test_markdown_rerenders_prose_without_html_or_unsafe_links(self, editor):
+        prose = (
+            "<script>alert(1)</script>\n\n"
+            'Hi <img src=x onerror="alert(1)"> [click](javascript:alert(1)) '
+            "[ok](https://example.com) ![pic](file:///etc/passwd)\n\n"
+            "- one\n- **two**\n\n```sql\nselect 1\n```"
+        )
+        editor.set_report({"blocks": [{"text": prose}]})
+        text = export_report(editor, "md").data.decode()
+        from panel_flowdash.text_components import _MARKDOWN
+
+        rendered = _MARKDOWN.render(text)
+        assert "<script" not in rendered and "<img" not in rendered
+        assert 'href="javascript' not in rendered and 'src="file' not in rendered
+        assert '<a href="https://example.com">ok</a>' in rendered
+        assert "<li><strong>two</strong></li>" in rendered
+        assert '<code class="language-sql">select 1' in rendered
+
+    def test_notebook_markdown_cells_hold_no_html(self, editor):
+        nbformat = pytest.importorskip("nbformat")
+        editor.set_report({"blocks": [{"text": '<b onmouseover="x()">hi</b> [a](javascript:x)'}]})
+        notebook = nbformat.reads(export_report(editor, "ipynb").data.decode(), as_version=4)
+        text = "\n".join(c.source for c in notebook.cells if c.cell_type == "markdown")
+        assert not re.search(r"(?<!\\)<b", text)
+        assert not re.search(r"(?<!\\)\]\(javascript", text)
+
+    def test_control_characters_do_not_break_word(self, editor):
+        docx = pytest.importorskip("docx")
+        assert cell_text("a\x00b\x0bc") == "abc"
+        editor.set_report({"title": "T\x0b", "blocks": [{"heading": "H\x01"}, {"text": "x\x00y"}]})
+        doc = docx.Document(io.BytesIO(export_report(editor, "docx").data))
+        assert [p.text for p in doc.paragraphs][:1] == ["T"]
+
+    def test_dashboard_text_ending_in_a_quote_is_valid_python(self):
+        from panel_flowdash.export.notebook import preamble
+
+        source = preamble('title: "Q3"\nnote: \'"""\\\n')
+        namespace = {}
+        exec(source.split("dashboard = load_dashboard")[0], namespace)
+        assert namespace["DASHBOARD"] == 'title: "Q3"\nnote: \'"""\\\n'
+
+    @pytest.mark.parametrize("url", ["file:///etc/passwd", "javascript:alert(1)", "/local.png"])
+    def test_image_urls_from_hooks_are_checked(self, url):
+        from panel_flowdash.export import ExportDocument, Image, Provenance
+        from panel_flowdash.export.html import write_html
+        from panel_flowdash.export.markdown import write_markdown
+
+        document = ExportDocument(
+            "T",
+            Provenance("T", generated_at=__import__("datetime").datetime.now()),
+            [Image(url=url, alt="x"), Image(url="https://example.com/a.png", alt="y")],
+        )
+        assert url not in write_html(document) and url not in write_markdown(document)
+        assert "https://example.com/a.png" in write_html(document)
+
+    def test_weasyprint_keeps_charts_and_images(self, editor):
+        pytest.importorskip("weasyprint")
+        from panel_flowdash.export import Image
+        from panel_flowdash.export.pdf import write_pdf
+
+        document = build_document(editor, "pdf")
+        png = render_chart(_spec(pd.DataFrame({"region": ["a"], "amount": [1]})), "docx").png
+        document.blocks.append(Image(data=png, mime="image/png", alt="chart"))
+        pdf = write_pdf(document, "weasyprint")
+        assert pdf.startswith(b"%PDF")
+        # The SVG chart is drawn as a form, the PNG as an image.
+        assert len(re.findall(rb"/Subtype\s*/Form", pdf)) >= 1
+        assert len(re.findall(rb"/Subtype\s*/Image", pdf)) >= 1
+
+    def test_weasyprint_reads_no_files(self, tmp_path):
+        pytest.importorskip("weasyprint")
+        from panel_flowdash.export.pdf import _weasyprint
+
+        secret = tmp_path / "secret.png"
+        secret.write_bytes(
+            render_chart(_spec(pd.DataFrame({"region": ["a"], "amount": [1]})), "docx").png
+        )
+        page = f'<html><body><img src="file://{secret}"><img src="{secret}"></body></html>'
+        assert not re.findall(rb"/Subtype\s*/Image", _weasyprint(page))
+
+    def test_exported_charts_leave_room_for_long_labels(self):
+        from panel_flowdash.export.build import CHART_FONT, _sized
+
+        spec = _sized({"mark": "bar", "autosize": {"type": "fit-x"}, "width": "container"})
+        assert spec["autosize"]["type"] == "pad" and spec["width"] == 640
+        assert spec["config"]["font"] == CHART_FONT
+        assert spec["config"]["axis"]["labelLimit"] == 160 and spec["padding"] == 8
 
 
 class TestAgent:

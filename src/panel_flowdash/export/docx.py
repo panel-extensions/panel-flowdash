@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import html
 import io
 import re
@@ -183,9 +184,26 @@ def _add(doc, block: Block, level: int, max_rows: int):
             _add(doc, child, level + 1, max_rows)
 
 
+def _clean(value):
+    """Return *value* with control characters, which XML cannot hold, dropped from every string in it."""
+    from panel_flowdash.export.build import strip_control
+
+    if isinstance(value, str):
+        return strip_control(value)
+    if isinstance(value, list):
+        return [_clean(v) for v in value]
+    if isinstance(value, tuple):
+        return tuple(_clean(v) for v in value)
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        changes = {f.name: _clean(getattr(value, f.name)) for f in dataclasses.fields(value)}
+        return dataclasses.replace(value, **changes)
+    return value
+
+
 def write_docx(document: ExportDocument, max_rows: int = MAX_ROWS) -> bytes:
     """Return *document* as a Word file."""
     docx = _docx()
+    document = _clean(document)
     doc = docx.Document()
     p = document.provenance
     doc.core_properties.title = document.title

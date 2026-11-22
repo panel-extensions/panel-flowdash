@@ -95,6 +95,13 @@ pre { background: var(--fd-panel); padding: 12px; border-radius: 6px; overflow-x
 """
 
 
+def safe_url(url: str | None) -> str | None:
+    """Return *url* when it is an http(s) URL or a base64 image data URL, else None."""
+    from panel_flowdash.export.markdown import safe_url
+
+    return safe_url(url)
+
+
 def markdown_html(text: str) -> str:
     """Render Markdown as HTML, raw HTML shown as text and unsafe link targets dropped."""
     from panel_flowdash.text_components import _MARKDOWN
@@ -161,8 +168,8 @@ def _block(block: Block, level: int) -> str:
     if isinstance(block, Image):
         if block.data:
             src = _data_url(block.mime, block.data)
-        elif block.url:
-            src = block.url
+        elif safe_url(block.url):
+            src = block.url.strip()
         else:
             return ""
         return _figure(src, block.alt, "", block.caption)

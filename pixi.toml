@@ -63,6 +63,7 @@ cryptography = "*"
 nbformat = "*"
 python-docx = "*"
 vl-convert-python = "*"
+weasyprint = "*"
 
 [feature.test.pypi-dependencies]
 pytest-asyncio = ">=0.23"

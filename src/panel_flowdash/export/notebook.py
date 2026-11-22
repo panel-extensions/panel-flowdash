@@ -36,9 +36,9 @@ def _nbformat():
 
 
 def _string_literal(text: str) -> str:
-    """Return *text* as a readable triple-quoted Python string literal."""
-    body = text.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
-    return f'"""\\\n{body}"""'
+    """Return *text* as a Python expression: one ``repr``'d string per line, in parentheses."""
+    lines = text.splitlines(keepends=True) or [""]
+    return "(\n" + "".join(f"    {line!r}\n" for line in lines) + ")"
 
 
 def preamble(dashboard_yaml: str | None) -> str:
@@ -139,8 +139,9 @@ def write_notebook(document: ExportDocument, dashboard_yaml: str | None = None) 
         nbformat.v4.new_markdown_cell(
             markdown_block(Heading(document.title, 0), 0) + "\n\n" + provenance_markdown(document)
         ),
-        nbformat.v4.new_code_cell(preamble(dashboard_yaml)),
     ]
+    if dashboard_yaml:
+        cells.append(nbformat.v4.new_code_cell(preamble(dashboard_yaml)))
     cells += _cells(nbformat, document.blocks, 1, live=bool(dashboard_yaml))
     notebook = nbformat.v4.new_notebook(
         cells=cells,

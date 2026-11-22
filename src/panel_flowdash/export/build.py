@@ -162,6 +162,7 @@ def cell_text(value: t.Any, years: bool | None = None) -> str:
         return type(value).__name__
     if text in ("NaT", "<NA>", "nan"):
         return ""
+    text = strip_control(text)
     return text if len(text) <= MAX_CELL else text[: MAX_CELL - 1] + "…"
 
 
@@ -204,6 +205,15 @@ def table_block(value: t.Any, max_rows: int = MAX_ROWS, caption: str = "") -> Ta
         for row in head.itertuples(index=False, name=None)
     ]
     return Table(columns=columns, rows=rows, total_rows=total, caption=caption)
+
+
+# Characters XML 1.0, and so a Word file, cannot hold.
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ufffe\uffff]")
+
+
+def strip_control(text: str) -> str:
+    """Return *text* without the control characters a Word or XML file cannot hold."""
+    return _CONTROL.sub("", text)
 
 
 _MD_INLINE = re.compile(r"([\\`*_\[\]~|$])")
@@ -259,13 +269,29 @@ def _convert(function: t.Callable, spec: dict, **options: t.Any) -> t.Any:
     return function(spec, **options)
 
 
+#: The font exported charts are measured and drawn in: vl-convert measures text with
+#: Liberation Sans, which has Arial's metrics, so a browser drawing the SVG in Arial
+#: fits labels in the space they were given.
+CHART_FONT = "Arial, Helvetica, sans-serif"
+LABEL_LIMIT = 160
+
+
 def _sized(spec: dict) -> dict:
     spec = copy.deepcopy(spec)
     for key, default in (("width", CHART_WIDTH), ("height", CHART_HEIGHT)):
         if spec.get(key) == "container":
             spec[key] = default
-    if isinstance(spec.get("autosize"), dict) and spec["autosize"].get("type") == "fit":
-        spec["autosize"] = {**spec["autosize"], "type": "pad"}
+    autosize = spec.get("autosize")
+    if isinstance(autosize, dict) and str(autosize.get("type", "")).startswith("fit"):
+        spec["autosize"] = {**autosize, "type": "pad"}
+    elif isinstance(autosize, str) and autosize.startswith("fit"):
+        spec["autosize"] = "pad"
+    if not _is_vega(spec):
+        config = spec["config"] = dict(spec.get("config") or {})
+        config["font"] = CHART_FONT
+        axis = config["axis"] = dict(config.get("axis") or {})
+        axis.setdefault("labelLimit", LABEL_LIMIT)
+        spec.setdefault("padding", 8)
     return spec
 
 

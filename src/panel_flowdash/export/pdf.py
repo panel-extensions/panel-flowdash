@@ -17,13 +17,19 @@ UNAVAILABLE = (
 
 
 def _weasyprint(page: str) -> bytes:
-    from weasyprint import HTML
+    import weasyprint
 
-    # The page embeds its images, so WeasyPrint fetches nothing.
-    def refuse(url, *args, **kwargs):
-        raise ValueError(f"Exports fetch no URLs: {url[:80]}")
+    # The page embeds its images as data URLs; anything else, a file or a site, is not read.
+    if hasattr(weasyprint, "URLFetcher"):
+        fetcher = weasyprint.URLFetcher(allowed_protocols=["data"], allow_redirects=False)
+    else:
 
-    return HTML(string=page, url_fetcher=refuse).write_pdf()
+        def fetcher(url, *args, **kwargs):
+            if url.startswith("data:"):
+                return weasyprint.default_url_fetcher(url, *args, **kwargs)
+            raise ValueError(f"Exports fetch no URLs: {url[:80]}")
+
+    return weasyprint.HTML(string=page, url_fetcher=fetcher).write_pdf()
 
 
 def _chromium(page: str) -> bytes:
