@@ -42,6 +42,7 @@ from panel_flowdash.editor import (
     dashboard_context,
     placement_context,
 )
+from panel_flowdash.global_filters import FilterTarget, request_filters
 from panel_flowdash.json_store import JSONFolderDashboardStore
 from panel_flowdash.parameters import (
     ContractContext,
@@ -101,6 +102,7 @@ __all__: list[str] = [
     "DashboardStoreError",
     "DashboardTurn",
     "DataflowGraph",
+    "FilterTarget",
     "FlowDash",
     "Identity",
     "InputPort",
@@ -143,5 +145,6 @@ __all__: list[str] = [
     "port_types_compatible",
     "register",
     "register_port_type",
+    "request_filters",
     "resolve_identity",
 ]

@@ -12,7 +12,7 @@ import pytest
 import yaml
 from panel.viewable import Viewer
 
-from panel_flowdash import FlowDash, MemoryDashboardStore, Predicate, register
+from panel_flowdash import FlowDash, MemoryDashboardStore, Predicate, register, request_filters
 from panel_flowdash.agent import DashboardOps
 from panel_flowdash.agent.yaml_format import (
     DashboardYAMLError,
@@ -21,6 +21,7 @@ from panel_flowdash.agent.yaml_format import (
 )
 from panel_flowdash.dashboard_store import DashboardModel, DashboardStore
 from panel_flowdash.global_filters import (
+    MAX_OPTIONS,
     FilterError,
     FilterTarget,
     check_filters,
@@ -28,6 +29,7 @@ from panel_flowdash.global_filters import (
     filter_frame,
     predicate,
     resolve_view,
+    skipped_filters,
 )
 from panel_flowdash.json_store import JSONFolderDashboardStore
 from panel_flowdash.turns import change_labels
@@ -106,7 +108,43 @@ class Query(Viewer):
         return pn.pane.Str("query")
 
 
+@register(component=True, page=False, provides=[{"key": "spec", "type": "dict"}])
+class Spec(Viewer):
+    """A source handing on a query, not a DataFrame, as a Lumen pipeline would."""
+
+    spec = param.Dict(default={"columns": []})
+
+    def __panel__(self):
+        return pn.pane.Str("spec")
+
+
+@register(component=True, page=False, tags=["view"], requires=[{"key": "spec", "type": "dict"}])
+class LateQuery(Viewer):
+    """A view filtering itself whose columns are known only once its query arrives."""
+
+    spec = param.Dict(default=None, allow_None=True)
+    extra = param.List(default=[])
+    received = param.List(default=[])
+    unsupported = param.Dict(default={})
+
+    def __flowdash_columns__(self):
+        if self.spec is None and not self.extra:
+            return None
+        return [*(self.spec or {}).get("columns", []), *self.extra]
+
+    def __flowdash_apply_filters__(self, filters):
+        self.received = [*self.received, dict(filters)]
+        if self.unsupported == {"raise": True}:
+            raise RuntimeError("the query is broken")
+        return {c: r for c, r in self.unsupported.items() if c in filters}
+
+    def __panel__(self):
+        return pn.pane.Str("late")
+
+
 COMPONENTS = {
+    "T/Spec": Spec,
+    "T/LateQuery": LateQuery,
     "T/Fleet": Fleet,
     "T/Regions": Regions,
     "T/Table": Table,
@@ -269,6 +307,110 @@ class TestProtocol:
         _, hint, _ = editor._global_filters.notes(ops._instance("query"))
         assert hint == "Not filtered by state, mw"
         editor.dispose()
+
+
+@pytest.fixture
+def late():
+    editor = FlowDash(COMPONENTS, notifications=False)
+    ops = DashboardOps(editor)
+    ops.add_node("T/Spec", {}, name="spec")
+    ops.add_node("T/LateQuery", {}, name="late")
+    ops.connect("spec.spec", "late.spec")
+    editor.set_filters([{"column": "state", "label": "State", "value": ["TX"]}])
+    yield ops
+    editor.dispose()
+
+
+def instance(ops, name):
+    return ops.editor._component_instances[ops._instance(name)]
+
+
+class TestLateColumns:
+    def test_a_new_query_at_an_input_reads_the_columns_again(self, late):
+        query = instance(late, "late")
+        assert query.received[-1:] in ([], [{}])
+        assert notes(late, "late")[1] == "Not filtered by State"
+        instance(late, "spec").spec = {"columns": ["state", "year"]}
+        assert query.received[-1] == {"state": Predicate("state", "in", ("TX",))}
+        assert notes(late, "late")[1] == ""
+        assert "year" in late.editor._global_filters.available_columns()
+
+    def test_request_filters_hands_the_filters_over_again(self, late):
+        query = instance(late, "late")
+        query.extra = ["state"]
+        assert query.received[-1:] in ([], [{}])
+        assert request_filters(query) is True
+        assert query.received[-1] == {"state": Predicate("state", "in", ("TX",))}
+        count = len(query.received)
+        assert request_filters(query) is True
+        assert len(query.received) == count + 1
+        assert request_filters(object()) is False
+
+    def test_requesting_filters_while_taking_them_hands_them_over_once_more(self, late):
+        query = instance(late, "late")
+        calls = []
+
+        def apply(filters):
+            calls.append(dict(filters))
+            assert request_filters(query) is True
+
+        query.__flowdash_apply_filters__ = apply
+        query.extra = ["state"]
+        request_filters(query)
+        assert calls == [{"state": Predicate("state", "in", ("TX",))}] * 2
+        calls.clear()
+        late.editor.set_filter_value("state", ["OK"])
+        assert calls == [{"state": Predicate("state", "in", ("OK",))}] * 2
+
+
+class TestReportedSkips:
+    def test_a_skipped_filter_shows_as_a_hint_with_its_reason(self, late):
+        late.editor.mode = "dashboard"
+        query = instance(late, "late")
+        query.unsupported = {"state": "is a number in this table"}
+        instance(late, "spec").spec = {"columns": ["state"]}
+        assert query.received[-1] == {"state": Predicate("state", "in", ("TX",))}
+        _, hint, detail = notes(late, "late")
+        assert hint == "Not filtered by State"
+        assert detail == "State: is a number in this table"
+        tile = late.editor._inspect_tiles[late._instance("late")]
+        assert [o.label for o in tile.filter_notes] == ["Not filtered by State"]
+        query.unsupported = {}
+        request_filters(query)
+        assert notes(late, "late")[1] == ""
+        assert not tile.filter_notes.visible
+
+    def test_a_failure_skips_every_filter_handed_over(self, late):
+        query = instance(late, "late")
+        query.unsupported = {"raise": True}
+        instance(late, "spec").spec = {"columns": ["state"]}
+        _, hint, detail = notes(late, "late")
+        assert hint == "Not filtered by State"
+        assert "the query is broken" in detail
+
+    def test_skipped_filters_takes_a_mapping_or_pairs(self):
+        assert skipped_filters(None, {"a"}) == {}
+        assert skipped_filters({"a": "no", "z": "x"}, {"a"}) == {"a": "no"}
+        assert skipped_filters([("a", "no")], {"a"}) == {"a": "no"}
+        assert skipped_filters(["a"], {"a"}) == {"a": "could not be applied"}
+        with pytest.raises(TypeError):
+            skipped_filters(3, {"a"})
+
+
+class TestSelectionCap:
+    def test_a_selection_larger_than_the_options_limit_is_refused(self, ops):
+        editor = ops.editor
+        editor.set_filters([{"column": "state", "widget": "select"}])
+        editor.set_filter_value("state", [f"S{i}" for i in range(MAX_OPTIONS)])
+        with pytest.raises(FilterError, match=f"at most {MAX_OPTIONS} values"):
+            editor.set_filter_value("state", [f"S{i}" for i in range(MAX_OPTIONS + 1)])
+        with pytest.raises(FilterError, match="at most"):
+            check_filters([{"column": "state", "value": list(range(MAX_OPTIONS + 1))}])
+
+    def test_options_stop_at_the_limit(self, ops):
+        feed(ops, "fleet", pd.DataFrame({"state": [f"S{i:05}" for i in range(3 * MAX_OPTIONS)]}))
+        feed(ops, "regions", pd.DataFrame({"state": [f"R{i:05}" for i in range(MAX_OPTIONS)]}))
+        assert len(ops.editor._global_filters.options("state")) == MAX_OPTIONS
 
 
 class TestPure:

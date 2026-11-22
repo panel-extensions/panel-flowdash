@@ -28,6 +28,8 @@ import param
 from panel.viewable import Viewer
 
 from panel_flowdash.global_filters import (
+    MAX_OPTIONS,
+    FilterError,
     FilterMismatch,
     accepts_filters,
     check_filters,
@@ -44,6 +46,7 @@ from panel_flowdash.global_filters import (
     plain_value,
     predicate,
     resolve_view,
+    skipped_filters,
     widget_for,
 )
 from panel_flowdash.selection import Predicate
@@ -68,6 +71,9 @@ _REMOVE_CSS = """
 
 class GlobalFilters(param.Parameterized):
     """The global filters of a :class:`~panel_flowdash.editor.FlowDash` editor and the views they reach."""
+
+    # Every live instance, so request() finds the editors showing a component.
+    _live: t.ClassVar[weakref.WeakSet] = weakref.WeakSet()
 
     filters = param.List(
         default=[], doc="The dashboard's filters, views they exclude by instance id."
@@ -94,11 +100,38 @@ class GlobalFilters(param.Parameterized):
         self._notes: dict[str, tuple] = {}
         # Why a filter could not be applied to an input of a view, by view, input and column.
         self._mismatched: dict[str, dict[str, dict[str, str]]] = {}
+        # The filters a view applying them itself reported it could not apply, by view and column.
+        self._reported: dict[str, dict[str, str]] = {}
+        # The columns each view applying filters itself declared when last asked.
+        self._declared: dict[str, set[str] | None] = {}
+        # Views whose hand-over is running, those that requested their filters during it,
+        # and those being handed them once more for that request, which ignore further ones.
+        self._handing: set[str] = set()
+        self._deferred: set[str] = set()
+        self._replaying: set[str] = set()
         # What apply() last worked out, which the notes of a single view reuse.
         self._active: dict[str, Predicate] = {}
         self._targets: set[str] = set()
         self._chips: dict[str, list[tuple[str, str]]] = {}
         self.param.watch(lambda *_: self.apply(), ["filters", "values"])
+        GlobalFilters._live.add(self)
+
+    @classmethod
+    def request(cls, component) -> bool:
+        """Read the columns of *component* again and hand it its filters anew, wherever it is shown.
+
+        See :func:`panel_flowdash.global_filters.request_filters`.
+        """
+        found = False
+        for filters in list(cls._live):
+            editor = filters.editor
+            if editor is None:
+                continue
+            for iid, instance in list(editor._component_instances.items()):
+                if instance is component:
+                    found = True
+                    filters.refresh(iid)
+        return found
 
     @property
     def editor(self):
@@ -242,9 +275,10 @@ class GlobalFilters(param.Parameterized):
         for values in self._declared_values(column):
             options.update(dict.fromkeys(values))
         try:
-            return sorted(options)
+            options = sorted(options)
         except TypeError:
-            return sorted(options, key=str)
+            options = sorted(options, key=str)
+        return options[:MAX_OPTIONS]
 
     def span(self, column: str) -> tuple | None:
         """Return the smallest and largest value a range filter on *column* spans.
@@ -313,8 +347,17 @@ class GlobalFilters(param.Parameterized):
         return self._filtered(instance_id, values, predicates)
 
     def inputs_changed(self, instance_id: str, names: t.Iterable[str]):
-        """Note that new values arrived at a view's inputs, which may change its columns and notes."""
+        """Note that new values arrived at a view's inputs, which may change its columns and notes.
+
+        A view applying filters itself is asked for its columns again, since
+        any input, e.g. a query, can change them.
+        """
         if not self.filters:
+            return
+        instance = self.editor._component_instances.get(instance_id)
+        if accepts_filters(instance):
+            if self.columns(instance_id) != self._declared.get(instance_id):
+                self.refresh(instance_id)
             return
         state = self.editor._dataflow_graph.get_state(instance_id)
         if state is None or not any(
@@ -325,46 +368,95 @@ class GlobalFilters(param.Parameterized):
         if instance_id in self._targets:
             self._sync_notes(instance_id)
 
+    def _reaching(self, instance_id: str, instance, targets: set[str]) -> dict[str, Predicate]:
+        """Return the active filters that reach a view, reading the columns of one filtering itself."""
+        reaching = {}
+        if instance_id in targets:
+            reaching = {
+                c: p
+                for c, p in self._active.items()
+                if instance_id not in (self.entry(c) or {}).get("exclude", ())
+            }
+        if accepts_filters(instance):
+            columns = self._declared[instance_id] = self.columns(instance_id)
+            reaching = {c: p for c, p in reaching.items() if c in (columns or ())}
+        return reaching
+
+    def _update(self, instance_id: str, instance, reaching: dict[str, Predicate], force=False):
+        if not force and reaching == self._applied.get(instance_id, {}):
+            return
+        if reaching:
+            self._applied[instance_id] = reaching
+        else:
+            self._applied.pop(instance_id, None)
+        self._handing.add(instance_id)
+        try:
+            self._hand_over(instance_id, instance, reaching)
+        finally:
+            self._handing.discard(instance_id)
+        if instance_id in self._deferred:
+            # The view asked for its filters while taking them: hand them over once more.
+            self._deferred.discard(instance_id)
+            self._replaying.add(instance_id)
+            try:
+                targets = set(self.targets()) if self.filters else set()
+                self._update(
+                    instance_id, instance, self._reaching(instance_id, instance, targets), True
+                )
+            finally:
+                self._replaying.discard(instance_id)
+
     def apply(self):
         """Hand every view the predicates that reach it now, and update the notes on its tile."""
         editor = self.editor
         if editor is None:
             return
-        active = self._active = self.active()
+        self._active = self.active()
         shown = self.targets()
         targets = set(shown) if self.filters else set()
         for iid, instance in list(editor._component_instances.items()):
-            reaching = {}
-            if iid in targets:
-                reaching = {
-                    c: p
-                    for c, p in active.items()
-                    if iid not in (self.entry(c) or {}).get("exclude", ())
-                }
-            if accepts_filters(instance):
-                columns = self.columns(iid) or set()
-                reaching = {c: p for c, p in reaching.items() if c in columns}
-            if reaching != self._applied.get(iid, {}):
-                if reaching:
-                    self._applied[iid] = reaching
-                else:
-                    self._applied.pop(iid, None)
-                self._hand_over(iid, instance, reaching)
-        for iid in list(self._applied):
-            if iid not in editor._component_instances:
-                del self._applied[iid]
+            self._update(iid, instance, self._reaching(iid, instance, targets))
+        for kept in (self._applied, self._reported, self._declared):
+            for iid in [i for i in kept if i not in editor._component_instances]:
+                del kept[iid]
         self._targets = set(shown)
         self._sync_chips(shown)
         for iid in set(self._notes) | self._targets:
             self._sync_notes(iid)
 
+    def refresh(self, instance_id: str):
+        """Read a view's columns again and hand it the filters that reach it, even if unchanged."""
+        editor = self.editor
+        instance = editor._component_instances.get(instance_id) if editor else None
+        if instance is None:
+            return
+        if instance_id in self._handing:
+            if instance_id not in self._replaying:
+                self._deferred.add(instance_id)
+            return
+        if not self._active and self.filters:
+            self._active = self.active()
+        targets = set(self._targets) if self.filters else set()
+        self._update(instance_id, instance, self._reaching(instance_id, instance, targets), True)
+        # New columns may offer new filter choices, chips and notes.
+        self.revision += 1
+        self._sync_chips(list(self._targets))
+        if instance_id in self._targets or instance_id in self._notes:
+            self._sync_notes(instance_id)
+
     def _hand_over(self, instance_id: str, instance, predicates: dict[str, Predicate]):
         editor = self.editor
         if accepts_filters(instance):
             try:
-                instance.__flowdash_apply_filters__(dict(predicates))
+                result = instance.__flowdash_apply_filters__(dict(predicates))
+                skipped = skipped_filters(result, predicates)
             except Exception as exc:
                 logger.error("Applying the global filters to %r failed: %s", instance_id, exc)
+                skipped = dict.fromkeys(predicates, f"failed: {exc}")
+            if skipped:
+                self._reported[instance_id] = skipped
+            else:
+                self._reported.pop(instance_id, None)
             return
         inputs = {
             name: value
@@ -386,6 +478,8 @@ class GlobalFilters(param.Parameterized):
         self._applied.pop(instance_id, None)
         self._notes.pop(instance_id, None)
         self._mismatched.pop(instance_id, None)
+        self._reported.pop(instance_id, None)
+        self._declared.pop(instance_id, None)
         self._chips.pop(instance_id, None)
 
     # ------------------------------------------------------------------
@@ -456,11 +550,12 @@ class GlobalFilters(param.Parameterized):
             instance = self.editor._component_instances.get(instance_id)
             if columns is not None or accepts_filters(instance):
                 mismatched = self.mismatched(instance_id)
+                reported = self._reported.get(instance_id, {})
                 _, skipped = resolve_view(
-                    self.filters, self._active, instance_id, columns, mismatched
+                    self.filters, self._active, instance_id, columns, mismatched, reported
                 )
                 hint = hint_text(self.filters, skipped)
-                detail = hint_detail(self.filters, skipped, mismatched)
+                detail = hint_detail(self.filters, skipped, mismatched, reported)
         return chips, hint, detail
 
     def _sync_notes(self, instance_id: str):
@@ -642,6 +737,7 @@ class FilterBar(Viewer):
             widget = pmui.MultiChoice(
                 label=label,
                 placeholder="All",
+                max_items=MAX_OPTIONS,
                 width=_FILTER_WIDTH,
                 margin=(10, 10),
                 visual_size="small",
@@ -712,7 +808,17 @@ class FilterBar(Viewer):
             lo, hi = value
             start, end = event.obj.start, event.obj.end
             value = None if (lo, hi) == (start, end) else [plain_value(lo), plain_value(hi)]
-        self.filters.set_value(column, value)
+        try:
+            self.filters.set_value(column, value)
+        except FilterError as exc:
+            logger.warning("Ignoring the value of the filter on %r: %s", column, exc)
+            if pn.state.notifications is not None:
+                pn.state.notifications.warning(exc.reason)
+            self._syncing = True
+            try:
+                self._show_value(event.obj, self.filters.values.get(column))
+            finally:
+                self._syncing = False
 
     def _on_add(self, item):
         column = item.get("column") if isinstance(item, dict) else None
