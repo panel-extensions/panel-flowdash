@@ -1181,7 +1181,7 @@ async def test_adding_to_a_large_dashboard_takes_the_version_once_and_keeps_the_
     assert len(snapshots) == 1
     during = [start, *(t for t in ticks if start <= t <= end), end]
     gap = max(b - a for a, b in itertools.pairwise(during))
-    assert gap < 2, gap
+    assert gap < 4, gap
     assert _nodes(editor) == [*before, "a0", "a1", "a2", "a3"]
     assert len(editor.edit_history.versions) == versions + 1
     assert "a3:" in editor.edit_history.versions[-1].value

@@ -808,12 +808,22 @@ class EditHistory:
         self._batching += 1
         try:
             yield
-        finally:
+        except BaseException:
             self._batching -= 1
-            if not self._batching:
-                for request in self._requests.values():
-                    if request.stale:
-                        self._snapshot_request(request)
+            try:
+                self._snapshot_stale()
+            except Exception:
+                # The edits' own failure is the one to report.
+                logger.exception("Could not take the canvas after a failed batch of edits")
+            raise
+        self._batching -= 1
+        self._snapshot_stale()
+
+    def _snapshot_stale(self):
+        if not self._batching:
+            for request in self._requests.values():
+                if request.stale:
+                    self._snapshot_request(request)
 
     def _close_requests(self):
         """Publish the edits the open dashboard's requests made so far, keeping the requests open.
