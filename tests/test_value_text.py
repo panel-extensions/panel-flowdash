@@ -297,6 +297,14 @@ def test_exception_text_masks_credentials():
         ("sent Authorization: Token abc123", "sent Authorization: Token ***"),
         ("sent X-Api-Key: Secret", "sent X-Api-Key: ***"),
         ("connect(authorization='hunter')", "connect(authorization='***')"),
+        ("sent Authorization: Bearer abcdef", "sent Authorization: Bearer ***"),
+        ("sent Authorization: bEaReR abcdef", "sent Authorization: bEaReR ***"),
+        ("sent Authorization: Basic abc", "sent Authorization: Basic ***"),
+        ("sent Authorization: Basic dXNlcjpwYXNzd29yZA==", "sent Authorization: Basic ***"),
+        ("sent Authorization: BASIC dXNlcjpwYXNzd29yZA==", "sent Authorization: BASIC ***"),
+        ("sent Authorization: Token abcdef", "sent Authorization: Token ***"),
+        ("sent Authorization: abcdef", "sent Authorization: ***"),
+        ("sent X-Api-Key: secretkey", "sent X-Api-Key: ***"),
     ],
 )
 def test_exception_text_masks_quoted_and_bearer_credentials(message, shown):
@@ -312,6 +320,8 @@ def test_exception_text_masks_quoted_and_bearer_credentials(message, shown):
         "token: expired",
         "Authorization: token required",
         "Authorization: required",
+        "Authorization: Token required",
+        "Authorization header missing",
         "X-Api-Key: missing",
         "password must be set",
         "Password: must be at least 8 characters",

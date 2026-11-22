@@ -45,12 +45,17 @@ _SECRET_QUOTED = re.compile(
     rf"""(["']?{_SECRET_KEY}["']?\s*[:=]\s*)(["'])(?:\\.|(?!\2).)*?\2""", re.IGNORECASE
 )
 # An unquoted header-style value. Authorization may also be a keyword argument or a dict
-# value, and its value may follow its scheme. An unquoted short lowercase word is English,
-# not a credential, as in "Authorization: token required".
+# value, and its value may follow its scheme. The value after Bearer or Basic is always
+# masked; a word like "required" after the header or "token" is English, as in
+# "Authorization: token required", and stays.
+_HEADER_WORD = (
+    r"(?:required|missing|invalid|expired|needed|denied|rejected|failed|empty|header"
+    r"|is|was|not|must)(?![^\s\"',;}&])"
+)
 _SECRET_HEADER = re.compile(
     r"""(\b(?:(?:x-)?api[_-]?key["']?\s*:|authorization["']?\s*[:=])\s*"""
-    r"""(?:["'](?:(?:bearer|basic|token)\s+)?"""
-    r"""|(?:(?:bearer|basic|token)\s+)?(?!(?-i:[a-z]{1,15})(?![^\s"',;}&]))))"""
+    r"""(?:["'](?:(?:bearer|basic|token)\s+)?|(?:bearer|basic)\s+"""
+    rf"""|token\s+(?!{_HEADER_WORD})|(?!(?:bearer|basic|token)\s)(?!{_HEADER_WORD})))"""
     r"""(?![*"'])[^\s"',;}&]+""",
     re.IGNORECASE,
 )
