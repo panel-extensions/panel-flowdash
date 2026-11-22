@@ -83,14 +83,19 @@ _AVATAR_COLORS = {
 }
 
 _CARD_CSS = """
-.k .card-head { display: flex; align-items: center; gap: 12px; }
+.k .card-head { display: flex; align-items: flex-start; gap: 12px; }
 .k .avatar { width: 36px; height: 36px; border-radius: 8px; color: #fff; font-weight: 500;
   display: flex; align-items: center; justify-content: center; font-size: 1rem; flex: 0 0 auto; }
 .k .who { flex: 1 1 auto; min-width: 0; }
-.k .who b { font-weight: 500; font-size: 1rem; display: block; }
+.k .who b { font-weight: 500; font-size: 1rem; display: block; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.k .who .line { display: flex; align-items: center; flex-wrap: wrap; column-gap: 8px; row-gap: 2px; }
 .k .who .small { white-space: nowrap; }
-.k .detail { display: flex; align-items: center; gap: 6px; margin-top: 12px; overflow: hidden;
-  white-space: nowrap; text-overflow: ellipsis; color: var(--mui-palette-text-secondary); }
+.k .who .chip { margin: 0; }
+.k .detail { display: flex; align-items: center; flex-wrap: wrap; column-gap: 6px; row-gap: 2px;
+  margin-top: 12px; color: var(--mui-palette-text-secondary); min-width: 0; }
+.k .detail code { overflow-wrap: anywhere; }
+.k .detail .ends { white-space: nowrap; }
 .k .detail code { color: var(--mui-palette-text-primary); }
 """
 
@@ -199,7 +204,7 @@ def provider_status(ai: t.Mapping[str, t.Any], name: str) -> ProviderStatus:
     info, _ = key_status(ai, name)
     configured = provider_config(ai, name).get("api_key") is not None
     source = {"env": "Environment", "stored": "Stored secret"}.get(info.source or "", "Not set up")
-    ends = f" · ends in {esc(info.last4)}" if info.last4 else ""
+    ends = f'<span class="ends">ends in {esc(info.last4)}</span>' if info.last4 else ""
     if info.source == "env":
         detail = f"{KEY_SVG}<code>{esc(info.env)}</code>{ends}"
     elif info.source == "stored":
@@ -423,8 +428,8 @@ class AISettings(Viewer):
         head = cell(
             f'<div class="card-head"><span class="avatar" style="background:{color}">'
             f'{esc(_initial(name))}</span><span class="who"><b>{esc(provider.label)}</b>'
-            f'<span class="muted small">{esc(status.source)}</span></span>'
-            f"{chip(status.chip, status.tone)}</div>"
+            f'<span class="line"><span class="muted small">{esc(status.source)}</span>'
+            f"{chip(status.chip, status.tone)}</span></span></div>"
             f'<div class="detail">{status.detail or "&nbsp;"}</div>',
             stylesheets=[_CARD_CSS],
         )

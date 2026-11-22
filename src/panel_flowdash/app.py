@@ -48,7 +48,12 @@ from panel_flowdash.dashboard_store import (
     DashboardStoreError,
 )
 from panel_flowdash.editor import FlowDash
-from panel_flowdash.permissions import auth_code_fields, effective_auth_config
+from panel_flowdash.permissions import (
+    PermissionsUnavailable,
+    auth_code_fields,
+    effective_auth_config,
+    project_permissions,
+)
 from panel_flowdash.project import (
     PROJECT_FILE,
     Project,
@@ -544,7 +549,7 @@ class FlowDashApp(Viewer):
         self._identity = resolve_identity(self.auth_config)
         self._note_visit()
         self._user_id = self._resolve_user_id()
-        self._is_admin = is_admin(
+        self._is_admin = self._permissions_error is None and is_admin(
             self._identity,
             self._admin_groups(),
             self._configured_admins(),
@@ -794,14 +799,50 @@ class FlowDashApp(Viewer):
             self._code_auth_config, self.settings_sources, "auth_config" in self._explicit
         )
 
+    def _read_permissions(self) -> dict[str, t.Any]:
+        """Return the project file's permissions as they are now.
+
+        Raises `PermissionsUnavailable` when the file cannot be read and no
+        permissions were read from it before, so access is denied rather
+        than left to the defaults.
+        """
+        project = self._settings_project()
+        if project.path and pathlib.Path(project.path).exists():
+            return project_permissions(project.path)
+        try:
+            return dict(project.get("permissions") or {})
+        except ProjectError as exc:
+            raise PermissionsUnavailable(str(exc)) from None
+
     def _apply_project_permissions(self):
-        """Layer the project file's permissions under the `auth_config` given in code."""
+        """Layer the project file's permissions under the `auth_config` given in code.
+
+        When they cannot be read, the session is denied: `_permissions_error` says why.
+        """
         self._code_auth_config = self.auth_config
-        self._permissions = self._project_section("permissions")
+        self._permissions_error: str | None = None
+        try:
+            self._permissions = self._read_permissions()
+        except PermissionsUnavailable as exc:
+            self._permissions = {}
+            self._permissions_error = str(exc)
         if self._permissions:
             self.auth_config = effective_auth_config(
                 self.auth_config, self._permissions, self._auth_code_fields()
             )
+
+    def _assistant_still_allowed(self) -> bool:
+        """Whether the person still gets the assistant, with the permissions read again.
+
+        Checked before each request, so taking the assistant away applies to
+        sessions already open.
+        """
+        try:
+            self._permissions = self._read_permissions()
+        except PermissionsUnavailable as exc:
+            self._permissions_error = str(exc)
+            return False
+        return self._permissions_error is None and self._assistant_allowed()
 
     def _usage_ledger(self) -> UsageLedger:
         """Return the ledger of the models' spend and of who opened the app."""
@@ -1333,7 +1374,7 @@ class FlowDashApp(Viewer):
             )
         ):
             return None
-        if not self._assistant_allowed():
+        if self._permissions_error is not None or not self._assistant_allowed():
             return None
         try:
             from panel_flowdash.agent.assistant import EDITING
@@ -1817,6 +1858,17 @@ class FlowDashApp(Viewer):
         # Importing pending pages awaits, so a newer navigation may have started.
         await self._resolve_pending_entries()
         if not self._is_current_navigation(generation):
+            return
+
+        if self._permissions_error is not None:
+            self._leave_dashboard()
+            self._set_sidebar_views([])
+            self._page.main = [
+                alert_pane(
+                    f"**Access is denied.** {escape_markdown(self._permissions_error)}",
+                    alert_type="danger",
+                )
+            ]
             return
 
         if pathname == "/":

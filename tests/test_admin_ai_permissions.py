@@ -11,12 +11,23 @@ from bokeh.document import Document
 
 from panel_flowdash import project as project_module
 from panel_flowdash.admin import ADMIN_ROUTE, AISettings, PermissionsForm
-from panel_flowdash.ai import KEY_CHECKS, ModelEntry, check_key, ledger_for, select_model
+from panel_flowdash.ai import (
+    KEY_CHECKS,
+    ModelEntry,
+    UsageLedger,
+    check_key,
+    ledger_for,
+    select_model,
+)
 from panel_flowdash.app import FlowDashApp
-from panel_flowdash.auth import AuthConfig, Identity
+from panel_flowdash.auth import AuthConfig, Identity, make_authorize_callback
 from panel_flowdash.command import serve as serve_module
 from panel_flowdash.dashboard_store import MemoryDashboardStore
-from panel_flowdash.permissions import approval_rules
+from panel_flowdash.permissions import (
+    PermissionsUnavailable,
+    approval_rules,
+    project_permissions,
+)
 from panel_flowdash.project import PROJECT_FILE, ProjectError, load_project, parse_project
 from panel_flowdash.secret_store import (
     KEY_ENV,
@@ -431,3 +442,143 @@ class TestPermissions:
         assert not form.add_rule(" ", "")
         assert not form.add_rule("run_sql", "rows")
         assert form._agent_alert.visible and not form.dirty
+
+
+class TestFailClosed:
+    BROKEN = "permissions:\n  default_allow: false\n<<<<<<< HEAD\n  admin_groups: [ops]\n"
+
+    @pytest.fixture(autouse=True)
+    def fresh(self, monkeypatch):
+        monkeypatch.setattr("panel_flowdash.permissions._LAST_GOOD", {})
+
+    def test_a_broken_file_after_a_good_read_keeps_the_permissions(self, sections, tmp_path):
+        path = tmp_path / PROJECT_FILE
+        path.write_text("permissions:\n  default_allow: false\n")
+        assert project_permissions(path) == {"default_allow": False}
+        path.write_text(self.BROKEN)
+        os.utime(path, ns=(1, 1))
+        assert project_permissions(path) == {"default_allow": False}
+        current = serve_module._project_auth_config(AuthConfig(), {}, path, tmp_path)
+        assert current().default_allow is False
+
+    def test_a_broken_file_at_startup_denies(self, sections, tmp_path, monkeypatch):
+        path = tmp_path / PROJECT_FILE
+        path.write_text(self.BROKEN)
+        with pytest.raises(PermissionsUnavailable):
+            project_permissions(path)
+        current = serve_module._project_auth_config(AuthConfig(), {}, path, tmp_path)
+        callback = make_authorize_callback({"Sec/page": _page()}, current)
+        assert callback({}, "/Sec/page") is False
+        monkeypatch.setattr("panel_flowdash.app.resolve_identity", lambda _c: Identity(user=ME))
+        app = FlowDashApp(
+            registry={},
+            project_dir=tmp_path,
+            store=MemoryDashboardStore(),
+            notifications=False,
+            include_builtin_components=False,
+            auth_config=AuthConfig(user_groups={ME: frozenset({"ops"})}),
+            agent_model="test",
+        )
+        assert app._permissions_error and "cannot be read" in app._permissions_error
+        assert not app._is_admin and app._agent_session is None
+
+    def test_an_invalid_section_at_startup_denies_too(self, sections, tmp_path):
+        path = tmp_path / PROJECT_FILE
+        path.write_text("permissions:\n  default_allow: maybe\n")
+        with pytest.raises(PermissionsUnavailable):
+            project_permissions(path)
+
+
+def _page():
+    from panel_flowdash.registry import PanelAppMetadata, RegistryEntry
+
+    return RegistryEntry(
+        app_id="Sec/page",
+        section="Sec",
+        name="page",
+        page_path="/Sec/page",
+        module_name="Sec.page",
+        metadata=PanelAppMetadata(page=True, component=False),
+    )
+
+
+async def test_taking_the_assistant_away_applies_to_an_open_session(
+    sections, tmp_path, monkeypatch
+):
+    pytest.importorskip("pydantic_ai")
+    from pydantic_ai.models.function import FunctionModel
+
+    from panel_flowdash.agent.assistant import create_agent
+
+    calls = []
+
+    async def stream(messages, info):
+        calls.append(1)
+        yield "ok"
+
+    monkeypatch.setattr("panel_flowdash.app.resolve_identity", lambda _c: Identity(user="cy"))
+    app = _app(tmp_path, agent=create_agent(FunctionModel(stream_function=stream)))
+    notes = []
+    monkeypatch.setattr(app, "_notify", lambda severity, message, **_kw: notes.append(message))
+    runner = app._agent_session.runner
+    await runner.run("Hi")
+    assert calls == [1]
+    path = tmp_path / PROJECT_FILE
+    path.write_text(path.read_text() + "permissions:\n  people:\n    cy: {assistant: false}\n")
+    os.utime(path, ns=(10**18, 10**18))
+    assert await runner.run("Again") is None
+    assert calls == [1] and "no longer have access" in notes[-1]
+
+
+async def test_a_caller_passed_model_does_not_skip_the_fallback(sections, tmp_path, monkeypatch):
+    pytest.importorskip("pydantic_ai")
+    from panel_agents import ModelChoice
+    from pydantic_ai.models.function import FunctionModel
+
+    from panel_flowdash.agent.assistant import create_agent
+
+    calls = []
+
+    def model(name):
+        async def stream(messages, info):
+            calls.append(name)
+            yield "ok"
+
+        return FunctionModel(stream_function=stream)
+
+    main, cheap = model("main"), model("cheap")
+    text = (
+        "ai:\n  models:\n    - id: fn:main\n      monthly_limit: 1\n      fallback: fn:cheap\n"
+        "    - id: fn:cheap\n"
+    )
+    monkeypatch.setattr("panel_flowdash.app.resolve_identity", lambda _c: Identity(user=ME))
+    app = _app(
+        tmp_path,
+        text,
+        agent=create_agent(main),
+        agent_models=[ModelChoice("fn:main", model=main), ModelChoice("fn:cheap", model=cheap)],
+    )
+    monkeypatch.setattr(app, "_notify", lambda *_a, **_kw: None)
+    ledger_for(tmp_path).add("fn:main", 2.0)
+    await app._agent_session.runner.run("Hi", model=main)
+    assert calls == ["cheap"]
+
+
+def _add_spend(directory, times):
+    ledger = UsageLedger(directory / ".flowdash" / "usage.json")
+    for _ in range(times):
+        ledger.add("openai:luna", 0.5)
+
+
+def test_processes_sharing_the_ledger_lose_no_spend(tmp_path):
+    import multiprocessing
+
+    context = multiprocessing.get_context("spawn")
+    workers = [context.Process(target=_add_spend, args=(tmp_path, 25)) for _ in range(4)]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(60)
+        assert worker.exitcode == 0
+    usd, requests = UsageLedger(tmp_path / ".flowdash" / "usage.json").month("openai:luna")
+    assert requests == 100 and usd == pytest.approx(50.0)

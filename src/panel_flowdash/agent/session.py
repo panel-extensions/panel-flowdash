@@ -605,12 +605,19 @@ class _SessionRunner(AgentRunner):
         # The id is known before the run starts, so its turn, version and tile layout are
         # kept apart from those of the other surface's runner if both run at once.
         run_id = kwargs["run_id"] = self._run_id(kwargs.get("run_id"))
+        app = self._session.app
+        if not app._assistant_still_allowed():
+            app._notify("error", "You no longer have access to the assistant.", duration=8000)
+            return None
+        # Approval rules and sensitive components changed in the admin view apply from this request.
+        self.approval_policy = self._session._approval_policy()
         model_id, model_kwargs, note = self._session.plan_request(kwargs.get("model", self.model))
         if note:
             self._session.app._notify("warning" if model_id else "error", note, duration=8000)
         if model_id is None and note:
             return None
-        kwargs = {**model_kwargs, **kwargs}
+        # The limit's fallback wins over a model the caller passed.
+        kwargs = {**kwargs, **model_kwargs}
         self._session.ops.editor.end_turn()
         self._session.publish_user_edits()
         self.deps.start_request(prompt if isinstance(prompt, str) else None, run_id)

@@ -476,7 +476,12 @@ def make_authorize_callback(
         if entry is None:
             # Not a code-authored page route; gated in-app if at all.
             return True
-        config = auth_config() if callable(auth_config) else auth_config
+        try:
+            config = auth_config() if callable(auth_config) else auth_config
+        except Exception:
+            # An authorization config that cannot be read denies rather than allows.
+            logger.exception("Denying %s: the authorization config cannot be read.", route)
+            return False
         identity = resolve_identity(config)
         if entry_authorized(entry, identity, default_allow=config.default_allow):
             return True

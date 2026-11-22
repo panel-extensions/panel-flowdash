@@ -8,7 +8,6 @@ import importlib.util
 import logging
 import os
 import sys
-import typing as t
 from pathlib import Path
 
 import panel as pn
@@ -121,32 +120,26 @@ def _project_auth_config(
     """Return a callable giving *auth_config* with the project file's permissions layered under it.
 
     The file is read again when it changes, so the admin view's changes apply
-    to the next request.
+    to the next request. A file that cannot be read keeps the permissions last
+    read from it, and with none, page requests are denied.
     """
-    from panel_flowdash.app import _unloaded_project
-    from panel_flowdash.permissions import effective_auth_config
+    from panel_flowdash.permissions import effective_auth_config, project_permissions
 
     path = project_file or project_dir / PROJECT_FILE
-    cache: dict[str, t.Any] = {}
 
     def current() -> AuthConfig:
-        try:
-            stamp = path.stat().st_mtime_ns
-        except OSError:
-            return auth_config
-        if cache.get("stamp") != stamp:
-            try:
-                project = _unloaded_project(path, {})
-                permissions = (project.get("permissions") if project else None) or {}
-            except (ProjectError, OSError) as exc:
-                log.warning("Not using the project file's permissions: %s", exc)
-                permissions = {}
-            cache.update(
-                stamp=stamp, config=effective_auth_config(auth_config, permissions, in_code)
-            )
-        return cache["config"]
+        # Raises PermissionsUnavailable for a broken file with nothing read before; the
+        # authorize callback then denies.
+        return effective_auth_config(auth_config, project_permissions(path), in_code)
 
     return current
+
+
+def _admin_groups(current) -> frozenset[str]:
+    try:
+        return current().admin_groups
+    except Exception:
+        return frozenset()
 
 
 def _resolve_store(
@@ -475,7 +468,7 @@ class Serve(_PanelServe):
         if options.get("admin_link", True) and (
             args.admin_link
             or not (
-                current_auth_config().admin_groups or _project_admins(project_file, project_dir)
+                _admin_groups(current_auth_config) or _project_admins(project_file, project_dir)
             )
         ):
             address = getattr(args, "address", None)

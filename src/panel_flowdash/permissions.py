@@ -30,14 +30,17 @@ from __future__ import annotations
 
 import dataclasses
 import fnmatch
+import logging
+import os
+import threading
 import typing as t
 from collections.abc import Mapping
+from pathlib import Path
 
 from panel_flowdash.auth import AuthConfig, Identity
-from panel_flowdash.project import ProjectError, SectionError
+from panel_flowdash.project import Project, ProjectError, Section, SectionError, _parse
 
-if t.TYPE_CHECKING:
-    from panel_flowdash.project import Section
+logger = logging.getLogger(__name__)
 
 KEYS = (
     "default_allow",
@@ -132,6 +135,72 @@ def rule_problems(rule: t.Any) -> list[tuple[tuple, str]]:
     if "enabled" in rule and not isinstance(rule["enabled"], bool):
         problems.append((("enabled",), "`enabled` is true or false."))
     return problems
+
+
+# ---------------------------------------------------------------------------
+# Reading the section, failing closed
+# ---------------------------------------------------------------------------
+
+
+class PermissionsUnavailable(RuntimeError):
+    """The project file's permissions cannot be read and none were read from it before."""
+
+
+# The permissions last read from each project file, with the file's modification stamp.
+_LAST_GOOD: dict[str, tuple[int, dict[str, t.Any]]] = {}
+_LAST_GOOD_LOCK = threading.Lock()
+
+
+def project_permissions(path: str | os.PathLike) -> dict[str, t.Any]:
+    """Return the ``permissions`` section of the project file at *path*, read again when it changes.
+
+    A file that cannot be read or parsed, or whose section is invalid, does
+    not loosen anything: the permissions last read from it stay in force,
+    logged as an error, and with none read before `PermissionsUnavailable`
+    is raised, so callers deny access rather than fall back to defaults.
+    No file at all sets nothing.
+    """
+    file = Path(path)
+    key = str(file.resolve())
+    try:
+        stamp = file.stat().st_mtime_ns
+    except FileNotFoundError:
+        return {}
+    except OSError as exc:
+        return _last_good(key, exc)
+    with _LAST_GOOD_LOCK:
+        cached = _LAST_GOOD.get(key)
+    if cached is not None and cached[0] == stamp:
+        return cached[1]
+    try:
+        data, positions = _parse(file.read_text(encoding="utf-8"), key)
+        value = (
+            load_permissions(
+                Section("permissions", data["permissions"], Project(key, data, positions))
+            )
+            if "permissions" in data
+            else {}
+        )
+    except (ProjectError, SectionError, OSError, UnicodeDecodeError, TypeError, ValueError) as exc:
+        return _last_good(key, exc)
+    with _LAST_GOOD_LOCK:
+        _LAST_GOOD[key] = (stamp, value)
+    return value
+
+
+def _last_good(key: str, exc: Exception) -> dict[str, t.Any]:
+    with _LAST_GOOD_LOCK:
+        cached = _LAST_GOOD.get(key)
+    if cached is None:
+        logger.error("Denying access: the permissions in %s cannot be read: %s", key, exc)
+        raise PermissionsUnavailable(
+            f"The permissions in the project file cannot be read, so access is denied until "
+            f"it is fixed: {exc}"
+        )
+    logger.error(
+        "Keeping the permissions last read from %s; the file cannot be read now: %s", key, exc
+    )
+    return cached[1]
 
 
 # ---------------------------------------------------------------------------

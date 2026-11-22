@@ -80,7 +80,12 @@ ai:
 ```
 
 The spend counted against `monthly_limit` is kept in `.flowdash/usage.json`
-beside the project file, with who last opened the app.
+beside the project file, with who last opened the app; processes sharing
+the project update it under a file lock.
+
+If the project file cannot be read, for example while it holds a merge
+conflict, the permissions last read from it stay in force, and an app that
+has never read them denies access with an error page until it is fixed.
 
 The `permissions` section is layered under the app's `auth_config`:
 `default_allow` and `admin_groups` apply when the project's `__init__.py`
@@ -169,7 +174,14 @@ key is `FLOWDASH_SECRET_KEY` (several, comma-separated, to rotate: the
 first encrypts and all decrypt), else the OS keyring, else a key file
 made with mode 0600 at `~/.config/flowdash/secret.key`
 (`FLOWDASH_SECRET_KEY_FILE`). Servers sharing a project share
-`FLOWDASH_SECRET_KEY`. A key is never written to the file in plain text,
+`FLOWDASH_SECRET_KEY`.
+
+The keyring and the key file belong to the user who saved the key, so on a
+project shared through version control or a network drive, where each
+person runs the app themselves, a stored key only decrypts for that user.
+Use `${VAR}` references there and let each person set the variable. On
+Windows the key file is protected by the user profile's permissions, not
+by mode 0600. A key is never written to the file in plain text,
 shown in the admin view (only its last four characters), logged or put
 into the process environment; it goes to the provider's client.
 

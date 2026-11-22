@@ -36,6 +36,7 @@ pydantic-ai when the agent extra is installed.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import datetime as dt
 import json
 import logging
@@ -48,7 +49,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from panel_flowdash.project import ProjectError, SectionError
+from panel_flowdash.project import ProjectError, SectionError, _retry_sharing
 from panel_flowdash.secret_store import SecretError, check_secret, describe_secret, resolve_secret
 
 if t.TYPE_CHECKING:
@@ -463,17 +464,61 @@ def month_key(when: dt.datetime | None = None) -> str:
     return (when or dt.datetime.now(dt.UTC)).strftime("%Y-%m")
 
 
+@contextlib.contextmanager
+def file_lock(path: Path):
+    """Hold an exclusive lock on *path* (``fcntl`` on POSIX, ``msvcrt`` on Windows), across processes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+
+            handle.seek(0)
+            for attempt in range(6):
+                try:
+                    # Each attempt retries for about ten seconds before raising.
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    if attempt == 5:
+                        raise
+            try:
+                yield
+            finally:
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
 class UsageLedger:
     """What each model cost by month, and who opened the app when, in a JSON file by the project.
 
     Without a path the spend is kept in memory for the process. Every
-    process serving the project adds to the same file.
+    process serving the project adds to the same file: each change is a
+    read-modify-write under an OS file lock (``usage.json.lock``), so
+    several workers, or people sharing the project on a network drive, do
+    not lose each other's spend.
     """
 
     def __init__(self, path: str | os.PathLike | None = None):
         self.path = Path(path) if path is not None else None
-        self._lock = threading.Lock()
+        self._thread_lock = threading.Lock()
         self._memory: dict[str, t.Any] = {}
+
+    @contextlib.contextmanager
+    def _lock(self):
+        with self._thread_lock:
+            if self.path is None:
+                yield
+                return
+            with file_lock(self.path.with_name(self.path.name + ".lock")):
+                yield
 
     def _read(self) -> dict[str, t.Any]:
         if self.path is None:
@@ -493,27 +538,30 @@ class UsageLedger:
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
                 json.dump(data, handle, indent=1, sort_keys=True)
-            os.replace(temporary, self.path)
+            _retry_sharing(lambda: os.replace(temporary, self.path))
         except BaseException:
             Path(temporary).unlink(missing_ok=True)
             raise
 
     def add(self, model_id: str, cost: float | None, when: dt.datetime | None = None) -> None:
         """Count a request to *model_id* that cost *cost* US dollars (None: unknown)."""
-        with self._lock:
-            data = self._read()
-            month = data.setdefault("spend", {}).setdefault(month_key(when), {})
-            spent = month.setdefault(model_id, {"usd": 0.0, "requests": 0})
-            spent["usd"] = round(spent["usd"] + (cost or 0.0), 6)
-            spent["requests"] += 1
-            try:
-                self._write(data)
-            except OSError as exc:
-                logger.warning("Could not record the spend of %s: %s", model_id, exc)
+        try:
+            with self._lock():
+                self._add(model_id, cost, when)
+        except OSError as exc:
+            logger.warning("Could not record the spend of %s: %s", model_id, exc)
+
+    def _add(self, model_id: str, cost: float | None, when: dt.datetime | None) -> None:
+        data = self._read()
+        month = data.setdefault("spend", {}).setdefault(month_key(when), {})
+        spent = month.setdefault(model_id, {"usd": 0.0, "requests": 0})
+        spent["usd"] = round(spent["usd"] + (cost or 0.0), 6)
+        spent["requests"] += 1
+        self._write(data)
 
     def month(self, model_id: str, when: dt.datetime | None = None) -> tuple[float, int]:
         """Return the US dollars spent on *model_id* this month and the number of requests."""
-        spent = self._read().get("spend", {}).get(month_key(when), {}).get(model_id) or {}
+        spent = self._locked_read().get("spend", {}).get(month_key(when), {}).get(model_id) or {}
         return float(spent.get("usd", 0.0)), int(spent.get("requests", 0))
 
     def spent(self, model_id: str) -> float:
@@ -524,20 +572,27 @@ class UsageLedger:
         self, user: str, groups: t.Iterable[str] = (), when: dt.datetime | None = None
     ) -> None:
         """Note that *user*, a member of *groups*, opened the app."""
-        with self._lock:
-            data = self._read()
-            data.setdefault("people", {})[user] = {
-                "last_seen": (when or dt.datetime.now(dt.UTC)).isoformat(timespec="seconds"),
-                "groups": sorted(groups),
-            }
-            try:
+        try:
+            with self._lock():
+                data = self._read()
+                data.setdefault("people", {})[user] = {
+                    "last_seen": (when or dt.datetime.now(dt.UTC)).isoformat(timespec="seconds"),
+                    "groups": sorted(groups),
+                }
                 self._write(data)
-            except OSError as exc:
-                logger.warning("Could not record a visit: %s", exc)
+        except OSError as exc:
+            logger.warning("Could not record a visit: %s", exc)
+
+    def _locked_read(self) -> dict[str, t.Any]:
+        try:
+            with self._lock():
+                return self._read()
+        except OSError:
+            return self._read()
 
     def people(self) -> dict[str, dict[str, t.Any]]:
         """Return who opened the app, with when they were last seen and their groups then."""
-        people = self._read().get("people")
+        people = self._locked_read().get("people")
         return dict(people) if isinstance(people, dict) else {}
 
 

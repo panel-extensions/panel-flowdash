@@ -192,3 +192,10 @@ def test_an_approval_rule_added_on_the_agent_tab_is_saved(page, tmp_path):
     expect(page.get_by_text("All changes saved")).to_be_visible()
     permissions = load_project(tmp_path / PROJECT_FILE).get("permissions")
     assert permissions == {"approval_rules": [{"tool": "run_sql"}]}
+
+
+def test_a_project_file_whose_permissions_cannot_be_read_denies_access(page, tmp_path):
+    (tmp_path / PROJECT_FILE).write_text("permissions:\n  default_allow: false\n<<<<<<< HEAD\n")
+    _serve(page, tmp_path, suffix="/", admin=False)
+    expect(page.get_by_text("Access is denied.")).to_be_visible()
+    expect(page.get_by_text("cannot be read")).to_be_visible()
