@@ -140,10 +140,11 @@ class TestInspector:
         select_on_canvas(editor._flow, node_id=node)
         body = pn.Column(*editor._inspector._body)
         assert not list(body.select(CodeField))
-        buttons = [b for b in body.select(pmui.Button) if "fd-edit-spec" in b.css_classes]
-        assert [b.label for b in buttons] == ["Edit SQL", "Edit Notes"]
-        buttons[1].clicks += 1
-        assert (editor.code_panel.instance_id, editor.code_panel.field) == (node, "notes")
+        button = next(b for b in body.select(pmui.IconButton) if "fd-edit-spec" in b.css_classes)
+        button.clicks += 1
+        assert (editor.code_panel.instance_id, editor.code_panel.field) == (node, "sql")
+        editor.code_panel.field_toggle.value = "notes"
+        assert editor.code_panel.field == "notes"
 
     async def test_editing_the_code_applies_the_config(self, editor):
         node = editor.add_component("D/query")

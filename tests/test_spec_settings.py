@@ -495,7 +495,7 @@ class TestCodePanel:
         select_on_canvas(editor._flow, node_id=node)
         body = pn.Column(*editor._inspector._body)
         assert not list(body.select(SpecEditor))
-        button = next(b for b in body.select(pmui.Button) if "fd-edit-spec" in b.css_classes)
+        button = next(b for b in body.select(pmui.IconButton) if "fd-edit-spec" in b.css_classes)
         button.clicks += 1
         panel = editor.code_panel
         assert (panel.instance_id, panel.field) == (node, "spec")
@@ -815,8 +815,12 @@ class TestDraftsAcrossChanges:
         select_on_canvas(editor._flow, node_id=node)
         assert panel.field == "spec" and field.value["title"] == "Mine"
         body = pn.Column(*editor._inspector._body)
-        labels = [b.label for b in body.select(pmui.Button) if "fd-edit-spec" in b.css_classes]
-        assert labels == ["Edit SQL", "Edit Spec · draft not run"]
+        caption = next(
+            iter(
+                body.select(lambda o: "fd-spec-in-panel-caption" in getattr(o, "css_classes", []))
+            )
+        )
+        assert "Spec" in caption.object and caption.object.endswith("draft not run.")
         panel.field_toggle.value = "sql"
         assert "Spec (draft not run)" in panel.field_toggle.options
 

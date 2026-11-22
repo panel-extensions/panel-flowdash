@@ -536,11 +536,49 @@ class TestInspector:
         select_on_canvas(editor._flow, node_id=query)
         body = pn.Column(*editor._inspector._body)
         assert not list(body.select(CodeField))
-        button = next(b for b in body.select(pmui.Button) if "fd-edit-spec" in b.css_classes)
-        assert button.label == "Edit Expr"
+        button = next(b for b in body.select(pmui.IconButton) if "fd-edit-spec" in b.css_classes)
+        assert button.description == "Edit spec"
         button.clicks += 1
         assert editor.code_panel_open
         assert editor.code_panel.field == "expr"
+
+    def test_only_nodes_with_a_spec_or_definition_offer_the_edit_button(self, setup):
+        editor, query = setup
+        defined = editor.add_component("D/defined", position=(0, 300))
+        source = next(
+            i["instance_id"] for i in editor._tile_items if i["component_id"] == "D/turbines"
+        )
+
+        def header_button(node):
+            select_on_canvas(editor._flow, node_id=node)
+            body = pn.Column(*editor._inspector._body)
+            found = [b for b in body.select(pmui.IconButton) if "fd-edit-spec" in b.css_classes]
+            return found[0].description if found else None
+
+        assert header_button(query) == "Edit spec"
+        assert header_button(defined) == "Show definition"
+        assert header_button(source) is None
+        cards = editor._node_cards()
+        assert (cards[query].edit, cards[defined].edit, cards[source].edit) == (
+            "spec",
+            "definition",
+            None,
+        )
+        assert 'data-fd-action="edit_spec"' in cards[query]._pane.object
+        assert "edit_spec" not in cards[source]._pane.object
+
+    def test_the_card_edit_button_opens_the_spec(self, setup):
+        editor, query = setup
+        editor._on_card_bridge_action({"node_id": query, "action": "edit_spec"})
+        assert editor.code_panel_open
+        assert (editor.code_panel.instance_id, editor.code_panel.field) == (query, "expr")
+
+    def test_viewers_get_no_edit_button_on_the_cards(self, setup):
+        editor, query = setup
+        editor.editable = False
+        assert editor._node_cards()[query].edit is None
+        editor.editable = True
+        assert editor._node_cards()[query].edit == "spec"
 
     def test_edit_shows_the_canvas_from_the_layout_tab(self, setup):
         editor, query = setup
@@ -560,7 +598,7 @@ class TestInspector:
         select_on_canvas(editor._flow, node_id=query)
         body = pn.Column(*editor._inspector._body)
         assert not list(body.select(CodeField))
-        button = next(b for b in body.select(pmui.Button) if "fd-edit-spec" in b.css_classes)
+        button = next(b for b in body.select(pmui.IconButton) if "fd-edit-spec" in b.css_classes)
         button.clicks += 1
         assert editor.mode == "wiring"
         assert active_tab(editor) == "Spec"
@@ -1060,7 +1098,8 @@ class TestSpecTab:
         assert not editor.code_panel_open
         note = spec_tab(editor)[0]
         buttons = {b.label: b for b in note.select(pmui.Button)}
-        assert set(buttons) == {"Open in sidecar", "Open below"}
+        # The header's edit button opens it below.
+        assert set(buttons) == {"Open in sidecar"}
         buttons["Open in sidecar"].clicks += 1
         assert editor.code_panel.dock == "sidecar"
         assert spec_tab(editor).objects == [editor.code_panel._layout]

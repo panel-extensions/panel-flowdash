@@ -36,7 +36,7 @@ from panel_flowdash.groups import component_nodes, group_id_of
 from panel_flowdash.input_literals import takes_literal
 from panel_flowdash.transforms import parse_transform, summarize_transform
 from panel_flowdash.ui.choice_widgets import form_widgets, setting_choices, widgets_key
-from panel_flowdash.ui.code_field import CodeField, code_language
+from panel_flowdash.ui.code_field import CodeField
 from panel_flowdash.ui.config_draft import ConfigDraft
 from panel_flowdash.ui.dashboard_bar import PHONE_TOUCH_CSS
 from panel_flowdash.ui.dock_handle import DockHandle
@@ -51,7 +51,6 @@ from panel_flowdash.ui.node_card import (
 from panel_flowdash.ui.node_preview import (
     CHART_COLOR,
     CHART_CSS,
-    DEFINITION_HOOK,
     PREVIEW_HOOK,
     PREVIEW_KIND_KEY,
     call_preview_hook,
@@ -73,7 +72,13 @@ from panel_flowdash.ui.status_bar import (
     connection_title,
     select_on_canvas,
 )
-from panel_flowdash.ui.text import field_label, markdown_renderer, text_alert, text_typography
+from panel_flowdash.ui.text import (
+    escape_markdown,
+    field_label,
+    markdown_renderer,
+    text_alert,
+    text_typography,
+)
 from panel_flowdash.ui.tile_layout import tile_entry, update_tile
 from panel_flowdash.ui.tile_options import TileOptions
 from panel_flowdash.util import is_failure
@@ -1255,6 +1260,7 @@ class Inspector(Viewer):
         subtitle: str | None = None,
         menu_items: list[dict] | None = None,
         on_menu: t.Callable[[t.Any], None] | None = None,
+        edit: tuple[str, str, t.Callable[[], t.Any]] | None = None,
         show_close: bool = True,
     ) -> Viewable:
         name_text = text_typography(
@@ -1346,6 +1352,20 @@ class Inspector(Viewer):
             css_classes=["fd-inspector-status"],
         )
         row_items: list[Viewable] = [_header_icon(icon), title_stack, self._status_dot]
+        if edit is not None:
+            edit_icon, edit_label, on_edit = edit
+            edit_btn = pmui.IconButton(
+                icon=edit_icon,
+                icon_size="18px",
+                description=edit_label,
+                size="small",
+                margin=0,
+                align="center",
+                sx={**_HEADER_ICON_SX, **_SHEET_TARGET_SX} if self.sheet else _HEADER_ICON_SX,
+                css_classes=["fd-edit-spec", "fd-inspector-edit"],
+            )
+            edit_btn.on_click(lambda _event: on_edit())
+            row_items.append(edit_btn)
         if menu_items:
             menu = pmui.MenuButton(
                 label="",
@@ -1647,6 +1667,12 @@ class Inspector(Viewer):
         menu_items.append(
             {"label": "Remove from dashboard", "icon": "delete_outline", "action": "remove"}
         )
+        edit = None
+        if (offered := editor._spec_to_edit(instance_id)) is not None:
+            icon, label = (
+                ("edit", "Edit spec") if offered == "spec" else ("code", "Show definition")
+            )
+            edit = (icon, label, partial(editor.edit_spec, instance_id))
         header = self._header(
             component_icon(spec),
             editor._node_name(instance_id),
@@ -1654,6 +1680,7 @@ class Inspector(Viewer):
             subtitle=spec.title,
             menu_items=menu_items,
             on_menu=partial(self._on_node_menu, instance_id),
+            edit=edit,
         )
         self._data_column = pn.Column(margin=(12, 14, 16, 14), sizing_mode="stretch_width")
         self._inputs_column = pn.Column(margin=0, sizing_mode="stretch_width")
@@ -1765,13 +1792,7 @@ class Inspector(Viewer):
 
     def _has_spec_tab(self, instance_id: str, spec: ComponentSpec) -> bool:
         """Whether the component has a Spec tab: a spec field to edit, or a definition to read."""
-        editor = self.editor
-        if not editor._code_panel_allowed():
-            return False
-        if spec_fields(spec):
-            return True
-        instance = editor._component_instances.get(instance_id)
-        return callable(getattr(instance, DEFINITION_HOOK, None))
+        return self.editor._spec_to_edit(instance_id) is not None
 
     def _spec_tab_active(self) -> bool:
         tabs = self._node_tabs
@@ -1853,22 +1874,9 @@ class Inspector(Viewer):
             css_classes=["fd-spec-open-here"],
         )
         move.on_click(lambda _event: editor.open_spec_in_sidecar(instance_id))
-        buttons = [move]
-        if not here:
-            below = pmui.Button(
-                label="Open below",
-                icon="horizontal_split",
-                variant="text",
-                size="small",
-                margin=(0, 0, 4, 8),
-                sx={"textTransform": "none"},
-                css_classes=["fd-spec-open-below"],
-            )
-            below.on_click(lambda _event: editor.edit_spec(instance_id))
-            buttons.append(below)
         note = pn.Column(
             _caption(caption, margin=(0, 0, 8, 0)),
-            pn.Row(*buttons, margin=0),
+            move,
             margin=(12, 14, 16, 14),
             sizing_mode="stretch_width",
             css_classes=["fd-spec-elsewhere"],
@@ -1926,63 +1934,40 @@ class Inspector(Viewer):
         if in_panel:
             names = [n for n in names if n not in in_panel]
             return pn.Column(
-                self._spec_buttons(instance_id, config_state, in_panel),
+                self._spec_caption(instance_id, config_state, in_panel),
                 self._settings_form(instance_id, spec, config_state, names, bool(in_panel)),
                 margin=0,
                 sizing_mode="stretch_width",
             )
         return self._settings_form(instance_id, spec, config_state, names, False)
 
-    def _spec_buttons(
+    def _spec_caption(
         self, instance_id: str, config_state: param.Parameterized, fields: list[str]
     ) -> Viewable:
-        """Offer to edit each spec field in the code panel."""
-        buttons = []
+        """Say where the spec fields are edited, naming those holding an edit not run yet."""
         panel = self.editor.code_panel
-        for name in fields:
-            parameter = config_state.param[name]
-            label = field_label(parameter) or name
-            code = code_language(parameter) is not None
-            button = pmui.Button(
-                label=f"Edit {label}",
-                icon="code" if code else "data_object",
-                variant="outlined",
-                size="small",
-                sizing_mode="stretch_width",
-                margin=(0, 0, 4, 0),
-                sx={"textTransform": "none", "justifyContent": "flex-start"},
-                css_classes=["fd-edit-spec", f"fd-edit-spec-{name}"],
-            )
-            button.on_click(
-                partial(lambda _event, n: self.editor.edit_spec(instance_id, n), n=name)
-            )
-            buttons.append((name, label, button))
+        labels = {name: field_label(config_state.param[name]) or name for name in fields}
 
-        def mark(*_events):
-            # A field holding an edit not run yet says so on its button.
-            drafted = panel.drafted_fields(instance_id)
-            for name, label, button in buttons:
-                draft = name in drafted
-                button.label = f"Edit {label} · draft not run" if draft else f"Edit {label}"
-                classes = [c for c in button.css_classes if c != "fd-edit-spec-draft"]
-                button.css_classes = [*classes, "fd-edit-spec-draft"] if draft else classes
+        def text(*_events) -> str:
+            where = (
+                "Edited in the Spec tab."
+                if panel.dock == "sidecar"
+                else "Edited in the code panel under the canvas."
+            )
+            drafted = [labels[n] for n in fields if n in panel.drafted_fields(instance_id)]
+            if drafted:
+                where += f" {', '.join(drafted)}: draft not run."
+            return where
 
-        mark()
-        watcher = panel.param.watch(mark, ["dirty", "instance_id", "field"])
+        caption = _caption(text(), margin=(0, 0, 8, 0), css_classes=["fd-spec-in-panel-caption"])
+
+        def sync(*_events):
+            caption.object = escape_markdown(text())
+
+        watcher = panel.param.watch(sync, ["dirty", "instance_id", "field", "dock"])
         self._releases.append(partial(panel.param.unwatch, watcher))
         return pn.Column(
-            *(button for _name, _label, button in buttons),
-            _caption(
-                panel.param.dock.rx().rx.pipe(
-                    lambda dock: (
-                        "Edited in the Spec tab."
-                        if dock == "sidecar"
-                        else "Edited in the code panel under the canvas."
-                    )
-                ),
-                margin=(0, 0, 8, 0),
-                css_classes=["fd-spec-in-panel-caption"],
-            ),
+            caption,
             margin=(0, 0, 4, 0),
             sizing_mode="stretch_width",
             css_classes=["fd-spec-in-panel"],
