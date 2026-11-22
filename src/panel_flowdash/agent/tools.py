@@ -51,6 +51,15 @@ _UNPINNED = object()
 EDIT_WAIT_TIMEOUT = 180
 
 
+def _duration(seconds: float) -> str:
+    """Name a wait in whole minutes, or in seconds when it is shorter than a minute."""
+    if round(seconds) < 60:
+        count, unit = max(1, round(seconds)), "second"
+    else:
+        count, unit = round(seconds / 60), "minute"
+    return f"{count} {unit}{'s' * (count != 1)}"
+
+
 class AgentEditLock:
     """Lets one agent request at a time edit a dashboard, e.g. the assistant's or the Explore view's.
 
@@ -105,10 +114,9 @@ class AgentEditLock:
                         raise TimeoutError
                     await asyncio.wait_for(freed.wait(), remaining)
                 except TimeoutError:
-                    minutes = max(1, round(self.timeout / 60))
                     return (
                         f"Not available: the dashboard is busy with {held[1]}, which did not "
-                        f"finish within {minutes} minute{'s' * (minutes != 1)}. Nothing was "
+                        f"finish within {_duration(self.timeout)}. Nothing was "
                         "changed; tell the user to ask again once it is done."
                     )
         finally:
