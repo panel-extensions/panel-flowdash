@@ -39,6 +39,8 @@ from ruamel.yaml.error import YAMLError
 from ruamel.yaml.nodes import MappingNode, Node, SequenceNode
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString
 
+from panel_flowdash.value_text import error_text
+
 __all__ = [
     "ENTRY_POINT_GROUP",
     "KEY",
@@ -396,7 +398,7 @@ class Project:
             target = Path(self.path).resolve() if self.path is not None else None
             text = _read(target) if target is not None else _dump(self.data)
             old_data, old_positions = _parse(text, self.path)
-            new_text = _replace_section(text, old_data, old_positions, name, data)
+            new_text = _replace_section(text, old_data, old_positions, name, data, self.path)
             new_data, new_positions = _parse(new_text, self.path)
             _check_written(name, data, old_data, new_data, self.path)
             candidate = Project(self.path, new_data, new_positions, self.context)
@@ -422,7 +424,9 @@ class Project:
         except SectionError as exc:
             problems.append(self.problem((name, *exc.path), exc.message, key=exc.key))
         except (TypeError, ValueError) as exc:
-            problems.append(self.problem((name,), f"Section {name!r}: {exc}", key=True))
+            problems.append(
+                self.problem((name,), f"Section {name!r}: {error_text(exc)}", key=True)
+            )
 
     def _load_all(self) -> None:
         problems: list[Problem] = []
@@ -536,11 +540,92 @@ def _dump(document: Mapping[str, Any]) -> str:
     return buffer.getvalue()
 
 
-def _replace_section(text: str, data: dict, positions: dict, name: str, value: Any) -> str:
+_COMMENT = re.compile(r"(?:^|\s)(#.*)$", re.MULTILINE)
+
+
+def _rewrite(text: str, data: dict, name: str, value: Any, source: str | None) -> str:
+    """Return ``text`` written whole with section ``name`` set to ``value``.
+
+    ruamel's round trip keeps the comments and merge keys it can; whatever it
+    cannot keep, or a file it does not read back the same, is logged.
+    """
+    expected = _plain({**data, name: value})
+    yaml = YAML()
+    yaml.width = 4096
+    try:
+        document = yaml.load(text)
+        document[name] = _plain(value, quote=True)
+        buffer = io.StringIO()
+        yaml.dump(document, buffer)
+        new_text = buffer.getvalue()
+        kept = _parse(new_text, source)[0] == expected
+    except (YAMLError, ProjectError, TypeError):
+        kept = False
+    if not kept:
+        new_text = _dump({**data, name: value})
+    dropped = [c for c in dict.fromkeys(_COMMENT.findall(text)) if c not in new_text]
+    if dropped:
+        logger.warning(
+            "Writing section %r rewrote %s whole and dropped %d comment(s), e.g. %r.",
+            name,
+            source or "the project file",
+            len(dropped),
+            dropped[0],
+        )
+    return new_text
+
+
+def _anchor_owners(node: Node, owner: str, owners: dict[int, str], shared: list) -> None:
+    """Record the top-level key that first holds each node under ``node``.
+
+    A node met again under another key is an alias of an anchor defined
+    earlier; it is added to ``shared`` with its anchor and both keys.
+    """
+    if id(node) in owners:
+        if owners[id(node)] != owner:
+            shared.append((node.anchor, owners[id(node)], owner))
+        return
+    owners[id(node)] = owner
+    if isinstance(node, MappingNode):
+        children = [child for pair in node.value for child in pair]
+    elif isinstance(node, SequenceNode):
+        children = node.value
+    else:
+        return
+    for child in children:
+        _anchor_owners(child, owner, owners, shared)
+
+
+def _check_anchors(text: str, name: str, source: str | None) -> None:
+    """Refuse to replace section ``name`` when another key aliases an anchor defined in it."""
+    root = YAML(typ="safe", pure=True).compose(text)
+    if not isinstance(root, MappingNode):
+        return
+    owners: dict[int, str] = {}
+    shared: list[tuple[str, str, str]] = []
+    for key_node, value_node in root.value:
+        _anchor_owners(value_node, str(key_node.value), owners, shared)
+    aliases = [(anchor, user) for anchor, owner, user in shared if owner == name]
+    if aliases:
+        anchor, user = aliases[0]
+        where = "the merge key '<<'" if user == "<<" else repr(user)
+        message = (
+            f"Section {name!r} defines the anchor &{anchor}, which {where} refers to with "
+            f"the alias *{anchor}; writing the section would leave that alias undefined, "
+            "so edit the file by hand."
+        )
+        raise ProjectError([Problem(message, source, section=name)])
+
+
+def _replace_section(
+    text: str, data: dict, positions: dict, name: str, value: Any, source: str | None = None
+) -> str:
     """Return ``text`` with section ``name`` set to ``value`` and its other lines untouched."""
     if any(positions[(key, KEY)][1] != 1 for key in data):
         # A flow mapping, or a document that starts on a key's line: write it whole.
-        return _dump({**data, name: value})
+        return _rewrite(text, data, name, value, source)
+    if name in data:
+        _check_anchors(text, name, source)
     section_text = _dump({name: value})
     lines = text.splitlines(keepends=True)
     if lines and not lines[-1].endswith("\n"):

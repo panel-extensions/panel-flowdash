@@ -16,6 +16,7 @@ from panel_flowdash.input_literals import check_literal
 from panel_flowdash.port_types import port_types_compatible
 from panel_flowdash.settings import DashboardSettings
 from panel_flowdash.transforms import parse_transform
+from panel_flowdash.value_text import error_text
 
 from .yaml_format import (
     FORMAT_VERSION,
@@ -68,7 +69,7 @@ def _check_value(p: param.Parameter, value) -> str | None:
     try:
         copy.copy(p)._validate(value)
     except Exception as exc:
-        return str(exc)
+        return error_text(exc)
     return None
 
 
@@ -376,7 +377,7 @@ class _Checker:
             try:
                 parse_transform(transform)
             except ValueError as exc:
-                self.error(f"{path}.transform", str(exc))
+                self.error(f"{path}.transform", error_text(exc))
             if output is None or input_ is None:
                 continue
             incoming[(target, input_.name)].append(path)

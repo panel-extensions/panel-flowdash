@@ -294,6 +294,17 @@ def test_exception_text_masks_credentials():
             'headers {"authorization": "Bearer ***"}',
         ),
         ("sent authorization=Bearer sk-secret", "sent authorization=Bearer ***"),
+        ("sent Authorization: Token abc123", "sent Authorization: Token ***"),
+        ("sent X-Api-Key: Secret", "sent X-Api-Key: ***"),
+        ("connect(authorization='hunter')", "connect(authorization='***')"),
+        ("sent Authorization: Bearer abcdef", "sent Authorization: Bearer ***"),
+        ("sent Authorization: bEaReR abcdef", "sent Authorization: bEaReR ***"),
+        ("sent Authorization: Basic abc", "sent Authorization: Basic ***"),
+        ("sent Authorization: Basic dXNlcjpwYXNzd29yZA==", "sent Authorization: Basic ***"),
+        ("sent Authorization: BASIC dXNlcjpwYXNzd29yZA==", "sent Authorization: BASIC ***"),
+        ("sent Authorization: Token abcdef", "sent Authorization: Token ***"),
+        ("sent Authorization: abcdef", "sent Authorization: ***"),
+        ("sent X-Api-Key: secretkey", "sent X-Api-Key: ***"),
     ],
 )
 def test_exception_text_masks_quoted_and_bearer_credentials(message, shown):
@@ -307,6 +318,11 @@ def test_exception_text_masks_quoted_and_bearer_credentials(message, shown):
         "Bearer token required.",
         "Bearer authentication failed",
         "token: expired",
+        "Authorization: token required",
+        "Authorization: required",
+        "Authorization: Token required",
+        "Authorization header missing",
+        "X-Api-Key: missing",
         "password must be set",
         "Password: must be at least 8 characters",
         '"max_tokens": 5',
@@ -404,3 +420,11 @@ def test_a_toast_never_shows_a_password(monkeypatch, caplog):
     )
     notify("error", CONNECT_ERROR)
     assert "SECRET" not in caplog.text and "u:***@h" in caplog.text
+
+
+def test_a_rejected_value_names_no_credential():
+    from panel_flowdash.agent.validation import _check_value
+
+    message = _check_value(param.Selector(objects=["a"]), "password=hunter2")
+    assert "password=***" in message
+    assert "hunter2" not in message

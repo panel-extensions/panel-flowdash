@@ -33,6 +33,7 @@ from panel.viewable import Viewer
 
 from panel_flowdash.port_types import register_port_type
 from panel_flowdash.registry import register
+from panel_flowdash.value_text import error_text
 
 SELECTION_TYPE = register_port_type("Selection")
 
@@ -1005,7 +1006,7 @@ class SelectionFilter(Viewer):
         try:
             kept = len(self.selection.filter(self.data))
         except (ValueError, TypeError) as exc:
-            return str(exc)
+            return error_text(exc)
         return f"{kept:,} of {total:,} rows: {self.selection}"
 
     def __panel__(self):

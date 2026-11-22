@@ -24,6 +24,7 @@ from panel_flowdash.util import confirm
 logger = logging.getLogger(__name__)
 
 from panel_flowdash.history import components_of
+from panel_flowdash.value_text import error_text
 
 from .actions import palette_actions
 from .assistant import create_agent, create_explore_agent
@@ -404,7 +405,9 @@ class AgentSession:
             await editor.ensure_components_loaded_async(components_of(version.value))
             history.restore(artifact, version)
         except Exception as exc:
-            self.app._notify("error", f"v{version.version} was not restored: {exc}", duration=8000)
+            self.app._notify(
+                "error", f"v{version.version} was not restored: {error_text(exc)}", duration=8000
+            )
             raise
         task = asyncio.ensure_future(self._report_checks(version))
         self._checks.add(task)

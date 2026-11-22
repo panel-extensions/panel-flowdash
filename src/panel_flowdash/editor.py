@@ -4224,7 +4224,7 @@ class FlowDash(Viewer):
             if self.editable and any(i["instance_id"] == instance_id for i in self._tile_items):
                 moved = tile_layout.move_to_area(self, instance_id, area, before)
         except ValueError as exc:
-            self._notify("info", str(exc), duration=4000)
+            self._notify("info", error_text(exc), duration=4000)
         finally:
             self._end_tile_release(instance_id, recorded=moved)
 
@@ -8152,7 +8152,7 @@ class FlowDash(Viewer):
         try:
             self._restore_model(text, notify=False)
         except PermissionError as exc:
-            return str(exc)
+            return error_text(exc)
         except (ValueError, KeyError, TypeError) as exc:
             return f"That version cannot be read: {error_text(exc)}"
         return None
@@ -8559,10 +8559,10 @@ class FlowDash(Viewer):
         except KeyError:
             self._notify("warning", "Select a valid component first.", duration=3000)
         except PermissionError as exc:
-            self._notify("error", str(exc), duration=5000)
+            self._notify("error", error_text(exc), duration=5000)
         except Exception as exc:
             logger.exception("Failed to add component '%s'", component_id)
-            self._notify("error", f"Failed to add component: {exc}", duration=5000)
+            self._notify("error", f"Failed to add component: {error_text(exc)}", duration=5000)
         else:
             entry = self._component_entries[component_id]
             self._notify("success", f"Added component: {entry.title}", duration=3000)
@@ -8608,7 +8608,9 @@ class FlowDash(Viewer):
         try:
             model = self._imported_model(file.get("content", ""))
         except ValueError as exc:
-            self._notify("error", f"Could not load {file['name']}: {exc}", duration=5000)
+            self._notify(
+                "error", f"Could not load {file['name']}: {error_text(exc)}", duration=5000
+            )
             return
         if not self._tile_items:
             self._apply_import(model)
@@ -8634,7 +8636,9 @@ class FlowDash(Viewer):
                 await self.load_model_async(model)
         except Exception as exc:
             logger.exception("Failed to load dropped dashboard")
-            self._notify("error", f"Could not load the dashboard: {exc}", duration=5000)
+            self._notify(
+                "error", f"Could not load the dashboard: {error_text(exc)}", duration=5000
+            )
             return
         self._record_import(model, before, present)
         if not self._placeholders() and not self._unresolved_edges:
@@ -8754,11 +8758,11 @@ class FlowDash(Viewer):
             model = self.save()
         except DashboardConflictError as exc:
             logger.info("Store refused to save dashboard: %s", exc)
-            self._notify("error", str(exc), duration=5000)
+            self._notify("error", error_text(exc), duration=5000)
             self._show_save_conflict()
         except DashboardStoreError as exc:
             logger.info("Store refused to save dashboard: %s", exc)
-            self._notify("error", str(exc), duration=5000)
+            self._notify("error", error_text(exc), duration=5000)
         except Exception:
             logger.exception("Failed to save dashboard")
             self._notify(
@@ -8856,7 +8860,7 @@ class FlowDash(Viewer):
             model = self.save_as(self._copy_title())
         except DashboardStoreError as exc:
             logger.info("Store refused to save a copy of the dashboard: %s", exc)
-            self._notify("error", str(exc), duration=5000)
+            self._notify("error", error_text(exc), duration=5000)
         except Exception:
             logger.exception("Failed to save a copy of the dashboard")
             self._notify(

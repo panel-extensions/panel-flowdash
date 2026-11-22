@@ -69,6 +69,16 @@ class TestParse:
         assert project.raw("limits") == {"rows": 10}
         assert "limits" in project
 
+    def test_a_loader_error_masks_credentials(self, registry):
+        def loader(section):
+            raise ValueError(f"cannot reach postgresql://u:hunter2@h/db for {section.name}")
+
+        register_section("db", loader)
+        with pytest.raises(ProjectError) as info:
+            parse_project("db:\n  uri: x\n")
+        (problem,) = info.value.problems
+        assert problem.message == "Section 'db': cannot reach postgresql://u:***@h/db for db"
+
     def test_missing_section_gives_the_default(self, registry):
         register_section("limits", _limits)
         assert parse_project("").get("limits", {}) == {}
@@ -469,6 +479,55 @@ class TestWriteBack:
         project = parse_project("a: 1\n")
         project.set("a", 2)
         assert project.get("a") == 2
+
+    def test_set_keeps_comments_and_merge_keys_of_a_file_written_whole(
+        self, registry, tmp_path, caplog
+    ):
+        original = "base: &base\n  limits: {rows: 1}  # base\n<<: *base\n# end\nother: 3  # o\n"
+        path = _write(tmp_path / PROJECT_FILE, original)
+        with caplog.at_level(logging.WARNING, logger="panel_flowdash.project"):
+            load_project(path).set("extra", {"rows": 5})
+        assert path.read_text() == original + "extra:\n  rows: 5\n"
+        assert load_project(path).raw("extra") == {"rows": 5}
+        assert "dropped" not in caplog.text
+
+    def test_set_warns_when_a_merged_key_drops_the_comments(self, registry, tmp_path, caplog):
+        original = "base: &base\n  limits: {rows: 1}  # base\n<<: *base\n"
+        path = _write(tmp_path / PROJECT_FILE, original)
+        with caplog.at_level(logging.WARNING, logger="panel_flowdash.project"):
+            load_project(path).set("limits", {"rows": 5})
+        assert load_project(path).data == {"base": {"limits": {"rows": 1}}, "limits": {"rows": 5}}
+        assert "dropped 1 comment(s), e.g. '# base'" in caplog.text
+
+    def test_set_warns_about_comments_a_flow_mapping_drops(self, registry, tmp_path, caplog):
+        path = _write(tmp_path / PROJECT_FILE, "{a: 1,  # about a\n b: 2}\n")
+        with caplog.at_level(logging.WARNING, logger="panel_flowdash.project"):
+            load_project(path).set("a", 3)
+        assert load_project(path).data == {"a": 3, "b": 2}
+        assert "dropped 1 comment(s), e.g. '# about a'" in caplog.text
+
+    @pytest.mark.parametrize(
+        "other, user", [("other: *l\n", "'other'"), ("other:\n  <<: *l\n", "'other'")]
+    )
+    def test_set_refuses_to_drop_an_anchor_aliased_elsewhere(
+        self, registry, tmp_path, other, user
+    ):
+        original = "limits: &l\n  rows: 1\n" + other
+        path = _write(tmp_path / PROJECT_FILE, original)
+        project = load_project(path)
+        with pytest.raises(ProjectError) as info:
+            project.set("limits", {"rows": 2})
+        (problem,) = info.value.problems
+        assert problem.section == "limits"
+        assert f"anchor &l, which {user} refers to with the alias *l" in problem.message
+        assert path.read_text() == original
+
+    def test_set_replaces_a_section_that_aliases_an_anchor_defined_before(
+        self, registry, tmp_path
+    ):
+        path = _write(tmp_path / PROJECT_FILE, "base: &b\n  rows: 1\nlimits: *b\n")
+        load_project(path).set("limits", {"rows": 2})
+        assert load_project(path).data == {"base": {"rows": 1}, "limits": {"rows": 2}}
 
 
 class TestDiscovery:
