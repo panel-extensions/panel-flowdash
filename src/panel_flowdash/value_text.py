@@ -37,10 +37,21 @@ _PLAIN_TYPES = (
 )
 _CONTAINERS = (list, tuple, set, frozenset, dict)
 _MAX_NAME = 60
-_URL_PASSWORD = re.compile(r"(\b[a-zA-Z][\w+.-]*://[^\s:/@]+:)[^\s@/]+@")
-_SECRET_PARAM = re.compile(
-    r"(\b(?:password|passwd|pwd|secret|token|access_token|api_key|apikey)=)[^\s&;,'\"]+",
+_URL_PASSWORD = re.compile(r"(\b[a-zA-Z][\w+.-]*://[^\s:/@]*:)[^\s@/]+@")
+_SECRET_KEY = r"\b\w*?(?:password|passwd|pwd|secret|token|api_?key)"
+_SECRET_PARAM = re.compile(rf"({_SECRET_KEY}=)[^\s&;,'\"]+", re.IGNORECASE)
+# A quoted value of a secret key, as JSON, a dict repr or keyword arguments write it.
+_SECRET_QUOTED = re.compile(
+    rf"""(["']?{_SECRET_KEY}["']?\s*[:=]\s*)(["'])(?:\\.|(?!\2).)*?\2""", re.IGNORECASE
+)
+_AUTH_HEADER = re.compile(
+    r"""(\bauthorization["']?\s*[:=]\s*["']?(?:(?:bearer|basic|token)\s+)?)[^\s"',;}]+""",
     re.IGNORECASE,
+)
+# Only a credential-like word after "Bearer", one with a digit or inner token punctuation,
+# so text like "Bearer token required." stays readable.
+_BEARER = re.compile(
+    r"\b(bearer\s+)(?=[\w~+/.-]*(?:\d|[~+/.][\w~+/-]))[\w~+/.-]+=*", re.IGNORECASE
 )
 
 
@@ -88,13 +99,31 @@ def held_table_names(value: t.Any) -> list[str] | None:
 
 
 def redact_secrets(text: str) -> str:
-    """Mask a URL's password and ``password=``/``token=`` style values, e.g. in an error message."""
+    """Mask a URL's password, secret keys' values and bearer tokens, e.g. in an error message."""
     text = _URL_PASSWORD.sub(r"\1***@", text)
-    return _SECRET_PARAM.sub(r"\1***", text)
+    text = _SECRET_QUOTED.sub(r"\1\2***\2", text)
+    text = _SECRET_PARAM.sub(r"\1***", text)
+    text = _AUTH_HEADER.sub(r"\1***", text)
+    return _BEARER.sub(r"\1***", text)
+
+
+def _safe_labels(index: t.Any) -> t.Any:
+    """Return a pandas *index* whose labels and level names that are not plain data show their label."""
+    import pandas as pd
+
+    names = [n if is_plain(n) else object_label(n) for n in index.names]
+    if isinstance(index, pd.MultiIndex):
+        levels = [_safe_labels(index.get_level_values(i)) for i in range(index.nlevels)]
+        return pd.MultiIndex.from_arrays(levels, names=names)
+    if index.dtype.kind == "O" and not all(is_plain(v) for v in index):
+        return pd.Index([v if is_plain(v) else object_label(v) for v in index], name=names[0])
+    return index.rename(names[0]) if names[0] is not index.name else index
 
 
 def safe_frame(frame: t.Any) -> t.Any:
-    """Return a copy of a pandas *frame* whose object cells that are not plain data show their label.
+    """Return a copy of a pandas *frame* whose objects that are not plain data show their label.
+
+    That covers object cells, index values, column labels and level names.
 
     Pass only the rows to show: every object column of *frame* is copied.
     """
@@ -104,12 +133,14 @@ def safe_frame(frame: t.Any) -> t.Any:
         return frame
     if not isinstance(frame, pd.DataFrame):
         return frame
+    index, labels = _safe_labels(frame.index), _safe_labels(frame.columns)
     columns = [i for i, dtype in enumerate(frame.dtypes) if dtype.kind == "O"]
-    if not columns:
+    if not columns and index is frame.index and labels is frame.columns:
         return frame
     frame = frame.copy()
     for i in columns:
         frame.isetitem(i, frame.iloc[:, i].map(lambda v: v if is_plain(v) else safe_repr(v)))
+    frame.index, frame.columns = index, labels
     return frame
 
 

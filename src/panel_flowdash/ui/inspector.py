@@ -733,7 +733,7 @@ def summarize_input_html(value: t.Any, port_type: str | None = None) -> str:
             '<span class="fd-inp-text">Failed</span></div>'
         )
     if _is_table(value):
-        cols = [str(c) for c in value.columns]
+        cols = [safe_str(c) for c in value.columns]
         return _table_summary_html(int(value.shape[0]), cols)
 
     try:

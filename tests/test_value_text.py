@@ -17,6 +17,7 @@ from panel_flowdash.dataflow_engine import exception_text
 from panel_flowdash.editor import FlowDash
 from panel_flowdash.text_components import fill_template
 from panel_flowdash.ui.inspect_sheet import python_literal
+from panel_flowdash.ui.inspector import summarize_input_html
 from panel_flowdash.ui.node_preview import format_value, summarize_value
 from panel_flowdash.ui.status_bar import select_on_canvas
 from panel_flowdash.util import ReactiveError
@@ -262,6 +263,69 @@ def test_exception_text_masks_credentials():
         "ValueError: cannot reach postgresql://u:***@h/db?sslmode=x&token=***"
     )
     assert exception_text(KeyError("password=hunter2")) == "KeyError: 'password=***'"
+
+
+@pytest.mark.parametrize(
+    "message, shown",
+    [
+        ("cannot reach redis://:hunter2@h/0", "cannot reach redis://:***@h/0"),
+        (
+            'bad config {"password": "hunter2", "user": "u"}',
+            'bad config {"password": "***", "user": "u"}',
+        ),
+        (
+            "bad config {'secret': 'sk-secret', 'api_key': 'sk-secret'}",
+            "bad config {'secret': '***', 'api_key': '***'}",
+        ),
+        ("connect(password='hunter2')", "connect(password='***')"),
+        ("sent Authorization: Bearer sk-secret", "sent Authorization: Bearer ***"),
+        ("sent Authorization: hunter2", "sent Authorization: ***"),
+        ("rejected Bearer sk-secret.42 for h", "rejected Bearer *** for h"),
+    ],
+)
+def test_exception_text_masks_quoted_and_bearer_credentials(message, shown):
+    assert exception_text(ValueError(message)) == f"ValueError: {shown}"
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Invalid token",
+        "Bearer token required.",
+        "token: expired",
+        '"max_tokens": 5',
+        "http://h:8080/x",
+    ],
+)
+def test_exception_text_keeps_messages_without_credentials(message):
+    assert exception_text(ValueError(message)) == f"ValueError: {message}"
+
+
+def test_safe_frame_labels_object_index_values_and_column_labels():
+    frame = pd.DataFrame(
+        [[1, 2], [3, 4]], index=[SecretSource(), "b"], columns=["x", SecretText()]
+    )
+    shown = safe_frame(frame)
+    assert list(shown.index) == ["SecretSource", "b"]
+    assert list(shown.columns) == ["x", "SecretText"]
+    assert isinstance(frame.index[0], SecretSource)
+    _assert_no_secrets(shown.to_html() + shown.to_string())
+    nested = frame.set_axis(
+        pd.MultiIndex.from_tuples([("a", SecretSource()), ("b", 1)], names=[SecretText(), "k"])
+    )
+    shown = safe_frame(nested)
+    assert list(shown.index) == [("a", "SecretSource"), ("b", 1)]
+    assert list(shown.index.names) == ["SecretText", "k"]
+    _assert_no_secrets(shown.to_html())
+    plain = pd.DataFrame({"x": [1]})
+    assert safe_frame(plain) is plain
+
+
+def test_inspector_input_summary_names_object_columns():
+    frame = pd.DataFrame([[1, 2]], columns=["x", SecretText()])
+    html = summarize_input_html(frame, "DataFrame")
+    _assert_no_secrets(html)
+    assert "SecretText" in html
 
 
 def test_card_popout_table_never_shows_secrets(editor, monkeypatch):
