@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import param
 
 from panel_flowdash.component_spec import ComponentSpec
-from panel_flowdash.dataflow_engine import _is_list_port
+from panel_flowdash.dataflow_engine import _is_list_port, connection_type
 from panel_flowdash.input_literals import check_literal
 from panel_flowdash.port_types import port_types_compatible
 from panel_flowdash.settings import DashboardSettings
@@ -339,12 +339,13 @@ class _Checker:
             if output is None or input_ is None:
                 continue
             incoming[(target, input_.name)].append(path)
-            if not transform and not port_types_compatible(output.type, input_.type):
+            expected = connection_type(input_)
+            if not transform and not port_types_compatible(output.type, expected):
                 self.error(
                     path,
                     f"Type mismatch: output '{source_port}' of '{source}' produces "
                     f"'{output.type}' but input '{target_port}' of '{target}' expects "
-                    f"'{input_.type}'. Connect a matching output or add a transform.",
+                    f"'{expected}'. Connect a matching output or add a transform.",
                 )
         for (target, port), paths in incoming.items():
             target_spec = self.spec_for(components[target])

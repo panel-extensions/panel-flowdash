@@ -35,7 +35,7 @@ import param
 
 from panel_flowdash.component_spec import ComponentSpec
 from panel_flowdash.input_literals import check_literal, port_literal
-from panel_flowdash.port_types import port_types_compatible
+from panel_flowdash.port_types import normalize_port_type, port_types_compatible
 from panel_flowdash.transforms import Transform, apply_transform, parse_transform
 from panel_flowdash.util import ReactiveError, is_failure
 
@@ -128,6 +128,38 @@ def _is_list_port(port) -> bool:
     if port.type is None:
         return False
     return port.type.lower() in ("list", "List")
+
+
+def _item_class(port) -> type | None:
+    """Return the class each item of a list input's Parameter must be, or None."""
+    item_type = getattr(port.parameter, "item_type", None)
+    return item_type if isinstance(item_type, type) else None
+
+
+def connection_type(port) -> str | None:
+    """Return the type one edge into *port* must carry.
+
+    Each edge into a list input delivers one item, so the item type applies:
+    the declared type of a ``multiple`` input that is not itself a list, or
+    the ``item_type`` of a List Parameter. A plain ``List`` input says nothing
+    about its items and accepts anything.
+    """
+    if not _is_list_port(port):
+        return port.type
+    item_class = _item_class(port)
+    if item_class is not None:
+        return item_class.__name__
+    if normalize_port_type(port.type) == "list":
+        return None
+    return port.type
+
+
+def _check_item(port, value) -> str | None:
+    """Return why a list input would reject *value* as one of its items, or None."""
+    item_class = _item_class(port)
+    if item_class is None or value is None or is_failure(value) or isinstance(value, item_class):
+        return None
+    return f"its items must be {item_class.__name__}, not {type(value).__name__}."
 
 
 def _stack_deeper_than(depth: int) -> bool:
@@ -724,7 +756,7 @@ class DataflowGraph:
         steps, error = self._parse(transform)
         if error:
             return error
-        if is_list or not types:
+        if not types:
             return None
         # A transform changes what the edge carries, so the declared output type
         # no longer applies and only the transformed value can be checked.
@@ -740,7 +772,7 @@ class DataflowGraph:
         except Exception as exc:
             return f"Transform fails on the current value of '{source_port}': {exc}"
         port = next(p for p in target_spec.inputs if p.name == target_port)
-        reason = port.check_value(value)
+        reason = _check_item(port, value) if is_list else port.check_value(value)
         if reason:
             return f"Input '{target_port}' rejects the current value of '{source_port}': {reason}"
         return None
@@ -849,7 +881,7 @@ class DataflowGraph:
         target_type = None
         for port in target_spec.inputs:
             if port.name == target_port:
-                target_type = port.type
+                target_type = connection_type(port)
                 break
 
         if port_types_compatible(source_type, target_type):
