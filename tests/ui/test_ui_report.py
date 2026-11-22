@@ -228,11 +228,16 @@ def _author(report=True, extra=False):
             .replace("edges:\n", EXTRA + "edges:\n")
             .replace("  - {node: output}\n", "  - {node: output}\n  - {node: extra}\n")
         )
-    editor = FlowDash({}, notifications=False, editable=True)
+    editor = FlowDash({}, notifications=False, editable=True, history_coalesce=0)
     editor.import_dashboard(doc + (REPORT if report else ""))
     editor.read_only = False
-    editor.history_coalesce = 0
     return editor
+
+
+def _open_report(page):
+    """Open the Report view from the view switch, as a person would, in the session's own thread."""
+    page.get_by_role("button", name="Report", exact=True).click()
+    expect(_report(page)).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
 
 
 def _kinds(editor):
@@ -276,7 +281,7 @@ def _pick(page, index, label, menu=None):
 def test_customize_turns_the_derived_report_into_the_dashboards_own(page):
     editor = _author(report=False)
     serve_component(page, editor)
-    editor.surface = "report"
+    _open_report(page)
     report = _report(page)
     expect(report.get_by_text("Built from this dashboard")).to_be_visible()
     # Outside edit mode an editor reads the report, and is told where to customize it.
@@ -304,7 +309,7 @@ def test_quick_structural_gestures_undo_one_at_a_time(page):
     editor = _author(report=False)
     editor.history_coalesce = 3
     serve_component(page, editor)
-    editor.surface = "report"
+    _open_report(page)
     report = _report(page)
     report.get_by_role("button", name="Customize").click()
     _shown(page, 1)
@@ -326,7 +331,7 @@ def test_quick_structural_gestures_undo_one_at_a_time(page):
 def test_insert_each_kind_of_block(page):
     editor = _author(extra=True)
     serve_component(page, editor)
-    editor.surface = "report"
+    _open_report(page)
     report = _report(page)
     expect(report.locator(".fd-report-handle")).to_have_count(4)
     bar = report.locator(".fd-report-insert-bar")
@@ -386,7 +391,7 @@ def test_insert_each_kind_of_block(page):
 def test_reorder_by_drag_and_by_menu(page):
     editor = _author()
     serve_component(page, editor)
-    editor.surface = "report"
+    _open_report(page)
     report = _report(page)
     # The first page a worker opens can take a while to render the edited blocks.
     _shown(page, 4, timeout=DASHBOARD_LOAD_TIMEOUT)
@@ -422,7 +427,7 @@ def test_reorder_by_drag_and_by_menu(page):
 def test_edit_prose_and_insert_a_value(page):
     editor = _author()
     serve_component(page, editor)
-    editor.surface = "report"
+    _open_report(page)
     report = _report(page)
     text = report.locator(".fd-report-block-text")
     expect(text.locator(".fd-report-value")).to_have_text("40")
@@ -465,7 +470,7 @@ def test_remove_caption_table_and_page_break_from_the_menu(page):
     editor = _author()
     editor.set_report({"blocks": [{"heading": "Summary"}, {"node": "output"}]})
     serve_component(page, editor)
-    editor.surface = "report"
+    _open_report(page)
     report = _report(page)
     expect(report.locator(".fd-report-handle")).to_have_count(2)
 
@@ -489,7 +494,7 @@ def test_select_on_canvas_from_the_block_menu(page):
     editor = _author()
     editor.set_report({"blocks": [{"node": "output"}]})
     serve_component(page, editor)
-    editor.surface = "report"
+    _open_report(page)
     _pick(page, 0, "Select on canvas")
     wait_until(lambda: editor.surface == "workspace" and editor.mode in ("wiring", "split"), page)
     wait_until(lambda: (editor._flow.selection or {}).get("nodes") == ["output"], page)
@@ -502,7 +507,7 @@ def test_viewers_read_the_report(page):
     editor = _author()
     editor.read_only = True
     serve_component(page, editor)
-    editor.surface = "report"
+    _open_report(page)
     report = _report(page)
     expect(report.locator(".fd-report-value")).to_have_text("40")
     expect(report.locator(".fd-report-handle")).to_have_count(0)

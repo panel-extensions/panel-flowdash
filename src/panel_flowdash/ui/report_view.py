@@ -678,16 +678,30 @@ class ReportView(Viewer):
     @param.depends("shown", watch=True)
     def _on_shown(self):
         if self.shown:
-            self.sync()
+            self.schedule()
         else:
             self._unwatch()
+
+    def _document(self):
+        """Return the server document the view is rendered in, None if it is not on a page yet.
+
+        Rebuilds are scheduled on it rather than on ``pn.state.curdoc``, which
+        is unset or another document when the editor is changed from outside
+        the session, e.g. by an agent or a test, so a rebuild always runs on
+        the session's event loop, under its lock, in one batch.
+        """
+        for model, _parent in list(self._layout._models.values()):
+            doc = model.document
+            if doc is not None and doc.session_context is not None:
+                return doc
+        return None
 
     def schedule(self, *_events):
         """Rebuild the report soon, once for a burst of changes, while it is on screen."""
         if not self.shown or self._pending:
             return
-        doc = pn.state.curdoc
-        if doc is None or doc.session_context is None:
+        doc = self._document()
+        if doc is None:
             self.sync()
             return
         self._pending = True
@@ -701,8 +715,8 @@ class ReportView(Viewer):
     def _schedule_values(self, *_events):
         if not self.shown:
             return
-        doc = pn.state.curdoc
-        if doc is None or doc.session_context is None:
+        doc = self._document()
+        if doc is None:
             self._refill()
             return
         doc.add_next_tick_callback(self._refill)
