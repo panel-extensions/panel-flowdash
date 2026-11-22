@@ -19,6 +19,7 @@ import difflib
 import logging
 import os
 import re
+import types
 import typing as t
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
@@ -28,6 +29,7 @@ import panel_material_ui as pmui
 import param
 from panel.viewable import Viewer
 
+from panel_flowdash.admin.ai import _redacted_log
 from panel_flowdash.admin.form import Group, SettingsForm, current_app, current_section, using_app
 from panel_flowdash.admin.kit import KEY_SVG, KIT_CSS, esc
 from panel_flowdash.admin.permissions import POLICY_GROUPS, _clean
@@ -263,6 +265,10 @@ def check_section(project: Project, name: str, value: t.Any) -> list[Problem]:
     return problems
 
 
+# Shown on Review for a pasted key, which is encrypted only when Finish writes it.
+# It has the shape of an encrypted value, so the loader checks the rest of the section.
+PENDING_SECRET = {"encrypted": "pending", "key_id": "pending"}
+
 _ENCRYPTED = re.compile(r"^(\s*encrypted:\s*).+$")
 
 
@@ -324,6 +330,18 @@ class WizardStep(Viewer):
     def summary(self) -> list[str]:
         """Return what the step will do, one line each, for its card on Review."""
         return []
+
+    def confirmations(self) -> list[str]:
+        """Return what the admin must confirm on Review before Finish writes this step."""
+        return []
+
+    def finalize(self, name: str, value: t.Any) -> t.Any:
+        """Return section *name*'s reviewed *value* as Finish writes it; it as is by default.
+
+        A step whose Review shows a placeholder, such as a key to encrypt,
+        replaces it here, so nothing is made before the admin finishes.
+        """
+        return value
 
     def view(self):
         """Return the step's page below its title."""
@@ -593,6 +611,9 @@ class AIStep(WizardStep):
             visible=False,
             css_classes=["flowdash-wizard-key"],
         )
+        # Panel's debug log records each value a widget receives; never this one's.
+        self._key._log = types.MethodType(_redacted_log, self._key)
+        self._pending_key: str | None = None
         self._key_note = pn.pane.HTML(
             "", stylesheets=[KIT_CSS], margin=(6, 0, 0, 0), sizing_mode="stretch_width"
         )
@@ -674,8 +695,22 @@ class AIStep(WizardStep):
                 if existing.get("api_key") is not None:
                     return existing["api_key"]
                 raise ValueError("Paste the key, or use an environment variable.")
-            return encrypt_secret(typed)
+            self._pending_key = typed
+            return dict(PENDING_SECRET)
         return env_reference(self._variable())
+
+    def finalize(self, name: str, value: t.Any) -> t.Any:
+        """Encrypt the key pasted when Review opened, in place of its placeholder."""
+        providers = (value or {}).get("providers") if name == "ai" else None
+        config = (providers or {}).get(self.provider) or {}
+        if config.get("api_key") != PENDING_SECRET:
+            return value
+        if not self._pending_key:
+            raise ValueError("Paste the key again, or use an environment variable.")
+        value = copy.deepcopy(value)
+        value["providers"][self.provider]["api_key"] = encrypt_secret(self._pending_key)
+        self._pending_key = None
+        return value
 
     def _resolved_key(self) -> str | None:
         if self._source.value == "stored":
@@ -821,6 +856,38 @@ def theme_step(project: Project) -> FormStep:
     )
 
 
+class PeopleStep(FormStep):
+    """Admins and the access policy; removing yourself as admin needs confirming."""
+
+    def __init__(self, project: Project, forms, app: FlowDashApp | None = None, **params):
+        super().__init__(project, forms, **params)
+        self._app = app
+
+    def removes_self(self) -> bool:
+        """Whether the changes leave the admin running the wizard without admin."""
+        identity = getattr(self._app, "_identity", None)
+        if identity is None:
+            return False
+        admins, policy = self.forms
+        if identity.user not in admins.initial.get("admins", []):
+            return False
+        if identity.user in admins.values.get("admins", []):
+            return False
+        code_groups = set(self._app._admin_groups()) if self._app is not None else set()
+        groups = code_groups | set(policy.values.get("admin_groups") or [])
+        return not identity.in_groups(groups)
+
+    def confirmations(self) -> list[str]:
+        """Ask to confirm when the admin removes themselves from the admins."""
+        if not self.removes_self():
+            return []
+        user = self._app._identity.user
+        return [
+            f"You removed yourself ({user}) from the admins. After Finish you can no longer "
+            "open Admin unless another admin adds you again."
+        ]
+
+
 def people_step(project: Project, app: FlowDashApp | None = None) -> FormStep:
     """Return the People step: admins, admin groups and what an unshared dashboard allows."""
     admins = SettingsForm(
@@ -850,9 +917,10 @@ def people_step(project: Project, app: FlowDashApp | None = None) -> FormStep:
         margin=0,
         styles={"max-width": "760px"},
     )
-    return FormStep(
+    return PeopleStep(
         project,
         [admins, policy],
+        app=app,
         body=body,
         title="People",
         caption="Permissions",
@@ -998,6 +1066,15 @@ class SetupWizard(Viewer):
             object="", severity="error", visible=False, sizing_mode="stretch_width"
         )
         self._body = pn.Column(sizing_mode="stretch_width", margin=0)
+        self._confirm = pmui.Checkbox(
+            label="I understand, finish anyway",
+            value=False,
+            margin=(0, 0, 16, 0),
+            css_classes=["flowdash-wizard-confirm"],
+        )
+        self._confirm_alert = pmui.Alert(
+            object="", severity="warning", visible=False, sizing_mode="stretch_width"
+        )
         self._back = pmui.Button(
             label="Back", icon="arrow_back", variant="outlined", color="default", margin=0
         )
@@ -1044,6 +1121,8 @@ class SetupWizard(Viewer):
                 self._heading,
                 self._description,
                 self._alert,
+                self._confirm_alert,
+                self._confirm,
                 self._body,
                 margin=0,
                 sizing_mode="stretch_width",
@@ -1119,6 +1198,8 @@ class SetupWizard(Viewer):
         with pn.io.hold():
             self.step = index
             self._alert.visible = False
+            self._confirm_alert.visible = False
+            self._confirm.visible = False
             if index == self.review_index:
                 self._show_review()
             else:
@@ -1195,18 +1276,22 @@ class SetupWizard(Viewer):
         """
         plan: dict[str, t.Any] = {}
         problems: list[str] = []
+        confirmations: list[str] = []
         self._step_lines: dict[int, list[str]] = {}
+        self._writers: dict[str, WizardStep] = {}
         for i, step in enumerate(self.steps):
             if i in self.skipped:
                 continue
             try:
                 changes = step.changes()
                 self._step_lines[i] = step.summary()
+                confirmations.extend(step.confirmations())
             except (ValueError, TypeError) as exc:
                 problems.append(f"{step.title}: {error_text(exc)}")
                 continue
             for name, value in changes.items():
                 plan[name] = value
+                self._writers[name] = step
         current = _file_data(self.project)
         plan = {
             name: value
@@ -1220,6 +1305,7 @@ class SetupWizard(Viewer):
             )
         self.plan = plan
         self.problems = problems
+        self.confirmations = confirmations
         self._current = current
         return plan
 
@@ -1277,6 +1363,10 @@ class SetupWizard(Viewer):
                 + "\n".join(f"- {p}" for p in self.problems),
                 visible=True,
             )
+        self._confirm.value = False
+        if self.confirmations:
+            self._confirm_alert.param.update(object="\n\n".join(self.confirmations), visible=True)
+            self._confirm.visible = True
         lines = self.diff()
         where = Path(self.project.path).name if self.project.path else PROJECT_FILE
         body = (
@@ -1320,18 +1410,46 @@ class SetupWizard(Viewer):
 
     def finish(self) -> bool:
         """Write the reviewed sections with `Project.set`; False, writing nothing, on a problem."""
+        if self.step != self.review_index:
+            return False
         if self.problems:
             self._alert.visible = True
             return False
-        plan = self.plan
+        if self._app is not None and not self._app._still_admin():
+            self._alert.param.update(
+                object="You are no longer an admin of this project, so setup was not saved.",
+                visible=True,
+            )
+            return False
+        if getattr(self, "confirmations", None) and not self._confirm.value:
+            self._confirm_alert.visible = True
+            return False
         written: list[str] = []
         try:
             with _FILE_LOCK:
+                if _file_data(self.project) != self._current:
+                    # Another admin saved since Review opened: their change must not be lost.
+                    self.show(self.review_index)
+                    self._alert.param.update(
+                        object="The project file changed since Review opened. Review the "
+                        "changes again, then finish.",
+                        visible=True,
+                    )
+                    return False
+                plan = {
+                    name: self._writers[name].finalize(name, value)
+                    if name in self._writers
+                    else value
+                    for name, value in self.plan.items()
+                }
                 for name, value in plan.items():
                     self.project.set(name, value)
                     written.append(name)
         except ProjectError as exc:
             self._fail([p.message for p in exc.problems], written)
+            return False
+        except ValueError as exc:
+            self._fail([error_text(exc)], written)
             return False
         except OSError as exc:
             self._fail([f"Could not write the project file: {error_text(exc)}"], written)

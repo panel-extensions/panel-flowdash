@@ -1,6 +1,7 @@
 """Tests of the setup wizard at /admin/setup."""
 
 import getpass
+import logging
 from types import SimpleNamespace
 
 import panel_material_ui as pmui
@@ -9,7 +10,13 @@ import pytest
 from panel_flowdash import project as project_module
 from panel_flowdash.admin import SettingsForm, WizardStep, access
 from panel_flowdash.admin.page import ADMIN_ROUTE, AdminPage
-from panel_flowdash.admin.wizard import AIStep, DataStep, SetupWizard, project_is_new
+from panel_flowdash.admin.wizard import (
+    PENDING_SECRET,
+    AIStep,
+    DataStep,
+    SetupWizard,
+    project_is_new,
+)
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.auth import AuthConfig
 from panel_flowdash.dashboard_store import MemoryDashboardStore
@@ -279,6 +286,7 @@ class TestSecrets:
     def test_a_pasted_key_is_stored_encrypted_and_never_shown(
         self, tmp_path, sections, secret_key
     ):
+        key_file = tmp_path / "keys" / "secret.key"
         app = _app(tmp_path)
         app._navigate_to = lambda path: None
         wizard = _wizard(app)
@@ -286,16 +294,45 @@ class TestSecrets:
         ai._source.value = "stored"
         ai._key.value = SECRET
         _go(wizard, "Review")
-        stored = wizard.plan["ai"]["providers"]["openai"]["api_key"]
-        assert set(stored) == {"encrypted", "key_id"}
+        # Review shows a placeholder: nothing is encrypted, so no key is made, before Finish.
+        assert wizard.plan["ai"]["providers"]["openai"]["api_key"] == PENDING_SECRET
         assert ("add", "        encrypted: (stored encrypted)") in wizard.diff()
-        assert not any(stored["encrypted"] in text for _kind, text in wizard.diff())
+        assert not key_file.exists()
         assert wizard.finish()
+        assert key_file.exists()
         text = _file(tmp_path)
-        assert SECRET not in text
+        assert SECRET not in text and "pending" not in text
         written = load_project(tmp_path / PROJECT_FILE).get("ai")["providers"]["openai"]
-        assert written["api_key"] == stored
+        assert set(written["api_key"]) == {"encrypted", "key_id"}
         assert resolve_secret(written["api_key"]) == SECRET
+
+    @pytest.mark.skipif(not encryption_available(), reason="needs cryptography")
+    def test_cancel_after_pasting_a_key_makes_no_secret_key(self, tmp_path, sections, secret_key):
+        app = _app(tmp_path)
+        app._navigate_to = lambda path: None
+        wizard = _wizard(app)
+        ai = _step(wizard, "AI")
+        ai._source.value = "stored"
+        ai._key.value = SECRET
+        _go(wizard, "Review")
+        wizard.cancel()
+        assert not (tmp_path / "keys" / "secret.key").exists()
+        assert _file(tmp_path) is None
+
+    def test_a_pasted_key_never_reaches_the_debug_log(self, tmp_path, sections, caplog):
+        ai = _step(_wizard(_app(tmp_path)), "AI")
+        # Panel's logger does not propagate, so listen to it directly.
+        panel_logger = ai._key._logger
+        caplog.set_level(logging.DEBUG, logger=panel_logger.name)
+        panel_logger.addHandler(caplog.handler)
+        try:
+            # What the browser sends as the admin types the key.
+            ai._key._process_events({"value_input": SECRET, "value": SECRET})
+        finally:
+            panel_logger.removeHandler(caplog.handler)
+        assert ai._key.value == SECRET
+        assert "received events" in caplog.text
+        assert SECRET not in caplog.text
 
     async def test_test_key_asks_the_provider_without_saving(
         self, tmp_path, sections, monkeypatch
@@ -396,3 +433,62 @@ class TestPluginSteps:
         assert ("file", "1 data file in the project folder", "turbines.csv") in _step(
             wizard, "Welcome"
         ).found()
+
+
+class TestFinishIsSafe:
+    def test_a_save_by_another_admin_after_review_sends_back_to_review(self, tmp_path, sections):
+        app = _app(tmp_path)
+        app._navigate_to = lambda path: None
+        wizard = _wizard(app)
+        wizard.skipped.add(wizard.titles.index("AI"))
+        _step(wizard, "Theme").forms[0]._widgets["title"].value = "Wind"
+        _go(wizard, "Review")
+        # Another admin saves General while this one is on Review.
+        (tmp_path / PROJECT_FILE).write_text("general:\n  tile_titles: false\n")
+        assert not wizard.finish()
+        assert wizard.step == wizard.review_index
+        assert "changed since Review opened" in wizard._alert.object
+        assert _file(tmp_path) == "general:\n  tile_titles: false\n"
+        # Reviewed again, Finish keeps both.
+        assert wizard.finish()
+        project = load_project(tmp_path / PROJECT_FILE)
+        assert project.get("general") == {"tile_titles": False}
+        assert project.get("theme") == {"title": "Wind"}
+
+    def test_someone_no_longer_admin_cannot_finish(self, tmp_path, sections):
+        app = _app(tmp_path)
+        app._navigate_to = lambda path: None
+        wizard = _wizard(app)
+        _step(wizard, "Theme").forms[0]._widgets["title"].value = "Wind"
+        _go(wizard, "Review")
+        app._still_admin = lambda: False
+        assert not wizard.finish()
+        assert "no longer an admin" in wizard._alert.object
+        assert _file(tmp_path) is None
+
+    def test_removing_yourself_as_admin_needs_confirming(self, tmp_path, sections):
+        user = getpass.getuser()
+        (tmp_path / PROJECT_FILE).write_text(f"general:\n  admins: [{user}, ana]\n")
+        app = _app(tmp_path, auth_config=AuthConfig())
+        app._navigate_to = lambda path: None
+        wizard = _wizard(app)
+        wizard.skipped.add(wizard.titles.index("AI"))
+        admins = _step(wizard, "People").forms[0]
+        admins._widgets["admins"].value = ["ana"]
+        _go(wizard, "Review")
+        assert wizard.confirmations and user in wizard.confirmations[0]
+        assert wizard._confirm.visible and wizard._confirm_alert.visible
+        assert not wizard.finish()
+        assert "ana" in _file(tmp_path) and user in _file(tmp_path)
+        wizard._confirm.value = True
+        assert wizard.finish()
+        assert load_project(tmp_path / PROJECT_FILE).get("general") == {"admins": ["ana"]}
+
+    def test_keeping_yourself_needs_no_confirmation(self, tmp_path, sections):
+        user = getpass.getuser()
+        (tmp_path / PROJECT_FILE).write_text(f"general:\n  admins: [{user}]\n")
+        wizard = _wizard(_app(tmp_path, auth_config=AuthConfig()))
+        _step(wizard, "People").forms[0]._widgets["admins"].value = [user, "ana"]
+        _go(wizard, "Review")
+        assert wizard.confirmations == []
+        assert not wizard._confirm.visible
