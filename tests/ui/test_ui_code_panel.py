@@ -607,7 +607,8 @@ def test_outputs_json_cannot_show_are_previewed(page):
     preview = page.locator(".fd-code-preview")
     expect(preview).to_contain_text("2 rows", timeout=15000)
     outputs.get_by_role("button", name="Result").click()
-    expect(preview).to_contain_text("Opaque()", timeout=15000)
+    expect(preview).to_contain_text("'pipeline': Opaque", timeout=15000)
+    expect(preview).not_to_contain_text("Opaque()")
     outputs.get_by_role("button", name="Rows").click()
     expect(page.locator(".fd-code-table")).to_be_visible(timeout=15000)
     assert not [e for e in errors if "JSON" in e]

@@ -200,6 +200,7 @@ from panel_flowdash.util import (
     panel_viewer,
     stepped,
 )
+from panel_flowdash.value_text import held_table_names, is_plain, object_label, safe_repr
 from panel_flowdash.widgets import BUILTIN_COMPONENTS, TEXT_COMPONENTS
 
 try:
@@ -2485,15 +2486,27 @@ class FlowDash(Viewer):
             json.dumps(value)
             return pn.pane.JSON(value, depth=2, sizing_mode="stretch_width")
         except Exception:
-            text = repr(value)
-            if len(text) > 2000:
-                text = text[:2000] + "…"
-            return pn.pane.HTML(
-                f'<pre class="fd-value-repr">{html.escape(text)}</pre>',
-                margin=0,
-                sizing_mode="stretch_width",
-                stylesheets=[_REPR_CSS],
-            )
+            pass
+        if is_plain(value):
+            text = str(value)
+        elif isinstance(value, (list, tuple, set, frozenset, dict)):
+            text = safe_repr(value)
+        else:
+            # An object's own repr may list secrets, e.g. a source's URI and token.
+            label = escape_markdown(object_label(value))
+            if tables := held_table_names(value):
+                label += " · " + ", ".join(f"`{name}`" for name in tables[:20])
+                if len(tables) > 20:
+                    label += " …"
+            return markdown_pane(label, margin=0)
+        if len(text) > 2000:
+            text = text[:2000] + "…"
+        return pn.pane.HTML(
+            f'<pre class="fd-value-repr">{html.escape(text)}</pre>',
+            margin=0,
+            sizing_mode="stretch_width",
+            stylesheets=[_REPR_CSS],
+        )
 
     def _build_value_popup(self, title: str, subtitle: str | None, value: t.Any) -> Viewable:
         header = f"**{escape_markdown(title)}**"

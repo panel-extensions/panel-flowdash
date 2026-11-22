@@ -1097,6 +1097,8 @@ class TestOutputPreviews:
         panel = editor.code_panel
         panel.outputs.value = output
         assert not list(pn.Column(*panel._result_body).select(pn.pane.JSON))
-        assert "Opaque()" in _texts(panel)
+        # Named by its type: an object's own repr may hold secrets.
+        assert "Opaque" in _texts(panel)
+        assert "Opaque()" not in _texts(panel)
         panel.outputs.value = "rows"
         assert "fd-code-table" in panel._result_body[0].css_classes

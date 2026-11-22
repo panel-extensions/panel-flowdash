@@ -12,6 +12,7 @@ import panel_material_ui as pmui
 
 from panel_flowdash.ui.text import escape_markdown, text_typography
 from panel_flowdash.ui.tile import status_chip_sx
+from panel_flowdash.value_text import is_plain, object_label
 
 if t.TYPE_CHECKING:
     from collections.abc import Callable
@@ -248,7 +249,11 @@ def _literal(value: t.Any) -> t.Any:
             return value.item()
         except (TypeError, ValueError):
             pass
-    return value
+    if isinstance(value, dict):
+        return {_literal(k): _literal(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_literal(v) for v in value)
+    return value if is_plain(value) else object_label(value)
 
 
 def python_literal(frame) -> str:

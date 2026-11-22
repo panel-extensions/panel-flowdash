@@ -423,3 +423,17 @@ def test_view_controls_follow_the_cards(page):
     expect(previews).to_have_attribute("aria-pressed", str(shown).lower())
     editor._status_bar.toggle_previews()
     expect(previews).to_have_attribute("aria-pressed", str(not shown).lower())
+
+
+def test_port_value_of_a_source_shows_its_name_not_its_secrets(page):
+    from tests.test_value_text import NODE, SecretNode
+
+    editor = FlowDash({NODE: SecretNode}, notifications=False, include_builtin_components=False)
+    node = editor.add_component(NODE, position=(0, 0))
+    serve_component(page, editor)
+
+    _node(page, node).locator(".react-flow__handle-right").first.click()
+    popup = page.locator(".rf-value-popup")
+    expect(popup).to_contain_text("SecretSource · turbines")
+    text = popup.inner_text()
+    assert "hunter2" not in text and "sk-secret" not in text
