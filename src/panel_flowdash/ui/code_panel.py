@@ -40,7 +40,7 @@ from functools import partial
 import panel as pn
 import panel_material_ui as pmui
 import param
-from panel.custom import JSComponent
+from panel.custom import Child, JSComponent
 from panel.viewable import Viewer
 from panel.widgets import CodeEditor
 from panel_splitjs import HSplit, VSplit
@@ -351,6 +351,41 @@ class DockHandle(JSComponent):
         super().__init__(**params)
         if self.orientation == "vertical":
             self.css_classes = [*self.css_classes, "fd-dock-vertical"]
+
+
+class ViewFrame(JSComponent):
+    """Holds a node's own view and tells it the size it gets.
+
+    A chart sized to its container, e.g. a Vega-Lite spec with
+    ``"container"`` dimensions, measures the container when it is embedded
+    and again only on a window resize. Embedded before the code panel's
+    result side is laid out, it keeps a height of zero, so the frame
+    dispatches a window resize whenever its own size changes, as the tile
+    grid and the splitter do.
+    """
+
+    object = Child()
+
+    _esm = """
+    export function render({ el, model }) {
+      el.append(model.get_child("object"))
+      let last = null
+      let frame = null
+      const observer = new ResizeObserver(([entry]) => {
+        const { width, height } = entry.contentRect
+        const size = `${Math.round(width)}x${Math.round(height)}`
+        if (!width || !height || size === last) return
+        last = size
+        cancelAnimationFrame(frame)
+        frame = requestAnimationFrame(() => window.dispatchEvent(new Event("resize")))
+      })
+      observer.observe(el)
+      model.on("remove", () => {
+        observer.disconnect()
+        cancelAnimationFrame(frame)
+      })
+    }
+    """
 
 
 class CodePanel(Viewer):
@@ -1910,7 +1945,14 @@ class CodePanel(Viewer):
                 )
             ]
         else:
-            self._result_body[:] = [instance]
+            self._result_body[:] = [
+                ViewFrame(
+                    object=instance,
+                    margin=0,
+                    sizing_mode="stretch_both",
+                    css_classes=["fd-code-view"],
+                )
+            ]
         self._summary.object = _bar(self._ran_text())
         self._show_result_footer()
 
