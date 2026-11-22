@@ -439,6 +439,42 @@ class TestTiles:
         ops.add_node("V/chart", name="trend_2")
         assert next(t for t in _tiles(editor) if t["instance_id"] == "trend_2")["width"] == 100
 
+    def test_arrange_tiles_moves_a_heading_with_the_tile_it_titles(self):
+        from panel_flowdash.text_components import TEXT_COMPONENTS
+
+        editor = FlowDash(
+            components={**COMPONENTS, **EXTRA, "Text/Heading": TEXT_COMPONENTS["Text/Heading"]},
+            include_builtin_components=False,
+            notifications=False,
+            user="alice",
+        )
+        editor.new_dashboard("Mine")
+        ops = DashboardOps(editor)
+        try:
+            ops.add_node("Text/Heading", name="title")
+            ops.add_node("V/chart", name="first")
+            ops.add_node("V/chart", name="second")
+            for style in ("grid", "stack"):
+                ops.arrange_tiles(order=["second"], style=style)
+                assert [t["instance_id"] for t in _tiles(editor)] == ["second", "title", "first"]
+                ops.arrange_tiles(order=["first"], style=style)
+                assert [t["instance_id"] for t in _tiles(editor)] == ["title", "first", "second"]
+        finally:
+            editor.dispose()
+
+    def test_new_charts_keep_a_stack_stacked(self, ops):
+        _build(ops, GRAPH[:3])
+        ops.arrange_tiles(style="stack")
+        ops.add_node("V/chart", name="trend_2")
+        ops.add_node("V/chart", name="trend_3")
+        widths = {e["instance_id"]: e.get("width") for e in ops.editor.layout}
+        assert widths["trend_2"] == widths["trend_3"] == 100
+        ops.arrange_tiles()
+        ops.add_node("V/chart", name="trend_4")
+        ops.add_node("V/chart", name="trend_5")
+        widths = {e["instance_id"]: e.get("width") for e in ops.editor.layout}
+        assert widths["trend_4"] == widths["trend_5"] == 50
+
     def test_arrange_tiles_rejects_an_unknown_style_or_node(self, ops):
         from panel_flowdash.agent import OperationError
 
