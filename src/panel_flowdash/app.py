@@ -32,6 +32,7 @@ from panel_flowdash.admin.sections import (
     project_admins,
     project_overrides,
 )
+from panel_flowdash.admin.wizard import SETUP_SECTION, SetupWizard, project_is_new
 from panel_flowdash.ai import UsageLedger, ledger_for
 from panel_flowdash.auth import (
     ANONYMOUS_USER,
@@ -562,6 +563,7 @@ class FlowDashApp(Viewer):
             self._configured_admins(),
         )
         self._admin_page: AdminPage | None = None
+        self._wizard: SetupWizard | None = None
         # Whether this session is admin through the admin link alone, having no user
         # name to record in `general.admins`.
         self._admin_by_token = False
@@ -884,6 +886,8 @@ class FlowDashApp(Viewer):
             location.hash = ""
         user = self._identity.user
         user = user if user and user != ANONYMOUS_USER else None
+        project = self._settings_project()
+        new_project = project_is_new(project)
         try:
             outcome = claim_admin(self._settings_project(), user, event.new, self._admin_groups())
         except (ProjectError, OSError) as exc:
@@ -907,12 +911,18 @@ class FlowDashApp(Viewer):
         # Someone with a name is recorded in `general.admins` and checked there like any
         # admin; only a session without one stays admin through the token alone.
         self._admin_by_token = user is None
-        if self._is_admin:
-            return
+        was_admin = self._is_admin
         self._is_admin = True
-        if self._shell is not None:
+        if not was_admin and self._shell is not None:
             self._shell.refresh()
-        if location is not None and (location.pathname or "").startswith(ADMIN_ROUTE):
+        if new_project:
+            # The first admin of a project with no settings yet is walked through setup.
+            self._navigate_to(f"{ADMIN_ROUTE}/{SETUP_SECTION}")
+        elif (
+            not was_admin
+            and location is not None
+            and (location.pathname or "").startswith(ADMIN_ROUTE)
+        ):
             pn.state.execute(self._load_page_layout)
 
     def _still_admin(self) -> bool:
@@ -946,10 +956,32 @@ class FlowDashApp(Viewer):
     def _show_admin_section(self, section: str):
         self._navigate_to(f"{ADMIN_ROUTE}/{section}")
 
+    def _setup_wizard(self) -> SetupWizard:
+        """Return the setup wizard, a new one unless it is open already."""
+        if self._wizard is None:
+            self._wizard = SetupWizard(
+                self, self._settings_project(), on_close=self._close_setup_wizard
+            )
+        return self._wizard
+
+    def _close_setup_wizard(self, finished: bool):
+        wizard, self._wizard = self._wizard, None
+        if finished and wizard is not None:
+            for section in wizard.written:
+                self._on_admin_saved(section)
+            if self._admin_page is not None:
+                # Its forms show what the file had before setup.
+                self._admin_page = None
+            self._navigate_to("/")
+        else:
+            self._navigate_to(f"{ADMIN_ROUTE}/general")
+
     def _admin_view(self, pathname: str):
         """Return the admin page showing the section *pathname* names, or a refusal."""
         if not self._is_admin:
             return self._access_denied_view("Admin")
+        if pathname.strip("/") == f"{ADMIN_ROUTE}/{SETUP_SECTION}".strip("/"):
+            return self._setup_wizard()
         if self._admin_page is None:
             self._admin_page = AdminPage(
                 self,
