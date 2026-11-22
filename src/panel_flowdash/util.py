@@ -51,6 +51,10 @@ def is_failure(value: t.Any) -> bool:
 _dialogs: weakref.WeakKeyDictionary[Document, pmui.Dialog] = weakref.WeakKeyDictionary()
 # Under threaded Panel two callbacks of one session may ask for the dialog at once.
 _dialogs_lock = threading.Lock()
+# The ``open`` watcher of the confirmation a dialog shows, until it is answered or replaced.
+_confirmations: weakref.WeakKeyDictionary[pmui.Dialog, param.parameterized.Watcher] = (
+    weakref.WeakKeyDictionary()
+)
 
 
 def is_async_gen(obj: t.Any) -> bool:
@@ -350,6 +354,20 @@ def escape_closes() -> dict[str, bool]:
     return {"close_on_click": True}
 
 
+def _close_on_escape(value: bool) -> dict[str, bool]:
+    # Releases without the parameter tie Escape to ``close_on_click``.
+    return {"close_on_escape": value} if "close_on_escape" in pmui.Dialog.param else {}
+
+
+def _forget_confirmation(dialog: pmui.Dialog, watcher=None) -> None:
+    with _dialogs_lock:
+        current = _confirmations.get(dialog)
+        if current is None or (watcher is not None and current is not watcher):
+            return
+        del _confirmations[dialog]
+    dialog.param.unwatch(current)
+
+
 def page_dialog() -> pmui.Dialog | None:
     """Return the dialog shared by every component of the current session.
 
@@ -410,11 +428,13 @@ def open_dialog(
     dialog = _session_dialog(title)
     if dialog is None:
         return
+    _forget_confirmation(dialog)
     dialog.param.update(
         title=title,
         objects=[content],
         open=True,
         close_on_click=True,
+        **_close_on_escape(True),
         show_close_button=True,
         width_option=width,
         sizing_mode="stretch_width" if full_width else None,
@@ -445,8 +465,10 @@ def confirm(
     dialog and then calls ``on_confirm(event)``; clicking *Cancel* closes it and
     calls ``on_cancel(event)`` if one is given. Either handler may be a
     coroutine function, which Panel schedules. Only the first click counts, so
-    a double click cannot run the action twice. The buttons are the only way
-    out: a confirmation cannot be dismissed with Escape or a click outside.
+    a double click cannot run the action twice. A confirmation cannot be
+    dismissed with Escape or a click outside; if it closes without an answer
+    anyway, for example through :func:`close_dialog`, that counts as *Cancel*
+    and ``on_cancel`` is called with the change event of the dialog's ``open``.
 
     Replacing the dialog (another :func:`open_dialog` or :func:`confirm`) before
     the user answers drops the question without calling either handler.
@@ -462,7 +484,8 @@ def confirm(
     on_confirm
         Called with the click event after the dialog has closed.
     on_cancel
-        Called with the click event after the dialog has closed.
+        Called with the click event after the dialog has closed, or with the
+        ``open`` event when it closed without an answer.
     confirm_label, cancel_label
         Button labels.
     width
@@ -476,25 +499,27 @@ def confirm(
     # A lock rather than unwatching the buttons: under threaded Panel two clicks can
     # be dispatched concurrently, and only one of them may run a handler.
     answered = threading.Lock()
+    watcher = None
 
     def claim() -> bool:
         if not answered.acquire(blocking=False):
             return False
+        _forget_confirmation(dialog, watcher)
         dialog.open = False
         return True
 
-    def answer_with(handler):
+    def answer_with(handler, when=lambda _event: True):
         # Panel only schedules a watcher that is itself a coroutine function.
         if handler is not None and is_coroutine(handler):
 
             async def answer(event):
-                if claim():
+                if when(event) and claim():
                     await handler(event)
 
         else:
 
             def answer(event):
-                if claim() and handler is not None:
+                if when(event) and claim() and handler is not None:
                     handler(event)
 
         return answer
@@ -502,6 +527,10 @@ def confirm(
     cancel.on_click(answer_with(on_cancel))
     accept.on_click(answer_with(on_confirm))
 
+    _forget_confirmation(dialog)
+    watcher = dialog.param.watch(answer_with(on_cancel, lambda event: not event.new), "open")
+    with _dialogs_lock:
+        _confirmations[dialog] = watcher
     dialog.param.update(
         title=title,
         objects=[
@@ -510,6 +539,7 @@ def confirm(
         ],
         open=True,
         close_on_click=False,
+        **_close_on_escape(False),
         show_close_button=False,
         width_option=width,
     )
