@@ -137,6 +137,39 @@ def test_done_and_pending_turns(page):
     expect(item.first).to_contain_text("Not run")
 
 
+def test_a_done_turn_keeps_its_output_above_the_next_block(page):
+    editor = _editor()
+    serve_component(page, editor)
+    editor.surface = "report"
+    report = _report(page)
+    node = report.locator(".fd-report-turn .fd-report-node")
+    expect(node.get_by_text("40 MW")).to_be_visible()
+    pending = report.locator(".fd-report-pending")
+
+    def apart():
+        turn = report.locator(".fd-report-turn").bounding_box()
+        box = node.bounding_box()
+        return (
+            box["y"] + box["height"] <= turn["y"] + turn["height"] + 1
+            and turn["y"] + turn["height"] <= pending.bounding_box()["y"]
+        )
+
+    wait_until(apart, page, timeout=5000)
+
+
+def test_undo_refreshes_the_report(page):
+    editor = _editor()
+    editor.history_coalesce = 0
+    serve_component(page, editor)
+    editor.surface = "report"
+    title = _report(page).locator(".fd-report-title")
+    expect(title).to_have_text("Plant review")
+    editor.set_report({**editor.report, "title": "Renamed"})
+    expect(title).to_have_text("Renamed")
+    assert editor.undo()
+    expect(title).to_have_text("Plant review")
+
+
 def test_phone_width_is_one_column_with_chips(page):
     page.set_viewport_size({"width": 390, "height": 844})
     editor = _editor()

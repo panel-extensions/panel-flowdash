@@ -92,7 +92,7 @@ _PHONE_ONLY = f"@media not {_PHONE} {{ :host {{ display: none !important; }} }}"
 _HIDE_WHEN_NARROW = f"@media {_NARROW} {{ :host {{ display: none !important; }} }}"
 
 # A view that stretches makes its frame stretch too, to the height of the section
-# it is in; the frame takes the height of its content instead.
+# it is in; blocks, sections and frames take the height of their content instead.
 _HOST_FITS_CONTENT = ":host { height: auto !important; flex: 0 0 auto !important; }"
 
 _LAYOUT_CSS = """
@@ -912,8 +912,7 @@ class ReportView(Viewer):
         return text_typography(text, variant="body2", margin=0, sx={"color": "text.secondary"})
 
     def _section(self, *objects: Viewable, gap: int = 14, styles=None, **params) -> pn.Column:
-        # The edited report's block list is not a Bokeh layout, so it gives stretching
-        # children no height: there sections take the height of their content.
+        # Sections take the height of their content, not of a view that stretches.
         return pn.Column(
             *objects,
             margin=0,
