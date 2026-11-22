@@ -1,6 +1,7 @@
 """Explore's answers, built in a hidden exploration beside the dashboard, and adding one to it."""
 
 import asyncio
+import itertools
 
 import pytest
 import yaml
@@ -1041,10 +1042,16 @@ async def test_a_source_nothing_reads_is_not_an_answer(store, monkeypatch):
     assert exploration.leaves(runner.run_id) == []
 
 
+#: When each run of the slow check started and ended, by the monotonic clock.
+_SLOW_CHECKS: list[tuple[float, float]] = []
+
+
 def _slow_check(config, inputs):
     import time
 
+    start = time.monotonic()
     time.sleep(0.8)
+    _SLOW_CHECKS.append((start, time.monotonic()))
     return []
 
 
@@ -1082,21 +1089,25 @@ async def test_adding_runs_the_config_checks_off_the_event_loop(store, monkeypat
     session = app._agent_session
     await session.explore_runner.run("Slowly")
     run = session.explore_runner.run_id
-    gaps, done = [], asyncio.Event()
+    ticks, done = [], asyncio.Event()
 
     async def tick():
-        last = time.monotonic()
         while not done.is_set():
             await asyncio.sleep(0.01)
-            now = time.monotonic()
-            gaps.append(now - last)
-            last = now
+            ticks.append(time.monotonic())
 
+    _SLOW_CHECKS.clear()
     ticker = asyncio.ensure_future(tick())
     assert await session.add_answer(run, "s3") == "s3"
     done.set()
     await ticker
     assert _nodes(app._editor) == ["base", "s0", "s1", "s2", "s3"]
-    # Four checks of 0.8 s ran, but the loop never waited on one: a check run on
-    # the loop would show a gap of at least 0.8 s, so 0.5 s leaves room for slow CI runners.
-    assert max(gaps) < 0.5, max(gaps)
+    # Four checks of 0.8 s ran while the loop kept turning: a check run on the loop
+    # would leave no tick for 0.8 s within the checks' time. Only that window counts;
+    # the writes that follow the checks are the loop's own work, slow on a busy runner.
+    assert len(_SLOW_CHECKS) == 4
+    start = min(s for s, _ in _SLOW_CHECKS)
+    end = max(e for _, e in _SLOW_CHECKS)
+    during = [start, *(t for t in ticks if start <= t <= end), end]
+    gap = max(b - a for a, b in itertools.pairwise(during))
+    assert gap < 0.5, gap
