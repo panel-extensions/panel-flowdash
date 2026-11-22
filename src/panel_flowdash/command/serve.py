@@ -217,8 +217,8 @@ class Serve(_PanelServe):
                 type=str,
                 default=None,
                 help=(
-                    "The project file whose sections configure the app. Defaults to "
-                    "flowdash.yaml in DIRECTORY, else in the working directory."
+                    "The project file whose sections configure the app, relative to the "
+                    "working directory. Defaults to flowdash.yaml in DIRECTORY."
                 ),
             ),
         ),
@@ -303,7 +303,7 @@ class Serve(_PanelServe):
         if args.project is not None:
             project_file = Path(args.project).resolve()
         else:
-            project_file = find_project([project_dir])
+            project_file = find_project(cwd=project_dir)
 
         package = args.package
         if package is None:

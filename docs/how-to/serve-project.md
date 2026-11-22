@@ -46,7 +46,7 @@ flowdash serve <directory> [options]
 | `--home-dashboard` | none | Dashboard (id or title) to show on the homepage instead of the grid. |
 | `--nav-variant` | `rail` | How navigation is rendered: `rail`, `left`, `right` or `menubar`. See [Navigation](#navigation). |
 | `--package` | none | Serve the project as this importable package, naming modules `<package>.<Section>.<name>` instead of adding the directory to `sys.path`. See [Serving a package](#serving-a-package). |
-| `--project` | `flowdash.yaml` | The project file whose sections configure the app. Without it FlowDash reads `flowdash.yaml` in the project directory, else in the working directory. See [Project File](../reference/project-file.md). |
+| `--project` | `flowdash.yaml` | The project file whose sections configure the app. Without it FlowDash reads `flowdash.yaml` in the project directory. See [Project File](../reference/project-file.md). |
 | `--db-path` | `<dir>/dashboards.db` | Path to the SQLite database. Conflicts with a `store` defined in the project. |
 | `--warm` | off | Import all modules at startup instead of lazily on first visit. |
 | `--dev` | off | Enable autoreload for development. |

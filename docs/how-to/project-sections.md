@@ -60,7 +60,22 @@ register_section(
 To report several problems at once, collect them with
 `section.problem(path, message)` and raise `ProjectError(problems)`. A
 `ValueError` or `TypeError` raised by the loader is reported at the
-section's key.
+section's key. Each `Problem` carries the file, line and column, and the
+`section` and `keys` of the value, e.g. `("branding", ("logo",))`, so a
+settings form can show it next to its field.
+
+A problem that should not stop the app, such as an entry that refers to
+something the app does not have, is reported with `section.warn(path,
+message)`: it is logged with its position and kept in `project.warnings`,
+and the loader carries on.
+
+### The loader's context
+
+`section.context` holds what the app loaded the project with. `flowdash
+serve` and `FlowDashApp` pass `project_dir` and `registry` (the component
+registry). An app that knows more, such as its data sources, loads the file
+itself with `load_project(path, context={...})` and passes the `Project` to
+`FlowDashApp(project=...)`.
 
 With this file
 
@@ -119,11 +134,52 @@ folder the file is in.
 
 ## 4. Write it back
 
-`Project.set(name, value)` passes the value through the section's `dump`
-and writes the section to the file, leaving the other sections and their
-comments as they were. Values must read back the same: text that YAML would
-read as something else, such as `on` or `yes`, has to be quoted by `dump`'s
-caller, or `set` refuses it with a `ProjectError`.
+`Project.set(name, value)` passes the value through the section's `dump`,
+runs the loader on the result and, if the loader accepts it, writes the
+section to the file. A value the loader rejects raises `ProjectError`,
+positioned where it would have been written, and the file is left as it
+was. Only the lines of this section change: the other sections keep their
+formatting and comments, while comments inside the written section are not
+kept. Text that an older YAML reader would take for something else, such as
+`on`, `no` or `1:20`, is quoted.
+
+The file is replaced atomically, with its permissions kept, and through a
+symlink the target is updated. Writes from one process are serialized and
+each rewrites only its own section, so concurrent `set` calls for different
+sections all land.
+
+---
+
+## Secrets
+
+Never write a secret into the project file. A section names an environment
+variable instead, as `${NAME}` or `${NAME:-default}`, and the loader keeps
+that reference in its value, expanding it with
+`panel_flowdash.project.expand_env` only where it is used. `dump` then
+writes the reference back, so saving the section from the admin never puts
+the resolved value in the file:
+
+```python
+import dataclasses
+
+from panel_flowdash.project import expand_env
+
+
+@dataclasses.dataclass
+class AgentSettings:
+    api_key: str = "${OPENROUTER_API_KEY}"
+
+    @property
+    def resolved_api_key(self):
+        return expand_env(self.api_key)
+
+
+AGENT = ProjectSection(
+    "agent",
+    lambda section: AgentSettings(**section.value),
+    dump=dataclasses.asdict,
+)
+```
 
 ---
 

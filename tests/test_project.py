@@ -1,11 +1,14 @@
 """Tests for the project file: parsing, discovery, the section registry and the CLI flag."""
 
 import argparse
+import concurrent.futures
+import dataclasses
 import importlib.metadata
 import logging
 import subprocess
 import sys
 import textwrap
+import time
 import types
 from pathlib import Path
 
@@ -37,6 +40,7 @@ def registry(monkeypatch):
     """Give each test its own section registry, with no entry points."""
     monkeypatch.setattr(project_module, "_SECTIONS", {})
     monkeypatch.setattr(project_module, "_entry_points_loaded", True)
+    monkeypatch.setattr(project_module, "_entry_points_loading", False)
     return project_module._SECTIONS
 
 
@@ -111,8 +115,44 @@ class TestParse:
 
     def test_duplicate_keys_are_errors(self, registry):
         with pytest.raises(ProjectError) as info:
-            parse_project("limits:\n  rows: 1\n  rows: 2\n", "p.yaml")
-        assert str(info.value) == "p.yaml:3:3: 'rows' is given twice."
+            parse_project("limits:\n  rows: 1\n  rows: 2\n  rows: 3\n", "p.yaml")
+        assert (
+            str(info.value)
+            == "p.yaml:3:3: 'rows' is given twice.\np.yaml:4:3: 'rows' is given twice."
+        )
+        assert (info.value.problems[0].section, info.value.problems[0].keys) == (
+            "limits",
+            ("rows",),
+        )
+
+    def test_problems_name_their_section_and_keys(self, registry):
+        register_section("limits", _limits)
+        with pytest.raises(ProjectError) as info:
+            parse_project("limits:\n  cols: many\n")
+        problem = info.value.problems[0]
+        assert (problem.section, problem.keys) == ("limits", ("cols",))
+
+    def test_loaders_get_the_context_and_can_warn(self, registry, caplog):
+        def loader(section):
+            sources = section.context["sources"]
+            kept = {}
+            for name, table in section.value.items():
+                if table in sources:
+                    kept[name] = table
+                else:
+                    section.warn((name,), f"{name!r} is left out: no source has {table!r}.")
+            return kept
+
+        register_section("metrics", loader)
+        with caplog.at_level(logging.WARNING, logger="panel_flowdash.project"):
+            project = parse_project(
+                "metrics:\n  a: plants\n  b: missing\n", "p.yaml", context={"sources": {"plants"}}
+            )
+        assert project.get("metrics") == {"a": "plants"}
+        (warning,) = project.warnings
+        assert str(warning) == "p.yaml:3:6: 'b' is left out: no source has 'missing'."
+        assert (warning.section, warning.keys) == ("metrics", ("b",))
+        assert "left out" in caplog.text
 
     def test_duplicate_sections_are_errors(self, registry):
         with pytest.raises(ProjectError, match=r":3:1: 'a' is given twice"):
@@ -198,6 +238,64 @@ class TestRegistry:
         monkeypatch.setattr(project_module, "_entry_points_loaded", False)
         assert set(sections()) == {"limits", "a", "b"}
 
+    def test_concurrent_lookups_see_every_entry_point(self, registry, monkeypatch):
+        def slow():
+            time.sleep(0.2)
+            return [ProjectSection("a", _limits), ProjectSection("b", _limits)]
+
+        module = types.ModuleType("fd_ext_slow")
+        module.slow = slow
+        monkeypatch.setitem(sys.modules, "fd_ext_slow", module)
+        group = project_module.ENTRY_POINT_GROUP
+        entry_point = importlib.metadata.EntryPoint("slow", "fd_ext_slow:slow", group)
+        monkeypatch.setattr(
+            importlib.metadata,
+            "entry_points",
+            lambda group=None: [entry_point] if group == project_module.ENTRY_POINT_GROUP else [],
+        )
+        monkeypatch.setattr(project_module, "_entry_points_loaded", False)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            seen = list(pool.map(lambda _: set(sections()), range(8)))
+        assert seen == [{"a", "b"}] * 8
+
+
+class TestEnv:
+    def test_expand_env(self):
+        env = {"KEY": "secret", "EMPTY": ""}
+        assert project_module.expand_env("${KEY}", env) == "secret"
+        assert project_module.expand_env("pre-${KEY}-${EMPTY}", env) == "pre-secret-"
+        assert project_module.expand_env("${MISSING:-fallback}", env) == "fallback"
+        assert project_module.expand_env({"a": ["${KEY}", 1]}, env) == {"a": ["secret", 1]}
+        with pytest.raises(ValueError, match="MISSING is not set"):
+            project_module.expand_env("${MISSING}", env)
+
+    def test_dump_keeps_the_reference_not_the_secret(self, registry, tmp_path, monkeypatch):
+        @dataclasses.dataclass
+        class Agent:
+            api_key: str
+            model: str
+
+            @property
+            def resolved_key(self):
+                return project_module.expand_env(self.api_key)
+
+        register_section(
+            "agent",
+            lambda section: Agent(**section.value),
+            dump=dataclasses.asdict,
+        )
+        monkeypatch.setenv("FD_TEST_API_KEY", "sk-very-secret")
+        path = _write(
+            tmp_path / PROJECT_FILE, "agent:\n  api_key: ${FD_TEST_API_KEY}\n  model: a\n"
+        )
+        project = load_project(path)
+        agent = project.get("agent")
+        assert agent.resolved_key == "sk-very-secret"
+        project.set("agent", dataclasses.replace(agent, model="b"))
+        text = path.read_text()
+        assert "${FD_TEST_API_KEY}" in text
+        assert "sk-very-secret" not in text
+
 
 class TestWriteBack:
     def test_set_writes_the_section_and_keeps_the_rest(self, registry, tmp_path, caplog):
@@ -231,11 +329,88 @@ class TestWriteBack:
         project.set("limits", {"rows": 1})
         assert load_project(path).raw("limits") == {"rows": 1}
 
-    def test_set_refuses_data_that_reads_back_differently(self, registry, tmp_path):
+    def test_ambiguous_text_round_trips_as_text(self, registry, tmp_path):
         path = _write(tmp_path / PROJECT_FILE, "a: 1\n")
-        with pytest.raises(ProjectError, match="does not read back"):
-            load_project(path).set("flags", {"mode": "on"})
-        assert path.read_text() == "a: 1\n"
+        values = {"mode": "on", "answer": "no", "ratio": "1:20", "n": "1", "flag": True}
+        load_project(path).set("flags", values)
+        assert load_project(path).raw("flags") == values
+        text = path.read_text()
+        assert 'mode: "on"' in text
+        assert 'ratio: "1:20"' in text
+        assert "flag: true" in text
+
+    def test_yaml_1_2_reads_no_and_sexagesimal_as_text(self, registry):
+        assert parse_project("a: [no, on, 1:20, true]\n").raw("a") == ["no", "on", "1:20", True]
+
+    def test_tuples_compare_as_lists_on_read_back(self, registry, tmp_path):
+        path = _write(tmp_path / PROJECT_FILE, "")
+        project = load_project(path)
+        project.set("limits", {"pairs": (("a", 1), ("b", 2))})
+        assert load_project(path).raw("limits") == {"pairs": [["a", 1], ["b", 2]]}
+
+    def test_untouched_sections_keep_their_formatting(self, registry, tmp_path):
+        other = (
+            "# leading comment\n"
+            "metrics:\n"
+            "    capacity:   {table: plants}   # odd spacing\n"
+            "    list:\n"
+            "        - a\n"
+            "        -   b\n"
+            "\n"
+            "# about limits\n"
+        )
+        tail = "\nlast:\n      - x\n"
+        path = _write(tmp_path / PROJECT_FILE, other + "limits:\n  rows: 1\n" + tail)
+        long_text = "word " * 40
+        load_project(path).set("limits", {"rows": 2, "note": long_text})
+        text = path.read_text()
+        assert text.startswith(other + "limits:\n")
+        assert text.endswith(tail)
+        assert load_project(path).raw("limits")["note"] == long_text
+        assert any(long_text.strip() in line for line in text.splitlines())
+
+    def test_set_validates_with_the_loader_before_writing(self, registry, tmp_path):
+        register_section("limits", _limits, dump=lambda value: value)
+        original = "# keep\nlimits:\n  rows: 1\n"
+        path = _write(tmp_path / PROJECT_FILE, original)
+        project = load_project(path)
+        with pytest.raises(ProjectError) as info:
+            project.set("limits", {"rows": 1, "cols": "many"})
+        (problem,) = info.value.problems
+        assert (problem.line, problem.column) == (4, 9)
+        assert (problem.section, problem.keys) == ("limits", ("cols",))
+        assert path.read_text() == original
+        assert project.get("limits") == {"rows": 1}
+
+    def test_set_keeps_the_file_mode_and_follows_symlinks(self, registry, tmp_path):
+        target = _write(tmp_path / "real.yaml", "a: 1\n")
+        target.chmod(0o640)
+        link = tmp_path / PROJECT_FILE
+        link.symlink_to(target)
+        load_project(link).set("b", 2)
+        assert link.is_symlink()
+        assert (target.stat().st_mode & 0o777) == 0o640
+        assert load_project(target).raw("b") == 2
+        assert [p.name for p in tmp_path.iterdir() if p.name.startswith(".")] == []
+
+    def test_concurrent_setters_lose_no_update(self, registry, tmp_path):
+        path = _write(tmp_path / PROJECT_FILE, "# shared\n")
+
+        def setter(i):
+            load_project(path).set(f"s{i}", {"value": i})
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=40) as pool:
+            list(pool.map(setter, range(40)))
+        data = load_project(path).data
+        assert data == {f"s{i}": {"value": i} for i in range(40)}
+        assert path.read_text().startswith("# shared\n")
+
+    def test_set_refreshes_sections_others_changed(self, registry, tmp_path):
+        path = _write(tmp_path / PROJECT_FILE, "a: 1\nb: 1\n")
+        mine, theirs = load_project(path), load_project(path)
+        theirs.set("b", 2)
+        mine.set("a", 3)
+        assert mine.data == {"a": 3, "b": 2}
 
     def test_set_without_a_file_stays_in_memory(self, registry):
         project = parse_project("a: 1\n")
@@ -350,11 +525,26 @@ class TestCLI:
         monkeypatch.chdir(tmp_path)
         assert invoke(project_dir).get("limits") == {"rows": 1}
 
-    def test_discovers_the_file_in_the_working_directory(self, tmp_path, monkeypatch, invoke):
+    def test_ignores_the_working_directory_of_a_served_directory(
+        self, tmp_path, monkeypatch, invoke
+    ):
         project_dir = _project_dir(tmp_path)
         (tmp_path / PROJECT_FILE).write_text("limits:\n  rows: 2\n")
         monkeypatch.chdir(tmp_path)
-        assert invoke(project_dir).get("limits") == {"rows": 2}
+        assert invoke(project_dir) is None
+
+    def test_loaders_get_the_registry_and_project_dir(self, tmp_path, monkeypatch, invoke):
+        project_dir = _project_dir(tmp_path)
+        (project_dir / "__init__.py").write_text(
+            "from panel_flowdash.dashboard_store import MemoryDashboardStore\n"
+            "from panel_flowdash.project import register_section\n"
+            "store = MemoryDashboardStore()\n"
+            "register_section('limits', lambda s: (s.context['project_dir'], "
+            "'Pages/page' in s.context['registry']))\n"
+        )
+        (project_dir / PROJECT_FILE).write_text("limits: {}\n")
+        monkeypatch.chdir(tmp_path)
+        assert invoke(project_dir).get("limits") == (project_dir.resolve(), True)
 
     def test_no_project_file(self, tmp_path, monkeypatch, invoke):
         project_dir = _project_dir(tmp_path)
