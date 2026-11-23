@@ -408,7 +408,8 @@ class FlowDashApp(Viewer):
         the defaults the app derives from its own parameters (such as
         `breakpoints` and `notifications`), and `toolbar_extra` items are
         placed after the app's Share button. `authorize_component`,
-        `authorize_dashboard`, `components`, `store`, `user` and `include_page_dialog` are supplied
+        `authorize_dashboard`, `authorize_rename`, `components`, `store`, `user` and
+        `include_page_dialog` are supplied
         by the app and raise a ValueError if given here.
         `dashboard`, `editable` and `read_only` are accepted but then managed
         by the app's routing and authorization. Read once at construction;
@@ -526,6 +527,9 @@ class FlowDashApp(Viewer):
 
     _main_task: asyncio.Task | None = None
 
+    # The title of the dashboard last saved, to refresh the sidebar when a save renames it.
+    _saved_title: str | None = None
+
     # Bumped by every navigation. A load that awaited something checks it before
     # touching the page, so a slow load cannot overwrite a newer navigation.
     _nav_generation: int = 0
@@ -533,6 +537,7 @@ class FlowDashApp(Viewer):
     _RESERVED_EDITOR_OPTIONS = (
         "authorize_component",
         "authorize_dashboard",
+        "authorize_rename",
         "components",
         "include_page_dialog",
         "refuse_placement",
@@ -1454,6 +1459,7 @@ class FlowDashApp(Viewer):
         editor = self.editor_class(
             authorize_component=self._can_use_component,
             authorize_dashboard=self._authorize_dashboard,
+            authorize_rename=self._can_administer_dashboard,
             refuse_placement=self._placement_refusal,
             components=self._registry,
             include_page_dialog=False,
@@ -1474,6 +1480,7 @@ class FlowDashApp(Viewer):
         )
         editor.param.watch(self._on_editor_sidebar, ["controls_bar", "fullscreen", "sidebar"])
         editor.param.watch(self._on_editor_saved, "saved")
+        editor.param.watch(self._on_editor_retitled, "retitled")
         return editor
 
     @param.depends("agent_models", watch=True, on_init=True)
@@ -1638,11 +1645,23 @@ class FlowDashApp(Viewer):
         elif not had_views:
             self._page.sidebar_open = True if restore is None else restore
 
+    def _on_editor_retitled(self, _event):
+        if self._shell is not None:
+            self._shell.refresh()
+
     def _on_editor_saved(self, _event):
-        """Follow the editor to a dashboard it saved under a new id ("Save as copy")."""
+        """Follow the editor to a dashboard it saved under a new id ("Save as copy").
+
+        The sidebar is refreshed too, since a save may store a new title.
+        """
         current = self._current_dashboard
         location = pn.state.location
-        if current is None or location is None:
+        if current is None:
+            return
+        if current.title != self._saved_title:
+            self._saved_title = current.title
+            self._refresh_sidebar_dashboards()
+        if location is None:
             return
         if not location.pathname.startswith(DASH_ROUTE_PREFIX):
             return
@@ -1954,7 +1973,7 @@ class FlowDashApp(Viewer):
             self._refresh_sidebar_dashboards()
             return False
         if self._current_dashboard and self._current_dashboard.dashboard_id == dashboard_id:
-            self._current_dashboard.title = new_title
+            self._editor.title_renamed(new_title)
         self._refresh_sidebar_dashboards()
         return True
 

@@ -715,10 +715,13 @@ async def set_config(
 
     Args:
         name: The node's name in the dashboard YAML.
-        config: The fields to change and their new values.
-        inputs: Values for inputs nothing is connected to, e.g. {"value": "TX"},
-            so a fixed value needs no extra node. A connection always wins over
-            such a value; null removes it.
+        config: The fields to change and their new values, using only the
+            config fields of the node's component, e.g. {"height": 300} for a
+            component that has a height field.
+        inputs: Fixed values for the node's own inputs that nothing is
+            connected to, by the input names of its component, so a fixed value
+            needs no extra node. Outputs cannot be set: they are computed. A
+            connection always wins over such a value; null removes it.
     """
     changed = " and ".join(
         what for what, given in (("config", config), ("inputs", inputs)) if given
@@ -945,13 +948,123 @@ def remove_parameter(ctx: RunContext[FlowDashDeps], name: str) -> t.Any:
     return _artifact(ops, f"Removed parameter {name}.")
 
 
+def set_title(ctx: RunContext[FlowDashDeps], title: str, description: str | None = None) -> t.Any:
+    """Give the open dashboard a title, shown above it and in the list of dashboards.
+
+    Name every dashboard you build, since a new one is "Untitled". Like your
+    other edits, the title is stored when the user saves; only the dashboard's
+    owner or an administrator may rename it.
+
+    Args:
+        title: The title, short and specific, e.g. "US wind fleet, 2000 to 2023".
+        description: A sentence on what the dashboard shows, shown under the
+            title; it is saved with the dashboard's other changes.
+    """
+    ops = ctx.deps.ops
+    title = ops.set_title(title, description)
+    described = " and changed its description" if description is not None else ""
+    return _artifact(ops, f"Titled the dashboard {title!r}{described}.")
+
+
+#: What ``add_filter(scope="local")`` does, see :func:`register_local_filter`.
+_LOCAL_FILTER: list[t.Callable[..., t.Any] | str] = []
+
+
+def register_local_filter(route: t.Callable[..., t.Any] | str | None):
+    """Say how ``add_filter(scope="local")`` is answered, e.g. by the tools of a data library.
+
+    A local filter is a control shown with a few views and linked to them
+    through a Filter node, unlike the global filter bar, which filters every
+    view with the column. FlowDash's tools do not build one.
+
+    Parameters
+    ----------
+    route
+        The name of the tool that builds a local filter, which the refusal
+        points the model to; or a function called as
+        ``route(ctx, column=..., label=..., widget=..., value=...)`` whose
+        result, awaited if need be, is the tool's; or None for the default
+        refusal.
+    """
+    _LOCAL_FILTER[:] = [] if route is None else [route]
+
+
+async def add_filter(
+    ctx: RunContext[FlowDashDeps],
+    column: str,
+    label: str | None = None,
+    widget: t.Literal["select", "range"] | None = None,
+    value: list[t.Any] | None = None,
+    scope: t.Literal["global", "local"] = "global",
+) -> t.Any:
+    """Let viewers filter the dashboard by a column, with a filter in the filter bar above the tiles.
+
+    A global filter keeps, in every view whose data has a column of that
+    exact name, only the rows the viewer picks; no nodes or connections are
+    needed. Use it whenever the user asks for a filter, dropdown or slider,
+    unless they ask for one that filters only some charts. Calling it again
+    for the same column changes that filter. The result names the views it
+    filters and why the others cannot follow it, e.g. a KPI computed from a
+    single number; tell the user about those.
+
+    Args:
+        column: The column to filter by, as the views' data names it, e.g. "state".
+        label: The filter's name in the bar, e.g. "State"; the column name without it.
+        widget: "select" picks values from a list, "range" a span of numbers or
+            dates; without it, it follows the column's type.
+        value: What the filter keeps when the dashboard opens: values for a
+            select, [start, end] for a range; every row without it.
+        scope: "global" (the default) for the filter bar. "local" asks for a
+            control that filters only some views, which these tools do not build.
+    """
+    if scope == "local":
+        route = _LOCAL_FILTER[0] if _LOCAL_FILTER else None
+        if callable(route):
+            result = route(ctx, column=column, label=label, widget=widget, value=value)
+            return await result if inspect.isawaitable(result) else result
+        instead = (
+            f"Build a local filter with {route} instead."
+            if route
+            else "No tool here builds one: tell the user, and offer the filter bar instead."
+        )
+        return (
+            "Refused: add_filter only adds filters to the dashboard's filter bar "
+            "(scope='global'), which filters every view with the column. A local filter, a "
+            f"control linked to some views through a Filter node, is not built by it. {instead}"
+        )
+    ops = ctx.deps.ops
+    result = ops.add_filter(column, label=label, widget=widget, value=value)
+    entry = result["filter"]
+    what = "Added" if result["new"] else "Changed"
+    message = f"{what} the global filter on {column!r} ({entry.get('label', column)}, {entry['widget']})."
+    if result["filters"]:
+        message += f" It filters: {', '.join(result['filters'])}."
+    else:
+        message += " It filters no view yet."
+    if result["cannot"]:
+        reasons = "; ".join(f"{name}: {why}" for name, why in result["cannot"].items())
+        message += f" It cannot filter: {reasons}."
+    return _artifact(ops, message)
+
+
+def remove_filter(ctx: RunContext[FlowDashDeps], column: str) -> t.Any:
+    """Remove a global filter from the dashboard's filter bar; every view shows all rows again.
+
+    Args:
+        column: The column of the filter, as add_filter or get_dashboard's `filters` name it.
+    """
+    ops = ctx.deps.ops
+    ops.remove_filter(column)
+    return _artifact(ops, f"Removed the global filter on {column!r}.")
+
+
 async def replace_dashboard(ctx: RunContext[FlowDashDeps], dashboard_yaml: str) -> t.Any:
     """Replace the whole open dashboard with YAML.
 
     Use it to rewrite most of the dashboard, or when the user asks for it, e.g.
     with YAML they pasted. Otherwise build and change dashboards with add_node,
-    connect and set_config: positions and the layout are automatic, and only
-    the user can rename a dashboard.
+    connect and set_config: positions and the layout are automatic, and
+    set_title renames a dashboard.
 
     Args:
         dashboard_yaml: The whole dashboard in the YAML format, edited from what
@@ -1255,6 +1368,9 @@ EDIT_TOOLS = (
     group_nodes,
     ungroup,
     set_settings,
+    set_title,
+    add_filter,
+    remove_filter,
     declare_parameter,
     remove_parameter,
     replace_dashboard,
@@ -1285,6 +1401,9 @@ TOOLS = (
     group_nodes,
     ungroup,
     set_settings,
+    set_title,
+    add_filter,
+    remove_filter,
     declare_parameter,
     remove_parameter,
     replace_dashboard,
@@ -1311,6 +1430,23 @@ REPORT_TOOLS = (
     "ask_in_report",
     "run_pending",
     "export_report",
+)
+
+
+#: The dashboard tools of an assistant that brings its own tools to add and query
+#: data, e.g. Lumen's: changing and wiring nodes, laying out tiles, the title, the
+#: global filters and the report.
+LAYOUT_TOOLS = (
+    "set_config",
+    "remove_node",
+    "connect",
+    "disconnect",
+    "place_tile",
+    "arrange_tiles",
+    "set_title",
+    "add_filter",
+    "remove_filter",
+    *REPORT_TOOLS,
 )
 
 

@@ -14,6 +14,7 @@ import hashlib
 import json
 import re
 import typing as t
+import unicodedata
 
 import panel as pn
 import yaml
@@ -38,6 +39,7 @@ from panel_flowdash.editor import (
     copy_context,
     export_model,
 )
+from panel_flowdash.global_filters import FilterError, accepts_filters, check_value, filter_label
 from panel_flowdash.input_literals import check_literal
 from panel_flowdash.parameters import ContractError, ParameterError
 from panel_flowdash.report import (
@@ -94,6 +96,48 @@ def _check_issues(path: str, result: CheckResult) -> list[Issue]:
     ]
 
 
+def _no_input(name: str, spec: t.Any, key: str) -> str:
+    """Say that node *name* has no input *key*, which may be one of its outputs, and list its ports."""
+    inputs = [p.name for p in spec.inputs]
+    outputs = [p.name for p in spec.outputs]
+    message = f"'{name}' ({spec.title}) has no input '{key}'."
+    if spec.resolve_name(key) in outputs:
+        message += (
+            f" '{key}' is an output of '{name}': its value is computed, so it cannot be set; "
+            "connect it to another node's input to use it."
+        )
+    elif (close := _suggest(key, inputs)).startswith(" Did you mean"):
+        message += close
+    listed = (
+        f" Its inputs: {', '.join(inputs) or 'none'}; its outputs: {', '.join(outputs) or 'none'}."
+    )
+    if not inputs:
+        listed += " Change its config instead."
+    return message + listed
+
+
+def _short(text: t.Any, limit: int = 40) -> str:
+    """Quote *text* for a message, cut to *limit* characters, as it may be long or made up."""
+    text = str(text)
+    return repr(text if len(text) <= limit else text[:limit] + "…")
+
+
+def _check_column(column: t.Any):
+    """Refuse a column name no table could have: empty, too long or with control characters."""
+    if not isinstance(column, str) or not column.strip():
+        raise OperationError("Name the column to filter by, e.g. 'state'.")
+    if len(column) > MAX_COLUMN_LENGTH:
+        raise OperationError(
+            f"A column name has at most {MAX_COLUMN_LENGTH} characters; {_short(column)} has "
+            f"{len(column)}. Use the name the views' data gives the column."
+        )
+    if any(unicodedata.category(c) in ("Cc", "Cf") for c in column):
+        raise OperationError(
+            f"The column name {_short(column)} holds control characters; use the name the "
+            "views' data gives the column."
+        )
+
+
 def _incoming(edges: t.Any, name: str) -> list[str]:
     """Return the edges into node *name* of a dashboard document, in a comparable form."""
     if not isinstance(edges, list):
@@ -133,6 +177,12 @@ class NotFound(OperationError, KeyError):
         """Return the message, without the quotes ``KeyError`` adds."""
         return str(self.args[0]) if self.args else ""
 
+
+# The longest dashboard title set_title accepts.
+MAX_TITLE_LENGTH = 200
+
+# The longest column name add_filter accepts.
+MAX_COLUMN_LENGTH = 128
 
 # How long a preview or a bulk replace may take to import and start its components.
 DEFAULT_TIMEOUT = 30
@@ -1080,8 +1130,8 @@ class DashboardOps:
         return [
             Issue(
                 "title",
-                f"is ignored: the dashboard keeps its title {current.title!r}. Only the user "
-                "can rename it.",
+                f"is ignored: the dashboard keeps its title {current.title!r}. Rename it "
+                "with set_title.",
                 "warning",
             )
         ]
@@ -1334,10 +1384,7 @@ class DashboardOps:
         for key, value in inputs.items():
             port = ports.get(spec.resolve_name(key))
             if port is None:
-                raise OperationError(
-                    f"'{name}' ({spec.title}) has no input '{key}'."
-                    + (_suggest(key, list(ports)) if ports else " It has no inputs.")
-                )
+                raise OperationError(_no_input(name, spec, key))
             if value is not None and (reason := check_literal(port, value)) is not None:
                 raise OperationError(f"Input '{key}' of '{name}': {reason}")
             resolved[port.name] = value
@@ -1607,6 +1654,197 @@ class DashboardOps:
                 raise OperationError(f"Setting '{key}': {reason}")
         editor.settings.param.update(**settings)
         return editor._settings_values()
+
+    # ------------------------------------------------------------------
+    # Title
+    # ------------------------------------------------------------------
+
+    def set_title(self, title: str, description: str | None = None) -> str:
+        """Rename the open dashboard, and change its description when given; return the title.
+
+        Both are unsaved changes like any other edit, stored when the dashboard
+        is saved; only the dashboard's owner or an administrator may rename it.
+
+        Raises
+        ------
+        OperationError
+            If no dashboard is open, or the title is empty or too long.
+        PermissionError
+            If the user may not rename the dashboard.
+        """
+        self._require_edit()
+        current = self.editor.dashboard
+        if current is None:
+            raise OperationError("No dashboard is open, so there is nothing to title.")
+        if not isinstance(title, str) or not title.strip():
+            raise OperationError("Give the dashboard a title, e.g. 'Wind fleet overview'.")
+        title = " ".join(title.split())
+        if len(title) > MAX_TITLE_LENGTH:
+            raise OperationError(f"A title has at most {MAX_TITLE_LENGTH} characters.")
+        if title != current.title and not self.editor.may_rename():
+            raise PermissionError(
+                "Only the dashboard's owner or an administrator may rename it; you may change "
+                "its contents but not its title."
+            )
+        self.editor.set_title(title)
+        if description is not None:
+            self.set_settings({"description": description})
+        return title
+
+    # ------------------------------------------------------------------
+    # Global filters
+    # ------------------------------------------------------------------
+
+    def filters(self) -> list[dict[str, t.Any]]:
+        """Return the dashboard's global filters, the views they exclude by node name."""
+        names = self._names()
+        filters = self.editor.filters
+        for entry in filters:
+            if "exclude" in entry:
+                entry["exclude"] = [names.get(iid, iid) for iid in entry["exclude"]]
+        return filters
+
+    def filter_reach(self, column: str) -> tuple[list[str], dict[str, str]]:
+        """Return the views a global filter on *column* filters, and why each other view with data does not.
+
+        Views are named as in the YAML. Views that take no data, e.g. text, are left out.
+        """
+        editor = self.editor
+        state = editor._global_filters
+        names = self._names()
+        entry = state.entry(column) or {"column": column}
+        fed = {edge["target"] for edge in editor._dataflow_graph.edges}
+        applies: list[str] = []
+        cannot: dict[str, str] = {}
+        for iid in state.targets():
+            name = names.get(iid, iid)
+            columns = state.columns(iid)
+            if iid in entry.get("exclude", ()):
+                cannot[name] = "it opts out of this filter"
+            elif columns is None:
+                if reason := self._no_columns(iid, iid in fed):
+                    cannot[name] = reason
+            elif column not in columns:
+                cannot[name] = f"its data has no column {column!r}"
+            elif column in (mismatched := state.mismatched(iid)):
+                cannot[name] = f"its column {column!r} {mismatched[column]}"
+            elif column in (reported := state._reported.get(iid, {})):
+                cannot[name] = reported[column]
+            else:
+                applies.append(name)
+        return applies, cannot
+
+    def _no_columns(self, instance_id: str, fed: bool) -> str | None:
+        """Say why a view whose columns are not known cannot follow a filter, None for one without data."""
+        editor = self.editor
+        if accepts_filters(editor._component_instances.get(instance_id)):
+            return "it has not reported its columns yet; it may follow once its query has run"
+        item = next((i for i in editor._tile_items if i["instance_id"] == instance_id), None)
+        spec = editor._component_specs.get(item["component_id"]) if item else None
+        if spec is not None and any("DataFrame" in str(p.type) for p in spec.inputs):
+            return "it has no data yet, so whether it has the column is not known"
+        if fed:
+            return (
+                "it receives no table, e.g. a single number computed upstream, so it shows the "
+                "same whatever the filter keeps"
+            )
+        return None
+
+    def add_filter(
+        self,
+        column: str,
+        label: str | None = None,
+        widget: str | None = None,
+        value: list[t.Any] | None = None,
+    ) -> dict[str, t.Any]:
+        """Add a global filter on *column* to the dashboard's filter bar, or change the one it has.
+
+        Returns the filter, whether it is new, and which views it filters and
+        why the others with data do not (see :meth:`filter_reach`).
+
+        Raises
+        ------
+        OperationError
+            If no view on the dashboard has the column, or the filter is malformed.
+        """
+        self._require_edit()
+        editor = self.editor
+        state = editor._global_filters
+        _check_column(column)
+        filters = editor.filters
+        existing = next((f for f in filters if f["column"] == column), None)
+        if existing is None:
+            self._check_filter_column(column)
+        entry = dict(existing or {"column": column})
+        if label is not None:
+            entry.pop("label", None)
+            if label.strip():
+                entry["label"] = label.strip()
+        if widget is not None:
+            entry["widget"] = widget
+        elif "widget" not in entry:
+            entry["widget"] = state.widget(entry)
+        if value is not None:
+            entry["value"] = value
+        try:
+            if value is not None:
+                check_value(value, entry["widget"], "value")
+            filters = (
+                [entry if f is existing else f for f in filters] if existing else [*filters, entry]
+            )
+            action = "Changed" if existing else "Added"
+            editor.set_filters(filters, label=f"{action} the {filter_label(entry)} filter")
+        except (FilterError, ValueError) as exc:
+            raise OperationError(str(exc)) from exc
+        applies, cannot = self.filter_reach(column)
+        shown = {k: v for k, v in entry.items() if k != "exclude"}
+        return {"filter": shown, "new": existing is None, "filters": applies, "cannot": cannot}
+
+    def _check_filter_column(self, column: str):
+        """Refuse a filter on a column no view on the dashboard has, unless some views do not know theirs yet."""
+        state = self.editor._global_filters
+        known: set[str] = set()
+        pending = False
+        for iid in state.targets():
+            columns = state.columns(iid)
+            if columns is None:
+                pending = pending or self._no_columns(iid, False) is not None
+            else:
+                known |= columns
+        if column in known or pending:
+            return
+        if not known:
+            raise OperationError(
+                "No view on the dashboard shows a table yet, so there is nothing to filter. "
+                "Add the views first."
+            )
+        listed = ", ".join(sorted(known)) if len(known) <= 40 else ""
+        raise OperationError(
+            f"No view on the dashboard has a column {_short(column)}; a global filter matches "
+            "columns by their exact name."
+            + _suggest(column, known).split(" Available:")[0]
+            + (f" The views' columns: {listed}." if listed else "")
+        )
+
+    def remove_filter(self, column: str) -> None:
+        """Remove the global filter on *column* from the dashboard's filter bar.
+
+        Raises
+        ------
+        OperationError
+            If the dashboard has no filter on *column*.
+        """
+        self._require_edit()
+        editor = self.editor
+        filters = editor.filters
+        kept = [f for f in filters if f["column"] != column]
+        if len(kept) == len(filters):
+            columns = [f["column"] for f in filters]
+            raise OperationError(
+                f"The dashboard has no global filter on {_short(column)}."
+                + (f" Its filters: {', '.join(columns)}." if columns else " It has none.")
+            )
+        editor.set_filters(kept, label=f"Removed the {column} filter")
 
     # ------------------------------------------------------------------
     # Report

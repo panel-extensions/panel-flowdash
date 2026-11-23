@@ -1199,6 +1199,20 @@ class FlowDash(Viewer):
         signed-in user. None allows both.""",
     )
 
+    retitled = param.Event(
+        doc="Triggered when the open dashboard's title changes in the editor, e.g. by set_title or undo."
+    )
+
+    authorize_rename = param.Callable(
+        default=None,
+        doc="""
+        Called with the stored `DashboardModel` to decide whether this session
+        may rename it, as an administrator of the dashboard. `set_title` asks
+        before renaming and `save` before storing a new title. `FlowDashApp`
+        supplies one that checks the signed-in user. None lets only the
+        dashboard's owner, the editor's `user`, rename it.""",
+    )
+
     breakpoints = param.List(default=[768, 1200], doc="Responsive breakpoints for the tile grid.")
 
     import_unknown_components = param.Boolean(
@@ -1810,6 +1824,10 @@ class FlowDash(Viewer):
         self._apply_mode_state()
         # A watcher only runs on changes, so `fullscreen=True` given here is applied by hand.
         self._apply_fullscreen()
+        # The titles the dashboard was renamed from in the store since it was opened,
+        # by the title it was renamed to, see title_renamed.
+        self._store_renames: dict[str, str] = {}
+        self.param.watch(self._on_dashboard_title, "dashboard", onlychanged=False)
         if dashboard is not None:
             self._init_dashboard(dashboard)
         else:
@@ -6363,6 +6381,98 @@ class FlowDash(Viewer):
             self._flow.fit_view()
 
     # ------------------------------------------------------------------
+    # Title
+    # ------------------------------------------------------------------
+
+    # The title the dashboard has in the store.
+    _stored_title: str | None = None
+
+    def _on_dashboard_title(self, event):
+        old, new = event.old, event.new
+        if old is None or new is None or old.dashboard_id != new.dashboard_id:
+            self._store_renames = {}
+        self._stored_title = new.title if new is not None else None
+
+    def may_rename(self) -> bool:
+        """Whether this session may rename the open dashboard, see :attr:`authorize_rename`.
+
+        A dashboard that is not stored yet may always be renamed.
+        """
+        current = self.dashboard
+        if current is None or self.read_only:
+            return False
+        stored = self.store._load_any(current.dashboard_id) if self.store is not None else None
+        if stored is None:
+            return True
+        if self.authorize_rename is None:
+            return self.user is not None and stored.owner == self.user
+        try:
+            return bool(self.authorize_rename(stored))
+        except Exception:
+            logger.exception("authorize_rename failed for '%s'", stored.dashboard_id)
+            return False
+
+    def set_title(self, title: str):
+        """Rename the open dashboard as an edit: undoable, and stored when the dashboard is saved.
+
+        Raises
+        ------
+        PermissionError
+            If the dashboard is read-only or this session may not rename it.
+        """
+        current = self.dashboard
+        if current is None:
+            raise ValueError("No dashboard is open.")
+        if self.read_only:
+            raise PermissionError("You may only view this dashboard, so it cannot be renamed.")
+        if not self.may_rename():
+            raise PermissionError("Only the dashboard's owner or an administrator may rename it.")
+        if title == current.title:
+            return
+        self._show_title(title)
+        self._history.flush()
+        self._record_edit(f"Renamed the dashboard to {title}", op="set_title")
+        self._history.flush()
+
+    def _show_title(self, title: str):
+        self.dashboard.title = title
+        bar = getattr(self, "_dashboard_bar", None)
+        if bar is not None:
+            bar.sync()
+        self._name_fullscreen_toolbar()
+        self.param.trigger("retitled")
+
+    def _renamed_title(self, title: str) -> str:
+        """Return what *title* was renamed to in the store since the dashboard was opened.
+
+        Stops at a name already seen, so a map with a cycle cannot hang a restore.
+        """
+        seen = {title}
+        while (renamed := self._store_renames.get(title)) is not None and renamed not in seen:
+            seen.add(renamed)
+            title = renamed
+        return title
+
+    def title_renamed(self, title: str):
+        """Note that the open dashboard was renamed to *title* in the store, e.g. by the Rename action.
+
+        Undo then keeps that name rather than bringing back the old one.
+        """
+        current = self.dashboard
+        if current is None:
+            return
+        old = self._stored_title
+        if old is not None and old != title:
+            # Every earlier name points straight at the newest, and the newest at nothing,
+            # so renaming A to B and back to A leaves only B to A.
+            renames = {k: title if v == old else v for k, v in self._store_renames.items()}
+            renames[old] = title
+            self._store_renames = {k: v for k, v in renames.items() if k != v and k != title}
+        self._stored_title = title
+        if current.title in (old, title):
+            self._show_title(title)
+
+    # ------------------------------------------------------------------
     # Global filters
     # ------------------------------------------------------------------
 
@@ -8142,7 +8252,8 @@ class FlowDash(Viewer):
             if stored is not None:
                 model.user_id = stored.user_id
                 model.permission = stored.permission
-                if title is None:
+                renamed = model.title != self._stored_title and self.may_rename()
+                if title is None and not renamed:
                     model.title = stored.title
             else:
                 model.user_id = self.user
@@ -8249,6 +8360,10 @@ class FlowDash(Viewer):
         dashboard was opened, and never with what the version says of it.
         """
         model = self._restore_model(text)
+        title = self._renamed_title(model.title)
+        model.title = self.dashboard.title if self.dashboard is not None else title
+        # Loading the whole model replaces the dashboard, whose stored title stays as it was.
+        stored_title = self._stored_title
         self.ensure_components_loaded(self._model_component_ids(model))
         with self._quiet_history(), _placing("restore"):
             self._hydrating = True
@@ -8258,6 +8373,9 @@ class FlowDash(Viewer):
                 self._hydrating = False
             if not patched:
                 self._hydrate_model(model, keep_open_turns=True)
+        self._stored_title = stored_title
+        if self.dashboard is not None and title and title != self.dashboard.title:
+            self._show_title(title)
         if self._report_view is not None:
             # The report is restored after the dashboard, which the view follows.
             self._report_view.schedule()
@@ -8620,7 +8738,7 @@ class FlowDash(Viewer):
                 **data,
                 "dashboard_id": current.dashboard_id,
                 "user_id": current.user_id,
-                "title": current.title,
+                "title": data.get("title") or current.title,
                 "permission": None,
             }
         )
