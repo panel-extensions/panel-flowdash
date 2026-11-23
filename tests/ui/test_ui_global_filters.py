@@ -209,6 +209,15 @@ def test_the_assistant_adds_a_global_filter_that_filters_the_tiles(page):
     chat.press("Enter")
     page.get_by_text("Done: Titled the dashboard 'Wind fleet'.").wait_for(timeout=20000)
 
+    # The title is an unsaved change, stored with the filter when the user saves.
+    expect(page.get_by_role("banner").get_by_role("button", name="Wind fleet")).to_be_visible()
+    assert store._load_any(created.dashboard_id).title == "Untitled"
+    page.get_by_role("banner").get_by_role("button", name="Save", exact=True).click()
+    wait_until(lambda: store._load_any(created.dashboard_id).title == "Wind fleet", page)
+    assert store._load_any(created.dashboard_id).filters == [
+        {"column": "state", "label": "State", "widget": "select"}
+    ]
+
     # The edit opened edit mode on the canvas; the filter bar is over the tiles.
     page.get_by_role("button", name="Layout", exact=True).click()
     expect(bar.get_by_role("combobox", name="State")).to_be_visible()
@@ -217,6 +226,3 @@ def test_the_assistant_adds_a_global_filter_that_filters_the_tiles(page):
     expect(page.get_by_text("Whole fleet: 2 rows")).to_be_visible()
     expect(page.get_by_text("Regional: 2 rows")).to_be_visible()
     expect(page.locator(".flowdash-tile-filter-hint")).to_contain_text("Not filtered by State")
-    expect(page.get_by_text("Wind fleet").first).to_be_visible()
-    assert store._load_any(created.dashboard_id).title == "Wind fleet"
-    assert apps[0]._editor.filters == [{"column": "state", "label": "State", "widget": "select"}]

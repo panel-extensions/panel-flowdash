@@ -1,5 +1,6 @@
 """The tool sets and the instructions agree: every tool a role's instructions name is offered, and every tool is documented."""
 
+import difflib
 import inspect
 import re
 
@@ -34,8 +35,28 @@ ROLES = {
 # Tools a role's instructions may name although the role's own toolset does not offer them.
 OFFERED_BESIDES = {"assistant": COMMAND_TOOLS}
 
-# A name written like a call, e.g. "add_node(", or like a tool, e.g. "arrange_tiles".
-CALL = re.compile(r"\b([a-z]+(?:_[a-z]+)+)\(")
+# snake_case words the instructions use that are not tools, e.g. example node names.
+NON_TOOL_WORDS = {"snake_case", "total_revenue", "revenue_by_region"}
+
+# Every snake_case word, bare, backticked or written like a call, e.g. `add_node(`.
+SNAKE = re.compile(r"\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b")
+
+
+def instruction_problems(text: str, offered) -> list[str]:
+    """Return a line for each tool-like word in *text* that is not a tool in *offered*."""
+    problems = []
+    for word in sorted(set(SNAKE.findall(text)) - NON_TOOL_WORDS):
+        if word in offered:
+            continue
+        if word in ALL_TOOLS:
+            problems.append(f"{word}: a tool this role does not offer")
+            continue
+        close = difflib.get_close_matches(word, ALL_TOOLS, n=1)
+        hint = f"did you mean {close[0]}? " if close else ""
+        problems.append(
+            f"{word}: no such tool ({hint}add it to NON_TOOL_WORDS if it is not meant as one)"
+        )
+    return problems
 
 
 async def _seen(role):
@@ -60,14 +81,26 @@ async def _seen(role):
 async def test_every_tool_the_instructions_name_is_offered(role):
     seen = await _seen(role)
     offered = {*seen["tools"], *OFFERED_BESIDES.get(role, ())}
-    text = seen["instructions"]
-    named = {name for name in ALL_TOOLS if re.search(rf"\b{name}\b", text)}
-    named |= set(CALL.findall(text))
-    missing = sorted(named - offered)
-    assert not missing, (
-        f"The {role!r} instructions name tools the role does not offer: {', '.join(missing)}. "
-        f"It offers: {', '.join(sorted(offered))}."
-    )
+    problems = instruction_problems(seen["instructions"], offered)
+    listed = "\n".join(f"- {p}" for p in problems)
+    assert not problems, f"The {role!r} instructions name tools it cannot call:\n{listed}"
+
+
+@pytest.mark.parametrize(
+    "text, problem",
+    [
+        (
+            "Then call add_fliter for each column.",
+            "add_fliter: no such tool (did you mean add_filter?",
+        ),
+        ("Use `rename_dashboard` to name it.", "rename_dashboard: no such tool"),
+        ("Rename it with rename_dashboard(title).", "rename_dashboard: no such tool"),
+        ("Lay them out with arrange_canvas.", "arrange_canvas: a tool this role does not offer"),
+    ],
+)
+def test_a_typo_or_a_tool_not_offered_is_reported(text, problem):
+    (found,) = instruction_problems(text, {"add_filter", "set_title"})
+    assert found.startswith(problem)
 
 
 def _undocumented(func) -> list[str]:

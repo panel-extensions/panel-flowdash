@@ -336,9 +336,10 @@ by name; `panel_flowdash.agent.REPORT_TOOLS` lists them. When it is offered
 `edit_report` or `set_report`, its own instructions are followed by the rule about
 where prose goes.
 
-`set_title(title, description)` renames the open dashboard, as its Rename action does,
-so only its owner or an administrator may; the description is saved with the other
-changes. `add_filter(column, label, widget, value)` adds a column to the dashboard's
+`set_title(title, description)` renames the open dashboard and changes its
+description as unsaved changes, stored when the user saves and taken back by undo
+like any other edit. Only the dashboard's owner or an administrator may rename it
+(`FlowDash(authorize_rename=...)`; without one, only the owner). `add_filter(column, label, widget, value)` adds a column to the dashboard's
 [filter bar](filter-dashboards.md), or changes the filter it has, and answers which
 views it filters and why the others cannot, e.g. a view whose data has no such column
 or a KPI computed from a single number upstream; `remove_filter(column)` takes it out.

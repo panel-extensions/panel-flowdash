@@ -102,14 +102,6 @@ class LiveDashboardOps(DashboardOps):
             raise PermissionError("The dashboard was not saved; the user was told why.")
         return self.app._current_dashboard.dashboard_id
 
-    def _rename(self, current, title: str):
-        """Rename the open dashboard through the app, as its Rename action does."""
-        if not self.app._can_administer_dashboard(current.dashboard_id):
-            raise PermissionError("Only the dashboard's owner or an administrator may rename it.")
-        if not self.app._rename_dashboard(current.dashboard_id, title):
-            raise OperationError("The dashboard could not be renamed.")
-        self.editor._name_fullscreen_toolbar()
-
     def delete_dashboard(self, dashboard_id: str) -> None:
         """Delete a stored dashboard; only its administrators may."""
         model = self._stored(dashboard_id)

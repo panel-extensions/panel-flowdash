@@ -951,9 +951,9 @@ def remove_parameter(ctx: RunContext[FlowDashDeps], name: str) -> t.Any:
 def set_title(ctx: RunContext[FlowDashDeps], title: str, description: str | None = None) -> t.Any:
     """Give the open dashboard a title, shown above it and in the list of dashboards.
 
-    Name every dashboard you build, since a new one is "Untitled". The title is
-    stored at once, as the app's Rename action does, and undo does not take it
-    back; only the dashboard's owner or an administrator may rename it.
+    Name every dashboard you build, since a new one is "Untitled". Like your
+    other edits, the title is stored when the user saves; only the dashboard's
+    owner or an administrator may rename it.
 
     Args:
         title: The title, short and specific, e.g. "US wind fleet, 2000 to 2023".

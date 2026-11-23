@@ -88,6 +88,20 @@ class TestAddFilter:
             ops.add_filter("p_cap")
         assert ops.editor.filters == []
 
+    def test_long_and_control_character_names_are_refused_while_a_view_waits(self, ops):
+        ops.add_node("T/Table", {}, name="waiting")
+        with pytest.raises(OperationError) as info:
+            ops.add_filter("x" * 1_000_000)
+        assert "at most 128 characters" in str(info.value)
+        assert len(str(info.value)) < 300
+        with pytest.raises(OperationError, match="control characters"):
+            ops.add_filter("state\x00")
+        with pytest.raises(OperationError) as info:
+            ops.remove_filter("y" * 10_000)
+        assert len(str(info.value)) < 200
+        assert ops.editor.filters == []
+        assert ops.add_filter("x" * 128)["filters"] == []
+
     def test_a_malformed_value_is_refused(self, ops):
         with pytest.raises(OperationError, match="a range takes"):
             ops.add_filter("year", widget="range", value=[2005])
@@ -170,19 +184,34 @@ class TestFilterTools:
 
 
 class TestSetTitle:
-    def test_renames_the_dashboard_in_the_store(self, ops, store):
+    def test_renames_the_dashboard_as_an_unsaved_edit(self, ops, store):
+        ops.editor.save()
         current = ops.editor.dashboard
         assert ops.set_title("  US wind   fleet ") == "US wind fleet"
         assert current.title == "US wind fleet"
-        assert store._load_any(current.dashboard_id).title == "US wind fleet"
         assert yaml.safe_load(ops.get_dashboard())["title"] == "US wind fleet"
+        assert ops.editor.dirty
+        assert store._load_any(current.dashboard_id).title == "Untitled"
+        ops.editor.save()
+        assert store._load_any(current.dashboard_id).title == "US wind fleet"
+
+    def test_undo_and_revert_take_the_title_back(self, ops):
+        ops.editor.save()
+        ops.set_title("Fleet")
+        ops.editor.undo(whole_runs=False)
+        assert ops.editor.dashboard.title == "Untitled"
+        assert not ops.editor.dirty
+        ops.editor.redo()
+        assert ops.editor.dashboard.title == "Fleet"
+        history = ops.editor.edit_history
+        history.restore(history.artifact, history.versions[0])
+        assert ops.editor.dashboard.title == "Untitled"
 
     def test_a_description_is_an_unsaved_setting(self, ops, store):
         ops.editor.save()
         ops.set_title("Fleet", description="Turbines by state.")
         assert ops.editor.settings.description == "Turbines by state."
         assert ops.editor.dirty
-        assert store._load_any(ops.editor.dashboard.dashboard_id).title == "Fleet"
 
     def test_empty_and_long_titles_are_refused(self, ops):
         with pytest.raises(OperationError, match="Give the dashboard a title"):
@@ -199,9 +228,54 @@ class TestSetTitle:
         assert editor.dashboard.title == "Mine"
         editor.dispose()
 
+    def test_an_editor_who_does_not_own_it_cannot_rename(self, store):
+        bob = store.create_dashboard("bob", "Bob's")
+        store.set_permission(bob.dashboard_id, Permission(allow_edit_users={"alice"}))
+        editor = _editor(store)
+        editor.load(bob.dashboard_id)
+        ops = DashboardOps(editor)
+        with pytest.raises(PermissionError, match="owner or an administrator"):
+            ops.set_title("Hijacked")
+        with pytest.raises(PermissionError):
+            editor.set_title("Hijacked")
+        assert editor.dashboard.title == "Bob's"
+        ops.add_node("T/number")
+        editor.save()
+        assert store._load_any(bob.dashboard_id).title == "Bob's"
+        editor.dispose()
+
+    def test_authorize_rename_decides(self, store):
+        bob = store.create_dashboard("bob", "Bob's")
+        editor = _editor(store, authorize_rename=lambda model: model.owner == "bob")
+        editor.load(bob.dashboard_id)
+        DashboardOps(editor).set_title("Fleet")
+        editor.save()
+        assert store._load_any(bob.dashboard_id).title == "Fleet"
+        editor.dispose()
+
+    def test_a_rename_in_the_store_survives_undo(self, ops, store):
+        editor = ops.editor
+        editor.save()
+        ops.add_node("T/Count", {}, name="other")
+        store.rename_dashboard("alice", editor.dashboard.dashboard_id, "Renamed")
+        editor.title_renamed("Renamed")
+        editor.undo(whole_runs=False)
+        assert editor.dashboard.title == "Renamed"
+        editor.save()
+        assert store._load_any(editor.dashboard.dashboard_id).title == "Renamed"
+
+    def test_saving_keeps_a_rename_made_elsewhere(self, ops, store):
+        editor = ops.editor
+        editor.save()
+        store.rename_dashboard("alice", editor.dashboard.dashboard_id, "Elsewhere")
+        ops.add_node("T/Count", {}, name="other")
+        editor.save()
+        assert store._load_any(editor.dashboard.dashboard_id).title == "Elsewhere"
+
     async def test_the_tool(self, ops):
         output = await _runner(ops, ("set_title", {"title": "Fleet"})).run("Name it")
         assert output == "Done: Titled the dashboard 'Fleet'."
+        assert ops.editor.dashboard.title == "Fleet"
 
     async def test_live_rename_needs_administrator_rights(self, store, monkeypatch):
         theirs = store.create_dashboard("bob", "Bob's")
@@ -210,12 +284,15 @@ class TestSetTitle:
         ops = LiveDashboardOps(app)
         app._load_dashboard_sync(mine.dashboard_id)
         ops.set_title("Alice's fleet")
-        assert store._load_any(mine.dashboard_id).title == "Alice's fleet"
         assert app._current_dashboard.title == "Alice's fleet"
+        assert store._load_any(mine.dashboard_id).title == "Mine"
+        ops.save()
+        assert store._load_any(mine.dashboard_id).title == "Alice's fleet"
         store.set_permission(theirs.dashboard_id, Permission(allow_edit_users={"alice"}))
         app._load_dashboard_sync(theirs.dashboard_id, edit=True)
         with pytest.raises(PermissionError, match="owner or an administrator"):
             ops.set_title("Mine now")
+        assert app._current_dashboard.title == "Bob's"
         assert store._load_any(theirs.dashboard_id).title == "Bob's"
 
 
@@ -232,7 +309,7 @@ def test_set_config_says_an_input_it_cannot_find_may_be_an_output():
     with pytest.raises(
         OperationError, match=r"Did you mean 'value'.*Its inputs: value; its outputs: doubled"
     ):
-        ops.set_inputs(doubler, {"valu": 3})
+        ops.set_inputs(doubler, {"values": 3})
     editor.dispose()
 
 

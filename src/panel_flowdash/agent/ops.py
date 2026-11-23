@@ -14,6 +14,7 @@ import hashlib
 import json
 import re
 import typing as t
+import unicodedata
 
 import panel as pn
 import yaml
@@ -115,6 +116,28 @@ def _no_input(name: str, spec: t.Any, key: str) -> str:
     return message + listed
 
 
+def _short(text: t.Any, limit: int = 40) -> str:
+    """Quote *text* for a message, cut to *limit* characters, as it may be long or made up."""
+    text = str(text)
+    return repr(text if len(text) <= limit else text[:limit] + "…")
+
+
+def _check_column(column: t.Any):
+    """Refuse a column name no table could have: empty, too long or with control characters."""
+    if not isinstance(column, str) or not column.strip():
+        raise OperationError("Name the column to filter by, e.g. 'state'.")
+    if len(column) > MAX_COLUMN_LENGTH:
+        raise OperationError(
+            f"A column name has at most {MAX_COLUMN_LENGTH} characters; {_short(column)} has "
+            f"{len(column)}. Use the name the views' data gives the column."
+        )
+    if any(unicodedata.category(c) in ("Cc", "Cf") for c in column):
+        raise OperationError(
+            f"The column name {_short(column)} holds control characters; use the name the "
+            "views' data gives the column."
+        )
+
+
 def _incoming(edges: t.Any, name: str) -> list[str]:
     """Return the edges into node *name* of a dashboard document, in a comparable form."""
     if not isinstance(edges, list):
@@ -157,6 +180,9 @@ class NotFound(OperationError, KeyError):
 
 # The longest dashboard title set_title accepts.
 MAX_TITLE_LENGTH = 200
+
+# The longest column name add_filter accepts.
+MAX_COLUMN_LENGTH = 128
 
 # How long a preview or a bulk replace may take to import and start its components.
 DEFAULT_TIMEOUT = 30
@@ -1636,14 +1662,13 @@ class DashboardOps:
     def set_title(self, title: str, description: str | None = None) -> str:
         """Rename the open dashboard, and change its description when given; return the title.
 
-        The title is stored at once, as the app's Rename action does, while a
-        new description is an unsaved change like any other setting.
+        Both are unsaved changes like any other edit, stored when the dashboard
+        is saved; only the dashboard's owner or an administrator may rename it.
 
         Raises
         ------
         OperationError
-            If no dashboard is open, the title is empty or too long, or the
-            store refuses the rename.
+            If no dashboard is open, or the title is empty or too long.
         PermissionError
             If the user may not rename the dashboard.
         """
@@ -1656,24 +1681,15 @@ class DashboardOps:
         title = " ".join(title.split())
         if len(title) > MAX_TITLE_LENGTH:
             raise OperationError(f"A title has at most {MAX_TITLE_LENGTH} characters.")
-        if title != current.title:
-            self._rename(current, title)
+        if title != current.title and not self.editor.may_rename():
+            raise PermissionError(
+                "Only the dashboard's owner or an administrator may rename it; you may change "
+                "its contents but not its title."
+            )
+        self.editor.set_title(title)
         if description is not None:
             self.set_settings({"description": description})
         return title
-
-    def _rename(self, current: DashboardModel, title: str):
-        editor = self.editor
-        stored = editor.store._load_any(current.dashboard_id) if editor.store is not None else None
-        if stored is not None and not editor.store.rename_dashboard(
-            stored.user_id, current.dashboard_id, title
-        ):
-            raise OperationError("The store did not rename the dashboard.")
-        current.title = title
-        bar = getattr(editor, "_dashboard_bar", None)
-        if bar is not None:
-            bar.sync()
-        editor._name_fullscreen_toolbar()
 
     # ------------------------------------------------------------------
     # Global filters
@@ -1754,8 +1770,7 @@ class DashboardOps:
         self._require_edit()
         editor = self.editor
         state = editor._global_filters
-        if not isinstance(column, str) or not column.strip():
-            raise OperationError("Name the column to filter by, e.g. 'state'.")
+        _check_column(column)
         filters = editor.filters
         existing = next((f for f in filters if f["column"] == column), None)
         if existing is None:
@@ -1805,7 +1820,7 @@ class DashboardOps:
             )
         listed = ", ".join(sorted(known)) if len(known) <= 40 else ""
         raise OperationError(
-            f"No view on the dashboard has a column {column!r}; a global filter matches "
+            f"No view on the dashboard has a column {_short(column)}; a global filter matches "
             "columns by their exact name."
             + _suggest(column, known).split(" Available:")[0]
             + (f" The views' columns: {listed}." if listed else "")
@@ -1826,7 +1841,7 @@ class DashboardOps:
         if len(kept) == len(filters):
             columns = [f["column"] for f in filters]
             raise OperationError(
-                f"The dashboard has no global filter on {column!r}."
+                f"The dashboard has no global filter on {_short(column)}."
                 + (f" Its filters: {', '.join(columns)}." if columns else " It has none.")
             )
         editor.set_filters(kept, label=f"Removed the {column} filter")
