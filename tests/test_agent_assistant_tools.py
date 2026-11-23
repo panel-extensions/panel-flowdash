@@ -264,6 +264,66 @@ class TestSetTitle:
         editor.save()
         assert store._load_any(editor.dashboard.dashboard_id).title == "Renamed"
 
+    def test_renaming_and_renaming_back_then_undo(self, ops):
+        editor = ops.editor
+        editor.save()
+        ops.set_title("B")
+        ops.set_title("Untitled")
+        editor.undo(whole_runs=False)
+        assert editor.dashboard.title == "B"
+        editor.undo(whole_runs=False)
+        assert editor.dashboard.title == "Untitled"
+
+    def test_renaming_twice_then_undo(self, ops):
+        editor = ops.editor
+        editor.save()
+        ops.set_title("B")
+        ops.set_title("C")
+        editor.undo(whole_runs=False)
+        assert editor.dashboard.title == "B"
+        editor.undo(whole_runs=False)
+        assert editor.dashboard.title == "Untitled"
+
+    def test_the_rename_action_back_and_forth_then_undo(self, ops, store):
+        editor = ops.editor
+        editor.save()
+        dashboard_id = editor.dashboard.dashboard_id
+        ops.add_node("T/Count", {}, name="other")
+        for title in ("B", "Untitled"):
+            store.rename_dashboard("alice", dashboard_id, title)
+            editor.title_renamed(title)
+        assert editor._store_renames == {"B": "Untitled"}
+        editor.undo(whole_runs=False)
+        assert editor.dashboard.title == "Untitled"
+        for title in ("B", "C"):
+            store.rename_dashboard("alice", dashboard_id, title)
+            editor.title_renamed(title)
+        assert editor._store_renames == {"Untitled": "C", "B": "C"}
+        editor.redo()
+        assert editor.dashboard.title == "C"
+
+    async def test_the_apps_rename_back_and_forth_then_undo(self, store, monkeypatch):
+        mine = store.create_dashboard("alice", "A")
+        app = _app(store, monkeypatch)
+        app._load_dashboard_sync(mine.dashboard_id, edit=True)
+        LiveDashboardOps(app).add_node("T/number")
+        assert app._rename_dashboard(mine.dashboard_id, "B")
+        assert app._rename_dashboard(mine.dashboard_id, "A")
+        app._editor.undo(whole_runs=False)
+        assert app._current_dashboard.title == "A"
+        assert store._load_any(mine.dashboard_id).title == "A"
+
+    @pytest.mark.parametrize(
+        "renames", [{"Untitled": "Untitled"}, {"Untitled": "B", "B": "Untitled"}]
+    )
+    def test_a_corrupted_rename_map_cannot_hang_undo(self, ops, renames):
+        editor = ops.editor
+        editor.save()
+        ops.add_node("T/Count", {}, name="other")
+        editor._store_renames = renames
+        editor.undo(whole_runs=False)
+        assert editor.dashboard.title in ("Untitled", "B")
+
     def test_saving_keeps_a_rename_made_elsewhere(self, ops, store):
         editor = ops.editor
         editor.save()

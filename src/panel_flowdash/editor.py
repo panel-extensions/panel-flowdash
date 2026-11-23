@@ -6396,6 +6396,17 @@ class FlowDash(Viewer):
         self._name_fullscreen_toolbar()
         self.param.trigger("retitled")
 
+    def _renamed_title(self, title: str) -> str:
+        """Return what *title* was renamed to in the store since the dashboard was opened.
+
+        Stops at a name already seen, so a map with a cycle cannot hang a restore.
+        """
+        seen = {title}
+        while (renamed := self._store_renames.get(title)) is not None and renamed not in seen:
+            seen.add(renamed)
+            title = renamed
+        return title
+
     def title_renamed(self, title: str):
         """Note that the open dashboard was renamed to *title* in the store, e.g. by the Rename action.
 
@@ -6406,10 +6417,11 @@ class FlowDash(Viewer):
             return
         old = self._stored_title
         if old is not None and old != title:
-            self._store_renames = {
-                **{k: title if v == old else v for k, v in self._store_renames.items()},
-                old: title,
-            }
+            # Every earlier name points straight at the newest, and the newest at nothing,
+            # so renaming A to B and back to A leaves only B to A.
+            renames = {k: title if v == old else v for k, v in self._store_renames.items()}
+            renames[old] = title
+            self._store_renames = {k: v for k, v in renames.items() if k != v and k != title}
         self._stored_title = title
         if current.title in (old, title):
             self._show_title(title)
@@ -8302,9 +8314,7 @@ class FlowDash(Viewer):
         dashboard was opened, and never with what the version says of it.
         """
         model = self._restore_model(text)
-        title = model.title
-        while title in self._store_renames:
-            title = self._store_renames[title]
+        title = self._renamed_title(model.title)
         model.title = self.dashboard.title if self.dashboard is not None else title
         # Loading the whole model replaces the dashboard, whose stored title stays as it was.
         stored_title = self._stored_title
