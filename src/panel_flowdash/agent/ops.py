@@ -709,9 +709,34 @@ class DashboardOps:
                         "could not be read, so no column can be bound; leave it unbound.",
                     )
             resolved = check_bindings(template, bindings, choices, columns)
-            return template, fill_template(template, resolved)
+            doc = fill_template(template, resolved)
         except TemplateError as exc:
             raise OperationError(str(exc)) from exc
+        await self._check_views(template, doc, timeout)
+        return template, doc
+
+    async def _check_views(self, template, doc: dict, timeout: float = DEFAULT_TIMEOUT):
+        """Refuse bound views that cannot show the data the template gives them."""
+        from panel_flowdash.templates import PLACEHOLDER_COMPONENT
+
+        views = {
+            slot.node: slot
+            for slot in template.slots.values()
+            if slot.kind == "view"
+            and doc["nodes"].get(slot.node, {}).get("component") != PLACEHOLDER_COMPONENT
+        }
+        if not views:
+            return
+        problems = await self.view_problems_async(doc, views, timeout=timeout)
+        if problems:
+            raise OperationError(
+                "These views cannot show the data the template gives them; bind another view "
+                "or leave the slot unbound:\n"
+                + "\n".join(
+                    f"- {views[name].label} ({doc['nodes'][name]['component']}): {message}"
+                    for name, message in problems.items()
+                )
+            )
 
     async def new_dashboard_from_template_async(
         self, template_id: str, bindings: dict[str, t.Any], title: str | None = None
@@ -1042,6 +1067,48 @@ class DashboardOps:
             return self._preview(scratch, rows, invalid)
         finally:
             scratch.dispose()
+
+    async def view_problems_async(
+        self, doc: dict, names: t.Collection[str], *, timeout: float = DEFAULT_TIMEOUT
+    ) -> dict[str, str]:
+        """Run the dashboard *doc* beside this one and say which of the nodes *names* cannot show their data.
+
+        A node fails when drawing it raises, e.g. a view that needs columns
+        its input does not have, or when a table at one of its inputs has no
+        rows. Returns the problem by node name; nothing is shown or saved.
+        """
+        import pandas as pd
+
+        from panel_flowdash.value_text import error_text
+
+        scratch = self._scratch_editor()
+        problems: dict[str, str] = {}
+        try:
+            model = scratch._imported_model(without_provenance(copy.deepcopy(doc)))
+            await self._within(scratch.load_model_async(model), timeout)
+            graph = scratch.graph
+            for name in names:
+                instance = scratch._component_instances.get(name)
+                if instance is None:
+                    continue
+                state = graph.get_state(name)
+                component = next(
+                    (i.component_id for i in model.items if i.instance_id == name), None
+                )
+                spec = scratch._component_specs.get(component)
+                for port in spec.inputs if spec is not None and state is not None else ():
+                    value = getattr(state, port.name, None) if port.name in state.param else None
+                    if isinstance(value, pd.DataFrame) and value.empty:
+                        problems[name] = f"its input '{port.name}' has no rows"
+                if name in problems or not callable(getattr(instance, "__panel__", None)):
+                    continue
+                try:
+                    instance.__panel__()
+                except Exception as exc:
+                    problems[name] = f"{type(exc).__name__}: {error_text(exc)}"
+        finally:
+            scratch.dispose()
+        return problems
 
     def _document(self, text: str | dict) -> dict:
         return without_provenance(self._parse(text), self._turns())

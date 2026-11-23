@@ -603,6 +603,29 @@ class TestDialogRobustness:
             picker.bindings()
 
 
+async def test_the_dialog_refuses_views_that_cannot_show_their_data(app, monkeypatch):
+    from panel_flowdash.agent.ops import DashboardOps as Ops
+
+    async def problems(self, doc, names, timeout=30):
+        return {"trend": "KeyError: 'watts_per_person'"}
+
+    monkeypatch.setattr(Ops, "view_problems_async", problems)
+    app._open_create_dialog()
+    picker = app._template_picker
+    picker._list.index = 1
+    await picker.start_binding()
+    picker._fields["data"].value = "Data/sales"
+    for _ in range(100):
+        if picker._read_for.get("data") == "Data/sales":
+            break
+        await asyncio.sleep(0.05)
+    picker._fields["trend"].value = "Views/rows"
+    await app._confirm_template("Refused")
+    assert not app.store._all_dashboards()
+    assert app._dialog.open
+    assert any("watts_per_person" in str(args) for args in app._notified), app._notified
+
+
 def test_admin_switch():
     settings = {s.key: s for group in GENERAL_GROUPS for s in group.settings}
     assert settings["templates"].target == "templates"

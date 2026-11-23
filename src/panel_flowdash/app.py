@@ -2564,6 +2564,40 @@ class FlowDashApp(Viewer):
             f"Create dashboard: {picker.template.name}" if binding else "Create dashboard"
         )
 
+    async def _views_fit(self) -> bool:
+        """Whether the views bound to the chosen template can show their data; says why not."""
+        from panel_flowdash.agent.ops import DashboardOps, OperationError
+        from panel_flowdash.templates import TemplateError, fill_template
+
+        picker = self._template_picker
+        try:
+            doc = fill_template(picker.template, picker.bindings())
+            await DashboardOps(self._editor)._check_views(picker.template, doc)
+        except (TemplateError, OperationError) as exc:
+            self._notify(
+                "error", f"Could not create the dashboard: {error_text(exc)}", duration=8000
+            )
+            return False
+        return True
+
+    async def _confirm_template(self, name: str):
+        """Create the dashboard from the template once its views are known to show their data."""
+        button = self._dialog_confirm_button
+        button.loading = True
+        try:
+            if not await self._views_fit():
+                return
+        finally:
+            button.loading = False
+        if self._has_unsaved_changes():
+            self._confirm_unsaved(partial(self._create_from_template, name))
+            done = True
+        else:
+            done = self._create_from_template(name)
+        if done:
+            self._dialog.open = False
+            self._dialog_context = {}
+
     async def _start_template_binding(self):
         await self._template_picker.start_binding()
 
@@ -2686,14 +2720,7 @@ class FlowDashApp(Viewer):
                 return
             if not picker.valid:
                 return
-            if self._has_unsaved_changes():
-                self._confirm_unsaved(partial(self._create_from_template, name))
-                done = True
-            else:
-                done = self._create_from_template(name)
-            if done:
-                self._dialog.open = False
-                self._dialog_context = {}
+            pn.state.execute(partial(self._confirm_template, name))
             return
         if action in ("create", "rename"):
             error = self._validate_dashboard_name(name)
