@@ -11,7 +11,7 @@ from panel_flowdash.auth import resolve_identity
 from panel_flowdash.component_library import normalize_components
 from panel_flowdash.util import confirm
 
-from .util import INERT_COUNT, serve_component
+from .util import INERT_COUNT, select_option, serve_component
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect
@@ -159,7 +159,7 @@ def test_menus_selects_and_dialogs_work_in_full_screen(page):
     expect(item).to_be_hidden()
 
     page.get_by_role("combobox", name="Pick").click()
-    page.get_by_role("menuitem", name="b").click()
+    select_option(page, "b").click()
     expect(page.get_by_role("combobox", name="Pick")).to_have_text("b")
 
     page.get_by_role("button", name="Ask").click()

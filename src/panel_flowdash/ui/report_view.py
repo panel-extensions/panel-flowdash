@@ -1790,16 +1790,12 @@ class ReportView(Viewer):
 
     def _select_on_canvas(self, instance_id: str):
         editor = self.editor
+        # Selected while the canvas is off the page, so it comes back with the selection.
+        editor._select_node(instance_id)
         with param.parameterized.batch_call_watchers(editor):
             if editor.mode == "dashboard":
                 editor.mode = "wiring"
             editor.surface = "workspace"
-        doc = pn.state.curdoc
-        if doc is None or doc.session_context is None:
-            editor._select_node(instance_id)
-            return
-        # Once the canvas is back on the page, so it reports the selection.
-        doc.add_timeout_callback(lambda: editor._select_node(instance_id), 300)
 
     def _move(self, index: int, to: int):
         report = self.editor.report

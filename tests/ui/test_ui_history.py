@@ -213,15 +213,23 @@ def test_reverting_a_large_dashboard_ends_quickly(page, wind_app, monkeypatch):
 
     from panel_flowdash.editor import FlowDash
 
-    full_loads = []
-    load = FlowDash._hydrate_model
+    full_loads, reverts = [], []
+    load, restore = FlowDash._hydrate_model, FlowDash._restore_version
 
     def counted(self, *args, **kwargs):
         if self._history_quiet:
             full_loads.append(args)
         return load(self, *args, **kwargs)
 
+    def timed(self, *args, **kwargs):
+        start = time.monotonic()
+        try:
+            return restore(self, *args, **kwargs)
+        finally:
+            reverts.append(time.monotonic() - start)
+
     monkeypatch.setattr(FlowDash, "_hydrate_model", counted)
+    monkeypatch.setattr(FlowDash, "_restore_version", timed)
 
     page.keyboard.press("Control+k")
     search = page.get_by_role("combobox", name=re.compile("^Search dashboards"))
@@ -242,17 +250,21 @@ def test_reverting_a_large_dashboard_ends_quickly(page, wind_app, monkeypatch):
     page.get_by_role("button", name="Artifacts").click(timeout=EXAMPLE_LOAD_TIMEOUT)
     page.get_by_text(re.compile(r" edited$")).click(timeout=EXAMPLE_LOAD_TIMEOUT)
     _opened_row(page).click(timeout=EXAMPLE_LOAD_TIMEOUT)
-    start = time.monotonic()
     page.get_by_role("button", name="Revert to v1").click(timeout=EXAMPLE_LOAD_TIMEOUT)
     wait_until(lambda: editor.edit_history.artifact.applied == 1, page, timeout=10000)
-    restored = time.monotonic() - start
     expect(page.get_by_text(re.compile(r"^v1\b.*\bapplied\b"))).to_be_visible(
         timeout=EXAMPLE_LOAD_TIMEOUT
     )
-    expect(page.locator(".MuiButton-loading")).to_have_count(0, timeout=EXAMPLE_LOAD_TIMEOUT)
+    # The Apply bar hides once v1 is applied; only a spinner left on screen counts.
+    expect(page.locator(".MuiButton-loading:visible")).to_have_count(
+        0, timeout=EXAMPLE_LOAD_TIMEOUT
+    )
     # Only what changed is patched: the dashboard is not loaded again.
     assert full_loads == []
-    assert restored < 5
+    # Timed in Python, without the click and the round trips: on a desktop the
+    # revert takes 0.15 s and loading this dashboard in full 1 to 2 s, so 5 s
+    # holds on a runner 15 times slower, where a full load would not.
+    assert len(reverts) == 1 and reverts[0] < 5, reverts
     assert not any(i["component_id"] == "Text/Markdown" for i in editor._tile_items)
     assert editor.settings.description == ""
 

@@ -337,6 +337,27 @@ class TestAppShell:
         items = {item["key"]: item for item in app._shell.rail_items()}
         assert [i["label"] for i in items["dashboards"]["items"]] == ["Plant"]
 
+    async def test_refresh_keeps_the_rail_buttons(self, app):
+        _open(app)
+        app.home_dashboard = "Plant"
+        app._shell.refresh()
+        buttons = dict(app._shell._rail_buttons)
+        objects = list(app._shell.rail)
+        _open(app, "Depot")
+        app._refresh_sidebar_dashboards()
+        assert app._shell._rail_buttons == buttons
+        assert list(app._shell.rail) == objects
+        labels = [i["label"] for i in buttons["dashboards"].items]
+        assert labels == ["Depot", "Plant"]
+
+    async def test_refresh_rebuilds_the_rail_when_its_destinations_change(self, app):
+        buttons = dict(app._shell._rail_buttons)
+        _open(app)
+        app.home_dashboard = "Plant"
+        app._shell.refresh()
+        assert app._shell._rail_buttons["dashboards"] is not buttons["dashboards"]
+        assert app._shell._rail_buttons["dashboards"].items[0]["label"] == "Plant"
+
     @pytest.mark.parametrize(
         ("path", "active"),
         [("/", "home"), (COMPONENTS_ROUTE, "components"), ("/Analytics/page", "pages")],

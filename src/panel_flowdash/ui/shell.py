@@ -193,6 +193,8 @@ class AppShell:
             },
             stylesheets=[_HIDE_WHEN_NARROW],
         )
+        self._rail_buttons: dict[str, pmui.Button | pmui.MenuButton] = {}
+        self._rail_layout: list[tuple] | None = None
         self._nav_list = pmui.MenuList(items=[], dense=False, on_click=self._on_nav_list_click)
         self.nav_list = pn.Column(
             pmui.Typography(app.title, variant="h6", margin=(8, 16, 8, 16)),
@@ -340,9 +342,21 @@ class AppShell:
         return items
 
     def _render_rail(self):
+        items = self.rail_items()
+        self._nav_list.items = self._drawer_items(items)
+        layout = [
+            (item["key"], item.get("path"), item.get("href"), "items" in item) for item in items
+        ]
+        if layout == self._rail_layout:
+            # Replacing the buttons would drop a click that reaches the old ones
+            # before the browser renders the new ones, e.g. right after a save.
+            for item in items:
+                if "items" in item:
+                    self._rail_buttons[item["key"]].items = item["items"]
+            return
+        self._rail_layout = layout
         objects = []
         self._rail_buttons = {}
-        items = self.rail_items()
         for item in items:
             sx = _RAIL_ITEM_SX
             if "items" in item:
@@ -376,7 +390,6 @@ class AppShell:
             self._rail_buttons[item["key"]] = button
             objects.append(button)
         self.rail[:] = objects
-        self._nav_list.items = self._drawer_items(items)
 
     def _mark_active(self):
         active = self._active()

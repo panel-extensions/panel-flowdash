@@ -3,7 +3,7 @@
 from urllib.parse import urlparse
 
 import pytest
-from panel.tests.util import serve_component, wait_until
+from panel.tests.util import wait_until
 
 from panel_flowdash import DashboardItem, MemoryDashboardStore, register
 from panel_flowdash.app import FlowDashApp
@@ -11,6 +11,8 @@ from panel_flowdash.auth import Permission, resolve_identity
 from panel_flowdash.command.serve import _NotFoundHandler
 from panel_flowdash.component_library import normalize_components
 from panel_flowdash.dashboard_store import DashboardModel
+
+from .util import DASHBOARD_LOAD_TIMEOUT, serve_component
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect
@@ -65,7 +67,10 @@ def test_denied_dashboard_is_not_reported_as_missing(page):
     store, _, _, private = _store()
     _serve_app(page, store, f"/dash/{private}")
 
-    expect(page.get_by_text("You don't have access to this dashboard")).to_be_visible()
+    # The app looks the dashboard up as it loads one, after the page first renders.
+    expect(page.get_by_text("You don't have access to this dashboard")).to_be_visible(
+        timeout=DASHBOARD_LOAD_TIMEOUT
+    )
     expect(page.get_by_text("Ask the owner, maya, to add you.", exact=False)).to_be_visible()
     expect(page.get_by_text("Fleet Budget")).to_have_count(0)
     page.get_by_role("button", name="Go home").click()
@@ -77,7 +82,9 @@ def test_missing_dashboard_suggests_a_similar_one(page):
     typo = wind[:-1] + ("0" if wind[-1] != "0" else "1")
     _serve_app(page, store, f"/dash/{typo}")
 
-    expect(page.get_by_text("This dashboard does not exist")).to_be_visible()
+    expect(page.get_by_text("This dashboard does not exist")).to_be_visible(
+        timeout=DASHBOARD_LOAD_TIMEOUT
+    )
     expect(page.get_by_text("Similar dashboards")).to_be_visible()
     page.get_by_text("US Wind Turbines").click()
     wait_until(lambda: _path(page) == f"/dash/{wind}", page, timeout=10000)

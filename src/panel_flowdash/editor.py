@@ -4514,6 +4514,11 @@ class FlowDash(Viewer):
         if self._phone:
             self._sync_inspector_sheet()
 
+    @property
+    def _canvas_shown(self) -> bool:
+        """Whether the canvas is on the page, where it reports selections itself."""
+        return self._canvas_host is not None and self.surface == "workspace"
+
     def _clear_selection(self) -> bool:
         """Clear the selection on the canvas and the tile grid; return whether there was one.
 
@@ -4525,7 +4530,7 @@ class FlowDash(Viewer):
         if not (selection.get("nodes") or selection.get("edges") or tile is not None):
             return False
         select_on_canvas(self._flow)
-        if self._canvas_host is None:
+        if not self._canvas_shown:
             self._flow.selection = {"nodes": [], "edges": []}
         self._set_selected_tile(None, follow=False)
         return True
@@ -4540,8 +4545,9 @@ class FlowDash(Viewer):
         if self.mode == "split":
             self._reveal_node(instance_id)
         select_on_canvas(self._flow, node_id=instance_id)
-        if self._canvas_host is None:
+        if not self._canvas_shown:
             # No canvas is shown to report the selection, e.g. in the Layout tab.
+            # A canvas shown again later starts from it.
             self._flow.selection = {"nodes": [instance_id], "edges": []}
 
     def _sized_layout(self, layout: list[dict]) -> list[dict]:
