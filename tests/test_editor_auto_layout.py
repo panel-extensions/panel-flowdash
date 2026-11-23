@@ -387,7 +387,10 @@ class TestTiles:
         ops.arrange_layout()
         assert editor.turns[-1].summary == "Arranged the tile layout."
         assert [t["instance_id"] for t in _tiles(editor)] == ["kpi", "trend", "source"]
-        # The KPI keeps its 3 columns and the chart fills the rest of its row.
+        # The KPI keeps the width it was given and the chart fills the rest of its row.
+        assert [t["width"] for t in _tiles(editor)[:2]] == [30, 70]
+        ops.arrange_tiles(keep_sizes=False)
+        # Without the sizes given, the KPI gets its 3 columns again.
         assert [t["width"] for t in _tiles(editor)[:2]] == [25, 75]
 
     def test_arrange_layout_drops_band_layouts(self, ops):
@@ -414,8 +417,8 @@ class TestTiles:
             ops.add_node("V/chart", name=name)
         ops.add_node("V/table", name="rows")
         widths = {e["instance_id"]: e.get("width") for e in ops.editor.layout}
-        # The KPI keeps the size it was given and the chart beside it keeps its own.
-        assert (widths["kpi"], widths["trend"]) == (30, 75)
+        # The KPI keeps the size it was given and the chart beside it makes room for it.
+        assert (widths["kpi"], widths["trend"]) == (30, 70)
         assert widths["trend_2"] == widths["trend_3"] == 50
         assert widths["trend_4"] == widths["rows"] == 100
         shown = [t["instance_id"] for t in _tiles(ops.editor) if t.get("visible", True)]
@@ -500,7 +503,13 @@ class TestTools:
     async def test_an_agent_builds_a_laid_out_dashboard(self, ops):
         runner = _runner(ops, *GRAPH, ("arrange_canvas", {}), ("arrange_tiles", {}))
         output = await runner.run("Build a dashboard")
-        assert output == "Done: Arranged the tile layout."
+        assert output == (
+            "Done: Arranged the tile layout.\nLayout now:\n"
+            "Row 1: factor 33.33% 130px | kpi 25% 130px\n"
+            "Row 2: trend 50% 320px | split 50% 320px\n"
+            "Row 3: rows 100% 360px\n"
+            "Hidden: source, combined"
+        )
         editor = ops.editor
         assert _overlaps(editor) == []
         assert [t["instance_id"] for t in _tiles(editor)][:3] == ["factor", "kpi", "trend"]

@@ -10,6 +10,7 @@ FlowDash always installs. The agent itself (`create_agent`, `FlowDashDeps`,
 
 from panel_flowdash.agent.ops import (
     DashboardOps,
+    NotApplied,
     NotFound,
     OperationError,
     OutputUnavailable,
@@ -65,6 +66,7 @@ __all__ = [
     "ExplorationOps",
     "FlowDashDeps",
     "Issue",
+    "NotApplied",
     "NotFound",
     "OperationError",
     "OutputUnavailable",

@@ -85,8 +85,12 @@ Each is one change.
 
 Tiles and nodes the agent adds are laid out this way: a node the agent places
 goes beside the nodes it is connected to and follows as it is wired, until you
-move it, and the tiles a request adds are laid out once the request ends. The
-tiles of the data sources and transforms it adds start hidden, since they are
+move it, and the tiles a request adds are laid out once the request ends, or
+as soon as the agent sizes, moves or arranges tiles, so its layout applies to
+them. A heading of the *Title* size goes in front of the other tiles. When the
+agent resizes a tile, its row is rebalanced as dragging the tile's edge would:
+the other tiles shrink to make room, down to their narrowest, or widen to fill
+the room left. The tiles of the data sources and transforms it adds start hidden, since they are
 the dashboard's plumbing; **Show** them under **Not on the dashboard**. While
 no tile was arranged by hand the whole grid is arranged again; afterwards new
 tiles are only added next to their kind. Arranging keeps every other setting
