@@ -119,3 +119,12 @@ def tile_sizes_match(page, editor):
         and abs(drawn[k][1] - entries[keys[k]]["height"]) < 0.5
         for k in shown
     )
+
+
+def select_option(page, name):
+    """An option of an open panel-material-ui Select menu.
+
+    The options are menuitems up to panel-material-ui 0.17 and listbox
+    options from panel-material-ui#836 on, so this matches either role.
+    """
+    return page.get_by_role("option", name=name).or_(page.get_by_role("menuitem", name=name))

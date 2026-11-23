@@ -12,7 +12,7 @@ from panel_flowdash.app import FlowDashApp
 from panel_flowdash.auth import AuthConfig, resolve_identity
 from panel_flowdash.component_library import normalize_components
 
-from .util import serve_component
+from .util import select_option, serve_component
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect
@@ -95,7 +95,7 @@ def test_roles_and_the_everyone_switch_map_to_the_permission(page):
     expect(dialog.get_by_text("Group, 2 members")).to_be_visible()
 
     _role(dialog, "bob").click()
-    page.get_by_role("menuitem", name="Blocked").click()
+    select_option(page, "Blocked").click()
     expect(dialog.get_by_text("always blocked, even if listed above")).to_be_visible()
 
     dialog.get_by_role("switch").click()

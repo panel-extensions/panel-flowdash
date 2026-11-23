@@ -12,7 +12,7 @@ from panel_flowdash.app import FlowDashApp
 from panel_flowdash.auth import AuthConfig
 from panel_flowdash.component_library import normalize_components
 
-from .util import serve_component
+from .util import select_option, serve_component
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect
@@ -61,7 +61,7 @@ def test_share_dialog_sets_editors(page):
     add.fill("erin")
     add.press("Enter")
     dialog.locator(".share-entry").filter(has_text="erin").get_by_role("combobox").click()
-    page.get_by_role("menuitem", name="Can edit").click()
+    select_option(page, "Can edit").click()
     dialog.get_by_role("button", name="Save settings").click()
 
     (dashboard,) = store._all_dashboards()
