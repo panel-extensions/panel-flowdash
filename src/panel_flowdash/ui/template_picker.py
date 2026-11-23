@@ -21,6 +21,7 @@ from panel_flowdash.templates import (
     slot_choices,
     template_model,
 )
+from panel_flowdash.ui.choice_group import ChoiceGroup
 from panel_flowdash.ui.launcher import _CARD_CSS, thumbnail_html
 
 logger = logging.getLogger(__name__)
@@ -57,7 +58,7 @@ def preview_html(template: Template | None, icons: t.Mapping[str, str | None]) -
         if slot.kind in ("data", "view"):
             bindings[slot.name] = DataBinding(f"flowdash:slot/{slot.kind}", {}, "table")
         elif slot.kind == "column":
-            bindings[slot.name] = slot.label
+            bindings[slot.name] = slot.name
     model = template_model(template, bindings, "preview")
     thumb = thumbnail_html(model, {**_SLOT_ICONS, **icons})
     return f'{thumb}<div class="caption">{escape(template.description)}</div>'
@@ -86,15 +87,17 @@ class TemplatePicker(Viewer):
         self._columns: dict[str, dict[str, str] | None] = {}
         self._choices: dict[str, list] = {}
         self._fields: dict[str, t.Any] = {}
-        self._list = pmui.MenuList(
+        # The data slots whose columns are being read, by the choice they are read for.
+        self._loading: dict[str, str] = {}
+        self._read_for: dict[str, str] = {}
+        self._list = ChoiceGroup(
             items=self._items(),
-            active=(0,),
-            dense=False,
+            label="Start from",
             sizing_mode="stretch_width",
             margin=0,
             css_classes=["flowdash-template-list"],
         )
-        self._list.param.watch(self._on_pick, "active")
+        self._list.param.watch(self._on_pick, "index")
         self._preview = pn.pane.HTML(
             preview_html(None, self._icons),
             stylesheets=[_PREVIEW_CSS],
@@ -140,10 +143,10 @@ class TemplatePicker(Viewer):
         return self._templates.get(self.selected)
 
     def _items(self) -> list[dict]:
-        items = [{"label": "Blank", "secondary": "An empty dashboard", "icon": "add"}]
+        items = [{"label": "Blank", "description": "An empty dashboard", "icon": "add"}]
         for template in self._templates.values():
             items.append(
-                {"label": template.name, "secondary": template.description, "icon": "dashboard"}
+                {"label": template.name, "description": template.description, "icon": "dashboard"}
             )
         return items
 
@@ -152,13 +155,16 @@ class TemplatePicker(Viewer):
         if templates is not None:
             self._templates = {template.id: template for template in templates}
             self._list.items = self._items()
-        self._list.active = (0,)
-        self.param.update(selected=BLANK, step="choose", valid=True)
+        # Leave the slot step first, so nothing reads a template while it changes.
+        self.param.update(step="choose", valid=True)
+        self._list.index = 0
+        self.selected = BLANK
+        self._loading.clear()
         self._preview.object = preview_html(None, self._icons)
         self._show_step()
 
     def _on_pick(self, event):
-        index = (event.new or (0,))[0]
+        index = event.new or 0
         ids = list(self._templates)
         self.selected = ids[index - 1] if 0 < index <= len(ids) else BLANK
         self._preview.object = preview_html(self.template, self._icons)
@@ -174,6 +180,8 @@ class TemplatePicker(Viewer):
             return
         await self._editor.ensure_components_loaded_async()
         self._columns.clear()
+        self._loading.clear()
+        self._read_for.clear()
         self._fields = {}
         self._choices = {}
         widgets = []
@@ -251,8 +259,17 @@ class TemplatePicker(Viewer):
                 helper_text="Reading the columns…",
             )
         choice = next((c for c in self._choices.get(data_slot, ()) if c.key == key), None)
+        self._columns[data_slot] = None
+        self._read_for.pop(data_slot, None)
+        self._loading[data_slot] = key or ""
+        self._update_valid()
         columns = None if choice is None else await data_columns(self._editor, choice.binding)
+        if self._loading.get(data_slot) != (key or "") or self.template is not template:
+            # The data was changed again while these columns were read.
+            return
+        del self._loading[data_slot]
         self._columns[data_slot] = columns
+        self._read_for[data_slot] = key or ""
         for slot in dependents:
             widget = self._fields[slot.name]
             if choice is None:
@@ -261,7 +278,7 @@ class TemplatePicker(Viewer):
             if not columns:
                 widget.helper_text = "Its columns could not be read."
                 continue
-            fitting = [c for c, dtype in columns.items() if column_fits(dtype, slot.type)]
+            fitting = [c for c, dtype in columns.items() if column_fits(dtype, slot.type, c)]
             widget.param.update(
                 options={NOT_CHOSEN: "", **{column: column for column in fitting}},
                 value="",
@@ -295,7 +312,7 @@ class TemplatePicker(Viewer):
             self.valid = True
             return
         bound = self.raw_bindings()
-        self.valid = all(
+        self.valid = not self._loading and all(
             slot.name in bound
             for slot in template.slots.values()
             if slot.required and slot.kind == "data"
@@ -309,7 +326,18 @@ class TemplatePicker(Viewer):
         TemplateError
             If a choice is no longer offered or a column is not the data's.
         """
-        return check_bindings(self.template, self.raw_bindings(), self._choices, self._columns)
+        template = self.template
+        raw = self.raw_bindings()
+        for slot in template.slots.values():
+            if slot.kind != "data":
+                continue
+            if slot.name in self._loading or self._read_for.get(slot.name, "") != raw.get(
+                slot.name, ""
+            ):
+                raise TemplateError(
+                    f"bindings.{slot.name}", "its columns are still being read; try again."
+                )
+        return check_bindings(template, raw, self._choices, self._columns)
 
     def filled(self) -> dict[str, t.Any]:
         """Return the dashboard document the chosen template gives with the choices made."""

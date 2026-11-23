@@ -696,6 +696,18 @@ class DashboardOps:
                     choices[slot.name] = slot_choices(editor, slot, data.get(slot.of))
             for name, binding in data.items():
                 columns[name] = await data_columns(editor, binding, timeout)
+            for slot in template.slots.values():
+                if (
+                    slot.kind == "column"
+                    and bindings.get(slot.name)
+                    and slot.of in data
+                    and columns.get(slot.of) is None
+                ):
+                    raise TemplateError(
+                        f"bindings.{slot.name}",
+                        f"the columns of {data[slot.of].label or data[slot.of].component} "
+                        "could not be read, so no column can be bound; leave it unbound.",
+                    )
             resolved = check_bindings(template, bindings, choices, columns)
             return template, fill_template(template, resolved)
         except TemplateError as exc:
@@ -709,7 +721,10 @@ class DashboardOps:
         :class:`~panel_flowdash.agent.live.LiveDashboardOps` creates a new
         dashboard instead.
         """
+        if self.editor.read_only:
+            raise PermissionError("You may only view dashboards here, so you cannot create one.")
         template, doc = await self.template_document_async(template_id, bindings)
+        self._checked_title(title, template)
         self._require_edit()
         if self.editor._tile_items:
             raise OperationError(
@@ -720,6 +735,14 @@ class DashboardOps:
             yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), revision=self.revision()
         )
         return self._template_result(template, doc, issues)
+
+    def _checked_title(self, title: t.Any, template) -> str:
+        from panel_flowdash.templates import TemplateError, check_title
+
+        try:
+            return check_title(title, template.name)
+        except TemplateError as exc:
+            raise OperationError(str(exc)) from exc
 
     def _template_result(self, template, doc: dict, issues: t.Sequence[Issue] = ()) -> str:
         from panel_flowdash.templates import PLACEHOLDER_COMPONENT

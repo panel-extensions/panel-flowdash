@@ -37,7 +37,13 @@ from .yaml_format import DashboardYAMLError, dashboard_to_dict, dashboard_to_yam
 logger = logging.getLogger(__name__)
 
 # Tools that change what is stored or who can see it: the user approves each call.
-APPROVAL_TOOLS = ("save_dashboard", "delete_dashboard", "share_dashboard", "export_report")
+APPROVAL_TOOLS = (
+    "save_dashboard",
+    "delete_dashboard",
+    "share_dashboard",
+    "export_report",
+    "new_dashboard_from_template",
+)
 
 
 # Command palette commands that do the same, run through the run_command action.
@@ -161,6 +167,8 @@ class FlowDashDeps:
     # The revision the save approval's summary was written for, set at each model step.
     _save_revision: str | None = field(default=None, repr=False)
     _question: str | None = field(default=None, repr=False)
+    # Whether this request already made a dashboard from a template; one per request.
+    _templated: bool = field(default=False, repr=False)
     #: Shared with the session's other agent, so only one request at a time edits a dashboard.
     edit_lock: AgentEditLock | None = field(default=None, repr=False)
     #: What this agent's requests are, for a request waiting on one, e.g. "the assistant's edit".
@@ -228,6 +236,7 @@ class FlowDashDeps:
         self._run_id = run_id
         self._abandoned = False
         self._question = None
+        self._templated = False
 
     def repin(self):
         """Move the pin to the dashboard open now, after the agent itself opened it."""
@@ -1274,8 +1283,22 @@ async def new_dashboard_from_template(
             column name (column slots) or text (text slots).
         title: The new dashboard's title; defaults to the template's name.
     """
-    ops = ctx.deps.ops
+    deps = ctx.deps
+    if deps._templated:
+        return (
+            "Refused: a request makes at most one dashboard from a template. Change the one "
+            "you made, or ask the user before making another."
+        )
+    ops = deps.ops
     message = await ops.new_dashboard_from_template_async(template, bindings, title)
+    deps._templated = True
+    # The request goes on with the new dashboard: its pin and its edit lock move there.
+    deps.repin()
+    if deps.edit_lock is not None:
+        deps._release_edits()
+        refusal = await deps.wait_to_edit(current_run_id() or ctx.run_id)
+        if refusal is not None:
+            message += f" {refusal}"
     return _artifact(ops, message)
 
 

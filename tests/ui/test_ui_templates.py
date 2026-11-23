@@ -137,22 +137,43 @@ def test_back_returns_to_the_templates(page):
     expect(dialog.get_by_role("button", name="Next", exact=True)).to_be_visible()
 
 
-def test_the_templates_are_reached_by_keyboard(page):
+def test_the_templates_are_a_labelled_radio_group(page):
     _serve(page)
     dialog = _open_dialog(page)
     name = dialog.get_by_label("Name", exact=True)
-    templates = dialog.get_by_role("navigation")
-    blank = templates.get_by_role("button", name="Blank An empty dashboard")
-    kpi = templates.get_by_role("button", name=re.compile("^KPI overview A row of headline"))
+    group = dialog.get_by_role("radiogroup", name="Start from")
+    expect(group).to_be_visible()
+    radios = group.get_by_role("radio")
+    expect(radios).to_have_count(4)
+    blank = group.get_by_role("radio", name=re.compile("^Blank"))
+    kpi = group.get_by_role("radio", name=re.compile("^KPI overview"))
+    explorer = group.get_by_role("radio", name=re.compile("^Table explorer"))
+    expect(blank).to_have_attribute("aria-checked", "true")
+    expect(kpi).to_have_attribute("aria-checked", "false")
+
+    # One Tab stop: the chosen option; the arrow keys, Home and End move and choose.
     name.focus()
     page.keyboard.press("Tab")
     expect(blank).to_be_focused()
-    page.keyboard.press("Tab")
+    page.keyboard.press("ArrowDown")
     expect(kpi).to_be_focused()
-    page.keyboard.press("Enter")
+    expect(kpi).to_have_attribute("aria-checked", "true")
     expect(name).to_have_value("KPI overview")
+    page.keyboard.press("End")
+    expect(explorer).to_have_attribute("aria-checked", "true")
+    page.keyboard.press("Home")
+    expect(blank).to_have_attribute("aria-checked", "true")
+    page.keyboard.press("ArrowUp")
+    expect(explorer).to_be_focused()
+    page.keyboard.press("ArrowDown")
+    expect(blank).to_be_focused()
+    page.keyboard.press("ArrowDown")
+    page.keyboard.press("Enter")
+    expect(kpi).to_have_attribute("aria-checked", "true")
+    outline = kpi.evaluate("e => getComputedStyle(e).outlineStyle")
+    assert outline == "solid"
+
     next_button = dialog.get_by_role("button", name="Next", exact=True)
-    expect(next_button).to_be_visible()
     next_button.focus()
     page.keyboard.press("Enter")
     # Every slot is a labelled combobox, its description part of its accessible name.
@@ -160,10 +181,56 @@ def test_the_templates_are_reached_by_keyboard(page):
     expect(data).to_be_visible()
     expect(dialog.get_by_role("combobox", name=re.compile("^Measure "))).to_be_disabled()
     expect(dialog.get_by_text("Choose Data first.").first).to_be_visible()
+    page.keyboard.press("Shift+Tab")
     back = dialog.get_by_role("button", name="Back", exact=True)
     back.focus()
     page.keyboard.press("Enter")
     expect(kpi).to_be_visible()
+
+
+def _select_opens_by_keyboard() -> bool:
+    """Whether the installed panel-material-ui Select opens from the keyboard (it sets open via onOpen)."""
+    from pathlib import Path
+
+    import panel_material_ui
+
+    jsx = Path(panel_material_ui.__file__).parent / "widgets" / "Select.jsx"
+    return jsx.exists() and "onOpen" in jsx.read_text()
+
+
+@pytest.mark.skipif(
+    not _select_opens_by_keyboard(),
+    reason="panel-material-ui's Select only opens on click (no onOpen), fixed in panel-material-ui",
+)
+def test_a_slot_is_chosen_by_keyboard(page):
+    _serve(page)
+    dialog = _open_dialog(page)
+    dialog.get_by_role("radio", name=re.compile("^KPI overview")).click()
+    dialog.get_by_role("button", name="Next", exact=True).click()
+    data = dialog.get_by_role("combobox", name=re.compile("^Data"))
+    data.focus()
+    page.keyboard.press("ArrowDown")
+    expect(page.get_by_role("listbox")).to_be_visible()
+    page.keyboard.press("ArrowDown")
+    page.keyboard.press("Enter")
+    expect(data).to_have_text(re.compile("Sales"))
+
+
+def test_escape_on_the_slot_step_then_reopen(page):
+    _serve(page)
+    dialog = _open_dialog(page)
+    dialog.get_by_role("radio", name=re.compile("^KPI overview")).click()
+    dialog.get_by_role("button", name="Next", exact=True).click()
+    expect(dialog.get_by_role("combobox", name=re.compile("^Data"))).to_be_visible()
+    dialog.get_by_role("button", name="Back", exact=True).focus()
+    page.keyboard.press("Escape")
+    expect(page.get_by_role("dialog")).to_have_count(0)
+    page.get_by_role("button", name="New dashboard").first.click()
+    dialog = page.get_by_role("dialog")
+    expect(dialog.get_by_role("heading", name="Create dashboard", exact=True)).to_be_visible()
+    expect(dialog.get_by_role("radio", name=re.compile("^Blank"))).to_have_attribute(
+        "aria-checked", "true"
+    )
 
 
 def test_templates_turned_off_show_only_the_name(page):

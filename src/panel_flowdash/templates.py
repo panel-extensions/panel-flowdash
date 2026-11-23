@@ -67,9 +67,13 @@ MAX_LABEL = 80
 MAX_SLOTS = 20
 MAX_TEMPLATES = 100
 MAX_BOUND_TEXT = 200
+# The size of a dashboard file, checked before a template file is read.
+MAX_FILE_SIZE = 1_000_000
 
 _SLOT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
-_REFERENCE = re.compile(r"\[\[\s*([^\[\]\s]*)\s*\]\]")
+_REFERENCE = re.compile(r"\[\[\s*([^\[\]\s:]*)(?::(label))?\s*\]\]")
+# A slot's value as a heading word: "t_cap" reads "T cap".
+_LABEL_SEPARATORS = re.compile(r"[_\-.]+")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _UNSAFE_BOUND = ("[[", "]]", "{{", "}}")
 
@@ -336,9 +340,18 @@ def load_template_dir(directory: str | Path, origin: str = "project") -> list[Te
     files = sorted(
         p for p in folder.iterdir() if p.suffix.lower() in TEMPLATE_SUFFIXES and p.is_file()
     )
+    root = folder.resolve()
     for path in files[:MAX_TEMPLATES]:
         try:
-            text = path.read_bytes()
+            resolved = path.resolve(strict=True)
+            if resolved.parent != root:
+                raise TemplateError("document", "is a link to a file outside the folder.")
+            size = resolved.stat().st_size
+            if size > MAX_FILE_SIZE:
+                raise TemplateError(
+                    "document", f"Too large: {size:,} bytes, at most {MAX_FILE_SIZE:,}."
+                )
+            text = resolved.read_bytes()
             templates.append(
                 parse_template(text, template_id=_template_id(path, origin), origin=origin)
             )
@@ -382,13 +395,37 @@ def check_bound_text(value: t.Any, path: str) -> str:
     return value
 
 
+def label_text(value: str) -> str:
+    """Return a column name as a label: separators become spaces and the first letter a capital."""
+    words = _LABEL_SEPARATORS.sub(" ", value).strip() or value
+    return words[:1].upper() + words[1:]
+
+
+def check_title(title: t.Any, default: str) -> str:
+    """Return a dashboard title from *title*: one line, at most ``MAX_BOUND_TEXT`` characters.
+
+    Control characters become spaces; an empty title gives *default*.
+    """
+    if title is None:
+        return default
+    if not isinstance(title, str):
+        raise TemplateError("title", "must be a string.")
+    title = " ".join(_CONTROL.sub(" ", title).split())
+    if len(title) > MAX_BOUND_TEXT:
+        raise TemplateError("title", f"is longer than {MAX_BOUND_TEXT} characters.")
+    return title or default
+
+
 def _substitute(value: t.Any, values: dict[str, str], escape: t.Callable[[str], str] | None):
+    """Fill ``[[name]]`` and ``[[name:label]]`` in one pass; filled text is never read again."""
     if isinstance(value, str):
 
         def replace(match: re.Match) -> str:
             text = values.get(match.group(1))
             if text is None:
                 return match.group(0)
+            if match.group(2) and text:
+                text = label_text(text)
             return escape(text) if escape is not None else text
 
         return _REFERENCE.sub(replace, value)
@@ -547,7 +584,7 @@ def fill_template(template: Template, bindings: t.Mapping[str, t.Any]) -> dict[s
     blanks = dict.fromkeys(unbound, "")
     for key in ("title", "settings"):
         if key in doc:
-            doc[key] = _substitute(_substitute(doc[key], values, None), blanks, None)
+            doc[key] = _substitute(doc[key], {**blanks, **values}, None)
     return doc
 
 
@@ -592,6 +629,22 @@ def _role(editor: t.Any, component_id: str) -> str:
         entry.metadata.provides or entry.metadata.requires
     )
     return component_role(entry, inputs, outputs, ports_known=known)
+
+
+# Tags of views that show one value rather than a table.
+_NOT_TABLE_VIEWS = ("kpi", "indicator", "metric")
+
+
+def is_table_type(port_type: str | None) -> bool:
+    """Whether a port of *port_type* carries a table: a DataFrame or a type registered as one."""
+    from panel_flowdash.port_types import port_types_compatible
+
+    # A port taking any value, e.g. a plain param.Parameter, fits a number as well.
+    return (
+        port_type is not None
+        and port_types_compatible(port_type, "DataFrame")
+        and not port_types_compatible(port_type, "Number")
+    )
 
 
 def slot_choices(editor: t.Any, slot: Slot, data: DataBinding | None = None) -> list[Choice]:
@@ -642,14 +695,19 @@ def slot_choices(editor: t.Any, slot: Slot, data: DataBinding | None = None) -> 
             continue
         outputs, inputs = _ports(editor, component_id)
         if slot.kind == "data":
-            if not outputs:
+            tables = [p for p in outputs if is_table_type(p.type)]
+            if not tables:
                 continue
-            port = outputs[0].name
+            port = tables[0].name
         else:
+            # KPIs are views of one number; a template places its own.
+            if any(str(tag).strip().lower() in _NOT_TABLE_VIEWS for tag in entry.metadata.tags):
+                continue
             fitting = [
                 p
                 for p in inputs
-                if any(port_types_compatible(data_type, p.type) for data_type in data_types)
+                if is_table_type(p.type)
+                and any(port_types_compatible(data_type, p.type) for data_type in data_types)
             ]
             if not fitting:
                 continue
@@ -685,11 +743,15 @@ def column_kind(dtype: str) -> str:
     return "category"
 
 
-def column_fits(dtype: str, column_type: str) -> bool:
-    """Whether a column of *dtype* suits a column slot of *column_type*.
+_YEAR = re.compile(r"(^|[_\W])(year|yr)s?($|[_\W])", re.IGNORECASE)
 
-    A date slot takes integer columns too, e.g. years, and a category slot
-    text and integer columns.
+
+def column_fits(dtype: str, column_type: str, name: str = "") -> bool:
+    """Whether a column *name* of *dtype* suits a column slot of *column_type*.
+
+    A date slot takes dates and integer columns named like a year; a
+    category slot takes text, booleans and categoricals, never numbers such
+    as integer ids.
     """
     kind = column_kind(dtype)
     if column_type == "any":
@@ -697,8 +759,10 @@ def column_fits(dtype: str, column_type: str) -> bool:
     if column_type == "number":
         return kind == "number"
     if column_type == "date":
-        return kind == "date" or dtype.lower().startswith(("int", "uint"))
-    return kind == "category" or dtype.lower().startswith(("int", "uint"))
+        return kind == "date" or (
+            dtype.lower().startswith(("int", "uint")) and bool(_YEAR.search(str(name)))
+        )
+    return kind == "category"
 
 
 async def data_columns(
@@ -774,7 +838,7 @@ def check_bindings(
                     raise TemplateError(
                         path, f"{text!r} is not a column; the columns are {listed}."
                     )
-                if not column_fits(known[text], slot.type):
+                if not column_fits(known[text], slot.type, text):
                     raise TemplateError(
                         path,
                         f"{text!r} is {known[text]}, which does not suit a {slot.type} column.",

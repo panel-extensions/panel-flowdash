@@ -2555,7 +2555,7 @@ class FlowDashApp(Viewer):
         if self._dialog_context.get("action") != "create":
             self._dialog_back_button.visible = False
             return
-        binding = picker.step == "bind"
+        binding = picker.step == "bind" and picker.template is not None
         self._dialog_back_button.visible = binding
         self._dialog_name_input.visible = not binding
         label = "Next" if picker.template is not None and not binding else "Create"
@@ -2572,6 +2572,10 @@ class FlowDashApp(Viewer):
         from panel_flowdash.templates import TemplateError
 
         picker = self._template_picker
+        offered = {template.id for template in self._offered_templates()}
+        if picker.template is None or picker.template.id not in offered:
+            self._notify("error", "This template is no longer offered.", duration=6000)
+            return False
         try:
             created = self._new_template_dashboard(picker.template, picker.bindings(), title)
         except (TemplateError, ValueError, PermissionError) as exc:

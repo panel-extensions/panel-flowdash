@@ -1,7 +1,7 @@
 flowdash: 1
 title: KPI overview
 settings:
-  description: Headline numbers of [[measure]], how it changes over time, how it splits and the rows behind it.
+  description: Headline numbers of [[measure:label]], how it changes over time, how it splits and the rows behind it.
 x-template:
   name: KPI overview
   description: A row of headline numbers, a trend chart beside a breakdown, and a table of the rows.
@@ -32,7 +32,7 @@ x-template:
       kind: view
       of: data
       label: Breakdown chart
-      description: A view of the data by category.
+      description: A view of the measure's total per category, the largest 15.
       required: false
     rows:
       kind: view
@@ -46,12 +46,12 @@ nodes:
   kpi_total:
     component: Widgets/KPI
     config:
-      label: Total [[measure]]
+      label: Total [[measure:label]]
       delta: none
   kpi_average:
     component: Widgets/KPI
     config:
-      label: Average [[measure]]
+      label: Average [[measure:label]]
       format: ",.2f"
       delta: none
   kpi_rows:
@@ -62,7 +62,7 @@ nodes:
   kpi_categories:
     component: Widgets/KPI
     config:
-      label: Distinct [[category]]
+      label: Distinct [[category:label]]
       delta: none
   trend:
     component: flowdash:slot
@@ -85,7 +85,7 @@ edges:
     to: kpi_rows.value
     transform:
       - {op: column, column: "[[measure]]"}
-      - {op: aggregate, how: count}
+      - {op: aggregate, how: size}
   - from: data.table
     to: kpi_categories.value
     transform:
@@ -95,6 +95,8 @@ edges:
     to: trend.table
   - from: data.table
     to: breakdown.table
+    transform:
+      - {op: group, by: "[[category]]", column: "[[measure]]", how: sum, top: 15}
   - from: data.table
     to: rows.table
 layout:

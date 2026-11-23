@@ -106,13 +106,20 @@ class LiveDashboardOps(DashboardOps):
         user may save or discard.
         """
         app = self.app
+        current = app._current_dashboard
+        if current is not None and not app._can_edit_dashboard(current):
+            raise PermissionError(
+                "You only view the open dashboard; the user can start a new dashboard from "
+                "the home page."
+            )
         if app._has_unsaved_changes():
             raise OperationError(
                 "The open dashboard has unsaved changes. Ask the user to save or discard "
                 "them before starting a new dashboard."
             )
         template, doc = await self.template_document_async(template_id, bindings)
-        created = app._new_dashboard_from_document(doc, (title or "").strip() or template.name)
+        name = self._checked_title(title, template)
+        created = app._new_dashboard_from_document(doc, name)
         await self.open_dashboard_async(created.dashboard_id)
         return f"Created '{created.title}' and opened it. " + self._template_result(template, doc)
 

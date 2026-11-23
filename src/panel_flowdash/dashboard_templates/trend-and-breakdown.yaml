@@ -1,7 +1,7 @@
 flowdash: 1
 title: Trend and breakdown
 settings:
-  description: How the data changes over [[date]] and how it splits by [[category]]. Narrow both with the filters above.
+  description: How the data changes over [[date:label]] and how [[measure:label]] splits by [[category:label]]. Narrow both with the filters above.
 x-template:
   name: Trend and breakdown
   description: A wide trend chart over a breakdown and a detail view, with filters for the date range and the category.
@@ -22,8 +22,13 @@ x-template:
       of: data
       type: category
       label: Category
-      description: The column the category filter picks from.
-      required: false
+      description: What the breakdown totals by, and the column the category filter picks from.
+    measure:
+      kind: column
+      of: data
+      type: number
+      label: Measure
+      description: The number the breakdown totals, e.g. revenue.
     trend:
       kind: view
       of: data
@@ -33,7 +38,7 @@ x-template:
       kind: view
       of: data
       label: Breakdown chart
-      description: A view of the data by category.
+      description: A view of the measure's total per category, the largest 15.
     detail:
       kind: view
       of: data
@@ -54,6 +59,8 @@ edges:
     to: trend.table
   - from: data.table
     to: breakdown.table
+    transform:
+      - {op: group, by: "[[category]]", column: "[[measure]]", how: sum, top: 15}
   - from: data.table
     to: detail.table
 filters:

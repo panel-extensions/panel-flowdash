@@ -14,9 +14,6 @@ from panel.viewable import Viewer
 from panel_flowdash import FlowDash, MemoryDashboardStore, register
 from panel_flowdash.admin.sections import GENERAL_GROUPS
 from panel_flowdash.agent import DashboardOps, OperationError
-from panel_flowdash.agent.assistant import EXPLORE_TOOLS
-from panel_flowdash.agent.chrome import TOOL_LABELS
-from panel_flowdash.agent.tools import TOOLS
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.templates import (
     DataBinding,
@@ -82,7 +79,46 @@ class Secret(Viewer):
         return pn.pane.Markdown("secret")
 
 
-COMPONENTS = {"Data/sales": Sales, "Data/secret": Secret, "Views/rows": Rows}
+@register(page=False, component=True, title="Fleet", tags=["source"])
+class Fleet(Viewer):
+    """A source whose first output is a list, not a table."""
+
+    @param.output(param.List)
+    def region_names(self):
+        return ["north"]
+
+    @param.output(param.DataFrame)
+    def telemetry(self):
+        return FRAME
+
+    def __panel__(self):
+        return pn.pane.Markdown("fleet")
+
+
+@register(page=False, component=True, title="Indicator", tags=["view", "kpi"])
+class Indicator(Viewer):
+    table = param.DataFrame(default=None, allow_None=True)
+
+    def __panel__(self):
+        return pn.pane.Markdown("kpi")
+
+
+@register(page=False, component=True, title="Status", tags=["view"])
+class Status(Viewer):
+    checked = param.Parameter(default=None)
+
+    def __panel__(self):
+        return pn.pane.Markdown("status")
+
+
+COMPONENTS = {
+    "Data/sales": Sales,
+    "Data/secret": Secret,
+    "Data/fleet": Fleet,
+    "Views/rows": Rows,
+    "Views/indicator": Indicator,
+    "Views/status": Status,
+}
 
 
 def _editor(**params):
@@ -295,8 +331,10 @@ class TestFill:
 
     def test_column_fits(self):
         assert column_fits("float64", "number") and not column_fits("object", "number")
-        assert column_fits("datetime64[ns]", "date") and column_fits("int64", "date")
+        assert column_fits("datetime64[ns]", "date") and column_fits("int64", "date", "p_year")
+        assert not column_fits("int64", "date", "case_id")
         assert column_fits("object", "category") and not column_fits("float64", "category")
+        assert not column_fits("int64", "category", "case_id")
         assert not column_fits("datetime64[ns]", "category")
         assert column_fits("float64", "any")
 
@@ -351,6 +389,11 @@ class TestBinding:
 
 class TestAgent:
     def test_tools_are_in_the_assistant_set_only(self):
+        pytest.importorskip("pydantic_ai")
+        from panel_flowdash.agent.assistant import EXPLORE_TOOLS
+        from panel_flowdash.agent.chrome import TOOL_LABELS
+        from panel_flowdash.agent.tools import TOOLS
+
         names = [tool.__name__ for tool in TOOLS]
         for name in ("list_templates", "new_dashboard_from_template"):
             assert name in names and name not in EXPLORE_TOOLS and name in TOOL_LABELS
@@ -492,7 +535,7 @@ class TestDialog:
     async def test_choose_bind_and_create(self, app):
         app._open_create_dialog()
         picker = app._template_picker
-        picker._list.active = (1,)
+        picker._list.index = 1
         assert picker.selected == "package:kpi-overview"
         assert app._dialog_name_input.value == "KPI overview"
         assert app._dialog_confirm_button.label == "Next"
@@ -521,11 +564,43 @@ class TestDialog:
     async def test_back_returns_to_the_list(self, app):
         app._open_create_dialog()
         picker = app._template_picker
-        picker._list.active = (3,)
+        picker._list.index = 3
         await picker.start_binding()
         picker.back()
         assert picker.step == "choose" and app._dialog_name_input.visible
         assert app._dialog_confirm_button.label == "Next"
+
+
+class TestDialogRobustness:
+    async def test_reopening_after_leaving_the_slot_step(self, app):
+        app._open_create_dialog()
+        picker = app._template_picker
+        picker._list.index = 1
+        await picker.start_binding()
+        app._dialog.open = False
+        app._open_create_dialog()
+        assert app._dialog.open and picker.step == "choose" and picker.selected == ""
+        assert app._dialog.title == "Create dashboard"
+        assert app._dialog_confirm_button.label == "Create"
+
+    async def test_turning_templates_off_is_rechecked_at_create(self, app):
+        app._open_create_dialog()
+        picker = app._template_picker
+        picker._list.index = 3
+        await picker.start_binding()
+        app.templates = False
+        assert not app._create_from_template("Late")
+        assert not app.store._all_dashboards()
+
+    async def test_columns_of_earlier_data_never_count(self, app):
+        app._open_create_dialog()
+        picker = app._template_picker
+        picker._list.index = 1
+        await picker.start_binding()
+        picker._loading["data"] = "Data/sales"
+        picker._fields["data"].value = "Data/sales"
+        with pytest.raises(TemplateError, match="still being read"):
+            picker.bindings()
 
 
 def test_admin_switch():
@@ -538,3 +613,168 @@ def test_admin_switch():
 def test_template_yaml_is_plain_data():
     for template in package_templates():
         yaml.safe_dump(template.document)
+
+
+class TestReviewFixes:
+    def test_data_binds_its_table_output_and_views_need_a_table_input(self):
+        editor = _editor()
+        template = _template()
+        data = {c.key: c.binding for c in slot_choices(editor, template.slots["data"])}
+        assert data["Data/fleet"].port == "telemetry"
+        views = [c.key for c in slot_choices(editor, template.slots["rows"], data["Data/fleet"])]
+        assert views == ["Views/rows"]
+
+    def test_a_link_out_of_the_folder_is_not_loaded(self, tmp_path):
+        outside = tmp_path / "outside.yaml"
+        outside.write_text(TEMPLATE)
+        folder = tmp_path / "templates"
+        folder.mkdir()
+        (folder / "linked.yaml").symlink_to(outside)
+        (folder / "inside.yaml").write_text(TEMPLATE)
+        (folder / "alias.yaml").symlink_to(folder / "inside.yaml")
+        assert sorted(t.id for t in load_template_dir(folder)) == [
+            "project:alias",
+            "project:inside",
+        ]
+
+    def test_size_is_checked_before_reading(self, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        from panel_flowdash import templates
+
+        big = tmp_path / "big.yaml"
+        with big.open("wb") as f:
+            f.truncate(templates.MAX_FILE_SIZE + 1)
+        read = []
+        monkeypatch.setattr(Path, "read_bytes", lambda self: read.append(self) or b"")
+        assert load_template_dir(tmp_path) == []
+        assert read == []
+
+    def test_preview_survives_brackets_in_labels(self):
+        from panel_flowdash.ui.template_picker import preview_html
+
+        template = parse_template(
+            TEMPLATE.replace("label: Measure}", "label: 'Measure ]] {{x}} <b>'}"),
+            template_id="project:x",
+        )
+        assert "thumb" in preview_html(template, {})
+
+    def test_filled_text_is_never_read_again(self):
+        text = """
+flowdash: 1
+title: "[[a]][x]] [[b]]"
+settings: {description: "[[a]][x]]"}
+x-template:
+  name: Second
+  slots:
+    a: {kind: text, label: A}
+    b: {kind: text, label: B}
+    x: {kind: text, label: X}
+nodes: {}
+"""
+        template = parse_template(text, template_id="project:x")
+        doc = fill_template(template, {"a": "[", "b": "B"})
+        assert doc["title"] == "[[x]] B"
+        assert doc["settings"]["description"] == "[[x]]"
+
+    def test_labels_read_as_words(self):
+        doc = fill_template(
+            parse_template(
+                TEMPLATE.replace("Total [[measure]]", "Total [[measure:label]]"),
+                template_id="project:x",
+            ),
+            {"data": DataBinding("Data/sales", {}, "sales"), "measure": "net_revenue-eur"},
+        )
+        assert doc["nodes"]["total"]["config"]["label"] == "Total Net revenue eur"
+
+    def test_kpi_overview_counts_rows_and_ranks_the_breakdown(self):
+        template = package_templates()[0]
+        doc = fill_template(
+            template,
+            {
+                "data": DataBinding("Data/sales", {}, "sales"),
+                "breakdown": DataBinding("Views/rows", {}, "table"),
+                "measure": "revenue",
+                "category": "region",
+            },
+        )
+        edges = {edge["to"]: edge.get("transform") for edge in doc["edges"]}
+        assert edges["kpi_rows.value"][-1] == {"op": "aggregate", "how": "size"}
+        assert edges["breakdown.table"] == [
+            {"op": "group", "by": "region", "column": "revenue", "how": "sum", "top": 15}
+        ]
+        assert doc["nodes"]["kpi_total"]["config"]["label"] == "Total Revenue"
+
+    def test_title_is_one_short_line(self):
+        from panel_flowdash.templates import check_title
+
+        assert check_title(" Sales\n\tby region ", "Default") == "Sales by region"
+        assert check_title("  ", "Default") == "Default"
+        with pytest.raises(TemplateError):
+            check_title("x" * 5000, "Default")
+
+
+class TestAgentRules:
+    @pytest.fixture(autouse=True)
+    def _agent(self):
+        pytest.importorskip("pydantic_ai")
+
+    def test_creating_needs_approval(self):
+        from panel_flowdash.agent.tools import approval_policy
+
+        ops = DashboardOps(_editor())
+        for policy in (
+            approval_policy(),
+            approval_policy(sensitive_components=["Data/*"], ops=ops),
+        ):
+            assert policy.requires_approval(
+                "new_dashboard_from_template", {"template": "package:kpi-overview", "bindings": {}}
+            )
+
+    async def test_one_dashboard_per_request_and_the_pin_moves(self):
+        from types import SimpleNamespace
+
+        from panel_flowdash.agent.tools import FlowDashDeps, new_dashboard_from_template
+
+        editor = _editor()
+        deps = FlowDashDeps(DashboardOps(editor))
+        deps.start_request("make one")
+        ctx = SimpleNamespace(deps=deps, run_id="r1")
+        first = await new_dashboard_from_template(
+            ctx, "package:table-explorer", {"data": "Data/sales"}
+        )
+        assert "Filled in the template" in str(first)
+        assert deps.check_pin("r1") is None
+        second = await new_dashboard_from_template(
+            ctx, "package:table-explorer", {"data": "Data/sales"}
+        )
+        assert str(second).startswith("Refused: a request makes at most one")
+        deps.end_request()
+        deps.start_request("again")
+        assert deps._templated is False
+
+    async def test_viewers_are_refused(self):
+        editor = _editor()
+        editor.read_only = True
+        with pytest.raises(PermissionError):
+            await DashboardOps(editor).new_dashboard_from_template_async(
+                "package:table-explorer", {"data": "Data/sales"}
+            )
+
+    async def test_long_titles_and_unreadable_columns_are_refused(self, monkeypatch):
+        from panel_flowdash import templates
+
+        ops = DashboardOps(_editor())
+        with pytest.raises(OperationError, match="title"):
+            await ops.new_dashboard_from_template_async(
+                "package:table-explorer", {"data": "Data/sales"}, "x" * 5000
+            )
+
+        async def unreadable(*args, **kwargs):
+            return None
+
+        monkeypatch.setattr(templates, "data_columns", unreadable)
+        with pytest.raises(OperationError, match="could not be read"):
+            await ops.new_dashboard_from_template_async(
+                "package:table-explorer", {"data": "Data/sales", "filter_1": "region"}
+            )
