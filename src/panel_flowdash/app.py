@@ -535,6 +535,7 @@ class FlowDashApp(Viewer):
     _nav_generation: int = 0
 
     _RESERVED_EDITOR_OPTIONS = (
+        "authorize_admin",
         "authorize_component",
         "authorize_dashboard",
         "authorize_rename",
@@ -965,6 +966,8 @@ class FlowDashApp(Viewer):
         self._is_admin = True
         if not was_admin and self._shell is not None:
             self._shell.refresh()
+        if not was_admin:
+            self._editor._sync_tile_actions()
         if new_project:
             # The first admin of a project with no settings yet is walked through setup.
             self._navigate_to(f"{ADMIN_ROUTE}/{SETUP_SECTION}")
@@ -1457,6 +1460,7 @@ class FlowDashApp(Viewer):
             )
         toolbar_extra = [self._share_button, *(options.pop("toolbar_extra", None) or [])]
         editor = self.editor_class(
+            authorize_admin=self._still_admin,
             authorize_component=self._can_use_component,
             authorize_dashboard=self._authorize_dashboard,
             authorize_rename=self._can_administer_dashboard,

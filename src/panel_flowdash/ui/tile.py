@@ -160,15 +160,20 @@ class Tile(pn.Column):
         on_inspect: Callable[[], None] | None = None,
         on_show_in_editor: Callable[[], None] | None = None,
         on_how_made: Callable[[], None] | None = None,
+        on_node_action: Callable[[str], None] | None = None,
         **params,
     ):
         self.view = view
         self.on_inspect = on_inspect
         self.on_show_in_editor = on_show_in_editor
         self.on_how_made = on_how_made
+        self.on_node_action = on_node_action
         self._inspect = False
         self._show_in_editor = False
         self._how_made = False
+        self._node_actions: tuple[tuple[str, str, str | None], ...] = ()
+        self._provenance: t.Any = None
+        self._provenance_chip: Viewable | None = None
         self._arranging = False
         self._framed = True
         self._titled = False
@@ -333,11 +338,24 @@ class Tile(pn.Column):
             classes.append("flowdash-tile-floating")
         self.css_classes = classes
 
-    def set_actions(self, *, inspect: bool, show_in_editor: bool, how_made: bool = False):
-        """Offer Inspect, Show in editor and How was this made? only where they apply to the current viewer."""
+    def set_actions(
+        self,
+        *,
+        inspect: bool,
+        show_in_editor: bool,
+        how_made: bool = False,
+        node_actions: t.Sequence[tuple[str, str, str | None]] = (),
+    ):
+        """Offer Inspect, Show in editor and How was this made? only where they apply to the current viewer.
+
+        *node_actions* are the registered node actions offered, as ``(key,
+        label, icon)``, which go to the More menu and call ``on_node_action``
+        with their key.
+        """
         self._inspect = inspect
         self._show_in_editor = show_in_editor
         self._how_made = how_made
+        self._node_actions = tuple(node_actions)
         self.inspect_button.visible = inspect
         self._sync_menu()
 
@@ -361,6 +379,25 @@ class Tile(pn.Column):
         if classes != self.css_classes:
             self.css_classes = classes
 
+    def set_provenance(self, provenance: t.Any, shown: bool = True):
+        """Show where the view's numbers come from as a quiet chip before its filter notes, or none.
+
+        *provenance* is a :class:`~panel_flowdash.node_actions.Provenance`
+        or None, and *shown* whether it is shown now (in edit mode, or as
+        the editor's ``provenance_labels`` says).
+        """
+        provenance = provenance if shown else None
+        if provenance == self._provenance:
+            return
+        self._provenance = provenance
+        if provenance is None:
+            self._provenance_chip = None
+        else:
+            from panel_flowdash.ui.provenance import provenance_chip
+
+            self._provenance_chip = provenance_chip(provenance)
+        self._render_notes()
+
     def set_filters(self, chips=(), hint: str = "", detail: str = ""):
         """Show the Filter nodes feeding the view as chips, ``(instance_id, title)``, and *hint*.
 
@@ -371,7 +408,12 @@ class Tile(pn.Column):
         if notes == self._filter_notes:
             return
         self._filter_notes = notes
-        objects = [
+        self._render_notes()
+
+    def _render_notes(self):
+        chips, hint, detail = self._filter_notes
+        objects = [] if self._provenance_chip is None else [self._provenance_chip]
+        objects += [
             pmui.Chip(
                 label=title,
                 icon="filter_alt",
@@ -427,6 +469,10 @@ class Tile(pn.Column):
             items.append(
                 {"label": "How was this made?", "icon": "manage_search", "action": "how_made"}
             )
+        items.extend(
+            {"label": label, "icon": icon, "action": f"node:{key}"}
+            for key, label, icon in self._node_actions
+        )
         self.more_menu.param.update(items=items, visible=bool(items))
 
     def _on_menu(self, item):
@@ -435,3 +481,9 @@ class Tile(pn.Column):
             self.on_show_in_editor()
         elif action == "how_made" and self.on_how_made is not None:
             self.on_how_made()
+        elif (
+            isinstance(action, str)
+            and action.startswith("node:")
+            and self.on_node_action is not None
+        ):
+            self.on_node_action(action.removeprefix("node:"))

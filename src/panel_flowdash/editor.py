@@ -92,6 +92,7 @@ from panel_flowdash.groups import (
 )
 from panel_flowdash.history import BURST_SECONDS, HISTORY_MAX_BYTES, EditHistory, label_for
 from panel_flowdash.input_literals import check_literal, stored_literal
+from panel_flowdash.node_actions import NodeAction, Provenance, call_provenance_hook, node_actions
 from panel_flowdash.parameters import (
     ContractError,
     ContractProblem,
@@ -189,7 +190,7 @@ from panel_flowdash.ui.palette import (
     palette_items,
     preset_entries,
 )
-from panel_flowdash.ui.provenance import provenance_objects
+from panel_flowdash.ui.provenance import provenance_line, provenance_objects
 from panel_flowdash.ui.report_view import ReportView
 from panel_flowdash.ui.roles import component_role
 from panel_flowdash.ui.settings_dialog import SettingsDialog
@@ -1221,6 +1222,16 @@ class FlowDash(Viewer):
         dashboard's owner, the editor's `user`, rename it.""",
     )
 
+    authorize_admin = param.Callable(
+        default=None,
+        doc="""
+        Called without arguments to decide whether this session administers
+        the project. Node actions registered as ``admin_only`` (see
+        :mod:`panel_flowdash.node_actions`) are offered only while it says
+        so, and it is asked again before one runs. `FlowDashApp` supplies
+        one that reads the project file again. None makes no one an admin.""",
+    )
+
     breakpoints = param.List(default=[768, 1200], doc="Responsive breakpoints for the tile grid.")
 
     import_unknown_components = param.Boolean(
@@ -1527,6 +1538,15 @@ class FlowDash(Viewer):
         the versions it published, from the run the node's origin turn
         names. People who may not edit the dashboard see the request's
         shape without its content.""",
+    )
+
+    provenance_labels = param.Boolean(
+        default=False,
+        doc="""
+        Whether the views of nodes that report their provenance (see
+        :mod:`panel_flowdash.node_actions`), e.g. "Metric: capacity" or "Ad
+        hoc", show it as a chip in view mode too. While the dashboard is
+        edited the chip is always shown.""",
     )
 
     agent_state = param.ClassSelector(
@@ -3000,6 +3020,88 @@ class FlowDash(Viewer):
         turn = self.origin_turn(instance_id)
         return turn is not None and turn.actor == "agent"
 
+    def is_admin(self) -> bool:
+        """Whether this session administers the project, as :attr:`authorize_admin` says."""
+        if self.authorize_admin is None:
+            return False
+        try:
+            return bool(self.authorize_admin())
+        except Exception:
+            logger.exception("authorize_admin failed; treating the session as no admin")
+            return False
+
+    def node_actions(self, instance_id: str, *, admin: bool | None = None) -> list[NodeAction]:
+        """Return the registered node actions offered for a node to the person using the editor.
+
+        A restricted node or a placeholder gets none, an ``admin_only``
+        action needs :meth:`is_admin`, and an action whose ``applies``
+        fails is left out. *admin* says whether the session is an admin,
+        which :meth:`is_admin` is asked otherwise.
+        """
+        if instance_id not in self._component_instances or self._node_restricted(instance_id):
+            return []
+        actions = node_actions()
+        if admin is None:
+            admin = any(action.admin_only for action in actions) and self.is_admin()
+        offered = []
+        for action in actions:
+            if action.admin_only and not admin:
+                continue
+            try:
+                if action.applies is not None and not action.applies(self, instance_id):
+                    continue
+            except Exception:
+                logger.exception("Node action %r failed to say whether it applies", action.key)
+                continue
+            offered.append(action)
+        return offered
+
+    def run_node_action(self, instance_id: str, key: str) -> t.Any:
+        """Run the node action *key* on a node, checking again that it is offered to this session.
+
+        Raises
+        ------
+        PermissionError
+            If the action is not offered for the node, e.g. an ``admin_only``
+            action for someone who is no admin (any more).
+        """
+        action = next((a for a in self.node_actions(instance_id) if a.key == key), None)
+        if action is None:
+            raise PermissionError(f"The action {key!r} is not available for this node.")
+        return action.run(self, instance_id)
+
+    def _on_node_action(self, instance_id: str, key: str):
+        try:
+            self.run_node_action(instance_id, key)
+        except PermissionError as exc:
+            self._notify("error", str(exc))
+
+    def node_provenance(self, instance_id: str) -> tuple[Provenance, str] | None:
+        """Return the provenance a node's numbers have, and the id of the node that reports it.
+
+        That is the node's own ``__flowdash_provenance__`` or else the
+        nearest upstream node's, following its inputs breadth first, see
+        :mod:`panel_flowdash.node_actions`. None when no node reports one.
+        """
+        edges = self._dataflow_graph.edges
+        seen, frontier = {instance_id}, [instance_id]
+        while frontier:
+            for node in frontier:
+                found = call_provenance_hook(self._component_instances.get(node))
+                if found is not None:
+                    return found, node
+            upstream = []
+            for node in frontier:
+                for edge in edges:
+                    if edge["target"] == node and edge["source"] not in seen:
+                        seen.add(edge["source"])
+                        upstream.append(edge["source"])
+            frontier = upstream
+        return None
+
+    def _provenance_shown(self) -> bool:
+        return self.editable or self.provenance_labels
+
     def later_turns(self, instance_id: str) -> list[DashboardTurn]:
         """Return copies of the turns after a node's origin whose summary says they changed it."""
         origin = self._origins.get(instance_id)
@@ -3104,6 +3206,8 @@ class FlowDash(Viewer):
             on_open=lambda t: self.show_how_made(instance_id, t.id),
         )
         caption = "How this was made" if turn is origin else "How this was changed"
+        if turn is origin and (found := self.node_provenance(instance_id)) is not None:
+            body = [provenance_line(found[0]), *body]
         return caption, body, span
 
     def _render_how_made(self, instance_id: str, turn_id: str | None, *, open_sheet: bool):
@@ -3189,6 +3293,7 @@ class FlowDash(Viewer):
             subtitle=" ".join(description.split("\n\n")[0].split()) or None,
             on_show_in_editor=partial(self._on_show_in_editor, instance_id),
             on_how_made=partial(self.show_how_made, instance_id),
+            on_node_action=partial(self._on_node_action, instance_id),
             css_classes=["flowdash-tile", f"{TILE_KEY_PREFIX}{next(self._tile_keys)}"],
             **bounds,
         )
@@ -3228,24 +3333,36 @@ class FlowDash(Viewer):
             wiring.append(partial(failures.param.unwatch, watcher))
         return tile
 
-    def _sync_tile(self, instance_id: str, tile: Tile, spec: ComponentSpec | None):
+    def _sync_tile(
+        self, instance_id: str, tile: Tile, spec: ComponentSpec | None, admin: bool | None = None
+    ):
         """Offer a tile's actions to whoever is viewing it now."""
         show_in_editor = self._can_show_in_editor()
         tile.set_actions(
             inspect=self._can_inspect_tile(spec),
             show_in_editor=show_in_editor,
             how_made=self.made_by_agent(instance_id),
+            node_actions=[
+                (a.key, a.label, a.icon) for a in self.node_actions(instance_id, admin=admin)
+            ],
         )
+        found = self.node_provenance(instance_id)
+        tile.set_provenance(found and found[0], self._provenance_shown())
         if isinstance(tile.view, FailureOverlay):
             for button in tile.view.actions:
                 button.visible = show_in_editor
 
-    @param.depends("editable", "show_in_editor", "provenance", watch=True)
+    @param.depends(
+        "editable", "show_in_editor", "provenance", "provenance_labels", "edited", watch=True
+    )
     def _sync_tile_actions(self):
+        admin = any(a.admin_only for a in node_actions()) and self.is_admin()
         for item in self._tile_items:
             tile = self._inspect_tiles.get(item["instance_id"])
             if tile is not None:
-                self._sync_tile(item["instance_id"], tile, self._tile_spec(item))
+                self._sync_tile(item["instance_id"], tile, self._tile_spec(item), admin)
+        if (controls := getattr(self, "_view_controls", None)) is not None:
+            controls.sync_provenance()
 
     def _tile_spec(self, item: dict) -> ComponentSpec | None:
         """Return the spec whose hints apply to a tile; a placeholder keeps its saved size."""
