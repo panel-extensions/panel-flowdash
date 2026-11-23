@@ -594,3 +594,101 @@ class TestAgent:
     def test_write_takes_a_document(self, editor):
         document = build_document(editor, "md")
         assert write(document, "md").startswith(b"# Sales review")
+
+
+class TestTablePlaceholders:
+    TEXT = (
+        "Top region {{ sales.frame.region[1] }} at {{ sales.frame[1].amount:,.0f }}; "
+        "{{ sales.frame.conn }} {{ sales.frame.nope }}\n\n"
+        "{{#each sales.frame limit=3}}\n- {{ .region }}: {{ .amount:,.1f }}\n{{/each}}"
+    )
+
+    @pytest.fixture
+    def tabled(self, editor):
+        editor.set_report({"title": "Tables", "blocks": [{"text": self.TEXT}]})
+        return editor
+
+    def test_report_text_reads_cells_and_rows(self, tabled):
+        from panel_flowdash.report import fill_report_text, render_report_text, text_problems
+
+        rendered = render_report_text(tabled, self.TEXT)
+        assert "Top region R1 at 1,000;" in rendered
+        assert "<li>R0: 0.0</li>\n<li>R1: 1,000.5</li>\n<li>R2: 2,001.0</li>" in rendered
+        assert 'Credentials <span class="fd-text-missing">[no column nope]</span>' in rendered
+        filled = fill_report_text(tabled, self.TEXT)
+        assert "- R2: 2,001.0\n" in filled and "\\[no column nope\\]" in filled
+        assert text_problems(tabled, self.TEXT) == [
+            "'{{ sales.frame.nope }}': no column nope. Its columns: region, amount, conn."
+        ]
+
+    @pytest.mark.parametrize("format", ["html", "md", "docx", "ipynb"])
+    def test_exports_render_the_filled_text(self, tabled, format):
+        pytest.importorskip({"docx": "docx", "ipynb": "nbformat"}.get(format, "json"))
+        text = _texts(export_report(tabled, format).data, format)
+        if format == "ipynb":
+            cells = json.loads(text)["cells"]
+            text = "".join("".join(c["source"]) for c in cells if c["cell_type"] == "markdown")
+        assert "R1" in text and "2,001.0" in text and "1,000.5" in text
+        assert "{{" not in text and "each" not in text.replace("Each", "")
+        assert SECRET not in text
+
+    @pytest.mark.parametrize("format", ["html", "md", "ipynb"])
+    def test_cell_line_breaks_stay_in_their_list_item(self, editor, format):
+        pytest.importorskip({"ipynb": "nbformat"}.get(format, "json"))
+        from panel_flowdash.report import render_report_text
+        from panel_flowdash.text_components import _MARKDOWN
+
+        editor.graph.get_state("sales").frame = pd.DataFrame({"region": ["a\n\n# H\n- li", "b"]})
+        text = "{{#each sales.frame}}\n- {{ .region }}\n{{/each}}"
+        editor.set_report({"title": "Breaks", "blocks": [{"text": text}]})
+        assert render_report_text(editor, text).count("<li>") == 2
+        data = export_report(editor, format).data.decode()
+        if format == "ipynb":
+            cells = json.loads(data)["cells"]
+            data = "\n\n".join("".join(c["source"]) for c in cells if c["cell_type"] == "markdown")
+        if format != "html":
+            data = _MARKDOWN.render(data)
+        assert "a # H - li" in data and "<h1>H</h1>" not in data
+        assert re.search(r"<li>a # H - li</li>\s*<li>b</li>", data)
+
+    def test_a_failed_output_shows_unavailable(self, tabled):
+        from panel_flowdash.report import fill_report_text, render_report_text
+
+        tabled._output_failures.setdefault("sales", {})["frame"] = ValueError("down")
+        assert "Top region \\[unavailable\\] at \\[unavailable\\];" in fill_report_text(
+            tabled, self.TEXT
+        )
+        assert '<span class="fd-text-missing">[unavailable]</span>' in render_report_text(
+            tabled, "{{ sales.frame.region }}"
+        )
+        assert fill_report_text(tabled, "{{#each sales.frame}}x{{/each}}") == "\\[unavailable\\]"
+
+    def test_view_only_export_without_data_leaves_placeholders_empty(self, tabled):
+        from panel_flowdash.report import fill_report_text
+
+        tabled.graph.get_state("sales").frame = None
+        assert fill_report_text(tabled, self.TEXT) == "Top region  at ;  \n\n"
+
+    def test_edit_report_warns_about_unknown_columns(self, tabled):
+        from panel_flowdash.agent import DashboardOps
+
+        issues = DashboardOps(tabled).edit_report(
+            [
+                {
+                    "op": "insert",
+                    "block": {"text": "{{ sales.frame.rgion }} {{#each sales.frame}}x"},
+                }
+            ]
+        )
+        messages = [i.message for i in issues]
+        assert any("no column rgion" in m for m in messages)
+        assert any("has no '{{/each}}'" in m for m in messages)
+        assert len(messages) == len(set(messages))
+
+    def test_placeholder_refs_include_blocks(self):
+        from panel_flowdash.report import placeholder_refs
+
+        assert set(placeholder_refs("{{#each a.data}}{{ .x }}{{/each}} {{ b.out.col[2] }}")) == {
+            ("a", "data"),
+            ("b", "out"),
+        }

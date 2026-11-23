@@ -1748,6 +1748,22 @@ class DashboardOps:
     def _report_ids(self) -> dict[str, str]:
         return {name: iid for iid, name in self._names().items()}
 
+    def _report_text_problems(self, report: dict[str, t.Any], known: list[Issue]) -> list[Issue]:
+        """Return warnings about text placeholders that read a column or row the current data lacks."""
+        from panel_flowdash.report import text_problems
+
+        seen = {(i.path, i.message) for i in known}
+        issues = []
+        for i, block in enumerate(report.get("blocks") or []):
+            if not isinstance(block, dict) or not isinstance(block.get("text"), str):
+                continue
+            path = f"report.blocks[{i}].text"
+            for problem in text_problems(self.editor, block["text"]):
+                if (path, problem) not in seen:
+                    seen.add((path, problem))
+                    issues.append(Issue(path, problem, "warning"))
+        return issues
+
     def _apply_report(self, report: dict[str, t.Any], labels: list[str]) -> list[Issue]:
         """Store *report*, nodes by name, as one edit described by *labels*; return its warnings."""
         editor = self.editor
@@ -1767,6 +1783,7 @@ class DashboardOps:
             for issue in self.validate(doc, checks=False)
             if issue.path.startswith("report") and issue.severity != "error"
         ]
+        warnings += self._report_text_problems(report, warnings)
         try:
             editor.set_report(stored, label=labels, coalesce=False)
         except ValueError as exc:

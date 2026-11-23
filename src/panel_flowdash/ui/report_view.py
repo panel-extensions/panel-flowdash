@@ -36,12 +36,12 @@ from panel.viewable import Viewable, Viewer
 from panel_flowdash.global_filters import filter_label
 from panel_flowdash.port_types import port_types_compatible
 from panel_flowdash.report import (
-    PLACEHOLDER,
     block_kind,
     dashboard_nodes,
     group_members,
     insert_block,
     move_block,
+    placeholder_refs,
     placeholder_text,
     remove_block,
     render_report_text,
@@ -185,6 +185,12 @@ code {{ font-family: "Roboto Mono", monospace; font-size: 0.9em; }}
   padding: 1px 5px;
   font-weight: 500;
   white-space: nowrap;
+}}
+/* A marker for a value the text cannot show: visible, but quieter than a value. */
+.fd-text-missing {{
+  color: var(--mui-palette-text-secondary, #666);
+  font-size: 0.9em;
+  font-style: italic;
 }}
 """
 
@@ -996,10 +1002,10 @@ class ReportView(Viewer):
         from panel_flowdash.agent.yaml_format import node_names
 
         ids = {name: iid for iid, name in node_names(self.editor._tile_items).items()}
-        for match in PLACEHOLDER.finditer(text or ""):
-            iid = ids.get(match.group(1))
+        for name, port in dict.fromkeys(placeholder_refs(text)):
+            iid = ids.get(name)
             if iid is not None:
-                spec_port = self._port_of(iid, match.group(2))
+                spec_port = self._port_of(iid, port)
                 if spec_port is not None:
                     self._refs.append((iid, spec_port))
 

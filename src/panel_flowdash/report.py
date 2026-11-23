@@ -32,10 +32,11 @@ import decimal
 import fractions
 import re
 import typing as t
-from collections.abc import Callable, Collection, Iterable, Mapping
+from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 
 from panel_flowdash.groups import GroupError, check_group_id
+from panel_flowdash.text_fill import UNAVAILABLE, Filled, placeholder_pattern, prepare
 from panel_flowdash.turns import TURN_ID_PATTERN
 
 if t.TYPE_CHECKING:
@@ -456,10 +457,10 @@ def report_blocks(editor: FlowDash) -> ResolvedReport:
 # Live values in text blocks
 # --------------------------------------------------------------------------
 
-# ``{{ <node>.<port> }}``, ``{{ <node>.<port>.<key> }}`` and a format spec after a colon.
-PLACEHOLDER = re.compile(
-    r"\{\{\s*([A-Za-z_][A-Za-z0-9_-]*)\.([A-Za-z_][\w-]*)(?:\.([\w-]+))?\s*(?::([^{}]*?))?\s*\}\}"
-)
+# ``{{ <node>.<port> }}``, then keys, columns and ``[n]`` rows, and a format spec after a colon;
+# see :mod:`panel_flowdash.text_fill`, also for ``{{#each <node>.<port>}}`` blocks.
+_ROOT = r"[A-Za-z_][A-Za-z0-9_-]*\.[A-Za-z_][\w-]*"
+PLACEHOLDER = placeholder_pattern(_ROOT)
 
 # Exactly these types: a subclass may format itself however it likes.
 _PLAIN_TYPES = (
@@ -509,9 +510,20 @@ def _plain(value: t.Any, depth: int = 0) -> bool:
     return False
 
 
+class _Outputs:
+    """The outputs of one node, read by port name only when a placeholder names them."""
+
+    __slots__ = ("editor", "ids", "name")
+
+    def __init__(self, editor: FlowDash, name: str, ids: t.Mapping[str, str]):
+        self.editor, self.name, self.ids = editor, name, ids
+
+
 def _lookup(value: t.Any, key: str | None) -> t.Any:
     if key is None:
         return value
+    if type(value) is _Outputs:
+        return output_value(value.editor, value.name, key, value.ids, UNAVAILABLE)
     if type(value) is dict:
         return value.get(key)
     if type(value).__module__.startswith("pandas") and type(value).__name__ == "Series":
@@ -554,12 +566,16 @@ def _scalar(value: t.Any) -> bool:
 
 
 def output_value(
-    editor: FlowDash, name: str, port: str, ids: t.Mapping[str, str] | None = None
+    editor: FlowDash,
+    name: str,
+    port: str,
+    ids: t.Mapping[str, str] | None = None,
+    failed: t.Any = None,
 ) -> t.Any:
     """Return the current value of output *port* of the node called *name*, None if it has none to show.
 
-    None too when there is no such node or output, when the node is one the
-    editor's user may not use, or when the output failed. *ids* maps node
+    None too when there is no such node or output and when the node is one
+    the editor's user may not use; *failed* when the output failed. *ids* maps node
     names to instance ids, to look up many outputs without naming the nodes each time.
     """
     from panel_flowdash.agent.preview import output_failures
@@ -575,7 +591,7 @@ def output_value(
     if not any(p.name == resolved for p in spec.outputs):
         return None
     if resolved in output_failures(editor, instance_id):
-        return None
+        return failed
     state = editor.graph.get_state(instance_id)
     return getattr(state, resolved, None) if state is not None else None
 
@@ -586,15 +602,12 @@ def _node_ids(editor: FlowDash) -> dict[str, str]:
     return {name: iid for iid, name in node_names(editor._tile_items).items()}
 
 
-def _filler(editor: FlowDash) -> Callable[[re.Match], str]:
-    ids = _node_ids(editor)
-
-    def fill(match: re.Match) -> str:
-        name, port, key, spec = match.groups()
-        value = _lookup(output_value(editor, name, port, ids), key)
-        return placeholder_text(value, (spec or "").strip())
-
-    return fill
+def _prepare(editor: FlowDash | None, text: str, problems: list[str] | None = None) -> Filled:
+    ids = {} if editor is None else _node_ids(editor)
+    nodes = {name: _Outputs(editor, name, ids) for name in ids}
+    return prepare(
+        text, _ROOT, nodes, lambda v, spec: placeholder_text(v, spec.strip()), _lookup, problems
+    )
 
 
 def render_report_text(editor: FlowDash, text: str, value_class: str | None = None) -> str:
@@ -602,13 +615,16 @@ def render_report_text(editor: FlowDash, text: str, value_class: str | None = No
 
     Placeholders are filled as the Markdown component fills its own: after
     the Markdown is parsed, so a value is literal text, and never in a link or
-    image URL. A placeholder naming no node or output, a restricted node or a
-    failed output is left empty. With *value_class* each value in the text is
+    image URL. A placeholder naming no node or output or a restricted node is
+    left empty, one reading a failed output shows ``[unavailable]`` and one
+    naming a column or row its table lacks a marker saying so, each marker a
+    quiet ``<span>`` of class ``fd-text-missing``. With *value_class* each value in the text is
     a ``<span>`` of that class, which the Report view shows as a chip.
     """
     from panel_flowdash.text_components import markdown_with_placeholders
 
-    return markdown_with_placeholders(text, PLACEHOLDER, _filler(editor), value_class)
+    filled = _prepare(editor, text)
+    return markdown_with_placeholders(filled.template, filled.pattern, filled.fill, value_class)
 
 
 def fill_report_text(editor: FlowDash, text: str) -> str:
@@ -616,13 +632,36 @@ def fill_report_text(editor: FlowDash, text: str) -> str:
     from panel_flowdash.text_components import fill_placeholders
     from panel_flowdash.ui.text import escape_markdown
 
-    return fill_placeholders(text, PLACEHOLDER, _filler(editor), escape_markdown)
+    filled = _prepare(editor, text)
+    return fill_placeholders(filled.template, filled.pattern, filled.fill, escape_markdown)
+
+
+def text_problems(editor: FlowDash | None, text: str) -> list[str]:
+    """Return the problems filling *text* from current outputs meets, e.g. a column a table lacks.
+
+    Without *editor* only those of the text itself, such as an unclosed block.
+    """
+    from panel_flowdash.text_components import fill_placeholders
+
+    problems: list[str] = []
+    filled = _prepare(editor, text, problems)
+    fill_placeholders(filled.template, filled.pattern, filled.fill)
+    return problems
+
+
+_EACH_REF = re.compile(rf"\{{\{{\s*#each\s+({_ROOT})")
 
 
 def placeholder_refs(text: str) -> Iterable[tuple[str, str]]:
-    """Yield the ``(node, port)`` each placeholder of a text block reads."""
-    for match in PLACEHOLDER.finditer(text or ""):
-        yield match.group(1), match.group(2)
+    """Yield the ``(node, port)`` each placeholder and block of a text block reads."""
+    text = text or ""
+    for match in _EACH_REF.finditer(text):
+        name, port = match.group(1).split(".")
+        yield name, port
+    for match in PLACEHOLDER.finditer(text):
+        if match.group("root") is not None:
+            name, port = match.group("root").split(".")
+            yield name, port
 
 
 __all__ = [
@@ -647,6 +686,7 @@ __all__ = [
     "report_blocks",
     "report_turns",
     "set_title",
+    "text_problems",
     "turn_outputs",
     "update_block",
     "without_nodes",

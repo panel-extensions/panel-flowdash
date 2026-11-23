@@ -75,7 +75,13 @@ _REPORT = """\
   Prose about a dashboard, e.g. a summary or a sentence per chart, goes in the
   report as text blocks, with placeholders such as `{{ total_revenue.value:,.0f }}`
   for numbers so they follow the data; add a heading or Markdown tile only
-  when the user asks for one on the dashboard. A node can be in the report
+  when the user asks for one on the dashboard. Never type a number from the
+  data into prose: read it from a node's table with `{{ node.data.column }}`
+  (first row), `{{ node.data.column[2] }}` or `{{ node.data[-1].column }}`,
+  and list rows with `{{#each node.data limit=5}}- {{ .region }}:
+  {{ .share:.1% }}{{/each}}`. Placeholders do not compute: put sorting,
+  filtering and totals in the node's query. A Markdown tile reads its `table`
+  input the same way, as `{{ table.column }}`. A node can be in the report
   without a tile. ask_in_report adds a question for the user to run later;
   run_pending answers one now. Read your text back with report_text.
 """

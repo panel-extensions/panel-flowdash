@@ -255,12 +255,14 @@ class _Checker:
 
         Readers see such a placeholder or block empty, so it loads, but its author should know.
         """
-        from panel_flowdash.report import placeholder_refs
+        from panel_flowdash.report import placeholder_refs, text_problems
 
         nodes = doc.get("nodes") or {}
         for i, block in enumerate((doc.get("report") or {}).get("blocks") or []):
             path = f"report.blocks[{i}]"
             if "text" in block:
+                for problem in text_problems(None, block["text"]):
+                    self.warn(f"{path}.text", problem)
                 for name, port in dict.fromkeys(placeholder_refs(block["text"])):
                     node = nodes.get(name)
                     if node is None:

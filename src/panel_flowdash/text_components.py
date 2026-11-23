@@ -20,12 +20,12 @@ import param
 from panel.viewable import Viewer
 
 from panel_flowdash.registry import register
+from panel_flowdash.text_fill import UNAVAILABLE, Filled, Missing, names_pattern, prepare
 from panel_flowdash.ui.node_card import summarize_value
 from panel_flowdash.ui.text import escape_markdown, markdown_renderer, text_typography
 from panel_flowdash.util import is_failure
-from panel_flowdash.value_text import safe_str
+from panel_flowdash.value_text import is_plain, safe_str
 
-_PLACEHOLDER = re.compile(r"\{\{\s*value(?:\.([\w-]+))?\s*(?::([^{}]*?))?\s*\}\}")
 # A format spec asking for thousands of characters would make the server build them.
 _HUGE_SPEC = re.compile(r"\d{4,}")
 _MAX_FILL = 1000
@@ -41,10 +41,15 @@ _MARKDOWN = markdown_renderer("gfm-like", new_tab=False)
 _APP_MARKDOWN = markdown_renderer("gfm-like")
 
 _TEMPLATE_DOC = """
-Placeholders are filled from the connected `value` input: `{{ value }}` shows
-the value, `{{ value.key }}` a key of a dict or a pandas Series, and a format
-spec after a colon formats a number, e.g. `{{ value:,.0f }}` or
-`{{ value.share:.1%}}`."""
+Placeholders are filled from the connected `value` and `table` inputs:
+`{{ value }}` shows the value, `{{ value.key }}` a key of a dict or a pandas
+Series, and a format spec after a colon formats a number, e.g.
+`{{ value:,.0f }}` or `{{ value.share:.1% }}`. On a table (a DataFrame, e.g. a
+SQL query's `data`) `{{ table.column }}` is the first row's cell,
+`{{ table.column[2] }}` or `{{ table[2].column }}` the third row's and
+`{{ table.column[-1] }}` the last's. `{{#each table limit=5}}- {{ .region }}:
+{{ .share:.1% }}{{/each}}` repeats its text for each row, at most 50.
+Placeholders do not compute: sort, filter and aggregate in the query."""
 
 
 def _lookup(value: t.Any, key: str | None) -> t.Any:
@@ -112,7 +117,8 @@ def _format(value: t.Any, spec: str, depth: int) -> str:
         return ""
     if _huge(value):
         return _scientific(value, spec)
-    if spec and not _HUGE_SPEC.search(spec):
+    # Another object's __format__ could write out whatever it holds.
+    if spec and not _HUGE_SPEC.search(spec) and is_plain(value):
         try:
             return format(value, spec)
         except (TypeError, ValueError, OverflowError):
@@ -165,12 +171,10 @@ class _Budget:
         return text
 
 
-def _value_filler(value: t.Any) -> t.Callable[[re.Match], str]:
-    def fill(match: re.Match) -> str:
-        key, spec = match.group(1), (match.group(2) or "").strip()
-        return format_value(_lookup(value, key), spec)
-
-    return fill
+def _prepare(
+    template: str, tables: t.Mapping[str, t.Any], problems: list[str] | None = None
+) -> Filled:
+    return prepare(template, names_pattern(tables), tables, format_value, _lookup, problems)
 
 
 def fill_placeholders(
@@ -188,13 +192,36 @@ def fill_placeholders(
     return pattern.sub(replace, template or "")
 
 
-def fill_template(template: str, value: t.Any, escape: t.Callable[[str], str] = str) -> str:
-    """Replace the ``{{ value }}`` placeholders of *template*, passing each filled text through *escape*."""
-    return fill_placeholders(template, _PLACEHOLDER, _value_filler(value), escape)
+def fill_text(
+    template: str,
+    tables: t.Mapping[str, t.Any],
+    escape: t.Callable[[str], str] = str,
+    problems: list[str] | None = None,
+) -> str:
+    """Return *template* with its placeholders filled from the values and tables named in *tables*.
+
+    Its blocks are repeated first (see :mod:`panel_flowdash.text_fill`), then
+    each placeholder is replaced by its value passed through *escape*, once:
+    a value is never read as a placeholder. Problems, such as a column a
+    table does not have, are added to *problems*.
+    """
+    filled = _prepare(template, tables, problems)
+    return fill_placeholders(filled.template, filled.pattern, filled.fill, escape)
 
 
-# Private-use characters around a filled value, turned into an element after rendering.
+def fill_template(
+    template: str, value: t.Any, escape: t.Callable[[str], str] = str, table: t.Any = None
+) -> str:
+    """Replace the ``{{ value }}`` and ``{{ table }}`` placeholders of *template*, each filled text through *escape*."""
+    return fill_text(template, {"value": value, "table": table}, escape)
+
+
+# Private-use characters around a filled value and around a marker, turned into elements after rendering.
 _VALUE_OPEN, _VALUE_CLOSE = "\ue000", "\ue001"
+_MISSING_OPEN, _MISSING_CLOSE = "\ue002", "\ue003"
+_PRIVATE = re.compile("[\ue000-\ue003]")
+#: The class of the ``<span>`` around a marker such as ``[no column x]`` or ``[unavailable]``.
+MISSING_CLASS = "fd-text-missing"
 
 
 def markdown_with_placeholders(
@@ -209,29 +236,34 @@ def markdown_with_placeholders(
     cannot add markup, and inside a code span or block it keeps its backslashes.
     A placeholder in a link or image URL is dropped rather than filled, so
     showing the text never sends upstream data to another site. With
-    *value_class*, each value in the text is a ``<span>`` of that class.
+    *value_class*, each value in the text is a ``<span>`` of that class. A
+    marker for something the text names but cannot show (a :class:`Missing`)
+    is a ``<span>`` of class :data:`MISSING_CLASS`.
     """
-    fills: list[str] = []
+    fills: list[tuple[str, bool]] = []
     nonce = secrets.token_hex(4)
     budget = _Budget()
-    markers = (_VALUE_OPEN, _VALUE_CLOSE)
-
-    def strip(text: str) -> str:
-        return text.replace(_VALUE_OPEN, "").replace(_VALUE_CLOSE, "")
-
-    if value_class is not None:
-        template = strip(template or "")
+    template = _PRIVATE.sub("", template or "")
 
     def mark(match: re.Match) -> str:
-        fills.append(strip(budget.take(fill(match))) if value_class else budget.take(fill(match)))
+        text = fill(match)
+        fills.append((_PRIVATE.sub("", budget.take(text)), isinstance(text, Missing)))
         return f"fdph{nonce}n{len(fills) - 1}e"
 
     marker = re.compile(f"fdph{nonce}n(\\d+)e")
 
+    def wrapped(m: re.Match) -> str:
+        text, missing = fills[int(m.group(1))]
+        if missing:
+            return _MISSING_OPEN + text + _MISSING_CLOSE
+        if value_class is not None:
+            return _VALUE_OPEN + text + _VALUE_CLOSE
+        return text
+
     def filled(text: str, wrap: bool = False) -> str:
-        if wrap and value_class is not None:
-            return marker.sub(lambda m: markers[0] + fills[int(m.group(1))] + markers[1], text)
-        return marker.sub(lambda m: fills[int(m.group(1))], text)
+        if wrap:
+            return marker.sub(wrapped, text)
+        return marker.sub(lambda m: fills[int(m.group(1))][0], text)
 
     def walk(tokens):
         for token in tokens:
@@ -245,9 +277,12 @@ def markdown_with_placeholders(
             if token.children:
                 walk(token.children)
 
-    tokens = _APP_MARKDOWN.parse(pattern.sub(mark, template or ""))
+    tokens = _APP_MARKDOWN.parse(pattern.sub(mark, template))
     walk(tokens)
     rendered = _APP_MARKDOWN.renderer.render(tokens, _APP_MARKDOWN.options, {})
+    rendered = rendered.replace(_MISSING_OPEN, f'<span class="{MISSING_CLASS}">').replace(
+        _MISSING_CLOSE, "</span>"
+    )
     if value_class is None:
         return rendered
     return rendered.replace(_VALUE_OPEN, f'<span class="{html.escape(value_class)}">').replace(
@@ -255,12 +290,35 @@ def markdown_with_placeholders(
     )
 
 
-def render_markdown(template: str, value: t.Any) -> str:
-    """Render *template* as HTML, filling its ``{{ value }}`` placeholders from *value*.
+def render_text(
+    template: str,
+    tables: t.Mapping[str, t.Any],
+    value_class: str | None = None,
+    problems: list[str] | None = None,
+) -> str:
+    """Render *template* as HTML, filling its placeholders from the values and tables named in *tables*.
 
     See :func:`markdown_with_placeholders` for how values are kept literal.
     """
-    return markdown_with_placeholders(template, _PLACEHOLDER, _value_filler(value))
+    filled = _prepare(template, tables, problems)
+    return markdown_with_placeholders(filled.template, filled.pattern, filled.fill, value_class)
+
+
+def render_markdown(template: str, value: t.Any, table: t.Any = None) -> str:
+    """Render *template* as HTML, filling its ``{{ value }}`` and ``{{ table }}`` placeholders."""
+    return render_text(template, {"value": value, "table": table})
+
+
+def check_text(config: t.Mapping[str, t.Any], inputs: t.Mapping[str, t.Any]) -> list:
+    """Warn about placeholders of a text tile that read a column or row its table does not have."""
+    from panel_flowdash.config_check import CheckWarning
+
+    tables = {"value": inputs.get("value"), "table": inputs.get("table")}
+    problems: list[str] = []
+    for key in ("text", "subtitle"):
+        if isinstance(config.get(key), str):
+            fill_text(config[key], tables, problems=problems)
+    return [CheckWarning(p) for p in problems]
 
 
 _MARKDOWN_CSS = """
@@ -306,6 +364,12 @@ th {
 img {
   max-width: 100%;
 }
+.fd-text-missing {
+  color: var(--mui-palette-text-secondary, inherit);
+  font-size: 0.9em;
+  font-style: italic;
+  opacity: 0.85;
+}
 """
 
 
@@ -336,13 +400,48 @@ pn.Param.mapping[MultilineText] = MultilineInput
     description=(
         "Text written in Markdown, with headings, emphasis, lists, links, "
         "tables and images; raw HTML is shown as text. Placeholders like {{ value }} "
-        "show the value of the optional Value input."
+        "show the value of the optional Value input, {{ table.column }} a cell of "
+        "the optional Table input and {{#each table limit=5}}...{{/each}} repeats "
+        "text for its rows."
     ),
     config=["text"],
-    requires=[{"key": "value", "label": "Value", "required": False, "blocking": False}],
+    requires=[
+        {"key": "value", "label": "Value", "required": False, "blocking": False},
+        {
+            "key": "table",
+            "label": "Table",
+            "type": "DataFrame",
+            "required": False,
+            "blocking": False,
+        },
+    ],
+    check_config=check_text,
+    handles_failures=["value", "table"],
     default_size={"height": 240},
 )
-class Markdown(Viewer):
+class _FilledText(Viewer):
+    """A text tile filled from its ``value`` and ``table`` inputs, showing a failed input as unavailable."""
+
+    def _tables(self) -> dict[str, t.Any]:
+        failed = getattr(self, "_failed_inputs", ())
+        return {
+            name: UNAVAILABLE if name in failed else getattr(self, name)
+            for name in ("value", "table")
+        }
+
+    def __flowdash_input_failed__(self, port: str, failed: bool):
+        """Show the placeholders reading *port* as unavailable while its upstream output fails."""
+        current = set(getattr(self, "_failed_inputs", ()))
+        updated = current | {port} if failed else current - {port}
+        if updated != current:
+            self._failed_inputs = updated
+            self._update()
+
+    def _fill(self, text: str, escape: t.Callable[[str], str] = str) -> str:
+        return fill_text(text, self._tables(), escape)
+
+
+class Markdown(_FilledText):
     """Markdown text, optionally filled with values from upstream components."""
 
     text = MultilineText(
@@ -354,6 +453,10 @@ class Markdown(Viewer):
 
     value = param.Parameter(default=None, doc="The value filled into the text's placeholders.")
 
+    table = param.Parameter(
+        default=None, doc="The table whose cells and rows fill the text's placeholders."
+    )
+
     def __init__(self, **params):
         super().__init__(**params)
         self._pane = pn.pane.HTML(
@@ -364,9 +467,9 @@ class Markdown(Viewer):
         )
 
     def _render(self) -> str:
-        return render_markdown(self.text, self.value)
+        return render_text(self.text, self._tables())
 
-    @param.depends("text", "value", watch=True)
+    @param.depends("text", "value", "table", watch=True)
     def _update(self):
         self._pane.object = self._render()
 
@@ -375,7 +478,7 @@ class Markdown(Viewer):
         from panel_flowdash.export import Text
         from panel_flowdash.export.build import markdown_text
 
-        return Text(fill_template(self.text, self.value, markdown_text))
+        return Text(self._fill(self.text, markdown_text))
 
     def __flowdash_preview__(self) -> str:
         """Return the text of the Markdown with its placeholders filled in, without markup."""
@@ -397,14 +500,26 @@ _HEADING_VARIANTS = {"Title": "h3", "Heading": "h4", "Subheading": "h5", "Sectio
     tags=["view"],
     description=(
         "A heading with an optional subtitle, for titling a group of tiles. "
-        "Placeholders like {{ value }} show the value of the optional Value input."
+        "Placeholders like {{ value }} or {{ table.column }} show the value of the "
+        "optional Value input or a cell of the optional Table input."
     ),
     config=["text", "subtitle", "size", "alignment"],
-    requires=[{"key": "value", "label": "Value", "required": False, "blocking": False}],
+    requires=[
+        {"key": "value", "label": "Value", "required": False, "blocking": False},
+        {
+            "key": "table",
+            "label": "Table",
+            "type": "DataFrame",
+            "required": False,
+            "blocking": False,
+        },
+    ],
+    check_config=check_text,
+    handles_failures=["value", "table"],
     default_size={"height": 96},
     framed=False,
 )
-class Heading(Viewer):
+class Heading(_FilledText):
     """A heading for a section of the dashboard."""
 
     text = param.String(default="Heading", label="Text", doc="The heading text." + _TEMPLATE_DOC)
@@ -427,6 +542,10 @@ class Heading(Viewer):
 
     value = param.Parameter(default=None, doc="The value filled into the text's placeholders.")
 
+    table = param.Parameter(
+        default=None, doc="The table whose cells and rows fill the text's placeholders."
+    )
+
     def __init__(self, **params):
         super().__init__(**params)
         self._title = text_typography("", margin=0)
@@ -436,15 +555,15 @@ class Heading(Viewer):
         )
         self._update()
 
-    @param.depends("text", "subtitle", "size", "alignment", "value", watch=True)
+    @param.depends("text", "subtitle", "size", "alignment", "value", "table", watch=True)
     def _update(self):
         sx = {"textAlign": self.alignment, "width": "100%"}
         self._title.param.update(
-            object=escape_markdown(fill_template(self.text, self.value)),
+            object=escape_markdown(self._fill(self.text)),
             variant=_HEADING_VARIANTS[self.size],
             sx={**sx, "fontWeight": 500},
         )
-        subtitle = fill_template(self.subtitle, self.value)
+        subtitle = self._fill(self.subtitle)
         self._subtitle.param.update(
             object=escape_markdown(subtitle),
             visible=bool(subtitle.strip()),
@@ -457,15 +576,15 @@ class Heading(Viewer):
         from panel_flowdash.export.build import markdown_text
 
         level = {"Title": 1, "Heading": 1, "Subheading": 2, "Section": 3}[self.size]
-        blocks = [HeadingBlock(fill_template(self.text, self.value), level)]
-        subtitle = fill_template(self.subtitle, self.value)
+        blocks = [HeadingBlock(self._fill(self.text), level)]
+        subtitle = self._fill(self.subtitle)
         if subtitle.strip():
             blocks.append(Text(markdown_text(subtitle)))
         return blocks
 
     def __flowdash_preview__(self) -> str:
         """Return the heading text with its placeholders filled in."""
-        return fill_template(self.text, self.value)
+        return self._fill(self.text)
 
     def __panel__(self):
         """Return the heading."""

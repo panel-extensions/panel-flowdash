@@ -1,8 +1,13 @@
 """UI tests for the built-in Markdown, Notes, Heading and Divider components."""
 
+import pandas as pd
+import panel as pn
+import param
 import pytest
 from panel.tests.util import wait_until
+from panel.viewable import Viewer
 
+from panel_flowdash import register
 from panel_flowdash.editor import FlowDash
 
 from .util import serve_component
@@ -90,3 +95,56 @@ def test_notes_are_not_editable_in_preview(page):
     editor.preview = False
     expect(page.locator(".ql-editor")).to_have_attribute("contenteditable", "true")
     assert editor.graph.get_config_state(node).text == "<p>First</p>"
+
+
+@register(
+    page=False,
+    component=True,
+    title="Region query",
+    requires=[{"key": "period", "required": False}],
+    provides=[{"key": "data", "type": "DataFrame"}],
+)
+class RegionQuery(Viewer):
+    """A query node like Lumen's SQL node: a period in, a table of shares by region out."""
+
+    period = param.Parameter(default=None)
+
+    @param.output(param.DataFrame)
+    @param.depends("period")
+    def data(self):
+        if self.period == "Week":
+            return pd.DataFrame({"region": ["APAC", "EMEA"], "share": [0.61, 0.39]})
+        return pd.DataFrame({"region": ["EMEA", "APAC", "<b>AMER</b>"], "share": [0.5, 0.3, 0.2]})
+
+    def __panel__(self):
+        return pn.pane.Str("query")
+
+
+def test_a_text_tile_fills_from_a_table_and_follows_it(page):
+    editor = FlowDash({"T/query": RegionQuery}, notifications=False)
+    period = editor.add_component(
+        "Widgets/RadioGroup", config={"label": "Period", "default_options": ["Day", "Week"]}
+    )
+    query = editor.add_component("T/query")
+    text = (
+        "Leader: **{{ table.region }}** at {{ table.share:.0% }}\n\n"
+        "{{#each table limit=5}}\n- {{ .region }}: {{ .share:.0% }}\n{{/each}}"
+    )
+    note = editor.add_component("Text/Markdown", config={"text": text})
+    assert editor.connect(period, "selected", query, "period") is True
+    assert editor.connect(query, "data", note, "table") is True
+    editor.mode = "dashboard"
+    editor.editable = False
+    serve_component(page, editor)
+
+    tile = page.locator(".flowdash-tile").nth(
+        [item["instance_id"] for item in editor._tile_items].index(note)
+    )
+    expect(tile.locator("strong", has_text="EMEA")).to_be_visible()
+    expect(tile.locator("li")).to_have_text(["EMEA: 50%", "APAC: 30%", "<b>AMER</b>: 20%"])
+    expect(tile.locator("b")).to_have_count(0)
+
+    page.get_by_role("radio", name="Week").check()
+    expect(tile.locator("strong", has_text="APAC")).to_be_visible()
+    expect(tile.get_by_text("Leader: APAC at 61%")).to_be_visible()
+    expect(tile.locator("li")).to_have_text(["APAC: 61%", "EMEA: 39%"])
