@@ -40,8 +40,9 @@ def _shows_node(page, editor, instance_id):
         timeout=TIMEOUT,
     )
     wait_until(lambda: editor._inspector._shown == ("node", instance_id), page, timeout=TIMEOUT)
-    expect(page.locator(".fd-inspector-header")).to_be_visible()
-    expect(_node(page, instance_id)).to_have_class(re.compile(r"\bselected\b"))
+    # Python has shown the node; the browser then renders the whole inspector for it.
+    expect(page.locator(".fd-inspector-header")).to_be_visible(timeout=TIMEOUT)
+    expect(_node(page, instance_id)).to_have_class(re.compile(r"\bselected\b"), timeout=TIMEOUT)
 
 
 def test_the_inspector_keeps_the_selection_across_tab_switches(page):

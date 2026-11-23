@@ -21,6 +21,11 @@ _DOCUMENTS_IDLE = (
 # a busy CI runner takes longer than the 5 s that ``expect`` waits by default.
 DASHBOARD_LOAD_TIMEOUT = 20000
 
+# A scripted agent run of a few tool calls takes about 1.5 s on a desktop and
+# over 20 s on a Windows runner, most of it in the first tool call of a test
+# worker, so waits for a run to end get this much.
+AGENT_RUN_TIMEOUT = 60000
+
 # The number of inert elements on the page, across shadow roots.
 INERT_COUNT = """() => {
   const found = []

@@ -17,6 +17,7 @@ from panel_flowdash.agent.tools import FlowDashDeps, dashboard_toolset
 
 from ..test_agent_tools import scripted
 from .test_ui_shell import _serve_app, _store_with
+from .util import AGENT_RUN_TIMEOUT
 
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
@@ -204,7 +205,7 @@ def test_the_tile_outline_sits_on_the_tiles_visible_edge(page, preview):
     wait_until(
         lambda: len(session.highlighter.marked) == 2 and not session.runner.state.running,
         page,
-        timeout=20000,
+        timeout=AGENT_RUN_TIMEOUT,
     )
     page.get_by_role("button", name="Layout").first.click()
     expect(page.locator(f".{TILE_CLASSES['add']}")).to_have_count(2, timeout=20000)

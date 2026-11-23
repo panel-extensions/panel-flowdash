@@ -20,7 +20,7 @@ from panel_flowdash.ui import tile_layout
 from ..test_agent_tools import scripted
 from .test_ui_selection import CHART, FRAME, ROWS, SelectionChart, SelectionRows, _drag
 from .test_ui_shell import _serve_app, _store_with
-from .util import DASHBOARD_LOAD_TIMEOUT, serve_component, stable_box
+from .util import AGENT_RUN_TIMEOUT, DASHBOARD_LOAD_TIMEOUT, serve_component, stable_box
 
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
@@ -98,9 +98,19 @@ def test_add_to_dashboard_puts_an_answer_on_the_dashboard(page):
     apps = []
     _serve_app(page, store, f"/dash/{dash}", apps, agent=agent, explore_agent=agent)
     _ask(page, apps)
+    feed = apps[0]._editor.explore_feed
+    wait_until(
+        lambda: (
+            feed.runner is not None
+            and bool(feed.runner.state.runs)
+            and not feed.runner.state.running
+        ),
+        page,
+        timeout=AGENT_RUN_TIMEOUT,
+    )
     card = page.locator(".artifact-cell", has_text="memo")
     button = card.get_by_role("button", name="Add to dashboard")
-    expect(button).to_be_visible(timeout=20000)
+    expect(button).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
     button.click()
     expect(card.locator(".artifact-cell-done")).to_have_text(
         re.compile("On dashboard as memo$"), timeout=DASHBOARD_LOAD_TIMEOUT
