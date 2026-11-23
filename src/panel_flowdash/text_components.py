@@ -20,7 +20,7 @@ import param
 from panel.viewable import Viewer
 
 from panel_flowdash.registry import register
-from panel_flowdash.text_fill import Filled, names_pattern, prepare
+from panel_flowdash.text_fill import UNAVAILABLE, Filled, Missing, names_pattern, prepare
 from panel_flowdash.ui.node_card import summarize_value
 from panel_flowdash.ui.text import escape_markdown, markdown_renderer, text_typography
 from panel_flowdash.util import is_failure
@@ -216,8 +216,12 @@ def fill_template(
     return fill_text(template, {"value": value, "table": table}, escape)
 
 
-# Private-use characters around a filled value, turned into an element after rendering.
+# Private-use characters around a filled value and around a marker, turned into elements after rendering.
 _VALUE_OPEN, _VALUE_CLOSE = "\ue000", "\ue001"
+_MISSING_OPEN, _MISSING_CLOSE = "\ue002", "\ue003"
+_PRIVATE = re.compile("[\ue000-\ue003]")
+#: The class of the ``<span>`` around a marker such as ``[no column x]`` or ``[unavailable]``.
+MISSING_CLASS = "fd-text-missing"
 
 
 def markdown_with_placeholders(
@@ -232,29 +236,34 @@ def markdown_with_placeholders(
     cannot add markup, and inside a code span or block it keeps its backslashes.
     A placeholder in a link or image URL is dropped rather than filled, so
     showing the text never sends upstream data to another site. With
-    *value_class*, each value in the text is a ``<span>`` of that class.
+    *value_class*, each value in the text is a ``<span>`` of that class. A
+    marker for something the text names but cannot show (a :class:`Missing`)
+    is a ``<span>`` of class :data:`MISSING_CLASS`.
     """
-    fills: list[str] = []
+    fills: list[tuple[str, bool]] = []
     nonce = secrets.token_hex(4)
     budget = _Budget()
-    markers = (_VALUE_OPEN, _VALUE_CLOSE)
-
-    def strip(text: str) -> str:
-        return text.replace(_VALUE_OPEN, "").replace(_VALUE_CLOSE, "")
-
-    if value_class is not None:
-        template = strip(template or "")
+    template = _PRIVATE.sub("", template or "")
 
     def mark(match: re.Match) -> str:
-        fills.append(strip(budget.take(fill(match))) if value_class else budget.take(fill(match)))
+        text = fill(match)
+        fills.append((_PRIVATE.sub("", budget.take(text)), isinstance(text, Missing)))
         return f"fdph{nonce}n{len(fills) - 1}e"
 
     marker = re.compile(f"fdph{nonce}n(\\d+)e")
 
+    def wrapped(m: re.Match) -> str:
+        text, missing = fills[int(m.group(1))]
+        if missing:
+            return _MISSING_OPEN + text + _MISSING_CLOSE
+        if value_class is not None:
+            return _VALUE_OPEN + text + _VALUE_CLOSE
+        return text
+
     def filled(text: str, wrap: bool = False) -> str:
-        if wrap and value_class is not None:
-            return marker.sub(lambda m: markers[0] + fills[int(m.group(1))] + markers[1], text)
-        return marker.sub(lambda m: fills[int(m.group(1))], text)
+        if wrap:
+            return marker.sub(wrapped, text)
+        return marker.sub(lambda m: fills[int(m.group(1))][0], text)
 
     def walk(tokens):
         for token in tokens:
@@ -268,9 +277,12 @@ def markdown_with_placeholders(
             if token.children:
                 walk(token.children)
 
-    tokens = _APP_MARKDOWN.parse(pattern.sub(mark, template or ""))
+    tokens = _APP_MARKDOWN.parse(pattern.sub(mark, template))
     walk(tokens)
     rendered = _APP_MARKDOWN.renderer.render(tokens, _APP_MARKDOWN.options, {})
+    rendered = rendered.replace(_MISSING_OPEN, f'<span class="{MISSING_CLASS}">').replace(
+        _MISSING_CLOSE, "</span>"
+    )
     if value_class is None:
         return rendered
     return rendered.replace(_VALUE_OPEN, f'<span class="{html.escape(value_class)}">').replace(
@@ -352,6 +364,12 @@ th {
 img {
   max-width: 100%;
 }
+.fd-text-missing {
+  color: var(--mui-palette-text-secondary, inherit);
+  font-size: 0.9em;
+  font-style: italic;
+  opacity: 0.85;
+}
 """
 
 
@@ -398,9 +416,32 @@ pn.Param.mapping[MultilineText] = MultilineInput
         },
     ],
     check_config=check_text,
+    handles_failures=["value", "table"],
     default_size={"height": 240},
 )
-class Markdown(Viewer):
+class _FilledText(Viewer):
+    """A text tile filled from its ``value`` and ``table`` inputs, showing a failed input as unavailable."""
+
+    def _tables(self) -> dict[str, t.Any]:
+        failed = getattr(self, "_failed_inputs", ())
+        return {
+            name: UNAVAILABLE if name in failed else getattr(self, name)
+            for name in ("value", "table")
+        }
+
+    def __flowdash_input_failed__(self, port: str, failed: bool):
+        """Show the placeholders reading *port* as unavailable while its upstream output fails."""
+        current = set(getattr(self, "_failed_inputs", ()))
+        updated = current | {port} if failed else current - {port}
+        if updated != current:
+            self._failed_inputs = updated
+            self._update()
+
+    def _fill(self, text: str, escape: t.Callable[[str], str] = str) -> str:
+        return fill_text(text, self._tables(), escape)
+
+
+class Markdown(_FilledText):
     """Markdown text, optionally filled with values from upstream components."""
 
     text = MultilineText(
@@ -426,7 +467,7 @@ class Markdown(Viewer):
         )
 
     def _render(self) -> str:
-        return render_markdown(self.text, self.value, self.table)
+        return render_text(self.text, self._tables())
 
     @param.depends("text", "value", "table", watch=True)
     def _update(self):
@@ -437,7 +478,7 @@ class Markdown(Viewer):
         from panel_flowdash.export import Text
         from panel_flowdash.export.build import markdown_text
 
-        return Text(fill_template(self.text, self.value, markdown_text, self.table))
+        return Text(self._fill(self.text, markdown_text))
 
     def __flowdash_preview__(self) -> str:
         """Return the text of the Markdown with its placeholders filled in, without markup."""
@@ -474,10 +515,11 @@ _HEADING_VARIANTS = {"Title": "h3", "Heading": "h4", "Subheading": "h5", "Sectio
         },
     ],
     check_config=check_text,
+    handles_failures=["value", "table"],
     default_size={"height": 96},
     framed=False,
 )
-class Heading(Viewer):
+class Heading(_FilledText):
     """A heading for a section of the dashboard."""
 
     text = param.String(default="Heading", label="Text", doc="The heading text." + _TEMPLATE_DOC)
@@ -517,11 +559,11 @@ class Heading(Viewer):
     def _update(self):
         sx = {"textAlign": self.alignment, "width": "100%"}
         self._title.param.update(
-            object=escape_markdown(fill_template(self.text, self.value, table=self.table)),
+            object=escape_markdown(self._fill(self.text)),
             variant=_HEADING_VARIANTS[self.size],
             sx={**sx, "fontWeight": 500},
         )
-        subtitle = fill_template(self.subtitle, self.value, table=self.table)
+        subtitle = self._fill(self.subtitle)
         self._subtitle.param.update(
             object=escape_markdown(subtitle),
             visible=bool(subtitle.strip()),
@@ -534,15 +576,15 @@ class Heading(Viewer):
         from panel_flowdash.export.build import markdown_text
 
         level = {"Title": 1, "Heading": 1, "Subheading": 2, "Section": 3}[self.size]
-        blocks = [HeadingBlock(fill_template(self.text, self.value, table=self.table), level)]
-        subtitle = fill_template(self.subtitle, self.value, table=self.table)
+        blocks = [HeadingBlock(self._fill(self.text), level)]
+        subtitle = self._fill(self.subtitle)
         if subtitle.strip():
             blocks.append(Text(markdown_text(subtitle)))
         return blocks
 
     def __flowdash_preview__(self) -> str:
         """Return the heading text with its placeholders filled in."""
-        return fill_template(self.text, self.value, table=self.table)
+        return self._fill(self.text)
 
     def __panel__(self):
         """Return the heading."""

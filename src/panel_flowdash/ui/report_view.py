@@ -186,6 +186,12 @@ code {{ font-family: "Roboto Mono", monospace; font-size: 0.9em; }}
   font-weight: 500;
   white-space: nowrap;
 }}
+/* A marker for a value the text cannot show: visible, but quieter than a value. */
+.fd-text-missing {{
+  color: var(--mui-palette-text-secondary, #666);
+  font-size: 0.9em;
+  font-style: italic;
+}}
 """
 
 _META_CSS = """

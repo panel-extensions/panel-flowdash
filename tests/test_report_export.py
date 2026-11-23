@@ -614,7 +614,7 @@ class TestTablePlaceholders:
         rendered = render_report_text(tabled, self.TEXT)
         assert "Top region R1 at 1,000;" in rendered
         assert "<li>R0: 0.0</li>\n<li>R1: 1,000.5</li>\n<li>R2: 2,001.0</li>" in rendered
-        assert "Credentials [no column nope]" in rendered
+        assert 'Credentials <span class="fd-text-missing">[no column nope]</span>' in rendered
         filled = fill_report_text(tabled, self.TEXT)
         assert "- R2: 2,001.0\n" in filled and "\\[no column nope\\]" in filled
         assert text_problems(tabled, self.TEXT) == [
@@ -631,6 +631,37 @@ class TestTablePlaceholders:
         assert "R1" in text and "2,001.0" in text and "1,000.5" in text
         assert "{{" not in text and "each" not in text.replace("Each", "")
         assert SECRET not in text
+
+    @pytest.mark.parametrize("format", ["html", "md", "ipynb"])
+    def test_cell_line_breaks_stay_in_their_list_item(self, editor, format):
+        pytest.importorskip({"ipynb": "nbformat"}.get(format, "json"))
+        from panel_flowdash.report import render_report_text
+        from panel_flowdash.text_components import _MARKDOWN
+
+        editor.graph.get_state("sales").frame = pd.DataFrame({"region": ["a\n\n# H\n- li", "b"]})
+        text = "{{#each sales.frame}}\n- {{ .region }}\n{{/each}}"
+        editor.set_report({"title": "Breaks", "blocks": [{"text": text}]})
+        assert render_report_text(editor, text).count("<li>") == 2
+        data = export_report(editor, format).data.decode()
+        if format == "ipynb":
+            cells = json.loads(data)["cells"]
+            data = "\n\n".join("".join(c["source"]) for c in cells if c["cell_type"] == "markdown")
+        if format != "html":
+            data = _MARKDOWN.render(data)
+        assert "a # H - li" in data and "<h1>H</h1>" not in data
+        assert re.search(r"<li>a # H - li</li>\s*<li>b</li>", data)
+
+    def test_a_failed_output_shows_unavailable(self, tabled):
+        from panel_flowdash.report import fill_report_text, render_report_text
+
+        tabled._output_failures.setdefault("sales", {})["frame"] = ValueError("down")
+        assert "Top region \\[unavailable\\] at \\[unavailable\\];" in fill_report_text(
+            tabled, self.TEXT
+        )
+        assert '<span class="fd-text-missing">[unavailable]</span>' in render_report_text(
+            tabled, "{{ sales.frame.region }}"
+        )
+        assert fill_report_text(tabled, "{{#each sales.frame}}x{{/each}}") == "\\[unavailable\\]"
 
     def test_view_only_export_without_data_leaves_placeholders_empty(self, tabled):
         from panel_flowdash.report import fill_report_text

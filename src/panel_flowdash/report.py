@@ -36,7 +36,7 @@ from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 
 from panel_flowdash.groups import GroupError, check_group_id
-from panel_flowdash.text_fill import Filled, placeholder_pattern, prepare
+from panel_flowdash.text_fill import UNAVAILABLE, Filled, placeholder_pattern, prepare
 from panel_flowdash.turns import TURN_ID_PATTERN
 
 if t.TYPE_CHECKING:
@@ -523,7 +523,7 @@ def _lookup(value: t.Any, key: str | None) -> t.Any:
     if key is None:
         return value
     if type(value) is _Outputs:
-        return output_value(value.editor, value.name, key, value.ids)
+        return output_value(value.editor, value.name, key, value.ids, UNAVAILABLE)
     if type(value) is dict:
         return value.get(key)
     if type(value).__module__.startswith("pandas") and type(value).__name__ == "Series":
@@ -566,12 +566,16 @@ def _scalar(value: t.Any) -> bool:
 
 
 def output_value(
-    editor: FlowDash, name: str, port: str, ids: t.Mapping[str, str] | None = None
+    editor: FlowDash,
+    name: str,
+    port: str,
+    ids: t.Mapping[str, str] | None = None,
+    failed: t.Any = None,
 ) -> t.Any:
     """Return the current value of output *port* of the node called *name*, None if it has none to show.
 
-    None too when there is no such node or output, when the node is one the
-    editor's user may not use, or when the output failed. *ids* maps node
+    None too when there is no such node or output and when the node is one
+    the editor's user may not use; *failed* when the output failed. *ids* maps node
     names to instance ids, to look up many outputs without naming the nodes each time.
     """
     from panel_flowdash.agent.preview import output_failures
@@ -587,7 +591,7 @@ def output_value(
     if not any(p.name == resolved for p in spec.outputs):
         return None
     if resolved in output_failures(editor, instance_id):
-        return None
+        return failed
     state = editor.graph.get_state(instance_id)
     return getattr(state, resolved, None) if state is not None else None
 
@@ -611,8 +615,10 @@ def render_report_text(editor: FlowDash, text: str, value_class: str | None = No
 
     Placeholders are filled as the Markdown component fills its own: after
     the Markdown is parsed, so a value is literal text, and never in a link or
-    image URL. A placeholder naming no node or output, a restricted node or a
-    failed output is left empty. With *value_class* each value in the text is
+    image URL. A placeholder naming no node or output or a restricted node is
+    left empty, one reading a failed output shows ``[unavailable]`` and one
+    naming a column or row its table lacks a marker saying so, each marker a
+    quiet ``<span>`` of class ``fd-text-missing``. With *value_class* each value in the text is
     a ``<span>`` of that class, which the Report view shows as a chip.
     """
     from panel_flowdash.text_components import markdown_with_placeholders

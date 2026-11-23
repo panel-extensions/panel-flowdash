@@ -47,7 +47,9 @@ _RELATIVE = r"\.(?:[\w-]+)?"
 _HEAD = re.compile(r"\{\{\s*#each\b([^{}]*)\}\}")
 _CLOSE = re.compile(r"\{\{\s*/each\s*\}\}")
 _BODY_REF = re.compile(r"\{\{(\s*)\.((?:[\w-]+)?)(?=[\s:.\[}])")
-_LIMIT = re.compile(r"limit\s*=\s*(\d{1,9})")
+_LIMIT = re.compile(r"limit\s*=\s*(\S*)")
+# Line breaks in a value, which would end the list item or paragraph it is in.
+_BREAKS = re.compile(r"\s*[\n\r\v\f\x1c-\x1e\x85\u2028\u2029]+\s*")
 _IDENTIFIER = re.compile(r"[\w-]{1,40}")
 
 
@@ -59,6 +61,14 @@ class Missing(str):
     @property
     def problem(self) -> str:
         return self.strip("[]") + "." + self.detail
+
+
+class Unavailable(Missing):
+    """The text a placeholder shows when the output it reads failed: not a problem of the text."""
+
+
+#: What a failed output reads as; a placeholder over it shows ``[unavailable]``.
+UNAVAILABLE = Unavailable("[unavailable]")
 
 
 def names_pattern(names: t.Iterable[str]) -> str:
@@ -166,8 +176,10 @@ def _no_column(frame: t.Any, name: str) -> Missing:
 
 def _step(value: t.Any, part: str | int, lookup: Lookup) -> t.Any:
     """Return what *part*, a name or row number, picks from *value*: None if nothing, Missing if absent."""
-    if value is None or is_failure(value):
+    if value is None:
         return None
+    if isinstance(value, Unavailable) or is_failure(value):
+        return UNAVAILABLE
     if isinstance(value, _Row):
         if isinstance(part, int):
             return None
@@ -217,6 +229,8 @@ def resolve(
     Without *finish* a column stays a column, for a block to repeat over its cells.
     """
     value = namespace.get(parts[0]) if isinstance(namespace, Mapping) else None
+    if is_failure(value):
+        return UNAVAILABLE
     for part in parts[1:]:
         value = _step(value, part, lookup)
         if isinstance(value, Missing):
@@ -274,12 +288,13 @@ def prepare(
         if text not in problems:
             problems.append(text)
 
-    def note(text: str, detail: str) -> str:
-        problem(detail)
-        notes.append(text)
+    def note(text: str, detail: str | None) -> str:
+        if detail is not None:
+            problem(detail)
+        notes.append(Missing(text))
         return f"{{{{#each!{len(notes) - 1}}}}}"
 
-    def expand(head: re.Match, body: str) -> str:
+    def expand(head: re.Match, body: str, room: int) -> str:
         args = head_args.fullmatch(head.group(1))
         tag = head.group(0)
         if args is None:
@@ -294,14 +309,28 @@ def prepare(
                     "[each takes only limit=N]",
                     f"'{tag}': a block takes only 'limit=N'; sort and filter in the query instead.",
                 )
-            limit = int(found.group(1))
-            if limit > MAX_ROWS:
-                problem(f"'{tag}': a block repeats at most {MAX_ROWS} rows.")
+            digits = found.group(1)
+            if digits.isascii() and digits.isdigit():
+                digits = digits.lstrip("0")
+            if not digits.isascii() or not digits.isdigit():
+                return note(
+                    "[each limit must be 1 to 50]",
+                    f"'{tag}': limit must be an integer from 1 to {MAX_ROWS}.",
+                )
+            if len(digits) > 2 or int(digits) > MAX_ROWS:
+                problem(
+                    f"'{tag}': limit must be an integer from 1 to {MAX_ROWS}, "
+                    f"so it repeats at most {MAX_ROWS} rows."
+                )
                 limit = MAX_ROWS
+            else:
+                limit = int(digits)
         value = resolve(namespace, parts, lookup, finish=False)
+        if isinstance(value, Unavailable):
+            return note(str(value), None)
         if isinstance(value, Missing):
             return note(f"[each: {value.strip('[]')}]", f"'{tag}': {value.problem}")
-        if value is None or is_failure(value):
+        if value is None:
             return ""
         count = _rows(value)
         if count is None:
@@ -321,7 +350,7 @@ def prepare(
                 body,
             )
             size += len(row)
-            if size > MAX_EXPANDED:
+            if size > room:
                 problem(f"'{tag}' made the text too long; it stops after {i} rows.")
                 break
             out.append(row)
@@ -334,9 +363,12 @@ def prepare(
         starts = [c.start() for c in closes]
         pieces: list[str] = []
         pos = 0
+        total = 0
         for n, head in enumerate(heads):
             if head.start() < pos:
                 continue
+            if total + head.start() - pos >= MAX_EXPANDED:
+                break
             k = bisect.bisect_left(starts, head.end())
             if k == len(closes):
                 problem(f"'{head.group(0)}' has no '{{{{/each}}}}'.")
@@ -345,13 +377,14 @@ def prepare(
             if n + 1 < len(heads) and heads[n + 1].start() < close.start():
                 problem(f"'{head.group(0)}': blocks cannot be nested.")
                 continue
-            pieces.append(template[pos : head.start()])
-            pieces.append(expand(head, template[head.end() : close.start()]))
+            before = template[pos : head.start()]
+            total += len(before)
+            repeated = expand(head, template[head.end() : close.start()], MAX_EXPANDED - total)
+            total += len(repeated)
+            pieces += [before, repeated]
             pos = close.end()
-        pieces.append(template[pos:])
+        pieces.append(template[pos : pos + max(0, MAX_EXPANDED - total)])
         template = "".join(pieces)
-        if len(template) > MAX_EXPANDED:
-            template = template[:MAX_EXPANDED]
 
     def fill(match: re.Match) -> str:
         tag = match.group("tag")
@@ -361,17 +394,18 @@ def prepare(
                 return notes[int(found.group(1))]
             if tag.startswith("/"):
                 problem("'{{/each}}' closes no block.")
-                return "[each without start]"
-            return "[each not repeated]"
+                return Missing("[each without start]")
+            return Missing("[each not repeated]")
         if match.group("rel") is not None:
             problem(f"'{match.group(0)}' reads a row, so it belongs inside {{{{#each}}}}.")
-            return "[row outside each]"
+            return Missing("[row outside each]")
         parts = segments(match.group("root"), match.group("path"))
         value = resolve(namespace, parts, lookup)
         if isinstance(value, Missing):
-            problem(f"'{match.group(0)}': {value.problem}")
+            if not isinstance(value, Unavailable):
+                problem(f"'{match.group(0)}': {value.problem}")
             return value
-        return format(value, (match.group("spec") or "").strip())
+        return _BREAKS.sub(" ", format(value, (match.group("spec") or "").strip()))
 
     return Filled(template, pattern, fill)
 
@@ -387,8 +421,10 @@ def columns_hint(value: t.Any) -> str:
 __all__ = [
     "MAX_EXPANDED",
     "MAX_ROWS",
+    "UNAVAILABLE",
     "Filled",
     "Missing",
+    "Unavailable",
     "columns_hint",
     "names_pattern",
     "placeholder_pattern",

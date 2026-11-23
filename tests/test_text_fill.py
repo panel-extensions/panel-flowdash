@@ -4,8 +4,10 @@ import html
 import re
 
 import pandas as pd
+import panel as pn
 import param
 import pytest
+from panel.viewable import Viewer
 
 from panel_flowdash import FlowDash, register
 from panel_flowdash.text_components import (
@@ -115,7 +117,9 @@ class TestAddresses:
 
     def test_markers_are_escaped_like_values(self):
         assert fill("{{ table.rgion }}", escape=escape_markdown) == "\\[no column rgion\\]"
-        assert "<p>[no column rgion]</p>" in render_text("{{ table.rgion }}", {"table": TABLE})
+        assert '<p><span class="fd-text-missing">[no column rgion]</span></p>' in render_text(
+            "{{ table.rgion }}", {"table": TABLE}
+        )
 
 
 class TestEach:
@@ -182,9 +186,56 @@ class TestEach:
         assert "[each not repeated]" in fill(template)
         assert any("cannot be nested" in p for p in problems(template))
 
+    @pytest.mark.parametrize("limit", ["1234567890", "99999999999999999999"])
+    def test_a_long_limit_is_capped_with_its_range(self, limit):
+        assert fill(f"{{{{#each table limit={limit}}}}}x{{{{/each}}}}") == "xxx"
+        (problem,) = problems(f"{{{{#each table limit={limit}}}}}x{{{{/each}}}}")
+        assert "limit must be an integer from 1 to 50" in problem
+
+    @pytest.mark.parametrize("limit", ["0", "000", "-1", "2.5", "x"])
+    def test_a_limit_out_of_range_shows_its_range(self, limit):
+        template = f"{{{{#each table limit={limit}}}}}x{{{{/each}}}}"
+        assert fill(template) == "[each limit must be 1 to 50]"
+        assert any("integer from 1 to 50" in p for p in problems(template))
+
+    def test_many_blocks_stop_expanding_at_the_cap(self):
+        import tracemalloc
+
+        big = pd.DataFrame({"n": range(MAX_ROWS)})
+        template = ("{{#each table}}" + "x" * 2000 + "{{/each}}") * 500
+        tracemalloc.start()
+        try:
+            filled = fill(template, big)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        assert len(filled) <= MAX_EXPANDED
+        assert peak < 10 * MAX_EXPANDED + len(template) * 4
+
     def test_many_unclosed_blocks_stay_fast_and_short(self):
         filled = fill("{{#each table}}" * 5000 + "{{/each}}")
         assert filled.startswith("[each not repeated]") and len(filled) <= 20_001
+
+
+class TestLineBreaks:
+    """A value with line breaks stays in its list item or paragraph, in the app and in exports."""
+
+    FRAME = pd.DataFrame({"c": ["a\n\n# H\n- li", "b\r\n\r\nc\u2028d"]})
+    TEMPLATE = "{{#each table}}\n- {{ .c }}\n{{/each}}"
+
+    def test_breaks_collapse_to_spaces(self):
+        assert fill(self.TEMPLATE, self.FRAME) == "- a # H - li\n- b c d\n"
+
+    def test_app_html_keeps_each_value_in_its_item(self):
+        rendered = render_text(self.TEMPLATE, {"table": self.FRAME})
+        assert rendered.count("<li>") == 2 and "<h1>" not in rendered and "<p>" not in rendered
+
+    def test_exported_markdown_keeps_each_value_in_its_item(self):
+        from panel_flowdash.text_components import _MARKDOWN
+
+        md = Markdown(text=self.TEMPLATE, table=self.FRAME)
+        exported = _MARKDOWN.render(md.__export__(None).markdown)
+        assert exported.count("<li>") == 2 and "<h1>" not in exported and "<p>" not in exported
 
 
 class TestUntrustedCells:
@@ -263,6 +314,25 @@ def query(config, instance_config):
     return "query"
 
 
+class Failing(Viewer):
+    fail = param.Boolean(default=False)
+
+    @param.output(param.DataFrame)
+    @param.depends("fail")
+    def data(self):
+        if self.fail:
+            raise ValueError("query failed")
+        return pd.DataFrame({"region": ["R0"]})
+
+    def __panel__(self):
+        return pn.pane.Str("failing")
+
+
+register(
+    page=False, component=True, title="Failing", provides=[{"key": "data", "type": "DataFrame"}]
+)(Failing)
+
+
 class TestTiles:
     def test_markdown_follows_its_table(self):
         md = Markdown(
@@ -278,6 +348,22 @@ class TestTiles:
         md = Markdown(text="**{{ table.region[1] }}** {{ table.rgion }}", table=TABLE)
         block = md.__export__(None)
         assert block.markdown == "**APAC** \\[no column rgion\\]"
+
+    def test_a_failed_input_shows_unavailable(self):
+        md = Markdown(text="{{ table.region }} {{#each table}}x{{/each}}", table=TABLE)
+        md.__flowdash_input_failed__("table", True)
+        assert md._pane.object.count('<span class="fd-text-missing">[unavailable]</span>') == 2
+        assert "EMEA" not in md._pane.object
+        md.__flowdash_input_failed__("table", False)
+        assert _text(md._pane.object).strip() == "EMEA xxx"
+        assert "fd-text-missing" in md._pane.stylesheets[0]
+
+    @pytest.mark.failures
+    def test_a_failure_value_shows_unavailable(self):
+        md = Markdown(
+            text="{{ value }} {{ table.region }}", value=param.ReactiveError(ValueError())
+        )
+        assert _text(md._pane.object).strip() == "[unavailable]"
 
     def test_heading_reads_the_table(self):
         heading = Heading(
@@ -307,5 +393,23 @@ class TestTiles:
             assert _text(pane.object).split() == ["R0", "R1"]
             editor.graph.get_state(source).data = pd.DataFrame({"region": ["R0", "R1", "R2"]})
             assert _text(pane.object).split() == ["R0", "R1", "R2"]
+        finally:
+            editor.dispose()
+
+    @pytest.mark.parametrize("propagate", [False, pytest.param(True, marks=pytest.mark.failures)])
+    def test_an_upstream_failure_marks_the_tile_unavailable(self, propagate):
+        editor = FlowDash(
+            {"T/failing": Failing}, notifications=False, propagate_failures=propagate
+        )
+        try:
+            source = editor.add_component("T/failing")
+            node = editor.add_component("Text/Markdown", config={"text": "{{ table.region }}"})
+            assert editor.connect(source, "data", node, "table") is True
+            pane = editor._component_instances[node]._pane
+            assert _text(pane.object).strip() == "R0"
+            editor._component_instances[source].fail = True
+            assert _text(pane.object).strip() == "[unavailable]"
+            editor._component_instances[source].fail = False
+            assert _text(pane.object).strip() == "R0"
         finally:
             editor.dispose()

@@ -1077,6 +1077,50 @@ def _popout_chart(payload: t.Mapping) -> Viewable:
     return markdown_pane("*No chart data*", margin=0)
 
 
+class _FailureLog(dict):
+    """The exception of each output of a node whose latest run failed, telling *changed* when that starts or ends."""
+
+    def __init__(self, changed: t.Callable[[str, bool], None]):
+        super().__init__()
+        self._changed = changed
+
+    def __setitem__(self, name, exc):
+        new = name not in self
+        super().__setitem__(name, exc)
+        if new:
+            self._changed(name, True)
+
+    def pop(self, name, *default):
+        had = name in self
+        value = super().pop(name, *default)
+        if had:
+            self._changed(name, False)
+        return value
+
+
+def _output_failure_changed(editor_ref, node_id: str, port: str, failed: bool):
+    """Tell the components fed by output *port* of *node_id* that it started or stopped failing.
+
+    A component opts in with ``__flowdash_input_failed__(input, failed)``; without
+    ``propagate_failures`` its input otherwise keeps the last value unannounced.
+    """
+    editor = editor_ref()
+    if editor is None:
+        return
+    for edge in list(editor._dataflow_graph.edges):
+        if edge["source"] != node_id or edge["source_port"] != port:
+            continue
+        hook = getattr(
+            editor._component_instances.get(edge["target"]), "__flowdash_input_failed__", None
+        )
+        if hook is None:
+            continue
+        try:
+            hook(edge["target_port"], failed)
+        except Exception:
+            logger.exception("Telling '%s' about a failed input failed", edge["target"])
+
+
 class _Outlet(param.Parameterized):
     """Holds a single async output reference of a component, apart from its node state."""
 
@@ -3609,7 +3653,9 @@ class FlowDash(Viewer):
             watcher = node_state.param.watch(_propagate_inputs, input_names)
             wiring.append(partial(node_state.param.unwatch, watcher))
 
-        failures = self._output_failures[node_id] = {}
+        failures = self._output_failures[node_id] = _FailureLog(
+            partial(_output_failure_changed, editor, node_id)
+        )
         wiring.append(partial(self._output_failures.pop, node_id, None))
         methods = instance.param.outputs()
         for name, (_, method, _) in methods.items():
