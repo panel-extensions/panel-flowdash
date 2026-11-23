@@ -78,7 +78,10 @@ def _open_dialog(page):
 
 def _pick(page, dialog, label, option):
     dialog.get_by_label(label, exact=True).click()
-    page.get_by_role("menuitem", name=option, exact=True).click()
+    # panel-material-ui names a Select's entries "option" from #836 on, "menuitem" before.
+    page.get_by_role("option", name=option, exact=True).or_(
+        page.get_by_role("menuitem", name=option, exact=True)
+    ).click()
     expect(page.get_by_role("listbox")).to_have_count(0)
 
 
