@@ -92,7 +92,13 @@ from panel_flowdash.groups import (
 )
 from panel_flowdash.history import BURST_SECONDS, HISTORY_MAX_BYTES, EditHistory, label_for
 from panel_flowdash.input_literals import check_literal, stored_literal
-from panel_flowdash.node_actions import NodeAction, Provenance, call_provenance_hook, node_actions
+from panel_flowdash.node_actions import (
+    NodeAction,
+    NodeActionContext,
+    Provenance,
+    call_provenance_hook,
+    node_actions,
+)
 from panel_flowdash.parameters import (
     ContractError,
     ContractProblem,
@@ -116,6 +122,7 @@ from panel_flowdash.placeholders import (
     placeholder_view,
     unresolved_summary,
 )
+from panel_flowdash.project import Project
 from panel_flowdash.registry import RegistryEntry
 from panel_flowdash.report import (
     check_report,
@@ -1225,11 +1232,13 @@ class FlowDash(Viewer):
     authorize_admin = param.Callable(
         default=None,
         doc="""
-        Called without arguments to decide whether this session administers
-        the project. Node actions registered as ``admin_only`` (see
-        :mod:`panel_flowdash.node_actions`) are offered only while it says
-        so, and it is asked again before one runs. `FlowDashApp` supplies
-        one that reads the project file again. None makes no one an admin.""",
+        Called with a keyword ``fresh`` to decide whether this session
+        administers the project. Node actions registered as ``admin_only``
+        (see :mod:`panel_flowdash.node_actions`) are offered while it says so
+        with ``fresh=False``, which should be cheap as menus ask it on every
+        edit, and run only if it says so with ``fresh=True``, which should
+        check again, e.g. with the project file read afresh. `FlowDashApp`
+        supplies one. None makes no one an admin.""",
     )
 
     breakpoints = param.List(default=[768, 1200], doc="Responsive breakpoints for the tile grid.")
@@ -1538,6 +1547,15 @@ class FlowDash(Viewer):
         the versions it published, from the run the node's origin turn
         names. People who may not edit the dashboard see the request's
         shape without its content.""",
+    )
+
+    project = param.ClassSelector(
+        class_=Project,
+        default=None,
+        allow_None=True,
+        doc="""
+        The project file the app reads, which node actions get to save a
+        section of it with ``Project.set``. `FlowDashApp` supplies its own.""",
     )
 
     provenance_labels = param.Boolean(
@@ -3020,35 +3038,49 @@ class FlowDash(Viewer):
         turn = self.origin_turn(instance_id)
         return turn is not None and turn.actor == "agent"
 
-    def is_admin(self) -> bool:
-        """Whether this session administers the project, as :attr:`authorize_admin` says."""
+    def is_admin(self, *, fresh: bool = False) -> bool:
+        """Whether this session administers the project, as :attr:`authorize_admin` says.
+
+        With *fresh* the host checks again from its sources, e.g. the project
+        file read afresh, as before an admin action runs.
+        """
         if self.authorize_admin is None:
             return False
         try:
-            return bool(self.authorize_admin())
+            return bool(self.authorize_admin(fresh=fresh))
         except Exception:
             logger.exception("authorize_admin failed; treating the session as no admin")
             return False
 
+    def _action_mode(self) -> str:
+        """Return the mode node actions apply in: "edit" while the dashboard may be edited, else "view"."""
+        return "edit" if self.editable and not self.read_only and not self.preview else "view"
+
     def node_actions(self, instance_id: str, *, admin: bool | None = None) -> list[NodeAction]:
         """Return the registered node actions offered for a node to the person using the editor.
 
-        A restricted node or a placeholder gets none, an ``admin_only``
-        action needs :meth:`is_admin`, and an action whose ``applies``
-        fails is left out. *admin* says whether the session is an admin,
-        which :meth:`is_admin` is asked otherwise.
+        A restricted node or a placeholder gets none, nor does an action
+        outside the editor's mode (see ``NodeAction.modes``); an
+        ``admin_only`` action needs :meth:`is_admin`, and an action whose
+        ``applies`` fails is left out. *admin* says whether the session is
+        an admin, which :meth:`is_admin` is asked otherwise.
         """
         if instance_id not in self._component_instances or self._node_restricted(instance_id):
             return []
-        actions = node_actions()
+        mode = self._action_mode()
+        actions = [a for a in node_actions() if mode in a.modes]
+        if not actions:
+            return []
         if admin is None:
             admin = any(action.admin_only for action in actions) and self.is_admin()
+        actions = [a for a in actions if admin or not a.admin_only]
+        if not actions:
+            return []
+        context = NodeActionContext(self, instance_id)
         offered = []
         for action in actions:
-            if action.admin_only and not admin:
-                continue
             try:
-                if action.applies is not None and not action.applies(self, instance_id):
+                if action.applies is not None and not action.applies(context):
                     continue
             except Exception:
                 logger.exception("Node action %r failed to say whether it applies", action.key)
@@ -3059,16 +3091,18 @@ class FlowDash(Viewer):
     def run_node_action(self, instance_id: str, key: str) -> t.Any:
         """Run the node action *key* on a node, checking again that it is offered to this session.
 
+        An ``admin_only`` action asks :attr:`authorize_admin` afresh first.
+
         Raises
         ------
         PermissionError
-            If the action is not offered for the node, e.g. an ``admin_only``
-            action for someone who is no admin (any more).
+            If the action is not offered for the node, e.g. outside its modes
+            or an ``admin_only`` action for someone who is no admin (any more).
         """
         action = next((a for a in self.node_actions(instance_id) if a.key == key), None)
-        if action is None:
+        if action is None or (action.admin_only and not self.is_admin(fresh=True)):
             raise PermissionError(f"The action {key!r} is not available for this node.")
-        return action.run(self, instance_id)
+        return action.run(NodeActionContext(self, instance_id))
 
     def _on_node_action(self, instance_id: str, key: str):
         try:
@@ -3353,10 +3387,18 @@ class FlowDash(Viewer):
                 button.visible = show_in_editor
 
     @param.depends(
-        "editable", "show_in_editor", "provenance", "provenance_labels", "edited", watch=True
+        "editable",
+        "read_only",
+        "preview",
+        "show_in_editor",
+        "provenance",
+        "provenance_labels",
+        "edited",
+        watch=True,
     )
     def _sync_tile_actions(self):
-        admin = any(a.admin_only for a in node_actions()) and self.is_admin()
+        mode = self._action_mode()
+        admin = any(a.admin_only and mode in a.modes for a in node_actions()) and self.is_admin()
         for item in self._tile_items:
             tile = self._inspect_tiles.get(item["instance_id"])
             if tile is not None:

@@ -23,7 +23,7 @@ def ran():
         NodeAction(
             "test.save",
             "Save it…",
-            run=lambda editor, iid: calls.append(iid),
+            run=lambda ctx: calls.append(ctx.node),
             icon="save",
             admin_only=True,
         )
@@ -37,7 +37,7 @@ def _app(admin: bool, built: dict):
         editor = FlowDash(
             {"T/measured": Measured},
             notifications=False,
-            authorize_admin=lambda: admin,
+            authorize_admin=lambda fresh=False: admin,
         )
         editor.add_component("T/measured", instance_id="source", position=(0, 0))
         editor.add_component("Widgets/KPI", instance_id="kpi", position=(320, 0))

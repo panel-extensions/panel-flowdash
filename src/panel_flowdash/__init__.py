@@ -44,6 +44,13 @@ from panel_flowdash.editor import (
 )
 from panel_flowdash.global_filters import FilterTarget, request_filters
 from panel_flowdash.json_store import JSONFolderDashboardStore
+from panel_flowdash.node_actions import (
+    NodeAction,
+    NodeActionContext,
+    Provenance,
+    register_node_action,
+    unregister_node_action,
+)
 from panel_flowdash.parameters import (
     ContractContext,
     ContractError,
@@ -108,6 +115,8 @@ __all__: list[str] = [
     "InputPort",
     "JSONFolderDashboardStore",
     "MemoryDashboardStore",
+    "NodeAction",
+    "NodeActionContext",
     "OutputPort",
     "PanelAppMetadata",
     "ParameterContract",
@@ -115,6 +124,7 @@ __all__: list[str] = [
     "Permission",
     "PlacementReason",
     "Predicate",
+    "Provenance",
     "RegistryEntry",
     "Selection",
     "SelectionLink",
@@ -144,7 +154,9 @@ __all__: list[str] = [
     "port_type_color",
     "port_types_compatible",
     "register",
+    "register_node_action",
     "register_port_type",
     "request_filters",
     "resolve_identity",
+    "unregister_node_action",
 ]

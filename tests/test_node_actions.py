@@ -53,7 +53,9 @@ def editor(admin):
         {"T/measured": Measured, "T/card": Card},
         include_builtin_components=False,
         notifications=False,
-        authorize_admin=lambda: admin["value"],
+        authorize_admin=lambda fresh=False: (
+            admin["value"] and (not fresh or admin.get("fresh", True))
+        ),
     )
     editor.new_dashboard("Actions")
     editor.add_component("T/measured", instance_id="source")
@@ -70,8 +72,8 @@ def ran():
         NodeAction(
             "test.save",
             "Save it…",
-            run=lambda editor, iid: calls.append(iid),
-            applies=lambda editor, iid: iid == "source",
+            run=lambda ctx: calls.append(ctx.node),
+            applies=lambda ctx: ctx.node == "source",
             icon="save",
             admin_only=True,
         )
@@ -114,7 +116,7 @@ def test_without_authorize_admin_no_one_is_an_admin(ran):
 
 
 def test_a_failing_authorize_admin_counts_as_no_admin(editor, admin, ran):
-    editor.authorize_admin = lambda: 1 / 0
+    editor.authorize_admin = lambda fresh=False: 1 / 0
     assert editor.node_actions("source") == []
 
 
@@ -228,5 +230,104 @@ def test_an_app_editor_asks_the_app_whether_the_session_is_admin(tmp_path):
 
     app = FlowDashApp(registry={}, project_dir=tmp_path, store=MemoryDashboardStore())
     # The app re-reads the project file each time, so an admin removed meanwhile is refused.
-    assert app._editor.authorize_admin == app._still_admin
-    assert not app._editor.is_admin()
+    assert app._editor.authorize_admin == app._authorize_admin
+    assert not app._editor.is_admin() and not app._editor.is_admin(fresh=True)
+    assert app._editor.project is app._settings_project()
+
+
+def test_running_an_admin_action_checks_the_admin_afresh(editor, admin, ran):
+    admin["fresh"] = False
+    assert [a.key for a in editor.node_actions("source")] == ["test.save"]
+    with pytest.raises(PermissionError):
+        editor.run_node_action("source", "test.save")
+    assert ran == []
+
+
+@pytest.mark.parametrize("state", [{"editable": False}, {"read_only": True}, {"preview": True}])
+def test_an_edit_mode_action_is_neither_offered_nor_run_outside_edit_mode(editor, ran, state):
+    editor.param.update(**state)
+    assert editor.node_actions("source") == []
+    with pytest.raises(PermissionError):
+        editor.run_node_action("source", "test.save")
+    assert ran == []
+
+
+def test_an_action_declares_the_modes_it_applies_in(editor):
+    calls = []
+    register_node_action(
+        NodeAction("test.look", "Look", run=lambda ctx: calls.append(ctx.mode), modes={"view"})
+    )
+    try:
+        assert "test.look" not in [a.key for a in editor.node_actions("source")]
+        editor.editable = False
+        editor.run_node_action("source", "test.look")
+        assert calls == ["view"]
+    finally:
+        unregister_node_action("test.look")
+    with pytest.raises(ValueError, match="modes"):
+        NodeAction("bad", "Bad", run=print, modes={"sometimes"})
+
+
+def test_the_context_reads_the_node_and_its_edges(editor):
+    from panel_flowdash.node_actions import NodeActionContext
+
+    ctx = NodeActionContext(editor, "card")
+    assert ctx.node == "card" and ctx.component() == "T/card"
+    assert ctx.inputs() == [{"from": "source.value", "to": "card.value", "transform": []}]
+    assert ctx.outputs("source") == ctx.inputs()
+    assert ctx.output("value", "source") == 1.0
+    assert ctx.input_value("value") == 1.0
+    assert ctx.mode == "edit" and ctx.project is None
+    with pytest.raises(TypeError):
+        ctx.context["x"] = 1
+
+
+def test_replace_node_keeps_the_wiring_and_tile_slot_and_one_undo_reverts_it(editor):
+    from panel_flowdash.node_actions import NodeActionContext
+    from panel_flowdash.ui import tile_layout
+
+    ctx = NodeActionContext(editor, "source")
+    ctx.ops.place_tile("source", index=0, width=50)
+    before = [i["instance_id"] for i in tile_layout.area_items(editor, tile_layout.GRID)]
+    editor.save()
+    new = ctx.replace_node("source", "T/measured", new_name="other")
+    grid = [i["instance_id"] for i in tile_layout.area_items(editor, tile_layout.GRID)]
+    assert grid.index("other") == before.index("source")
+    assert tile_layout.tile_entry(editor, "other")["width"] == 50
+    assert ctx.inputs("card") == [{"from": "other.value", "to": "card.value", "transform": []}]
+    assert new == "other" and "source" not in ctx.nodes()
+    assert editor.undo()
+    assert "source" in ctx.nodes() and "other" not in ctx.nodes()
+    assert ctx.inputs("card")[0]["from"] == "source.value"
+
+
+def test_a_failing_edit_is_undone(editor):
+    from panel_flowdash.node_actions import NodeActionContext
+
+    ctx = NodeActionContext(editor, "source")
+    editor.save()
+
+    def refuse(edge):
+        raise ValueError("no")
+
+    with pytest.raises(ValueError, match="no"):
+        ctx.replace_node("source", "T/measured", new_name="other", rewire=refuse)
+    with pytest.raises(RuntimeError):
+        with ctx.edit():
+            ctx.ops.add_node("T/card", name="extra")
+            raise RuntimeError("boom")
+    assert sorted(ctx.nodes()) == ["card", "source"]
+
+
+def test_an_edit_block_is_one_undo_step_even_without_coalescing(editor):
+    from panel_flowdash.node_actions import NodeActionContext
+
+    editor.history_coalesce = 0
+    editor.save()
+    ctx = NodeActionContext(editor, "source")
+    ctx.ops.add_node("T/card", name="before")
+    with ctx.edit():
+        ctx.ops.add_node("T/card", name="one")
+        ctx.ops.add_node("T/card", name="two")
+    assert editor.undo()
+    assert sorted(ctx.nodes()) == ["before", "card", "source"]
