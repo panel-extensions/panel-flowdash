@@ -1588,6 +1588,12 @@ class DashboardOps:
         if other_id == instance_id:
             raise OperationError(f"'{other}' is the tile being placed; name another node.")
         area = area or tile_layout.GRID
+        if other in self.hidden_tiles():
+            raise NotApplied(
+                f"'{other}' has no tile on the dashboard (it is hidden), so nothing can go "
+                f"{'in front of' if before is not None else 'after'} it; name a tile the "
+                "layout shows."
+            )
         if tile_layout.area_of(editor, self._item(other_id)) != area:
             raise OperationError(
                 f"'{other}' is not in the {tile_layout.AREA_NAMES[area]}; "
@@ -1638,6 +1644,15 @@ class DashboardOps:
             "Pass visible=True to show its tile, or show its result with a chart or table node."
         )
 
+    def hidden_tiles(self) -> list[str]:
+        """Return the names of the nodes whose tiles are hidden, e.g. data sources and transforms."""
+        names = self._names()
+        return [
+            names.get(o.instance_id, o.instance_id)
+            for o in tile_layout.off_grid(self.editor)
+            if o.hidden
+        ]
+
     def describe_layout(self) -> str:
         """Describe the layout as it is now: the top bar, the sidebar and the grid's rows.
 
@@ -1657,11 +1672,7 @@ class DashboardOps:
             lines.append(f"Row {number}: {tiles}")
         if not any(line.startswith("Row") for line in lines):
             lines.append("No tiles on the grid.")
-        hidden = [
-            names.get(o.instance_id, o.instance_id)
-            for o in tile_layout.off_grid(editor)
-            if o.hidden
-        ]
+        hidden = self.hidden_tiles()
         if hidden:
             lines.append(f"Hidden: {', '.join(hidden)}")
         return "\n".join(lines)

@@ -499,6 +499,8 @@ HEADING_MIN_COLUMNS = 4
 FILLER_MIN_COLUMNS = 6
 #: How many times their own width the tiles of a row may widen to close a gap.
 MAX_WIDENING = 2
+#: Kinds whose tiles keep a row of their own when a resized tile's row is rebalanced.
+WHOLE_ROW_KINDS = frozenset({"table", "text"})
 #: Kinds whose tiles start hidden when the editor places them: the dashboard's plumbing.
 HIDDEN_KINDS = frozenset({"data"})
 #: A view whose default width is at most this many pixels is laid out as a KPI.
@@ -878,19 +880,25 @@ def resize_in_row(
     height: float | None = None,
     fixed: Collection[str] = (),
     bounds: Mapping[str, tuple[float, float]] | None = None,
+    whole: Collection[str] = (),
 ) -> list[dict]:
     """Resize one tile of a layout and rebalance the other tiles of its row, as dragging its edge does.
 
     *entries* are the shown tiles' entries in display order. A wider tile takes
     the room its row has left, then shrinks the row's other tiles, those after
     it first, down to their narrowest in *bounds* (percent by tile id); it is
-    held at the width they leave, unless it takes the whole row and they wrap
-    to the next one. A narrower tile in a full row leaves its room to the
-    tiles of the next row that fit in it, as the grid moves them up, and the
-    other tiles of its row, then of the row those came from, widen alike to
-    fill what is left. A *height* goes to the row's other tiles too, so the
-    row stays aligned. The tiles of *fixed*, sized on purpose, keep their
-    size. Returns copies; the resized tile's entry holds the width it got.
+    held at the width they leave. A tile that takes the whole row moves the
+    others to the next row instead. A narrower tile in a full row leaves its
+    room to the tiles of the next row that fit in it, as the grid moves them
+    up, and the other tiles of its row widen alike to fill what is left.
+
+    No row the change moved tiles in or out of is left part empty: it takes
+    the next row's first tile when every tile still fits at an equal share of
+    the row, else its tiles widen to fill it. The tiles of *whole*, e.g.
+    tables, keep a row of their own. A *height* goes to the row's other tiles
+    too, so the row stays aligned. The tiles of *fixed*, sized on purpose,
+    keep their size. Returns copies; the resized tile's entry holds the width
+    it got.
     """
     entries = [dict(e) for e in entries]
     target = next((e for e in entries if e["instance_id"] == tile_id), None)
@@ -901,17 +909,19 @@ def resize_in_row(
     def current(entry):
         return min(100.0, entry.get("width") or 100.0)
 
+    def least(entry):
+        return bounds.get(entry["instance_id"], (0.0, 100.0))[0]
+
+    def free(entry):
+        return entry is not target and entry["instance_id"] not in fixed
+
     def row_index(rows):
         return next(r for r, row in enumerate(rows) if any(e is target for e in row))
 
     def adjustable(row):
         # The tiles after the target give way first, then those before it, nearest first.
         position = next((i for i, e in enumerate(row) if e is target), len(row))
-        return [
-            e
-            for e in [*row[position + 1 :], *reversed(row[:position])]
-            if e is not target and e["instance_id"] not in fixed
-        ]
+        return [e for e in [*row[position + 1 :], *reversed(row[:position])] if free(e)]
 
     def fill(row):
         others = adjustable(row)
@@ -924,48 +934,72 @@ def resize_in_row(
 
     if width is not None:
         rows = layout_rows(entries)
-        row = rows[row_index(rows)]
+        before = {tuple(id(e) for e in row) for row in rows}
+        start = row_index(rows)
+        row = rows[start]
         old = current(target)
-        full = {id(e): sum(current(o) for o in r) >= 99.99 for r in rows for e in r}
-        was = {id(e): [id(o) for o in r] for r in rows for e in r}
-        if width > old and width < 100:
-            others = adjustable(row)
-            kept = sum(current(e) for e in row if e is not target and e not in others)
-            least = sum(bounds.get(e["instance_id"], (0.0, 100.0))[0] for e in others)
-            width = max(
-                old, min(width, round(100 - kept - min(least, sum(map(current, others))), 2))
-            )
+        others = adjustable(row)
+        kept = sum(current(e) for e in row if e is not target and e not in others)
+        if old < width < 99.99:
+            room = 100 - kept - min(sum(map(least, others)), sum(map(current, others)))
+            width = max(old, min(width, round(room, 2)))
         target["width"] = width
-        if width > old:
+        if old < width < 99.99:
             excess = sum(current(e) for e in row) - 100
-            for entry in adjustable(row):
+            for entry in others:
                 if excess <= 0.01:
                     break
-                least = bounds.get(entry["instance_id"], (0.0, 100.0))[0]
-                take = min(max(0.0, current(entry) - least), excess)
+                take = min(max(0.0, current(entry) - least(entry)), excess)
                 entry["width"] = round(current(entry) - take, 2)
                 excess -= take
-        elif width < old and full[id(target)]:
+        elif width < old and sum(current(e) for e in row) - width + old >= 99.99:
             now = layout_rows(entries)
             r = row_index(now)
             # A tile that moved up into the room of the row before leaves no gap in it.
             if now[r][0] is row[0]:
                 fill(now[r])
-            # The row whose tiles moved up, or that the tile left, fills the gap they leave.
-            below = now[r + 1] if r + 1 < len(now) else []
-            if (
-                below
-                and [id(e) for e in below] != was[id(below[0])]
-                and all(full[id(e)] for e in below)
-            ):
-                fill(below)
+        _settle_rows(entries, start, before, free, least, bounds, whole)
     if height is not None:
         target["height"] = height
         rows = layout_rows(entries)
         for entry in rows[row_index(rows)]:
-            if entry is not target and entry["instance_id"] not in fixed:
+            if free(entry):
                 entry["height"] = height
     return entries
+
+
+def _settle_rows(entries, start, before, free, least, bounds, whole):
+    """Leave no row from *start* on that changed part empty: take up the next tile or widen."""
+
+    def current(entry):
+        return min(100.0, entry.get("width") or 100.0)
+
+    r = start
+    while True:
+        rows = layout_rows(entries)
+        if r >= len(rows):
+            return
+        row = rows[r]
+        room = 100 - sum(current(e) for e in row)
+        changed = tuple(id(e) for e in row) not in before
+        movable = [e for e in row if free(e) and e["instance_id"] not in whole]
+        if not changed or room <= 0.01 or not movable:
+            r += 1
+            continue
+        below = rows[r + 1][0] if r + 1 < len(rows) else None
+        set_width = 100 - sum(current(e) for e in row if e not in movable)
+        if below is not None and free(below) and below["instance_id"] not in whole:
+            share = round(set_width / (len(movable) + 1), 2)
+            if all(share >= least(e) for e in [*movable, below]):
+                for entry in [*movable, below]:
+                    entry["width"] = share
+                r += 1
+                continue
+        share = round(set_width / len(movable), 2)
+        for entry in movable:
+            most = bounds.get(entry["instance_id"], (0.0, 100.0))[1]
+            entry["width"] = min(most, share)
+        r += 1
 
 
 def _entry(tile: TileBox, width: float) -> dict:
@@ -1025,8 +1059,12 @@ def insert_tiles(
     width: float,
     previous: Mapping[str, Mapping] | None = None,
     resizable: Mapping[str, TileBox] | None = None,
+    leading: Collection[str] = (),
 ) -> list[dict]:
     """Add entries for the *new* tiles to a *layout*, leaving the other tiles' sizes alone.
+
+    No new tile goes in front of the tiles of *leading*, the dashboard's
+    titles, at the start of the order.
 
     *order* lists the shown tiles in display order and *kinds* gives the
     kind of each. A new tile goes after the last tile of its kind, or else
@@ -1086,6 +1124,11 @@ def insert_tiles(
                 if rank.get(kinds.get(iid), len(rank)) > rank.get(tile.kind, len(rank))
             ]
             position = later[0] if later else len(ordered)
+        if not tile.lead:
+            first = 0
+            while first < len(ordered) and ordered[first] in leading:
+                first += 1
+            position = max(position, first)
         appended = appended and position == len(ordered)
         ordered.insert(position, tile.id)
         by_id[tile.id] = entry

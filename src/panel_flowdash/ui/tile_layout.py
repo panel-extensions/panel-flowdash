@@ -109,10 +109,9 @@ def _rebalanced(
     if not any(item["instance_id"] == instance_id for item in shown):
         return layout, None
     width, _ = editor._tile_bands()
-    bounds = {
-        item["instance_id"]: auto_layout.width_bounds(editor._tile_box(item), width)
-        for item in shown
-    }
+    boxes = {item["instance_id"]: editor._tile_box(item) for item in shown}
+    bounds = {iid: auto_layout.width_bounds(box, width) for iid, box in boxes.items()}
+    whole = {iid for iid, box in boxes.items() if box.kind in auto_layout.WHOLE_ROW_KINDS}
     entries = [
         by_id.get(item["instance_id"], {"instance_id": item["instance_id"]}) for item in shown
     ]
@@ -123,6 +122,7 @@ def _rebalanced(
         height=patch.get("height"),
         fixed=fixed,
         bounds=bounds,
+        whole=whole,
     )
     held = None
     for entry in resized:

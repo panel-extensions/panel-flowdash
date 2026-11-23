@@ -7235,9 +7235,16 @@ class FlowDash(Viewer):
         else:
             layout = auto_layout.arrange_tiles(boxes, width, previous)
         bounds = {box.id: auto_layout.width_bounds(box, width) for box in boxes}
+        whole = {box.id for box in boxes if box.kind in auto_layout.WHOLE_ROW_KINDS}
         for iid, size in (sizes or {}).items():
             layout = auto_layout.resize_in_row(
-                layout, iid, size.get("width"), size.get("height"), fixed=set(sizes), bounds=bounds
+                layout,
+                iid,
+                size.get("width"),
+                size.get("height"),
+                fixed=set(sizes),
+                bounds=bounds,
+                whole=whole,
             )
         shown = {box.id for box in boxes}
         hidden = [dict(e) for e in self.layout if e.get("instance_id") not in shown | set(hide)]
@@ -7304,7 +7311,9 @@ class FlowDash(Viewer):
             for item in tile_layout.grid_tiles(self)
             if item["instance_id"] not in hide
         }
-        new = [iid for iid in instance_ids if iid in tiles]
+        # In the order they were placed, since the ids may come as a set.
+        ids = set(instance_ids)
+        new = [iid for iid in tiles if iid in ids]
         if not (new or hide):
             return
         if self._all_tiles_automatic([*new, *hide]):
@@ -7328,11 +7337,13 @@ class FlowDash(Viewer):
             if iid in self._auto_tiles and not self._stacked
         }
 
+        titles = {iid for iid, item in tiles.items() if _is_title(item)}
+
         def insert(entries, width):
             previous = {e["instance_id"]: e for e in entries if e.get("instance_id") in new}
             entries = [e for e in entries if e.get("instance_id") not in new]
             return auto_layout.insert_tiles(
-                entries, order, kinds, boxes, width, previous, resizable
+                entries, order, kinds, boxes, width, previous, resizable, titles
             )
 
         layout = insert(self.layout, width)

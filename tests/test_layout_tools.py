@@ -51,6 +51,18 @@ def _shown(ops):
     ]
 
 
+def _saved(ops):
+    """Return ops on a fresh editor loaded from the dashboard's saved model."""
+    editor = FlowDash(
+        components={**COMPONENTS, **EXTRA, **TEXT_COMPONENTS},
+        include_builtin_components=False,
+        notifications=False,
+        user="alice",
+    )
+    editor.load_model(ops.editor.to_model())
+    return DashboardOps(editor)
+
+
 def _request(ops, during):
     deps = FlowDashDeps(ops)
     deps.start_request("Change it")
@@ -153,7 +165,8 @@ class TestRebalance:
         assert (_widths(ops)["a"], _widths(ops)["b"]) == (65, 35)
         assert "Width 80 not applied" in ops.layout_notes[0]
         ops.place_tile("a", width=100)
-        assert ops.describe_layout().splitlines() == ["Row 1: a 100% 320px", "Row 2: b 35% 320px"]
+        # The neighbour moves to a row of its own at full width, not a 35% orphan.
+        assert ops.describe_layout().splitlines() == ["Row 1: a 100% 320px", "Row 2: b 100% 320px"]
 
     def test_a_new_height_aligns_the_row(self, ops):
         def place():
@@ -166,6 +179,39 @@ class TestRebalance:
         _request(ops, lambda: ops.place_tile("rows", height=600))
         heights = {t["instance_id"]: t.get("height") for t in _tiles(ops.editor)}
         assert heights == {"rows": 600, "chart": 600}
+
+    @pytest.mark.parametrize("count", [2, 3, 4])
+    def test_a_full_width_tile_leaves_no_orphan(self, ops, count):
+        names = [f"c{i}" for i in range(count)]
+        _charts(ops, *names, "after")
+        ops.arrange_tiles(style="stack")
+        for name in names:
+            ops.place_tile(name, width=round(100 / count, 2))
+        ops.sized_tiles.clear()
+        ops.place_tile("c0", width=100)
+        rows = ops.describe_layout().splitlines()
+        assert rows[0] == "Row 1: c0 100% 320px"
+        for row in rows[1:]:
+            widths = [float(t.split()[1].rstrip("%")) for t in row.split(": ", 1)[1].split(" | ")]
+            assert sum(widths) == pytest.approx(100, abs=0.1), rows
+
+    def test_a_replayed_full_width_chart_keeps_its_row_mate_whole(self, ops):
+        # Playtest s3 t3: place_tile(timeline, width=100, height=500) after arrange_tiles.
+        _request(
+            ops,
+            lambda: (
+                _charts(ops, "timeline", "states", "manu"),
+                ops.add_node("V/table", name="rows"),
+            ),
+        )
+        _request(
+            ops, lambda: (ops.arrange_tiles(), ops.place_tile("timeline", width=100, height=500))
+        )
+        assert ops.describe_layout().splitlines() == [
+            "Row 1: timeline 100% 500px",
+            "Row 2: states 50% 320px | manu 50% 320px",
+            "Row 3: rows 100% 360px",
+        ]
 
     def test_tiles_sized_on_purpose_keep_their_size(self):
         entries = [
@@ -203,6 +249,27 @@ class TestPositions:
 
         _request(ops, during)
         assert _shown(ops) == ["title", "a", "b"]
+
+    @pytest.mark.parametrize("arrange", [False, True])
+    def test_a_title_moved_to_the_top_before_its_charts_stays_first(self, ops, arrange):
+        # Lumen's add_text places a Title heading at index 0 before the charts are added.
+        def during():
+            ops.add_node("Text/Heading", {"text": "Wind", "size": "Title"}, name="title")
+            ops.place_tile("title", index=0)
+            _charts(ops, "a", "b", "c")
+            if arrange:
+                ops.arrange_tiles()
+
+        _request(ops, during)
+        assert _shown(_saved(ops)) == ["title", "a", "b", "c"]
+
+    def test_text_before_a_hidden_tile_is_not_applied(self, ops):
+        ops.add_node("T/number", name="source")
+        _charts(ops, "a")
+        ops.add_node("Text/Heading", {"text": "Data"}, name="section")
+        with pytest.raises(NotApplied, match="'source' has no tile on the dashboard"):
+            ops.place_tile("section", before="source")
+        assert ops.hidden_tiles() == ["source"]
 
     def test_other_text_still_goes_last(self, ops):
         _charts(ops, "a")
