@@ -177,15 +177,31 @@ def test_disposing_lets_go_of_the_dashboard(explore):
         lambda ex: ex.set_settings({}),
         lambda ex: ex.save(),
         lambda ex: ex.replace_yaml("nodes: {}"),
+        lambda ex: ex.set_title("Explored"),
+        lambda ex: ex.add_filter("value"),
+        lambda ex: ex.remove_filter("value"),
     ],
-    ids=["config", "connect", "remove", "layout", "settings", "save", "replace"],
+    ids=[
+        "config",
+        "connect",
+        "remove",
+        "layout",
+        "settings",
+        "save",
+        "replace",
+        "title",
+        "add_filter",
+        "remove_filter",
+    ],
 )
 def test_explore_cannot_change_the_dashboard(explore, call):
     ops, ex = explore
     before = ops.get_dashboard()
+    scratch = ex.editor.export_dashboard()
     with pytest.raises(PermissionError):
         call(ex)
     assert ops.get_dashboard() == before
+    assert ex.editor.export_dashboard() == scratch
 
 
 def test_drafts_are_not_previewed(explore):

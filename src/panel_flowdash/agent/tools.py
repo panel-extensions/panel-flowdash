@@ -6,6 +6,7 @@ Needs the ``panel-flowdash[agent]`` extra (panel-agents and pydantic-ai).
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import fnmatch
 import functools
 import inspect
@@ -521,7 +522,9 @@ def _open_id(ops: DashboardOps) -> str | None:
     return current.dashboard_id if current is not None else None
 
 
-def _guarded(func: t.Callable) -> t.Callable:
+def _guarded(
+    func: t.Callable, local_filter: t.Callable[..., t.Any] | str | None = None
+) -> t.Callable:
     """Turn refusals into messages: a fixable request is retried, a forbidden one is reported.
 
     A request asking again cannot fix (:class:`NotApplied`) is reported too, so
@@ -558,6 +561,7 @@ def _guarded(func: t.Callable) -> t.Callable:
             begin()
         listen = func in EDIT_TOOLS and bool(deps.edit_listeners)
         before = _snapshot(deps.ops) if listen else None
+        route = _LOCAL_FILTER.set(local_filter)
         try:
             with agent_edits(current_run_id() or ctx.run_id, deps.question):
                 try:
@@ -578,6 +582,7 @@ def _guarded(func: t.Callable) -> t.Callable:
             prefix = "Not available: " if isinstance(exc, OutputUnavailable) else ""
             return f"{prefix}{error_text(exc)}"
         finally:
+            _LOCAL_FILTER.reset(route)
             deps.ops.editor.edit_history.flush()
         notes = take_notes() if take_notes is not None else None
         if notes:
@@ -1022,27 +1027,10 @@ def set_title(ctx: RunContext[FlowDashDeps], title: str, description: str | None
     return _artifact(ops, f"Titled the dashboard {title!r}{described}.")
 
 
-#: What ``add_filter(scope="local")`` does, see :func:`register_local_filter`.
-_LOCAL_FILTER: list[t.Callable[..., t.Any] | str] = []
-
-
-def register_local_filter(route: t.Callable[..., t.Any] | str | None):
-    """Say how ``add_filter(scope="local")`` is answered, e.g. by the tools of a data library.
-
-    A local filter is a control shown with a few views and linked to them
-    through a Filter node, unlike the global filter bar, which filters every
-    view with the column. FlowDash's tools do not build one.
-
-    Parameters
-    ----------
-    route
-        The name of the tool that builds a local filter, which the refusal
-        points the model to; or a function called as
-        ``route(ctx, column=..., label=..., widget=..., value=...)`` whose
-        result, awaited if need be, is the tool's; or None for the default
-        refusal.
-    """
-    _LOCAL_FILTER[:] = [] if route is None else [route]
+#: How the toolset running ``add_filter(scope="local")`` answers it, see :func:`dashboard_toolset`.
+_LOCAL_FILTER: contextvars.ContextVar[t.Callable[..., t.Any] | str | None] = (
+    contextvars.ContextVar("local_filter", default=None)
+)
 
 
 async def add_filter(
@@ -1074,7 +1062,7 @@ async def add_filter(
             control that filters only some views, which these tools do not build.
     """
     if scope == "local":
-        route = _LOCAL_FILTER[0] if _LOCAL_FILTER else None
+        route = _LOCAL_FILTER.get()
         if callable(route):
             result = route(ctx, column=column, label=label, widget=widget, value=value)
             return await result if inspect.isawaitable(result) else result
@@ -1100,6 +1088,13 @@ async def add_filter(
     if result["cannot"]:
         reasons = "; ".join(f"{name}: {why}" for name, why in result["cannot"].items())
         message += f" It cannot filter: {reasons}."
+    if local := result.get("filtered_locally"):
+        views = "; ".join(f"{view} by {node}" for view, node in local.items())
+        message += (
+            f" Warning: views already filtered on {column!r} by a Filter node upstream now keep "
+            f"only the rows both filters keep: {views}. Tell the user, and remove the Filter "
+            "node if the filter bar should replace it."
+        )
     return _artifact(ops, message)
 
 
@@ -1500,6 +1495,10 @@ LOCKED_TOOLS = (
     share_dashboard,
 )
 
+#: The tools that run one at a time, alone, when the model calls several at once: those that
+#: change the dashboard or the app, so parallel calls do not interleave their changes of the graph.
+SEQUENTIAL_TOOLS = (*LOCKED_TOOLS, open_dashboard)
+
 TOOLS = (
     list_components,
     list_dashboards,
@@ -1575,7 +1574,10 @@ _RENAMED = {"arrange_layout": "arrange_tiles"}
 
 
 def dashboard_toolset(
-    tools: t.Collection[str] | None = None, *, max_retries: int | None = None
+    tools: t.Collection[str] | None = None,
+    *,
+    max_retries: int | None = None,
+    local_filter: t.Callable[..., t.Any] | str | None = None,
 ) -> FunctionToolset[FlowDashDeps]:
     """Return the dashboard tools, which run against ``FlowDashDeps.ops`` of each run's deps.
 
@@ -1591,6 +1593,16 @@ def dashboard_toolset(
     max_retries
         How often in a run each tool may fail with a mistake the model is
         asked to fix; pydantic-ai's default (1) when None.
+    local_filter
+        How this toolset answers ``add_filter(scope="local")``, a control
+        that filters only some views, which FlowDash's tools do not build:
+        the name of the tool that builds one, which the refusal points the
+        model to; or a function called as
+        ``route(ctx, column=..., label=..., widget=..., value=...)`` whose
+        result, awaited if need be, is the tool's; or None to refuse it.
+
+    The tools that change the dashboard run one at a time when the model
+    calls several at once; the tools that only read it run in parallel.
 
     Raises
     ------
@@ -1613,9 +1625,10 @@ def dashboard_toolset(
         if tools is not None and func.__name__ not in tools:
             continue
         toolset.add_function(
-            _guarded(func),
+            _guarded(func, local_filter if func is add_filter else None),
             takes_ctx=True,
             name=func.__name__,
             prepare=_describe_save if func is save_dashboard else None,
+            sequential=func in SEQUENTIAL_TOOLS,
         )
     return toolset

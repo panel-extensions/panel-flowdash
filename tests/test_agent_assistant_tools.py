@@ -1,4 +1,6 @@
-"""The assistant's tools for the dashboard as a whole: global filters, the title and the step labels."""
+"""The assistant's tools for the dashboard as a whole: global filters, the title, the step labels and parallel calls."""
+
+import asyncio
 
 import panel as pn
 import param
@@ -8,14 +10,20 @@ from panel.viewable import Viewer
 
 pytest.importorskip("pydantic_ai")
 
+from panel_agents.adapters.pydantic_ai import AgentRunner
+from pydantic_ai import Agent
+from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart
+from pydantic_ai.models.function import FunctionModel
+
 from panel_flowdash import FlowDash, MemoryDashboardStore, register
-from panel_flowdash.agent import DashboardOps, OperationError, register_local_filter
+from panel_flowdash.agent import DashboardOps, OperationError
 from panel_flowdash.agent.chrome import TOOL_LABELS
 from panel_flowdash.agent.live import LiveDashboardOps
+from panel_flowdash.agent.tools import FlowDashDeps, dashboard_toolset
 from panel_flowdash.dashboard_store import Permission
 
 from .test_agent_ops import _editor
-from .test_agent_tools import _app, _runner
+from .test_agent_tools import _app, _runner, scripted
 from .test_global_filters import COMPONENTS as FILTER_COMPONENTS, rows
 
 
@@ -35,7 +43,28 @@ class Kpi(Viewer):
         return pn.pane.Str("kpi")
 
 
-COMPONENTS = {**FILTER_COMPONENTS, "T/Count": Count, "T/Kpi": Kpi}
+@register(
+    component=True,
+    page=False,
+    tags=["transform", "filter"],
+    config=["column"],
+    requires=[{"key": "data", "type": "DataFrame"}],
+    provides=[{"key": "filtered", "type": "DataFrame"}],
+)
+class ByColumn(Viewer):
+    column = param.String(default="")
+    data = param.DataFrame(default=None, allow_None=True)
+
+    @param.output(param.DataFrame)
+    @param.depends("data")
+    def filtered(self):
+        return self.data
+
+    def __panel__(self):
+        return pn.pane.Str("filter")
+
+
+COMPONENTS = {**FILTER_COMPONENTS, "T/Count": Count, "T/Kpi": Kpi, "T/ByColumn": ByColumn}
 
 
 @pytest.fixture
@@ -132,6 +161,16 @@ class TestAddFilter:
         applies, cannot = ops.filter_reach("state")
         assert applies == [] and cannot["by_state"] == "it opts out of this filter"
 
+    def test_views_a_filter_node_filters_on_the_column_are_named(self, ops):
+        ops.add_node("T/ByColumn", {"column": "state"}, name="pick_state")
+        ops.add_node("T/Table", {}, name="picked")
+        ops.connect("fleet.data", "pick_state.data")
+        ops.connect("pick_state.filtered", "picked.table")
+        result = ops.add_filter("state")
+        assert set(result["filters"]) == {"by_state", "picked"}
+        assert result["filtered_locally"] == {"picked": "pick_state"}
+        assert ops.add_filter("year")["filtered_locally"] == {}
+
 
 class TestFilterTools:
     async def test_add_filter_reports_the_views_it_cannot_filter(self, ops):
@@ -141,6 +180,17 @@ class TestFilterTools:
             "Done: Added the global filter on 'state' (State, select). It filters: by_state."
         )
         assert "It cannot filter: regional: its data has no column 'state'; total:" in output
+
+    async def test_add_filter_warns_of_a_filter_node_on_the_column(self, ops):
+        ops.add_node("T/ByColumn", {"column": "state"}, name="pick_state")
+        ops.add_node("T/Table", {}, name="picked")
+        ops.connect("fleet.data", "pick_state.data")
+        ops.connect("pick_state.filtered", "picked.table")
+        output = await _runner(ops, ("add_filter", {"column": "state"})).run("Add a state filter")
+        assert (
+            "Warning: views already filtered on 'state' by a Filter node upstream now keep only "
+            "the rows both filters keep: picked by pick_state."
+        ) in output
 
     async def test_remove_filter(self, ops):
         ops.add_filter("state")
@@ -155,28 +205,36 @@ class TestFilterTools:
         assert "No tool here builds one" in output
         assert ops.editor.filters == []
 
-    async def test_a_local_filter_route_can_be_registered(self, ops):
+    @staticmethod
+    def _local(ops, route, *calls):
+        agent = Agent(
+            scripted(*calls),
+            deps_type=FlowDashDeps,
+            toolsets=[dashboard_toolset(["add_filter"], local_filter=route)],
+        )
+        return AgentRunner(agent, ops.editor.edit_history.state, deps=FlowDashDeps(ops))
+
+    async def test_a_toolset_can_route_local_filters(self, ops):
+        call = ("add_filter", {"column": "state", "scope": "local", "label": "State"})
+        output = await self._local(ops, "add_filter_control", call).run("Local one")
+        assert "Build a local filter with add_filter_control instead." in output
         calls = []
-        try:
-            register_local_filter("add_filter_control")
-            output = await _runner(ops, ("add_filter", {"column": "state", "scope": "local"})).run(
-                "Local one"
-            )
-            assert "Build a local filter with add_filter_control instead." in output
 
-            def route(ctx, **kwargs):
-                calls.append(kwargs)
-                return "Built a local filter."
+        def route(ctx, **kwargs):
+            calls.append(kwargs)
+            return "Built a local filter."
 
-            register_local_filter(route)
-            output = await _runner(
-                ops, ("add_filter", {"column": "state", "scope": "local", "label": "State"})
-            ).run("Local one")
-            assert output == "Done: Built a local filter."
-            assert calls == [{"column": "state", "label": "State", "widget": None, "value": None}]
-        finally:
-            register_local_filter(None)
+        output = await self._local(ops, route, call).run("Local one")
+        assert output == "Done: Built a local filter."
+        assert calls == [{"column": "state", "label": "State", "widget": None, "value": None}]
         assert ops.editor.filters == []
+
+    async def test_a_local_filter_route_is_the_toolsets_own(self, ops):
+        call = ("add_filter", {"column": "state", "scope": "local"})
+        await self._local(ops, "add_filter_control", call).run("Local one")
+        output = await _runner(ops, call).run("Local one")
+        assert "No tool here builds one" in output
+        assert "add_filter_control" not in output
 
     async def test_a_mistake_is_sent_back(self, ops):
         output = await _runner(ops, ("add_filter", {"column": "nope"})).run("Filter by nope")
@@ -243,6 +301,28 @@ class TestSetTitle:
         editor.save()
         assert store._load_any(bob.dashboard_id).title == "Bob's"
         editor.dispose()
+
+    def test_an_editor_who_does_not_own_it_may_change_the_description(self, store):
+        bob = store.create_dashboard("bob", "Bob's")
+        store.set_permission(bob.dashboard_id, Permission(allow_edit_users={"alice"}))
+        editor = _editor(store)
+        editor.load(bob.dashboard_id)
+        assert DashboardOps(editor).set_title("Bob's", "Wind fleet") == "Bob's"
+        assert editor.settings.description == "Wind fleet"
+        editor.set_title("Bob's")
+        with pytest.raises(PermissionError, match="owner or an administrator"):
+            DashboardOps(editor).set_title("Hijacked", "Mine")
+        assert editor.settings.description == "Wind fleet"
+        editor.dispose()
+
+    @pytest.mark.parametrize("title", ["Fleet\x00", "Fleet \u202eteelf", "Fl\u200beet"])
+    def test_control_and_format_characters_are_refused(self, ops, title):
+        with pytest.raises(OperationError, match="control or formatting characters"):
+            ops.set_title(title)
+        assert ops.editor.dashboard.title == "Untitled"
+
+    def test_whitespace_in_a_title_is_collapsed(self, ops):
+        assert ops.set_title("Wind\tfleet\n overview") == "Wind fleet overview"
 
     def test_authorize_rename_decides(self, store):
         bob = store.create_dashboard("bob", "Bob's")
@@ -355,6 +435,24 @@ class TestSetTitle:
         assert app._current_dashboard.title == "Bob's"
         assert store._load_any(theirs.dashboard_id).title == "Bob's"
 
+    async def test_a_refused_live_edit_leaves_view_mode(self, store, monkeypatch):
+        theirs = store.create_dashboard("bob", "Bob's")
+        store.set_permission(theirs.dashboard_id, Permission(allow_edit_users={"alice"}))
+        app = _app(store, monkeypatch)
+        ops = LiveDashboardOps(app)
+        app._load_dashboard_sync(theirs.dashboard_id)
+        assert not app._editor.editable
+        with pytest.raises(PermissionError, match="owner or an administrator"):
+            ops.set_title("Mine now")
+        with pytest.raises(OperationError, match="nothing to filter"):
+            ops.add_filter("state")
+        with pytest.raises(OperationError, match="no global filter"):
+            ops.remove_filter("state")
+        assert not app._editor.editable
+        assert not app._has_unsaved_changes()
+        ops.set_title("Bob's", "Wind fleet")
+        assert app._editor.editable
+
 
 def test_set_config_says_an_input_it_cannot_find_may_be_an_output():
     editor = _editor()
@@ -384,3 +482,53 @@ def test_set_config_says_an_input_it_cannot_find_may_be_an_output():
 )
 def test_step_labels(name, args, label):
     assert TOOL_LABELS[name](args) == label
+
+
+class TestParallelCalls:
+    def test_the_tools_that_change_the_dashboard_run_alone(self):
+        toolset = dashboard_toolset()
+        sequential = {name for name, tool in toolset.tools.items() if tool.sequential}
+        assert {"add_node", "set_config", "connect", "place_tile", "save_dashboard"} <= sequential
+        assert not {"get_dashboard", "list_components", "preview_dashboard"} & sequential
+
+    async def test_parallel_edits_in_one_response_do_not_interleave(self, ops, monkeypatch):
+        ops.add_node("T/ByColumn", {}, name="first")
+        ops.add_node("T/ByColumn", {}, name="second")
+        running, overlaps, done = [], [], []
+        set_config_async = ops.set_config_async
+
+        async def slow_set_config(name, config, inputs=None):
+            if running:
+                overlaps.append((running[-1], name))
+            running.append(name)
+            try:
+                await asyncio.sleep(0.01)
+                result = await set_config_async(name, config, inputs)
+                done.append(name)
+                return result
+            finally:
+                running.remove(name)
+
+        monkeypatch.setattr(ops, "set_config_async", slow_set_config)
+
+        def model(messages, info):
+            if any(isinstance(p, ToolReturnPart) for m in messages for p in m.parts):
+                return ModelResponse(parts=[TextPart("Done.")])
+            calls = [
+                ("set_config", {"name": "first", "config": {"column": "state"}}),
+                ("add_node", {"component": "T/Table", "name": "extra"}),
+                ("set_config", {"name": "second", "config": {"column": "year"}}),
+                ("connect", {"source": "fleet.data", "target": "extra.table"}),
+                ("get_dashboard", {}),
+            ]
+            return ModelResponse(
+                parts=[ToolCallPart(n, a, tool_call_id=f"c{i}") for i, (n, a) in enumerate(calls)]
+            )
+
+        agent = Agent(FunctionModel(model), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()])
+        await agent.run("Change several things", deps=FlowDashDeps(ops))
+        assert overlaps == []
+        assert done == ["first", "second"]
+        doc = yaml.safe_load(ops.get_dashboard())
+        assert doc["nodes"]["second"]["config"] == {"column": "year"}
+        assert any(e["to"] == "extra.table" for e in doc["edges"])

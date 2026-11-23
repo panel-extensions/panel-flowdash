@@ -43,14 +43,16 @@ class LiveDashboardOps(DashboardOps):
         super().__init__(app._editor)
         self.app = app
 
-    def _require_edit(self):
-        app = self.app
-        current = app._current_dashboard
-        if current is None:
+    def _check_edit(self):
+        if self.app._current_dashboard is None:
             raise OperationError("No dashboard is open; open one with open_dashboard first.")
-        if not self.editor.editable and app._can_edit_dashboard(current):
+        super()._check_edit()
+
+    def _require_edit(self):
+        self._check_edit()
+        app = self.app
+        if not self.editor.editable and app._can_edit_dashboard(app._current_dashboard):
             app._show_edit_mode()
-        super()._require_edit()
 
     async def open_dashboard_async(self, dashboard_id: str) -> str:
         """Show a stored dashboard in the app, in edit mode when the user may edit it.

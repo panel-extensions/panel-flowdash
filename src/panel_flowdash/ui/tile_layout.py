@@ -46,19 +46,30 @@ def tile_entry(editor, instance_id: str) -> dict:
     return next((dict(e) for e in _layout(editor) if e.get("instance_id") == instance_id), {})
 
 
-def update_tile(editor, instance_id: str, rebalance: Collection[str] | None = None, **patch):
+def update_tile(
+    editor,
+    instance_id: str,
+    rebalance: Collection[str] | None = None,
+    *,
+    hold_heights: Collection[str] | None = None,
+    record: bool = True,
+    **patch,
+):
     """Change how a component's tile is laid out, e.g. ``visible``, ``width`` or ``height``.
 
     Works whether or not the tile grid is on screen: the grid is rebuilt from
     the updated layout, which is what is saved. With *rebalance*, a new width
     or height also resizes the other tiles of the tile's row, except those
     of *rebalance*, as dragging the tile's edge does (see
-    :func:`~panel_flowdash.auto_layout.resize_in_row`).
+    :func:`~panel_flowdash.auto_layout.resize_in_row`); with *hold_heights*
+    too, the tiles of *rebalance* keep only their width and those of
+    *hold_heights* their height. Without *record* the change is not recorded
+    as an edit, for a caller that records the edit it is part of.
     """
     editor._settle_deferred_tiles()
     layout = [dict(e) for e in _layout(editor)]
     if rebalance is not None and {"width", "height"} & set(patch):
-        layout, held = _rebalanced(editor, layout, instance_id, patch, rebalance)
+        layout, held = _rebalanced(editor, layout, instance_id, patch, rebalance, hold_heights)
         if held is not None and "width" in patch:
             # Its row may hold the tile narrower than asked.
             patch["width"] = held
@@ -86,15 +97,21 @@ def update_tile(editor, instance_id: str, rebalance: Collection[str] | None = No
             editor._deferred_rearrange = True
         else:
             editor._arrange_tiles()
-    editor._record_edit(
-        "Changed the tile layout",
-        op="layout",
-        args={"name": editor._node_name(instance_id), "keys": sorted(patch)},
-    )
+    if record:
+        editor._record_edit(
+            "Changed the tile layout",
+            op="layout",
+            args={"name": editor._node_name(instance_id), "keys": sorted(patch)},
+        )
 
 
 def _rebalanced(
-    editor, layout: list[dict], instance_id: str, patch: dict, fixed: Collection[str]
+    editor,
+    layout: list[dict],
+    instance_id: str,
+    patch: dict,
+    fixed: Collection[str],
+    fixed_heights: Collection[str] | None = None,
 ) -> tuple[list[dict], float | None]:
     """Return *layout* with the tile's new size from *patch* and its row rebalanced around it.
 
@@ -123,6 +140,7 @@ def _rebalanced(
         fixed=fixed,
         bounds=bounds,
         whole=whole,
+        fixed_heights=fixed_heights,
     )
     held = None
     for entry in resized:
@@ -136,18 +154,31 @@ def _rebalanced(
 
 
 def row_layout(editor) -> list[list[dict]]:
-    """Return the entries of the tiles shown on the grid, by the rows they fill."""
+    """Return the entries of the tiles shown on the grid, by the rows the grid packs them in.
+
+    A tile stacked below a shorter tile of its row, beside a taller one, has
+    the instance id of that tile under ``"under"``.
+    """
     entries = _entries(editor)
     shown = [
         entries.get(item["instance_id"], {"instance_id": item["instance_id"]})
         for item in area_items(editor, GRID, entries)
         if entries.get(item["instance_id"], {}).get("visible") is not False
     ]
-    return [[dict(e) for e in row] for row in auto_layout.layout_rows(shown)]
+    return [
+        [
+            {**entry, "under": shown[under]["instance_id"]} if under is not None else dict(entry)
+            for entry, under in row
+        ]
+        for row in auto_layout.pack_rows(shown)
+    ]
 
 
-def move_tile(editor, instance_id: str, index: int):
-    """Move a component's tile to position *index* among the tiles, 0 for the first."""
+def move_tile(editor, instance_id: str, index: int, *, record: bool = True):
+    """Move a component's tile to position *index* among the tiles, 0 for the first.
+
+    Without *record* the move is not recorded as an edit, see :func:`update_tile`.
+    """
     editor._settle_deferred_tiles()
     layout = [dict(e) for e in _layout(editor)]
     entries = _entries(editor)
@@ -168,9 +199,10 @@ def move_tile(editor, instance_id: str, index: int):
     editor._auto_tiles.clear()
     editor._pending_tile_layout = [*by_id.values(), *(e for e in layout if "instance_id" not in e)]
     editor._rebuild_tile_grid()
-    editor._record_edit(
-        "Changed the tile layout", op="layout", args={"name": editor._node_name(instance_id)}
-    )
+    if record:
+        editor._record_edit(
+            "Changed the tile layout", op="layout", args={"name": editor._node_name(instance_id)}
+        )
 
 
 def frame_choices(editor, instance_id: str) -> dict[str, bool | str]:
@@ -301,14 +333,21 @@ def area_items(editor, area: str, entries: dict[str, dict] | None = None) -> lis
 
 
 def move_to_area(
-    editor, instance_id: str, area: str, before: str | None = None, index: int | None = None
+    editor,
+    instance_id: str,
+    area: str,
+    before: str | None = None,
+    index: int | None = None,
+    *,
+    record: bool = True,
 ) -> bool:
     """Show a component in *area*, in front of the component *before* there or else last.
 
     *index*, the position among the others in *area* with 0 for the first, may
     be given instead of *before*.
 
-    One edit, and so one version in the history. Moving within an area
+    One edit, and so one version in the history, unless *record* is False
+    (see :func:`update_tile`). Moving within an area
     reorders it. A tile keeps its size on the grid while it is beside it, and
     a hidden tile moved anywhere is shown. Returns whether anything moved.
 
@@ -350,9 +389,12 @@ def move_to_area(
     editor._pending_tile_layout = [*by_id.values(), *(e for e in layout if "instance_id" not in e)]
     editor._rebuild_tile_grid()
     name = editor._node_name(instance_id)
-    editor._record_edit(
-        f"Moved {name} to the {AREA_NAMES[area]}", op="layout", args={"name": name, "area": area}
-    )
+    if record:
+        editor._record_edit(
+            f"Moved {name} to the {AREA_NAMES[area]}",
+            op="layout",
+            args={"name": name, "area": area},
+        )
     return True
 
 

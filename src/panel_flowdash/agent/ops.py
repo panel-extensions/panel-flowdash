@@ -19,6 +19,7 @@ import unicodedata
 import panel as pn
 import yaml
 
+from panel_flowdash import auto_layout
 from panel_flowdash.config_check import (
     CHECK_TIMEOUT,
     CheckResult,
@@ -41,7 +42,13 @@ from panel_flowdash.editor import (
     copy_context,
     export_model,
 )
-from panel_flowdash.global_filters import FilterError, accepts_filters, check_value, filter_label
+from panel_flowdash.global_filters import (
+    FilterError,
+    accepts_filters,
+    check_filters,
+    check_value,
+    filter_label,
+)
 from panel_flowdash.input_literals import check_literal
 from panel_flowdash.parameters import ContractError, ParameterError
 from panel_flowdash.report import (
@@ -97,6 +104,8 @@ def _tile_text(names: dict[str, str], entry: dict, shown: float | None = None) -
         text += f" {height:g}px"
     else:
         text += f" auto ({shown:g}px)" if shown is not None else " auto (content)"
+    if entry.get("under"):
+        text += f" (under {names.get(entry['under'], entry['under'])})"
     return text
 
 
@@ -410,6 +419,11 @@ class DashboardOps:
         return current is None or self._can_read_source(self.editor.to_model(), current=True)
 
     def _require_edit(self):
+        """Refuse an edit the user may not make; called right before an operation changes the dashboard."""
+        self._check_edit()
+
+    def _check_edit(self):
+        """Refuse an edit the user may not make, without preparing the editor for it."""
         editor = self.editor
         if editor.read_only:
             raise PermissionError("You may only view this dashboard, so it cannot be changed.")
@@ -1784,10 +1798,9 @@ class DashboardOps:
             If the node does not fit in *area*, or is sized while beside the
             grid.
         """
-        self._require_edit()
+        self._check_edit()
         instance_id = self._instance(name)
         editor = self.editor
-        editor._settle_deferred_tiles()
         item = self._item(instance_id)
         self.layout_notes = []
         if area is not None and area not in tile_layout.AREAS:
@@ -1810,32 +1823,70 @@ class DashboardOps:
         if sum(v is not None for v in (index, before, after)) > 1:
             raise OperationError("Pass one of index, before and after.")
         if before is not None or after is not None:
-            index = self._index_beside(instance_id, placed, before, after)
-        if width is not None:
-            width = self._bounded_width(name, item, width)
-        patch = {
-            key: value
-            for key, value in (("width", width), ("height", height), ("visible", visible))
-            if value is not None
-        }
-        if frame is not None:
-            patch["framed"] = _FRAMES[frame]
-        if area is not None or (placed not in (None, tile_layout.GRID) and index is not None):
-            tile_layout.move_to_area(editor, instance_id, placed, index=index)
-        elif index is not None:
-            tile_layout.move_tile(editor, instance_id, index)
-        if patch:
-            if width is not None or height is not None:
-                size = self.sized_tiles.setdefault(instance_id, {})
-                size.update({k: v for k, v in (("width", width), ("height", height)) if v})
-            tile_layout.update_tile(editor, instance_id, rebalance=set(self.sized_tiles), **patch)
-            held = tile_layout.tile_entry(editor, instance_id).get("width")
-            if width is not None and held is not None and abs(held - width) > 0.01:
-                self.sized_tiles[instance_id]["width"] = held
-                self.layout_notes.append(
-                    f"Width {width:g} not applied: the other tiles of its row are as narrow as "
-                    f"they go, so '{name}' got width {held:g}. Width 100 gives it a row of its "
-                    "own; narrowing or moving the others makes room."
+            self._check_beside(instance_id, placed, before, after)
+        self._require_edit()
+        # The request's waiting tiles are laid out first, so the change applies to the tiles
+        # as they show; that layout is part of this edit, whether or not the call applies.
+        laid_out = copy.deepcopy(tile_layout._layout(editor))
+        editor._settle_deferred_tiles()
+        changed = False
+        try:
+            if before is not None or after is not None:
+                index = self._index_beside(instance_id, placed, before, after)
+            if width is not None:
+                width = self._bounded_width(name, item, width)
+            if height is not None:
+                height = self._bounded_height(name, item, height)
+            patch = {
+                key: value
+                for key, value in (("width", width), ("height", height), ("visible", visible))
+                if value is not None
+            }
+            if frame is not None:
+                patch["framed"] = _FRAMES[frame]
+            if area is not None or (placed not in (None, tile_layout.GRID) and index is not None):
+                tile_layout.move_to_area(editor, instance_id, placed, index=index, record=False)
+            elif index is not None:
+                tile_layout.move_tile(editor, instance_id, index, record=False)
+            if patch:
+                if width is not None or height is not None:
+                    size = self.sized_tiles.setdefault(instance_id, {})
+                    size.update({k: v for k, v in (("width", width), ("height", height)) if v})
+                tile_layout.update_tile(
+                    editor,
+                    instance_id,
+                    rebalance={i for i, s in self.sized_tiles.items() if "width" in s},
+                    hold_heights={i for i, s in self.sized_tiles.items() if "height" in s},
+                    record=False,
+                    **patch,
+                )
+                held = tile_layout.tile_entry(editor, instance_id).get("width")
+                if width is not None and held is not None and abs(held - width) > 0.01:
+                    self.sized_tiles[instance_id]["width"] = held
+                    self.layout_notes.append(
+                        f"Width {width:g} not applied: the other tiles of its row are as narrow "
+                        f"as they go, so '{name}' got width {held:g}. Width 100 gives it a row "
+                        "of its own; narrowing or moving the others makes room."
+                    )
+            changed = True
+        finally:
+            if changed or tile_layout._layout(editor) != laid_out:
+                keys = sorted(
+                    k
+                    for k, v in (
+                        ("width", width),
+                        ("height", height),
+                        ("visible", visible),
+                        ("framed", frame),
+                        ("index", index),
+                        ("area", area),
+                    )
+                    if v is not None
+                )
+                editor._record_edit(
+                    "Changed the tile layout",
+                    op="layout",
+                    args={"name": editor._node_name(instance_id), "keys": keys},
                 )
         self._note_hidden(name, instance_id, visible, sized or index is not None)
         return {
@@ -1848,10 +1899,10 @@ class DashboardOps:
         area = tile_layout.area_of(self.editor, self._item(self._instance(name)))
         return f" '{name}' stays {'on the grid' if area == tile_layout.GRID else 'where it is'}."
 
-    def _index_beside(
+    def _check_beside(
         self, instance_id: str, area: str | None, before: str | None, after: str | None
-    ) -> int:
-        """Return the index in *area* that puts a tile in front of *before* or after *after*."""
+    ) -> str:
+        """Refuse a tile to put another in front of or after that is not beside it; return its id."""
         other = before if before is not None else after
         other_id = self._instance(other)
         editor = self.editor
@@ -1869,6 +1920,15 @@ class DashboardOps:
                 f"'{other}' is not in the {tile_layout.AREA_NAMES[area]}; "
                 "before and after name a tile in the same area."
             )
+        return other_id
+
+    def _index_beside(
+        self, instance_id: str, area: str | None, before: str | None, after: str | None
+    ) -> int:
+        """Return the index in *area* that puts a tile in front of *before* or after *after*."""
+        other_id = self._check_beside(instance_id, area, before, after)
+        editor = self.editor
+        area = area or tile_layout.GRID
         order = [
             i["instance_id"]
             for i in tile_layout.area_items(editor, area)
@@ -1877,22 +1937,47 @@ class DashboardOps:
         return order.index(other_id) + (after is not None)
 
     def _bounded_width(self, name: str, item: dict, width: float) -> float:
-        """Return *width* within the width bounds the component gives its tile, noting a change."""
+        """Return *width* within the narrowest and widest its tile is laid out, noting a change.
+
+        The bounds are the component's ``min_size`` and ``max_size``, and the
+        narrowest a tile of its kind stays legible at, e.g. a chart's.
+        """
         editor = self.editor
         spec = editor._tile_spec(item)
         reference, _ = editor._tile_bands()
-        low = ((spec and spec.min_size) or {}).get("width")
-        high = ((spec and spec.max_size) or {}).get("width")
-        bounded = width
-        if low:
-            bounded = max(bounded, min(100.0, round(low * 100 / reference, 2)))
-        if high:
-            bounded = min(bounded, round(high * 100 / reference, 2))
+        box = editor._tile_box(item)
+        low, high = auto_layout.width_bounds(box, reference)
+        bounded = min(max(width, low), high)
         if bounded != width:
-            bound, pixels = ("at least", low) if bounded > width else ("at most", high)
+            if bounded > width:
+                pixels = round(low * reference / 100)
+                own = ((spec and spec.min_size) or {}).get("width") or 0
+                what = f"'{name}'" if own >= pixels else f"a {box.kind} tile"
+                bound = "at least"
+            else:
+                pixels = ((spec and spec.max_size) or {}).get("width")
+                what, bound = f"'{name}'", "at most"
             self.layout_notes.append(
-                f"Width {width:g} not applied: '{name}' is {bound} {pixels:g} px wide, "
-                f"{bounded:g}% of the {reference} px grid, so it got width {bounded:g}."
+                f"Width {width:g} not applied: {what} is {bound} {pixels:g} px wide, "
+                f"{bounded:g}% of the {reference} px grid, so '{name}' got width {bounded:g}."
+            )
+        return bounded
+
+    def _bounded_height(self, name: str, item: dict, height: float) -> float:
+        """Return *height* within the height bounds the component gives its tile, noting a change."""
+        spec = self.editor._tile_spec(item)
+        low = ((spec and spec.min_size) or {}).get("height")
+        high = ((spec and spec.max_size) or {}).get("height")
+        bounded = height
+        if low:
+            bounded = max(bounded, low)
+        if high:
+            bounded = min(bounded, high)
+        if bounded != height:
+            bound = "at least" if bounded > height else "at most"
+            self.layout_notes.append(
+                f"Height {height:g} not applied: '{name}' is {bound} {bounded:g} px tall, so it "
+                f"got height {bounded:g}."
             )
         return bounded
 
@@ -2079,21 +2164,32 @@ class DashboardOps:
         PermissionError
             If the user may not rename the dashboard.
         """
-        self._require_edit()
+        self._check_edit()
         current = self.editor.dashboard
         if current is None:
             raise OperationError("No dashboard is open, so there is nothing to title.")
         if not isinstance(title, str) or not title.strip():
             raise OperationError("Give the dashboard a title, e.g. 'Wind fleet overview'.")
+        if any(unicodedata.category(c) in ("Cc", "Cf") and not c.isspace() for c in title):
+            raise OperationError(
+                "A title holds no control or formatting characters; write it as plain text."
+            )
         title = " ".join(title.split())
         if len(title) > MAX_TITLE_LENGTH:
             raise OperationError(f"A title has at most {MAX_TITLE_LENGTH} characters.")
-        if title != current.title and not self.editor.may_rename():
+        renamed = title != current.title
+        if renamed and not self.editor.may_rename():
             raise PermissionError(
                 "Only the dashboard's owner or an administrator may rename it; you may change "
                 "its contents but not its title."
             )
-        self.editor.set_title(title)
+        if description is not None:
+            params = self.editor.settings.param.objects("existing")
+            if reason := _check_value(params["description"], description):
+                raise OperationError(f"description: {reason}")
+        self._require_edit()
+        if renamed:
+            self.editor.set_title(title)
         if description is not None:
             self.set_settings({"description": description})
         return title
@@ -2166,15 +2262,17 @@ class DashboardOps:
     ) -> dict[str, t.Any]:
         """Add a global filter on *column* to the dashboard's filter bar, or change the one it has.
 
-        Returns the filter, whether it is new, and which views it filters and
-        why the others with data do not (see :meth:`filter_reach`).
+        Returns the filter, whether it is new, which views it filters and why
+        the others with data do not (see :meth:`filter_reach`), and the views
+        it filters that a Filter node upstream already filters on the column
+        (see :meth:`filtered_locally`), which then keep only the rows both keep.
 
         Raises
         ------
         OperationError
             If no view on the dashboard has the column, or the filter is malformed.
         """
-        self._require_edit()
+        self._check_edit()
         editor = self.editor
         state = editor._global_filters
         _check_column(column)
@@ -2193,19 +2291,49 @@ class DashboardOps:
             entry["widget"] = state.widget(entry)
         if value is not None:
             entry["value"] = value
+        filters = (
+            [entry if f is existing else f for f in filters] if existing else [*filters, entry]
+        )
         try:
             if value is not None:
                 check_value(value, entry["widget"], "value")
-            filters = (
-                [entry if f is existing else f for f in filters] if existing else [*filters, entry]
-            )
-            action = "Changed" if existing else "Added"
+            check_filters(filters)
+        except (FilterError, ValueError) as exc:
+            raise OperationError(str(exc)) from exc
+        self._require_edit()
+        action = "Changed" if existing else "Added"
+        try:
             editor.set_filters(filters, label=f"{action} the {filter_label(entry)} filter")
         except (FilterError, ValueError) as exc:
             raise OperationError(str(exc)) from exc
         applies, cannot = self.filter_reach(column)
         shown = {k: v for k, v in entry.items() if k != "exclude"}
-        return {"filter": shown, "new": existing is None, "filters": applies, "cannot": cannot}
+        return {
+            "filter": shown,
+            "new": existing is None,
+            "filters": applies,
+            "cannot": cannot,
+            "filtered_locally": self.filtered_locally(column, applies),
+        }
+
+    def filtered_locally(self, column: str, views: t.Iterable[str]) -> dict[str, str]:
+        """Return the *views* a Filter node upstream already filters on *column*, by view name.
+
+        A Filter node is a transform tagged ``filter`` whose ``field`` or
+        ``column`` config names the column; it is named as in the YAML.
+        """
+        names = self._names()
+        ids = {name: iid for iid, name in names.items()}
+        items = {i["instance_id"]: i for i in self.editor._tile_items}
+        found = {}
+        for view in views:
+            iid = ids.get(view, view)
+            for node in self.editor._global_filters.local_filters(iid):
+                config = (items.get(node) or {}).get("config") or {}
+                if column in (config.get("field"), config.get("column")):
+                    found[view] = names.get(node, node)
+                    break
+        return found
 
     def _check_filter_column(self, column: str):
         """Refuse a filter on a column no view on the dashboard has, unless some views do not know theirs yet."""
@@ -2241,7 +2369,7 @@ class DashboardOps:
         OperationError
             If the dashboard has no filter on *column*.
         """
-        self._require_edit()
+        self._check_edit()
         editor = self.editor
         filters = editor.filters
         kept = [f for f in filters if f["column"] != column]
@@ -2251,6 +2379,7 @@ class DashboardOps:
                 f"The dashboard has no global filter on {_short(column)}."
                 + (f" Its filters: {', '.join(columns)}." if columns else " It has none.")
             )
+        self._require_edit()
         editor.set_filters(kept, label=f"Removed the {column} filter")
 
     # ------------------------------------------------------------------

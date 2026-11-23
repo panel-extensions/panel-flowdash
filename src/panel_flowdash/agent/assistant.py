@@ -261,6 +261,7 @@ def create_agent(
     default_instructions: bool = True,
     catalogue: t.Literal["full", "compact", "none"] = "full",
     tool_retries: int = TOOL_RETRIES,
+    local_filter: t.Callable[..., t.Any] | str | None = None,
     **kwargs: t.Any,
 ) -> Agent[FlowDashDeps, str]:
     """Create the default FlowDash agent.
@@ -314,6 +315,10 @@ def create_agent(
         model is asked to fix. pydantic-ai counts a tool's failures until a
         step calls it without one, so in steps of parallel calls a few
         failed connections add up quickly; one retry would end the run.
+    local_filter
+        How the agent's ``add_filter(scope="local")`` is answered, e.g. by
+        the name of a tool of a data library that builds a filter for some
+        views; see :func:`dashboard_toolset`.
     **kwargs
         Passed on to ``pydantic_ai.Agent``.
     """
@@ -340,7 +345,7 @@ def create_agent(
         name=kwargs.pop("name", "FlowDash"),
         instructions=text or None,
         toolsets=[
-            dashboard_toolset(tools, max_retries=tool_retries),
+            dashboard_toolset(tools, max_retries=tool_retries, local_filter=local_filter),
             *kwargs.pop("toolsets", []),
         ],
         model_settings=model_settings,

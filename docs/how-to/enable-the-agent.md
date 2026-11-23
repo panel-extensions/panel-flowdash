@@ -344,11 +344,14 @@ like any other edit. Only the dashboard's owner or an administrator may rename i
 views it filters and why the others cannot, e.g. a view whose data has no such column
 or a KPI computed from a single number upstream; `remove_filter(column)` takes it out.
 A column no view has is refused with the columns there are. `add_filter(scope="local")`,
-a control that filters only some views, is refused unless an application registers a
-way to build one with `panel_flowdash.agent.register_local_filter` (the name of its
-own tool, or a function that builds it). `panel_flowdash.agent.LAYOUT_TOOLS` names
+a control that filters only some views, is refused unless the agent is given a way to
+build one with `create_agent(local_filter=...)` or `dashboard_toolset(local_filter=...)`
+(the name of its own tool, or a function that builds it). `panel_flowdash.agent.LAYOUT_TOOLS` names
 the tools an assistant with its own data tools needs to wire, lay out, title, filter
-and report on a dashboard.
+and report on a dashboard. A global filter on a column a Filter node upstream of a
+view already filters on is added with a warning naming those views, since both
+apply. When the model calls several tools at once, the tools that change the
+dashboard run one at a time and the tools that only read it run in parallel.
 
 Each request to the agent stays on the dashboard that was open when the user sent it:
 if the user opens another dashboard while the agent works, every further tool call

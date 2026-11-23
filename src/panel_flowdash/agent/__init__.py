@@ -35,7 +35,6 @@ _AGENT_NAMES = {
     "create_agent": "assistant",
     "create_explore_agent": "assistant",
     "dashboard_toolset": "tools",
-    "register_local_filter": "tools",
 }
 
 
@@ -80,6 +79,5 @@ __all__ = [
     "dashboard_toolset",
     "palette_actions",
     "read_revision",
-    "register_local_filter",
     "validate_dashboard",
 ]
