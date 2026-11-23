@@ -873,6 +873,11 @@ def layout_rows(entries: Sequence[Mapping]) -> list[list[Mapping]]:
     return rows
 
 
+#: The margin around each tile of the grid in pixels, as panel-tiles' CSS sets it. A tile's
+#: width in percent includes it, its height in pixels does not.
+TILE_MARGIN = 10
+
+
 def pack_rows(entries: Sequence[Mapping]) -> list[list[tuple[Mapping, int | None]]]:
     """Group the shown tiles' entries into rows as the grid packs them in its "rows" mode.
 
@@ -881,7 +886,8 @@ def pack_rows(entries: Sequence[Mapping]) -> list[list[tuple[Mapping, int | None
     shorter one of them, beside a taller tile, as the grid does; it never
     moves into an earlier row. Each entry comes with the position in
     *entries* of the tile it sits under, None for one at the top of its row.
-    Tiles without a height never stack, nor does anything under them.
+    Tiles without a height never stack, nor does anything under them. Heights
+    count the tiles' margins, as the grid's packing does.
     """
     rows: list[list[tuple[Mapping, int | None]]] = []
     rects: list[tuple[float, float, float, float | None]] = []
@@ -900,6 +906,8 @@ def pack_rows(entries: Sequence[Mapping]) -> list[list[tuple[Mapping, int | None
     for n, entry in enumerate(entries):
         w = min(100.0, entry.get("width") or 100.0)
         h = entry.get("height")
+        if h is not None:
+            h += 2 * TILE_MARGIN
         spot = None
         if rows and not closed and cursor + w <= 100.01:
             spot = (cursor, top)
@@ -925,7 +933,7 @@ def pack_rows(entries: Sequence[Mapping]) -> list[list[tuple[Mapping, int | None
             under = next(
                 (
                     i
-                    for i in reversed(members)
+                    for i in members
                     if rects[i][3] is not None
                     and abs(rects[i][1] + rects[i][3] - y) <= 0.5
                     and rects[i][0] < x + w - 0.01

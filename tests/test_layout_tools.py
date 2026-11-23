@@ -503,7 +503,7 @@ class TestRows:
 
     def test_a_tile_stacks_under_a_shorter_one_beside_a_taller_one(self):
         entries = [
-            {"instance_id": "map", "width": 60, "height": 640},
+            {"instance_id": "map", "width": 60, "height": 620},
             {"instance_id": "k1", "width": 40, "height": 300},
             {"instance_id": "k2", "width": 40, "height": 300},
             {"instance_id": "k3", "width": 40, "height": 300},
@@ -515,6 +515,23 @@ class TestRows:
         ]
         unsized = pack_rows([{**e, "height": None} for e in entries])
         assert [len(row) for row in unsized] == [2, 2]
+
+    def test_the_margins_count_in_whether_a_tile_fits_below_another(self):
+        # Beside a 600 px table, two rows of 130 px KPIs leave 600 - 2 * 130 = 340 px, but
+        # with the 20 px margin of each tile the room is 620 - 2 * 150 = 300 px, too short
+        # for a 320 px chart, which starts a row below the table, as the browser shows it.
+        entries = [
+            {"instance_id": "t", "width": 50, "height": 600},
+            *({"instance_id": f"k{i}", "width": 25, "height": 130} for i in range(1, 5)),
+            {"instance_id": "c", "width": 50, "height": 320},
+        ]
+        rows = pack_rows(entries)
+        assert [[(e["instance_id"], under) for e, under in row] for row in rows] == [
+            [("t", None), ("k1", None), ("k2", None), ("k3", 1), ("k4", 2)],
+            [("c", None)],
+        ]
+        entries[-1]["height"] = 280
+        assert [(e["instance_id"], u) for e, u in pack_rows(entries)[0]][-1] == ("c", 3)
 
     def test_the_report_names_a_stacked_tile(self, ops):
         _charts(ops, "map", "k1", "k2")

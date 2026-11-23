@@ -180,6 +180,10 @@ def test_disposing_lets_go_of_the_dashboard(explore):
         lambda ex: ex.set_title("Explored"),
         lambda ex: ex.add_filter("value"),
         lambda ex: ex.remove_filter("value"),
+        lambda ex: ex.edit_report([{"op": "insert", "block": {"text": "Note"}}]),
+        lambda ex: ex.set_report("- text: Note"),
+        lambda ex: ex.ask_in_report("Why?"),
+        lambda ex: ex.run_pending("turn"),
     ],
     ids=[
         "config",
@@ -192,6 +196,10 @@ def test_disposing_lets_go_of_the_dashboard(explore):
         "title",
         "add_filter",
         "remove_filter",
+        "edit_report",
+        "set_report",
+        "ask_in_report",
+        "run_pending",
     ],
 )
 def test_explore_cannot_change_the_dashboard(explore, call):
