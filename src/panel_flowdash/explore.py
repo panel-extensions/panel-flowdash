@@ -320,6 +320,11 @@ class ExploreFeed(Viewer):
                 placeholder="Ask a question about this dashboard…",
                 **self._chat_params,
             )
+        if "user_placement" in AgentChat.param:
+            # As in the assistant's chat: questions as bubbles on the right, no avatars or names.
+            params.update(
+                user_placement="right", message_params={"show_avatar": False, "show_user": False}
+            )
         from panel_flowdash.agent.chrome import TOOL_LABELS
 
         chat = AgentChat(
