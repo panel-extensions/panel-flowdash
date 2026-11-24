@@ -77,19 +77,19 @@ class app(pn.viewable.Viewer):
                 pn.bind(lambda label, metric: label or METRICS[metric], self.param.label, metric),
                 variant="overline",
                 sx={"color": "text.secondary", "lineHeight": 1.6},
-                margin=(6, 12, 0, 12),
+                margin=(6, 10, 0, 10),
             ),
             pmui.Typography(
                 pn.bind(lambda *args: self._reading(*args)[0], *reading),
                 variant="h4",
                 sx={"fontWeight": 500},
-                margin=(0, 12),
+                margin=(0, 10),
             ),
             pmui.Typography(
                 pn.bind(lambda *args: self._reading(*args)[1], *reading),
                 variant="caption",
                 sx={"color": "text.secondary"},
-                margin=(0, 12),
+                margin=(0, 10),
             ),
             margin=0,
         )
