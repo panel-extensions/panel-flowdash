@@ -7,6 +7,7 @@ import param
 from panel.viewable import Viewer
 
 from panel_flowdash import register
+from panel_flowdash.agent import DashboardOps
 from panel_flowdash.dashboard_store import DashboardItem, DashboardModel
 from panel_flowdash.editor import FILL_HEIGHT, FlowDash, _fills_tile
 
@@ -276,6 +277,20 @@ class TestFillHeight:
         editor._tile_grid._process_events({"layout": [resized]})
 
         assert editor.to_model().tile_layout == [{**resized, "instance_id": "f"}]
+
+    def test_the_agent_reads_the_height_a_tile_without_one_is_shown_at(self):
+        editor = _fill_editor()
+        for component, name in ((PLAIN, "plain"), (FILLING, "fill"), (FILLING_BOUNDED, "bounded")):
+            editor.add_component(component, instance_id=name)
+        editor.mode = "dashboard"
+        ops = DashboardOps(editor)
+        rows = " | ".join(
+            line for line in ops.describe_layout().splitlines() if line.startswith("Row")
+        )
+
+        assert "plain 100% auto (content)" in rows
+        assert f"fill 100% auto ({FILL_HEIGHT}px)" in rows
+        assert "bounded 100% auto (300px)" in rows
 
     def test_a_pane_that_renders_a_chart_later_sizes_its_tile_then(self):
         editor = _fill_editor()

@@ -34,7 +34,9 @@ from panel_flowdash.config_check import (
 from panel_flowdash.dashboard_store import DashboardModel
 from panel_flowdash.editor import (
     _SESSION_EDITORS,
+    FILL_HEIGHT,
     FlowDash,
+    _fills_tile,
     _ReadOnlyEditorError,
     copy_context,
     export_model,
@@ -81,16 +83,20 @@ class OperationError(ValueError):
     """
 
 
-def _tile_text(names: dict[str, str], entry: dict) -> str:
+def _tile_text(names: dict[str, str], entry: dict, shown: float | None = None) -> str:
     """Describe a tile's layout entry as its node's name, width and height, e.g. ``kpi 25% 130px``.
 
-    A tile without a height says ``auto height``: it is as tall as its
-    content, so tiles side by side are not equally tall by default.
+    A tile without a height of its own is ``auto``, with the height the
+    dashboard gives it: *shown* pixels, e.g. ``auto (360px)`` for a view
+    that fills its tile, else ``auto (content)``.
     """
     text = f"{names.get(entry['instance_id'], entry['instance_id'])} "
     text += f"{min(100.0, entry.get('width') or 100.0):g}%"
     height = entry.get("height")
-    text += " auto height" if height is None else f" {height:g}px"
+    if height is not None:
+        text += f" {height:g}px"
+    else:
+        text += f" auto ({shown:g}px)" if shown is not None else " auto (content)"
     return text
 
 
@@ -1704,12 +1710,22 @@ class DashboardOps:
             if o.hidden
         ]
 
+    def _shown_height(self, instance_id: str) -> float | None:
+        """Return the height a tile without one of its own is shown at, None when its content sizes it."""
+        editor = self.editor
+        height = editor._fill_heights.get(instance_id)
+        if height is None:
+            tile = editor._inspect_tiles.get(instance_id)
+            if tile is not None and _fills_tile(tile.view):
+                height = FILL_HEIGHT
+        return height
+
     def describe_layout(self) -> str:
         """Describe the layout as it is now: the top bar, the sidebar and the grid's rows.
 
         Each tile is named with its width in percent of the row and its
-        height in pixels, or ``auto height`` when it has none and takes the
-        height of its content; hidden tiles are listed last.
+        height in pixels, or ``auto`` with the height the dashboard gives it
+        when it has none of its own; hidden tiles are listed last.
         """
         editor = self.editor
         names = self._names()
@@ -1720,7 +1736,9 @@ class DashboardOps:
                 shown = ", ".join(names.get(i["instance_id"], i["instance_id"]) for i in items)
                 lines.append(f"{tile_layout.AREA_NAMES[area].capitalize()}: {shown}")
         for number, row in enumerate(tile_layout.row_layout(editor), start=1):
-            tiles = " | ".join(_tile_text(names, entry) for entry in row)
+            tiles = " | ".join(
+                _tile_text(names, entry, self._shown_height(entry["instance_id"])) for entry in row
+            )
             lines.append(f"Row {number}: {tiles}")
         if not any(line.startswith("Row") for line in lines):
             lines.append("No tiles on the grid.")

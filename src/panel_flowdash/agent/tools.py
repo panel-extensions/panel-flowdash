@@ -843,9 +843,10 @@ def place_tile(
     Args:
         name: The node's name in the dashboard YAML.
         width: Percent of the row, greater than 0 and at most 100.
-        height: Height in pixels. A tile without one ("auto height" in the
-            layout) is as tall as its content, so tiles side by side are
-            only equally tall once each is given the same height.
+        height: Height in pixels. Without one ("auto" in the layout) the
+            dashboard picks the height, the content's or 360 for a view that
+            fills its tile, and tiles side by side only stay aligned once
+            given a height; a height given to one tile resizes its whole row.
         visible: False hides the tile; the component keeps running. Tiles of
             sources and transforms start hidden; True shows one.
         index: Position among the tiles, 0 for the first, or within the node's

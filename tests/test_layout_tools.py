@@ -288,9 +288,9 @@ class TestPositions:
 
 
 class TestReports:
-    async def test_tiles_without_a_height_are_reported_as_auto_height(self, ops):
-        # A playtest asked for a table left of a chart at the same height; the
-        # model set the widths only and answered that both were equally tall.
+    async def test_tiles_without_a_height_are_reported_as_auto(self, ops):
+        # A playtest asked for a table left of a chart at the same height and
+        # the model set the widths only, so the layout says what height they get.
         def place():
             _charts(ops, "chart")
             ops.add_node("V/table", name="rows")
@@ -327,7 +327,8 @@ class TestReports:
         ops.versioned = False
         result = await agent.run("Table left, chart right, same height", deps=FlowDashDeps(ops))
         assert (
-            result.output.splitlines()[-1] == "Row 1: rows 50% auto height | chart 50% auto height"
+            result.output.splitlines()[-1]
+            == "Row 1: rows 50% auto (content) | chart 50% auto (content)"
         )
         _request(ops, lambda: ops.place_tile("rows", height=400))
         assert ops.describe_layout() == "Row 1: rows 50% 400px | chart 50% 400px"
