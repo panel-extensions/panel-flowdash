@@ -1799,9 +1799,15 @@ class Inspector(Viewer):
             provenance[:] = [] if found is None else [provenance_chip(found[0])]
             provenance.visible = found is not None
 
+        def refreshed(only):
+            if only is None or instance_id in only:
+                show_provenance()
+
         show_provenance()
         watcher = editor.param.watch(show_provenance, "edited")
         self._releases.append(partial(editor.param.unwatch, watcher))
+        editor._provenance_listeners.append(refreshed)
+        self._releases.append(partial(editor._provenance_listeners.remove, refreshed))
         update()
         if tab == HISTORY:
             self._fill_history()

@@ -1148,6 +1148,14 @@ class _Outlet(param.Parameterized):
     value = param.Parameter(allow_refs=True)
 
 
+def _config_snapshot(config: t.Mapping[str, t.Any] | None) -> t.Any:
+    """Return a copy of a node's config to tell a later change by, or a value never equal to another if it cannot be copied."""
+    try:
+        return copy.deepcopy(dict(config or {}))
+    except Exception:
+        return object()
+
+
 def _same_signature(before: tuple | None, after: tuple) -> bool:
     """Whether two node signatures are equal; a config value that cannot be compared, e.g. a DataFrame, differs."""
     try:
@@ -1703,6 +1711,8 @@ class FlowDash(Viewer):
         self._names_cache: tuple[frozenset[str], dict[str, str]] | None = None
         # What each tile's actions and provenance were last offered for, see `_sync_edited_tiles`.
         self._tile_signatures: dict[str, tuple] | None = None
+        # Called by `refresh_provenance` with the ids it refreshes, or None for all, e.g. the sidecar's chip.
+        self._provenance_listeners: list[t.Callable[[set[str] | None], None]] = []
 
         super().__init__(**params)
         self.context = copy_context(self.context)
@@ -3449,6 +3459,25 @@ class FlowDash(Viewer):
         if (controls := getattr(self, "_view_controls", None)) is not None:
             controls.sync_provenance(only)
 
+    def refresh_provenance(self, nodes: t.Iterable[str] | None = None) -> None:
+        """Offer anew the node actions and provenance labels of every node, or of *nodes* and those downstream.
+
+        After an edit the editor does this itself for the nodes the edit may
+        have changed. Call it when what a ``__flowdash_provenance__`` hook
+        or an action's ``applies`` reads changes outside the dashboard, e.g.
+        a metric a project file defines being deleted. *nodes* are names as
+        in the dashboard YAML, or instance ids.
+        """
+        only = None
+        if nodes is not None:
+            ids = {name: iid for iid, name in self._node_names().items()}
+            only = self._downstream(
+                n if n in self._component_instances else ids.get(n, n) for n in nodes
+            )
+        self._sync_tile_actions(only)
+        for listener in list(self._provenance_listeners):
+            listener(only)
+
     @param.depends("edited", watch=True)
     def _sync_edited_tiles(self):
         """After an edit, offer anew the actions and provenance of the nodes it may have changed.
@@ -3464,19 +3493,22 @@ class FlowDash(Viewer):
             return
         after = self._node_signatures()
         changed = {iid for iid, sig in after.items() if not _same_signature(before.get(iid), sig)}
-        if not changed:
-            return
+        if changed:
+            self._sync_tile_actions(self._downstream(changed))
+
+    def _downstream(self, ids: t.Iterable[str]) -> set[str]:
+        """Return *ids* and every node downstream of them."""
         targets: dict[str, list[str]] = {}
         for edge in self._dataflow_graph.edges:
             targets.setdefault(edge["source"], []).append(edge["target"])
-        affected, frontier = set(changed), list(changed)
+        found = set(ids)
+        frontier = list(found)
         while frontier:
-            node = frontier.pop()
-            for target in targets.get(node, ()):
-                if target not in affected:
-                    affected.add(target)
+            for target in targets.get(frontier.pop(), ()):
+                if target not in found:
+                    found.add(target)
                     frontier.append(target)
-        self._sync_tile_actions(affected)
+        return found
 
     def _node_signatures(self) -> dict[str, tuple]:
         """Return what a node's actions and provenance may depend on, by instance id, to tell which changed."""
@@ -3494,7 +3526,7 @@ class FlowDash(Viewer):
             (iid := item["instance_id"]): (
                 item["component_id"],
                 id(self._component_instances.get(iid)),
-                dict(item.get("config") or {}),
+                _config_snapshot(item.get("config")),
                 self._origins.get(iid),
                 sorted(inputs.get(iid, ())),
             )
@@ -8716,6 +8748,8 @@ class FlowDash(Viewer):
         if self._report_view is not None:
             # The report is restored after the dashboard, which the view follows.
             self._report_view.schedule()
+        # Restoring is no edit, so nothing else offers the restored nodes' actions and provenance.
+        self.refresh_provenance()
 
     @pn.io.hold()
     def _patch_canvas(self, model: DashboardModel) -> bool:

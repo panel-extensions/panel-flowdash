@@ -522,3 +522,49 @@ def test_node_names_are_worked_out_once_until_the_nodes_change(editor, monkeypat
     for _ in range(5):
         assert editor._node_name("more") == "more"
     assert calls == []
+
+
+def test_undo_and_redo_offer_the_restored_provenance_again(editor):
+    editor.history_coalesce = 0
+    editor.editable = True
+    editor._rebuild_tile_grid()
+    editor.save()
+    assert _chip_labels(editor._inspect_tiles["card"]) == ["Metric: capacity"]
+    DashboardOps(editor).disconnect("source.value", "card.value")
+    assert _chip_labels(editor._inspect_tiles["card"]) == []
+    assert editor.undo()
+    assert _chip_labels(editor._inspect_tiles["card"]) == ["Metric: capacity"]
+    assert editor.redo()
+    assert _chip_labels(editor._inspect_tiles["card"]) == []
+
+
+def test_refresh_provenance_follows_state_outside_the_dashboard(editor):
+    editor.editable = True
+    editor._rebuild_tile_grid()
+    inspector = editor._inspector
+    inspector.visible = True
+    editor._flow.selection = {"nodes": ["card"], "edges": []}
+    inspector.refresh()
+
+    def sidecar_chip():
+        rows = [o for o in inspector._body if "fd-inspector-provenance" in o.css_classes]
+        return [c.label for row in rows if row.visible for c in row]
+
+    assert sidecar_chip() == ["Metric: capacity"]
+    editor._component_instances["source"].label = "Missing metric: capacity"
+    assert _chip_labels(editor._inspect_tiles["card"]) == ["Metric: capacity"]
+    editor.refresh_provenance(["source"])
+    assert _chip_labels(editor._inspect_tiles["card"]) == ["Missing metric: capacity"]
+    assert sidecar_chip() == ["Missing metric: capacity"]
+    editor._component_instances["source"].label = "Metric: capacity"
+    editor.refresh_provenance()
+    assert sidecar_chip() == ["Metric: capacity"]
+
+
+def test_a_nested_config_changed_in_place_is_seen(editor):
+    item = next(i for i in editor._tile_items if i["instance_id"] == "card")
+    item["config"] = {"nested": {"a": 1}}
+    editor._sync_tile_actions()
+    before = editor._tile_signatures["card"]
+    item["config"]["nested"]["a"] = 2
+    assert editor._node_signatures()["card"] != before
