@@ -19,6 +19,7 @@ from panel_flowdash.agent import DashboardOps, NotApplied
 from panel_flowdash.agent.tools import FlowDashDeps, dashboard_toolset
 from panel_flowdash.auto_layout import resize_in_row
 from panel_flowdash.text_components import TEXT_COMPONENTS
+from panel_flowdash.ui import tile_layout
 
 from .test_agent_ops import COMPONENTS
 from .test_editor_auto_layout import EXTRA, _tiles
@@ -287,6 +288,51 @@ class TestPositions:
 
 
 class TestReports:
+    async def test_tiles_without_a_height_are_reported_as_auto(self, ops):
+        # A playtest asked for a table left of a chart at the same height and
+        # the model set the widths only, so the layout says what height they get.
+        def place():
+            _charts(ops, "chart")
+            ops.add_node("V/table", name="rows")
+
+        _request(ops, place)
+        for name in ("rows", "chart"):
+            tile_layout.update_tile(ops.editor, ops._instance(name), height=None)
+
+        def model(messages, info):
+            results = [
+                p
+                for m in messages
+                for p in getattr(m, "parts", [])
+                if isinstance(p, ToolReturnPart)
+            ]
+            if not results:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart(
+                            "place_tile",
+                            {"name": "rows", "width": 50, "index": 0},
+                            tool_call_id="1",
+                        ),
+                        ToolCallPart(
+                            "place_tile",
+                            {"name": "chart", "width": 50, "index": 1},
+                            tool_call_id="2",
+                        ),
+                    ]
+                )
+            return ModelResponse(parts=[TextPart(str(results[-1].content))])
+
+        agent = Agent(FunctionModel(model), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()])
+        ops.versioned = False
+        result = await agent.run("Table left, chart right, same height", deps=FlowDashDeps(ops))
+        assert (
+            result.output.splitlines()[-1]
+            == "Row 1: rows 50% auto (content) | chart 50% auto (content)"
+        )
+        _request(ops, lambda: ops.place_tile("rows", height=400))
+        assert ops.describe_layout() == "Row 1: rows 50% 400px | chart 50% 400px"
+
     def test_a_hidden_tile_is_reported(self, ops):
         ops.add_node("T/number", name="source")
         ops.add_node("V/chart", name="chart")
