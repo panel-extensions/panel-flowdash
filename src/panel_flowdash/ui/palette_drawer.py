@@ -16,7 +16,6 @@ import panel_material_ui as pmui
 import param
 from panel.custom import JSComponent
 
-from panel_flowdash.ui.dashboard_bar import HIDE_ON_PHONE
 from panel_flowdash.ui.sidecar import FOLDED_WIDTH
 
 if t.TYPE_CHECKING:
@@ -244,7 +243,6 @@ class PaletteDrawer(param.Parameterized):
             styles={"border-right": "1px solid var(--mui-palette-divider, #e0e0e0)"},
             # Folded by a class, so the palette's own visibility stays the sheet's to use.
             stylesheets=[
-                HIDE_ON_PHONE,
                 f":host(.{FOLDED_CLASS}) .fd-palette-region-{uid} {{ display: none !important; }}",
             ],
         )

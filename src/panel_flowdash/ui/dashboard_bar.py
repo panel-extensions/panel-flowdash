@@ -58,13 +58,27 @@ _HIDE_ON_PHONE = (
     f"@media (max-width: {PHONE_BREAKPOINT - 0.05}px) {{ :host {{ display: none !important; }} }}"
 )
 
-# Public for the editor's side panels, which the phone's bottom sheets replace, and
-# their inverse for the buttons opening those sheets. CSS, so a phone never shows
+# For the buttons opening the phone's bottom sheets. CSS, so a phone never shows
 # the wrong ones before the server knows the window's width.
-HIDE_ON_PHONE = _HIDE_ON_PHONE
 SHOW_ON_PHONE = (
     f"@media (min-width: {PHONE_BREAKPOINT}px) {{ :host {{ display: none !important; }} }}"
 )
+
+
+def hide_on_phone(css_class: str) -> str:
+    """Return a layout's stylesheet hiding its children with *css_class* on a phone.
+
+    For the editor's side panels, which the phone's bottom sheets replace. CSS,
+    so a phone never shows them before the server knows the window's width. The
+    rule belongs to the layout holding them, not to their own shadow roots:
+    WebKit can leave a host hidden by an ``@media`` ``:host`` rule after the
+    window widens again, once the styles in its shadow root change.
+    """
+    return (
+        f"@media (max-width: {PHONE_BREAKPOINT - 0.05}px) "
+        f"{{ .{css_class} {{ display: none !important; }} }}"
+    )
+
 
 # On phones the buttons left on screen are 44 px touch targets, as are tabs.
 PHONE_TOUCH_CSS = (

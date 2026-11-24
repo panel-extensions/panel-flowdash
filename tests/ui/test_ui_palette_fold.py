@@ -221,11 +221,6 @@ def test_a_folded_palette_still_shows_in_the_phone_sheet(page):
     page.get_by_role("dialog", name="Add component").get_by_role("button", name="Close").click()
 
 
-@pytest.mark.xfail(
-    reason="The palette moved back from the phone's sheet is lost at the column's next "
-    "change, often in Chromium under load and always in Firefox and WebKit, also on main",
-    strict=False,
-)
 def test_the_fold_survives_a_round_trip_through_the_phone_layout(page):
     apps = _serve_app(page, 1400)
     _button(page, HIDE).click()

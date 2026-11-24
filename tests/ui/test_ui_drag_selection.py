@@ -213,6 +213,37 @@ def test_a_press_between_tiles_selects_no_text_but_tile_text_stays_selectable(pa
     assert "ipsum" in page.evaluate(_SELECTED)
 
 
+def test_a_selection_made_before_dragging_another_tile_is_kept(page, browser_name):
+    page.set_viewport_size({"width": 1400, "height": 900})
+    editor = _editor()
+    serve_component(page, editor)
+    tiles = page.locator(".muuri-grid-item")
+    expect(tiles).to_have_count(3, timeout=DASHBOARD_LOAD_TIMEOUT)
+    before = page.evaluate(_BODY_USER_SELECT)
+
+    text = stable_box(tiles.nth(1).get_by_text("Lorem ipsum").first, page)
+    _drag(page, (text["x"] + 5, text["y"] + 8), (text["x"] + text["width"] - 10, text["y"] + 30))
+    selected = page.evaluate(_SELECTED)
+    assert "ipsum" in selected
+
+    first = tiles.first
+    dragged = page.locator(f".muuri-grid-item[data-id='{first.get_attribute('data-id')}']")
+    dragged.hover()
+    handle = center(stable_box(dragged.locator(".muuri-handle.drag"), page))
+    last = stable_box(tiles.last, page)
+    _drag(
+        page,
+        handle,
+        (last["x"] + last["width"] - 20, last["y"] + last["height"] + 40),
+        steps=40,
+        during=lambda: _held(page),
+    )
+    wait_until(lambda: page.evaluate(_BODY_USER_SELECT) == before, page, timeout=5000)
+    # WebKit collapses a selection on the press itself; the drag must not select anything else.
+    kept = page.evaluate(_SELECTED)
+    assert kept in (selected, "") if browser_name == "webkit" else kept == selected
+
+
 def test_two_guards_on_one_page_restore_the_body(page):
     handle = pn.pane.HTML(
         '<div class="muuri-handle" style="width: 100px; height: 40px">handle</div>'
