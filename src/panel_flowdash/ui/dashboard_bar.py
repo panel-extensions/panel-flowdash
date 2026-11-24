@@ -546,8 +546,9 @@ class DashboardBar(Viewer):
         self.mode_tabs.param.watch(self._on_tab, "value")
         editor.param.watch(self._sync_switchers, ["surface", "mode", "read_only", "ask"])
         editor.param.watch(lambda _event: self.sync(), ["assistant", "read_only"])
-        # The overflow menu offers the views the switchers have no room for.
-        editor.param.watch(lambda _event: self.sync(), "surface")
+        # The overflow menu offers the views the switchers have no room for and,
+        # on a phone in edit mode, opens or closes the assistant.
+        editor.param.watch(lambda _event: self.sync(), ["surface", "ask"])
         # An icon, so the edit actions keep to one row beside the switches and tabs.
         self.settings_button = pmui.IconButton(
             icon="tune",
@@ -790,6 +791,10 @@ class DashboardBar(Viewer):
                 for tab, label, icon in _PHONE_TABS
                 if tab != current
             ]
+            if editor.assistant:
+                # The drawer stays closed on the Explore view even while Ask is on.
+                shown = editor.ask and editor.surface != "explore"
+                items.append(_PHONE_CLOSE_ASSISTANT if shown else _PHONE_ASSISTANT)
             if not editor.read_only:
                 items.append(_SETTINGS)
             if editor.dirty:
@@ -824,6 +829,8 @@ class DashboardBar(Viewer):
             self._choose_tab(value)
         elif kind == "output":
             self.output_toggle.value = value
+        elif kind == "assistant":
+            self._show_assistant(value == "open")
         elif action == "refresh":
             self.editor.trigger_refresh()
         elif action == "fullscreen":
@@ -1062,6 +1069,13 @@ class DashboardBar(Viewer):
         if not self._syncing and self.editor.ask != event.new:
             self.editor.ask = event.new
 
+    def _show_assistant(self, show: bool):
+        """Open or close the host's assistant, first leaving the Explore view, which keeps it closed."""
+        editor = self.editor
+        if show and editor.surface == "explore":
+            editor.surface = "workspace"
+        editor.ask = show
+
     def _edit(self):
         """Edit the output on screen: the report's blocks, or the dashboard."""
         editor = self.editor
@@ -1230,6 +1244,12 @@ _PHONE_TABS = [
 ]
 _PHONE_REFRESH = {"label": "Refresh now", "icon": "refresh", "action": "refresh"}
 _PHONE_FULLSCREEN = {"label": "Full screen", "icon": "fullscreen", "action": "fullscreen"}
+_PHONE_ASSISTANT = {"label": "Assistant", "icon": "smart_toy", "action": "assistant:open"}
+_PHONE_CLOSE_ASSISTANT = {
+    "label": "Close assistant",
+    "icon": "smart_toy",
+    "action": "assistant:close",
+}
 _PHONE_DISCARD = {"label": "Discard changes", "icon": "undo", "action": "discard"}
 _PHONE_DONE = {"label": "Done editing", "icon": "visibility", "action": "done"}
 _CLEAR = {
