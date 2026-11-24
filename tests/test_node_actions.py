@@ -5,6 +5,7 @@ import pytest
 from panel.viewable import Viewer
 
 from panel_flowdash import FlowDash
+from panel_flowdash.agent import DashboardOps
 from panel_flowdash.node_actions import (
     NodeAction,
     Provenance,
@@ -479,3 +480,45 @@ def test_the_provenance_detail_is_shown_as_literal_text():
 
     line = provenance_line(Provenance("Ad hoc", "Sum of **mw** over `rows`", "ad hoc"))
     assert line[1].object == "Sum of \\*\\*mw\\*\\* over \\`rows\\`"
+
+
+def test_an_edit_resyncs_only_the_tiles_it_may_change(editor, monkeypatch):
+    for i in range(30):
+        editor.add_component("T/card", instance_id=f"other{i}")
+    editor.editable = True
+    editor._rebuild_tile_grid()
+    synced = []
+    sync = editor._sync_tile
+    monkeypatch.setattr(
+        editor, "_sync_tile", lambda iid, *args, **kw: (synced.append(iid), sync(iid, *args, **kw))
+    )
+    editor.connect("source", "value", "other3", "value")
+    assert synced == ["other3"]
+    assert _chip_labels(editor._inspect_tiles["other3"]) == ["Metric: capacity"]
+    synced.clear()
+    DashboardOps(editor).disconnect("source.value", "other3.value")
+    assert synced == ["other3"]
+    assert _chip_labels(editor._inspect_tiles["other3"]) == []
+    synced.clear()
+    editor.add_component("T/card", instance_id="late")
+    assert set(synced) <= {"late"}
+
+
+def test_node_names_are_worked_out_once_until_the_nodes_change(editor, monkeypatch):
+    from panel_flowdash.agent import yaml_format
+
+    calls = []
+    original = yaml_format.node_names
+    monkeypatch.setattr(
+        yaml_format, "node_names", lambda items: (calls.append(1), original(items))[1]
+    )
+    for _ in range(5):
+        editor._node_name("source")
+        editor._node_name("card")
+    assert len(calls) <= 1
+    calls.clear()
+    editor.add_component("T/card", instance_id="more")
+    calls.clear()
+    for _ in range(5):
+        assert editor._node_name("more") == "more"
+    assert calls == []

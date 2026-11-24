@@ -350,10 +350,11 @@ class ControlsBar(Viewer):
         note[:] = [] if provenance is None else [provenance_chip(provenance)]
         note.visible = provenance is not None
 
-    def sync_provenance(self):
-        """Show or hide each component's provenance chip, after an edit or a change of mode."""
+    def sync_provenance(self, only: t.Collection[str] | None = None):
+        """Show or hide each component's provenance chip, or those of *only*, after an edit or a change of mode."""
         for instance_id in self._wrappers:
-            self._sync_note(instance_id)
+            if only is None or instance_id in only:
+                self._sync_note(instance_id)
 
     @pn.io.hold()
     @param.depends("collapsed", "beside_canvas", "editing", watch=True)

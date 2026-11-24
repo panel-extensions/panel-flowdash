@@ -115,6 +115,8 @@ class NodeActionOps:
     or replacing dashboards, their settings and report, sending files and
     running the assistant's pending questions. A library that needs one of
     those offers its own UI for it rather than doing it from a node's menu.
+    It is a fence for well-behaved libraries, not a security boundary: an
+    action runs in-process and can reach the editor through Python anyway.
     """
 
     #: The names of the :class:`~panel_flowdash.agent.DashboardOps` methods it offers.

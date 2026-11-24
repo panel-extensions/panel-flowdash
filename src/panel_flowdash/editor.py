@@ -93,6 +93,7 @@ from panel_flowdash.groups import (
 from panel_flowdash.history import BURST_SECONDS, HISTORY_MAX_BYTES, EditHistory, label_for
 from panel_flowdash.input_literals import check_literal, stored_literal
 from panel_flowdash.node_actions import (
+    PROVENANCE_HOOK,
     NodeAction,
     NodeActionContext,
     Provenance,
@@ -1147,6 +1148,14 @@ class _Outlet(param.Parameterized):
     value = param.Parameter(allow_refs=True)
 
 
+def _same_signature(before: tuple | None, after: tuple) -> bool:
+    """Whether two node signatures are equal; a config value that cannot be compared, e.g. a DataFrame, differs."""
+    try:
+        return bool(before == after)
+    except Exception:
+        return False
+
+
 class FlowDash(Viewer):
     """A dataflow wiring canvas and dashboard layout editor over a set of components.
 
@@ -1690,6 +1699,10 @@ class FlowDash(Viewer):
         params["settings"] = params.get("settings_class", type(self).settings_class)()
         # A tab the host asked for wins over the one remembered by the browser.
         self._restore_split = "mode" not in params
+        # The canvas's node names with the ids they are for, see `_node_names`.
+        self._names_cache: tuple[frozenset[str], dict[str, str]] | None = None
+        # What each tile's actions and provenance were last offered for, see `_sync_edited_tiles`.
+        self._tile_signatures: dict[str, tuple] | None = None
 
         super().__init__(**params)
         self.context = copy_context(self.context)
@@ -3124,18 +3137,30 @@ class FlowDash(Viewer):
         :mod:`panel_flowdash.node_actions`. None when no node reports one.
         """
         edges = self._dataflow_graph.edges
-        paths: dict[str, list[dict[str, t.Any]]] = {instance_id: []}
+        # The edge each node was reached by, from which `via` is built for the nodes with a hook.
+        reached: dict[str, dict[str, t.Any] | None] = {instance_id: None}
+
+        def via(node: str) -> list[dict[str, t.Any]]:
+            path = []
+            while (edge := reached[node]) is not None:
+                path.append(self._provenance_edge(edge))
+                node = edge["target"]
+            return path
+
         frontier = [instance_id]
         while frontier:
             for node in frontier:
-                found = call_provenance_hook(self._component_instances.get(node), paths[node])
+                instance = self._component_instances.get(node)
+                if getattr(instance, PROVENANCE_HOOK, None) is None:
+                    continue
+                found = call_provenance_hook(instance, via(node))
                 if found is not None:
                     return found, node
             upstream = []
             for node in frontier:
                 for edge in edges:
-                    if edge["target"] == node and edge["source"] not in paths:
-                        paths[edge["source"]] = [self._provenance_edge(edge), *paths[node]]
+                    if edge["target"] == node and edge["source"] not in reached:
+                        reached[edge["source"]] = edge
                         upstream.append(edge["source"])
             frontier = upstream
         return None
@@ -3408,18 +3433,73 @@ class FlowDash(Viewer):
         "show_in_editor",
         "provenance",
         "provenance_labels",
-        "edited",
         watch=True,
     )
-    def _sync_tile_actions(self):
+    def _sync_tile_actions(self, only: t.Collection[str] | None = None):
+        """Offer each tile's actions and provenance anew, or only those of the nodes in *only*."""
+        self._tile_signatures = self._node_signatures()
         mode = self._action_mode()
         admin = any(a.admin_only and mode in a.modes for a in node_actions()) and self.is_admin()
         for item in self._tile_items:
+            if only is not None and item["instance_id"] not in only:
+                continue
             tile = self._inspect_tiles.get(item["instance_id"])
             if tile is not None:
                 self._sync_tile(item["instance_id"], tile, self._tile_spec(item), admin)
         if (controls := getattr(self, "_view_controls", None)) is not None:
-            controls.sync_provenance()
+            controls.sync_provenance(only)
+
+    @param.depends("edited", watch=True)
+    def _sync_edited_tiles(self):
+        """After an edit, offer anew the actions and provenance of the nodes it may have changed.
+
+        Those are the nodes whose component, config, origin or inputs
+        differ from the last sync, and every node downstream of them, whose
+        provenance and actions may read theirs; resyncing every tile after
+        every edit would make each edit cost as much as the dashboard.
+        """
+        before = self._tile_signatures
+        if before is None:
+            self._sync_tile_actions()
+            return
+        after = self._node_signatures()
+        changed = {iid for iid, sig in after.items() if not _same_signature(before.get(iid), sig)}
+        if not changed:
+            return
+        targets: dict[str, list[str]] = {}
+        for edge in self._dataflow_graph.edges:
+            targets.setdefault(edge["source"], []).append(edge["target"])
+        affected, frontier = set(changed), list(changed)
+        while frontier:
+            node = frontier.pop()
+            for target in targets.get(node, ()):
+                if target not in affected:
+                    affected.add(target)
+                    frontier.append(target)
+        self._sync_tile_actions(affected)
+
+    def _node_signatures(self) -> dict[str, tuple]:
+        """Return what a node's actions and provenance may depend on, by instance id, to tell which changed."""
+        inputs: dict[str, list[tuple]] = {}
+        for edge in self._dataflow_graph.edges:
+            inputs.setdefault(edge["target"], []).append(
+                (
+                    edge["source"],
+                    edge["source_port"],
+                    edge["target_port"],
+                    repr(edge.get("transform") or []),
+                )
+            )
+        return {
+            (iid := item["instance_id"]): (
+                item["component_id"],
+                id(self._component_instances.get(iid)),
+                dict(item.get("config") or {}),
+                self._origins.get(iid),
+                sorted(inputs.get(iid, ())),
+            )
+            for item in self._tile_items
+        }
 
     def _tile_spec(self, item: dict) -> ComponentSpec | None:
         """Return the spec whose hints apply to a tile; a placeholder keeps its saved size."""
@@ -6807,10 +6887,22 @@ class FlowDash(Viewer):
         """Return the name a node has in the dashboard YAML, for a turn's summary."""
         from panel_flowdash.agent.yaml_format import node_names
 
-        items = [{"instance_id": item["instance_id"]} for item in self._tile_items]
-        if not any(item["instance_id"] == instance_id for item in items):
-            items.append({"instance_id": instance_id})
+        names = self._node_names()
+        if instance_id in names:
+            return names[instance_id]
+        items = [{"instance_id": iid} for iid in names]
+        items.append({"instance_id": instance_id})
         return node_names(items)[instance_id]
+
+    def _node_names(self) -> dict[str, str]:
+        """Return the YAML names of the canvas's nodes, worked out again only when its nodes change."""
+        from panel_flowdash.agent.yaml_format import node_names
+
+        ids = frozenset(item["instance_id"] for item in self._tile_items)
+        cached = self._names_cache
+        if cached is None or cached[0] != ids:
+            cached = self._names_cache = (ids, node_names({"instance_id": iid} for iid in ids))
+        return cached[1]
 
     def _connect_label(self, verb, source_id, source_port, target_id, target_port) -> str:
         # Only the nodes: a summary is shown to everyone who may read the
