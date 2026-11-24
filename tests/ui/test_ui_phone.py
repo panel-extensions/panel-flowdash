@@ -51,8 +51,8 @@ _OFF_SCREEN = """() => {
 # On a dashboard the bar's Ask stands in for the top bar's Assistant, and a phone
 # finds Ask in the overflow menu.
 _PHONE_TOP_BAR = {
-    False: ["Share", "More actions", "Search", "Toggle theme"],
-    True: ["More actions", "Save", "Search", "Toggle theme"],
+    False: ["More actions", "Search", "Toggle theme"],
+    True: ["Share", "More actions", "Save", "Search", "Toggle theme"],
 }
 
 
@@ -151,4 +151,5 @@ def test_the_overflow_menu_switches_a_phone_to_edit_mode(page):
     expect(_button(page, "Save")).to_be_visible()
     _button(page, "More actions").click()
     page.get_by_role("menuitem", name="Done editing").click()
-    expect(_button(page, "Share")).to_be_visible()
+    # Sharing is an edit action.
+    expect(page.get_by_role("button", name="Save", exact=True)).to_be_hidden()

@@ -45,12 +45,13 @@ class TestDashboardBarSections:
         assert bar._actions.objects[:3] == [bar.output_toggle, bar.mode_tabs, bar.ask_button]
         for item in (bar.settings_button, bar.overflow, bar.discard_button, bar.done_button):
             assert item in bar._actions.objects
-        assert bar._actions.objects[-5:] == [
+        assert bar._actions.objects[-6:] == [
             editor._save_button,
             bar.done_button,
             bar.download_button,
             bar._phone_query,
             bar._narrow_query,
+            bar._settings_query,
         ]
         assert bar.lead.objects == [bar.title, bar.save_state]
 
@@ -68,6 +69,7 @@ class TestDashboardBarSections:
             bar.download_button,
             bar._phone_query,
             bar._narrow_query,
+            bar._settings_query,
         ]
         assert bar.lead.objects == [bar.title]
 
@@ -94,6 +96,7 @@ class TestDashboardBarSections:
             bar.download_button,
             bar._phone_query,
             bar._narrow_query,
+            bar._settings_query,
         ]
 
     async def test_a_phone_finds_the_view_actions_in_the_overflow_menu(self, editor):
@@ -508,14 +511,15 @@ class TestAppModes:
         app._on_dashboard_bar_mode("edit")
         assert app._editor.editable
         assert pn.state.location.search == "?edit=true"
-        assert not app._share_button.visible
+        # Sharing is an edit action.
+        assert app._share_button.visible
 
     async def test_view_request_without_changes(self, app):
         _open(app, edit=True)
         app._on_dashboard_bar_mode("view")
         assert not app._editor.editable
         assert pn.state.location.search == ""
-        assert app._share_button.visible
+        assert not app._share_button.visible
 
     async def test_view_request_with_changes_asks(self, app):
         model = _open(app, edit=True)

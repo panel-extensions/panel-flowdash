@@ -547,7 +547,6 @@ class TestToolbar:
         assert len(editor._tile_items) == 1
 
     async def test_save_button_enabled_only_with_unsaved_changes(self, store_editor):
-        assert store_editor._save_button.variant == "contained"
         assert store_editor._save_button.disabled
         store_editor.add_component(SELECTOR)
         assert not store_editor._save_button.disabled

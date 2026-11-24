@@ -23,7 +23,6 @@ VIEW_ACTIONS = [
     "Edit",
     "Refresh now",
     "Update automatically",
-    "Share",
     "More actions",
 ]
 EDIT_ACTIONS = [
@@ -32,6 +31,7 @@ EDIT_ACTIONS = [
     "Layout",
     "Split",
     "Settings",
+    "Share",
     "More actions",
     "Discard",
     "Save",

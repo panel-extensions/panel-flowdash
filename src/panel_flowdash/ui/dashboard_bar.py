@@ -202,6 +202,17 @@ ICON_ONLY_WHEN_COMPACT = icon_only_below(COMPACT_BREAKPOINT)
 # Done keeps its label longer than the view actions: its eye icon alone does not say
 # it ends editing. Below this width the title and save state need the room.
 DONE_COMPACT_BREAKPOINT = 900
+
+# Below this width Settings leaves the edit actions for the overflow menu, so the title keeps its room.
+SETTINGS_MENU_BREAKPOINT = 900
+_SETTINGS_IN_MENU = f"@media (max-width: {SETTINGS_MENU_BREAKPOINT - 0.05}px) {{ :host {{ display: none !important; }} }}"
+
+
+def _icon_only(tooltip: str) -> str:
+    """Return a stylesheet showing only a button's icon at any width, its label as the tooltip when disabled."""
+    return icon_only_below(100_000, disabled_tooltip=tooltip)
+
+
 _DONE_ICON_ONLY = icon_only_below(DONE_COMPACT_BREAKPOINT)
 
 # Icon buttons are as tall as the text buttons beside them.
@@ -224,6 +235,8 @@ _ASK_SX = {
     "py": "6px",
     "gap": "6px",
     "whiteSpace": "nowrap",
+    # As narrow as a toggle group's icon-only segments once its label is hidden.
+    f"@media (max-width: {EDIT_COMPACT_BREAKPOINT - 0.05}px)": {"gap": 0, "px": 0.75},
 }
 
 _DIRTY_DOT_SX = {
@@ -243,7 +256,7 @@ _DIRTY_DOT_SX = {
 
 # Below this width the save state gives its room in the top bar to the edit
 # actions: only the dot of unsaved changes shows, its text stays for screen readers.
-SAVE_STATE_TEXT_BREAKPOINT = 1800
+SAVE_STATE_TEXT_BREAKPOINT = 800
 _SAVE_STATE_DOT_ONLY = f"""
 @media (max-width: {SAVE_STATE_TEXT_BREAKPOINT - 0.05}px) {{
   .MuiTypography-root {{ font-size: 0 !important; }}
@@ -543,40 +556,38 @@ class DashboardBar(Viewer):
             color="primary",
             description="Settings",
             sx=_ICON_BUTTON_SX,
-            stylesheets=[_HIDE_ON_PHONE],
+            stylesheets=[_HIDE_ON_PHONE, _SETTINGS_IN_MENU],
         )
+        # Discard and Save are quiet icons and Done a text action, so the edit actions stay compact.
         self.discard_button = pmui.Button(
             label="Discard",
             icon="undo",
-            variant="outlined",
+            variant="text",
+            color="default",
             size="small",
-            margin=(0, 4),
+            margin=(0, 2),
             description="Discard",
-            stylesheets=[
-                icon_only_below(EDIT_COMPACT_BREAKPOINT, disabled_tooltip="Discard"),
-                _HIDE_ON_PHONE,
-            ],
+            sx={"color": "text.secondary"},
+            stylesheets=[_icon_only("Discard"), _HIDE_ON_PHONE],
         )
         self.discard_button.on_click(lambda _event: self._confirm_discard())
         self.save_button = pmui.Button(
             label="Save",
             icon="save",
-            variant="contained",
+            variant="text",
             size="small",
-            margin=(0, 4),
+            margin=(0, 2),
             description="Save",
-            stylesheets=[
-                icon_only_below(EDIT_COMPACT_BREAKPOINT, disabled_tooltip="Save"),
-                PHONE_TOUCH_CSS,
-            ],
+            stylesheets=[_icon_only("Save"), PHONE_TOUCH_CSS],
         )
         self.done_button = pmui.Button(
             label="Done",
-            icon="visibility",
-            variant="outlined",
+            icon="check",
+            variant="text",
             size="small",
-            margin=(0, 4),
+            margin=(0, 4, 0, 2),
             description="Done",
+            sx={"fontWeight": 600},
             stylesheets=[_DONE_ICON_ONLY, _HIDE_ON_PHONE],
         )
         self.done_button.on_click(lambda _event: self.request_mode("view"))
@@ -615,6 +626,10 @@ class DashboardBar(Viewer):
             breakpoint=REPORT_MENU_BREAKPOINT, width=0, height=0, margin=0
         )
         self._narrow_query.param.watch(lambda _event: self.sync(), "phone")
+        self._settings_query = PhoneQuery(
+            breakpoint=SETTINGS_MENU_BREAKPOINT, width=0, height=0, margin=0
+        )
+        self._settings_query.param.watch(lambda _event: self.sync(), "phone")
 
         self._lead = pn.FlexBox(
             align_items="center",
@@ -754,12 +769,14 @@ class DashboardBar(Viewer):
         Each entry has an ``action`` key that :meth:`_on_overflow` dispatches on.
         A destructive entry goes last and is shown in the error colour.
         """
+        phone = []
         if self._phone_query.phone:
             phone = self._phone_items()
-        elif self._narrow_query.phone and self._output() != "report":
-            phone = [{"label": "Report", "icon": "description", "action": "output:report"}]
         else:
-            phone = []
+            if self._narrow_query.phone and self._output() != "report":
+                phone.append({"label": "Report", "icon": "description", "action": "output:report"})
+            if self._settings_query.phone and self.editor.editable and not self.editor.read_only:
+                phone.append(_SETTINGS)
         items = self._menu_items()
         return [*phone, None, *items] if phone and items else phone or items
 
@@ -858,6 +875,7 @@ class DashboardBar(Viewer):
             self.download_button,
             self._phone_query,
             self._narrow_query,
+            self._settings_query,
         ]
         if list(self._actions) != actions:
             self._actions[:] = actions

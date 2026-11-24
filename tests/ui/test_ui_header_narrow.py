@@ -14,6 +14,7 @@ from pydantic_ai import Agent
 from panel_flowdash.agent.tools import FlowDashDeps, dashboard_toolset
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.component_library import normalize_components
+from panel_flowdash.ui.dashboard_bar import SETTINGS_MENU_BREAKPOINT
 
 from ..test_agent_tools import scripted
 from .test_ui_header_layout import EDIT_ACTIONS, TOP_BAR, VIEW_ACTIONS
@@ -55,11 +56,11 @@ ASK = "Ask about this dashboard"
 # The outlined controls, which share one height, and the text buttons, which share another.
 _OUTLINED = {
     False: ["Dashboard", "Ask", "Edit", "Refresh now", "Update automatically"],
-    True: ["Dashboard", "Dataflow", "Layout", "Split", "Ask", "Discard", "Done"],
+    True: ["Dashboard", "Dataflow", "Layout", "Split", "Ask"],
 }
 _TEXT = {
-    False: ["Share", "Full screen", "More actions"],
-    True: ["Settings", "More actions"],
+    False: ["Full screen", "More actions"],
+    True: ["Settings", "Share", "More actions", "Discard", "Save", "Done"],
 }
 
 
@@ -83,6 +84,9 @@ def _serve(page, width, edit):
     serve_component(page, {"/": factory, "/dash/[^/]+": factory}, suffix=suffix)
     # With an assistant, edit mode has Ask too, which opens it.
     names = [*([*EDIT_ACTIONS, "Ask"] if edit else VIEW_ACTIONS), *TOP_BAR]
+    if width < SETTINGS_MENU_BREAKPOINT:
+        # Settings is in the overflow menu, so the title keeps its room.
+        names = [name for name in names if name != "Settings"]
     for name in names:
         expect(_button(page, name)).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
         stable_box(_button(page, name), page)
@@ -112,11 +116,14 @@ def test_top_bar_items_never_overlap(page, width, edit):
 def test_top_bar_buttons_keep_their_height_without_labels(page, width, edit):
     _serve(page, width, edit)
 
-    for group in (_OUTLINED[edit], _TEXT[edit]):
+    shown = [_OUTLINED[edit], _TEXT[edit]]
+    if width < SETTINGS_MENU_BREAKPOINT:
+        shown = [[n for n in group if n != "Settings"] for group in shown]
+    for group in shown:
         heights = {name: stable_box(_button(page, name), page)["height"] for name in group}
         assert max(heights.values()) - min(heights.values()) <= 1, heights
-    outlined = stable_box(_button(page, _OUTLINED[edit][0]), page)["height"]
-    text = stable_box(_button(page, _TEXT[edit][0]), page)["height"]
+    outlined = stable_box(_button(page, shown[0][0]), page)["height"]
+    text = stable_box(_button(page, shown[1][0]), page)["height"]
     assert outlined == pytest.approx(36.75, abs=1)
     assert text == pytest.approx(34.75, abs=1)
 
