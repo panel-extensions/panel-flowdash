@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import typing as t
 from collections.abc import Callable, Sequence
 from datetime import datetime
 
@@ -10,6 +11,7 @@ import panel_material_ui as pmui
 from panel.viewable import Viewable
 from panel_agents import RunState, SpanView
 
+from panel_flowdash.node_actions import Provenance
 from panel_flowdash.turns import DashboardTurn
 from panel_flowdash.ui.text import text_alert, text_typography
 
@@ -135,3 +137,42 @@ def provenance_objects(
 
 
 __all__ = ["later_summary", "provenance_objects", "recorded"]
+
+
+def provenance_chip(provenance: Provenance, **params: t.Any) -> pmui.Chip:
+    """Return a quiet chip with a node's provenance label, e.g. "Metric: capacity", and its detail on hover."""
+    icon = provenance.icon or ("functions" if provenance.kind == "metric" else "calculate")
+    params.setdefault("margin", 0)
+    return pmui.Chip(
+        label=provenance.label,
+        icon=icon,
+        color="default",
+        size="small",
+        variant="outlined",
+        description=provenance.detail or None,
+        css_classes=[
+            "flowdash-provenance-chip",
+            f"flowdash-provenance-{(provenance.kind or 'other').replace(' ', '-')}",
+        ],
+        **params,
+    )
+
+
+def provenance_line(provenance: Provenance) -> Viewable:
+    """Return the provenance of a node's numbers as a chip with its detail, for "How was this made?"."""
+    objects: list[Viewable] = [provenance_chip(provenance)]
+    if provenance.detail:
+        objects.append(
+            text_typography(
+                provenance.detail,
+                variant="body2",
+                margin=(4, 0, 0, 0),
+                sx={"color": "text.secondary"},
+            )
+        )
+    return pn.Column(
+        *objects,
+        margin=(0, 0, 12, 0),
+        sizing_mode="stretch_width",
+        css_classes=["flowdash-provenance-source"],
+    )

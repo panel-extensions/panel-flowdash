@@ -59,6 +59,7 @@ from panel_flowdash.ui.node_preview import (
     format_value,
     run_off_loop,
 )
+from panel_flowdash.ui.provenance import provenance_chip
 from panel_flowdash.ui.sidecar import (
     FOLDED_WIDTH,
     SIDECAR_MAX_WIDTH,
@@ -1527,6 +1528,8 @@ class Inspector(Viewer):
             self._duplicate_component(instance_id)
         elif action == "remove":
             self.editor.remove_component(instance_id)
+        elif isinstance(action, str) and action.startswith("node:"):
+            self.editor._on_node_action(instance_id, action.removeprefix("node:"))
 
     # ------------------------------------------------------------------
     # Several selected components, and a selected group
@@ -1664,6 +1667,10 @@ class Inspector(Viewer):
         menu_items: list[dict] = [
             {"label": "Duplicate", "icon": "content_copy", "action": "duplicate"}
         ]
+        menu_items.extend(
+            {"label": action.label, "icon": action.icon, "action": f"node:{action.key}"}
+            for action in editor.node_actions(instance_id)
+        )
         menu_items.append(
             {"label": "Remove from dashboard", "icon": "delete_outline", "action": "remove"}
         )
@@ -1783,10 +1790,28 @@ class Inspector(Viewer):
 
         watcher = tabs.param.watch(on_tab, "active")
         self._releases.append(partial(tabs.param.unwatch, watcher))
+        provenance = pn.Row(margin=(0, 14, 8, 14), css_classes=["fd-inspector-provenance"])
+
+        def show_provenance(*_events):
+            if (owner := inspector()) is None or owner._node_tabs is not tabs:
+                return
+            found = editor.node_provenance(instance_id)
+            provenance[:] = [] if found is None else [provenance_chip(found[0])]
+            provenance.visible = found is not None
+
+        def refreshed(only):
+            if only is None or instance_id in only:
+                show_provenance()
+
+        show_provenance()
+        watcher = editor.param.watch(show_provenance, "edited")
+        self._releases.append(partial(editor.param.unwatch, watcher))
+        editor._provenance_listeners.append(refreshed)
+        self._releases.append(partial(editor._provenance_listeners.remove, refreshed))
         update()
         if tab == HISTORY:
             self._fill_history()
-        return [header, tabs]
+        return [header, provenance, tabs]
 
     # Spec
 

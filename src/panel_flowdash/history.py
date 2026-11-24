@@ -405,6 +405,8 @@ class EditHistory:
         self._timer = False
         self._requests: dict[tuple[str, str | None], _Request] = {}
         self._batching = 0
+        # Nesting depth of `grouped`, inside which the person's edits make one version.
+        self._grouping = 0
         self._refused: dict[str, str] = {}
         #: Called after :meth:`load`, e.g. to show :attr:`refused`.
         self.on_load: t.Callable[[], None] | None = None
@@ -703,10 +705,15 @@ class EditHistory:
         now = self._clock()
         window = self.editor.history_coalesce or 0
         pending = self._pending
-        if pending is not None and pending.key == key and now - pending.last <= window:
+        if (
+            pending is not None
+            and pending.key == key
+            and (self._grouping or now - pending.last <= window)
+        ):
             pending.extend(value, revision, op, args, label, now)
             self._head = revision
-            self._schedule()
+            if not self._grouping:
+                self._schedule()
             return
         self.flush()
         if revision == self._head:
@@ -739,6 +746,8 @@ class EditHistory:
             counted=[{"op": op, "args": dict(args)}] if label else [],
         )
         self._head = revision
+        if self._grouping:
+            return
         if window > 0:
             self._schedule()
         else:
@@ -794,6 +803,61 @@ class EditHistory:
         request.value, request.revision = self.snapshot()
         request.stale = False
         self._head = request.revision
+
+    @contextmanager
+    def grouped(self, *, atomic: bool = False):
+        """Make the person's edits inside the block one version, which one undo reverts.
+
+        The edit in progress before the block is published first, so undo
+        never takes it along with the block's. With *atomic*, a block that
+        raises puts the dashboard back as it was before the block, also
+        while the history is off, and its edits never become a version, so
+        neither undo nor redo brings them back.
+        """
+        if not self._grouping:
+            self.flush()
+        before = self.snapshot() if atomic else None
+        dirty = self.editor.dirty
+        published = self._published()
+        self._grouping += 1
+        try:
+            yield
+        except BaseException:
+            if before is not None:
+                self._roll_back(*before, dirty=dirty, published=published)
+            raise
+        finally:
+            self._grouping -= 1
+            if not self._grouping:
+                self.flush()
+
+    def _published(self) -> int:
+        artifact = self.artifact
+        return len(artifact.versions) if artifact is not None else 0
+
+    def _roll_back(self, value: str, revision: str, *, dirty: bool, published: int):
+        """Make the canvas *value* again, the dashboard as a failed :meth:`grouped` block found it."""
+        if self.snapshot()[1] == revision:
+            return
+        self._applying = True
+        try:
+            self.editor._restore_version(value)
+        finally:
+            self._applying = False
+        pending = self._pending
+        if not self.active:
+            self.editor.dirty = dirty
+        elif self._published() == published and (pending is None or pending.base == revision):
+            # Nothing of the block was published: drop it, as if it never happened.
+            self._pending = None
+            self._head = revision
+            self.editor.dirty = dirty
+        elif pending is not None:
+            pending.extend(value, revision, "edit", {}, None, self._clock())
+            self._head = revision
+        else:
+            # Part of the block was published already; going back is an edit of its own.
+            self.record("edit", {}, None, None)
 
     @contextmanager
     def batched(self):

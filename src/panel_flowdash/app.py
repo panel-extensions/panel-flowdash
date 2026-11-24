@@ -535,6 +535,7 @@ class FlowDashApp(Viewer):
     _nav_generation: int = 0
 
     _RESERVED_EDITOR_OPTIONS = (
+        "authorize_admin",
         "authorize_component",
         "authorize_dashboard",
         "authorize_rename",
@@ -965,6 +966,8 @@ class FlowDashApp(Viewer):
         self._is_admin = True
         if not was_admin and self._shell is not None:
             self._shell.refresh()
+        if not was_admin:
+            self._editor._sync_tile_actions()
         if new_project:
             # The first admin of a project with no settings yet is walked through setup.
             self._navigate_to(f"{ADMIN_ROUTE}/{SETUP_SECTION}")
@@ -982,6 +985,16 @@ class FlowDashApp(Viewer):
         saves on its own asks this before every save.
         """
         return self._still_admin()
+
+    def _authorize_admin(self, *, fresh: bool = False) -> bool:
+        """Whether this session is an admin: as found when it started, or with *fresh* as now.
+
+        The editor's node menus ask on every edit, so only an action about to
+        run re-reads the permissions and the project file.
+        """
+        if fresh:
+            return self._still_admin()
+        return self._is_admin and self._admin_possible
 
     def _still_admin(self) -> bool:
         """Whether this session is still an admin, with the project file read again.
@@ -1456,7 +1469,9 @@ class FlowDashApp(Viewer):
                 "page dialog."
             )
         toolbar_extra = [self._share_button, *(options.pop("toolbar_extra", None) or [])]
+        options.setdefault("project", self._settings_project())
         editor = self.editor_class(
+            authorize_admin=self._authorize_admin,
             authorize_component=self._can_use_component,
             authorize_dashboard=self._authorize_dashboard,
             authorize_rename=self._can_administer_dashboard,
