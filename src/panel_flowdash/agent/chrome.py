@@ -121,8 +121,9 @@ class SessionChrome:
       where they share one slot.
     - An approval that waits on a surface out of sight shows a notice whose
       Review button brings that surface back: one of the assistant's in full
-      screen or while Explore is shown opens the drawer, and one of the
-      Explore agent's, asked before leaving Explore, shows Explore again.
+      screen or while Explore or Ask's feed is shown opens the drawer in the
+      feed's place, and one of the Explore agent's, asked before leaving
+      Explore, shows Explore again.
     - The command palette offers to ask the assistant whatever was typed. A
       question asked while the assistant is busy is sent once it is done.
     """
@@ -230,7 +231,10 @@ class SessionChrome:
     # ------------------------------------------------------------------
 
     def review(self):
-        """Leave full screen and bring back the surface whose approval is pending."""
+        """Leave full screen and bring back the surface whose approval is pending.
+
+        The drawer opened in view mode turns Ask off, so the docked feed makes room for it.
+        """
         self.notice.visible = False
         editor = self.session.app._editor
         if editor is not None:

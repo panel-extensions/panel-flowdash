@@ -135,12 +135,29 @@ def test_add_to_dashboard_puts_an_answer_on_the_dashboard(page):
     button = card.get_by_role("button", name="Add to dashboard")
     expect(button).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
     button.click()
+    # Adding opens edit mode on the Layout tab with the new tile marked. Ask is off
+    # there rather than the assistant's drawer, which holds another conversation.
+    tile = page.locator(f".{TILE_CLASSES['add']}")
+    expect(tile).to_have_count(1, timeout=DASHBOARD_LOAD_TIMEOUT)
+    expect(tile.get_by_text("note tile")).to_be_visible()
+    editor = apps[0]._editor
+    session = apps[0]._agent_session
+    assert editor.editable and editor.mode == "dashboard"
+    memo = next(i for i in editor._tile_items if i["instance_id"] == "memo")
+    assert memo in tile_layout.grid_tiles(editor)
+    expect(page.locator(".flowdash-explore")).to_have_count(0)
+    expect(ask_button(page)).to_have_attribute("aria-pressed", "false")
+    assert not editor.ask and not session.drawer.open
+
+    # Done brings Ask back beside the dashboard, where the card says where the answer went.
+    page.get_by_role("button", name="Done").first.click()
+    page.get_by_role("button", name="Save and leave").click()
+    page.get_by_role("button", name="Edit", exact=True).wait_for()
+    expect(ask_button(page)).to_have_attribute("aria-pressed", "true")
     expect(card.locator(".artifact-cell-done")).to_have_text(
         re.compile("On dashboard as memo$"), timeout=DASHBOARD_LOAD_TIMEOUT
     )
-    editor = apps[0]._editor
-    memo = next(i for i in editor._tile_items if i["instance_id"] == "memo")
-    assert memo in tile_layout.grid_tiles(editor)
+    assert editor.ask_docked and not session.drawer.open
     # Show marks the answer's tile on the dashboard beside the feed, which stays.
     card.get_by_role("button", name="Show").click()
     tile = page.locator(f".{TILE_CLASSES['add']}")
