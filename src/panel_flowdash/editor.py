@@ -92,6 +92,14 @@ from panel_flowdash.groups import (
 )
 from panel_flowdash.history import BURST_SECONDS, HISTORY_MAX_BYTES, EditHistory, label_for
 from panel_flowdash.input_literals import check_literal, stored_literal
+from panel_flowdash.node_actions import (
+    PROVENANCE_HOOK,
+    NodeAction,
+    NodeActionContext,
+    Provenance,
+    call_provenance_hook,
+    node_actions,
+)
 from panel_flowdash.parameters import (
     ContractError,
     ContractProblem,
@@ -115,6 +123,7 @@ from panel_flowdash.placeholders import (
     placeholder_view,
     unresolved_summary,
 )
+from panel_flowdash.project import Project
 from panel_flowdash.registry import RegistryEntry
 from panel_flowdash.report import (
     check_report,
@@ -148,6 +157,7 @@ from panel_flowdash.ui.dashboard_bar import (
     fullscreen_toolbar,
 )
 from panel_flowdash.ui.dock_handle import DockHandle
+from panel_flowdash.ui.drag_guard import GRID_DRAG_CSS, DragGuard
 from panel_flowdash.ui.global_filters import GlobalFilters
 from panel_flowdash.ui.inspect_sheet import (
     dataframe_preview,
@@ -189,7 +199,8 @@ from panel_flowdash.ui.palette import (
     palette_items,
     preset_entries,
 )
-from panel_flowdash.ui.provenance import provenance_objects
+from panel_flowdash.ui.palette_drawer import PaletteDrawer, fold_button
+from panel_flowdash.ui.provenance import provenance_line, provenance_objects
 from panel_flowdash.ui.report_view import ReportView
 from panel_flowdash.ui.roles import component_role
 from panel_flowdash.ui.settings_dialog import SettingsDialog
@@ -508,6 +519,11 @@ _FLOW_PHONE_CSS = (
 )
 
 _FLOW_STYLESHEET = """\
+/* A press on the empty canvas or its panels starts no text selection. */
+.react-flow__pane, .react-flow__panel, .react-flow__background {
+  -webkit-user-select: none;
+  user-select: none;
+}
 /* The canvas shares its height with the code panel docked under it. */
 :host(.fd-docked) .react-flow { min-height: 0 !important; height: 100% !important; }
 /* React Flow's own dark palette draws edges at #3e3e3e on #141414, close to invisible. */
@@ -1139,6 +1155,22 @@ class _Outlet(param.Parameterized):
     value = param.Parameter(allow_refs=True)
 
 
+def _config_snapshot(config: t.Mapping[str, t.Any] | None) -> t.Any:
+    """Return a copy of a node's config to tell a later change by, or a value never equal to another if it cannot be copied."""
+    try:
+        return copy.deepcopy(dict(config or {}))
+    except Exception:
+        return object()
+
+
+def _same_signature(before: tuple | None, after: tuple) -> bool:
+    """Whether two node signatures are equal; a config value that cannot be compared, e.g. a DataFrame, differs."""
+    try:
+        return bool(before == after)
+    except Exception:
+        return False
+
+
 class FlowDash(Viewer):
     """A dataflow wiring canvas and dashboard layout editor over a set of components.
 
@@ -1219,6 +1251,18 @@ class FlowDash(Viewer):
         before renaming and `save` before storing a new title. `FlowDashApp`
         supplies one that checks the signed-in user. None lets only the
         dashboard's owner, the editor's `user`, rename it.""",
+    )
+
+    authorize_admin = param.Callable(
+        default=None,
+        doc="""
+        Called with a keyword ``fresh`` to decide whether this session
+        administers the project. Node actions registered as ``admin_only``
+        (see :mod:`panel_flowdash.node_actions`) are offered while it says so
+        with ``fresh=False``, which should be cheap as menus ask it on every
+        edit, and run only if it says so with ``fresh=True``, which should
+        check again, e.g. with the project file read afresh. `FlowDashApp`
+        supplies one. None makes no one an admin.""",
     )
 
     breakpoints = param.List(default=[768, 1200], doc="Responsive breakpoints for the tile grid.")
@@ -1529,6 +1573,24 @@ class FlowDash(Viewer):
         shape without its content.""",
     )
 
+    project = param.ClassSelector(
+        class_=Project,
+        default=None,
+        allow_None=True,
+        doc="""
+        The project file the app reads, which node actions get to save a
+        section of it with ``Project.set``. `FlowDashApp` supplies its own.""",
+    )
+
+    provenance_labels = param.Boolean(
+        default=False,
+        doc="""
+        Whether the views of nodes that report their provenance (see
+        :mod:`panel_flowdash.node_actions`), e.g. "Metric: capacity" or "Ad
+        hoc", show it as a chip in view mode too. While the dashboard is
+        edited the chip is always shown.""",
+    )
+
     agent_state = param.ClassSelector(
         class_=RunState,
         default=None,
@@ -1652,6 +1714,12 @@ class FlowDash(Viewer):
         params["settings"] = params.get("settings_class", type(self).settings_class)()
         # A tab the host asked for wins over the one remembered by the browser.
         self._restore_split = "mode" not in params
+        # The canvas's node names with the ids they are for, see `_node_names`.
+        self._names_cache: tuple[frozenset[str], dict[str, str]] | None = None
+        # What each tile's actions and provenance were last offered for, see `_sync_edited_tiles`.
+        self._tile_signatures: dict[str, tuple] | None = None
+        # Called by `refresh_provenance` with the ids it refreshes, or None for all, e.g. the sidecar's chip.
+        self._provenance_listeners: list[t.Callable[[set[str] | None], None]] = []
 
         super().__init__(**params)
         self.context = copy_context(self.context)
@@ -2127,10 +2195,12 @@ class FlowDash(Viewer):
             pn.extension(*extensions)
 
     def _make_palette(self):
+        self._palette_fold_button = fold_button()
         self._palette_panel = ComponentPalette(
             drag_type=_PALETTE_DRAG_TYPE,
             items=self._palette_items,
             on_click=self._on_palette_clicked,
+            header_end=self._palette_fold_button,
         )
         return self._palette_panel.menu
 
@@ -3000,6 +3070,131 @@ class FlowDash(Viewer):
         turn = self.origin_turn(instance_id)
         return turn is not None and turn.actor == "agent"
 
+    def is_admin(self, *, fresh: bool = False) -> bool:
+        """Whether this session administers the project, as :attr:`authorize_admin` says.
+
+        With *fresh* the host checks again from its sources, e.g. the project
+        file read afresh, as before an admin action runs.
+        """
+        if self.authorize_admin is None:
+            return False
+        try:
+            return bool(self.authorize_admin(fresh=fresh))
+        except Exception:
+            logger.exception("authorize_admin failed; treating the session as no admin")
+            return False
+
+    def _action_mode(self) -> str:
+        """Return the mode node actions apply in: "edit" while the dashboard may be edited, else "view"."""
+        return "edit" if self.editable and not self.read_only and not self.preview else "view"
+
+    def node_actions(self, instance_id: str, *, admin: bool | None = None) -> list[NodeAction]:
+        """Return the registered node actions offered for a node to the person using the editor.
+
+        A restricted node or a placeholder gets none, nor does an action
+        outside the editor's mode (see ``NodeAction.modes``); an
+        ``admin_only`` action needs :meth:`is_admin`, and an action whose
+        ``applies`` fails is left out. *admin* says whether the session is
+        an admin, which :meth:`is_admin` is asked otherwise.
+        """
+        if instance_id not in self._component_instances or self._node_restricted(instance_id):
+            return []
+        mode = self._action_mode()
+        actions = [a for a in node_actions() if mode in a.modes]
+        if not actions:
+            return []
+        if admin is None:
+            admin = any(action.admin_only for action in actions) and self.is_admin()
+        actions = [a for a in actions if admin or not a.admin_only]
+        if not actions:
+            return []
+        context = NodeActionContext(self, instance_id)
+        offered = []
+        for action in actions:
+            try:
+                if action.applies is not None and not action.applies(context):
+                    continue
+            except Exception:
+                logger.exception("Node action %r failed to say whether it applies", action.key)
+                continue
+            offered.append(action)
+        return offered
+
+    def run_node_action(self, instance_id: str, key: str) -> t.Any:
+        """Run the node action *key* on a node, checking again that it is offered to this session.
+
+        An ``admin_only`` action asks :attr:`authorize_admin` afresh first.
+
+        Raises
+        ------
+        PermissionError
+            If the action is not offered for the node, e.g. outside its modes
+            or an ``admin_only`` action for someone who is no admin (any more).
+        """
+        action = next((a for a in self.node_actions(instance_id) if a.key == key), None)
+        if action is None or (action.admin_only and not self.is_admin(fresh=True)):
+            raise PermissionError(f"The action {key!r} is not available for this node.")
+        return action.run(NodeActionContext(self, instance_id))
+
+    def _on_node_action(self, instance_id: str, key: str):
+        try:
+            self.run_node_action(instance_id, key)
+        except PermissionError as exc:
+            self._notify("error", str(exc))
+        except Exception as exc:
+            logger.exception("Node action %r failed", key)
+            self._notify(
+                "error", f"The action failed: {exc}" if str(exc) else "The action failed."
+            )
+
+    def node_provenance(self, instance_id: str) -> tuple[Provenance, str] | None:
+        """Return the provenance a node's numbers have, and the id of the node that reports it.
+
+        That is the node's own ``__flowdash_provenance__`` or else the
+        nearest upstream node's, following its inputs breadth first, each
+        hook told the edges between it and this node (``via``), see
+        :mod:`panel_flowdash.node_actions`. None when no node reports one.
+        """
+        edges = self._dataflow_graph.edges
+        # The edge each node was reached by, from which `via` is built for the nodes with a hook.
+        reached: dict[str, dict[str, t.Any] | None] = {instance_id: None}
+
+        def via(node: str) -> list[dict[str, t.Any]]:
+            path = []
+            while (edge := reached[node]) is not None:
+                path.append(self._provenance_edge(edge))
+                node = edge["target"]
+            return path
+
+        frontier = [instance_id]
+        while frontier:
+            for node in frontier:
+                instance = self._component_instances.get(node)
+                if getattr(instance, PROVENANCE_HOOK, None) is None:
+                    continue
+                found = call_provenance_hook(instance, via(node))
+                if found is not None:
+                    return found, node
+            upstream = []
+            for node in frontier:
+                for edge in edges:
+                    if edge["target"] == node and edge["source"] not in reached:
+                        reached[edge["source"]] = edge
+                        upstream.append(edge["source"])
+            frontier = upstream
+        return None
+
+    def _provenance_edge(self, edge: dict[str, t.Any]) -> dict[str, t.Any]:
+        names = self._node_name
+        return {
+            "from": f"{names(edge['source'])}.{edge['source_port']}",
+            "to": f"{names(edge['target'])}.{edge['target_port']}",
+            "transform": copy.deepcopy(edge.get("transform") or []),
+        }
+
+    def _provenance_shown(self) -> bool:
+        return self._action_mode() == "edit" or self.provenance_labels
+
     def later_turns(self, instance_id: str) -> list[DashboardTurn]:
         """Return copies of the turns after a node's origin whose summary says they changed it."""
         origin = self._origins.get(instance_id)
@@ -3104,6 +3299,8 @@ class FlowDash(Viewer):
             on_open=lambda t: self.show_how_made(instance_id, t.id),
         )
         caption = "How this was made" if turn is origin else "How this was changed"
+        if turn is origin and (found := self.node_provenance(instance_id)) is not None:
+            body = [provenance_line(found[0]), *body]
         return caption, body, span
 
     def _render_how_made(self, instance_id: str, turn_id: str | None, *, open_sheet: bool):
@@ -3189,6 +3386,7 @@ class FlowDash(Viewer):
             subtitle=" ".join(description.split("\n\n")[0].split()) or None,
             on_show_in_editor=partial(self._on_show_in_editor, instance_id),
             on_how_made=partial(self.show_how_made, instance_id),
+            on_node_action=partial(self._on_node_action, instance_id),
             css_classes=["flowdash-tile", f"{TILE_KEY_PREFIX}{next(self._tile_keys)}"],
             **bounds,
         )
@@ -3228,24 +3426,121 @@ class FlowDash(Viewer):
             wiring.append(partial(failures.param.unwatch, watcher))
         return tile
 
-    def _sync_tile(self, instance_id: str, tile: Tile, spec: ComponentSpec | None):
+    def _sync_tile(
+        self, instance_id: str, tile: Tile, spec: ComponentSpec | None, admin: bool | None = None
+    ):
         """Offer a tile's actions to whoever is viewing it now."""
         show_in_editor = self._can_show_in_editor()
         tile.set_actions(
             inspect=self._can_inspect_tile(spec),
             show_in_editor=show_in_editor,
             how_made=self.made_by_agent(instance_id),
+            node_actions=[
+                (a.key, a.label, a.icon) for a in self.node_actions(instance_id, admin=admin)
+            ],
         )
+        found = self.node_provenance(instance_id)
+        tile.set_provenance(found and found[0], self._provenance_shown())
         if isinstance(tile.view, FailureOverlay):
             for button in tile.view.actions:
                 button.visible = show_in_editor
 
-    @param.depends("editable", "show_in_editor", "provenance", watch=True)
-    def _sync_tile_actions(self):
+    @param.depends(
+        "editable",
+        "read_only",
+        "preview",
+        "show_in_editor",
+        "provenance",
+        "provenance_labels",
+        watch=True,
+    )
+    def _sync_tile_actions(self, only: t.Collection[str] | None = None):
+        """Offer each tile's actions and provenance anew, or only those of the nodes in *only*."""
+        self._tile_signatures = self._node_signatures()
+        mode = self._action_mode()
+        admin = any(a.admin_only and mode in a.modes for a in node_actions()) and self.is_admin()
         for item in self._tile_items:
+            if only is not None and item["instance_id"] not in only:
+                continue
             tile = self._inspect_tiles.get(item["instance_id"])
             if tile is not None:
-                self._sync_tile(item["instance_id"], tile, self._tile_spec(item))
+                self._sync_tile(item["instance_id"], tile, self._tile_spec(item), admin)
+        if (controls := getattr(self, "_view_controls", None)) is not None:
+            controls.sync_provenance(only)
+
+    def refresh_provenance(self, nodes: t.Iterable[str] | None = None) -> None:
+        """Offer anew the node actions and provenance labels of every node, or of *nodes* and those downstream.
+
+        After an edit the editor does this itself for the nodes the edit may
+        have changed. Call it when what a ``__flowdash_provenance__`` hook
+        or an action's ``applies`` reads changes outside the dashboard, e.g.
+        a metric a project file defines being deleted. *nodes* are names as
+        in the dashboard YAML, or instance ids.
+        """
+        only = None
+        if nodes is not None:
+            ids = {name: iid for iid, name in self._node_names().items()}
+            only = self._downstream(
+                n if n in self._component_instances else ids.get(n, n) for n in nodes
+            )
+        self._sync_tile_actions(only)
+        for listener in list(self._provenance_listeners):
+            listener(only)
+
+    @param.depends("edited", watch=True)
+    def _sync_edited_tiles(self):
+        """After an edit, offer anew the actions and provenance of the nodes it may have changed.
+
+        Those are the nodes whose component, config, origin or inputs
+        differ from the last sync, and every node downstream of them, whose
+        provenance and actions may read theirs; resyncing every tile after
+        every edit would make each edit cost as much as the dashboard.
+        """
+        before = self._tile_signatures
+        if before is None:
+            self._sync_tile_actions()
+            return
+        after = self._node_signatures()
+        changed = {iid for iid, sig in after.items() if not _same_signature(before.get(iid), sig)}
+        if changed:
+            self._sync_tile_actions(self._downstream(changed))
+
+    def _downstream(self, ids: t.Iterable[str]) -> set[str]:
+        """Return *ids* and every node downstream of them."""
+        targets: dict[str, list[str]] = {}
+        for edge in self._dataflow_graph.edges:
+            targets.setdefault(edge["source"], []).append(edge["target"])
+        found = set(ids)
+        frontier = list(found)
+        while frontier:
+            for target in targets.get(frontier.pop(), ()):
+                if target not in found:
+                    found.add(target)
+                    frontier.append(target)
+        return found
+
+    def _node_signatures(self) -> dict[str, tuple]:
+        """Return what a node's actions and provenance may depend on, by instance id, to tell which changed."""
+        inputs: dict[str, list[tuple]] = {}
+        for edge in self._dataflow_graph.edges:
+            inputs.setdefault(edge["target"], []).append(
+                (
+                    edge["source"],
+                    edge["source_port"],
+                    edge["target_port"],
+                    repr(edge.get("transform") or []),
+                )
+            )
+        return {
+            (iid := item["instance_id"]): (
+                item["component_id"],
+                id(self._component_instances.get(iid)),
+                _config_snapshot(item.get("config")),
+                self._origins.get(iid),
+                sorted(inputs.get(iid, ())),
+            )
+            for item in self._tile_items
+        }
 
     def _tile_spec(self, item: dict) -> ComponentSpec | None:
         """Return the spec whose hints apply to a tile; a placeholder keeps its saved size."""
@@ -3852,14 +4147,11 @@ class FlowDash(Viewer):
         # Specs registered after a lazy import replace the node types, and give
         # the palette real ports in place of the ones declared on `@register`.
         self._flow.param.watch(lambda _event: self._palette_panel.refresh(), "node_types")
-        self._side_panel = pmui.Column(
-            self._palette_section,
-            width=_SIDE_PANEL_WIDTH,
-            sizing_mode="stretch_height",
-            margin=0,
-            sx={"borderRight": 1, "borderColor": "divider"},
-            stylesheets=[HIDE_ON_PHONE],
+        self._palette_drawer = PaletteDrawer(
+            self._palette_panel, width=_SIDE_PANEL_WIDTH, fold_button=self._palette_fold_button
         )
+        self._palette_drawer.param.watch(self._on_palette_folded, "open")
+        self._side_panel = self._palette_drawer.panel
         self._start_card = StartCard(editor=self)
         self._empty_hint = self._start_card.__panel__()
         # Its own minimum, or the closed dialogs it holds (Clear canvas, a tile's full
@@ -3950,6 +4242,7 @@ class FlowDash(Viewer):
             self._status_bar,
             self._sheet_host,
             self._tile_drag,
+            DragGuard(),
             self._split_view.storage,
             self._card_bridge,
             # In every view, so an export the assistant makes downloads wherever the user is.
@@ -4012,7 +4305,7 @@ class FlowDash(Viewer):
         self._palette_panel.touch = phone
         self._inspector.sheet = phone
         if phone:
-            self._side_panel[:] = []
+            self._palette_drawer.detach()
             self._panel_slot[:] = []
             self._palette_sheet_body[:] = [self._palette_section]
             self._layout_sheet_body[:] = [self._layout_panel]
@@ -4023,7 +4316,7 @@ class FlowDash(Viewer):
             self._inspector_sheet[:] = []
             self._layout_sheet_body[:] = []
             self._palette_sheet_body[:] = []
-            self._side_panel[:] = [self._palette_section]
+            self._palette_drawer.attach()
             self._panel_slot[:] = [self._inspector]
             # A sheet dismissed on the phone is not a fold of the column.
             self._sidecar.left_phone()
@@ -4293,7 +4586,7 @@ class FlowDash(Viewer):
                 min_height=320,
                 show_breakpoint_toolbar=False,
                 sizing_mode="stretch_both",
-                stylesheets=[GRID_EDIT_CSS],
+                stylesheets=[GRID_EDIT_CSS, GRID_DRAG_CSS],
                 css_classes=[self._grid_class],
             )
             self._tile__grid.param.watch(self._on_tile_layout, "layout")
@@ -4729,6 +5022,7 @@ class FlowDash(Viewer):
         self._restore_split = self._restore_split and self._split_view.preferences.split
         self._apply_stored_split()
         self._inspector.width = self._split_view.preferences.sidecar_width
+        self._palette_drawer.open = self._split_view.preferences.palette_open
         self._sync_code_dock_side()
         if self._code_panel is not None:
             self._sync_code_spec_view()
@@ -5094,6 +5388,15 @@ class FlowDash(Viewer):
     def _on_sidecar_collapsed(self, event):
         self._sidecar.on_collapsed(event.new)
         self._inspector._sync_badge()
+
+    def _on_palette_folded(self, event):
+        self._split_view.preferences.palette_open = event.new
+        # The sidecar may fit beside the canvas again, or no longer.
+        self._sidecar.sync()
+
+    def toggle_palette(self):
+        """Fold the component palette beside the canvas, or open it and focus its search field."""
+        self._palette_drawer.toggle(not self._palette_drawer.open, focus=True)
 
     def _on_sidecar_resized(self, event):
         self._split_view.preferences.sidecar_width = event.new
@@ -6633,10 +6936,22 @@ class FlowDash(Viewer):
         """Return the name a node has in the dashboard YAML, for a turn's summary."""
         from panel_flowdash.agent.yaml_format import node_names
 
-        items = [{"instance_id": item["instance_id"]} for item in self._tile_items]
-        if not any(item["instance_id"] == instance_id for item in items):
-            items.append({"instance_id": instance_id})
+        names = self._node_names()
+        if instance_id in names:
+            return names[instance_id]
+        items = [{"instance_id": iid} for iid in names]
+        items.append({"instance_id": instance_id})
         return node_names(items)[instance_id]
+
+    def _node_names(self) -> dict[str, str]:
+        """Return the YAML names of the canvas's nodes, worked out again only when its nodes change."""
+        from panel_flowdash.agent.yaml_format import node_names
+
+        ids = frozenset(item["instance_id"] for item in self._tile_items)
+        cached = self._names_cache
+        if cached is None or cached[0] != ids:
+            cached = self._names_cache = (ids, node_names({"instance_id": iid} for iid in ids))
+        return cached[1]
 
     def _connect_label(self, verb, source_id, source_port, target_id, target_port) -> str:
         # Only the nodes: a summary is shown to everyone who may read the
@@ -8450,6 +8765,8 @@ class FlowDash(Viewer):
         if self._report_view is not None:
             # The report is restored after the dashboard, which the view follows.
             self._report_view.schedule()
+        # Restoring is no edit, so nothing else offers the restored nodes' actions and provenance.
+        self.refresh_provenance()
 
     @pn.io.hold()
     def _patch_canvas(self, model: DashboardModel) -> bool:

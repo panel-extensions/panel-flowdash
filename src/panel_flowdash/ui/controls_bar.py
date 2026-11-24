@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import typing as t
+
 import panel as pn
 import panel_material_ui as pmui
 import param
@@ -189,6 +191,8 @@ class ControlsBar(Viewer):
     def __init__(self, **params):
         super().__init__(**params)
         self._wrappers: dict[str, pn.Column] = {}
+        # The provenance chip each wrapper shows, by instance id, with what it says.
+        self._provenance: dict[str, tuple[t.Any, pn.Row]] = {}
         self._handles: dict[str, pn.pane.HTML] = {}
         # The key each component's handle and wrapper carry on the page, by instance id.
         self.keys: dict[str, str] = {}
@@ -314,8 +318,13 @@ class ControlsBar(Viewer):
             compact_inputs(view)
             self._key_count += 1
             key = self.keys[instance_id] = f"{self._uid}-{self._key_count}"
+            note = pn.Row(
+                margin=(0, 0, 0, 10), visible=False, css_classes=["fd-control-provenance"]
+            )
+            self._provenance[instance_id] = (None, note)
             wrapper = pn.Column(
                 self._handle(key),
+                note,
                 view,
                 margin=0,
                 styles={"max-width": "100%", "position": "relative"},
@@ -323,7 +332,29 @@ class ControlsBar(Viewer):
                 css_classes=[f"fd-control-{self._uid}", f"fd-key-{key}"],
             )
         wrapper[0].visible = self.editing
+        self._sync_note(instance_id)
         return wrapper
+
+    def _sync_note(self, instance_id: str):
+        from panel_flowdash.ui.provenance import provenance_chip
+
+        shown, note = self._provenance.get(instance_id, (None, None))
+        if note is None:
+            return
+        editor = self.editor
+        found = editor.node_provenance(instance_id) if editor._provenance_shown() else None
+        provenance = found[0] if found is not None else None
+        if provenance == shown:
+            return
+        self._provenance[instance_id] = (provenance, note)
+        note[:] = [] if provenance is None else [provenance_chip(provenance)]
+        note.visible = provenance is not None
+
+    def sync_provenance(self, only: t.Collection[str] | None = None):
+        """Show or hide each component's provenance chip, or those of *only*, after an edit or a change of mode."""
+        for instance_id in self._wrappers:
+            if only is None or instance_id in only:
+                self._sync_note(instance_id)
 
     @pn.io.hold()
     @param.depends("collapsed", "beside_canvas", "editing", watch=True)
@@ -346,6 +377,7 @@ class ControlsBar(Viewer):
         live = {iid for iid, _ in top_views + side_views}
         for iid in [iid for iid in self._wrappers if iid not in live]:
             self._handles.pop(self.keys.pop(iid, ""), None)
+            self._provenance.pop(iid, None)
             del self._wrappers[iid]
         self._wrappers.update(
             {iid: w for (iid, _), w in zip(top_views + side_views, self._shown, strict=True)}

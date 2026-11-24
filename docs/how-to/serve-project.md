@@ -451,6 +451,7 @@ one. Outside text fields these shortcuts also work:
 | <kbd>Esc</kbd> | While editing, close what is open first: a menu or dialog, the focus on the code panel's buttons, then the selection (on the canvas or the layout grid); with nothing open, back to view mode (asks first when there are unsaved changes) |
 | <kbd>Ctrl</kbd>/<kbd>⌘</kbd>+<kbd>S</kbd> | Save, in edit mode |
 | <kbd>S</kbd> | Show the Dataflow canvas and the Layout grid side by side, or back to one tab, in edit mode |
+| <kbd>/</kbd> | Search the component palette beside the canvas, opening it first if it is folded, in edit mode |
 | <kbd>?</kbd> | List the keyboard shortcuts |
 
 ### Full screen
