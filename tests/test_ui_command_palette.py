@@ -128,6 +128,7 @@ class TestItems:
             "action:save",
             "action:split",
             "action:previews",
+            "action:palette",
             "action:view",
             "action:settings",
             "action:theme",
@@ -451,6 +452,26 @@ class TestCanvasViewCommands:
         assert not any(card.collapsed for card in cards)
         assert _item(controller, "action:collapse_all")["title"] == "Collapse all nodes"
 
+    async def test_palette_fold_follows_and_drives_the_palette(self, app):
+        _open(app, edit=True, components=[SELECTOR])
+        controller, editor = app._command_palette, app._editor
+        drawer = editor._palette_drawer
+        item = _item(controller, "action:palette")
+        assert item["title"] == "Hide components"
+        assert "keys" not in item
+        controller.run("action:palette")
+        assert not drawer.open
+        item = _item(controller, "action:palette")
+        assert (item["title"], item["keys"]) == ("Show components", ["/"])
+        controller.run("action:palette")
+        assert drawer.open
+        assert drawer.bridge.focus_target == "search"
+        editor.mode = "dashboard"
+        assert "action:palette" not in _ids(controller)
+        controller.run("action:palette")
+        assert drawer.open
+        assert not editor.dirty
+
     async def test_not_run_on_the_layout_tab(self, app):
         _open(app, edit=True, components=[SELECTOR])
         editor = app._editor
@@ -462,6 +483,7 @@ class TestCanvasViewCommands:
         keys = {entry["label"]: entry["keys"] for entry in SHORTCUTS}
         assert keys["Show or hide node previews"] == ["P"]
         assert keys["Collapse or expand all nodes"] == ["C"]
+        assert keys["Search components, opening a folded palette"] == ["/"]
 
 
 class TestShortcuts:

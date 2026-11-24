@@ -464,6 +464,8 @@ export function render({model, el}) {
 class ComponentPalette(Viewer):
     """Search field, grouped component list and usage hint.
 
+    *header_end* is shown above the search field, except in the touch layout.
+
     ``menu`` is the MenuList the canvas accepts drops from. Its items come
     from the ``items`` callable, which reads ``query`` and is called again
     whenever the query changes or :meth:`refresh` is called.
@@ -485,10 +487,12 @@ class ComponentPalette(Viewer):
         drag_type: str,
         items: Callable[[], list[dict]],
         on_click: Callable[[dict], t.Any],
+        header_end: pn.viewable.Viewable | None = None,
         **params,
     ):
         super().__init__(**params)
         self._items = items
+        self._header_end = header_end
         self.menu = pmui.MenuList(
             draggable=True,
             drag_type=drag_type,
@@ -512,7 +516,9 @@ class ComponentPalette(Viewer):
         )
         self.search.param.watch(self._on_search_input, "value_input")
         self._shortcut = SearchShortcut(
-            search=self.search, sizing_mode="stretch_width", margin=(12, 12, 4, 12)
+            search=self.search,
+            sizing_mode="stretch_width",
+            margin=self._search_margin(),
         )
         self._empty = pmui.Typography(
             EMPTY_MESSAGE,
@@ -556,6 +562,7 @@ class ComponentPalette(Viewer):
             margin=0,
         )
         self._layout = pn.Column(
+            *([] if header_end is None else [header_end]),
             self._shortcut,
             self._list,
             self._hint,
@@ -563,12 +570,21 @@ class ComponentPalette(Viewer):
             margin=0,
         )
 
+    def _search_margin(self) -> tuple[int, int, int, int]:
+        # Right under the header's button, which takes the room above it.
+        top = 12 if self._header_end is None or self.touch else 0
+        return (top, 12, 4, 12)
+
     def _on_search_input(self, event):
         self.query = event.new or ""
 
     @param.depends("touch", watch=True)
     def _sync_touch(self):
         self._hint.visible = not self.touch
+        if self._header_end is not None:
+            # The phone's sheet has a close button of its own.
+            self._header_end.visible = not self.touch
+            self._shortcut.margin = self._search_margin()
         self.menu.sx = _TOUCH_PALETTE_SX if self.touch else _PALETTE_SX
         # The sheet scrolls as a whole, so the list takes its natural height there.
         sizing = "stretch_width" if self.touch else "stretch_both"

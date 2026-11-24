@@ -148,6 +148,7 @@ from panel_flowdash.ui.dashboard_bar import (
     fullscreen_toolbar,
 )
 from panel_flowdash.ui.dock_handle import DockHandle
+from panel_flowdash.ui.drag_guard import GRID_DRAG_CSS, DragGuard
 from panel_flowdash.ui.global_filters import GlobalFilters
 from panel_flowdash.ui.inspect_sheet import (
     dataframe_preview,
@@ -189,6 +190,7 @@ from panel_flowdash.ui.palette import (
     palette_items,
     preset_entries,
 )
+from panel_flowdash.ui.palette_drawer import PaletteDrawer, fold_button
 from panel_flowdash.ui.provenance import provenance_objects
 from panel_flowdash.ui.report_view import ReportView
 from panel_flowdash.ui.roles import component_role
@@ -2127,10 +2129,12 @@ class FlowDash(Viewer):
             pn.extension(*extensions)
 
     def _make_palette(self):
+        self._palette_fold_button = fold_button()
         self._palette_panel = ComponentPalette(
             drag_type=_PALETTE_DRAG_TYPE,
             items=self._palette_items,
             on_click=self._on_palette_clicked,
+            header_end=self._palette_fold_button,
         )
         return self._palette_panel.menu
 
@@ -3852,14 +3856,11 @@ class FlowDash(Viewer):
         # Specs registered after a lazy import replace the node types, and give
         # the palette real ports in place of the ones declared on `@register`.
         self._flow.param.watch(lambda _event: self._palette_panel.refresh(), "node_types")
-        self._side_panel = pmui.Column(
-            self._palette_section,
-            width=_SIDE_PANEL_WIDTH,
-            sizing_mode="stretch_height",
-            margin=0,
-            sx={"borderRight": 1, "borderColor": "divider"},
-            stylesheets=[HIDE_ON_PHONE],
+        self._palette_drawer = PaletteDrawer(
+            self._palette_panel, width=_SIDE_PANEL_WIDTH, fold_button=self._palette_fold_button
         )
+        self._palette_drawer.param.watch(self._on_palette_folded, "open")
+        self._side_panel = self._palette_drawer.panel
         self._start_card = StartCard(editor=self)
         self._empty_hint = self._start_card.__panel__()
         # Its own minimum, or the closed dialogs it holds (Clear canvas, a tile's full
@@ -3950,6 +3951,7 @@ class FlowDash(Viewer):
             self._status_bar,
             self._sheet_host,
             self._tile_drag,
+            DragGuard(),
             self._split_view.storage,
             self._card_bridge,
             # In every view, so an export the assistant makes downloads wherever the user is.
@@ -4012,7 +4014,7 @@ class FlowDash(Viewer):
         self._palette_panel.touch = phone
         self._inspector.sheet = phone
         if phone:
-            self._side_panel[:] = []
+            self._palette_drawer.detach()
             self._panel_slot[:] = []
             self._palette_sheet_body[:] = [self._palette_section]
             self._layout_sheet_body[:] = [self._layout_panel]
@@ -4023,7 +4025,7 @@ class FlowDash(Viewer):
             self._inspector_sheet[:] = []
             self._layout_sheet_body[:] = []
             self._palette_sheet_body[:] = []
-            self._side_panel[:] = [self._palette_section]
+            self._palette_drawer.attach()
             self._panel_slot[:] = [self._inspector]
             # A sheet dismissed on the phone is not a fold of the column.
             self._sidecar.left_phone()
@@ -4293,7 +4295,7 @@ class FlowDash(Viewer):
                 min_height=320,
                 show_breakpoint_toolbar=False,
                 sizing_mode="stretch_both",
-                stylesheets=[GRID_EDIT_CSS],
+                stylesheets=[GRID_EDIT_CSS, GRID_DRAG_CSS],
                 css_classes=[self._grid_class],
             )
             self._tile__grid.param.watch(self._on_tile_layout, "layout")
@@ -4729,6 +4731,7 @@ class FlowDash(Viewer):
         self._restore_split = self._restore_split and self._split_view.preferences.split
         self._apply_stored_split()
         self._inspector.width = self._split_view.preferences.sidecar_width
+        self._palette_drawer.open = self._split_view.preferences.palette_open
         self._sync_code_dock_side()
         if self._code_panel is not None:
             self._sync_code_spec_view()
@@ -5094,6 +5097,15 @@ class FlowDash(Viewer):
     def _on_sidecar_collapsed(self, event):
         self._sidecar.on_collapsed(event.new)
         self._inspector._sync_badge()
+
+    def _on_palette_folded(self, event):
+        self._split_view.preferences.palette_open = event.new
+        # The sidecar may fit beside the canvas again, or no longer.
+        self._sidecar.sync()
+
+    def toggle_palette(self):
+        """Fold the component palette beside the canvas, or open it and focus its search field."""
+        self._palette_drawer.toggle(not self._palette_drawer.open, focus=True)
 
     def _on_sidecar_resized(self, event):
         self._split_view.preferences.sidecar_width = event.new
