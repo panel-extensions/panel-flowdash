@@ -396,10 +396,19 @@ class DataflowGraph:
             self._specs[comp_id] = spec
             self._state_classes[comp_id] = build_node_state_class(spec)
 
-    def add_node(self, instance_id: str, component_id: str) -> param.Parameterized:
-        """Create a new node state instance."""
-        spec = self._specs[component_id]
-        cls = self._state_classes[component_id]
+    def add_node(
+        self, instance_id: str, component_id: str, spec: ComponentSpec | None = None
+    ) -> param.Parameterized:
+        """Create a new node state instance.
+
+        *spec* gives the node ports of its own in place of its component's,
+        for a component whose ports depend on the node's config.
+        """
+        if spec is None:
+            spec = self._specs[component_id]
+            cls = self._state_classes[component_id]
+        else:
+            cls = build_node_state_class(spec)
         state = cls(name=instance_id)
         self._nodes[instance_id] = state
         self._node_specs[instance_id] = spec

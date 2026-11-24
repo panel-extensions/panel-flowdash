@@ -71,6 +71,7 @@ from panel_flowdash.dataflow_engine import (
 )
 from panel_flowdash.failure_overlay import FailureMessage, FailureOverlay, with_failure_overlay
 from panel_flowdash.global_filters import (
+    accepts_filters,
     check_filters,
     map_filters,
     without_nodes as without_filtered_nodes,
@@ -1747,6 +1748,9 @@ class FlowDash(Viewer):
         self._popout_request: object | None = None
         self._tile_items: list[dict] = []
         self._tile_objects: list[Viewable] = []
+        # The ports of nodes whose component gives each node ports of its own,
+        # by instance id, see `_instance_spec`.
+        self._instance_specs: dict[str, ComponentSpec] = {}
         # Saved config values a node's config refused on load, by node, kept to tell the person.
         self._rejected_config: dict[str, dict[str, t.Any]] = {}
         # Saved edges that could not be wired, kept to be saved unchanged, and the
@@ -1967,7 +1971,10 @@ class FlowDash(Viewer):
             if panel.instance_id == instance_id:
                 self.close_code_panel()
             panel.drop_drafts(instance_id)
-        instance = self._component_instances.pop(instance_id, None)
+        self._dispose_instance(instance_id, self._component_instances.pop(instance_id, None))
+
+    def _dispose_instance(self, instance_id: str, instance: t.Any):
+        """Unlink a component created for *instance_id* and call its ``dispose`` hook, if it has one."""
         if instance is not None:
             release_links(instance)
         hook = getattr(instance, "dispose", None)
@@ -2258,40 +2265,52 @@ class FlowDash(Viewer):
         node_editors = {}
         for comp_id, spec in self._component_specs.items():
             type_key = comp_id.replace("/", "__")
-            tops_in, tops_out = port_tops(len(spec.inputs), len(spec.outputs))
-            node_types[type_key] = pr.NodeType(
-                type=type_key,
-                label=spec.title,
-                schema=config_json_schema(spec.config_state_class),
-                inputs=[
-                    {
-                        "id": port.name,
-                        "label": port.label or port.name,
-                        "type": port.type,
-                        "top": f"var(--fd-port-in-{idx}, {round(top, 2)}px)",
-                        **(
-                            {"maxConnections": 1}
-                            if port.multiple is False
-                            or (port.multiple is None and (port.type or "").lower() != "list")
-                            else {}
-                        ),
-                    }
-                    for idx, (port, top) in enumerate(zip(spec.inputs, tops_in, strict=True))
-                ],
-                outputs=[
-                    {
-                        "id": port.name,
-                        "label": port.label or port.name,
-                        "type": port.type,
-                        "top": f"var(--fd-port-out-{idx}, {round(top, 2)}px)",
-                    }
-                    for idx, (port, top) in enumerate(zip(spec.outputs, tops_out, strict=True))
-                ],
-            )
+            node_types[type_key] = self._node_type(type_key, spec)
+        for instance_id, spec in self._instance_specs.items():
+            type_key = self._node_type_key(spec.component_id, instance_id)
+            node_types[type_key] = self._node_type(type_key, spec)
         node_types[PLACEHOLDER_NODE_TYPE] = pr.NodeType(
             type=PLACEHOLDER_NODE_TYPE, label="Unavailable component", inputs=[], outputs=[]
         )
         return node_types, node_editors
+
+    def _node_type_key(self, component_id: str, instance_id: str) -> str:
+        """Return the canvas node type of a node: its component's, or its own if it has ports of its own."""
+        key = component_id.replace("/", "__")
+        return f"{key}--{instance_id}" if instance_id in self._instance_specs else key
+
+    @staticmethod
+    def _node_type(type_key: str, spec: ComponentSpec) -> pr.NodeType:
+        tops_in, tops_out = port_tops(len(spec.inputs), len(spec.outputs))
+        return pr.NodeType(
+            type=type_key,
+            label=spec.title,
+            schema=config_json_schema(spec.config_state_class),
+            inputs=[
+                {
+                    "id": port.name,
+                    "label": port.label or port.name,
+                    "type": port.type,
+                    "top": f"var(--fd-port-in-{idx}, {round(top, 2)}px)",
+                    **(
+                        {"maxConnections": 1}
+                        if port.multiple is False
+                        or (port.multiple is None and (port.type or "").lower() != "list")
+                        else {}
+                    ),
+                }
+                for idx, (port, top) in enumerate(zip(spec.inputs, tops_in, strict=True))
+            ],
+            outputs=[
+                {
+                    "id": port.name,
+                    "label": port.label or port.name,
+                    "type": port.type,
+                    "top": f"var(--fd-port-out-{idx}, {round(top, 2)}px)",
+                }
+                for idx, (port, top) in enumerate(zip(spec.outputs, tops_out, strict=True))
+            ],
+        )
 
     def _rebuild_flow_canvas(self):
         """Update node_types on the live ReactFlow canvas after component load."""
@@ -2863,8 +2882,7 @@ class FlowDash(Viewer):
         self, instance_id: str, port_name: str, *, output: bool
     ) -> InputPort | OutputPort | None:
         """Look up the OutputPort/InputPort declaration for a placed node's port."""
-        component_id = self._component_id_for_instance(instance_id)
-        spec = self._component_specs.get(component_id) if component_id else None
+        spec = self._node_spec(instance_id)
         if spec is None:
             return None
         ports = spec.outputs if output else spec.inputs
@@ -3548,7 +3566,9 @@ class FlowDash(Viewer):
         """Return the spec whose hints apply to a tile; a placeholder keeps its saved size."""
         if "placeholder" in item:
             return None
-        return self._component_specs.get(item["component_id"])
+        return self._instance_specs.get(item["instance_id"]) or self._component_specs.get(
+            item["component_id"]
+        )
 
     def _grid_view(self, item: dict, view: Viewable) -> Viewable:
         """Return the tile's view in a frame with a title bar and its actions.
@@ -3897,15 +3917,22 @@ class FlowDash(Viewer):
     # Component instantiation
     # ------------------------------------------------------------------
 
-    def _instantiate_for_node(self, entry, node_state, config_state=None):
-        """Create a live component view wired to the node_state."""
+    def _instantiate_for_node(self, entry, node_state, config_state=None, render=None):
+        """Create a live component view wired to the node_state.
+
+        With *render*, a list the releases of its wiring are added to, the
+        component is a further view of the node, see `render_node`: it reads
+        the node's inputs and config but publishes nothing.
+        """
         app_fn = entry.load()
 
         if not callable(app_fn):
             return pn.panel(app_fn)
 
         if inspect.isclass(app_fn) and issubclass(app_fn, pn.viewable.Viewer):
-            return self._instantiate_viewer_for_node(app_fn, entry, node_state, config_state)
+            return self._instantiate_viewer_for_node(
+                app_fn, entry, node_state, config_state, render
+            )
 
         sig = inspect.signature(app_fn)
         kwargs = {}
@@ -3923,20 +3950,42 @@ class FlowDash(Viewer):
         # An async body, or an awaitable a sync component returns, runs at
         # render time, after `_place` has finished tracking.
         node_id = node_state.name
-        wiring = self._component_wiring.setdefault(node_id, [])
+        if render is None:
+            wiring = self._component_wiring.setdefault(node_id, [])
+        else:
+            # The function sets its outputs on what it is given, so it gets a
+            # stand-in whose inputs follow the node's and whose outputs go nowhere.
+            wiring = render
+            stand_in = type(node_state)(name=node_id)
+            spec = self._node_spec(node_id)
+            stand_in.param.update(
+                {
+                    port.name: node_state.param[port.name]
+                    for port in (spec.inputs if spec else ())
+                    if port.name in node_state.param
+                }
+            )
+            wiring.append(partial(_release_refs, stand_in))
+            kwargs["config"] = node_state = stand_in
         app_fn = stepped(
             app_fn, partial(_creating, weakref.ref(self), node_id, wiring, _PLACEMENT.get())
         )
         return panel_call(app_fn, **kwargs)
 
-    def _instantiate_viewer_for_node(self, viewer_cls, entry, node_state, config_state=None):
+    def _instantiate_viewer_for_node(
+        self, viewer_cls, entry, node_state, config_state=None, render=None
+    ):
         """Instantiate a Viewer and wire its params to the node_state."""
-        spec = self._component_specs.get(entry.app_id)
-        instance = viewer_cls()
         node_id = node_state.name
-        self._dispose_component(node_id)
-        self._component_instances[node_id] = instance
-        wiring = self._component_wiring[node_id] = []
+        spec = self._instance_specs.get(node_id) or self._component_specs.get(entry.app_id)
+        instance = viewer_cls()
+        if render is None:
+            self._dispose_component(node_id)
+            self._component_instances[node_id] = instance
+            wiring = self._component_wiring[node_id] = []
+        else:
+            wiring = render
+            wiring.append(partial(self._dispose_instance, node_id, instance))
 
         if config_state is not None:
             self._bind_config_to_viewer(node_id, instance, config_state, wiring)
@@ -3947,9 +3996,7 @@ class FlowDash(Viewer):
             p.name for p in (spec.inputs if spec else ()) if hasattr(instance.param, p.name)
         ]
 
-        def _propagate_inputs(*events):
-            # Inputs changed together arrive together, so the component runs once.
-            values = {event.name: event.new for event in events}
+        def _deliver(values):
             if (owner := editor()) is not None:
                 try:
                     values = owner._global_filters.filter_inputs(node_id, values)
@@ -3964,7 +4011,7 @@ class FlowDash(Viewer):
             except Exception as exc:
                 if len(values) == 1:
                     if (owner := editor()) is not None:
-                        owner._report_input_error(node_id, events[0].name, exc)
+                        owner._report_input_error(node_id, next(iter(values)), exc)
                     return
             # A component rejecting a value, or a watcher of its own raising,
             # must not abort the dispatch to the node's other consumers.
@@ -3972,9 +4019,26 @@ class FlowDash(Viewer):
                 if (owner := editor()) is not None:
                     owner._report_input_error(node_id, name, exc)
 
+        def _propagate_inputs(*events):
+            # Inputs changed together arrive together, so the component runs once.
+            _deliver({event.name: event.new for event in events})
+
         if input_names:
             watcher = node_state.param.watch(_propagate_inputs, input_names)
             wiring.append(partial(node_state.param.unwatch, watcher))
+
+        if render is not None:
+            # The node's own component got these as they arrived; this one gets them now.
+            _deliver({name: getattr(node_state, name) for name in input_names})
+            if accepts_filters(instance):
+                predicates = self._global_filters.predicates_for(node_id)
+                try:
+                    instance.__flowdash_apply_filters__(dict(predicates))
+                except Exception as exc:
+                    logger.error(
+                        "Applying the global filters to a view of %r failed: %s", node_id, exc
+                    )
+            return panel_viewer(instance, runs=_ViewRuns(editor, node_id, wiring))
 
         failures = self._output_failures[node_id] = _FailureLog(
             partial(_output_failure_changed, editor, node_id)
@@ -4005,6 +4069,66 @@ class FlowDash(Viewer):
                 setattr(node_state, port.name, instance.param[port.name])
 
         return panel_viewer(instance, runs=_ViewRuns(editor, node_id, wiring))
+
+    def render_node(self, instance_id: str) -> tuple[Viewable, t.Callable[[], None]]:
+        """Return a new view of a placed node, and a callable that releases it.
+
+        A view can only be on screen once, so a node shown somewhere else as
+        well, e.g. through a reference from another dashboard, gets a view of
+        its own: the node's component is created once more and fed the node's
+        inputs, with the global filters that reach it, and its config, as the
+        node's own component is. Its outputs are left to that one, which stays
+        the node's. Raises KeyError for a node that is not placed or is a
+        placeholder.
+        """
+        item = next(i for i in self._tile_items if i["instance_id"] == instance_id)
+        if "placeholder" in item:
+            raise KeyError(instance_id)
+        entry = self._component_entries[item["component_id"]]
+        spec = self._node_spec(instance_id)
+        node_state = self._dataflow_graph.get_state(instance_id)
+        config_state = self._dataflow_graph.get_config_state(instance_id)
+        wiring: list[t.Callable[[], None]] = []
+        before = self._subscriptions()
+        tokens = (
+            _INSTANTIATING.set(self),
+            _INSTANTIATING_NODE.set(instance_id),
+            _PLACEMENT.set("load"),
+            _PLACING.set(None),
+        )
+        try:
+            view = self._instantiate_for_node(entry, node_state, config_state, render=wiring)
+        except Exception:
+            for release in wiring:
+                release()
+            raise
+        finally:
+            for var, token in zip(
+                (_INSTANTIATING, _INSTANTIATING_NODE, _PLACEMENT, _PLACING), tokens, strict=True
+            ):
+                var.reset(token)
+        for key, (owner, watcher) in self._subscriptions().items():
+            if key not in before:
+                wiring.append(partial(owner.param.unwatch, watcher))
+        view, gate = gate_view(view, node_state, spec.inputs, entry.metadata.placeholder)
+        if gate is not None:
+            wiring.append(gate)
+        if self.propagate_failures:
+            view = with_failure_overlay(
+                view,
+                self._dataflow_graph.get_failures(instance_id),
+                partial(self._describe_failures, instance_id),
+            )
+
+        def release():
+            for release in reversed(wiring):
+                try:
+                    release()
+                except Exception:
+                    logger.exception("Releasing a view of '%s' failed", instance_id)
+            wiring.clear()
+
+        return view, release
 
     def _report_input_error(self, node_id: str, port: str, exc: Exception):
         source = next(
@@ -6055,7 +6179,7 @@ class FlowDash(Viewer):
         return group_ports(group.nodes, edges, self._port_info)
 
     def _port_info(self, instance_id: str, port: str, direction: str) -> tuple[str, str | None]:
-        spec = self._component_specs.get(self._component_id_for_instance(instance_id) or "")
+        spec = self._node_spec(instance_id)
         ports = (spec.inputs if direction == "input" else spec.outputs) if spec else []
         match = next((p for p in ports if p.name == port), None)
         if match is None:
@@ -7360,7 +7484,17 @@ class FlowDash(Viewer):
             self._unplace(instance_id)
             self._report = report
 
-        node_state = self._dataflow_graph.add_node(instance_id, component_id)
+        own_spec = self._instance_spec(entry, spec, config)
+        if own_spec is not spec:
+            spec = self._instance_specs[instance_id] = own_spec
+            type_key = self._node_type_key(component_id, instance_id)
+            self._flow.node_types = {
+                **self._flow.node_types,
+                type_key: self._node_type(type_key, spec),
+            }
+        node_state = self._dataflow_graph.add_node(
+            instance_id, component_id, spec if own_spec is spec else None
+        )
         config_state = self._dataflow_graph.get_config_state(instance_id)
         config_data = self._seed_config_state(instance_id, config)
         # Checked before the component is created, so data the canvas would
@@ -7369,6 +7503,7 @@ class FlowDash(Viewer):
             self._check_node_data(component_id.replace("/", "__"), config_data)
         except ValueError:
             self._dataflow_graph.remove_node(instance_id)
+            self._drop_instance_spec(instance_id)
             raise
         before = self._subscriptions()
         token = _INSTANTIATING.set(self)
@@ -7389,6 +7524,7 @@ class FlowDash(Viewer):
             view = self._instantiate_for_node(entry, node_state, config_state)
         except Exception:
             self._dataflow_graph.remove_node(instance_id)
+            self._drop_instance_spec(instance_id)
             self._track_subscriptions(instance_id, before)
             self._dispose_component(instance_id)
             raise
@@ -7422,7 +7558,7 @@ class FlowDash(Viewer):
 
         node = pr.NodeSpec(
             id=instance_id,
-            type=component_id.replace("/", "__"),
+            type=self._node_type_key(component_id, instance_id),
             position=position,
             label=spec.title,
             data=config_data,
@@ -7466,6 +7602,87 @@ class FlowDash(Viewer):
             )
         self._sync_toolbar_state()
         return instance_id
+
+    def _instance_spec(self, entry, spec: ComponentSpec, config: dict) -> ComponentSpec:
+        """Return the ports a node of *entry* has with *config*: its component's, or its own.
+
+        A component whose ports depend on the node's config, like a reference
+        to a node of another dashboard, defines a class method
+        ``__flowdash_instance_spec__(spec, config, editor)`` returning the
+        spec for one node.
+        """
+        hook = getattr(entry.load(), "__flowdash_instance_spec__", None)
+        if hook is None:
+            return spec
+        try:
+            return hook(spec, dict(config or {}), self) or spec
+        except Exception:
+            logger.exception("Resolving the ports of a '%s' node failed", spec.component_id)
+            return spec
+
+    def _respec(self, instance_id: str, config: dict | None = None):
+        """Place a node again whose ports changed, keeping its tile and the edges that still fit.
+
+        For a component whose ports depend on its config, or on more than
+        that, like a reference whose source node now has other outputs. The
+        node keeps its component and its config, or takes *config*, the
+        config it has while a change of it is still being applied.
+        """
+        model = self.to_model()
+        item = next((i for i in model.items if i.instance_id == instance_id), None)
+        if item is None:
+            return
+        if config is not None:
+            item.config = {**item.config, **config}
+        edges = [e for e in model.edges if instance_id in (e.source, e.target)]
+        with self._quiet_history(), _placing("restore"):
+            self._hydrating = True
+            try:
+                self._place(
+                    item.component_id,
+                    instance_id,
+                    item.config,
+                    {"x": item.x, "y": item.y},
+                    preview_output=item.preview_output,
+                    collapsed=item.collapsed,
+                )
+                self._set_inputs(instance_id, item.inputs)
+                for edge in edges:
+                    result = self.connect(
+                        edge.source,
+                        edge.source_port,
+                        edge.target,
+                        edge.target_port,
+                        edge.transform,
+                    )
+                    if result is not True:
+                        logger.info("Dropping %s after its node's ports changed: %s", edge, result)
+            finally:
+                self._hydrating = False
+        self._match_order(model)
+        self._grid_populated = False
+        self._pending_tile_layout = _key_saved_layout(
+            model.tile_layout, self._legacy_layout_ids(model)
+        )
+        self._apply_mode_state()
+        self.refresh_provenance([instance_id])
+
+    def _drop_instance_spec(self, instance_id: str):
+        spec = self._instance_specs.pop(instance_id, None)
+        if spec is None:
+            return
+        type_key = f"{spec.component_id.replace('/', '__')}--{instance_id}"
+        if type_key in self._flow.node_types:
+            self._flow.node_types = {
+                k: v for k, v in self._flow.node_types.items() if k != type_key
+            }
+
+    def _node_spec(self, instance_id: str) -> ComponentSpec | None:
+        """Return the spec of a placed node: the ports of its own, or its component's."""
+        if instance_id in self._instance_specs:
+            return self._instance_specs[instance_id]
+        component_id = self._component_id_for_instance(instance_id)
+        return self._component_specs.get(component_id) if component_id else None
 
     def _default_position(self) -> dict:
         """Pick a free spot near the top-left of the visible canvas."""
@@ -7922,6 +8139,7 @@ class FlowDash(Viewer):
             with self._muted_canvas():
                 self._flow.remove_node(instance_id)
         self._dispose_component(instance_id)
+        self._drop_instance_spec(instance_id)
 
     def connect(
         self,
@@ -8162,6 +8380,8 @@ class FlowDash(Viewer):
         self._sync_toolbar_state()
         for instance_id in [*self._component_instances, *self._component_wiring]:
             self._dispose_component(instance_id)
+        for instance_id in list(self._instance_specs):
+            self._drop_instance_spec(instance_id)
 
     # ------------------------------------------------------------------
     # Persistence

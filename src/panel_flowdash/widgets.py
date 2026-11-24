@@ -12,6 +12,7 @@ import param
 from panel.viewable import Viewer
 
 from panel_flowdash.config_check import CheckWarning, stored_config
+from panel_flowdash.references import REFERENCE_COMPONENT, Reference
 from panel_flowdash.registry import register
 from panel_flowdash.selection import SelectionFilter
 from panel_flowdash.text_components import TEXT_COMPONENTS
@@ -1312,5 +1313,6 @@ BUILTIN_COMPONENTS = {
     "Widgets/KPI": KPI,
     "Widgets/Image": Image,
     "Data/FilterBySelection": SelectionFilter,
+    REFERENCE_COMPONENT: Reference,
     **TEXT_COMPONENTS,
 }

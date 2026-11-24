@@ -359,6 +359,45 @@ class BaseDashboardStore(ABC):
     rather than saying it exists and who owns it. Even with random ids, an id
     a caller chose when saving (see :meth:`guessable_id`) is treated so."""
 
+    def watch_changes(self, callback: Callable[[str], Any]) -> None:
+        """Call *callback* with a dashboard's id after it is saved, deleted, renamed or reshared.
+
+        A bound method is held weakly, so watching does not keep its object
+        alive. Callbacks run synchronously, in the thread that made the
+        change, and only for changes made through this store object in this
+        process; a callback that updates a session hands the work to that
+        session's event loop.
+        """
+        ref = weakref.WeakMethod(callback) if hasattr(callback, "__self__") else lambda: callback
+        self.__dict__.setdefault("_change_listeners", []).append(ref)
+
+    def unwatch_changes(self, callback: Callable[[str], Any]) -> None:
+        """Stop calling a callback given to :meth:`watch_changes`."""
+        listeners = self.__dict__.get("_change_listeners", [])
+        listeners[:] = [ref for ref in listeners if ref() not in (None, callback)]
+
+    def changed(self, dashboard_id: str) -> None:
+        """Tell the callbacks given to :meth:`watch_changes` that a dashboard changed.
+
+        The built-in stores call it after every save, delete, rename and
+        permission or owner change; a store of your own calls it likewise.
+        """
+        listeners = self.__dict__.get("_change_listeners", [])
+        listeners[:] = [ref for ref in listeners if ref() is not None]
+        for ref in list(listeners):
+            callback = ref()
+            if callback is None:
+                continue
+            try:
+                callback(dashboard_id)
+            except Exception:
+                logger.exception("A watcher of dashboard %r failed", dashboard_id)
+
+    def _changed_if(self, done: bool, dashboard_id: str) -> bool:
+        if done:
+            self.changed(dashboard_id)
+        return done
+
     def guessable_id(self, dashboard_id: str) -> bool:
         """Whether *dashboard_id* could be guessed rather than only learned from a link.
 
@@ -674,6 +713,7 @@ class MemoryDashboardStore(BaseDashboardStore):
                 self._order.remove(dashboard.dashboard_id)
             self._order.insert(0, dashboard.dashboard_id)
         dashboard.revision = revision
+        self.changed(dashboard.dashboard_id)
 
     def _load_any(self, dashboard_id: str) -> DashboardModel | None:
         model = self._dashboards.get(dashboard_id)
@@ -690,6 +730,7 @@ class MemoryDashboardStore(BaseDashboardStore):
             del self._dashboards[dashboard_id]
             self._order.remove(dashboard_id)
             self._history.pop(dashboard_id, None)
+        self.changed(dashboard_id)
         return True
 
     def load_history(self, dashboard_id: str) -> list[dict[str, Any]]:
@@ -724,6 +765,7 @@ class MemoryDashboardStore(BaseDashboardStore):
             return False
         model.title = new_title
         model.updated_at = datetime.now(UTC)
+        self.changed(dashboard_id)
         return True
 
     def set_permission(self, dashboard_id: str, permission: Permission) -> bool:
@@ -732,6 +774,7 @@ class MemoryDashboardStore(BaseDashboardStore):
             return False
         model.permission = copy.deepcopy(permission)
         model.updated_at = datetime.now(UTC)
+        self.changed(dashboard_id)
         return True
 
     def set_owner(self, dashboard_id: str, owner: str) -> bool:
@@ -740,6 +783,7 @@ class MemoryDashboardStore(BaseDashboardStore):
             if model is None:
                 return False
             model.user_id = owner
+        self.changed(dashboard_id)
         return True
 
 
@@ -1023,7 +1067,7 @@ class DashboardStore(BaseDashboardStore):
                 "UPDATE dashboards SET permission_json = ?, updated_at = datetime('now') WHERE dashboard_id = ?",
                 (json.dumps(permission.to_dict()), dashboard_id),
             )
-        return cursor.rowcount > 0
+        return self._changed_if(cursor.rowcount > 0, dashboard_id)
 
     def save_dashboard(self, dashboard: DashboardModel) -> None:
         columns = {
@@ -1072,6 +1116,7 @@ class DashboardStore(BaseDashboardStore):
                     (*columns.values(), revision, dashboard.dashboard_id),
                 )
         dashboard.revision = revision
+        self.changed(dashboard.dashboard_id)
 
     def delete_dashboard(self, user_id: str, dashboard_id: str) -> bool:
         with self._get_conn() as conn:
@@ -1083,14 +1128,14 @@ class DashboardStore(BaseDashboardStore):
                 conn.execute(
                     "DELETE FROM dashboard_history WHERE dashboard_id = ?", (dashboard_id,)
                 )
-        return cursor.rowcount > 0
+        return self._changed_if(cursor.rowcount > 0, dashboard_id)
 
     def set_owner(self, dashboard_id: str, owner: str) -> bool:
         with self._get_conn() as conn:
             cursor = conn.execute(
                 "UPDATE dashboards SET user_id = ? WHERE dashboard_id = ?", (owner, dashboard_id)
             )
-        return cursor.rowcount > 0
+        return self._changed_if(cursor.rowcount > 0, dashboard_id)
 
     def rename_dashboard(self, user_id: str, dashboard_id: str, new_title: str) -> bool:
         with self._get_conn() as conn:
@@ -1098,7 +1143,7 @@ class DashboardStore(BaseDashboardStore):
                 "UPDATE dashboards SET title = ?, updated_at = datetime('now') WHERE dashboard_id = ? AND user_id = ?",
                 (new_title, dashboard_id, user_id),
             )
-        return cursor.rowcount > 0
+        return self._changed_if(cursor.rowcount > 0, dashboard_id)
 
     def _rows_to_models(self, rows: list[sqlite3.Row]) -> list[DashboardModel]:
         return [model for model in map(self._decode, rows) if model is not None]
