@@ -22,7 +22,7 @@ from panel_flowdash.admin.access import allow_adding_admins, show_admin_link
 from panel_flowdash.app import ACCESS_DENIED_ROUTE, FlowDashApp
 from panel_flowdash.auth import AuthConfig, make_authorize_callback
 from panel_flowdash.component_library import ComponentLibraryError
-from panel_flowdash.dashboard_store import BaseDashboardStore, DashboardStore
+from panel_flowdash.dashboard_store import DEFAULT_DB_NAME, BaseDashboardStore, DashboardStore
 from panel_flowdash.project import PROJECT_FILE, ProjectError, find_project
 from panel_flowdash.registry import PackageResolutionError, build_registry
 
@@ -153,7 +153,7 @@ def _resolve_store(
     """
     store = getattr(init_mod, "store", None)
     if store is None:
-        db_path = db_path or str(project_dir / "dashboards.db")
+        db_path = db_path or str(project_dir / DEFAULT_DB_NAME)
         return DashboardStore(db_path), f"SQLite database {db_path}"
     if not isinstance(store, BaseDashboardStore):
         print(  # noqa: T201

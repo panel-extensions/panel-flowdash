@@ -72,7 +72,8 @@ Remove every step to turn the edge back into a plain connection.
 | Filter rows | `filter` | DataFrame | `column`, `comparison` (`==`, `!=`, `<`, `<=`, `>`, `>=`, `in`), `value` | the matching rows |
 | Sort | `sort` | DataFrame, Series, list or tuple | `column` (DataFrames only), `ascending` (default `True`) | the sorted value; a tuple becomes a list |
 | First rows | `head` | DataFrame, Series, list or tuple | `n` (default 5) | the first `n` rows or items |
-| Aggregate | `aggregate` | Series, list or tuple | `how`: `sum`, `mean`, `min`, `max`, `count`, `nunique` or `last` (None if empty) | a single Python number |
+| Aggregate | `aggregate` | Series, list or tuple | `how`: `sum`, `mean`, `min`, `max`, `count` (values that are set), `size` (all values), `nunique` or `last` (None if empty) | a single Python number |
+| Group and total | `group` | DataFrame | `by`, `column`, `how` (`sum`, `mean`, `min`, `max`, `count`, `size`), `top` (default 0, all) | one row per value of `by` with the total of `column`, largest first |
 | Unique values | `unique` | Series, list or tuple | none | a list of the distinct values in order of appearance, without missing values for a Series |
 | Round | `round` | a number or a Series | `digits` (default 0) | the rounded value; an `int` for a number rounded to 0 digits |
 | Format | `format` | anything | `spec`, a [format spec](https://docs.python.org/3/library/string.html#formatspec) such as `,.2f` or `.0%`, and `prefix` and `suffix` strings | a string |

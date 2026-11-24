@@ -81,6 +81,22 @@ _STATUS = {
 #: What the marker of a tile whose result does not match its spec says, by state.
 _STALE = {"draft": "Not run", "running": "Running…"}
 
+# Tile notes (filters, provenance) read as a quiet caption line, not as chips competing with the view.
+_NOTE_SX = {
+    "height": 20,
+    "border": "none",
+    "backgroundColor": "transparent",
+    "color": "text.secondary",
+    "fontSize": "0.75rem",
+    "cursor": "default",
+    "&.MuiChip-clickable:hover, &.MuiChip-clickable:active": {"backgroundColor": "transparent"},
+    "& .MuiTouchRipple-root": {"display": "none"},
+    "& .MuiChip-label": {"px": 0},
+    "& .MuiChip-icon": {"fontSize": 16, "color": "text.secondary", "ml": 0, "mr": "4px"},
+}
+# A flex wrapper, so the chip is not laid out on a text line taller than itself.
+_NOTE_CSS = ".chip { display: flex; }"
+
 _ACTION_SX = {"color": "text.secondary"}
 
 _ELLIPSIS = {"overflow": "hidden", "textOverflow": "ellipsis", "whiteSpace": "nowrap"}
@@ -324,9 +340,7 @@ class Tile(pn.Column):
         self.titles.visible = titled
         self.header.visible = shown
         self.header.margin = (10, 8, 6, 16) if titled else 0
-        self.body.margin = (0, 8, 8, 8) if titled else 8
-        # While arranging, the grid's drag handle sits on the tile's top edge.
-        self.filter_notes.margin = (0, 12, 4, 16) if shown else (24, 12, 0, 16)
+        self._sync_margins()
         classes = [
             c
             for c in self.css_classes
@@ -395,7 +409,9 @@ class Tile(pn.Column):
         else:
             from panel_flowdash.ui.provenance import provenance_chip
 
-            self._provenance_chip = provenance_chip(provenance)
+            self._provenance_chip = provenance_chip(
+                provenance, sx=_NOTE_SX, stylesheets=[_NOTE_CSS]
+            )
         self._render_notes()
 
     def set_filters(self, chips=(), hint: str = "", detail: str = ""):
@@ -420,8 +436,9 @@ class Tile(pn.Column):
                 color="default",
                 size="small",
                 variant="outlined",
-                description=f"Filtered by {title}",
                 margin=0,
+                sx=_NOTE_SX,
+                stylesheets=[_NOTE_CSS],
                 css_classes=["flowdash-tile-filter-chip"],
             )
             for _, title in chips
@@ -436,12 +453,30 @@ class Tile(pn.Column):
                     variant="outlined",
                     description=detail or None,
                     margin=0,
-                    sx={"borderStyle": "dashed", "color": "text.secondary"},
+                    sx=_NOTE_SX,
+                    stylesheets=[_NOTE_CSS],
                     css_classes=["flowdash-tile-filter-hint"],
                 )
             )
         self.filter_notes[:] = objects
         self.filter_notes.visible = bool(objects)
+        self._sync_margins()
+
+    def _sync_margins(self):
+        titled = self._titled and self._framed
+        noted = self.filter_notes.visible
+        if self._arranging:
+            # The grid's drag handle sits on the tile's top edge.
+            self.filter_notes.margin = (24, 12, 0, 16)
+        elif titled:
+            self.filter_notes.margin = (0, 12, 2, 16)
+        else:
+            # Clear of the top edge, with the view moved up to keep its place.
+            self.filter_notes.margin = (10, 12, 0, 16)
+        if titled:
+            self.body.margin = (0, 8, 8, 8)
+        else:
+            self.body.margin = (4, 8, 8, 8) if noted and not self._arranging else 8
 
     def expand(self, _event=None):
         """Show the tile's view in a full-screen dialog until the dialog closes."""

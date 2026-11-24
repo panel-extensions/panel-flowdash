@@ -102,6 +102,13 @@ GENERAL_GROUPS = (
                 target="home_dashboard",
             ),
             Setting(
+                "templates",
+                "Dashboard templates",
+                "Offer templates when someone creates a dashboard, besides a blank one.",
+                default=True,
+                target="templates",
+            ),
+            Setting(
                 "live_values",
                 "Live values on ports",
                 "Open a port's value on click, on hover or not at all.",

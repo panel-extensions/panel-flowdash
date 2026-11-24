@@ -76,6 +76,11 @@ TOOL_LABELS: dict[str, str | t.Callable[[dict], str]] = {
     "save_dashboard": "Save the dashboard",
     "delete_dashboard": lambda a: f"Delete {a['title']}",
     "share_dashboard": "Change who can see the dashboard",
+    "list_templates": "Look up dashboard templates",
+    "new_dashboard_from_template": lambda a: (
+        "Start a dashboard from the "
+        f"{str(a.get('template') or 'chosen').split(':')[-1].replace('-', ' ')} template"
+    ),
     "list_commands": "Look up commands",
     "run_command": lambda a: f"Run {a['command']}",
 }

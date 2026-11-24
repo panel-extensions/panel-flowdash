@@ -1,0 +1,111 @@
+flowdash: 1
+title: KPI overview
+settings:
+  description: Headline numbers of [[measure:label]], how it changes over time, how it splits and the rows behind it.
+x-template:
+  name: KPI overview
+  description: A row of headline numbers, a trend chart beside a breakdown, and a table of the rows.
+  slots:
+    data:
+      kind: data
+      label: Data
+      description: A table with a numeric column to sum, a date and a category.
+    measure:
+      kind: column
+      of: data
+      type: number
+      label: Measure
+      description: The number the headline figures add up, e.g. revenue.
+    category:
+      kind: column
+      of: data
+      type: category
+      label: Category
+      description: What the breakdown and the distinct count are by, e.g. region.
+      required: false
+    trend:
+      kind: view
+      of: data
+      label: Trend chart
+      description: A view of the data over time.
+    breakdown:
+      kind: view
+      of: data
+      label: Breakdown chart
+      description: A view of the measure's total per category, the largest 15.
+      required: false
+    rows:
+      kind: view
+      of: data
+      label: Table
+      description: A view listing the rows.
+      required: false
+nodes:
+  data:
+    component: flowdash:slot
+  kpi_total:
+    component: Widgets/KPI
+    config:
+      label: Total [[measure:label]]
+      delta: none
+  kpi_average:
+    component: Widgets/KPI
+    config:
+      label: Average [[measure:label]]
+      format: ",.2f"
+      delta: none
+  kpi_rows:
+    component: Widgets/KPI
+    config:
+      label: Rows
+      delta: none
+  kpi_categories:
+    component: Widgets/KPI
+    config:
+      label: Distinct [[category:label]]
+      delta: none
+  trend:
+    component: flowdash:slot
+  breakdown:
+    component: flowdash:slot
+  rows:
+    component: flowdash:slot
+edges:
+  - from: data.table
+    to: kpi_total.value
+    transform:
+      - {op: column, column: "[[measure]]"}
+      - {op: aggregate, how: sum}
+  - from: data.table
+    to: kpi_average.value
+    transform:
+      - {op: column, column: "[[measure]]"}
+      - {op: aggregate, how: mean}
+  - from: data.table
+    to: kpi_rows.value
+    transform:
+      - {op: column, column: "[[measure]]"}
+      - {op: aggregate, how: size}
+  - from: data.table
+    to: kpi_categories.value
+    transform:
+      - {op: column, column: "[[category]]"}
+      - {op: aggregate, how: nunique}
+  - from: data.table
+    to: trend.table
+  - from: data.table
+    to: breakdown.table
+    transform:
+      - {op: group, by: "[[category]]", column: "[[measure]]", how: sum, top: 15}
+  - from: data.table
+    to: rows.table
+layout:
+  tiles:
+    - {node: kpi_total, width: 25, height: 130}
+    - {node: kpi_average, width: 25, height: 130}
+    - {node: kpi_rows, width: 25, height: 130}
+    - {node: kpi_categories, width: 25, height: 130}
+    - {node: trend, width: 66.67, height: 380}
+    - {node: breakdown, width: 33.33, height: 380}
+    - {node: rows, width: 100, height: 420}
+    - {node: data, width: 100, height: 300, visible: false}
