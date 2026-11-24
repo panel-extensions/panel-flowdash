@@ -21,7 +21,13 @@ controls bar as described [below](#sidebar-components).
 
 In the *Layout* tab every tile has a dashed frame, a drag handle at the top
 and a resize grip in its bottom-right corner. Drag a tile by its handle to
-move it, and drag the grip to resize it.
+move it in front of or after another tile, and drag the grip to resize it.
+The grid lays tiles out in rows, left to right in order: a row is as tall as
+its tallest tile, and a tile that no longer fits starts the next row, so a
+row with room left keeps it rather than taking a tile from further down.
+Shorter tiles may stack below each other beside a taller tile of their row.
+Widening a tile in a full row narrows the tile to its right, and narrowing it
+gives that tile the room.
 
 Clicking, dragging or resizing a tile selects it, with an outline in the
 primary color, and selects its component on the *Dataflow* canvas too;
@@ -71,11 +77,11 @@ whole columns, e.g. 3 of 12 for a 280 px KPI. Controls and KPIs share a row
 when they all fit in it; otherwise the KPIs start a row of their own. A chart
 left on its own row takes at most twice its default width. Headings and other
 text tiles stay in front of the tile that followed them, so a heading keeps
-titling its section. The grid moves a tile up into any gap it fits, so the
-room a row of controls and KPIs leaves is filled on purpose: by the leading
+titling its section. The room a row of controls and KPIs leaves is filled
+on purpose: by the leading
 heading in the first row, else by the chart or table that follows, at its own
 height, else by widening the row's tiles to at most twice their width when a
-later tile would move into the room. Other tiles in a row share one height.
+later tile would fit in the room. Other tiles in a row share one height.
 The layouts for narrower screens are generated from this one, and separate
 arrangements made for other screen sizes are dropped. **Arrange dataflow**
 does the same for the *Dataflow* canvas: sources on the left, views on the

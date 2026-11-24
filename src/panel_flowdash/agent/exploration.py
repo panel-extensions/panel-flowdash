@@ -779,15 +779,18 @@ class ExplorationOps(DashboardOps):
 
     def _refused(self, *_args, **_kwargs):
         raise PermissionError(
-            "Explore answers questions and cannot change the dashboard's layout, settings or "
-            "parameters, replace, save, open, delete or share dashboards. Tell the user they "
-            "can add an answer from its card, or ask the assistant."
+            "Explore answers questions and cannot change the dashboard's layout, title, "
+            "filters, report, settings or parameters, replace, save, open, delete or share "
+            "dashboards. "
+            "Tell the user they can add an answer from its card, or ask the assistant."
         )
 
     place_tile = group_nodes = ungroup = arrange_canvas = arrange_layout = arrange_tiles = _refused
     set_settings = declare_parameter = remove_parameter = bind_parameters = _refused
     replace_yaml = replace_yaml_async = save = open_dashboard = _refused
     open_dashboard_async = delete_dashboard = share_dashboard = _refused
+    set_title = add_filter = remove_filter = _refused
+    edit_report = set_report = ask_in_report = run_pending = _refused
 
     # ------------------------------------------------------------------
     # Add to dashboard

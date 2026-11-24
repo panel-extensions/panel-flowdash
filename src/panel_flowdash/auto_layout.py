@@ -873,6 +873,119 @@ def layout_rows(entries: Sequence[Mapping]) -> list[list[Mapping]]:
     return rows
 
 
+#: The margin around each tile of the grid in pixels, as panel-tiles' CSS sets it. A tile's
+#: width in percent includes it, its height in pixels does not.
+TILE_MARGIN = 10
+
+
+def pack_rows(entries: Sequence[Mapping]) -> list[list[tuple[Mapping, int | None]]]:
+    """Group the shown tiles' entries into rows as the grid packs them in its "rows" mode.
+
+    Like :func:`layout_rows`, except that a tile that no longer fits beside
+    the tiles at the top of its row may drop into the room left below a
+    shorter one of them, beside a taller tile, as the grid does; it never
+    moves into an earlier row. Each entry comes with the position in
+    *entries* of the tile it sits under, None for one at the top of its row.
+    Tiles without a height never stack, nor does anything under them. Heights
+    count the tiles' margins, as the grid's packing does.
+    """
+    rows: list[list[tuple[Mapping, int | None]]] = []
+    rects: list[tuple[float, float, float, float | None]] = []
+    top = bottom = cursor = 0.0
+    closed = False
+    members: list[int] = []
+
+    def holes() -> list[tuple[float, float, float, float]]:
+        if any(rects[i][3] is None for i in members):
+            return []
+        free = [(0.0, top, 100.0, bottom - top)]
+        for i in members:
+            free = _carve(free, rects[i])
+        return free
+
+    for n, entry in enumerate(entries):
+        w = min(100.0, entry.get("width") or 100.0)
+        h = entry.get("height")
+        if h is not None:
+            h += 2 * TILE_MARGIN
+        spot = None
+        if rows and not closed and cursor + w <= 100.01:
+            spot = (cursor, top)
+        elif rows and h is not None:
+            spot = next(
+                (
+                    (x, y)
+                    for x, y, fw, fh in holes()
+                    if y > top + 0.5 and w <= fw + 0.01 and h <= fh + 0.5
+                ),
+                None,
+            )
+        if spot is None:
+            top = bottom if rows else 0.0
+            bottom, cursor, closed, members = top, 0.0, False, []
+            rows.append([])
+            spot = (0.0, top)
+        x, y = spot
+        rects.append((x, y, w, h))
+        under = None
+        if y > top + 0.5:
+            closed = True
+            under = next(
+                (
+                    i
+                    for i in members
+                    if rects[i][3] is not None
+                    and abs(rects[i][1] + rects[i][3] - y) <= 0.5
+                    and rects[i][0] < x + w - 0.01
+                    and x < rects[i][0] + rects[i][2] - 0.01
+                ),
+                None,
+            )
+        else:
+            cursor = x + w
+        bottom = max(bottom, y + (h or 0.0))
+        members.append(n)
+        rows[-1].append((entry, under))
+    return rows
+
+
+def _carve(slots, rect):
+    """Return the free rectangles of *slots* once *rect* is taken, as the grid's packing does."""
+    rx, ry, rw, rh = rect
+    rh = rh or 0.0
+    out = []
+    for sx, sy, sw, sh in slots:
+        if not (rx < sx + sw and sx < rx + rw and ry < sy + sh and sy < ry + rh):
+            out.append((sx, sy, sw, sh))
+            continue
+        if rx > sx:
+            out.append((sx, sy, rx - sx, sh))
+        if rx + rw < sx + sw:
+            out.append((rx + rw, sy, sx + sw - rx - rw, sh))
+        if ry > sy:
+            out.append((sx, sy, sw, ry - sy))
+        if ry + rh < sy + sh:
+            out.append((sx, ry + rh, sw, sy + sh - ry - rh))
+    out = [s for s in out if s[2] > 0.01 and s[3] > 0.5]
+
+    def contains(a, b):
+        return (
+            a[0] <= b[0] + 0.01
+            and a[1] <= b[1] + 0.5
+            and a[0] + a[2] >= b[0] + b[2] - 0.01
+            and a[1] + a[3] >= b[1] + b[3] - 0.5
+        )
+
+    kept = [
+        s
+        for i, s in enumerate(out)
+        if not any(
+            j != i and contains(o, s) and (not contains(s, o) or j < i) for j, o in enumerate(out)
+        )
+    ]
+    return sorted(kept, key=lambda s: (s[1], s[0]))
+
+
 def resize_in_row(
     entries: Sequence[Mapping],
     tile_id: str,
@@ -881,6 +994,7 @@ def resize_in_row(
     fixed: Collection[str] = (),
     bounds: Mapping[str, tuple[float, float]] | None = None,
     whole: Collection[str] = (),
+    fixed_heights: Collection[str] | None = None,
 ) -> list[dict]:
     """Resize one tile of a layout and rebalance the other tiles of its row, as dragging its edge does.
 
@@ -896,9 +1010,10 @@ def resize_in_row(
     the next row's first tile when every tile still fits at an equal share of
     the row, else its tiles widen to fill it. The tiles of *whole*, e.g.
     tables, keep a row of their own. A *height* goes to the row's other tiles
-    too, so the row stays aligned. The tiles of *fixed*, sized on purpose,
-    keep their size. Returns copies; the resized tile's entry holds the width
-    it got.
+    too, so the row stays aligned. The tiles of *fixed*, given a width on
+    purpose, keep their width, and those of *fixed_heights* (*fixed* when
+    None) their height. Returns copies; the resized tile's entry holds the
+    width it got.
     """
     entries = [dict(e) for e in entries]
     target = next((e for e in entries if e["instance_id"] == tile_id), None)
@@ -962,8 +1077,9 @@ def resize_in_row(
     if height is not None:
         target["height"] = height
         rows = layout_rows(entries)
+        held = fixed if fixed_heights is None else fixed_heights
         for entry in rows[row_index(rows)]:
-            if free(entry):
+            if entry is not target and entry["instance_id"] not in held:
                 entry["height"] = height
     return entries
 

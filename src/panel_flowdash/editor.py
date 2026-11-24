@@ -4592,6 +4592,10 @@ class FlowDash(Viewer):
                 card=False,
                 close_action="hide",
                 editable=False,
+                # Rows, as the agent's layout tools and the layout panel describe and rebalance
+                # them; masonry would fill a gap a narrower tile leaves with a later tile.
+                layout_mode="rows",
+                row_resize="split",
                 local_save=False,
                 min_height=320,
                 show_breakpoint_toolbar=False,
@@ -6693,6 +6697,14 @@ class FlowDash(Viewer):
         pending = self._deferred_tiles
         if not pending:
             return
+        # While another request defers its tiles too, only the current request's are laid out.
+        source = _agent_source()
+        run = source.run if source is not None else None
+        others = {r: tiles for r, tiles in self._deferred_by_run.items() if r != run and tiles}
+        rest = set().union(*others.values()) if others else set()
+        pending = pending - rest
+        if not pending and rest:
+            return
         rearrange, self._deferred_rearrange = self._deferred_rearrange, False
         self._deferred_tiles = None
         try:
@@ -6704,9 +6716,10 @@ class FlowDash(Viewer):
                 else:
                     self._place_new_tiles(pending)
         finally:
-            self._deferred_tiles = set()
-            for tiles in self._deferred_by_run.values():
-                tiles.clear()
+            self._deferred_tiles = rest
+            for r, tiles in self._deferred_by_run.items():
+                if r not in others:
+                    tiles.clear()
 
     def _lay_out_released(self, pending: set[str], rearrange: bool, run_id: str | None):
         shown = {item["instance_id"] for item in tile_layout.grid_tiles(self)}
@@ -6777,10 +6790,10 @@ class FlowDash(Viewer):
             raise ValueError("No dashboard is open.")
         if self.read_only:
             raise PermissionError("You may only view this dashboard, so it cannot be renamed.")
-        if not self.may_rename():
-            raise PermissionError("Only the dashboard's owner or an administrator may rename it.")
         if title == current.title:
             return
+        if not self.may_rename():
+            raise PermissionError("Only the dashboard's owner or an administrator may rename it.")
         self._show_title(title)
         self._history.flush()
         self._record_edit(f"Renamed the dashboard to {title}", op="set_title")
@@ -7729,9 +7742,10 @@ class FlowDash(Viewer):
                 iid,
                 size.get("width"),
                 size.get("height"),
-                fixed=set(sizes),
+                fixed={i for i, s in sizes.items() if s.get("width") is not None},
                 bounds=bounds,
                 whole=whole,
+                fixed_heights={i for i, s in sizes.items() if s.get("height") is not None},
             )
         shown = {box.id for box in boxes}
         hidden = [dict(e) for e in self.layout if e.get("instance_id") not in shown | set(hide)]
