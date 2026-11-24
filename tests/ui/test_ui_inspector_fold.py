@@ -45,10 +45,6 @@ _NARROWEST_TEXT = """(left) => {
 }"""
 
 
-@pytest.mark.xfail(
-    reason="Panel sizes an ESM component's container only when rendering it (holoviz/panel#9108)",
-    strict=False,
-)
 def test_inspector_text_is_not_squeezed_after_folding_beside_the_assistant(page):
     page.set_viewport_size({"width": 1600, "height": 1000})
     store = MemoryDashboardStore()
