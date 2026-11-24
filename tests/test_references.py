@@ -120,6 +120,7 @@ def test_an_edit_saved_at_the_source_updates_the_reference(source, importer):
     importer.add_component("Test/shown", instance_id="shown")
     importer.connect("ref", "total", "shown", "value")
 
+    view = importer._component_instances["ref"]._holder.objects[0]
     source._apply_config_patch("numbers", {"scale": 10})
     source._apply_config_patch("chart", {"color": "green"})
     # Unsaved edits stay in the source.
@@ -127,6 +128,8 @@ def test_an_edit_saved_at_the_source_updates_the_reference(source, importer):
     source.save()
     assert text(tile(importer, "ref")) == "bars green 60"
     assert text(tile(importer, "shown")) == "value 60.0"
+    # Only config changed, so the source graph patched its nodes and the view stayed.
+    assert importer._component_instances["ref"]._holder.objects[0] is view
 
 
 def test_references_in_one_session_share_one_source_graph(store, source, importer):
