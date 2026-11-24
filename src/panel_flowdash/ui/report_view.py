@@ -75,6 +75,12 @@ CONTENTS_WIDTH = 220
 WIDE_BREAKPOINT = 1280
 PHONE_BREAKPOINT = 600
 
+# The navigation rail beside the report; without Ask beside it, the body is this much narrower than the window.
+RAIL_WIDTH = 80
+
+# The report body's padding on either side of the column and the contents list.
+BODY_PADDING = 32
+
 #: The height of a chart, table or data block whose tile gives none.
 BLOCK_HEIGHT = 320
 
@@ -134,7 +140,9 @@ _PHONE_ROW_CSS = f"""
 _BODY_CSS = f"""
 :host {{
   box-sizing: border-box;
-  padding: 32px 32px 64px;
+  padding: {BODY_PADDING}px {BODY_PADDING}px 64px;
+  /* The contents list beside the column hides when the body is narrow, e.g. beside Ask. */
+  container-type: inline-size;
 }}
 @media {_PHONE} {{
   :host {{ padding: 0 0 40px; }}
@@ -155,6 +163,9 @@ _ARTICLE_CSS = f"""
 _SIDE_CSS = f"""
 :host {{ flex: 0 0 {CONTENTS_WIDTH}px; }}
 {_HIDE_WHEN_NARROW}
+@container (max-width: {WIDE_BREAKPOINT - RAIL_WIDTH - 2 * BODY_PADDING - 0.05}px) {{
+  :host {{ display: none !important; }}
+}}
 """
 
 # Prose: the body text of a document, with live values as small tinted chips.

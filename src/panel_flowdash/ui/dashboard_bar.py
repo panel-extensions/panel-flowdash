@@ -265,27 +265,25 @@ def format_period(seconds: float) -> str:
     return f"{seconds} s"
 
 
-_EXPLORE_LABEL = ":material/forum: Explore"
 _REPORT_LABEL = ":material/description: Report"
 
-# The view-mode toggle; people who may only view the dashboard get no Edit.
-_VIEW_OPTIONS = {
-    _EXPLORE_LABEL: "explore",
-    _REPORT_LABEL: "report",
-    ":material/visibility: View": "view",
-    ":material/edit: Edit": "edit",
-}
-_READER_OPTIONS = {
-    _EXPLORE_LABEL: "explore",
-    _REPORT_LABEL: "report",
-    ":material/visibility: View": "view",
-}
-# The views shown in place of the workspace, picked in the toggle and the tabs alike.
+# The outputs a dashboard is read as, in view and in edit mode alike.
+_OUTPUT_OPTIONS = {":material/dashboard: Dashboard": "dashboard", _REPORT_LABEL: "report"}
+
+# How edit mode shows the output: the dataflow, its layout or both side by side.
+# The report's layout is its block editor, and it has no split.
+_DATAFLOW_TAB = {":material/account_tree: Dataflow": "wiring"}
+_LAYOUT_TAB = {":material/grid_view: Layout": "dashboard"}
+_SPLIT_TAB = {":material/vertical_split: Split": "split"}
+_EDIT_TABS = {**_DATAFLOW_TAB, **_LAYOUT_TAB, **_SPLIT_TAB}
+_REPORT_EDIT_TABS = {**_DATAFLOW_TAB, **_LAYOUT_TAB}
+
+# The views shown in place of the workspace on phones, picked in the overflow menu.
 _SURFACES = ("explore", "report")
 
-# Below this width the Report segment, second in both switchers, leaves them for
+# Below this width the Report segment, second in the output switch, leaves it for
 # the overflow menu, so the dashboard title keeps its room. While Report is shown
-# it stays, so the switcher still says where the reader is.
+# it stays, so the switch still says where the reader is.
 REPORT_MENU_BREAKPOINT = 1100
 _REPORT_IN_MENU = f"""
 @media (max-width: {REPORT_MENU_BREAKPOINT - 0.05}px) {{
@@ -295,12 +293,12 @@ _REPORT_IN_MENU = f"""
 
 
 def _view(editor) -> str:
-    """Return the entry of the View/Edit toggle the editor shows: a surface, or "view"."""
+    """Return the phone menu's entry for what the editor shows: a surface, or "view"."""
     return editor.surface if editor.surface in _SURFACES else "view"
 
 
 def _tab(editor) -> str:
-    """Return the edit tab the editor shows: a surface, or its mode."""
+    """Return the edit tab the editor shows: a surface, or its mode, Layout for the report."""
     return editor.surface if editor.surface in _SURFACES else editor.mode
 
 
@@ -309,12 +307,14 @@ class DashboardBar(Viewer):
 
     In view mode it shows the dashboard title, an info button opening the
     description, the health chip (whose popover holds the pipeline and any
-    issues) and the view actions: the View/Edit control, Refresh (its tooltip
-    says when the dashboard was last refreshed) with the auto-refresh period,
-    the editor's ``toolbar_extra`` items, Full screen and an overflow menu
-    (Download, Settings). In edit mode it shows the title with the save state, the
-    Dataflow/Layout/Split tabs and the edit actions: Settings, an overflow menu
-    (Download, Import file, Clear canvas), Discard, Save and Done.
+    issues) and the view actions: the Dashboard/Report switch, Ask, Edit,
+    Refresh (its tooltip says when the dashboard was last refreshed) with the
+    auto-refresh period, the editor's ``toolbar_extra`` items, Full screen and
+    an overflow menu (Download, Settings). In edit mode it shows the title with
+    the save state, the same Dashboard/Report switch, the Dataflow/Layout/Split
+    tabs (Dataflow/Layout for the report), Ask when the host has an assistant,
+    and the edit actions: Settings, an overflow menu (Download, Import file,
+    Clear canvas), Discard, Save and Done.
 
     ``layout`` arranges these parts. With ``"compact"`` they form one line:
     the description sits behind an info button, and Refresh's tooltip says
@@ -479,32 +479,55 @@ class DashboardBar(Viewer):
             sx=_ICON_BUTTON_SX,
             stylesheets=[_HIDE_ON_PHONE],
         )
-        self.mode_toggle = pmui.RadioButtonGroup(
-            options=_VIEW_OPTIONS,
-            value="view",
+        self._syncing = False
+        # The output edit mode returns to from the Dataflow tab, which both outputs share.
+        self._edit_output = "report" if editor.surface == "report" else "dashboard"
+        self.output_toggle = pmui.RadioButtonGroup(
+            options=_OUTPUT_OPTIONS,
+            value=self._output(),
             size="small",
-            margin=(0, 12, 0, 4),
+            margin=(0, 4),
             sx=_TOGGLE_SX,
+            css_classes=["fd-output-switch"],
             stylesheets=[ICON_ONLY_WHEN_COMPACT, _HIDE_ON_PHONE, _REPORT_IN_MENU],
         )
-        self.mode_toggle.param.watch(self._on_mode_toggled, "value")
+        self.output_toggle.param.watch(self._on_output, "value")
+        self.ask_button = pmui.Toggle(
+            label="Ask",
+            icon="forum",
+            icon_size="1.2em",
+            value=editor.ask,
+            size="small",
+            margin=(0, 4),
+            description="Ask about this dashboard",
+            css_classes=["fd-ask-toggle"],
+            sx=_TOGGLE_SX["& .MuiToggleButton-root"],
+            stylesheets=[ICON_ONLY_WHEN_COMPACT, _HIDE_ON_PHONE],
+        )
+        self.ask_button.param.watch(self._on_ask_toggled, "value")
+        self.edit_button = pmui.Button(
+            label="Edit",
+            icon="edit",
+            variant="outlined",
+            size="small",
+            margin=(0, 4),
+            description="Edit",
+            css_classes=["fd-edit-button"],
+            stylesheets=[ICON_ONLY_WHEN_COMPACT, _HIDE_ON_PHONE],
+        )
+        self.edit_button.on_click(lambda _event: self._edit())
 
         self.mode_tabs = pmui.RadioButtonGroup(
-            options={
-                _EXPLORE_LABEL: "explore",
-                _REPORT_LABEL: "report",
-                ":material/account_tree: Dataflow": "wiring",
-                ":material/dashboard: Layout": "dashboard",
-                ":material/vertical_split: Split": "split",
-            },
-            value=_tab(editor),
+            options=_EDIT_TABS,
+            value=self._edit_tab(),
             size="small",
             margin=(0, 12, 0, 4),
             sx=_TOGGLE_SX,
-            stylesheets=[_ICON_ONLY_WHEN_NARROW, _HIDE_ON_PHONE, _REPORT_IN_MENU],
+            stylesheets=[_ICON_ONLY_WHEN_NARROW, _HIDE_ON_PHONE],
         )
         self.mode_tabs.param.watch(self._on_tab, "value")
-        editor.param.watch(self._sync_switchers, ["surface", "mode", "read_only"])
+        editor.param.watch(self._sync_switchers, ["surface", "mode", "read_only", "ask"])
+        editor.param.watch(lambda _event: self.sync(), ["assistant", "read_only"])
         # The overflow menu offers the views the switchers have no room for.
         editor.param.watch(lambda _event: self.sync(), "surface")
         self.settings_button = pmui.Button(
@@ -691,13 +714,15 @@ class DashboardBar(Viewer):
         return items
 
     def _view_actions(self) -> list:
-        """Actions on the right in view mode, the View/Edit control first.
+        """Actions on the right in view mode: the output switch, Ask and Edit first.
 
-        The order mirrors edit mode, where the Dataflow/Layout tabs come first,
-        then the actions (``toolbar_extra`` such as Share) and the overflow menu.
+        The order mirrors edit mode, where the output switch and the tabs come
+        first, then the actions (``toolbar_extra`` such as Share) and the overflow menu.
         """
         editor = self.editor
-        actions = [self.mode_toggle]
+        actions = [self.output_toggle, self.ask_button]
+        if not editor.read_only:
+            actions.append(self.edit_button)
         actions += [
             self.refresh_button,
             self.refresh_period,
@@ -713,9 +738,12 @@ class DashboardBar(Viewer):
         return [self.save_state]
 
     def _edit_actions(self) -> list:
-        """Actions on the right in edit mode, the tabs first."""
+        """Actions on the right in edit mode: the output switch, the tabs and Ask first."""
+        ask = [self.ask_button] if self.editor.assistant else []
         return [
+            self.output_toggle,
             self.mode_tabs,
+            *ask,
             self.settings_button,
             self.settings_icon_button,
             *self.editor.toolbar_extra,
@@ -734,9 +762,8 @@ class DashboardBar(Viewer):
         """
         if self._phone_query.phone:
             phone = self._phone_items()
-        elif self._narrow_query.phone and self.editor.surface != "report":
-            kind = "tab" if self.editor.editable else "mode"
-            phone = [{"label": "Report", "icon": "description", "action": f"{kind}:report"}]
+        elif self._narrow_query.phone and self._output() != "report":
+            phone = [{"label": "Report", "icon": "description", "action": "output:report"}]
         else:
             phone = []
         items = self._menu_items()
@@ -781,9 +808,11 @@ class DashboardBar(Viewer):
             return
         kind, _, value = action.partition(":")
         if kind == "mode":
-            self.mode_toggle.value = value
+            self._choose_view(value)
         elif kind == "tab":
-            self.mode_tabs.value = value
+            self._choose_tab(value)
+        elif kind == "output":
+            self.output_toggle.value = value
         elif action == "refresh":
             self.editor.trigger_refresh()
         elif action == "fullscreen":
@@ -851,16 +880,43 @@ class DashboardBar(Viewer):
         self.settings_icon_button.disabled = editor.read_only
         self._sync_switchers()
 
-    def _sync_switchers(self, *_events):
-        """Show the open view in the View/Edit toggle and the edit tabs; readers get no Edit."""
+    def _output(self) -> str:
+        """Return the output the switch shows: the report, or the dashboard, or in the Dataflow tab the last one."""
         editor = self.editor
-        options = _READER_OPTIONS if editor.read_only else _VIEW_OPTIONS
-        view = _view(editor)
-        if self.mode_toggle.options != options or self.mode_toggle.value != view:
-            self.mode_toggle.param.update(options=options, value=view)
-        tab = _tab(editor)
-        if self.mode_tabs.value != tab:
-            self.mode_tabs.value = tab
+        if editor.surface == "report":
+            return "report"
+        if self._in_dataflow():
+            return self._edit_output
+        return "dashboard"
+
+    def _edit_tab(self) -> str | None:
+        """Return the tab edit mode shows: Layout for the report, else the editor's mode."""
+        editor = self.editor
+        if editor.surface == "report":
+            return "dashboard"
+        return editor.mode if editor.surface == "workspace" else None
+
+    def _sync_switchers(self, *_events):
+        """Show the open output in the switch, the open tab in the tabs and whether Ask is open."""
+        editor = self.editor
+        if editor.surface == "report":
+            self._edit_output = "report"
+        elif editor.surface == "workspace" and editor.mode != "wiring":
+            self._edit_output = "dashboard"
+        output = self._output()
+        options = _REPORT_EDIT_TABS if output == "report" else _EDIT_TABS
+        tab = self._edit_tab()
+        # Showing the editor's state is not a choice of the person's.
+        self._syncing = True
+        try:
+            if self.output_toggle.value != output:
+                self.output_toggle.value = output
+            if self.mode_tabs.options != options or self.mode_tabs.value != tab:
+                self.mode_tabs.param.update(options=options, value=tab)
+            if self.ask_button.value != editor.ask:
+                self.ask_button.value = editor.ask
+        finally:
+            self._syncing = False
 
     def _sync_lead(self):
         row = not self.in_header
@@ -971,23 +1027,68 @@ class DashboardBar(Viewer):
     # Actions
     # ------------------------------------------------------------------
 
-    def _on_mode_toggled(self, event):
-        if event.new == "edit":
-            self.editor.surface = "workspace"
-            self.request_mode("edit")
-        elif event.new in _SURFACES:
-            self.editor.surface = event.new
-        elif event.new == "view":
+    def _on_output(self, event):
+        """Show the dashboard or the report; from the Dataflow tab, which both share, in its Layout."""
+        output = event.new
+        editor = self.editor
+        if (
+            self._syncing
+            or output is None
+            or (output == self._output() and not self._in_dataflow())
+        ):
+            return
+        self._edit_output = output
+        with param.parameterized.batch_call_watchers(editor):
+            if output == "report":
+                editor.surface = "report"
+            else:
+                if editor.editable and editor.mode == "wiring":
+                    editor.mode = "dashboard"
+                editor.surface = "workspace"
+
+    def _in_dataflow(self) -> bool:
+        editor = self.editor
+        return editor.editable and editor.surface == "workspace" and editor.mode == "wiring"
+
+    def _on_ask_toggled(self, event):
+        if not self._syncing and self.editor.ask != event.new:
+            self.editor.ask = event.new
+
+    def _edit(self):
+        """Edit the output on screen: the report's blocks, or the dashboard."""
+        editor = self.editor
+        if editor.surface == "explore":
+            editor.surface = "workspace"
+        self._edit_output = "report" if editor.surface == "report" else "dashboard"
+        self.request_mode("edit")
+
+    def _choose_view(self, view: str):
+        """Show a view picked in the phone menu: Ask's feed, the report, the dashboard, or edit it."""
+        if view == "edit":
+            self._edit()
+        elif view in _SURFACES:
+            self.editor.surface = view
+        else:
             self.editor.surface = "workspace"
 
     def _on_tab(self, event):
+        if not self._syncing and event.new is not None:
+            self._choose_tab(event.new)
+
+    def _choose_tab(self, tab: str):
+        """Show an edit tab: Layout is the report's blocks while the report is the output."""
         editor = self.editor
-        if event.new in _SURFACES:
-            editor.surface = event.new
-        elif event.new is not None:
-            with param.parameterized.batch_call_watchers(editor):
-                editor.mode = event.new
-                editor.surface = "workspace"
+        if tab in _SURFACES:
+            editor.surface = tab
+            return
+        if tab == "dashboard" and self._output() == "report":
+            editor.surface = "report"
+            return
+        if tab == "split":
+            self._edit_output = "dashboard"
+        with param.parameterized.batch_call_watchers(editor):
+            editor.mode = tab
+            editor.surface = "workspace"
 
     def request_mode(self, mode: str):
         """Switch to *mode* ("edit" or "view") through `on_mode`, or directly."""
@@ -1108,13 +1209,13 @@ _IMPORT = {"label": "Import file", "icon": "upload_file", "action": "import"}
 _SETTINGS = {"label": "Settings", "icon": "tune", "action": "settings"}
 # The entries standing in for the top bar's actions on phones.
 _PHONE_MODES = [
-    ("explore", "Explore", "forum"),
+    ("explore", "Ask", "forum"),
     ("report", "Report", "description"),
-    ("view", "View", "visibility"),
+    ("view", "Dashboard", "dashboard"),
     ("edit", "Edit", "edit"),
 ]
 _PHONE_TABS = [
-    ("explore", "Explore", "forum"),
+    ("explore", "Ask", "forum"),
     ("report", "Report", "description"),
     ("wiring", "Dataflow", "account_tree"),
     ("dashboard", "Layout", "dashboard"),

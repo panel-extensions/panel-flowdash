@@ -216,7 +216,7 @@ class TestOpening:
         assert not editor._code_dock.visible
         editor.open_code_panel(query, "expr")
         index = list(view).index(editor._code_dock)
-        assert view[index - 1] is editor._editor_row
+        assert view[index - 1] is editor._ask_row and editor._ask_row[1] is editor._editor_row
         assert editor._workspace_area[0] is editor._flow
         assert editor._code_dock.visible
         assert editor._code_dock.styles["height"] == "400px"

@@ -1754,7 +1754,7 @@ class TestDisplayModes:
         editor.editable = False
         actions = editor._dashboard_bar._actions.objects
         bar = editor._dashboard_bar
-        assert actions.index(bar.mode_toggle) < actions.index(bar.refresh_button)
+        assert actions.index(bar.edit_button) < actions.index(bar.refresh_button)
         assert actions.index(bar.refresh_period) < actions.index(button)
         assert actions.index(button) < actions.index(bar.overflow)
 

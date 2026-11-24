@@ -176,7 +176,7 @@ class SessionChrome:
             # Inside the editor, so the notice is on screen when the editor is in full screen.
             editor._view.append(self.notice)
             editor.param.watch(self._on_fullscreen, "fullscreen")
-            editor.param.watch(self._on_explore, "explore")
+            editor.param.watch(self._on_explore, ["explore", "ask", "editable"])
             editor._sidecar.on_close_drawer = lambda: setattr(drawer, "open", False)
             editor._split_view.storage.param.watch(
                 lambda _e: self._report_drawer(), "window_width"
@@ -237,7 +237,7 @@ class SessionChrome:
             editor.fullscreen = False
         if self._review_target == "explore":
             if editor is not None:
-                editor.explore = True
+                editor.show_ask()
             return
         if editor is not None:
             editor.explore = False
@@ -245,11 +245,11 @@ class SessionChrome:
 
     def _drawer_hidden(self) -> bool:
         editor = self.session.app._editor
-        return editor is not None and (editor.fullscreen or editor.explore)
+        return editor is not None and (editor.fullscreen or editor.explore or editor.ask_docked)
 
     def _explore_hidden(self) -> bool:
         editor = self.session.app._editor
-        return editor is not None and (editor.fullscreen or not editor.explore)
+        return editor is not None and (editor.fullscreen or not editor.feed_shown)
 
     def _on_pending(self, event):
         self._refresh_notice()

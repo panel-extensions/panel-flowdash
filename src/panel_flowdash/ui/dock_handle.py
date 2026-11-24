@@ -12,8 +12,9 @@ class DockHandle(JSComponent):
     """A bar dragged to resize the layout holding it, which reports its new :attr:`size`.
 
     A horizontal bar sits on top of a layout docked under the page and sets
-    its height; a vertical one sits on the left of a layout docked to the
-    right and sets its width. While dragging, the layout follows the pointer
+    its height; a vertical one sits on the inner edge of a layout docked to
+    the side and sets its width: on the left of one docked to the right, or
+    on the right of one docked to the left (``edge="end"``). While dragging, the layout follows the pointer
     in the page; :attr:`size` is set once the pointer is released. Arrow keys
     resize it by 24 pixels when the bar has focus.
     """
@@ -38,6 +39,15 @@ class DockHandle(JSComponent):
         doc="A horizontal bar resizes the height, a vertical one the width.",
     )
 
+    edge = param.Selector(
+        default="start",
+        objects=["start", "end"],
+        doc="""
+        Which edge of its layout a vertical bar sits on: the left ("start"),
+        for a layout docked to the right, or the right ("end"), for one
+        docked to the left, which grows as the bar is dragged right.""",
+    )
+
     _stylesheets: t.ClassVar[list[str]] = [
         """
         :host { cursor: row-resize; }
@@ -56,6 +66,8 @@ class DockHandle(JSComponent):
     _esm = """
     export function render({ el, model }) {
       const vertical = model.orientation === "vertical"
+      // Dragging away from the layout's docked side grows it.
+      const grow = vertical && model.edge === "end" ? 1 : -1
       const bar = document.createElement("div")
       bar.className = vertical ? "fd-dock-handle vertical" : "fd-dock-handle"
       bar.tabIndex = 0
@@ -119,7 +131,7 @@ class DockHandle(JSComponent):
       bar.addEventListener("pointermove", (event) => {
         if (!start) return
         const at = vertical ? event.clientX : event.clientY
-        const size = clamp(start.size + start.at - at, start.target)
+        const size = clamp(start.size + grow * (at - start.at), start.target)
         resize(start.target, size)
         start.last = size
       })
@@ -132,7 +144,9 @@ class DockHandle(JSComponent):
       bar.addEventListener("pointerup", end)
       bar.addEventListener("pointercancel", end)
       bar.addEventListener("keydown", (event) => {
-        const keys = vertical ? {ArrowLeft: 24, ArrowRight: -24} : {ArrowUp: 24, ArrowDown: -24}
+        const keys = vertical
+          ? {ArrowLeft: -24 * grow, ArrowRight: 24 * grow}
+          : {ArrowUp: 24, ArrowDown: -24}
         const step = keys[event.key]
         const target = dock()
         if (!step || !target) return

@@ -380,9 +380,11 @@ async def test_an_explore_approval_left_behind_shows_a_notice(store, monkeypatch
     assert chrome.notice.visible and not session.drawer.open
     assert chrome._notice_text.object.startswith("Explore is waiting for your approval")
     chrome.review()
-    assert editor.explore and not chrome.notice.visible
+    # In view mode the feed comes back docked in Ask, beside the dashboard.
+    assert editor.feed_shown and not chrome.notice.visible
+    assert editor.ask_docked or editor.explore
     session.explore_runner.state.resolve_approval("c2", False)
-    editor.explore = False
+    editor.param.update(explore=False, ask=False)
     assert not chrome.notice.visible
 
 

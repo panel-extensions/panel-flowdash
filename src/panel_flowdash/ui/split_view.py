@@ -51,6 +51,12 @@ def storage_key() -> str:
 
 DEFAULT_SIZES = (55.0, 45.0)
 
+#: The width of the Ask panel docked left of a dashboard, until the person drags it.
+ASK_WIDTH = 420
+
+#: The narrowest the Ask panel gets; the widest is half the window.
+ASK_MIN_WIDTH = 320
+
 # Narrower than this, a pane counts as collapsed; split.js reports a collapsed
 # pane at 0 to 1 percent and a pane dragged into its snap zone at under 5.
 _COLLAPSED = 5.0
@@ -95,6 +101,12 @@ class SplitPreferences(param.Parameterized):
         default=True, doc="Whether the component palette beside the canvas is open or folded."
     )
 
+    ask_width = param.Integer(
+        default=ASK_WIDTH,
+        bounds=(ASK_MIN_WIDTH, None),
+        doc="The width of the Ask panel docked left of a dashboard, set by dragging its right edge.",
+    )
+
     def to_json(self) -> str:
         """Return the preferences as stored in the browser."""
         return json.dumps(
@@ -106,6 +118,7 @@ class SplitPreferences(param.Parameterized):
                 "spec_text": self.spec_text,
                 "sidecar_width": self.sidecar_width,
                 "palette_open": self.palette_open,
+                "ask_width": self.ask_width,
             }
         )
 
@@ -141,6 +154,9 @@ class SplitPreferences(param.Parameterized):
             update["sidecar_width"] = max(SIDECAR_MIN_WIDTH, min(SIDECAR_MAX_WIDTH, width))
         if isinstance(stored.get("palette_open"), bool):
             update["palette_open"] = stored["palette_open"]
+        width = stored.get("ask_width")
+        if isinstance(width, int) and not isinstance(width, bool):
+            update["ask_width"] = max(ASK_MIN_WIDTH, width)
         if update:
             self.param.update(update)
         return bool(update)
@@ -393,6 +409,7 @@ class SplitView(Viewer):
                 "spec_text",
                 "sidecar_width",
                 "palette_open",
+                "ask_width",
             ],
         )
 

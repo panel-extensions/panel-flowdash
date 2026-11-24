@@ -222,7 +222,10 @@ class AgentSession:
                     add=self.add_answer,
                     show=self.show_answer,
                 )
-        editor.param.watch(self._on_explore, "explore")
+        editor.param.watch(self._on_explore, ["explore", "ask", "editable"])
+        # In edit mode Ask is this drawer, opened and closed with the bar's Ask.
+        editor.assistant = True
+        self.drawer.param.watch(self._on_drawer_toggled, "open")
         self._on_explore()
         self.highlighter = ChangeHighlighter(self)
         self.chrome = SessionChrome(self)
@@ -315,13 +318,24 @@ class AgentSession:
         self.ledger.add(model_id, run.cost_usd)
 
     def _on_explore(self, *_events):
-        """Close the drawer while Explore shows the chat, and bring back an approval left pending there."""
-        exploring = self.app._editor.explore
+        """Open the drawer as Ask in edit mode, close it while the feed is Ask, and bring back a pending approval."""
+        editor = self.app._editor
+        exploring = editor.explore or (editor.ask and not editor.editable)
         self.drawer.open_on_approval = not exploring
         if exploring:
             self.drawer.open = False
+        elif editor.editable and editor.ask:
+            self.drawer.open = True
         elif self.runner.state.pending_approvals:
             self.drawer.open = True
+        elif editor.editable:
+            self.drawer.open = False
+
+    def _on_drawer_toggled(self, event):
+        """Keep Ask open while the drawer is, in edit mode, where the drawer is Ask."""
+        editor = self.app._editor
+        if editor.editable and not editor.explore and editor.ask != event.new:
+            editor.ask = event.new
 
     async def add_answer(self, run: str, node: str) -> str:
         """Add the answer *node* of Explore run *run* to the dashboard and return its name there.

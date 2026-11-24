@@ -269,30 +269,59 @@ def test_the_composer_needs_an_agent_and_edit_rights(editor):
 
 
 def test_explore_takes_the_place_of_the_canvas_and_grid(editor):
-    view = editor._view
-    assert view[1] is editor._editor_row
+    row = editor._ask_row
+    assert row[1] is editor._editor_row
     editor.explore = True
-    assert view[1] is editor.explore_feed.__panel__() and editor.explore_feed.shown
+    assert row[1] is editor.explore_feed.__panel__() and editor.explore_feed.shown
     assert not editor._status_bar.visible
     assert not editor._grid_on_screen
     editor.explore = False
-    assert view[1] is editor._editor_row and not editor.explore_feed.shown
+    assert row[1] is editor._editor_row and not editor.explore_feed.shown
 
 
-def test_the_switchers_show_explore(editor):
+def test_ask_docks_the_feed_beside_the_dashboard_without_moving_it(editor):
+    editor.editable = False
+    row = editor._ask_row
+    dashboard = row[1]
+    editor.ask = True
+    assert editor.ask_docked and editor._ask_dock.visible
+    assert row[1] is dashboard
+    assert list(editor._ask_body) == [editor.explore_feed.__panel__()]
+    assert editor.explore_feed.shown and editor.explore_feed.docked
+    editor.surface = "report"
+    assert row[1] is editor.report_view.__panel__() and editor.explore_feed.docked
+    # In edit mode Ask is the host's assistant; the feed leaves the dock.
+    editor.editable = True
+    assert not editor.ask_docked and not editor._ask_dock.visible
+    assert not editor.explore_feed.shown and not editor.explore_feed.docked
+    editor.editable = False
+    assert editor.ask_docked and editor.explore_feed.shown
+    editor.ask = False
+    assert not editor._ask_dock.visible and not editor.explore_feed.shown
+
+
+def test_a_docked_card_names_the_dashboard_view_it_cannot_show(editor):
+    feed = _feed(editor)
+    editor.editable = False
+    instance_id = next(i["instance_id"] for i in editor._tile_items if feed._shows_view(i))
+    feed.docked = True
+    caption = feed._output(instance_id)
+    assert "dashboard" in caption.object
+    feed.docked = False
+    assert caption is not feed._output(instance_id)
+
+
+def test_the_phone_menu_shows_explore_as_ask(editor):
     bar = editor._dashboard_bar
     editor.editable = False
-    editor.explore = True
-    bar.sync()
-    assert bar.mode_toggle.value == "explore" and bar.mode_tabs.value == "explore"
-    bar.mode_toggle.value = "view"
-    assert not editor.explore
-    bar.mode_tabs.value = "explore"
+    bar._phone_query.phone = True
+    (ask,) = [item for item in bar.overflow.items if item and item["action"] == "mode:explore"]
+    assert ask["label"] == "Ask"
+    bar._on_overflow(ask)
     assert editor.explore
-    bar.mode_tabs.value = "dashboard"
+    editor.editable = True
+    bar._on_overflow({"action": "tab:dashboard"})
     assert not editor.explore and editor.mode == "dashboard"
-    editor.read_only = True
-    assert list(bar.mode_toggle.options.values()) == ["explore", "report", "view"]
 
 
 def test_a_manual_edit_while_shown_updates_the_feed_in_place(editor):

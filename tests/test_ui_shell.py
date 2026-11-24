@@ -38,7 +38,11 @@ def _labels(editor):
 class TestDashboardBarSections:
     async def test_edit_section(self, editor):
         bar = editor._dashboard_bar
-        assert bar._actions.objects[0] is bar.mode_tabs
+        assert bar._actions.objects[:2] == [bar.output_toggle, bar.mode_tabs]
+        # Without a host's assistant, Ask is offered in view mode only.
+        assert bar.ask_button not in bar._actions.objects
+        editor.assistant = True
+        assert bar._actions.objects[:3] == [bar.output_toggle, bar.mode_tabs, bar.ask_button]
         for item in (bar.settings_button, bar.overflow, bar.discard_button, bar.done_button):
             assert item in bar._actions.objects
         assert bar._actions.objects[-5:] == [
@@ -54,7 +58,9 @@ class TestDashboardBarSections:
         editor.editable = False
         bar = editor._dashboard_bar
         assert bar._actions.objects == [
-            bar.mode_toggle,
+            bar.output_toggle,
+            bar.ask_button,
+            bar.edit_button,
             bar.refresh_button,
             bar.refresh_period,
             bar.fullscreen_button,
@@ -80,7 +86,8 @@ class TestDashboardBarSections:
         editor.param.update(editable=False, read_only=True)
         bar = editor._dashboard_bar
         assert bar._actions.objects == [
-            bar.mode_toggle,
+            bar.output_toggle,
+            bar.ask_button,
             bar.refresh_button,
             bar.refresh_period,
             bar.fullscreen_button,
@@ -88,7 +95,6 @@ class TestDashboardBarSections:
             bar._phone_query,
             bar._narrow_query,
         ]
-        assert list(bar.mode_toggle.options.values()) == ["explore", "report", "view"]
 
     async def test_a_phone_finds_the_view_actions_in_the_overflow_menu(self, editor):
         editor.editable = False
@@ -116,10 +122,10 @@ class TestDashboardBarSections:
     async def test_a_narrow_window_finds_report_in_the_overflow_menu(self, editor):
         bar = editor._dashboard_bar
         bar._narrow_query.phone = True
-        assert bar.overflow.items[0]["action"] == "tab:report"
+        assert bar.overflow.items[0]["action"] == "output:report"
         bar._on_overflow(bar.overflow.items[0])
         assert editor.surface == "report"
-        assert all((item or {}).get("action") != "tab:report" for item in bar.overflow.items)
+        assert all((item or {}).get("action") != "output:report" for item in bar.overflow.items)
 
     async def test_a_reader_on_a_phone_gets_an_overflow_menu(self, editor):
         editor.param.update(editable=False, read_only=True)
@@ -255,9 +261,8 @@ class TestRearrangingIsAChange:
 class TestModes:
     async def test_edit_request_without_handler(self, editor):
         editor.editable = False
-        editor._dashboard_bar.mode_toggle.value = "edit"
+        editor._dashboard_bar.edit_button.clicks += 1
         assert editor.editable
-        assert editor._dashboard_bar.mode_toggle.value == "view"
 
     async def test_done_without_changes(self, editor):
         editor._dashboard_bar.done_button.clicks += 1
@@ -273,7 +278,7 @@ class TestModes:
         editor._dashboard_bar.on_mode = requests.append
         editor._dashboard_bar.done_button.clicks += 1
         editor.editable = False
-        editor._dashboard_bar.mode_toggle.value = "edit"
+        editor._dashboard_bar.edit_button.clicks += 1
         assert requests == ["view", "edit"]
         assert not editor.editable
 
@@ -530,7 +535,7 @@ class TestAppModes:
         assert app._editor.read_only
         assert not app._share_button.visible
         bar = app._editor._dashboard_bar
-        assert "edit" not in bar.mode_toggle.options.values()
+        assert bar.edit_button not in bar.actions.objects
 
     async def test_components_route_starts_from_an_empty_canvas(self, app):
         _open(app)

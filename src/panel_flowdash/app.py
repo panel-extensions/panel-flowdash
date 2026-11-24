@@ -1101,6 +1101,8 @@ class FlowDashApp(Viewer):
                 classes.append(_EDIT_HEADER_CLASS)
             if classes != toggle.css_classes:
                 toggle.css_classes = classes
+            # Beside a dashboard's actions, the bar's Ask opens the assistant.
+            toggle.visible = mode is None
 
     def _begin_navigation(self) -> int:
         """Start a navigation, superseding the one in flight, and return its generation."""

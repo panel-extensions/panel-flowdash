@@ -98,6 +98,9 @@ def is_explore_run(run_id: str | None) -> bool:
 
 _ARTIFACT_EVENTS = (ev.ArtifactPublished, ev.ArtifactApplied, ev.ArtifactVersionsDropped)
 
+# The chat feed's frame in Ask's dock, which draws its own edge.
+_DOCKED_FRAME = {"sx": {"boxShadow": "none", "borderRadius": 0}, "margin": 0}
+
 # How long forwarded events are gathered before the feed catches up, in milliseconds.
 _COALESCE_MS = 50
 
@@ -157,6 +160,14 @@ class ExploreFeed(Viewer):
         agent's events, and catches up when shown.""",
     )
 
+    docked = param.Boolean(
+        default=False,
+        doc="""
+        Whether the feed is docked in Ask beside the dashboard or the report,
+        which show the dashboard's views. A view is on screen only once, so
+        the card of a dashboard node then says where its view is instead.""",
+    )
+
     page_size = param.Integer(
         default=20,
         bounds=(1, None),
@@ -193,6 +204,8 @@ class ExploreFeed(Viewer):
         self._chat: AgentChat | None = None
         self._chat_params: dict = {}
         self._model_chat: AgentChat | None = None
+        # The chat feed's own frame, a card, restored when it leaves the dock.
+        self._card_frame: dict[str, t.Any] | None = None
         self._model_watchers: list = []
         self._chat_key: tuple | None = None
         self._foreign: t.Callable[[str], bool] | None = None
@@ -285,7 +298,18 @@ class ExploreFeed(Viewer):
             # already on the page, each card is a patch of its own, and under load the
             # browser can miss some of them.
             self._chat = self._build_chat(composer=key[0])
+            self._frame_chat()
         return self._chat
+
+    def _frame_chat(self):
+        """Lay the feed flat in Ask's dock, which frames it, and as a card in the Explore view."""
+        if self._chat is None:
+            return
+        feed = self._chat.feed
+        if self._card_frame is None:
+            self._card_frame = {"sx": feed.sx, "margin": feed.margin}
+        frame = _DOCKED_FRAME if self.docked else self._card_frame
+        feed.param.update(**frame)
 
     def _build_chat(self, composer: bool) -> AgentChat:
         params: dict[str, t.Any] = {}
@@ -405,6 +429,13 @@ class ExploreFeed(Viewer):
         self._unsubscribe = runner.state.subscribe(self._on_event)
         if self.shown:
             self.sync()
+
+    @param.depends("docked", watch=True)
+    def _on_docked(self):
+        self._frame_chat()
+        # The cards rendered for the other placement show or leave out the dashboard's views.
+        if self.shown and self._applied:
+            self._rebuild(*self.project())
 
     @param.depends("shown", watch=True)
     def _on_shown(self):
@@ -937,6 +968,12 @@ class ExploreFeed(Viewer):
             return self._value(instance_id, spec.outputs[0].name, editor, key)
         if dashboard and tile_layout.area_of(editor, item) == tile_layout.SIDEBAR:
             return self._caption("Shown in the sidebar.")
+        if dashboard and self.docked:
+            return self._caption(
+                "Shown on the dashboard."
+                if self._placed_item(item)
+                else "Add it to the dashboard to see it beside this conversation."
+            )
         view = editor._tile_objects[index] if index < len(editor._tile_objects) else None
         if view is None:
             return self._caption("This output has nothing to show yet.")
