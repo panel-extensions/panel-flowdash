@@ -41,6 +41,7 @@ from panel_flowdash.admin.sections import (
     _project_directory,
 )
 from panel_flowdash.ai import PROVIDERS, KeyCheck, check_key, provider_name
+from panel_flowdash.dashboard_store import DEFAULT_DB_NAME
 from panel_flowdash.project import (
     _FILE_LOCK,
     PROJECT_FILE,
@@ -200,17 +201,31 @@ def given_model(app: FlowDashApp | None) -> tuple[str, str]:
     return "", ""
 
 
-def data_files(directory: Path | None, limit: int = 50) -> list[Path]:
-    """Return the data files directly in *directory*, by name."""
+def data_files(
+    directory: Path | None, limit: int = 50, app: FlowDashApp | None = None
+) -> list[Path]:
+    """Return the data files directly in *directory*, by name, leaving out FlowDash's own store."""
     if directory is None or not directory.is_dir():
         return []
+    own = _store_files(directory, app)
     try:
         found = [
-            p for p in directory.iterdir() if p.is_file() and p.suffix.lower() in DATA_SUFFIXES
+            p
+            for p in directory.iterdir()
+            if p.is_file() and p.suffix.lower() in DATA_SUFFIXES and p.resolve() not in own
         ]
     except OSError:
         return []
     return sorted(found, key=lambda p: p.name.lower())[:limit]
+
+
+def _store_files(directory: Path, app: FlowDashApp | None) -> set[Path]:
+    """Return the dashboard databases FlowDash keeps: the app's store, and the default one in *directory*."""
+    own = {(directory / DEFAULT_DB_NAME).resolve()}
+    db_path = getattr(getattr(app, "store", None), "_db_path", None)
+    if db_path:
+        own.add(Path(db_path).resolve())
+    return own
 
 
 # ---------------------------------------------------------------------------
@@ -409,7 +424,7 @@ class WelcomeStep(WizardStep):
     def found(self) -> list[tuple[str, str, str]]:
         """Return what the app found when it started: ``(icon, what, detail)``."""
         found = []
-        files = data_files(_project_directory(self.project))
+        files = data_files(_project_directory(self.project), app=self._app)
         if files:
             names = ", ".join(p.name for p in files[:4]) + (", ..." if len(files) > 4 else "")
             noun = "file" if len(files) == 1 else "files"
@@ -512,7 +527,7 @@ class WelcomeStep(WizardStep):
 class DataStep(WizardStep):
     """The data the app serves: the data files in the project folder. It writes nothing."""
 
-    def __init__(self, project: Project, **params):
+    def __init__(self, project: Project, app: FlowDashApp | None = None, **params):
         params.setdefault("title", "Data")
         params.setdefault("caption", "Data folder")
         params.setdefault("heading", "Your data")
@@ -523,16 +538,17 @@ class DataStep(WizardStep):
         )
         params.setdefault("icon", "storage")
         super().__init__(project, **params)
+        self._app = app
 
     def summary(self) -> list[str]:
         """Return how many data files are served."""
-        files = data_files(_project_directory(self.project))
+        files = data_files(_project_directory(self.project), app=self._app)
         return [f"{len(files)} data file{'s' if len(files) != 1 else ''} in the project folder"]
 
     def view(self):
         """Return the data folder and its files."""
         directory = _project_directory(self.project)
-        files = data_files(directory)
+        files = data_files(directory, app=self._app)
         items = "".join(
             f"<li><code>{esc(p.name)}</code><span class='size'>{_size(p.stat().st_size)}</span></li>"
             for p in files
@@ -991,7 +1007,7 @@ def wizard_steps(project: Project, app: FlowDashApp | None = None) -> list[Wizar
     others = [_section_step(project, s) for s in extra if s.group != "Data"]
     return [
         WelcomeStep(project, app),
-        *(data or [DataStep(project)]),
+        *(data or [DataStep(project, app)]),
         AIStep(project, app),
         theme_step(project),
         people_step(project, app),
