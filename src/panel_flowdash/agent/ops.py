@@ -82,11 +82,15 @@ class OperationError(ValueError):
 
 
 def _tile_text(names: dict[str, str], entry: dict) -> str:
-    """Describe a tile's layout entry as its node's name, width and height, e.g. ``kpi 25% 130px``."""
+    """Describe a tile's layout entry as its node's name, width and height, e.g. ``kpi 25% 130px``.
+
+    A tile without a height says ``auto height``: it is as tall as its
+    content, so tiles side by side are not equally tall by default.
+    """
     text = f"{names.get(entry['instance_id'], entry['instance_id'])} "
     text += f"{min(100.0, entry.get('width') or 100.0):g}%"
-    if entry.get("height") is not None:
-        text += f" {entry['height']:g}px"
+    height = entry.get("height")
+    text += " auto height" if height is None else f" {height:g}px"
     return text
 
 
@@ -1704,7 +1708,8 @@ class DashboardOps:
         """Describe the layout as it is now: the top bar, the sidebar and the grid's rows.
 
         Each tile is named with its width in percent of the row and its
-        height in pixels when it has one; hidden tiles are listed last.
+        height in pixels, or ``auto height`` when it has none and takes the
+        height of its content; hidden tiles are listed last.
         """
         editor = self.editor
         names = self._names()
