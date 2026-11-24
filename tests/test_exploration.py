@@ -1190,9 +1190,10 @@ async def test_adding_to_a_large_dashboard_takes_the_version_once_and_keeps_the_
     gap = max(b - a for a, b in itertools.pairwise(during))
     # The writes do not yield, so the longest gap is the whole write. A fixed number of
     # seconds fails on a busy runner, so it is measured against opening the same dashboard
-    # in the same process: adding a four-node answer takes about a third of that, and
-    # taking as long would mean Add rebuilds the dashboard rather than adding to it.
-    assert gap < load, (gap, load)
+    # in the same process: adding a four-node answer takes well under half of that, and
+    # coming close would mean Add does work across the whole dashboard. The absolute cap
+    # catches a slowdown that makes opening the dashboard and Add slow together.
+    assert gap < min(0.6 * load, 15), (gap, load)
     assert _nodes(editor) == [*before, "a0", "a1", "a2", "a3"]
     assert len(editor.edit_history.versions) == versions + 1
     assert "a3:" in editor.edit_history.versions[-1].value
