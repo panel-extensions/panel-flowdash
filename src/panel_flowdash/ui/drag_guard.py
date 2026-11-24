@@ -56,14 +56,16 @@ class DragGuard(JSComponent):
     the pointer is released or the native drag ends, the body's
     ``user-select`` is ``none``; afterwards its own inline value is put back.
     A selection the browser makes during the drag all the same, as WebKit
-    does, is cleared, while one made before the drag is kept (WebKit itself
-    collapses it on the press). Presses in text fields, and on parts of a node
-    marked ``nodrag``, are left alone.
+    does, is cleared, while one made before the drag is kept through it (WebKit
+    itself collapses it on the press); a click there, moving less than a drag,
+    clears it as a click elsewhere does. Presses in text fields, and on parts
+    of a node marked ``nodrag``, are left alone.
     It takes no space on the page.
     """
 
     _esm = """
     const HANDLES = __HANDLES__
+    const CLICK_SLOP = 4
     const GRID_BACKGROUND = [
       ".muuri-grid:not(.muuri-no-handles) > .muuri-grid-item",
       ".muuri-grid:not(.muuri-no-handles)",
@@ -116,7 +118,9 @@ class DragGuard(JSComponent):
     // One guard per document, shared by every DragGuard rendered on the page, so
     // a second one never takes the first one's "none" for the body's own value.
     function install() {
-      const state = { users: 0, saved: null, kept: null, roots: [], pointers: new Set(), native: false }
+      const state = {
+        users: 0, saved: null, kept: null, roots: [], pointers: new Set(), native: false, press: null,
+      }
 
       const hold = () => {
         if (state.saved !== null) { return }
@@ -137,21 +141,31 @@ class DragGuard(JSComponent):
         if (state.saved === null) { return }
         const style = document.body.style
         ;[style.userSelect, style.webkitUserSelect] = state.saved
-        state.saved = state.kept = null
+        state.saved = state.kept = state.press = null
         state.roots = []
       }
 
       const onDown = (event) => {
         if (event.button !== 0 || !startsDrag(event.composedPath())) { return }
         state.pointers.add(event.pointerId)
+        state.press ??= [event.clientX, event.clientY]
         hold()
       }
+      // A click, which moved less than a drag would, dismisses the selection like a
+      // click elsewhere on the page, which these areas no longer do by themselves.
       const onUp = (event) => {
         state.pointers.delete(event.pointerId)
+        const { press } = state
+        if (press && !state.native && Math.hypot(event.clientX - press[0], event.clientY - press[1]) < CLICK_SLOP) {
+          document.getSelection()?.removeAllRanges()
+        }
         release()
       }
       // A native drag cancels the pointer as it starts, and ends with dragend or drop.
-      const onCancel = onUp
+      const onCancel = (event) => {
+        state.pointers.delete(event.pointerId)
+        release()
+      }
       // Not for dragging selected text or an image, which needs its selection.
       const onDragStart = (event) => {
         if (!startsDrag(event.composedPath())) { return }
