@@ -10,18 +10,28 @@ node's tile, for each node it ``applies`` to, in the ``modes`` it declares
 the project file read afresh, before the action runs.
 
 A component reports where its numbers come from by defining
-``__flowdash_provenance__(self)``, returning a :class:`Provenance` (or a
-dict of its fields) or None. A view that reads such a node, directly or
-through others, shows the nearest one's label: a chip on its tile while the
-dashboard is edited (and in view mode when the editor's
+``__flowdash_provenance__(self, via=())``, returning a :class:`Provenance`
+(or a dict of its fields) or None. A view that reads such a node, directly
+or through others, shows the nearest one's label: a chip on its tile while
+the dashboard is edited (and in view mode when the editor's
 ``provenance_labels`` is on), under the sidecar's header and first in "How
 was this made?".
+
+``via`` holds the edges the numbers travel along from the reporting node
+to the view asking, nearest the reporting node first, each ``{"from",
+"to", "transform"}`` as :meth:`NodeActionContext.inputs` gives them; it is
+empty when a node reports on itself. A hook reads it to tell what the view
+shows from what the node holds, e.g. a named metric's rows from their
+average taken by an edge's ``aggregate`` step, and returns a label for the
+derived number, or None to pass the question further up. The ``via``
+argument is optional: a hook that does not take it is called without it.
 
 See the how-to guide "Node Actions and Provenance".
 """
 
 from __future__ import annotations
 
+import inspect
 import logging
 import typing as t
 from collections.abc import Callable, Iterator, Mapping
@@ -47,6 +57,7 @@ __all__ = [
     "PROVENANCE_HOOK",
     "NodeAction",
     "NodeActionContext",
+    "NodeActionOps",
     "Provenance",
     "call_provenance_hook",
     "node_actions",
@@ -94,14 +105,80 @@ class NodeAction:
         object.__setattr__(self, "modes", modes)
 
 
+class NodeActionOps:
+    """The part of :class:`~panel_flowdash.agent.DashboardOps` a node action may use.
+
+    It reads the open dashboard and changes its nodes, edges, tiles,
+    groups, filters and parameters, each change checked and recorded as the
+    full ops do. It leaves out what reaches past the node's dashboard or
+    past an edit the person could undo: saving, opening, listing, renaming
+    or replacing dashboards, their settings and report, sending files and
+    running the assistant's pending questions. A library that needs one of
+    those offers its own UI for it rather than doing it from a node's menu.
+    """
+
+    #: The names of the :class:`~panel_flowdash.agent.DashboardOps` methods it offers.
+    METHODS = frozenset(
+        {
+            "add_filter",
+            "add_node",
+            "arrange_canvas",
+            "arrange_layout",
+            "arrange_tiles",
+            "bind_parameters",
+            "connect",
+            "declare_parameter",
+            "describe_layout",
+            "disconnect",
+            "filter_reach",
+            "filters",
+            "group",
+            "group_nodes",
+            "hidden_tiles",
+            "list_components",
+            "node_config",
+            "node_output",
+            "nodes",
+            "parameters",
+            "place_tile",
+            "preview",
+            "remove_filter",
+            "remove_node",
+            "remove_parameter",
+            "revision",
+            "set_config",
+            "set_inputs",
+            "set_transform",
+            "ungroup",
+            "validate",
+        }
+    )
+
+    def __init__(self, ops: DashboardOps):
+        self._ops = ops
+
+    def get_dashboard(self) -> str:
+        """Return the open dashboard as YAML, see ``DashboardOps.get_dashboard``."""
+        return self._ops.get_dashboard()
+
+    def __getattr__(self, name: str) -> t.Any:  # noqa: D105
+        if name in self.METHODS:
+            return getattr(self._ops, name)
+        raise AttributeError(f"Node actions cannot use DashboardOps.{name}.")
+
+    def __dir__(self) -> list[str]:  # noqa: D105
+        return sorted({*self.METHODS, "get_dashboard"})
+
+
 class NodeActionContext:
     """What a node action may read and change: the node, the dashboard through its ops, the project.
 
     Nodes and ports are named as in the dashboard YAML. :attr:`node` is the
     node the action was picked on; the read methods take another node's
-    name to read that one instead. Changes go through :attr:`ops`, with the
-    rights of the person using the editor, and :meth:`edit` makes several of
-    them one step of the edit history.
+    name to read that one instead. Changes go through :attr:`ops`, a
+    :class:`NodeActionOps` limited to the open dashboard, with the rights of
+    the person using the editor, and :meth:`edit` makes several of them one
+    step of the edit history.
     """
 
     def __init__(self, editor: FlowDash, instance_id: str):
@@ -109,8 +186,9 @@ class NodeActionContext:
 
         self._editor = editor
         self._instance_id = instance_id
-        #: The dashboard's :class:`~panel_flowdash.agent.DashboardOps`, to read and change it.
-        self.ops: DashboardOps = DashboardOps(editor)
+        self._ops = DashboardOps(editor)
+        #: The dashboard's :class:`NodeActionOps`, to read and change it.
+        self.ops = NodeActionOps(self._ops)
         #: The name of the node the action was picked on.
         self.node: str = editor._node_name(instance_id)
 
@@ -132,7 +210,7 @@ class NodeActionContext:
         return self._editor._action_mode()
 
     def _id(self, name: str | None) -> str:
-        return self._instance_id if name is None else self.ops._instance(name)
+        return self._instance_id if name is None else self._ops._instance(name)
 
     def nodes(self) -> list[str]:
         """Return the names of the dashboard's nodes."""
@@ -211,17 +289,12 @@ class NodeActionContext:
     def edit(self) -> Iterator[None]:
         """Make the changes inside the block one step of the edit history, which one undo reverts.
 
-        If the block raises, the changes it made so far are undone.
+        If the block raises, the dashboard goes back to how it was before
+        the block, also in an editor without an edit history, and the
+        failed changes are neither undone nor redone later.
         """
-        history = self._editor._history
-        before = history.snapshot()[1] if history.active else None
-        try:
-            with history.grouped():
-                yield
-        except BaseException:
-            if history.active and history.snapshot()[1] != before:
-                history.undo(whole_runs=False)
-            raise
+        with self._editor._history.grouped(atomic=True):
+            yield
 
     def replace_node(
         self,
@@ -305,13 +378,30 @@ def node_actions() -> list[NodeAction]:
     return list(_ACTIONS.values())
 
 
-def call_provenance_hook(instance: t.Any) -> Provenance | None:
-    """Return what ``instance.__flowdash_provenance__`` reports, or None if it has no hook or it fails."""
+def _takes_via(hook: Callable[..., t.Any]) -> bool:
+    try:
+        parameters = inspect.signature(hook).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        p.kind is p.VAR_KEYWORD
+        or (p.name == "via" and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY))
+        for p in parameters
+    )
+
+
+def call_provenance_hook(
+    instance: t.Any, via: t.Sequence[Mapping[str, t.Any]] = ()
+) -> Provenance | None:
+    """Return what ``instance.__flowdash_provenance__`` reports, or None if it has no hook or it fails.
+
+    *via* is passed on to a hook that takes it, see :mod:`panel_flowdash.node_actions`.
+    """
     hook = getattr(instance, PROVENANCE_HOOK, None)
     if hook is None or not callable(hook):
         return None
     try:
-        value = hook()
+        value = hook(via=tuple(via)) if _takes_via(hook) else hook()
     except Exception:
         logger.exception("The provenance hook of %s failed", type(instance).__name__)
         return None

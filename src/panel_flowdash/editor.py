@@ -3109,32 +3109,47 @@ class FlowDash(Viewer):
             self.run_node_action(instance_id, key)
         except PermissionError as exc:
             self._notify("error", str(exc))
+        except Exception as exc:
+            logger.exception("Node action %r failed", key)
+            self._notify(
+                "error", f"The action failed: {exc}" if str(exc) else "The action failed."
+            )
 
     def node_provenance(self, instance_id: str) -> tuple[Provenance, str] | None:
         """Return the provenance a node's numbers have, and the id of the node that reports it.
 
         That is the node's own ``__flowdash_provenance__`` or else the
-        nearest upstream node's, following its inputs breadth first, see
+        nearest upstream node's, following its inputs breadth first, each
+        hook told the edges between it and this node (``via``), see
         :mod:`panel_flowdash.node_actions`. None when no node reports one.
         """
         edges = self._dataflow_graph.edges
-        seen, frontier = {instance_id}, [instance_id]
+        paths: dict[str, list[dict[str, t.Any]]] = {instance_id: []}
+        frontier = [instance_id]
         while frontier:
             for node in frontier:
-                found = call_provenance_hook(self._component_instances.get(node))
+                found = call_provenance_hook(self._component_instances.get(node), paths[node])
                 if found is not None:
                     return found, node
             upstream = []
             for node in frontier:
                 for edge in edges:
-                    if edge["target"] == node and edge["source"] not in seen:
-                        seen.add(edge["source"])
+                    if edge["target"] == node and edge["source"] not in paths:
+                        paths[edge["source"]] = [self._provenance_edge(edge), *paths[node]]
                         upstream.append(edge["source"])
             frontier = upstream
         return None
 
+    def _provenance_edge(self, edge: dict[str, t.Any]) -> dict[str, t.Any]:
+        names = self._node_name
+        return {
+            "from": f"{names(edge['source'])}.{edge['source_port']}",
+            "to": f"{names(edge['target'])}.{edge['target_port']}",
+            "transform": copy.deepcopy(edge.get("transform") or []),
+        }
+
     def _provenance_shown(self) -> bool:
-        return self.editable or self.provenance_labels
+        return self._action_mode() == "edit" or self.provenance_labels
 
     def later_turns(self, instance_id: str) -> list[DashboardTurn]:
         """Return copies of the turns after a node's origin whose summary says they changed it."""

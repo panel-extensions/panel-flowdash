@@ -163,7 +163,7 @@ def provenance_line(provenance: Provenance) -> Viewable:
     objects: list[Viewable] = [provenance_chip(provenance)]
     if provenance.detail:
         objects.append(
-            pmui.Typography(
+            text_typography(
                 provenance.detail,
                 variant="body2",
                 margin=(4, 0, 0, 0),

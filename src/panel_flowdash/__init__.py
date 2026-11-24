@@ -47,6 +47,7 @@ from panel_flowdash.json_store import JSONFolderDashboardStore
 from panel_flowdash.node_actions import (
     NodeAction,
     NodeActionContext,
+    NodeActionOps,
     Provenance,
     register_node_action,
     unregister_node_action,
@@ -117,6 +118,7 @@ __all__: list[str] = [
     "MemoryDashboardStore",
     "NodeAction",
     "NodeActionContext",
+    "NodeActionOps",
     "OutputPort",
     "PanelAppMetadata",
     "ParameterContract",

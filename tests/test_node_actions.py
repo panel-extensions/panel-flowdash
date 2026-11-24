@@ -331,3 +331,151 @@ def test_an_edit_block_is_one_undo_step_even_without_coalescing(editor):
         ctx.ops.add_node("T/card", name="two")
     assert editor.undo()
     assert sorted(ctx.nodes()) == ["before", "card", "source"]
+
+
+def test_a_failing_edit_leaves_nothing_to_redo(editor):
+    from panel_flowdash.node_actions import NodeActionContext
+
+    editor.history_coalesce = 0
+    editor.save()
+    ctx = NodeActionContext(editor, "source")
+    ctx.ops.add_node("T/card", name="kept")
+    with pytest.raises(RuntimeError):
+        with ctx.edit():
+            ctx.ops.add_node("T/card", name="extra")
+            ctx.ops.remove_node("card")
+            raise RuntimeError("boom")
+    assert sorted(ctx.nodes()) == ["card", "kept", "source"]
+    assert not editor._history.can_redo
+    assert editor.undo()
+    assert sorted(ctx.nodes()) == ["card", "source"]
+    assert editor.redo()
+    assert sorted(ctx.nodes()) == ["card", "kept", "source"]
+
+
+def test_a_failing_edit_is_rolled_back_without_an_edit_history():
+    from panel_flowdash.node_actions import NodeActionContext
+
+    editor = FlowDash(
+        {"T/measured": Measured, "T/card": Card},
+        include_builtin_components=False,
+        notifications=False,
+        history=False,
+    )
+    editor.new_dashboard("No history")
+    editor.add_component("T/measured", instance_id="source")
+    editor.add_component("T/card", instance_id="card")
+    editor.connect("source", "value", "card", "value")
+    editor.save()
+    assert not editor.dirty
+    ctx = NodeActionContext(editor, "source")
+    with pytest.raises(ValueError, match="no"):
+        with ctx.edit():
+            ctx.ops.add_node("T/card", name="extra")
+            ctx.ops.disconnect("source.value", "card.value")
+            raise ValueError("no")
+    assert sorted(ctx.nodes()) == ["card", "source"]
+    assert ctx.inputs("card") == [{"from": "source.value", "to": "card.value", "transform": []}]
+    assert not editor.dirty
+    editor.dispose()
+
+
+def test_the_context_offers_only_the_ops_of_the_open_dashboard(editor):
+    from panel_flowdash.node_actions import NodeActionContext, NodeActionOps
+
+    ctx = NodeActionContext(editor, "source")
+    assert isinstance(ctx.ops, NodeActionOps)
+    for name in ("save", "open_dashboard", "list_dashboards", "set_title", "replace_yaml"):
+        assert not hasattr(ctx.ops, name)
+    assert "add_node" in dir(ctx.ops) and "save" not in dir(ctx.ops)
+    assert ctx.ops.get_dashboard().startswith("# revision:")
+    with pytest.raises(TypeError):
+        ctx.ops.get_dashboard("other")
+
+
+def test_a_failing_action_is_reported(editor, monkeypatch):
+    notes = []
+    monkeypatch.setattr(
+        editor, "_notify", lambda kind, message, **kw: notes.append((kind, message))
+    )
+    register_node_action(NodeAction("test.fail", "Fail", run=lambda ctx: 1 / 0))
+    try:
+        editor._on_node_action("source", "test.fail")
+    finally:
+        unregister_node_action("test.fail")
+    assert notes and notes[0][0] == "error" and "division by zero" in notes[0][1]
+
+
+def test_preview_shows_no_provenance_chip_unless_asked(editor):
+    editor._rebuild_tile_grid()
+    tile = editor._inspect_tiles["card"]
+    editor.editable = True
+    assert _chip_labels(tile) == ["Metric: capacity"]
+    editor.preview = True
+    assert _chip_labels(tile) == []
+    editor.provenance_labels = True
+    assert _chip_labels(tile) == ["Metric: capacity"]
+
+
+class Rows(Viewer):
+    """Reports a metric and says when a reader sees its rows aggregated."""
+
+    seen = param.List(default=[])
+
+    @param.output(param.DataFrame)
+    def data(self):
+        import pandas as pd
+
+        return pd.DataFrame({"mw": [1.0, 3.0]})
+
+    def __flowdash_provenance__(self, via=()):
+        self.seen.append(via)
+        steps = [step for edge in via for step in edge["transform"]]
+        if any(step["op"] == "aggregate" for step in steps):
+            return Provenance("Derived", "The mean of capacity's rows", "derived")
+        return Provenance("Metric: capacity", "Installed capacity", "metric")
+
+    def __panel__(self):
+        return "rows"
+
+
+def test_the_provenance_hook_is_told_the_edges_to_the_view():
+    editor = FlowDash(
+        {"T/rows": Rows, "T/card": Card}, include_builtin_components=False, notifications=False
+    )
+    editor.new_dashboard("Via")
+    editor.add_component("T/rows", instance_id="rows")
+    editor.add_component("T/card", instance_id="card")
+    editor.add_component("T/card", instance_id="other")
+    transform = [{"op": "column", "column": "mw"}, {"op": "aggregate", "how": "mean"}]
+    editor.connect("rows", "data", "card", "value", transform)
+    rows = editor._component_instances["rows"]
+    assert editor.node_provenance("rows")[0].label == "Metric: capacity"
+    assert rows.seen[-1] == ()
+    found, by = editor.node_provenance("card")
+    assert found.label == "Derived" and by == "rows"
+    assert rows.seen[-1] == ({"from": "rows.data", "to": "card.value", "transform": transform},)
+    rows.seen[-1][0]["transform"].clear()
+    assert editor._dataflow_graph.edges[0]["transform"] == transform
+    editor.dispose()
+
+
+def test_a_hook_without_via_is_called_without_it():
+    class Plain:
+        def __flowdash_provenance__(self):
+            return Provenance("Ad hoc")
+
+    class Keywords:
+        def __flowdash_provenance__(self, **kwargs):
+            return Provenance(f"Seen {len(kwargs['via'])}")
+
+    edge = {"from": "a.x", "to": "b.y", "transform": []}
+    assert call_provenance_hook(Plain(), [edge]).label == "Ad hoc"
+    assert call_provenance_hook(Keywords(), [edge]).label == "Seen 1"
+
+
+def test_the_provenance_detail_is_shown_as_literal_text():
+    from panel_flowdash.ui.provenance import provenance_line
+
+    line = provenance_line(Provenance("Ad hoc", "Sum of **mw** over `rows`", "ad hoc"))
+    assert line[1].object == "Sum of \\*\\*mw\\*\\* over \\`rows\\`"

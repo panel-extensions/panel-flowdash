@@ -56,12 +56,18 @@ The context reads the node and its neighbours by their names in the
 dashboard YAML: `component()`, `config()`, `output(port)`,
 `input_value(port)`, `inputs()` and `outputs()` (edges as `{"from", "to",
 "transform"}`), `tile()` and `nodes()`; each takes another node's name too.
-It changes the dashboard through `ctx.ops`, the
-[`DashboardOps`](../reference/api/agent.md) of the editor, with the rights of the
-person using it.
+It changes the dashboard through `ctx.ops`, a `NodeActionOps` with the
+[`DashboardOps`](../reference/api/agent.md) methods that read the open
+dashboard and change its nodes, edges, tiles, groups, filters and
+parameters, with the rights of the person using the editor. It leaves out
+saving, opening, renaming or replacing dashboards, their settings and
+report, so an action stays an edit of the open dashboard the person can
+undo; one that needs more offers its own UI for it.
 
 To make several changes one step that one undo reverts, wrap them in
-`ctx.edit()`. If the block raises, its changes are undone.
+`ctx.edit()`. If the block raises, the dashboard goes back to how it was
+before the block, also in an editor whose edit history is off, and the
+failed changes never reach undo or redo.
 `ctx.replace_node(name, component, config, rewire=...)` replaces a node by
 another one wired to everything it fed, in its tile slot, as one step:
 
@@ -103,7 +109,31 @@ class Metric(Viewer):
 A view shows the label of the nearest node up its inputs that reports one:
 as a chip on its tile and above it in the top bar or sidebar while the
 dashboard is edited, under the sidecar's header, and first in "How was this
-made?". The `detail` shows on hover. View mode shows no chip unless the
-editor's `provenance_labels` is on. A node that returns None passes the
-question on to its own inputs, so return None where your label would be
-noise, e.g. on rows a chart reads rather than a single number.
+made?". The `detail` shows on hover. View mode and preview show no chip
+unless the editor's `provenance_labels` is on. A node that returns None
+passes the question on to its own inputs, so return None where your label
+would be noise, e.g. on rows a chart reads rather than a single number.
+
+### Labels through edges
+
+An edge can change the numbers on the way: its transform may pick a
+column or aggregate rows. A hook that takes a `via` argument is told the
+edges between its node and the view asking, nearest its node first, each
+`{"from", "to", "transform"}` as `ctx.inputs()` gives them (empty when the
+node reports on itself). Use it so a view does not claim a named number it
+does not show:
+
+```python
+class Revenue(Metric):
+    def __flowdash_provenance__(self, via=()):
+        steps = [step for edge in via for step in edge["transform"]]
+        aggregate = next((s for s in steps if s.get("op") == "aggregate"), None)
+        if aggregate is not None and aggregate.get("how") != "last":
+            return Provenance(
+                "Derived", f"The {aggregate['how']} of revenue's rows.", kind="derived"
+            )
+        return Provenance("Metric: revenue", "Revenue as finance defines it.", kind="metric")
+```
+
+The walk itself does not stop at a transform, since only your component
+knows whether its rows survive one unchanged.
