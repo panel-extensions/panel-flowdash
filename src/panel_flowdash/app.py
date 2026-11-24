@@ -86,6 +86,7 @@ from panel_flowdash.ui.gallery import ComponentGallery
 from panel_flowdash.ui.launcher import (
     Launcher,
     build_downloader,
+    component_icon,
     copy_dashboard,
     parse_dashboard_file,
     send_download,
@@ -109,6 +110,7 @@ from panel_flowdash.ui.states import (
     page_not_found,
     similar_dashboards,
 )
+from panel_flowdash.ui.template_picker import TemplatePicker
 from panel_flowdash.ui.text import (
     alert_pane,
     code_span,
@@ -439,6 +441,14 @@ class FlowDashApp(Viewer):
 
     include_builtin_components = param.Boolean(
         default=True, doc="Include built-in widget components in the dashboard editor."
+    )
+
+    templates = param.Boolean(
+        default=True,
+        doc="""
+        Offer dashboard templates when someone creates a dashboard: the ones
+        panel-flowdash ships with and those in the project's ``templates/``
+        folder, see :mod:`panel_flowdash.templates`.""",
     )
 
     nav_variant = param.Selector(
@@ -2544,10 +2554,134 @@ class FlowDashApp(Viewer):
 
     @pn.io.hold()
     def _open_create_dialog(self):
+        templates = self._offered_templates()
         self._reset_dialog({"action": "create"}, "")
+        self._template_picker.reset(templates)
+        self._template_picker.visible = bool(templates)
         self._dialog.title = "Create dashboard"
         self._dialog.open = True
         self._nav_drawer.open = False
+
+    def _offered_templates(self) -> list:
+        """Return the templates this session may start a dashboard from, none when `templates` is off."""
+        if not self.templates:
+            return []
+        from panel_flowdash.templates import find_templates, offered_templates
+
+        return offered_templates(self._editor, find_templates(self.project_dir))
+
+    def _on_template_picked(self, event):
+        """Name the new dashboard after the chosen template, unless the user named it."""
+        picker = self._template_picker
+        name = self._dialog_name_input.value_input or ""
+        previous = picker._templates.get(event.old)
+        if name.strip() and (previous is None or name != previous.name):
+            return
+        template = picker.template
+        title = template.name if template is not None else ""
+        if template is not None:
+            title = unique_title(self.store, self._user_id, template.name)
+        self._dialog_name_input.value = title
+
+    def _sync_dialog_step(self, *_):
+        """Label the dialog's buttons for the template step it is on."""
+        picker = self._template_picker
+        if self._dialog_context.get("action") != "create":
+            self._dialog_back_button.visible = False
+            return
+        binding = picker.step == "bind" and picker.template is not None
+        self._dialog_back_button.visible = binding
+        self._dialog_name_input.visible = not binding
+        label = "Next" if picker.template is not None and not binding else "Create"
+        self._dialog_confirm_button.param.update(label=label, disabled=not self._dialog_valid())
+        self._dialog.title = (
+            f"Create dashboard: {picker.template.name}" if binding else "Create dashboard"
+        )
+
+    async def _views_fit(self) -> bool:
+        """Whether the views bound to the chosen template can show their data; says why not."""
+        from panel_flowdash.agent.ops import DashboardOps, OperationError
+        from panel_flowdash.templates import TemplateError, fill_template
+
+        picker = self._template_picker
+        try:
+            doc = fill_template(picker.template, picker.bindings())
+            await DashboardOps(self._editor)._check_views(picker.template, doc)
+        except (TemplateError, OperationError) as exc:
+            self._notify(
+                "error", f"Could not create the dashboard: {error_text(exc)}", duration=8000
+            )
+            return False
+        return True
+
+    async def _confirm_template(self, name: str):
+        """Create the dashboard from the template once its views are known to show their data."""
+        button = self._dialog_confirm_button
+        button.loading = True
+        try:
+            if not await self._views_fit():
+                return
+        finally:
+            button.loading = False
+        if self._has_unsaved_changes():
+            self._confirm_unsaved(partial(self._create_from_template, name))
+            done = True
+        else:
+            done = self._create_from_template(name)
+        if done:
+            self._dialog.open = False
+            self._dialog_context = {}
+
+    async def _start_template_binding(self):
+        await self._template_picker.start_binding()
+
+    def _create_from_template(self, title: str) -> bool:
+        """Create a dashboard from the chosen template with the slots bound and open it to edit."""
+        from panel_flowdash.templates import TemplateError
+
+        picker = self._template_picker
+        offered = {template.id for template in self._offered_templates()}
+        if picker.template is None or picker.template.id not in offered:
+            self._notify("error", "This template is no longer offered.", duration=6000)
+            return False
+        try:
+            created = self._new_template_dashboard(picker.template, picker.bindings(), title)
+        except (TemplateError, ValueError, PermissionError) as exc:
+            self._notify(
+                "error", f"Could not create the dashboard: {error_text(exc)}", duration=6000
+            )
+            return False
+        except Exception as exc:
+            self._show_dialog_name_error(self._notify_store_failure("create", exc))
+            return False
+        self._notify(
+            "success", f'Created "{created.title}" from {picker.template.name}.', duration=3000
+        )
+        self._edit_dashboard(created.dashboard_id)
+        return True
+
+    def _new_template_dashboard(self, template, bindings: dict, title: str) -> DashboardModel:
+        """Save *template* filled in with *bindings* as a new dashboard of the user, titled *title*.
+
+        The filled-in template is imported like a dashboard file: components
+        this session may not use are left out (``_guard_restricted``).
+        """
+        from panel_flowdash.templates import fill_template
+
+        return self._new_dashboard_from_document(
+            fill_template(template, bindings), title.strip() or template.name
+        )
+
+    def _new_dashboard_from_document(self, doc: dict, title: str) -> DashboardModel:
+        """Save a filled-in template document as a new dashboard of the user, titled *title*."""
+        from panel_flowdash.templates import document_model
+
+        title = unique_title(self.store, self._user_id, title)
+        model = document_model(doc, self._user_id, title)
+        self._editor._guard_restricted(model, None)
+        created = copy_dashboard(self.store, model, self._user_id, title)
+        self._refresh_sidebar_dashboards()
+        return created
 
     def _reset_dialog(self, context: dict, subject: str):
         """Prepare the dashboard dialog for *context*, acting on the dashboard titled *subject*."""
@@ -2561,6 +2695,9 @@ class FlowDashApp(Viewer):
         self._dialog_delete_input.param.update(value="", placeholder=subject, visible=deleting)
         self._dialog_name_input.param.update(error_state=False, helper_text="")
         self._dialog_message.param.update(object="", visible=deleting)
+        if action != "create":
+            self._template_picker.visible = False
+        self._dialog_back_button.visible = False
         label, color = {
             "create": ("Create", "primary"),
             "rename": ("Rename", "primary"),
@@ -2585,6 +2722,8 @@ class FlowDashApp(Viewer):
         action = self._dialog_context.get("action")
         if action == "delete":
             return self._dialog_delete_input.value_input == self._dialog_subject
+        if action == "create" and self._template_picker.step == "bind":
+            return self._template_picker.valid
         if action in ("create", "rename"):
             return self._validate_dashboard_name(self._dialog_name_input.value_input or "") is None
         return False
@@ -2604,6 +2743,19 @@ class FlowDashApp(Viewer):
             return
         action = ctx.get("action")
         name = self._dialog_name_input.value_input or ""
+        picker = self._template_picker
+        if action == "create" and picker.template is not None and picker.visible:
+            if picker.step == "choose":
+                error = self._validate_dashboard_name(name)
+                if error:
+                    self._show_dialog_name_error(error)
+                    return
+                pn.state.execute(self._start_template_binding)
+                return
+            if not picker.valid:
+                return
+            pn.state.execute(partial(self._confirm_template, name))
+            return
         if action in ("create", "rename"):
             error = self._validate_dashboard_name(name)
             if error:
@@ -2638,6 +2790,15 @@ class FlowDashApp(Viewer):
             label="Type the name to confirm", sizing_mode="stretch_width", visible=False
         )
         self._dialog_confirm_button = pmui.Button(label="Create", color="primary", disabled=True)
+        self._dialog_back_button = pmui.Button(label="Back", variant="text", visible=False)
+        self._template_picker = TemplatePicker(
+            self._editor,
+            icons={cid: component_icon(entry) for cid, entry in self._component_entries.items()},
+            visible=False,
+        )
+        self._template_picker.param.watch(self._on_template_picked, "selected")
+        self._template_picker.param.watch(self._sync_dialog_step, ["selected", "step", "valid"])
+        self._dialog_back_button.on_click(lambda _: self._template_picker.back())
         cancel_btn = pmui.Button(label="Cancel", variant="text")
         for widget in (self._dialog_name_input, self._dialog_delete_input):
             widget.param.watch(self._on_dialog_name_changed, "value_input")
@@ -2649,11 +2810,12 @@ class FlowDashApp(Viewer):
                 pn.Column(
                     self._dialog_message,
                     self._dialog_name_input,
+                    self._template_picker,
                     self._dialog_delete_input,
                     sizing_mode="stretch_width",
                 )
             ],
-            actions=[cancel_btn, self._dialog_confirm_button],
+            actions=[cancel_btn, self._dialog_back_button, self._dialog_confirm_button],
             title="Dashboard",
             open=False,
         )

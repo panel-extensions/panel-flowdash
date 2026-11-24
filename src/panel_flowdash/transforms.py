@@ -220,13 +220,18 @@ class Head(Transform):
 
 
 class Aggregate(Transform):
-    """Reduce a Series or list to a single value; ``last`` takes its last value, None if empty."""
+    """Reduce a Series or list to a single value.
+
+    ``count`` counts the values that are set, ``size`` every value including
+    missing ones (the rows of a column), and ``last`` takes the last value,
+    None if empty.
+    """
 
     op = "aggregate"
     label = "Aggregate"
 
     how = param.Selector(
-        default="sum", objects=["sum", "mean", "min", "max", "count", "nunique", "last"]
+        default="sum", objects=["sum", "mean", "min", "max", "count", "size", "nunique", "last"]
     )
 
     @classmethod
@@ -237,10 +242,41 @@ class Aggregate(Transform):
         series = value if isinstance(value, pd.Series) else pd.Series(list(value))
         if self.how == "last":
             return _scalar(series.iloc[-1]) if len(series) else None
+        if self.how == "size":
+            return len(series)
         return _scalar(getattr(series, self.how)())
 
     def summary(self) -> str:
         return self.how
+
+
+class Group(Transform):
+    """Total a column of a DataFrame per value of another, largest first, e.g. capacity per state."""
+
+    op = "group"
+    label = "Group and total"
+
+    by = param.String(default="", doc="Column whose values become the rows.")
+    column = param.String(default="", doc="Column to total per row.")
+    how = param.Selector(default="sum", objects=["sum", "mean", "min", "max", "count", "size"])
+    top = param.Integer(
+        default=0, bounds=(0, None), doc="Keep the largest this many; 0 keeps all."
+    )
+
+    @classmethod
+    def accepts(cls, value) -> bool:
+        return _is_frame(value)
+
+    def apply(self, value):
+        grouped = value.groupby(self.by, sort=False, dropna=True, observed=True)[self.column]
+        totals = getattr(grouped, self.how)().sort_values(ascending=False)
+        if self.top:
+            totals = totals.head(self.top)
+        return totals.reset_index()
+
+    def summary(self) -> str:
+        top = f", top {self.top}" if self.top else ""
+        return f"{self.how} of {self.column} by {self.by}{top}"
 
 
 class Unique(Transform):

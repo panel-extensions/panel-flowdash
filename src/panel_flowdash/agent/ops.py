@@ -699,6 +699,177 @@ class DashboardOps:
         """Return a token identifying the editor's canvas as it is now."""
         return _revision(dashboard_to_yaml(self.editor))
 
+    # ------------------------------------------------------------------
+    # Templates
+    # ------------------------------------------------------------------
+
+    def templates(self) -> list:
+        """Return the dashboard templates the user may start from, see :mod:`panel_flowdash.templates`."""
+        from panel_flowdash.templates import offered_templates, package_templates
+
+        return offered_templates(self.editor, package_templates())
+
+    def _template(self, template_id: str):
+        templates = {template.id: template for template in self.templates()}
+        template = templates.get(template_id)
+        if template is None:
+            raise OperationError(
+                f"No template {template_id!r}; the templates are "
+                f"{', '.join(templates) or 'none'}. Call list_templates."
+            )
+        return template
+
+    async def list_templates_async(self) -> list[dict[str, t.Any]]:
+        """Describe the templates, with what each data and view slot may be bound to."""
+        from panel_flowdash.templates import slot_choices
+
+        templates = self.templates()
+        if not templates:
+            return []
+        await self.editor.ensure_components_loaded_async()
+        listed = []
+        for template in templates:
+            entry = template.describe()
+            for slot in template.slots.values():
+                if slot.kind in ("data", "view"):
+                    entry["slots"][slot.name]["choices"] = {
+                        choice.key: choice.label for choice in slot_choices(self.editor, slot)
+                    }
+            listed.append(entry)
+        return listed
+
+    async def template_document_async(
+        self, template_id: str, bindings: dict[str, t.Any], *, timeout: float = DEFAULT_TIMEOUT
+    ):
+        """Return the template and its document filled in with *bindings*, checked.
+
+        Data and view slots are bound by the keys list_templates offers, so
+        only components the user may place; column slots by columns the bound
+        data has, read by running it beside the canvas.
+        """
+        from panel_flowdash.templates import (
+            TemplateError,
+            check_bindings,
+            data_columns,
+            fill_template,
+            slot_choices,
+        )
+
+        template = self._template(template_id)
+        if not isinstance(bindings, dict):
+            raise OperationError("bindings must map slot names to choices, columns or text.")
+        editor = self.editor
+        await self._within(editor.ensure_components_loaded_async(), timeout)
+        choices = {}
+        columns: dict[str, t.Any] = {}
+        try:
+            for slot in template.slots.values():
+                if slot.kind == "data":
+                    choices[slot.name] = slot_choices(editor, slot)
+            data = check_bindings(
+                template,
+                {k: v for k, v in bindings.items() if k in choices},
+                choices,
+                {},
+            )
+            for slot in template.slots.values():
+                if slot.kind == "view":
+                    choices[slot.name] = slot_choices(editor, slot, data.get(slot.of))
+            for name, binding in data.items():
+                columns[name] = await data_columns(editor, binding, timeout)
+            for slot in template.slots.values():
+                if (
+                    slot.kind == "column"
+                    and bindings.get(slot.name)
+                    and slot.of in data
+                    and columns.get(slot.of) is None
+                ):
+                    raise TemplateError(
+                        f"bindings.{slot.name}",
+                        f"the columns of {data[slot.of].label or data[slot.of].component} "
+                        "could not be read, so no column can be bound; leave it unbound.",
+                    )
+            resolved = check_bindings(template, bindings, choices, columns)
+            doc = fill_template(template, resolved)
+        except TemplateError as exc:
+            raise OperationError(str(exc)) from exc
+        await self._check_views(template, doc, timeout)
+        return template, doc
+
+    async def _check_views(self, template, doc: dict, timeout: float = DEFAULT_TIMEOUT):
+        """Refuse bound views that cannot show the data the template gives them."""
+        from panel_flowdash.templates import PLACEHOLDER_COMPONENT
+
+        views = {
+            slot.node: slot
+            for slot in template.slots.values()
+            if slot.kind == "view"
+            and doc["nodes"].get(slot.node, {}).get("component") != PLACEHOLDER_COMPONENT
+        }
+        if not views:
+            return
+        problems = await self.view_problems_async(doc, views, timeout=timeout)
+        if problems:
+            raise OperationError(
+                "These views cannot show the data the template gives them; bind another view "
+                "or leave the slot unbound:\n"
+                + "\n".join(
+                    f"- {views[name].label} ({doc['nodes'][name]['component']}): {message}"
+                    for name, message in problems.items()
+                )
+            )
+
+    async def new_dashboard_from_template_async(
+        self, template_id: str, bindings: dict[str, t.Any], title: str | None = None
+    ) -> str:
+        """Fill a template in and load it into the open canvas, which must be empty.
+
+        :class:`~panel_flowdash.agent.live.LiveDashboardOps` creates a new
+        dashboard instead.
+        """
+        if self.editor.read_only:
+            raise PermissionError("You may only view dashboards here, so you cannot create one.")
+        template, doc = await self.template_document_async(template_id, bindings)
+        self._checked_title(title, template)
+        self._require_edit()
+        if self.editor._tile_items:
+            raise OperationError(
+                "The open dashboard is not empty; a template fills a new, empty dashboard."
+            )
+        doc.pop("title", None)
+        issues = await self.replace_yaml_async(
+            yaml.safe_dump(doc, sort_keys=False, allow_unicode=True), revision=self.revision()
+        )
+        return self._template_result(template, doc, issues)
+
+    def _checked_title(self, title: t.Any, template) -> str:
+        from panel_flowdash.templates import TemplateError, check_title
+
+        try:
+            return check_title(title, template.name)
+        except TemplateError as exc:
+            raise OperationError(str(exc)) from exc
+
+    def _template_result(self, template, doc: dict, issues: t.Sequence[Issue] = ()) -> str:
+        from panel_flowdash.templates import PLACEHOLDER_COMPONENT
+
+        unfilled = [
+            name
+            for name, node in (doc.get("nodes") or {}).items()
+            if isinstance(node, dict)
+            and node.get("component") == PLACEHOLDER_COMPONENT
+            and template.document["nodes"].get(name, {}).get("component") != PLACEHOLDER_COMPONENT
+        ]
+        message = f"Filled in the template {template.name}."
+        if unfilled:
+            message += (
+                " These tiles show what they still need, since a slot they need was left "
+                f"unbound: {', '.join(unfilled)}."
+            )
+        if issues:
+            message += "\n" + "\n".join(f"- {issue}" for issue in issues)
+        return message
+
     def open_dashboard(self, dashboard_id: str, *, discard: bool = False) -> str:
         """Load a stored dashboard into the editor and return it as YAML.
 
@@ -977,6 +1148,48 @@ class DashboardOps:
             return self._preview(scratch, rows, invalid)
         finally:
             scratch.dispose()
+
+    async def view_problems_async(
+        self, doc: dict, names: t.Collection[str], *, timeout: float = DEFAULT_TIMEOUT
+    ) -> dict[str, str]:
+        """Run the dashboard *doc* beside this one and say which of the nodes *names* cannot show their data.
+
+        A node fails when drawing it raises, e.g. a view that needs columns
+        its input does not have, or when a table at one of its inputs has no
+        rows. Returns the problem by node name; nothing is shown or saved.
+        """
+        import pandas as pd
+
+        from panel_flowdash.value_text import error_text
+
+        scratch = self._scratch_editor()
+        problems: dict[str, str] = {}
+        try:
+            model = scratch._imported_model(without_provenance(copy.deepcopy(doc)))
+            await self._within(scratch.load_model_async(model), timeout)
+            graph = scratch.graph
+            for name in names:
+                instance = scratch._component_instances.get(name)
+                if instance is None:
+                    continue
+                state = graph.get_state(name)
+                component = next(
+                    (i.component_id for i in model.items if i.instance_id == name), None
+                )
+                spec = scratch._component_specs.get(component)
+                for port in spec.inputs if spec is not None and state is not None else ():
+                    value = getattr(state, port.name, None) if port.name in state.param else None
+                    if isinstance(value, pd.DataFrame) and value.empty:
+                        problems[name] = f"its input '{port.name}' has no rows"
+                if name in problems or not callable(getattr(instance, "__panel__", None)):
+                    continue
+                try:
+                    instance.__panel__()
+                except Exception as exc:
+                    problems[name] = f"{type(exc).__name__}: {error_text(exc)}"
+        finally:
+            scratch.dispose()
+        return problems
 
     def _document(self, text: str | dict) -> dict:
         return without_provenance(self._parse(text), self._turns())
