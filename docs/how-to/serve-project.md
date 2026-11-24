@@ -212,6 +212,7 @@ missing or set to `None` keeps its default.
 | `notifications` | `bool` | Show user-facing messages as Panel notifications. Default `True`. |
 | `page_options` | `dict` | Extra keyword arguments for the underlying `panel_material_ui.Page`. |
 | `propagate_failures` | `bool` | Carry failures downstream, see [Wire Dataflow](wire-dataflow.md#carry-failures-downstream). |
+| `sections` | `list[SidebarSection]` | Extra navigation sections shown in the rail and narrow-screen drawer alongside Dashboards, see [Sidebar sections](#sidebar-sections). |
 | `settings_class` | `DashboardSettings` subclass | Dashboard-wide settings, see [Dashboard Settings](dashboard-settings.md#add-your-own-settings). |
 | `title` | `str` | Application title in the browser tab. Overridden by `--title`. |
 
@@ -499,6 +500,34 @@ items set through `configure_layout`. Components registered with `sidebar=True`
 are shown with the dashboard's tiles (above them or in a panel to their left,
 see `controls_position`), or in the sidebar when
 `editor_options={"controls_bar": False}`.
+
+### Sidebar sections
+
+The navigation rail and narrow-screen drawer render registered
+`SidebarSection` entries in ascending `order`, starting with the built-in
+Dashboards section (`id="dashboards"`, `order=0`). Pass additional sections
+via `FlowDashApp(sections=[...])`, define `sections = [...]` in the project's
+`__init__.py`, or call `app.add_section(...)` at runtime:
+
+```python
+from panel_flowdash import SidebarAction, SidebarItem, SidebarSection
+
+reports = SidebarSection(
+    id="reports",
+    label="Reports",
+    icon="assessment",
+    order=10,
+    items=lambda user: [
+        SidebarItem(title="Weekly summary", url="/Reports/weekly", subtitle=user.user),
+    ],
+    new_action=SidebarAction(label="New report", action="/Reports/new"),
+    visible=lambda user: "analysts" in user.groups,
+)
+```
+
+Each item's `url` opens through the app's existing router (or in a new tab if
+it starts with `http://` or `https://`). The optional `new_action` accepts
+either a zero-argument callable or a route string.
 
 ---
 

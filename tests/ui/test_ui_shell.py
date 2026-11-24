@@ -7,7 +7,14 @@ from urllib.parse import urlparse
 import pytest
 from panel.tests.util import wait_until
 
-from panel_flowdash import DashboardItem, MemoryDashboardStore, register
+from panel_flowdash import (
+    DashboardItem,
+    MemoryDashboardStore,
+    SidebarAction,
+    SidebarItem,
+    SidebarSection,
+    register,
+)
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.auth import resolve_identity
 from panel_flowdash.component_library import normalize_components
@@ -260,3 +267,100 @@ def test_import_file_from_the_overflow_menu(page, tmp_path):
     )
     # The import marks the editor dirty once loading, which places the tiles, has finished.
     wait_until(lambda: editor.dirty, page, timeout=10000)
+
+
+@register(page=True, component=False, title="Weekly Summary")
+def weekly_report(config):
+    return "Weekly report content"
+
+
+@register(page=True, component=False, title="Monthly KPI")
+def monthly_report(config):
+    return "Monthly KPI content"
+
+
+def test_custom_sidebar_section_in_rail_and_narrow_drawer(page):
+    store, _ = _store_with("Plant")
+    created = []
+    reports = SidebarSection(
+        id="reports",
+        label="Reports",
+        icon="assessment",
+        order=10,
+        items=lambda _user: [
+            SidebarItem(
+                title="Weekly Summary",
+                url="/Reports/weekly",
+                subtitle="Owner: alice",
+            ),
+            SidebarItem(
+                title="Monthly KPI",
+                url="/Reports/monthly",
+                subtitle="Updated today",
+            ),
+        ],
+        new_action=SidebarAction(label="New report", action=lambda: created.append(True)),
+    )
+    registry = normalize_components(
+        {
+            **COMPONENTS,
+            "Reports/weekly": weekly_report,
+            "Reports/monthly": monthly_report,
+        }
+    )
+
+    def factory():
+        return FlowDashApp(
+            registry=registry,
+            store=store,
+            notifications=False,
+            sections=[reports],
+        )
+
+    routes = {
+        "/": factory,
+        "/components": factory,
+        "/dash/[^/]+": factory,
+        "/Reports/weekly": factory,
+        "/Reports/monthly": factory,
+    }
+    page.set_viewport_size({"width": 1280, "height": 800})
+    serve_component(page, routes, suffix="/")
+
+    # Desktop rail shows the Reports section, opens its menu and navigates.
+    reports_button = page.get_by_role("navigation").get_by_role(
+        "button", name="Reports", exact=True
+    )
+    expect(reports_button).to_be_visible()
+    reports_button.click()
+    expect(page.get_by_role("menuitem", name="Weekly Summary")).to_be_visible()
+    expect(page.get_by_role("menuitem", name="Monthly KPI")).to_be_visible()
+    expect(page.get_by_role("menuitem", name="New report")).to_be_visible()
+
+    page.get_by_role("menuitem", name="Weekly Summary").click()
+    wait_until(lambda: _path(page) == "/Reports/weekly", page, timeout=10000)
+    page.get_by_text("Weekly report content").wait_for()
+
+    reports_button.click()
+    page.get_by_role("menuitem", name="New report").click()
+    wait_until(lambda: created == [True], page, timeout=10000)
+
+    # At 390 px the section moves into the drawer, expanded inline, and navigates.
+    page.set_viewport_size({"width": 390, "height": 844})
+    expect(reports_button).to_be_hidden()
+    page.get_by_role("button", name="Open drawer").click()
+    drawer = page.locator(".MuiDrawer-paper.sidebar")
+    expect(drawer.get_by_text("Reports", exact=True)).to_be_visible()
+    expect(
+        drawer.locator(".MuiListItemButton-root")
+        .filter(has_text="Weekly Summary")
+        .filter(has_text="Owner: alice")
+    ).to_be_visible()
+    expect(drawer.get_by_text("New report")).to_be_visible()
+
+    drawer.locator(".MuiListItemButton-root").filter(has_text="Monthly KPI").filter(
+        has_text="Updated today"
+    ).click()
+    wait_until(lambda: _path(page) == "/Reports/monthly", page, timeout=10000)
+    page.get_by_text("Monthly KPI content").wait_for()
+    expect(drawer).to_be_hidden()

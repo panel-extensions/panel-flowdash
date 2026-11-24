@@ -39,6 +39,7 @@ from panel_flowdash.admin.wizard import SETUP_SECTION, SetupWizard, project_is_n
 from panel_flowdash.ai import UsageLedger, ledger_for
 from panel_flowdash.auth import (
     AuthConfig,
+    Identity,
     Permission,
     entry_authorized,
     is_authorized,
@@ -73,6 +74,7 @@ from panel_flowdash.project import (
 from panel_flowdash.registry import RegistryEntry, build_registry
 from panel_flowdash.session_state import build_session_state_class, check_requirements
 from panel_flowdash.settings import DashboardSettings
+from panel_flowdash.sidebar import SidebarItem, SidebarSection
 from panel_flowdash.ui.command_palette import CommandPaletteController
 from panel_flowdash.ui.dashboard_bar import (
     COMPACT_BREAKPOINT,
@@ -506,6 +508,19 @@ class FlowDashApp(Viewer):
         editor, see `FlowDash.propagate_failures`.""",
     )
 
+    sections = param.List(
+        default=[],
+        item_type=SidebarSection,
+        doc="""
+        Navigation sections shown in the rail and narrow-screen drawer, each a
+        :class:`~panel_flowdash.SidebarSection`. The built-in Dashboards
+        section (``id="dashboards"``, ``order=0``) is registered automatically
+        unless a section with ``id="dashboards"`` is supplied here. Sections
+        render in ascending ``order`` (custom sections default to ``100``),
+        preserving registration order on ties. Use :meth:`add_section` and
+        :meth:`remove_section` to update sections after construction.""",
+    )
+
     settings_sources = param.Dict(
         default={},
         doc="""
@@ -657,7 +672,9 @@ class FlowDashApp(Viewer):
         if self.nav_variant == "rail":
             # The top bar shows the dashboard's title (the breadcrumb) and actions.
             self._editor._dashboard_bar.placement = "header"
+        self._init_sections()
         self._shell = AppShell(self) if self.nav_variant == "rail" else None
+        self.param.watch(self._on_sections_changed, "sections")
         self._command_palette = CommandPaletteController.install(self)
         self._agent_session = self._build_agent_session()
         if self._agent_session is not None and self._shell is not None:
@@ -1082,6 +1099,68 @@ class FlowDashApp(Viewer):
 
     def _sync_page_sidebar(self, *_events):
         self._page.sidebar = [*self.sidebar, *self._sidebar_views]
+
+    # ------------------------------------------------------------------
+    # Sidebar navigation sections
+    # ------------------------------------------------------------------
+
+    def _list_dashboard_items(self, user: Identity) -> list[SidebarItem]:
+        """List accessible dashboards for *user* as :class:`SidebarItem` entries."""
+        dashboards = self.store.list_accessible(user, default_allow=self._default_allow())
+        return [
+            SidebarItem(
+                title=d.title,
+                url=f"{DASH_ROUTE_PREFIX}{d.dashboard_id}",
+                icon="dashboard",
+            )
+            for d in sorted(dashboards, key=lambda d: d.title.lower())
+        ]
+
+    def _build_dashboards_section(self) -> SidebarSection:
+        """Build the built-in Dashboards navigation section."""
+        return SidebarSection(
+            id="dashboards",
+            label="Dashboards",
+            icon="space_dashboard",
+            order=0,
+            items=self._list_dashboard_items,
+            path=lambda: None if self.home_dashboard else "/",
+        )
+
+    @staticmethod
+    def _order_sections(sections: t.Iterable[SidebarSection]) -> list[SidebarSection]:
+        """Deduplicate *sections* by id (last registration wins) and sort by ``order``."""
+        by_id: dict[str, SidebarSection] = {}
+        for section in sections:
+            by_id[section.id] = section
+        return sorted(by_id.values(), key=lambda s: s.order)
+
+    def _init_sections(self):
+        """Register the built-in Dashboards section alongside any user-supplied sections."""
+        self.sections = self._order_sections([self._build_dashboards_section(), *self.sections])
+
+    def _on_sections_changed(self, _event):
+        if self._shell is not None:
+            self._shell.refresh()
+
+    def add_section(self, section: SidebarSection) -> SidebarSection:
+        """Register a :class:`~panel_flowdash.SidebarSection` on this app.
+
+        If a section with the same ``id`` is already registered, it is
+        replaced. Sections are ordered by their ``order`` key and the
+        navigation rail and narrow-screen drawer refresh immediately.
+        """
+        if not isinstance(section, SidebarSection):
+            raise TypeError(f"section must be a SidebarSection, got {type(section).__name__}.")
+        self.sections = self._order_sections([*self.sections, section])
+        return section
+
+    def remove_section(self, section_id: str) -> SidebarSection | None:
+        """Remove the section with id *section_id*, returning it or ``None`` if absent."""
+        removed = next((s for s in self.sections if s.id == section_id), None)
+        if removed is not None:
+            self.sections = [s for s in self.sections if s.id != section_id]
+        return removed
 
     def _header_sx(self) -> dict:
         """Return the page's ``sx``, making room for a dashboard's actions in the top bar."""

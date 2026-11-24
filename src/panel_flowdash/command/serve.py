@@ -56,6 +56,7 @@ PROJECT_OPTIONS = (
     "notifications",
     "page_options",
     "propagate_failures",
+    "sections",
     "settings_class",
     "title",
     "trusted_proxies",

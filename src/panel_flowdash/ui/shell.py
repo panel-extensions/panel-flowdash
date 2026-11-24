@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import typing as t
 
 import panel as pn
@@ -9,11 +10,23 @@ import panel_material_ui as pmui
 
 # The app module imports this one; its route constants are only read at runtime.
 from panel_flowdash import app as app_module
+from panel_flowdash.sidebar import SidebarAction, SidebarItem, SidebarSection
 
 if t.TYPE_CHECKING:
     from panel_flowdash.app import FlowDashApp
 
+logger = logging.getLogger("panel_flowdash")
+
 DOCS_URL = "https://panel-extensions.github.io/panel-flowdash/"
+
+
+def _is_external_url(url: str) -> bool:
+    return url.startswith(("http://", "https://"))
+
+
+def _normalize_route(url: str) -> str:
+    return "/" + url.partition("?")[0].strip("/")
+
 
 # Material UI's sm breakpoint, below which the page moves its rail into the
 # sidebar drawer: the rail buttons show above it, the navigation list below it.
@@ -195,7 +208,13 @@ class AppShell:
         )
         self._rail_buttons: dict[str, pmui.Button | pmui.MenuButton] = {}
         self._rail_layout: list[tuple] | None = None
-        self._nav_list = pmui.MenuList(items=[], dense=False, on_click=self._on_nav_list_click)
+        self._rendered_section_items: dict[str, list[SidebarItem]] = {}
+        self._nav_list = pmui.MenuList(
+            items=[],
+            dense=False,
+            sizing_mode="stretch_width",
+            on_click=self._on_nav_list_click,
+        )
         self.nav_list = pn.Column(
             pmui.Typography(app.title, variant="h6", margin=(8, 16, 8, 16)),
             self._nav_list,
@@ -260,15 +279,142 @@ class AppShell:
             return "admin"
         if path == "/":
             return "home"
+        for section in self._visible_sections():
+            if self._section_matches_path(section, path):
+                return section.id
         if path.strip("/") in {e.page_path.strip("/") for e in self._page_entries()}:
             return "pages"
         return ""
+
+    def _ordered_sections(self) -> list[SidebarSection]:
+        return sorted(self._app.sections, key=lambda s: s.order)
+
+    def _section_visible(self, section: SidebarSection) -> bool:
+        if section.visible is None:
+            return True
+        try:
+            return bool(section.visible(self._app._identity))
+        except Exception:
+            logger.exception(
+                "SidebarSection %r visible predicate failed; hiding section", section.id
+            )
+            return False
+
+    def _visible_sections(self) -> list[SidebarSection]:
+        return [s for s in self._ordered_sections() if self._section_visible(s)]
+
+    def _section_by_id(self, section_id: str) -> SidebarSection | None:
+        return next((s for s in self._app.sections if s.id == section_id), None)
+
+    def _section_path(self, section: SidebarSection) -> str | None:
+        path = section.path() if callable(section.path) else section.path
+        return path or None
+
+    def _section_items(self, section: SidebarSection) -> list[SidebarItem]:
+        if section.items is None:
+            return []
+        try:
+            raw = section.items(self._app._identity) or ()
+        except Exception:
+            logger.exception("SidebarSection %r items callable failed", section.id)
+            return []
+        items: list[SidebarItem] = []
+        for item in raw:
+            if not isinstance(item, SidebarItem):
+                raise TypeError(
+                    f"SidebarSection {section.id!r} items must return SidebarItem instances, "
+                    f"got {type(item).__name__}."
+                )
+            items.append(item)
+        return items
+
+    @staticmethod
+    def _item_dict(item: SidebarItem) -> dict:
+        entry: dict[str, t.Any] = {"label": item.title, "icon": item.icon}
+        if _is_external_url(item.url):
+            entry["href"] = item.url
+        else:
+            entry["path"] = item.url
+        if item.subtitle:
+            entry["secondary"] = item.subtitle
+        return entry
+
+    @staticmethod
+    def _action_dict(section_id: str, action: SidebarAction) -> dict:
+        entry: dict[str, t.Any] = {"label": action.label, "icon": action.icon}
+        if isinstance(action.action, str):
+            if _is_external_url(action.action):
+                entry["href"] = action.action
+            else:
+                entry["path"] = action.action
+        else:
+            entry["section_action"] = section_id
+        return entry
+
+    def _section_rail_item(self, section: SidebarSection) -> dict:
+        section_path = self._section_path(section)
+        if section_path is not None:
+            self._rendered_section_items.pop(section.id, None)
+            key = "href" if _is_external_url(section_path) else "path"
+            return {
+                "key": section.id,
+                "label": section.label,
+                "icon": section.icon,
+                key: section_path,
+            }
+        section_items = self._section_items(section)
+        self._rendered_section_items[section.id] = section_items
+        menu_items: list[dict | None] = [self._item_dict(item) for item in section_items]
+        if section.new_action is not None:
+            if menu_items:
+                menu_items.append(None)
+            menu_items.append(self._action_dict(section.id, section.new_action))
+        return {
+            "key": section.id,
+            "label": section.label,
+            "icon": section.icon,
+            "items": menu_items,
+        }
+
+    def _section_matches_path(self, section: SidebarSection, path: str) -> bool:
+        section_path = self._section_path(section)
+        if section_path is not None and not _is_external_url(section_path):
+            sp = _normalize_route(section_path)
+            if sp != "/" and (path == sp or path.startswith(f"{sp}/")):
+                return True
+        items = self._rendered_section_items.get(section.id)
+        if items is None:
+            items = self._section_items(section)
+        for item in items:
+            if not _is_external_url(item.url):
+                item_path = _normalize_route(item.url)
+                if item_path != "/" and path == item_path:
+                    return True
+        if section.new_action is not None and isinstance(section.new_action.action, str):
+            if not _is_external_url(section.new_action.action):
+                action_path = _normalize_route(section.new_action.action)
+                if action_path != "/" and path == action_path:
+                    return True
+        return False
+
+    def _run_section_action(self, section_id: str):
+        section = next((s for s in self._visible_sections() if s.id == section_id), None)
+        if section is None or section.new_action is None:
+            return
+        action = section.new_action.action
+        if isinstance(action, str):
+            self._navigate(action)
+        else:
+            action()
 
     def _page_entries(self) -> list:
         entries = self._app._accessible_page_entries().values()
         return sorted(entries, key=lambda e: (e.section, e.name))
 
     def _dashboard_items(self) -> list[dict]:
+        section = self._section_by_id("dashboards")
+        if section is not None and section.items is not None:
+            return [self._item_dict(item) for item in self._section_items(section)]
         app = self._app
         dashboards = app.store.list_accessible(app._identity, default_allow=app._default_allow())
         return [
@@ -298,26 +444,9 @@ class AppShell:
 
     def rail_items(self) -> list[dict]:
         """Return the rail destinations: a ``path`` to open, ``items`` for a menu or an ``href``."""
-        items = [{"key": "home", "label": "Home", "icon": "home", "path": "/"}]
-        if self._app.home_dashboard:
-            # "/" shows the home dashboard, so the dashboards are listed in a menu.
-            items.append(
-                {
-                    "key": "dashboards",
-                    "label": "Dashboards",
-                    "icon": "space_dashboard",
-                    "items": self._dashboard_items(),
-                }
-            )
-        else:
-            items.append(
-                {
-                    "key": "dashboards",
-                    "label": "Dashboards",
-                    "icon": "space_dashboard",
-                    "path": "/",
-                }
-            )
+        items: list[dict] = [{"key": "home", "label": "Home", "icon": "home", "path": "/"}]
+        for section in self._visible_sections():
+            items.append(self._section_rail_item(section))
         items.append(
             {
                 "key": "components",
@@ -343,9 +472,20 @@ class AppShell:
 
     def _render_rail(self):
         items = self.rail_items()
-        self._nav_list.items = self._drawer_items(items)
+        drawer_items = self._drawer_items(items)
+        self._nav_list.items = drawer_items
+        # Set expanded after items: TreeLikeBase._update_expanded remaps expanded on items change.
+        self._nav_list.expanded = [(i,) for i, item in enumerate(drawer_items) if "items" in item]
         layout = [
-            (item["key"], item.get("path"), item.get("href"), "items" in item) for item in items
+            (
+                item["key"],
+                item["label"],
+                item["icon"],
+                item.get("path"),
+                item.get("href"),
+                "items" in item,
+            )
+            for item in items
         ]
         if layout == self._rail_layout:
             # Replacing the buttons would drop a click that reaches the old ones
@@ -391,18 +531,45 @@ class AppShell:
             objects.append(button)
         self.rail[:] = objects
 
+    def _nav_list_active(self, active: str) -> tuple[int, ...] | None:
+        path = self._path
+        for si, item in enumerate(self._nav_list.items):
+            if not isinstance(item, dict):
+                continue
+            item_path = item.get("path")
+            if item_path is not None and _normalize_route(item_path) == path:
+                return (si,)
+            for pi, child in enumerate(item.get("items", [])):
+                if not isinstance(child, dict):
+                    continue
+                child_path = child.get("path")
+                if child_path is not None and _normalize_route(child_path) == path:
+                    return (si, pi)
+        if active:
+            for si, item in enumerate(self._nav_list.items):
+                if (
+                    isinstance(item, dict)
+                    and item.get("key") == active
+                    and item.get("selectable", True)
+                ):
+                    return (si,)
+        return None
+
     def _mark_active(self):
         active = self._active()
         for key, button in self._rail_buttons.items():
             sx = _RAIL_ACTIVE_SX if key == active else _RAIL_ITEM_SX
             if button.sx != sx:
                 button.sx = sx
+        nav_active = self._nav_list_active(active)
+        if self._nav_list.active != nav_active:
+            self._nav_list.active = nav_active
 
     def _drawer_items(self, rail_items: list[dict]) -> list[dict]:
         """Return the rail as a list for the narrow-screen drawer, menus expanded inline."""
         items = []
         for item in rail_items:
-            entry = {k: item[k] for k in ("label", "icon", "path", "href") if k in item}
+            entry = {k: item[k] for k in ("key", "label", "icon", "path", "href") if k in item}
             if "items" in item:
                 entry["items"] = [i for i in item["items"] if i is not None]
                 entry["selectable"] = False
@@ -410,6 +577,12 @@ class AppShell:
         return items
 
     def _on_nav_list_click(self, item):
+        if not isinstance(item, dict):
+            return
+        if "section_action" in item:
+            self._app._page.sidebar_open = False
+            self._run_section_action(item["section_action"])
+            return
         if "path" not in item:
             return
         # On narrow screens the list sits in the page's temporary sidebar drawer.
@@ -417,11 +590,19 @@ class AppShell:
         self._navigate(item["path"])
 
     def _on_menu_item(self, item):
-        if isinstance(item, dict) and "path" in item:
+        if not isinstance(item, dict):
+            return
+        if "section_action" in item:
+            self._run_section_action(item["section_action"])
+        elif "path" in item:
             self._navigate(item["path"])
 
     def _navigate(self, path: str):
-        self._app._on_nav_click({"path": path})
+        route, sep, query = path.partition("?")
+        if sep:
+            self._app._request_navigation(route, search=f"?{query}")
+        else:
+            self._app._on_nav_click({"path": route})
 
     # ------------------------------------------------------------------
     # Breadcrumb
@@ -448,6 +629,23 @@ class AppShell:
         for entry in self._page_entries():
             if path.strip("/") == entry.page_path.strip("/"):
                 return [home, Crumb(entry.section.replace("_", " ")), Crumb(entry.title)]
+        for sidebar_section in self._visible_sections():
+            section_path = self._section_path(sidebar_section)
+            if section_path is not None and not _is_external_url(section_path):
+                sp = _normalize_route(section_path)
+                if sp != "/" and path == sp:
+                    return [home, Crumb(sidebar_section.label)]
+            items = self._rendered_section_items.get(sidebar_section.id)
+            if items is None:
+                items = self._section_items(sidebar_section)
+            for item in items:
+                if not _is_external_url(item.url) and _normalize_route(item.url) == path:
+                    parent_path = (
+                        section_path
+                        if section_path is not None and not _is_external_url(section_path)
+                        else None
+                    )
+                    return [home, Crumb(sidebar_section.label, parent_path), Crumb(item.title)]
         return [home]
 
     def _dashboard_title(self) -> str:
