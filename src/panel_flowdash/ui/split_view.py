@@ -57,6 +57,12 @@ ASK_WIDTH = 420
 #: The narrowest the Ask panel gets; the widest is half the window.
 ASK_MIN_WIDTH = 320
 
+#: The width of the assistant's drawer, Ask in edit mode, until the person drags its edge.
+ASSISTANT_WIDTH = 360
+
+#: The narrowest the assistant's drawer gets, as panel-agents' AgentDrawer allows.
+ASSISTANT_MIN_WIDTH = 240
+
 # Narrower than this, a pane counts as collapsed; split.js reports a collapsed
 # pane at 0 to 1 percent and a pane dragged into its snap zone at under 5.
 _COLLAPSED = 5.0
@@ -107,6 +113,12 @@ class SplitPreferences(param.Parameterized):
         doc="The width of the Ask panel docked left of a dashboard, set by dragging its right edge.",
     )
 
+    assistant_width = param.Integer(
+        default=ASSISTANT_WIDTH,
+        bounds=(ASSISTANT_MIN_WIDTH, None),
+        doc="The width of the assistant's drawer, Ask in edit mode, set by dragging its left edge.",
+    )
+
     def to_json(self) -> str:
         """Return the preferences as stored in the browser."""
         return json.dumps(
@@ -119,6 +131,7 @@ class SplitPreferences(param.Parameterized):
                 "sidecar_width": self.sidecar_width,
                 "palette_open": self.palette_open,
                 "ask_width": self.ask_width,
+                "assistant_width": self.assistant_width,
             }
         )
 
@@ -157,6 +170,9 @@ class SplitPreferences(param.Parameterized):
         width = stored.get("ask_width")
         if isinstance(width, int) and not isinstance(width, bool):
             update["ask_width"] = max(ASK_MIN_WIDTH, width)
+        width = stored.get("assistant_width")
+        if isinstance(width, int) and not isinstance(width, bool):
+            update["assistant_width"] = max(ASSISTANT_MIN_WIDTH, width)
         if update:
             self.param.update(update)
         return bool(update)
@@ -410,6 +426,7 @@ class SplitView(Viewer):
                 "sidecar_width",
                 "palette_open",
                 "ask_width",
+                "assistant_width",
             ],
         )
 

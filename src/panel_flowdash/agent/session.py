@@ -174,10 +174,12 @@ class AgentSession:
         chat_params = {"models": list(models), "model_id": model} if models else {}
         if len(models or ()) > 1:
             chat_params["remember_model"] = MODEL_KEY
+        preferences = editor._split_view.preferences
         self.drawer = AgentDrawer(
             self.runner,
             title="Assistant",
             variant="persistent",
+            width=preferences.assistant_width,
             on_apply=self.apply_version,
             # Someone else's request is redacted for people who may not see what it touched.
             redact_runs=editor.run_redacted,
@@ -222,6 +224,9 @@ class AgentSession:
                     add=self.add_answer,
                     show=self.show_answer,
                 )
+        # The drawer opens at the width last dragged to in this browser.
+        preferences.param.watch(lambda e: setattr(self.drawer, "width", e.new), "assistant_width")
+        self.drawer.param.watch(lambda e: setattr(preferences, "assistant_width", e.new), "width")
         editor.param.watch(self._on_explore, ["explore", "ask", "editable"])
         # In edit mode Ask is this drawer, opened and closed with the bar's Ask.
         editor.assistant = True

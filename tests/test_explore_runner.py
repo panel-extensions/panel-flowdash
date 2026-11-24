@@ -476,3 +476,14 @@ async def test_the_drawer_opened_in_view_mode_stays_open_as_edit_mode_starts(sto
     session.drawer.open = True
     editor.editable = True
     assert session.drawer.open and editor.ask
+
+
+async def test_the_drawer_opens_at_the_width_last_dragged_to(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    session, editor = app._agent_session, app._editor
+    preferences = editor._split_view.preferences
+    assert session.drawer.width == preferences.assistant_width == 360
+    session.drawer.width = 480
+    assert preferences.assistant_width == 480
+    preferences.assistant_width = 400
+    assert session.drawer.width == 400

@@ -294,6 +294,7 @@ class TestToggleAndCollapse:
             "sidecar_width": 360,
             "palette_open": True,
             "ask_width": 420,
+            "assistant_width": 360,
         }
         editor.mode = "wiring"
         assert json.loads(split_view.storage.value)["split"] is False
