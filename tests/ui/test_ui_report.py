@@ -8,7 +8,7 @@ expect = pytest.importorskip("playwright.sync_api").expect
 
 from panel_flowdash import FlowDash
 
-from .util import DASHBOARD_LOAD_TIMEOUT, serve_component, stable_box
+from .util import DASHBOARD_LOAD_TIMEOUT, ask_button, serve_component, stable_box
 
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
@@ -73,16 +73,20 @@ def test_switching_to_the_report_and_back_keeps_the_tiles_working(page):
         report.locator(".fd-report-controls .noUi-target, .fd-report-controls .MuiSlider-root")
     ).to_have_count(1)
 
-    page.get_by_role("button", name="View", exact=True).click()
+    page.get_by_role("button", name="Dashboard", exact=True).click()
     expect(_report(page)).to_have_count(0)
     editor._component_instances["level"].value = 55
     expect(page.get_by_text("55 MW")).to_be_visible()
 
     page.get_by_role("button", name="Report", exact=True).click()
     expect(_report(page).get_by_text("55 MW")).to_be_visible()
-    page.get_by_role("button", name="Explore", exact=True).click()
+    # Ask docks the feed beside the report, which stays, and then beside the tiles.
+    ask_button(page).click()
+    expect(page.locator(".flowdash-explore")).to_be_visible()
+    expect(_report(page).get_by_text("55 MW")).to_be_visible()
+    page.get_by_role("button", name="Dashboard", exact=True).click()
     expect(_report(page)).to_have_count(0)
-    page.get_by_role("button", name="View", exact=True).click()
+    expect(page.locator(".flowdash-explore")).to_be_visible()
     editor._component_instances["level"].value = 60
     expect(page.get_by_text("60 MW")).to_be_visible()
     assert errors == []

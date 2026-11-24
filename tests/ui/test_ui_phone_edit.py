@@ -15,7 +15,7 @@ from panel_flowdash.component_library import normalize_components
 
 from .test_ui_header_overflow import _button
 from .test_ui_phone import _OFF_SCREEN, PHONE
-from .util import DASHBOARD_LOAD_TIMEOUT, serve_component
+from .util import DASHBOARD_LOAD_TIMEOUT, ask_from_palette, serve_component
 
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
@@ -200,7 +200,8 @@ def test_widening_a_phone_with_the_assistant_open_keeps_the_inspector_folded(pag
     # browser gets the load timeout to show the result.
     _tap_header(page.locator(".react-flow__node[data-id='first']"))
     expect(_sheet(page, "fd-inspector-sheet")).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
-    _button(page, "Assistant").click()
+    # A phone's dashboard has no Assistant or Ask button for the drawer; the palette opens it.
+    ask_from_palette(page, "Hello")
     wait_until(lambda: editor._inspector.collapsed, page)
 
     page.set_viewport_size({"width": 1280, "height": 844})

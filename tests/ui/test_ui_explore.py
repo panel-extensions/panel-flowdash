@@ -1,4 +1,4 @@
-"""UI tests of the Explore view: the dashboard's turns as a feed with live outputs."""
+"""UI tests of the Explore feed: docked by Ask beside the dashboard, full page on a phone."""
 
 import re
 
@@ -14,28 +14,46 @@ from pydantic_ai.models.function import FunctionModel
 
 from panel_flowdash import FlowDash
 from panel_flowdash.agent import FlowDashDeps, dashboard_toolset
+from panel_flowdash.agent.highlight import TILE_CLASSES
 from panel_flowdash.turns import agent_edits
 from panel_flowdash.ui import tile_layout
 
 from ..test_agent_tools import scripted
 from .test_ui_selection import CHART, FRAME, ROWS, SelectionChart, SelectionRows, _drag
 from .test_ui_shell import _serve_app, _store_with
-from .util import AGENT_RUN_TIMEOUT, DASHBOARD_LOAD_TIMEOUT, serve_component, stable_box
+from .util import (
+    AGENT_RUN_TIMEOUT,
+    DASHBOARD_LOAD_TIMEOUT,
+    ask_button,
+    ask_from_palette,
+    center,
+    serve_component,
+    stable_box,
+)
 
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
 QUESTION = "Ask a question about this dashboard…"
 
 
+def _open_ask(page):
+    """Dock the Explore feed beside the dashboard with the bar's Ask, unless it is."""
+    ask = ask_button(page)
+    expect(ask).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
+    if ask.get_attribute("aria-pressed") != "true":
+        ask.click()
+    expect(page.locator(".flowdash-explore")).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
+
+
 def _ask(page, apps, text="Add another note"):
-    page.get_by_role("button", name="Explore", exact=True).click()
+    _open_ask(page)
     composer = page.get_by_placeholder(QUESTION)
     composer.fill(text)
     composer.press("Enter")
     return composer
 
 
-def test_a_question_asked_in_explore_shows_its_answer_and_output(page):
+def test_a_question_asked_in_ask_shows_its_answer_and_output(page):
     store, (dash,) = _store_with("Plant")
     agent = Agent(
         scripted(("add_node", {"component": "Test/note", "name": "memo"})),
@@ -47,14 +65,18 @@ def test_a_question_asked_in_explore_shows_its_answer_and_output(page):
     _serve_app(page, store, f"/dash/{dash}", apps, agent=agent, explore_agent=agent)
     page.get_by_text("note tile").first.wait_for()
 
-    page.get_by_role("button", name="Explore", exact=True).click()
+    _open_ask(page)
     # The outputs the dashboard was made with wait, collapsed, above the questions asked here.
     expect(page.get_by_placeholder(QUESTION)).to_be_visible()
     expect(page.locator(".artifact-cell")).to_have_count(1)
-    expect(page.get_by_text("note tile")).to_have_count(0)
+    # The dashboard stays beside the feed, and its tile's view stays on it: a view is
+    # on screen only once, so the feed's card says where it is.
+    expect(page.get_by_text("note tile")).to_have_count(1)
     page.get_by_role("button", name="Show earlier requests and edits").click()
     page.locator(".explore-earlier-toggle").first.click()
-    expect(page.locator(".artifact-cell").get_by_text("note tile")).to_be_visible()
+    cell = page.locator(".artifact-cell").first
+    expect(cell.get_by_text("Shown on the dashboard.")).to_be_visible()
+    expect(cell.get_by_text("note tile")).to_have_count(0)
     # Idle, the composer offers Send, not Stop.
     expect(page.get_by_role("button", name="Stop")).to_have_count(0)
 
@@ -62,6 +84,7 @@ def test_a_question_asked_in_explore_shows_its_answer_and_output(page):
     page.get_by_text("Add another note").first.wait_for()
     card = page.locator(".artifact-cell", has_text="memo").last
     expect(card).to_be_visible(timeout=20000)
+    # The answer is on no dashboard, so its card shows its view.
     expect(card.get_by_text("note tile")).to_be_visible()
     # The answer stays off the dashboard until it is added.
     expect(card.get_by_role("button", name="Add to dashboard")).to_be_visible()
@@ -69,7 +92,7 @@ def test_a_question_asked_in_explore_shows_its_answer_and_output(page):
     explore.get_by_text(re.compile(r"Done: Added node 'memo'\.")).wait_for(timeout=20000)
     expect(page.get_by_role("button", name="Stop")).to_have_count(0)
     editor = apps[0]._editor
-    assert editor.explore and not editor.dirty
+    assert editor.ask_docked and not editor.dirty
     assert [i["instance_id"] for i in editor._tile_items] == ["n1"]
     assert not apps[0]._agent_session.drawer.open
 
@@ -77,8 +100,8 @@ def test_a_question_asked_in_explore_shows_its_answer_and_output(page):
     last = card.bounding_box()
     assert last["y"] + last["height"] <= composer.bounding_box()["y"]
 
-    # Back on the dashboard, only its own tile is there.
-    page.get_by_role("button", name="View", exact=True).click()
+    # With Ask closed, only the dashboard's own tile is there.
+    ask_button(page).click()
     expect(page.locator(".artifact-cell")).to_have_count(0)
     expect(page.get_by_text("note tile")).to_have_count(1, timeout=20000)
     assert errors == []
@@ -118,18 +141,12 @@ def test_add_to_dashboard_puts_an_answer_on_the_dashboard(page):
     editor = apps[0]._editor
     memo = next(i for i in editor._tile_items if i["instance_id"] == "memo")
     assert memo in tile_layout.grid_tiles(editor)
-    # Show leaves Explore for the dashboard, where the answer's tile is, which renders
-    # the whole grid before Explore goes.
+    # Show marks the answer's tile on the dashboard beside the feed, which stays.
     card.get_by_role("button", name="Show").click()
-    expect(page.locator(".flowdash-explore")).to_have_count(0, timeout=DASHBOARD_LOAD_TIMEOUT)
-    expect(page.get_by_text("note tile")).to_have_count(1, timeout=20000)
-
-
-def _ask_drawer(page, text):
-    page.get_by_role("button", name="Assistant", exact=True).click()
-    chat = page.get_by_placeholder(re.compile("^Ask the agent"))
-    chat.fill(text)
-    chat.press("Enter")
+    tile = page.locator(f".{TILE_CLASSES['add']}")
+    expect(tile).to_have_count(1, timeout=DASHBOARD_LOAD_TIMEOUT)
+    expect(tile.get_by_text("note tile")).to_be_visible()
+    expect(page.locator(".flowdash-explore")).to_be_visible()
 
 
 def test_an_approval_waiting_in_the_drawer_shows_a_notice_while_exploring(page):
@@ -142,10 +159,10 @@ def test_an_approval_waiting_in_the_drawer_shows_a_notice_while_exploring(page):
     apps = []
     _serve_app(page, store, f"/dash/{dash}", apps, agent=agent)
     page.get_by_text("note tile").first.wait_for()
-    _ask_drawer(page, "Save it")
+    ask_from_palette(page, "Save it")
     session = apps[0]._agent_session
     wait_until(lambda: bool(session.runner.state.pending_approvals), page, timeout=20000)
-    page.get_by_role("button", name="Explore", exact=True).click()
+    _open_ask(page)
     wait_until(lambda: not session.drawer.open, page, timeout=10000)
     # The drawer's request is not the Explore view's: its approval stays out of the feed.
     explore = page.locator(".flowdash-explore")
@@ -185,15 +202,15 @@ def test_each_question_shows_only_where_it_was_asked(page):
     expect(explore.get_by_text("Explore answer.")).to_be_visible(timeout=20000)
     expect(explore.get_by_text("Which plant is largest?")).to_be_visible()
 
-    page.get_by_role("button", name="View", exact=True).click()
+    ask_button(page).click()
     expect(page.locator(".flowdash-explore")).to_have_count(0)
-    _ask_drawer(page, "Make the title bold")
+    ask_from_palette(page, "Make the title bold")
     session = apps[0]._agent_session
     expect(page.get_by_text("Drawer answer.")).to_be_visible(timeout=20000)
     expect(page.get_by_text("Explore answer.")).to_have_count(0)
     expect(page.get_by_text("Which plant is largest?")).to_have_count(0)
 
-    page.get_by_role("button", name="Explore", exact=True).click()
+    _open_ask(page)
     expect(explore.get_by_text("Explore answer.")).to_be_visible(timeout=20000)
     expect(explore.get_by_text("Drawer answer.")).to_have_count(0)
     expect(explore.get_by_text("Make the title bold")).to_have_count(0)
@@ -265,12 +282,14 @@ def test_cards_stack_within_a_narrow_window(page, width):
         editor.add_component("Test/note", instance_id="a")
         editor.add_component("Test/note", instance_id="b")
     if width < 600:
-        # On a phone the View/Explore/Edit toggle is in the overflow menu.
+        # On a phone Ask is in the overflow menu, and shows the feed in place of the dashboard.
         page.get_by_role("button", name="More actions").filter(visible=True).click()
-        page.get_by_role("menuitem", name="Explore").click()
+        page.get_by_role("menuitem", name="Ask").click()
+        cards = page.locator(".artifact-cell").filter(has=page.get_by_text("note tile"))
     else:
-        page.get_by_role("button", name="Explore", exact=True).click()
-    cards = page.locator(".artifact-cell").filter(has=page.get_by_text("note tile"))
+        # Docked beside the dashboard, the cards say where the notes' views are.
+        _open_ask(page)
+        cards = page.locator(".artifact-cell", has_text="Shown on the dashboard.")
     expect(cards).to_have_count(2)
 
     def stacked():
@@ -311,8 +330,8 @@ def test_a_manual_edit_while_exploring_keeps_the_feed_in_place(page):
     apps, errors = [], []
     page.on("pageerror", lambda exc: errors.append(str(exc)))
     page.set_viewport_size({"width": 1400, "height": 1000})
-    _serve_app(page, store, f"/dash/{dash}?edit=true", apps)
-    page.get_by_role("button", name="Explore", exact=True).wait_for()
+    _serve_app(page, store, f"/dash/{dash}", apps)
+    expect(ask_button(page)).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
     editor = apps[0]._editor
 
     def fill():
@@ -324,7 +343,7 @@ def test_a_manual_edit_while_exploring_keeps_the_feed_in_place(page):
         tile_layout.update_tile(editor, "memo24", visible=False)
 
     _in_session(page, editor, fill)
-    page.get_by_role("button", name="Explore", exact=True).click()
+    _open_ask(page)
     card = page.locator(".artifact-cell", has_text="memo24")
     button = card.get_by_role("button", name="Add to dashboard")
     expect(button).to_be_visible(timeout=90000)
@@ -365,7 +384,7 @@ def test_a_long_history_shows_its_latest_page_and_loads_earlier_ones(page):
     apps = []
     page.set_viewport_size({"width": 1400, "height": 1000})
     _serve_app(page, store, f"/dash/{dash}", apps)
-    page.get_by_role("button", name="Explore", exact=True).wait_for()
+    expect(ask_button(page)).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
     editor = apps[0]._editor
     for i in range(60):
         editor.end_turn()
@@ -374,7 +393,7 @@ def test_a_long_history_shows_its_latest_page_and_loads_earlier_ones(page):
     page.wait_for_timeout(1000)
     before = page.evaluate(_DEEP_COUNT)
     start = time.monotonic()
-    page.get_by_role("button", name="Explore", exact=True).click()
+    ask_button(page).click()
     page.locator(".artifact-cell", has_text="memo59").wait_for(timeout=120000)
     switched = time.monotonic() - start
     cells = page.locator(".artifact-cell")
@@ -401,7 +420,7 @@ def test_a_long_history_shows_its_latest_page_and_loads_earlier_ones(page):
     ).to_be_visible()
 
     # A reader at the top of the feed stays at the entry they were reading.
-    page.mouse.move(700, 500)
+    page.mouse.move(*center(stable_box(page.locator(".flowdash-explore"), page)))
     for _ in range(40):
         page.mouse.wheel(0, -2000)
     page.wait_for_timeout(1000)

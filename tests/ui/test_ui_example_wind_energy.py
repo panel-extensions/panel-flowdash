@@ -130,13 +130,13 @@ def _bar_button(page, label):
     return page.locator("button").filter(has_text=pattern).filter(visible=True).first
 
 
-def test_view_actions_lead_with_the_mode_toggle(page, serve_example):
+def test_view_actions_lead_with_the_output_switch(page, serve_example):
     serve_example("wind-data-quality")
-    expect(_bar_button(page, "View")).to_be_visible(timeout=EXAMPLE_LOAD_TIMEOUT)
+    expect(_bar_button(page, "Dashboard")).to_be_visible(timeout=EXAMPLE_LOAD_TIMEOUT)
 
     boxes = [
         stable_box(_bar_button(page, label), page)
-        for label in ["View", "Edit", "Refresh", "Off", "Share", "more_vert"]
+        for label in ["Dashboard", "Ask", "Edit", "Refresh", "Off", "Share", "more_vert"]
     ]
     lefts = [box["x"] for box in boxes]
     assert lefts == sorted(lefts)

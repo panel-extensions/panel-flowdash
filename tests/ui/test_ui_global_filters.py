@@ -9,7 +9,7 @@ from panel.viewable import Viewer
 
 from panel_flowdash import FlowDash, register
 
-from .util import DASHBOARD_LOAD_TIMEOUT, serve_component
+from .util import DASHBOARD_LOAD_TIMEOUT, open_assistant, serve_component
 
 pytest.importorskip("playwright")
 expect = pytest.importorskip("playwright.sync_api").expect
@@ -203,7 +203,7 @@ def test_the_assistant_adds_a_global_filter_that_filters_the_tiles(page):
     bar = page.locator(".fd-filter-bar")
     expect(bar.get_by_role("combobox", name="State")).to_have_count(0)
 
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    open_assistant(page)
     chat = page.get_by_placeholder(re.compile("^Ask the agent"))
     chat.fill("Add a state filter and name the dashboard")
     chat.press("Enter")

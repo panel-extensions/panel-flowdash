@@ -15,6 +15,7 @@ from panel_flowdash.agent import FlowDashDeps, dashboard_toolset
 
 from ..test_agent_tools import scripted
 from .test_ui_shell import _serve_app, _store_with
+from .util import open_assistant
 
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
@@ -38,7 +39,7 @@ def test_reverting_from_the_drawer_restores_the_canvas(page):
     _serve_app(page, store, f"/dash/{dash}", apps, agent=agent)
 
     page.get_by_text("note tile").first.wait_for()
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    open_assistant(page)
     chat = page.get_by_placeholder(re.compile("^Ask the agent"))
     chat.fill("Add another note")
     chat.press("Enter")
@@ -76,7 +77,7 @@ def test_the_history_is_there_after_a_reload_and_reverts(page):
     _serve_app(page, store, f"/dash/{dash}?edit=true", apps, agent=agent)
 
     page.get_by_role("button", name="Done").wait_for()
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    open_assistant(page)
     chat = page.get_by_placeholder(re.compile("^Ask the agent"))
     chat.fill("Add another note")
     chat.press("Enter")
@@ -91,7 +92,7 @@ def test_the_history_is_there_after_a_reload_and_reverts(page):
     wait_until(lambda: len(apps) == 2, page, timeout=10000)
     editor = apps[1]._editor
     assert len(editor._tile_items) == 2
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    open_assistant(page)
     page.get_by_role("button", name="Artifacts").click()
     expect(page.locator(".MuiListItemText-primary", has_text="Add another note")).to_be_visible(
         timeout=10000
@@ -112,7 +113,7 @@ def test_a_history_of_a_newer_format_is_named_in_the_drawer(page):
     agent = Agent(scripted(), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()])
     _serve_app(page, store, f"/dash/{dash}?edit=true", agent=agent)
     page.get_by_role("button", name="Done").wait_for()
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    open_assistant(page)
     expect(page.get_by_text("History was written by a newer FlowDash")).to_be_visible(
         timeout=10000
     )
@@ -134,7 +135,7 @@ def test_a_refused_revert_says_why_and_stops_spinning(page, monkeypatch):
     apps = []
     _serve_app(page, store, f"/dash/{dash}", apps, agent=agent)
     page.get_by_text("note tile").first.wait_for()
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    open_assistant(page)
     chat = page.get_by_placeholder(re.compile("^Ask the agent"))
     chat.fill("Add another note")
     chat.press("Enter")
@@ -237,7 +238,7 @@ def test_reverting_a_large_dashboard_ends_quickly(page, wind_app, monkeypatch):
     search.press("Enter")
     editor = wind_app[0]._editor
     wait_until(lambda: any(i["component_id"] == "Text/Markdown" for i in editor._tile_items), page)
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    open_assistant(page)
     chat = page.get_by_placeholder(re.compile("^Ask the agent"))
     chat.fill("Describe it")
     chat.press("Enter")
@@ -281,7 +282,7 @@ def test_escape_does_not_dismiss_the_overwrite_question(page):
     _serve_app(page, store, f"/dash/{dash}", apps, agent=agent, editor_options={"history": False})
 
     page.get_by_text("note tile").first.wait_for()
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    open_assistant(page)
     chat = page.get_by_placeholder(re.compile("^Ask the agent"))
     chat.fill("Add another note")
     chat.press("Enter")

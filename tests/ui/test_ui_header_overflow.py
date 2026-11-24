@@ -75,7 +75,7 @@ def _serve(page, width, edit):
 
 
 def _button(page, name):
-    pattern = re.compile(rf"(^|\s){re.escape(name)}")
+    pattern = re.compile(rf"(^|\s){re.escape(name)}\b")
     return page.get_by_role("button", name=pattern).filter(visible=True).first
 
 

@@ -15,6 +15,7 @@ from panel_flowdash.auth import resolve_identity
 
 from ..test_agent_tools import scripted
 from .test_ui_shell import _serve_app
+from .util import ask_button, open_assistant
 
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
@@ -58,11 +59,11 @@ def test_inspector_text_is_not_squeezed_after_folding_beside_the_assistant(page)
     _serve_app(page, store, f"/dash/{dash}?edit=true", apps, agent=agent)
     inspector = apps[0]._editor._inspector
 
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    open_assistant(page)
     wait_until(lambda: inspector.collapsed, page, timeout=10000)
     apps[0]._editor.add_component("Test/note")
     page.wait_for_timeout(1000)
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    ask_button(page).click()
     wait_until(lambda: not inspector.collapsed, page, timeout=10000)
     expect(page.get_by_text("Issues", exact=True)).to_be_visible()
     page.wait_for_timeout(500)

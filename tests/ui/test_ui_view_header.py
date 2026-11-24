@@ -111,7 +111,7 @@ def test_header_shows_description_health_and_refresh(page, header_layout):
     _serve(page, store, dash, [], header_layout=header_layout)
 
     if header_layout == "compact":
-        button = page.get_by_role("button", name="About this dashboard")
+        button = page.get_by_role("button", name="About this dashboard", exact=True)
         expect(button).to_have_attribute("aria-haspopup", "dialog")
         button.focus()
         page.keyboard.press("Enter")
