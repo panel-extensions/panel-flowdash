@@ -31,6 +31,7 @@ SHORTCUTS = [
     {"group": "Editing", "label": "Undo", "keys": ["Mod", "Z"]},
     {"group": "Editing", "label": "Redo", "keys": ["Mod", "Shift", "Z"]},
     {"group": "Editing", "label": "Dataflow and Layout side by side", "keys": ["S"]},
+    {"group": "Editing", "label": "Search components, opening a folded palette", "keys": ["/"]},
     {"group": "Editing", "label": "Show or hide node previews", "keys": ["P"]},
     {"group": "Editing", "label": "Collapse or expand all nodes", "keys": ["C"]},
     {"group": "Editing", "label": "Clear the selection, then back to view mode", "keys": ["Esc"]},
@@ -445,10 +446,11 @@ class CommandPaletteController:
         return [{**action, "group": "Actions"} for action in actions]
 
     def _canvas_view_items(self) -> list[dict]:
-        """Offer the status bar's previews and collapse-all toggles while the canvas is shown."""
+        """Offer the status bar's previews and collapse-all toggles and the palette's fold, on the canvas."""
         if not self._canvas_shown():
             return []
-        bar = self._editor._status_bar
+        editor = self._editor
+        bar = editor._status_bar
         shown = bar.preview_toggle.value
         items = [
             {
@@ -460,7 +462,7 @@ class CommandPaletteController:
                 "keywords": "preview previews values canvas nodes cards dataflow",
             }
         ]
-        if self._editor._node_cards():
+        if editor._node_cards():
             collapsed = bar.collapse_toggle.value
             items.append(
                 {
@@ -469,6 +471,22 @@ class CommandPaletteController:
                     "icon": "unfold_more" if collapsed else "unfold_less",
                     "keys": ["C"],
                     "keywords": "collapse expand fold unfold all nodes cards canvas dataflow",
+                }
+            )
+        if editor._side_panel.visible:
+            folded = not editor._palette_drawer.open
+            items.append(
+                {
+                    "id": "action:palette",
+                    "title": "Show components" if folded else "Hide components",
+                    "subtitle": "Open the component palette and search it"
+                    if folded
+                    else "Fold the component palette, giving the canvas its width",
+                    "icon": "keyboard_double_arrow_right"
+                    if folded
+                    else "keyboard_double_arrow_left",
+                    "keywords": "palette components drawer sidebar add search fold collapse",
+                    **({"keys": ["/"]} if folded else {}),
                 }
             )
         return items
@@ -632,6 +650,8 @@ class CommandPaletteController:
             editor._dashboard_bar.request_mode("view")
         elif action == "split" and editor.editable:
             editor.toggle_split()
+        elif action == "palette" and self._canvas_shown() and editor._side_panel.visible:
+            editor.toggle_palette()
         elif action == "previews" and self._canvas_shown():
             editor._status_bar.toggle_previews()
         elif action == "collapse_all" and self._canvas_shown():
