@@ -41,7 +41,7 @@ HEADER_SX = {
 # On a dashboard the top bar also holds the dashboard's actions, so the brand
 # gives way to them on screens narrower than this. The edit actions are wider.
 _BRAND_BREAKPOINT = 1280
-_EDIT_BRAND_BREAKPOINT = 1600
+_EDIT_BRAND_BREAKPOINT = 1920
 
 
 def _hide_brand_below(width: int) -> dict:

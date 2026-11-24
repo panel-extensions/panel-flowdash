@@ -33,14 +33,8 @@ li.MuiMenuItem-root:last-of-type {
 }
 """
 
-# Below this width the edit actions only fit one row with Settings as an icon.
+# Below this width the edit actions show only their icons, so they fit one row.
 _WIDE_BREAKPOINT = 1280
-_HIDE_WHEN_NARROW = (
-    f"@media (max-width: {_WIDE_BREAKPOINT - 0.05}px) {{ :host {{ display: none !important; }} }}"
-)
-_HIDE_WHEN_WIDE = (
-    f"@media (min-width: {_WIDE_BREAKPOINT}px) {{ :host {{ display: none !important; }} }}"
-)
 
 # Below these widths the top bar's labelled actions show only their icons, so
 # the actions, search, assistant and theme toggle fit one row: the view
@@ -221,6 +215,17 @@ _TOGGLE_SX = {
     "@media (max-width: 799.95px)": {"& .MuiToggleButton-root": {"px": 0.75}},
 }
 
+# pmui's Toggle renders at MUI's medium size; these are the small toggle groups' metrics beside it.
+_ASK_SX = {
+    "textTransform": "none",
+    "fontSize": "0.8125rem",
+    "lineHeight": 1.75,
+    "px": 1.5,
+    "py": "6px",
+    "gap": "6px",
+    "whiteSpace": "nowrap",
+}
+
 _DIRTY_DOT_SX = {
     "display": "inline-flex",
     "alignItems": "center",
@@ -238,11 +243,12 @@ _DIRTY_DOT_SX = {
 
 # Below this width the save state gives its room in the top bar to the edit
 # actions: only the dot of unsaved changes shows, its text stays for screen readers.
-_SAVE_STATE_DOT_ONLY = """
-@media (max-width: 799.95px) {
-  .MuiTypography-root { font-size: 0 !important; }
-  .MuiTypography-root::before { margin-right: 0 !important; }
-}
+SAVE_STATE_TEXT_BREAKPOINT = 1800
+_SAVE_STATE_DOT_ONLY = f"""
+@media (max-width: {SAVE_STATE_TEXT_BREAKPOINT - 0.05}px) {{
+  .MuiTypography-root {{ font-size: 0 !important; }}
+  .MuiTypography-root::before {{ margin-right: 0 !important; }}
+}}
 """
 
 _PERIODS = [
@@ -489,20 +495,19 @@ class DashboardBar(Viewer):
             margin=(0, 4),
             sx=_TOGGLE_SX,
             css_classes=["fd-output-switch"],
-            stylesheets=[ICON_ONLY_WHEN_COMPACT, _HIDE_ON_PHONE, _REPORT_IN_MENU],
+            stylesheets=[_ICON_ONLY_WHEN_NARROW, _HIDE_ON_PHONE, _REPORT_IN_MENU],
         )
         self.output_toggle.param.watch(self._on_output, "value")
         self.ask_button = pmui.Toggle(
             label="Ask",
             icon="forum",
-            icon_size="1.2em",
+            icon_size="18px",
             value=editor.ask,
-            size="small",
             margin=(0, 4),
             description="Ask about this dashboard",
             css_classes=["fd-ask-toggle"],
-            sx=_TOGGLE_SX["& .MuiToggleButton-root"],
-            stylesheets=[ICON_ONLY_WHEN_COMPACT, _HIDE_ON_PHONE],
+            sx=_ASK_SX,
+            stylesheets=[_ICON_ONLY_WHEN_NARROW, _HIDE_ON_PHONE],
         )
         self.ask_button.param.watch(self._on_ask_toggled, "value")
         self.edit_button = pmui.Button(
@@ -530,26 +535,16 @@ class DashboardBar(Viewer):
         editor.param.watch(lambda _event: self.sync(), ["assistant", "read_only"])
         # The overflow menu offers the views the switchers have no room for.
         editor.param.watch(lambda _event: self.sync(), "surface")
-        self.settings_button = pmui.Button(
-            label="Settings",
-            icon="tune",
-            variant="text",
-            size="small",
-            margin=(0, 4),
-            description="Settings",
-            stylesheets=[_HIDE_WHEN_NARROW],
-        )
-        # On narrower screens only the icon shows, so the edit actions fit one row.
-        self.settings_icon_button = pmui.IconButton(
+        # An icon, so the edit actions keep to one row beside the switches and tabs.
+        self.settings_button = pmui.IconButton(
             icon="tune",
             size="small",
             margin=(0, 4),
             color="primary",
             description="Settings",
             sx=_ICON_BUTTON_SX,
-            stylesheets=[_HIDE_WHEN_WIDE, _HIDE_ON_PHONE],
+            stylesheets=[_HIDE_ON_PHONE],
         )
-        self.settings_icon_button.on_click(lambda _event: self._click_settings())
         self.discard_button = pmui.Button(
             label="Discard",
             icon="undo",
@@ -745,7 +740,6 @@ class DashboardBar(Viewer):
             self.mode_tabs,
             *ask,
             self.settings_button,
-            self.settings_icon_button,
             *self.editor.toolbar_extra,
             self.overflow,
             self._divider,
@@ -877,7 +871,6 @@ class DashboardBar(Viewer):
         )
         self.discard_button.disabled = not editor.dirty
         self.settings_button.disabled = editor.read_only
-        self.settings_icon_button.disabled = editor.read_only
         self._sync_switchers()
 
     def _output(self) -> str:
@@ -1000,9 +993,6 @@ class DashboardBar(Viewer):
             self._update_view_meta()
             if not self.editor.editable:
                 self._sync_lead()
-
-    def _click_settings(self):
-        self.settings_button.clicks += 1
 
     def _on_period_chosen(self, item):
         """Set the auto-refresh period for this session, without marking the dashboard changed."""
