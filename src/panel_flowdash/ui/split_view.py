@@ -91,6 +91,10 @@ class SplitPreferences(param.Parameterized):
         doc="The width of the editor's sidecar, set by dragging its left edge.",
     )
 
+    palette_open = param.Boolean(
+        default=True, doc="Whether the component palette beside the canvas is open or folded."
+    )
+
     def to_json(self) -> str:
         """Return the preferences as stored in the browser."""
         return json.dumps(
@@ -101,6 +105,7 @@ class SplitPreferences(param.Parameterized):
                 "spec_view": self.spec_view,
                 "spec_text": self.spec_text,
                 "sidecar_width": self.sidecar_width,
+                "palette_open": self.palette_open,
             }
         )
 
@@ -134,6 +139,8 @@ class SplitPreferences(param.Parameterized):
         width = stored.get("sidecar_width")
         if isinstance(width, int) and not isinstance(width, bool):
             update["sidecar_width"] = max(SIDECAR_MIN_WIDTH, min(SIDECAR_MAX_WIDTH, width))
+        if isinstance(stored.get("palette_open"), bool):
+            update["palette_open"] = stored["palette_open"]
         if update:
             self.param.update(update)
         return bool(update)
@@ -377,7 +384,16 @@ class SplitView(Viewer):
             legacy_key=None if key == STORAGE_KEY else STORAGE_KEY,
         )
         self.preferences.param.watch(
-            self._store, ["split", "sizes", "code_dock", "spec_view", "spec_text", "sidecar_width"]
+            self._store,
+            [
+                "split",
+                "sizes",
+                "code_dock",
+                "spec_view",
+                "spec_text",
+                "sidecar_width",
+                "palette_open",
+            ],
         )
 
     def _on_split_changed(self, *_events):
