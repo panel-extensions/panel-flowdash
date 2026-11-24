@@ -158,6 +158,20 @@ def server_cleanup():
 
 
 @pytest.fixture(autouse=True)
+def no_model_lists(monkeypatch):
+    """Keep model listing off the network; a test that wants lists replaces ``_fetch_body``."""
+    from panel_flowdash import ai
+
+    async def unreachable(url, headers):
+        raise OSError("no network in tests")
+
+    monkeypatch.setattr(ai, "_fetch_body", unreachable)
+    ai._MODEL_LISTS.clear()
+    yield
+    ai._MODEL_LISTS.clear()
+
+
+@pytest.fixture(autouse=True)
 def cache_cleanup():
     """Clean up cache."""
     state.clear_caches()

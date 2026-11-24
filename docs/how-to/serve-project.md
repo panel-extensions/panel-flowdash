@@ -302,7 +302,10 @@ opened again at any time from Admin, General.
 
 The AI step writes the provider key as a reference to an environment
 variable, such as `${OPENAI_API_KEY}`, unless you choose to paste a key,
-which is then stored encrypted like one saved under Admin, AI.
+which is then stored encrypted like one saved under Admin, AI. Once the key
+can be read, the Model field suggests the chat models the provider lists for
+it, newest first; you can still type any model id. Adding a model under
+Admin, AI suggests the models of every provider with a key in the same way.
 
 ### Two ways of working
 

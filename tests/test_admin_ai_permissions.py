@@ -9,7 +9,7 @@ import panel as pn
 import pytest
 from bokeh.document import Document
 
-from panel_flowdash import project as project_module
+from panel_flowdash import ai as ai_module, project as project_module
 from panel_flowdash.admin import ADMIN_ROUTE, AISettings, PermissionsForm
 from panel_flowdash.ai import (
     KEY_CHECKS,
@@ -255,6 +255,43 @@ class TestModels:
         view._model_id.value = "no-provider"
         assert not view.save_model()
         assert "names the provider" in view._drawer_alert.object
+
+    async def test_the_drawer_suggests_the_models_of_providers_with_a_key(
+        self, sections, tmp_path, monkeypatch
+    ):
+        for provider in ai_module.PROVIDERS.values():
+            if provider.env:
+                monkeypatch.delenv(provider.env, raising=False)
+        monkeypatch.setenv("OPENAI_API_KEY", SECRET)
+        monkeypatch.setenv("ANTHROPIC_API_KEY", ENV_SECRET)
+        lists = {
+            "https://api.openai.com/v1/models": {"data": [{"id": "gpt-6"}]},
+            "https://api.anthropic.com/v1/models": {"data": [{"id": "claude-x"}]},
+        }
+        asked = []
+
+        async def fetch(url, headers):
+            asked.append(url.split("?")[0])
+            return 200, json.dumps(lists[url.split("?")[0]])
+
+        monkeypatch.setattr(ai_module, "_fetch_body", fetch)
+        view = _section(_app(tmp_path), "ai")
+        assert await view.suggest_models() == ["openai:gpt-6", "anthropic:claude-x"]
+        assert view._model_id.options == ["openai:gpt-6", "anthropic:claude-x"]
+        assert view._model_id.helper_text == "Models listed by OpenAI and Anthropic."
+        assert sorted(asked) == sorted(lists)
+        view._model_id.value = "openai:not-listed"
+        assert view._model_id.value == "openai:not-listed"
+
+    async def test_the_drawer_says_when_no_provider_has_a_key(
+        self, sections, tmp_path, monkeypatch
+    ):
+        for provider in ai_module.PROVIDERS.values():
+            if provider.env:
+                monkeypatch.delenv(provider.env, raising=False)
+        view = _section(_app(tmp_path), "ai")
+        assert await view.suggest_models() == []
+        assert "Set a provider's key" in view._model_id.helper_text
 
     def test_removing_a_model_drops_the_fallbacks_to_it(self, sections, tmp_path):
         text = "ai:\n  models:\n    - id: openai:a\n      fallback: openai:b\n    - id: openai:b\n"

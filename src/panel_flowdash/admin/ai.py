@@ -9,6 +9,7 @@ cleared from the field as soon as it is saved or the dialog closes.
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import datetime as dt
 import logging
@@ -46,6 +47,7 @@ from panel_flowdash.ai import (
     check_model_settings,
     key_status,
     ledger_for,
+    list_models,
     load_ai,
     model_entries,
     provider_config,
@@ -116,6 +118,11 @@ _SAVED_ICON = (
 
 def _initial(name: str) -> str:
     return "R" if name == "openrouter" else PROVIDERS[name].label[0]
+
+
+def _and_join(words: t.Sequence[str]) -> str:
+    """Return *words* joined as prose: "A", "A and B", "A, B and C"."""
+    return words[0] if len(words) == 1 else f"{', '.join(words[:-1])} and {words[-1]}"
 
 
 def _dollars(amount: float) -> str:
@@ -596,9 +603,14 @@ class AISettings(Viewer):
         self._label = pmui.TextInput(
             label="Label", sizing_mode="stretch_width", margin=0, size="small"
         )
-        self._model_id = pmui.TextInput(
+        # Free text, suggesting the models the providers with a key list.
+        self._model_id = pmui.AutocompleteInput(
             label="Model id",
             placeholder="provider:model, e.g. openai:gpt-5",
+            options=[],
+            restrict=False,
+            search_strategy="includes",
+            min_characters=0,
             sizing_mode="stretch_width",
             margin=0,
             size="small",
@@ -700,14 +712,14 @@ class AISettings(Viewer):
         )
         fields = pn.Column(
             self._drawer_alert,
+            self._model_id,
             pn.Row(
                 self._label,
-                self._model_id,
+                self._description,
                 margin=0,
                 sizing_mode="stretch_width",
                 styles={"gap": "12px"},
             ),
-            self._description,
             section("Offered to"),
             self._offered,
             self._groups,
@@ -838,6 +850,43 @@ class AISettings(Viewer):
             self._fallback.disabled = fallback is None
             self._remove.visible = entry is not None and not entry.locked
             self._drawer.open = True
+        if entry is None:
+            pn.state.execute(self.suggest_models)
+
+    async def suggest_models(self) -> list[str]:
+        """Offer the models listed by every provider with a key (or a configured local server)."""
+        ai = self.ai()
+        configured = (ai or {}).get("providers") or {}
+        asked: dict[str, t.Awaitable] = {}
+        for name, provider in PROVIDERS.items():
+            if provider.local:
+                if name not in configured:
+                    continue
+                key = None
+            else:
+                try:
+                    key = resolve_secret(provider_key(ai, name))
+                except SecretError:
+                    continue
+                if not key:
+                    continue
+            asked[name] = list_models(name, key, provider_config(ai, name).get("base_url"))
+        if not asked:
+            self._model_id.helper_text = "Set a provider's key under Providers to see its models."
+            return []
+        self._model_id.loading = True
+        try:
+            lists = dict(zip(asked, await asyncio.gather(*asked.values()), strict=True))
+        finally:
+            self._model_id.loading = False
+        ids = [i for found in lists.values() for i in found.ids]
+        listed = [PROVIDERS[n].label for n, found in lists.items() if found.ids]
+        failed = [found.message.rstrip(".") for found in lists.values() if not found.ids]
+        parts = ([f"Models listed by {_and_join(listed)}"] if listed else []) + failed
+        self._model_id.param.update(
+            options=ids, helper_text=". ".join(p for p in parts if p) + "."
+        )
+        return ids
 
     def close_model(self):
         """Close the drawer without saving."""

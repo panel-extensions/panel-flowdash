@@ -1,13 +1,14 @@
 """Tests of the setup wizard at /admin/setup."""
 
 import getpass
+import json
 import logging
 from types import SimpleNamespace
 
 import panel_material_ui as pmui
 import pytest
 
-from panel_flowdash import project as project_module
+from panel_flowdash import ai as ai_module, project as project_module
 from panel_flowdash.admin import SettingsForm, WizardStep, access
 from panel_flowdash.admin.page import ADMIN_ROUTE, AdminPage
 from panel_flowdash.admin.wizard import (
@@ -492,3 +493,21 @@ class TestFinishIsSafe:
         _go(wizard, "Review")
         assert wizard.confirmations == []
         assert not wizard._confirm.visible
+
+
+async def test_the_ai_step_suggests_the_models_the_provider_lists(tmp_path, sections, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", SECRET)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    async def fetch(url, headers):
+        assert headers["Authorization"] == f"Bearer {SECRET}"
+        return 200, json.dumps({"data": [{"id": "gpt-6"}]})
+
+    monkeypatch.setattr(ai_module, "_fetch_body", fetch)
+    step = _step(_wizard(_app(tmp_path)), "AI")
+    step._provider.value = "openai"
+    assert await step.suggest_models() == ["openai:gpt-6"]
+    assert step._model.helper_text == "Models listed by OpenAI."
+    step._provider.value = "anthropic"
+    assert await step.suggest_models() == []
+    assert step._model.options == []

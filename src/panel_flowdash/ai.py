@@ -83,6 +83,8 @@ class Provider:
     auth: str = "bearer"
     blurb: str = ""
     local: bool = False
+    models_url: str | None = None
+    """Where the provider lists its models, if not at ``test_url``."""
 
 
 PROVIDERS: dict[str, Provider] = {
@@ -95,6 +97,7 @@ PROVIDERS: dict[str, Provider] = {
             "ANTHROPIC_API_KEY",
             "https://api.anthropic.com/v1/models",
             auth="x-api-key",
+            models_url="https://api.anthropic.com/v1/models?limit=1000",
         ),
         Provider(
             "openrouter",
@@ -102,6 +105,7 @@ PROVIDERS: dict[str, Provider] = {
             "OPENROUTER_API_KEY",
             "https://openrouter.ai/api/v1/key",
             blurb="One key for models of many providers",
+            models_url="https://openrouter.ai/api/v1/models",
         ),
         Provider(
             "google-gla",
@@ -109,6 +113,7 @@ PROVIDERS: dict[str, Provider] = {
             "GOOGLE_API_KEY",
             "https://generativelanguage.googleapis.com/v1beta/models",
             auth="x-goog-api-key",
+            models_url="https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000",
         ),
         Provider("groq", "Groq", "GROQ_API_KEY", "https://api.groq.com/openai/v1/models"),
         Provider("mistral", "Mistral", "MISTRAL_API_KEY", "https://api.mistral.ai/v1/models"),
@@ -794,24 +799,31 @@ async def _fetch(url: str, headers: Mapping[str, str]) -> tuple[int, str]:
     return response.code, response.reason or ""
 
 
+def _request(
+    provider: Provider, key: str | None, base_url: str | None, url: str
+) -> tuple[str, dict[str, str]]:
+    """Return *url* (a path on a local server) and the headers that carry *key*."""
+    headers: dict[str, str] = {}
+    if provider.local:
+        return (base_url or OLLAMA_URL).rstrip("/").removesuffix("/v1") + url, headers
+    if key:
+        if provider.auth == "bearer":
+            headers["Authorization"] = f"Bearer {key}"
+        else:
+            headers[provider.auth] = key
+    if provider.name == "anthropic":
+        headers["anthropic-version"] = "2023-06-01"
+    return url, headers
+
+
 async def check_key(
     name: str, key: str | None = None, base_url: str | None = None, fetch: Fetch | None = None
 ) -> KeyCheck:
     """Ask provider *name* whether *key* is valid (or a local server whether it is up)."""
     provider = PROVIDERS[name]
-    headers: dict[str, str] = {}
-    if provider.local:
-        url = (base_url or OLLAMA_URL).rstrip("/").removesuffix("/v1") + provider.test_url
-    else:
-        if not key:
-            return KeyCheck(False, "No key is set.")
-        url = provider.test_url
-        if provider.auth == "bearer":
-            headers["Authorization"] = f"Bearer {key}"
-        else:
-            headers[provider.auth] = key
-        if name == "anthropic":
-            headers["anthropic-version"] = "2023-06-01"
+    if not provider.local and not key:
+        return KeyCheck(False, "No key is set.")
+    url, headers = _request(provider, key, base_url, provider.test_url)
     try:
         status, reason = await asyncio.wait_for((fetch or _fetch)(url, headers), 20)
     except Exception as exc:
@@ -828,6 +840,125 @@ async def check_key(
     if status == 599:
         return KeyCheck(False, f"{provider.label} could not be reached.")
     return KeyCheck(False, f"{provider.label} answered {status} {reason}.".rstrip() + ".")
+
+
+# ---------------------------------------------------------------------------
+# The models a provider offers
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ModelList:
+    """The model ids a provider listed, as pydantic-ai ids (``openai:gpt-5``), or why it did not."""
+
+    ids: tuple[str, ...]
+    message: str = ""
+
+
+# Listed models per provider and key, for MODEL_LIST_TTL seconds; keyed by a hash, never the key.
+_MODEL_LISTS: dict[tuple[str, str], tuple[float, ModelList]] = {}
+MODEL_LIST_TTL = 600
+
+FetchBody = Callable[[str, Mapping[str, str]], t.Awaitable[tuple[int, str]]]
+
+# Ids from OpenAI and Groq lists that are not chat models.
+_NOT_CHAT = (
+    "embedding",
+    "whisper",
+    "tts",
+    "dall-e",
+    "moderation",
+    "transcribe",
+    "babbage",
+    "davinci",
+    "guard",
+    "image",
+    "audio",
+    "realtime",
+    "gpt-live",
+)
+
+
+async def _fetch_body(url: str, headers: Mapping[str, str]) -> tuple[int, str]:
+    from tornado.httpclient import AsyncHTTPClient
+
+    response = await AsyncHTTPClient().fetch(
+        url, headers=dict(headers), request_timeout=15, raise_error=False
+    )
+    body = response.body.decode("utf-8", "replace") if response.body else ""
+    return response.code, body
+
+
+def _created(entry: Mapping[str, t.Any]) -> float:
+    """Return when a listed model was created, as a timestamp, or 0 if the list does not say."""
+    value = entry.get("created", entry.get("created_at"))
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        with contextlib.suppress(ValueError):
+            return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    return 0.0
+
+
+def _model_names(name: str, data: t.Any) -> list[str]:
+    """Return the chat model names in provider *name*'s list response *data*, newest first."""
+    if name == "google-gla":
+        return [
+            m["name"].removeprefix("models/")
+            for m in data.get("models") or []
+            if "generateContent" in (m.get("supportedGenerationMethods") or ["generateContent"])
+        ]
+    if name == "ollama":
+        entries = [{"id": m.get("name") or m.get("model")} for m in data.get("models") or []]
+    else:
+        entries = data.get("data") or []
+    if name == "mistral":
+        entries = [
+            m for m in entries if (m.get("capabilities") or {}).get("completion_chat", True)
+        ]
+    if name in ("openai", "groq"):
+        entries = [
+            m for m in entries if not any(part in (m.get("id") or "") for part in _NOT_CHAT)
+        ]
+    entries = sorted(entries, key=lambda m: (-_created(m), m.get("id") or ""))
+    return [m.get("id") for m in entries]
+
+
+async def list_models(
+    name: str,
+    key: str | None = None,
+    base_url: str | None = None,
+    fetch: FetchBody | None = None,
+) -> ModelList:
+    """Ask provider *name* which chat models *key* can use, as pydantic-ai ids, newest first.
+
+    Answers for the same provider, key and server are reused for
+    :data:`MODEL_LIST_TTL` seconds. A provider that cannot be reached or
+    refuses the key gives no ids and a message saying why.
+    """
+    import hashlib
+
+    provider = PROVIDERS[name]
+    if not provider.local and not key and name != "openrouter":
+        return ModelList((), "No key is set.")
+    token = hashlib.sha256(f"{key or ''}|{base_url or ''}".encode()).hexdigest()[:16]
+    cached = _MODEL_LISTS.get((name, token))
+    if cached is not None and time.monotonic() - cached[0] < MODEL_LIST_TTL:
+        return cached[1]
+    url, headers = _request(provider, key, base_url, provider.models_url or provider.test_url)
+    try:
+        status, body = await asyncio.wait_for((fetch or _fetch_body)(url, headers), 20)
+    except Exception as exc:
+        return ModelList((), f"{provider.label} could not be reached ({type(exc).__name__}).")
+    if not 200 <= status < 300:
+        return ModelList((), f"{provider.label} did not list its models ({status}).")
+    try:
+        names = _model_names(name, json.loads(body))
+    except (ValueError, AttributeError, KeyError, TypeError):
+        return ModelList((), f"{provider.label} answered with a list FlowDash cannot read.")
+    result = ModelList(tuple(dict.fromkeys(f"{name}:{n}" for n in names if n)))
+    _MODEL_LISTS[(name, token)] = (time.monotonic(), result)
+    return result
 
 
 def key_status(ai: Mapping[str, t.Any] | None, name: str) -> tuple[SecretInfo, KeyCheck | None]:
