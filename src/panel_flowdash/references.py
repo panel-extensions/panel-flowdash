@@ -374,7 +374,7 @@ def reference_choices(config: t.Mapping[str, t.Any], inputs: t.Mapping[str, t.An
     description=(
         "A node of another dashboard, shown read only and kept in step with it: "
         "its outputs and its view, computed with that dashboard's own filters. "
-        "Edit the node in its own dashboard."
+        "Change the node in its own dashboard."
     ),
     config=["dashboard", "node"],
     config_choices=reference_choices,
@@ -440,7 +440,7 @@ class Reference(Viewer):
                 label=f"From {self.source_title}",
                 detail=(
                     f"{self.node} of the dashboard {self.source_title}, shown read only. "
-                    "Edit it there; this follows its saved version."
+                    "Change it there; this follows its saved version."
                 ),
                 kind="reference",
                 icon="link",
