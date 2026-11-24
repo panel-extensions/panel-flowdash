@@ -339,6 +339,17 @@ class FlowDashApp(Viewer):
         their schemas.""",
     )
 
+    agent_starters = param.Callable(
+        default=None,
+        doc="""
+        The questions the assistant offers when a new dashboard opens, with
+        Ask on, until its first request. Called with the session's
+        `LiveDashboardOps`, it returns a list of question strings, or an
+        awaitable of one, e.g. from a data catalogue's tables; at most three
+        are shown. None asks about the data sources the person may place, by
+        title (see `panel_flowdash.agent.starters.default_starter_questions`).""",
+    )
+
     agent_model_settings = param.Dict(
         default=None,
         allow_None=True,
@@ -543,6 +554,9 @@ class FlowDashApp(Viewer):
     # Bumped by every navigation. A load that awaited something checks it before
     # touching the page, so a slow load cannot overwrite a newer navigation.
     _nav_generation: int = 0
+
+    # A dashboard just created from a template, which opens with Ask on once loaded.
+    _fresh_dashboard: str | None = None
 
     _RESERVED_EDITOR_OPTIONS = (
         "authorize_admin",
@@ -1876,6 +1890,9 @@ class FlowDashApp(Viewer):
             *self._page_dialogs,
         ]
         self._note_opened(dashboard_id)
+        fresh, self._fresh_dashboard = self._fresh_dashboard, None
+        if fresh == dashboard_id and edit:
+            self._start_asking()
         opening = (parse_qs((search or "").lstrip("?")).get("open") or [None])[0]
         if opening is not None:
             pn.state.execute(partial(self._open_on_load, opening, edit), schedule=True)
@@ -1928,7 +1945,17 @@ class FlowDashApp(Viewer):
             self._unsaved_dialog,
             *self._page_dialogs,
         ]
+        self._start_asking()
         return True
+
+    def _start_asking(self):
+        """Turn Ask on for a new dashboard, opening the assistant with questions to start from."""
+        session = self._agent_session
+        editor = self._editor
+        if session is None or not editor.assistant or not editor.editable or editor.read_only:
+            return
+        editor.ask = True
+        session.starters.offer(self.agent_starters)
 
     def _request_new_dashboard(self, title_str: str) -> bool:
         """Create a dashboard, first asking about unsaved changes on the current one.
@@ -2684,6 +2711,8 @@ class FlowDashApp(Viewer):
         self._editor._guard_restricted(model, None)
         created = copy_dashboard(self.store, model, self._user_id, title)
         self._refresh_sidebar_dashboards()
+        # It opens once navigation loads it, see _load_dashboard_sync.
+        self._fresh_dashboard = created.dashboard_id
         return created
 
     def _reset_dialog(self, context: dict, subject: str):

@@ -35,6 +35,7 @@ from .highlight import ChangeHighlighter
 from .live import LiveDashboardOps
 from .models import agent_model_choice
 from .ops import OperationError, read_revision
+from .starters import StarterQuestions
 from .tools import ARTIFACT_KIND, AgentEditLock, FlowDashDeps, approval_policy
 
 if t.TYPE_CHECKING:
@@ -254,6 +255,9 @@ class AgentSession:
             css_classes=["flowdash-agent-waiting"],
         )
         self._place_notice(self.wait_notice)
+        # Offered on a new dashboard until its first request, see FlowDashApp.agent_starters.
+        self.starters = StarterQuestions(self)
+        self._place_notice(self.starters.view)
         if editor.history:
             editor.edit_history.on_load = self._on_history_loaded
             self.drawer.param.watch(self._on_drawer_open, "open")

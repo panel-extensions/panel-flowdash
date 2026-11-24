@@ -43,6 +43,7 @@ PROJECT_OPTIONS = (
     "agent_model_settings",
     "agent_models",
     "agent_sensitive_components",
+    "agent_starters",
     "breakpoints",
     "component_libraries",
     "configure_layout",
