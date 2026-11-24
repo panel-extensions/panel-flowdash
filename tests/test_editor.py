@@ -1707,6 +1707,11 @@ class TestDisplayModes:
         assert editor._workspace_area.objects[0] is editor._flow
         assert editor._tile_grid not in editor._workspace_area.objects
 
+    async def test_the_hidden_ask_dock_adds_nothing_to_the_canvas_minimum_width(self, editor):
+        row = editor._ask_row.get_root()
+        canvas = row.children[1]
+        assert canvas.min_width and row.min_width == canvas.min_width
+
     async def test_dialogs_stay_mounted_in_both_modes(self, editor):
         dialogs = [
             editor._clear_dialog,

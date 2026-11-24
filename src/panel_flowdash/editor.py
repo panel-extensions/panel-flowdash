@@ -1066,6 +1066,20 @@ class _EditorCall:
         return f"_EditorCall({self._method!r})"
 
 
+class _AskRow(pn.Row):
+    """The row holding the open surface, with the Ask dock on its left.
+
+    Panel adds every child's width to a row's minimum width, hidden or not, so
+    the dock's would keep the canvas wider than the window in edit mode, where
+    Ask is never docked, and lay a phone's canvas out wider than the screen
+    until the server knows it is a phone. Where the dock shows, in view mode,
+    the row narrows to the window anyway, so only the surface sets its minimum.
+    """
+
+    def _compute_sizing_mode(self, children, props):
+        return super()._compute_sizing_mode(children[1:], props)
+
+
 def _plain_integer_formatters(df) -> dict[str, dict[str, str]]:
     """Show integer columns below 10,000 without thousands separators, as cards do (years, ids)."""
     formatters = {}
@@ -4283,7 +4297,7 @@ class FlowDash(Viewer):
         )
         self._ask_dock.visible = False
         # Holds the open surface, with the dock on its left; it stays in the view.
-        self._ask_row = pn.Row(
+        self._ask_row = _AskRow(
             self._ask_dock,
             self._editor_row,
             sizing_mode="stretch_both",
