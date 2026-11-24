@@ -151,6 +151,43 @@ class TestDashboardBarSections:
         editor.dirty = True
         assert "discard" in [item["action"] for item in bar.overflow.items if item]
 
+    async def test_a_phone_opens_and_closes_the_assistant_from_the_overflow_menu(self, editor):
+        bar = editor._dashboard_bar
+        editor.mode = "wiring"
+        bar._phone_query.phone = True
+        editor.assistant = True
+        phone = [item["action"] for item in bar.overflow.items[:6]]
+        assert phone[3:] == ["assistant:open", "settings", "done"]
+        assert bar.overflow.items[3]["label"] == "Assistant"
+        assert bar.overflow.items[3]["icon"] == "smart_toy"
+        bar._on_overflow(bar.overflow.items[3])
+        assert editor.ask and editor.editable and editor.surface == "workspace"
+        assert bar.overflow.items[3]["label"] == "Close assistant"
+        bar._on_overflow(bar.overflow.items[3])
+        assert not editor.ask
+        assert bar.overflow.items[3]["label"] == "Assistant"
+        # In view mode Ask is the Explore view, the menu's Ask.
+        editor.editable = False
+        assert "Assistant" not in _labels(editor)
+
+    async def test_the_phone_menu_leaves_the_explore_view_to_open_the_assistant(self, editor):
+        bar = editor._dashboard_bar
+        bar._phone_query.phone = True
+        editor.assistant = True
+        bar._on_overflow({"action": "tab:explore"})
+        assert editor.surface == "explore"
+        bar._on_overflow({"action": "assistant:open"})
+        assert editor.ask and editor.surface == "workspace"
+        # The drawer closes on the Explore view, so the menu offers to open it there.
+        bar._on_overflow({"action": "tab:explore"})
+        assert editor.ask and "Assistant" in _labels(editor)
+        assert "Close assistant" not in _labels(editor)
+
+    async def test_without_an_assistant_a_phone_menu_offers_none(self, editor):
+        bar = editor._dashboard_bar
+        bar._phone_query.phone = True
+        assert "Assistant" not in _labels(editor)
+
     async def test_the_overflow_menu_switches_modes_on_a_phone(self, editor):
         bar = editor._dashboard_bar
         bar._phone_query.phone = True

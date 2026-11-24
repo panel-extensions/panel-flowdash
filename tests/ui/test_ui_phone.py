@@ -119,7 +119,7 @@ def test_the_top_bar_fits_a_phone_screen(page, edit):
     ("edit", "entries"),
     [
         (False, ["Ask", "Report", "Edit", "Refresh now", "Full screen"]),
-        (True, ["Ask", "Report", "Layout", "Settings", "Done editing"]),
+        (True, ["Ask", "Report", "Layout", "Assistant", "Settings", "Done editing"]),
     ],
     ids=["view", "edit"],
 )
