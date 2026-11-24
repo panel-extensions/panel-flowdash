@@ -317,19 +317,23 @@ class AgentSession:
             return
         self.ledger.add(model_id, run.cost_usd)
 
-    def _on_explore(self, *_events):
+    def _on_explore(self, *events):
         """Open the drawer as Ask in edit mode, close it while the feed is Ask, and bring back a pending approval."""
         editor = self.app._editor
         exploring = editor.explore or (editor.ask and not editor.editable)
         self.drawer.open_on_approval = not exploring
         if exploring:
             self.drawer.open = False
-        elif editor.editable and editor.ask:
-            self.drawer.open = True
+        elif editor.editable:
+            if "ask" in {event.name for event in events}:
+                self.drawer.open = editor.ask
+            elif self.drawer.open:
+                # Open as edit mode starts, e.g. as the assistant begins to edit: it is Ask now.
+                editor.ask = True
+            elif editor.ask or self.runner.state.pending_approvals:
+                self.drawer.open = True
         elif self.runner.state.pending_approvals:
             self.drawer.open = True
-        elif editor.editable:
-            self.drawer.open = False
 
     def _on_drawer_toggled(self, event):
         """Keep Ask open while the drawer is, in edit mode, where the drawer is Ask."""

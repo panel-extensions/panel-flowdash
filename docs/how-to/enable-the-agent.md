@@ -162,7 +162,9 @@ agent = create_agent(
 
 The robot button in the top bar opens the assistant: a drawer beside the page with
 the chat, the versions of the dashboard the agent published and the calls waiting for
-approval. It stays open while you move between dashboards. The command palette
+approval. It stays open while you move between dashboards. On a dashboard, **Ask** in
+edit mode takes the robot button's place and opens the same drawer; closing the drawer
+turns Ask off. The command palette
 (Ctrl+K) also offers "Ask the assistant" for whatever you typed; a question asked
 while the agent is busy is sent once it is done. In full screen, a call waiting for
 approval shows a notice whose Review button leaves full screen and opens the drawer.
@@ -224,12 +226,19 @@ to people who may only view the dashboard, and to anyone who may not use the com
 of a node the request created. Set `editor_options={"provenance": False}` to leave the
 action out.
 
-### Explore
+### Ask and Explore
 
-**Explore**, next to View and Edit (and first among the Dataflow, Layout and Split tabs
-in edit mode), shows the dashboard as a conversation: one entry per turn, the question,
+**Ask** in a dashboard's top bar, next to the Dashboard/Report switch and Edit, opens
+the Explore feed left of the dashboard or the report, which stay on screen beside it.
+Drag its right edge to resize it, from 320 pixels to half the window; the width is
+remembered by the browser. In edit mode Ask opens the assistant's drawer instead, and
+Done brings the feed back if Ask is still on. A phone has no room beside the dashboard,
+so there Ask, in the More actions menu, shows the feed in place of the dashboard.
+
+The feed shows the dashboard as a conversation: one entry per turn, the question,
 the assistant's steps and answer, and below it a card for each node the turn created,
-showing that node live. A view or control shows what its tile shows; a data source or
+showing that node live. A view or control shows what its tile shows, except beside the
+dashboard, whose tile already shows it, where the card says so; a data source or
 transform shows its output as a table. **Add to dashboard** on a card places the node's
 tile on the grid, and "On dashboard" says it is there already. A card whose node a later
 turn changed says so ("Changed later by 1 manual edit"), and a batch of manual edits is
@@ -245,7 +254,7 @@ sessions; the dashboard's other turns are listed, collapsed, in an "Earlier requ
 edits" entry at the top. Requests made in
 this session show every step; after a reload, or for requests made by others, an entry
 shows what the dashboard file records, with the same redaction as **How was this
-made?**. While Explore is shown the drawer stays closed, and an approval the Explore
+made?**. While the feed is shown the drawer stays closed, and an approval the Explore
 agent asks for is answered in the feed. An approval waiting on the surface out of sight
 shows a notice whose Review button brings it back, and leaving Explore with an approval
 of the drawer's pending opens the drawer on it. People who may only view the dashboard get the feed

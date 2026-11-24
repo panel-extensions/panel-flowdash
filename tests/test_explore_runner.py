@@ -449,3 +449,30 @@ async def test_a_drawer_run_is_never_taken_for_an_explore_question(store, monkey
     (drawn,) = app._editor.turns
     assert drawn.run == "explore-looking"
     assert list(feed.state.runs) == [HISTORY_RUN]
+
+
+async def test_the_drawer_is_ask_in_edit_mode(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    session, editor = app._agent_session, app._editor
+    assert editor.assistant
+    editor.editable = False
+    editor.ask = True
+    assert editor.ask_docked and not session.drawer.open
+    editor.editable = True
+    assert session.drawer.open and not editor.ask_docked
+    session.drawer.open = False
+    assert not editor.ask
+    editor.ask = True
+    assert session.drawer.open
+    editor.editable = False
+    assert editor.ask_docked and not session.drawer.open
+
+
+async def test_the_drawer_opened_in_view_mode_stays_open_as_edit_mode_starts(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    session, editor = app._agent_session, app._editor
+    editor.param.update(editable=False, ask=False)
+    # Asked from the command palette; the assistant's first edit switches to edit mode.
+    session.drawer.open = True
+    editor.editable = True
+    assert session.drawer.open and editor.ask
