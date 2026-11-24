@@ -28,6 +28,9 @@ from panel_flowdash.turns import DashboardTurn, decode_turns
 
 logger = logging.getLogger(__name__)
 
+#: The SQLite database ``flowdash serve`` keeps in the project folder unless told otherwise.
+DEFAULT_DB_NAME = "dashboards.db"
+
 # The ids `BaseDashboardStore.create_dashboard` makes.
 _RANDOM_ID = re.compile(r"[0-9a-f]{12}")
 

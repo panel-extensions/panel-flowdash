@@ -19,7 +19,7 @@ from panel_flowdash.admin.wizard import (
 )
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.auth import AuthConfig
-from panel_flowdash.dashboard_store import MemoryDashboardStore
+from panel_flowdash.dashboard_store import DashboardStore, MemoryDashboardStore
 from panel_flowdash.project import PROJECT_FILE, ProjectSection, load_project
 from panel_flowdash.secret_store import encryption_available, resolve_secret
 
@@ -433,6 +433,18 @@ class TestPluginSteps:
         assert ("file", "1 data file in the project folder", "turbines.csv") in _step(
             wizard, "Welcome"
         ).found()
+
+    def test_the_data_step_leaves_out_the_dashboard_store(self, tmp_path, sections):
+        (tmp_path / "turbines.csv").write_text("a,b\n1,2\n")
+        (tmp_path / "plants.db").write_bytes(b"")
+        (tmp_path / "dashboards.db").write_bytes(b"")
+        store = DashboardStore(str(tmp_path / "custom.db"))
+        app = FlowDashApp(registry={}, project_dir=tmp_path, store=store, auth_config=ADMINS)
+        data = _step(_wizard(app), "Data")
+        assert data.summary() == ["2 data files in the project folder"]
+        listing = data.view()[2].object
+        assert "turbines.csv" in listing and "plants.db" in listing
+        assert "dashboards.db" not in listing and "custom.db" not in listing
 
 
 class TestFinishIsSafe:
