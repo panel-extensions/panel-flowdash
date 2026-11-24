@@ -40,7 +40,7 @@ from panel_flowdash.admin.sections import (
     ThemePreview,
     _project_directory,
 )
-from panel_flowdash.ai import PROVIDERS, KeyCheck, check_key, provider_name
+from panel_flowdash.ai import PROVIDERS, KeyCheck, check_key, list_models, provider_name
 from panel_flowdash.dashboard_store import DEFAULT_DB_NAME
 from panel_flowdash.project import (
     _FILE_LOCK,
@@ -645,10 +645,15 @@ class AIStep(WizardStep):
             sizing_mode="stretch_width",
             css_classes=["flowdash-wizard-check"],
         )
-        self._model = pmui.TextInput(
+        # Free text, suggesting the models the provider lists for the key.
+        self._model = pmui.AutocompleteInput(
             label="Model",
             value=model,
             placeholder="e.g. openai:<model>",
+            options=[],
+            restrict=False,
+            search_strategy="includes",
+            min_characters=0,
             sizing_mode="stretch_width",
             margin=0,
             css_classes=["flowdash-wizard-model"],
@@ -668,6 +673,31 @@ class AIStep(WizardStep):
             self._env.value = new.env or ""
         self._check.object = ""
         self._sync()
+        pn.state.execute(self.suggest_models)
+
+    async def suggest_models(self) -> list[str]:
+        """Offer the models the picked provider lists for the key, if it can be read."""
+        provider = self.provider
+        try:
+            key = self._resolved_key()
+        except SecretError:
+            key = None
+        if not key:
+            self._model.param.update(options=[], helper_text="")
+            return []
+        self._model.loading = True
+        try:
+            found = await list_models(provider, key)
+        finally:
+            self._model.loading = False
+        if provider != self.provider:
+            return []
+        label = PROVIDERS[provider].label
+        self._model.param.update(
+            options=list(found.ids),
+            helper_text=f"Models listed by {label}." if found.ids else found.message,
+        )
+        return list(found.ids)
 
     def _variable(self) -> str:
         return (self._env.value_input or self._env.value or "").strip()
@@ -755,6 +785,8 @@ class AIStep(WizardStep):
             f'<div class="k"><span class="chip {tone}">'
             f"{'Connected' if result.ok else 'Not connected'}</span> {esc(result.message)}</div>"
         )
+        if result.ok:
+            await self.suggest_models()
         return result
 
     def changes(self) -> dict[str, t.Any]:
@@ -792,7 +824,7 @@ class AIStep(WizardStep):
         else:
             source = f"${{{self._variable()}}}"
         lines = [f"Provider: {label}, key from {source}"]
-        model = (self._model.value or "").strip()
+        model = (self._model.value_input or self._model.value or "").strip()
         if model:
             lines.append(f"Model: {model}")
         if self.last_check is not None and not self.last_check.ok:
@@ -801,6 +833,7 @@ class AIStep(WizardStep):
 
     def view(self):
         """Return the provider and key on the left, the model on the right."""
+        pn.state.execute(self.suggest_models)
         key = pmui.Paper(
             self._provider,
             self._source,
