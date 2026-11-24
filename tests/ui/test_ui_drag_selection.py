@@ -6,6 +6,7 @@ import pytest
 from panel.tests.util import wait_until
 
 from panel_flowdash import FlowDash, register
+from panel_flowdash.ui.drag_guard import DragGuard
 
 from .util import DASHBOARD_LOAD_TIMEOUT, center, serve_component, stable_box
 
@@ -17,7 +18,7 @@ pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference alrea
 TEXT = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor. " * 6
 
 
-@register(page=False, component=True, title="Notes", default_size={"width": 50, "height": 260})
+@register(page=False, component=True, title="Notes", default_size={"width": 400, "height": 260})
 def notes(config):
     return pn.pane.Markdown(TEXT, sizing_mode="stretch_both")
 
@@ -88,16 +89,20 @@ def test_dragging_a_tile_selects_no_text(page):
     before = page.evaluate(_BODY_USER_SELECT)
 
     first = tiles.first
-    first.hover()
-    handle = center(stable_box(first.locator(".muuri-handle.drag"), page))
+    dragged = page.locator(f".muuri-grid-item[data-id='{first.get_attribute('data-id')}']")
+    start = stable_box(dragged, page)
+    dragged.hover()
+    handle = center(stable_box(dragged.locator(".muuri-handle.drag"), page))
     last = stable_box(tiles.last, page)
     # Across the text of the other tiles, past the bottom of the grid.
     _drag(
         page,
         handle,
         (last["x"] + last["width"] - 20, last["y"] + last["height"] + 40),
+        steps=40,
         during=lambda: _held(page),
     )
+    wait_until(lambda: stable_box(dragged, page) != start, page, timeout=5000)
     _check_released(page, before)
 
 
@@ -183,4 +188,56 @@ def test_reordering_report_blocks_selects_no_text(page):
         during=lambda: _held(page),
     )
     wait_until(lambda: [next(iter(b)) for b in editor.report["blocks"]][-1] == "heading", page)
+    _check_released(page, before)
+
+
+def test_a_press_between_tiles_selects_no_text_but_tile_text_stays_selectable(page):
+    page.set_viewport_size({"width": 1400, "height": 900})
+    editor = _editor()
+    serve_component(page, editor)
+    tiles = page.locator(".muuri-grid-item")
+    expect(tiles).to_have_count(3, timeout=DASHBOARD_LOAD_TIMEOUT)
+    grid = stable_box(page.locator(".muuri-grid").first, page)
+    last = stable_box(tiles.last, page)
+
+    # From the empty grid below the tiles, up across their text.
+    _drag(
+        page,
+        (grid["x"] + grid["width"] - 20, last["y"] + last["height"] + 30),
+        (grid["x"] + 40, grid["y"] + 60),
+    )
+    assert page.evaluate(_SELECTED) == ""
+
+    text = stable_box(tiles.nth(1).get_by_text("Lorem ipsum").first, page)
+    _drag(page, (text["x"] + 5, text["y"] + 8), (text["x"] + text["width"] - 10, text["y"] + 30))
+    assert "ipsum" in page.evaluate(_SELECTED)
+
+
+def test_two_guards_on_one_page_restore_the_body(page):
+    handle = pn.pane.HTML(
+        '<div class="muuri-handle" style="width: 100px; height: 40px">handle</div>'
+    )
+    serve_component(page, pn.Column(DragGuard(), DragGuard(), handle, "Some text to select"))
+    before = page.evaluate(_BODY_USER_SELECT)
+    box = stable_box(page.get_by_text("handle", exact=True), page)
+    _drag(page, (box["x"] + 10, box["y"] + 10), (300, 300), during=lambda: _held(page))
+    _check_released(page, before)
+
+
+def test_dragging_from_the_canvas_corner_selects_no_text(page):
+    page.set_viewport_size({"width": 1400, "height": 900})
+    editor = _editor(mode="wiring")
+    serve_component(page, editor)
+    expect(page.locator(".react-flow__node")).to_have_count(3, timeout=DASHBOARD_LOAD_TIMEOUT)
+    before = page.evaluate(_BODY_USER_SELECT)
+
+    pane = stable_box(page.locator(".react-flow__pane"), page)
+    palette = stable_box(page.get_by_placeholder("Search components"), page)
+    # From beside the attribution in the corner, out over the palette's text.
+    _drag(
+        page,
+        (pane["x"] + pane["width"] - 30, pane["y"] + pane["height"] - 8),
+        (palette["x"] + 20, palette["y"] + 250),
+        during=lambda: _held(page),
+    )
     _check_released(page, before)

@@ -16,22 +16,30 @@ import typing as t
 from panel.custom import JSComponent
 
 #: What a drag starts from: tile handles (drag and resize), the handles of the
-#: components beside the grid, nodes, ports and the empty canvas, and the
-#: report's block handles. Native drags of ``draggable`` elements, e.g. palette
+#: components beside the grid, anything on the canvas (nodes, ports, the empty
+#: pane and its panels), and the report's block handles. Native drags of ``draggable`` elements, e.g. palette
 #: entries, are guarded from the press, and from their ``dragstart``.
 HANDLES = (
     ".muuri-handle",
     ".fd-control-handle",
-    ".react-flow__node",
-    ".react-flow__handle",
-    ".react-flow__pane",
-    ".react-flow__nodesselection-rect",
+    ".react-flow",
     ".fd-report-handle",
     "[draggable='true']",
 )
 
-#: Applied to the tile grid: the dragged or released tile and the resize ghost select nothing.
+#: Applied to the tile grid. In edit mode a press on the grid around the tiles
+#: starts no selection, while the tiles' own content stays selectable; the
+#: dragged or released tile and the resize ghost select nothing.
 GRID_DRAG_CSS = """
+.tile-grid:has(.muuri-grid:not(.muuri-no-handles)),
+.muuri-grid:not(.muuri-no-handles) {
+  -webkit-user-select: none;
+  user-select: none;
+}
+.muuri-grid:not(.muuri-no-handles) .muuri-grid-item > div:not(.muuri-handle) > * {
+  -webkit-user-select: text;
+  user-select: text;
+}
 .muuri-handle, .muuri-resize-ghost,
 .muuri-item-dragging, .muuri-item-dragging *,
 .muuri-item-releasing, .muuri-item-releasing * {
@@ -47,13 +55,19 @@ class DragGuard(JSComponent):
     From a press on one of :data:`HANDLES`, or a native ``dragstart`` of one, until
     the pointer is released or the native drag ends, the body's
     ``user-select`` is ``none``; afterwards its own inline value is put back.
-    A selection made before the drag is cleared as the drag starts. Presses
+    A selection made before the drag is cleared as the drag starts, and one
+    the browser makes during it all the same, as WebKit does. Presses
     in text fields, and on parts of a node marked ``nodrag``, are left alone.
     It takes no space on the page.
     """
 
     _esm = """
     const HANDLES = __HANDLES__
+    const GRID_BACKGROUND = [
+      ".muuri-grid:not(.muuri-no-handles) > .muuri-grid-item",
+      ".muuri-grid:not(.muuri-no-handles)",
+      ".tile-grid:has(.muuri-grid:not(.muuri-no-handles))",
+    ].join(", ")
 
     function editable(node) {
       const tag = node?.tagName
@@ -62,6 +76,9 @@ class DragGuard(JSComponent):
 
     function startsDrag(path) {
       if (editable(path[0])) { return false }
+      // A tile's resize edge, which some browsers report as the tile itself, and the
+      // edited grid around the tiles, where WebKit starts a selection despite the CSS.
+      if (path[0]?.matches?.(GRID_BACKGROUND)) { return true }
       for (const node of path) {
         if (!node.matches) { continue }
         if (node.classList.contains("nodrag")) { return false }
@@ -70,57 +87,56 @@ class DragGuard(JSComponent):
       return false
     }
 
-    export function render({ model }) {
-      let saved = null
-      let pressed = false
-      let native = false
+    // One guard per document, shared by every DragGuard rendered on the page, so
+    // a second one never takes the first one's "none" for the body's own value.
+    function install() {
+      const state = { users: 0, saved: null, pointers: new Set(), native: false }
 
       const hold = () => {
-        if (saved === null) {
+        if (state.saved === null) {
           const style = document.body.style
-          saved = [style.userSelect, style.webkitUserSelect]
+          state.saved = [style.userSelect, style.webkitUserSelect]
           style.userSelect = "none"
           style.webkitUserSelect = "none"
         }
         const selection = document.getSelection()
         if (selection && selection.type === "Range") { selection.removeAllRanges() }
       }
-      const release = () => {
-        if (saved === null || pressed || native) { return }
+      const release = (force = false) => {
+        if (!force && (state.pointers.size || state.native)) { return }
+        state.pointers.clear()
+        state.native = false
+        if (state.saved === null) { return }
         const style = document.body.style
-        ;[style.userSelect, style.webkitUserSelect] = saved
-        saved = null
+        ;[style.userSelect, style.webkitUserSelect] = state.saved
+        state.saved = null
       }
 
       const onDown = (event) => {
         if (event.button !== 0 || !startsDrag(event.composedPath())) { return }
-        pressed = true
+        state.pointers.add(event.pointerId)
         hold()
       }
-      const onUp = () => {
-        pressed = false
+      const onUp = (event) => {
+        state.pointers.delete(event.pointerId)
         release()
       }
       // A native drag cancels the pointer as it starts, and ends with dragend or drop.
-      const onCancel = () => {
-        pressed = false
-        if (!native) { release() }
-      }
+      const onCancel = onUp
       // Not for dragging selected text or an image, which needs its selection.
       const onDragStart = (event) => {
         if (!startsDrag(event.composedPath())) { return }
-        native = true
+        state.native = true
         hold()
       }
-      const onDragEnd = () => {
-        native = false
-        pressed = false
-        release()
-      }
-      const onBlur = () => {
-        pressed = false
-        native = false
-        release()
+      // Some browsers (WebKit) send no pointerup or pointercancel after a native drag.
+      const onDragEnd = () => release(true)
+      const onBlur = () => release(true)
+      // WebKit extends a selection into selectable text whatever the body's style.
+      const onSelectionChange = () => {
+        if (state.saved === null) { return }
+        const selection = document.getSelection()
+        if (selection && selection.type === "Range") { selection.removeAllRanges() }
       }
 
       const listeners = [
@@ -131,13 +147,25 @@ class DragGuard(JSComponent):
         [document, "dragend", onDragEnd],
         [document, "drop", onDragEnd],
         [window, "blur", onBlur],
+        [document, "selectionchange", onSelectionChange],
       ]
       for (const [target, type, listener] of listeners) { target.addEventListener(type, listener, true) }
-      model.on("remove", () => {
+      state.uninstall = () => {
         for (const [target, type, listener] of listeners) { target.removeEventListener(type, listener, true) }
-        pressed = false
-        native = false
-        release()
+        release(true)
+      }
+      return state
+    }
+
+    export function render({ model }) {
+      const state = window.__flowdashDragGuard ??= install()
+      state.users += 1
+      model.on("remove", () => {
+        state.users -= 1
+        if (state.users <= 0) {
+          state.uninstall()
+          if (window.__flowdashDragGuard === state) { delete window.__flowdashDragGuard }
+        }
       })
     }
     """.replace("__HANDLES__", json.dumps(HANDLES))

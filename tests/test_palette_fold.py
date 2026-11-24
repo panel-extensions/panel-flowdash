@@ -6,6 +6,7 @@ import pytest
 
 from panel_flowdash.editor import _SIDE_PANEL_WIDTH, FlowDash
 from panel_flowdash.ui.drag_guard import HANDLES, DragGuard
+from panel_flowdash.ui.palette_drawer import FOLDED_CLASS
 from panel_flowdash.ui.sidecar import FOLDED_WIDTH
 from panel_flowdash.ui.split_view import SplitPreferences
 from tests.test_ui_layout_tab import CHART, MAP, ChartView, MapView
@@ -55,14 +56,14 @@ class TestFold:
         editor._palette_drawer.fold_button.clicks += 1
         assert not drawer.open
         assert editor._side_panel.width == FOLDED_WIDTH
-        assert not editor._palette_panel.__panel__().visible
+        assert FOLDED_CLASS in editor._side_panel.css_classes
         assert drawer.unfold_button.visible
         assert drawer.bridge.collapsed
         assert drawer.bridge.focus_target == "unfold"
         drawer.unfold_button.clicks += 1
         assert drawer.open
         assert editor._side_panel.width == _SIDE_PANEL_WIDTH
-        assert editor._palette_panel.__panel__().visible
+        assert FOLDED_CLASS not in editor._side_panel.css_classes
         assert drawer.bridge.focus_target == "search"
 
     def test_the_fold_is_remembered(self):
@@ -107,7 +108,7 @@ class TestFold:
         assert not drawer.fold_button.visible
         editor._dashboard_bar._phone_query.phone = False
         assert region in editor._side_panel.objects
-        assert not region.visible
+        assert FOLDED_CLASS in editor._side_panel.css_classes
         assert drawer.unfold_button.visible
         assert drawer.fold_button.visible
 
@@ -116,7 +117,7 @@ def test_drag_guard_covers_every_kind_of_drag():
     assert {
         ".muuri-handle",
         ".fd-control-handle",
-        ".react-flow__node",
+        ".react-flow",
         ".fd-report-handle",
         "[draggable='true']",
     } <= set(HANDLES)

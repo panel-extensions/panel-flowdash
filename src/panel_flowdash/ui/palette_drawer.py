@@ -27,6 +27,8 @@ if t.TYPE_CHECKING:
 FOLD_LABEL = "Hide components"
 UNFOLD_LABEL = "Show components"
 
+FOLDED_CLASS = "fd-palette-folded"
+
 
 def fold_button() -> pmui.IconButton:
     """Return the button folding the palette, for the palette's header."""
@@ -61,14 +63,23 @@ class PaletteFoldBridge(JSComponent):
 
     focus_count = param.Integer(default=0, doc="Bumped to move the focus to the focus target.")
 
+    label_count = param.Integer(
+        default=0, doc="Bumped to label the buttons again, e.g. after they were rendered anew."
+    )
+
     _esm = """
-    function findHost(root, cls) {
+    function findHosts(root, cls, found = []) {
       for (const el of root.querySelectorAll("*")) {
-        if (el.classList?.contains(cls)) { return el }
-        const inner = el.shadowRoot && findHost(el.shadowRoot, cls)
-        if (inner) { return inner }
+        if (el.classList?.contains(cls)) { found.push(el) }
+        if (el.shadowRoot) { findHosts(el.shadowRoot, cls, found) }
       }
-      return null
+      return found
+    }
+
+    // The one on screen where a part was rendered more than once, e.g. in the phone's sheet.
+    function findHost(root, cls) {
+      const hosts = findHosts(root, cls)
+      return hosts.find((el) => el.getClientRects().length) ?? hosts[0] ?? null
     }
 
     function findInput(root) {
@@ -91,16 +102,18 @@ class PaletteFoldBridge(JSComponent):
       const host = (part) => findHost(document, `fd-palette-${part}-${model.uid}`)
       const button = (part) => host(part)?.shadowRoot?.querySelector("button") ?? null
 
-      // Whether every part was found and labelled.
+      const buttons = (part) => findHosts(document, `fd-palette-${part}-${model.uid}`)
+        .map((el) => el.shadowRoot?.querySelector("button")).filter(Boolean)
+
       const label = () => {
         const region = host("region")
-        const fold = button("fold")
-        const unfold = button("unfold")
-        if (!region || !fold || !unfold) { return false }
+        const fold = buttons("fold")
+        const unfold = buttons("unfold")
+        if (!region || !fold.length || !unfold.length) { return false }
         region.id = `fd-component-palette-${model.uid}`
         region.setAttribute("role", "region")
         region.setAttribute("aria-label", "Components")
-        for (const b of [fold, unfold]) {
+        for (const b of [...fold, ...unfold]) {
           b.setAttribute("aria-expanded", String(!model.collapsed))
           if ("ariaControlsElements" in b) {
             b.ariaControlsElements = [region]
@@ -111,11 +124,18 @@ class PaletteFoldBridge(JSComponent):
         return true
       }
 
+      // Labelled for a few seconds after each change, as the buttons can be rendered
+      // anew after they were first found, e.g. when the palette moves back from the
+      // phone's sheet.
       let labelling = null
-      const relabel = (started = performance.now()) => {
-        cancelAnimationFrame(labelling)
-        if (label() || performance.now() - started > 10000) { return }
-        labelling = requestAnimationFrame(() => relabel(started))
+      const relabel = () => {
+        clearInterval(labelling)
+        const started = performance.now()
+        label()
+        labelling = setInterval(() => {
+          const elapsed = performance.now() - started
+          if ((label() && elapsed > 3000) || elapsed > 20000) { clearInterval(labelling) }
+        }, 100)
       }
 
       let focusing = null
@@ -144,13 +164,14 @@ class PaletteFoldBridge(JSComponent):
       }
 
       model.on("collapsed", () => relabel())
+      model.on("label_count", () => relabel())
       model.on("focus_count", () => {
         relabel()
         if (model.focus_target) { focus(model.focus_target) }
       })
       document.addEventListener("keydown", onKey)
       model.on("remove", () => {
-        cancelAnimationFrame(labelling)
+        clearInterval(labelling)
         cancelAnimationFrame(focusing)
         document.removeEventListener("keydown", onKey)
       })
@@ -213,15 +234,19 @@ class PaletteDrawer(param.Parameterized):
         self.bridge = PaletteFoldBridge(uid=uid, on_open=lambda: self.toggle(True, focus=True))
         fold_button.on_click(lambda _event: self.toggle(False, focus=True))
         self.unfold_button.on_click(lambda _event: self.toggle(True, focus=True))
-        self.panel = pmui.Column(
+        self.panel = pn.Column(
             region,
             self.unfold_button,
             self.bridge,
             width=width,
             sizing_mode="stretch_height",
             margin=0,
-            sx={"borderRight": 1, "borderColor": "divider"},
-            stylesheets=[HIDE_ON_PHONE],
+            styles={"border-right": "1px solid var(--mui-palette-divider, #e0e0e0)"},
+            # Folded by a class, so the palette's own visibility stays the sheet's to use.
+            stylesheets=[
+                HIDE_ON_PHONE,
+                f":host(.{FOLDED_CLASS}) .fd-palette-region-{uid} {{ display: none !important; }}",
+            ],
         )
         self._sync()
 
@@ -235,8 +260,8 @@ class PaletteDrawer(param.Parameterized):
     @param.depends("open", watch=True)
     def _sync(self):
         self.panel.width = self.width if self.open else FOLDED_WIDTH
-        # A folded palette shows in the phone's sheet all the same.
-        self._region.visible = self.open or not self._attached
+        classes = [c for c in self.panel.css_classes if c != FOLDED_CLASS]
+        self.panel.css_classes = classes if self.open else [*classes, FOLDED_CLASS]
         self.unfold_button.visible = self._attached and not self.open
         self.bridge.collapsed = not self.open
 
@@ -251,3 +276,4 @@ class PaletteDrawer(param.Parameterized):
         self._attached = True
         self.panel[:] = [self._region, self.unfold_button, self.bridge]
         self._sync()
+        self.bridge.label_count += 1

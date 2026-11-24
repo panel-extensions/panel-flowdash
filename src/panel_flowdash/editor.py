@@ -510,6 +510,11 @@ _FLOW_PHONE_CSS = (
 )
 
 _FLOW_STYLESHEET = """\
+/* A press on the empty canvas or its panels starts no text selection. */
+.react-flow__pane, .react-flow__panel, .react-flow__background {
+  -webkit-user-select: none;
+  user-select: none;
+}
 /* The canvas shares its height with the code panel docked under it. */
 :host(.fd-docked) .react-flow { min-height: 0 !important; height: 100% !important; }
 /* React Flow's own dark palette draws edges at #3e3e3e on #141414, close to invisible. */
