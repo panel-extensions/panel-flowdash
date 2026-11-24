@@ -4,8 +4,8 @@ The tile grid, the canvas, the palette and the report's blocks are each
 dragged by a library or script of their own, which at best keeps the dragged
 element from being selected, not the text of the tiles, nodes or blocks the
 pointer passes over. :class:`DragGuard` turns text selection off for the
-whole page from the press on a drag handle until the drop, and clears a
-selection left from before the drag.
+whole page from the press on a drag handle until the drop, and clears any
+selection the browser makes during the drag, keeping one made before it.
 """
 
 from __future__ import annotations
@@ -55,14 +55,17 @@ class DragGuard(JSComponent):
     From a press on one of :data:`HANDLES`, or a native ``dragstart`` of one, until
     the pointer is released or the native drag ends, the body's
     ``user-select`` is ``none``; afterwards its own inline value is put back.
-    A selection made before the drag is cleared as the drag starts, and one
-    the browser makes during it all the same, as WebKit does. Presses
-    in text fields, and on parts of a node marked ``nodrag``, are left alone.
+    A selection the browser makes during the drag all the same, as WebKit
+    does, is cleared, while one made before the drag is kept through it (WebKit
+    itself collapses it on the press); a click there, moving less than a drag,
+    clears it as a click elsewhere does. Presses in text fields, and on parts
+    of a node marked ``nodrag``, are left alone.
     It takes no space on the page.
     """
 
     _esm = """
     const HANDLES = __HANDLES__
+    const CLICK_SLOP = 4
     const GRID_BACKGROUND = [
       ".muuri-grid:not(.muuri-no-handles) > .muuri-grid-item",
       ".muuri-grid:not(.muuri-no-handles)",
@@ -87,20 +90,49 @@ class DragGuard(JSComponent):
       return false
     }
 
+    function shadowRoots(root = document, found = []) {
+      for (const el of root.querySelectorAll("*")) {
+        if (el.shadowRoot) {
+          found.push(el.shadowRoot)
+          shadowRoots(el.shadowRoot, found)
+        }
+      }
+      return found
+    }
+
+    // The ends of the selected range in the shadow roots holding them, where the
+    // document's selection only gives their hosts. Older WebKit takes the roots
+    // as arguments, older Chromium has no composed ranges.
+    function rangeOf(selection, roots) {
+      if (!selection || selection.type !== "Range") { return null }
+      let range = null
+      try {
+        range = selection.getComposedRanges?.({ shadowRoots: roots })[0]
+      } catch {
+        try { range = selection.getComposedRanges(...roots)[0] } catch {}
+      }
+      range ??= selection.getRangeAt(0)
+      return [range.startContainer, range.startOffset, range.endContainer, range.endOffset]
+    }
+
     // One guard per document, shared by every DragGuard rendered on the page, so
     // a second one never takes the first one's "none" for the body's own value.
     function install() {
-      const state = { users: 0, saved: null, pointers: new Set(), native: false }
+      const state = {
+        users: 0, saved: null, kept: null, roots: [], pointers: new Set(), native: false, press: null,
+      }
 
       const hold = () => {
-        if (state.saved === null) {
-          const style = document.body.style
-          state.saved = [style.userSelect, style.webkitUserSelect]
-          style.userSelect = "none"
-          style.webkitUserSelect = "none"
-        }
+        if (state.saved !== null) { return }
+        const style = document.body.style
+        state.saved = [style.userSelect, style.webkitUserSelect]
+        style.userSelect = "none"
+        style.webkitUserSelect = "none"
         const selection = document.getSelection()
-        if (selection && selection.type === "Range") { selection.removeAllRanges() }
+        if (selection?.type === "Range") {
+          state.roots = shadowRoots()
+          state.kept = rangeOf(selection, state.roots)
+        }
       }
       const release = (force = false) => {
         if (!force && (state.pointers.size || state.native)) { return }
@@ -109,20 +141,31 @@ class DragGuard(JSComponent):
         if (state.saved === null) { return }
         const style = document.body.style
         ;[style.userSelect, style.webkitUserSelect] = state.saved
-        state.saved = null
+        state.saved = state.kept = state.press = null
+        state.roots = []
       }
 
       const onDown = (event) => {
         if (event.button !== 0 || !startsDrag(event.composedPath())) { return }
         state.pointers.add(event.pointerId)
+        state.press ??= [event.clientX, event.clientY]
         hold()
       }
+      // A click, which moved less than a drag would, dismisses the selection like a
+      // click elsewhere on the page, which these areas no longer do by themselves.
       const onUp = (event) => {
         state.pointers.delete(event.pointerId)
+        const { press } = state
+        if (press && !state.native && Math.hypot(event.clientX - press[0], event.clientY - press[1]) < CLICK_SLOP) {
+          document.getSelection()?.removeAllRanges()
+        }
         release()
       }
       // A native drag cancels the pointer as it starts, and ends with dragend or drop.
-      const onCancel = onUp
+      const onCancel = (event) => {
+        state.pointers.delete(event.pointerId)
+        release()
+      }
       // Not for dragging selected text or an image, which needs its selection.
       const onDragStart = (event) => {
         if (!startsDrag(event.composedPath())) { return }
@@ -136,7 +179,11 @@ class DragGuard(JSComponent):
       const onSelectionChange = () => {
         if (state.saved === null) { return }
         const selection = document.getSelection()
-        if (selection && selection.type === "Range") { selection.removeAllRanges() }
+        const range = rangeOf(selection, state.roots)
+        const { kept } = state
+        if (range && !(kept && range.every((part, i) => part === kept[i]))) {
+          selection.removeAllRanges()
+        }
       }
 
       const listeners = [

@@ -151,10 +151,10 @@ from panel_flowdash.ui import tile_layout
 from panel_flowdash.ui.code_panel import HEADER_HEIGHT, CodePanel
 from panel_flowdash.ui.controls_bar import ControlsBar
 from panel_flowdash.ui.dashboard_bar import (
-    HIDE_ON_PHONE,
     PHONE_BREAKPOINT,
     DashboardBar,
     fullscreen_toolbar,
+    hide_on_phone,
 )
 from panel_flowdash.ui.dock_handle import DockHandle
 from panel_flowdash.ui.drag_guard import GRID_DRAG_CSS, DragGuard
@@ -494,6 +494,8 @@ _NODE_DEFAULTS = {
     "deletable": True,
 }
 _SIDE_PANEL_WIDTH = 250
+# Of the palette's and the sidecar's columns, which the editor's row hides on a phone.
+_SIDE_PANEL_CLASS = "fd-side-panel"
 # A node added on a phone is shown at least this large, this far below the canvas's top.
 _PHONE_REVEAL_ZOOM = 0.75
 _PHONE_REVEAL_TOP = 24
@@ -4152,6 +4154,7 @@ class FlowDash(Viewer):
         )
         self._palette_drawer.param.watch(self._on_palette_folded, "open")
         self._side_panel = self._palette_drawer.panel
+        self._side_panel.css_classes = [*self._side_panel.css_classes, _SIDE_PANEL_CLASS]
         self._start_card = StartCard(editor=self)
         self._empty_hint = self._start_card.__panel__()
         # Its own minimum, or the closed dialogs it holds (Clear canvas, a tile's full
@@ -4214,7 +4217,10 @@ class FlowDash(Viewer):
         # The sidecar's slot, hidden with it, since an empty Column still takes
         # the width of its scroll button.
         self._panel_slot = pn.Column(
-            self._inspector, margin=0, sizing_mode="stretch_height", stylesheets=[HIDE_ON_PHONE]
+            self._inspector,
+            margin=0,
+            sizing_mode="stretch_height",
+            css_classes=[_SIDE_PANEL_CLASS],
         )
 
         self._build_phone_sheets()
@@ -4227,6 +4233,7 @@ class FlowDash(Viewer):
             self._workspace_area,
             self._panel_slot,
             sizing_mode="stretch_both",
+            stylesheets=[hide_on_phone(_SIDE_PANEL_CLASS)],
         )
         self._card_bridge = CardBridge(
             canvas_class=f"fd-canvas-{id(self)}",
@@ -4302,9 +4309,8 @@ class FlowDash(Viewer):
         self._palette_sheet.open = self._layout_sheet.open = False
         # Sized for where they go before they move, so the columns they leave
         # and join keep their own sizing.
-        self._palette_panel.touch = phone
-        self._inspector.sheet = phone
         if phone:
+            self._palette_panel.touch = self._inspector.sheet = True
             self._palette_drawer.detach()
             self._panel_slot[:] = []
             self._palette_sheet_body[:] = [self._palette_section]
@@ -4316,6 +4322,10 @@ class FlowDash(Viewer):
             self._inspector_sheet[:] = []
             self._layout_sheet_body[:] = []
             self._palette_sheet_body[:] = []
+            # Only once out of the sheets: a closed sheet never rendered them, and
+            # Panel 1.11.0rc1 fails on a size change of an unrendered custom
+            # component, dropping the rest of the patch (holoviz/panel#9154).
+            self._palette_panel.touch = self._inspector.sheet = False
             self._palette_drawer.attach()
             self._panel_slot[:] = [self._inspector]
             # A sheet dismissed on the phone is not a fold of the column.
