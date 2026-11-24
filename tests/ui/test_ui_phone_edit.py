@@ -192,15 +192,22 @@ def test_wider_screens_keep_the_palette_and_inspector_beside_the_canvas(page):
 def test_widening_a_phone_with_the_assistant_open_keeps_the_inspector_folded(page):
     pytest.importorskip("pydantic_ai")
     editor = _serve(page, agent=True)
+    wait_until(lambda: editor._phone, page)
 
+    # Crossing the phone breakpoint moves the palette, the inspector and their
+    # sheets between containers in one patch, which a Windows runner renders
+    # about ten times slower than a desktop (5.5 s against 0.55 s), so the
+    # browser gets the load timeout to show the result.
     _tap_header(page.locator(".react-flow__node[data-id='first']"))
-    expect(_sheet(page, "fd-inspector-sheet")).to_be_visible()
+    expect(_sheet(page, "fd-inspector-sheet")).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
     _button(page, "Assistant").click()
     wait_until(lambda: editor._inspector.collapsed, page)
 
     page.set_viewport_size({"width": 1280, "height": 844})
     wait_until(lambda: not editor._phone, page)
-    expect(page.get_by_placeholder("Search components")).to_be_visible()
+    expect(page.get_by_placeholder("Search components")).to_be_visible(
+        timeout=DASHBOARD_LOAD_TIMEOUT
+    )
     wait_until(lambda: editor._inspector.collapsed, page)
     flow = page.locator(".react-flow").first
     wait_until(lambda: _box(flow)["width"] >= 300, page)

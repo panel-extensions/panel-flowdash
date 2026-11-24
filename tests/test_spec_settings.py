@@ -448,6 +448,15 @@ def _field(editor, node_id, run_on_change=False):
     return editor.code_panel.spec_editor
 
 
+async def _until(condition, timeout=10):
+    """Wait on the event loop until *condition* holds, failing after *timeout* seconds."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not condition():
+        assert loop.time() < deadline, "timed out"
+        await asyncio.sleep(0.01)
+
+
 async def _run(editor):
     editor.code_panel.run()
     await _settle()
@@ -1347,11 +1356,11 @@ class TestRunFailure:
 
         monkeypatch.setattr(editor, "_apply_config_patch", fail)
         field._controls["title"][1].value = "X"
-        await _settle(0.5)
-        assert not panel.running and panel.stale == "draft"
+        # The draft is marked stale STALE_DELAY after the run, by a timer that a
+        # busy event loop fires late, so the test waits for it rather than a fixed time.
+        await _until(lambda: not panel.running and panel.stale == "draft")
         assert "boom" in panel._problems[0].object
         monkeypatch.undo()
         field._controls["title"][1].value = "Y"
-        await _settle(0.5)
-        assert editor._component_instances[node].spec["title"] == "Y"
-        assert not panel.running and panel.stale is None
+        await _until(lambda: editor._component_instances[node].spec.get("title") == "Y")
+        await _until(lambda: not panel.running and panel.stale is None)

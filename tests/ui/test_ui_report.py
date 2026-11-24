@@ -580,8 +580,13 @@ def test_select_on_canvas_from_the_block_menu(page):
     wait_until(lambda: editor.surface == "workspace" and editor.mode in ("wiring", "split"), page)
     wait_until(lambda: (editor._flow.selection or {}).get("nodes") == ["output"], page)
     expect(page.locator(".react-flow__node.selected")).to_have_count(1)
-    # The inspector opens for the selection before the session closes.
+    reported = []
+    editor._flow.on("selection_changed", reported.append)
+    # The inspector opens for the selection before the session closes, and the
+    # canvas, back on the page, does not report a selection of its own.
     page.wait_for_timeout(1000)
+    assert (editor._flow.selection or {}).get("nodes") == ["output"]
+    assert reported == []
 
 
 def test_viewers_read_the_report(page):

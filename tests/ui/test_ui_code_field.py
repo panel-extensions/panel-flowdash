@@ -86,7 +86,15 @@ def test_save_while_typing_stores_the_checked_text(page):
     serve_component(page, editor)
 
     page.locator(f".react-flow__node[data-id='{node}']").click()
-    expect(page.locator(".fd-code-status").first).to_contain_text("Check passed", timeout=8000)
+    # The node's first check runs once the inspector shows it. Its status reaches
+    # the page in a change that Panel 1.11.0rc1 can drop as one to a model the
+    # page has not been sent, so the test waits for the check in Python.
+    inspector = editor._inspector
+    wait_until(
+        lambda: [f.check_status for f in inspector._code_fields] == [("ok", "Check passed")],
+        page,
+        timeout=8000,
+    )
     page.locator(".fd-code-edit").first.click(timeout=8000)
     large = page.locator(".fd-code-field-large")
     expect(large.locator(".ace_content")).to_contain_text("SELECT 1", timeout=8000)
