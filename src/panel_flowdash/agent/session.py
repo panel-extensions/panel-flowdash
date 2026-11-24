@@ -227,6 +227,8 @@ class AgentSession:
         # The drawer opens at the width last dragged to in this browser.
         preferences.param.watch(lambda e: setattr(self.drawer, "width", e.new), "assistant_width")
         self.drawer.param.watch(lambda e: setattr(preferences, "assistant_width", e.new), "width")
+        # Whether Ask was set aside for the edit an add from its docked feed started.
+        self._ask_resumes = False
         editor.param.watch(self._on_explore, ["explore", "ask", "editable"])
         # In edit mode Ask is this drawer, opened and closed with the bar's Ask.
         editor.assistant = True
@@ -323,28 +325,56 @@ class AgentSession:
         self.ledger.add(model_id, run.cost_usd)
 
     def _on_explore(self, *events):
-        """Open the drawer as Ask in edit mode, close it while the feed is Ask, and bring back a pending approval."""
+        """Open the drawer as Ask in edit mode, close it while the feed is Ask, and bring back a pending approval.
+
+        An add from Ask's docked feed that starts edit mode sets Ask aside
+        rather than opening the drawer, whose conversation is another one,
+        and Ask comes back as edit mode ends, unless the person turned it on
+        or off meanwhile.
+        """
         editor = self.app._editor
+        names = {event.name for event in events}
+        if "editable" in names and not editor.editable and self._ask_resumes:
+            self._ask_resumes = False
+            editor.ask = True
         exploring = editor.explore or (editor.ask and not editor.editable)
         self.drawer.open_on_approval = not exploring
+        pending = self.runner.state.pending_approvals
         if exploring:
             self.drawer.open = False
         elif editor.editable:
-            if "ask" in {event.name for event in events}:
+            if "ask" in names:
+                self._ask_resumes = False
                 self.drawer.open = editor.ask
             elif self.drawer.open:
                 # Open as edit mode starts, e.g. as the assistant begins to edit: it is Ask now.
                 editor.ask = True
-            elif editor.ask or self.runner.state.pending_approvals:
+            elif editor.ask and self._adding_from_feed() and not pending:
+                editor.ask = False
+                # Only now: turning Ask off runs this again, as a change that clears it.
+                self._ask_resumes = True
+            elif editor.ask or pending:
                 self.drawer.open = True
-        elif self.runner.state.pending_approvals:
+        elif pending:
             self.drawer.open = True
 
+    def _adding_from_feed(self) -> bool:
+        feed = self.app._editor._explore_feed
+        return feed is not None and feed.adding
+
     def _on_drawer_toggled(self, event):
-        """Keep Ask open while the drawer is, in edit mode, where the drawer is Ask."""
+        """Keep Ask in step with the drawer: it is Ask in edit mode, and takes the docked feed's place in view mode.
+
+        In view mode the drawer and the docked feed would squeeze the output
+        between them, so opening the drawer, e.g. to review an approval,
+        turns Ask off, as turning Ask on closes the drawer.
+        """
         editor = self.app._editor
-        if editor.editable and not editor.explore and editor.ask != event.new:
-            editor.ask = event.new
+        if editor.editable:
+            if not editor.explore and editor.ask != event.new:
+                editor.ask = event.new
+        elif event.new and editor.ask:
+            editor.ask = False
 
     async def add_answer(self, run: str, node: str) -> str:
         """Add the answer *node* of Explore run *run* to the dashboard and return its name there.
@@ -389,11 +419,11 @@ class AgentSession:
             editor.running_pending = [t for t in editor.running_pending if t != turn_id]
 
     def show_answer(self, name: str):
-        """Leave the Explore view for the tiles and mark the dashboard node *name*, e.g. an answer just added."""
+        """Show the tiles, leaving the Explore view or the report, and mark the dashboard node *name*, e.g. an answer just added."""
         editor = self.app._editor
         if editor.editable and editor.mode == "wiring":
             editor.mode = "dashboard"
-        editor.explore = False
+        editor.surface = "workspace"
         self.highlighter.show({name: "add"})
 
     def _note_run(self, event):

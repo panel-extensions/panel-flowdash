@@ -487,3 +487,108 @@ async def test_the_drawer_opens_at_the_width_last_dragged_to(store, monkeypatch)
     assert preferences.assistant_width == 480
     preferences.assistant_width = 400
     assert session.drawer.width == 400
+
+
+async def test_review_opens_the_drawer_in_place_of_the_docked_feed(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    session, editor = app._agent_session, app._editor
+    chrome = session.chrome
+    editor.param.update(editable=False, ask=True)
+    _ask_approval(session.runner.state, "run-a", "c1")
+    assert editor.ask_docked and not session.drawer.open and chrome.notice.visible
+    chrome.review()
+    assert session.drawer.open and not chrome.notice.visible
+    assert not editor.ask and not editor.ask_docked
+
+
+async def test_the_drawer_and_the_docked_feed_take_turns_in_view_mode(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    session, editor = app._agent_session, app._editor
+    editor.param.update(editable=False, ask=True)
+    # Opened by asking from the command palette, say.
+    session.drawer.open = True
+    assert not editor.ask and not editor.ask_docked
+    editor.ask = True
+    assert editor.ask_docked and not session.drawer.open
+
+
+async def _add_from_the_dock(store, monkeypatch):
+    """Dock Ask in view mode, ask the Explore agent and add its answer from the card."""
+    app, _ = _seeded(
+        store, monkeypatch, agent=_adding("drawn"), explore_agent=_exploring("explored")
+    )
+    session, editor = app._agent_session, app._editor
+    feed = editor.explore_feed
+    editor.param.update(editable=False, ask=True)
+    assert feed.docked
+    await session.explore_runner.run("How many are there?")
+    run = session.explore_runner.run_id
+    feed.sync()
+    card = next(a for a in feed.state.artifacts if a.artifact_id == f"explore:{run}:explored")
+    await feed.actions.invoke("add_to_dashboard", feed._placement(card))
+    return app, card
+
+
+async def test_an_answer_added_from_the_docked_feed_is_shown_in_layout_and_ask_returns_after(
+    store, monkeypatch
+):
+    app, card = await _add_from_the_dock(store, monkeypatch)
+    session, editor = app._agent_session, app._editor
+    # Edit mode on the Layout tab with the tile marked, and no drawer holding another conversation.
+    assert editor.editable and editor.surface == "workspace" and editor.mode == "dashboard"
+    assert session.highlighter.marked == {"explored": "add"}
+    assert not editor.ask and not session.drawer.open
+    # Done brings the docked feed back, where the card says where the answer went.
+    app._on_dashboard_bar_mode("view")
+    assert editor.ask_docked and not session.drawer.open
+    feed = editor.explore_feed
+    assert feed.docked and feed._placed(card) == "On dashboard as explored"
+    # Docked beside the report, Show switches to the dashboard to point the tile out.
+    editor.surface = "report"
+    await feed.actions.invoke("show_on_dashboard", {"name": "explored"})
+    assert editor.surface == "workspace" and editor.ask_docked
+
+
+async def test_ask_turned_on_and_off_after_an_add_from_the_dock_stays_off(store, monkeypatch):
+    app, _ = await _add_from_the_dock(store, monkeypatch)
+    session, editor = app._agent_session, app._editor
+    editor.ask = True
+    assert session.drawer.open
+    session.drawer.open = False
+    assert not editor.ask
+    app._on_dashboard_bar_mode("view")
+    assert not editor.ask and not editor.ask_docked
+
+
+async def test_an_approval_waiting_as_an_add_from_the_dock_starts_edit_mode_opens_the_drawer(
+    store, monkeypatch
+):
+    app, _ = _seeded(
+        store, monkeypatch, agent=_adding("drawn"), explore_agent=_exploring("explored")
+    )
+    session, editor = app._agent_session, app._editor
+    feed = editor.explore_feed
+    editor.param.update(editable=False, ask=True)
+    await session.explore_runner.run("How many are there?")
+    run = session.explore_runner.run_id
+    _ask_approval(session.runner.state, "run-a", "c1")
+    await feed.actions.invoke("add_to_dashboard", {"exploration": run, "node": "explored"})
+    assert editor.editable and editor.ask and session.drawer.open
+
+
+async def test_a_hidden_output_shown_from_the_docked_feed_sets_ask_aside_too(store, monkeypatch):
+    from panel_flowdash.turns import agent_edits
+    from panel_flowdash.ui import tile_layout
+
+    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    session, editor = app._agent_session, app._editor
+    with agent_edits(run="run-old", question="An old question"):
+        editor.add_component("T/number", instance_id="old")
+    editor.end_agent_turns()
+    tile_layout.update_tile(editor, "old", visible=False)
+    editor.param.update(editable=False, ask=True)
+    await editor.explore_feed.actions.invoke("add_to_dashboard", {"name": "old"})
+    assert editor.editable and editor.mode == "dashboard"
+    assert not editor.ask and not session.drawer.open
+    app._on_dashboard_bar_mode("view")
+    assert editor.ask_docked

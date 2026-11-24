@@ -188,6 +188,7 @@ class ExploreFeed(Viewer):
         self.explorations = None
         self._add: t.Callable[[str, str], t.Awaitable[str]] | None = None
         self._show: t.Callable[[str], None] | None = None
+        self._adding = 0
         self._recorded: dict[str, list[ev.Event]] = {}
         self._roots: dict[str, str] = {}
         # The dashboard open when each recorded run started; a run shows in that dashboard's feed only.
@@ -1164,23 +1165,38 @@ class ExploreFeed(Viewer):
 
         return DashboardOps(self.editor)
 
+    @property
+    def adding(self) -> bool:
+        """Whether an add from one of the feed's cards is under way."""
+        return self._adding > 0
+
     async def _add_to_dashboard(
         self, name: str | None = None, exploration: str | None = None, node: str | None = None
     ) -> str:
-        """Add an answer of the exploration to the dashboard, or show a dashboard node's output as a tile."""
-        if exploration is not None and node is not None:
-            if self._add is None:
-                raise ValueError("Answers cannot be added to this dashboard.")
-            name = await self._add(exploration, node)
-        elif name is not None:
-            self._ops().place_tile(name, visible=True)
-        else:
-            raise ValueError("Name a node, or an answer by its exploration and node.")
+        """Add an answer of the exploration to the dashboard, or show a dashboard node's output as a tile.
+
+        An add from the dock that starts edit mode shows the tile there, as Show does.
+        """
+        docked = self.docked
+        self._adding += 1
+        try:
+            if exploration is not None and node is not None:
+                if self._add is None:
+                    raise ValueError("Answers cannot be added to this dashboard.")
+                name = await self._add(exploration, node)
+            elif name is not None:
+                self._ops().place_tile(name, visible=True)
+            else:
+                raise ValueError("Name a node, or an answer by its exploration and node.")
+        finally:
+            self._adding -= 1
         self.refresh()
+        if docked and self.editor.editable and self._show is not None:
+            self._show(name)
         return f"Added {name} to the dashboard."
 
     def _show_on_dashboard(self, name: str) -> str:
-        """Leave the Explore view and point out the dashboard node *name*."""
+        """Show the tiles and point out the dashboard node *name*."""
         if self._show is not None:
             self._show(name)
         return f"Showing {name}."
