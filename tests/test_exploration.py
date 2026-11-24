@@ -2,6 +2,7 @@
 
 import asyncio
 import itertools
+import time
 
 import pytest
 import yaml
@@ -1117,7 +1118,10 @@ async def test_adding_runs_the_config_checks_off_the_event_loop(store, monkeypat
 
 
 def _large(store, monkeypatch, explore_agent, nodes=150, tiles=40, edits=20):
-    """Open a dashboard of *nodes* chained doublers, *tiles* of them shown, after *edits* edits."""
+    """Open a dashboard of *nodes* chained doublers, *tiles* of them shown, after *edits* edits.
+
+    Returns the app and the seconds opening the dashboard took.
+    """
     model = store.create_dashboard("alice", "Large")
     model.items.append(DashboardItem("base", "T/number"))
     for i in range(nodes - 1):
@@ -1132,19 +1136,19 @@ def _large(store, monkeypatch, explore_agent, nodes=150, tiles=40, edits=20):
     ]
     store.save_dashboard(model)
     app = _app(store, monkeypatch, agent=_agent(), explore_agent=explore_agent)
+    start = time.monotonic()
     app._load_dashboard_sync(model.dashboard_id)
+    load = time.monotonic() - start
     ops = app._agent_session.ops
     for i in range(edits):
         ops.place_tile(f"d{i}", height=200 + i)
         app._editor.end_turn()
-    return app
+    return app, load
 
 
 async def test_adding_to_a_large_dashboard_takes_the_version_once_and_keeps_the_loop_turning(
     store, monkeypatch
 ):
-    import time
-
     from panel_flowdash.history import EditHistory
 
     calls = [("add_node", {"component": "T/doubler", "name": "a0"})]
@@ -1152,7 +1156,7 @@ async def test_adding_to_a_large_dashboard_takes_the_version_once_and_keeps_the_
     for i in range(1, 4):
         calls.append(("add_node", {"component": "T/doubler", "name": f"a{i}"}))
         calls.append(("connect", {"source": f"a{i - 1}.doubled", "target": f"a{i}.value"}))
-    app = _large(store, monkeypatch, _agent(*calls))
+    app, load = _large(store, monkeypatch, _agent(*calls))
     session, editor = app._agent_session, app._editor
     before = _nodes(editor)
     versions = len(editor.edit_history.versions)
@@ -1184,7 +1188,12 @@ async def test_adding_to_a_large_dashboard_takes_the_version_once_and_keeps_the_
     assert len(snapshots) == 1
     during = [start, *(t for t in ticks if start <= t <= end), end]
     gap = max(b - a for a, b in itertools.pairwise(during))
-    assert gap < 4, gap
+    # The writes do not yield, so the longest gap is the whole write. A fixed number of
+    # seconds fails on a busy runner, so it is measured against opening the same dashboard
+    # in the same process: adding a four-node answer takes well under half of that, and
+    # coming close would mean Add does work across the whole dashboard. The absolute cap
+    # catches a slowdown that makes opening the dashboard and Add slow together.
+    assert gap < min(0.6 * load, 15), (gap, load)
     assert _nodes(editor) == [*before, "a0", "a1", "a2", "a3"]
     assert len(editor.edit_history.versions) == versions + 1
     assert "a3:" in editor.edit_history.versions[-1].value
