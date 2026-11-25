@@ -1,6 +1,7 @@
 """A new dashboard opens with Ask on: the assistant's drawer, with questions to start from."""
 
 import asyncio
+import contextlib
 import logging
 
 import param
@@ -158,6 +159,7 @@ def _broken():
         (("A?", "B?"), ["A?", "B?"]),
         ("What's in Sales?", []),
         (b"What?", []),
+        ({"question": "What's in Sales?"}, []),
         (42, []),
         (_broken(), []),
         (iter(lambda: "Again?", None), ["Again?", "Again?", "Again?"]),
@@ -169,6 +171,7 @@ def _broken():
         "tuple",
         "string",
         "bytes",
+        "mapping",
         "number",
         "raising",
         "endless",
@@ -455,11 +458,13 @@ async def test_awaited_starters_are_dropped_once_the_person_types_or_asks(store,
     gate = asyncio.Event()
     app, task = await _waiting(store, monkeypatch, gate)
     widget = app._agent_session.drawer.chat.feed.active_widget
-    # As the browser reports them.
+    # As the browser reports them; the wait is given up at once.
     widget._process_events({"value_input" if how == "typing" else "value": "Show me"})
+    assert task.cancelled() or task.cancelling()
     gate.set()
-    await task
-    await asyncio.sleep(0)
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.05)
     assert not app._agent_session.starters.shown
 
 
@@ -639,3 +644,119 @@ async def test_a_new_dashboard_asks_about_scanned_presets_once_they_load(scanned
         "Add a table of south feed",
         "Chart the key numbers in north feed",
     ]
+
+
+class _Doc:
+    """A session's document whose next-tick callbacks wait until `tick`."""
+
+    session_context = object()
+
+    def __init__(self):
+        self.ticks = []
+
+    def on_session_destroyed(self, callback):
+        pass
+
+    def add_next_tick_callback(self, callback):
+        self.ticks.append(callback)
+
+    def tick(self):
+        ticks, self.ticks = self.ticks, []
+        for callback in ticks:
+            callback()
+
+
+@pytest.mark.parametrize("typed", [False, True])
+async def test_a_keystroke_before_the_questions_are_shown_drops_them(store, monkeypatch, typed):
+    from types import SimpleNamespace
+
+    doc = _Doc()
+    monkeypatch.setattr(starters_module, "pn", SimpleNamespace(state=SimpleNamespace(curdoc=doc)))
+    monkeypatch.setattr(starters_module, "set_curdoc", lambda _doc: contextlib.nullcontext())
+
+    async def starters(context):
+        return ["From the catalogue?"]
+
+    app = _session_app(store, monkeypatch, agent_starters=starters)
+    session = app._agent_session
+    app._create_new_dashboard("Fresh")
+    await session.starters._task
+    # Arrived, and waiting for the document's next tick to be shown.
+    assert len(doc.ticks) == 1 and not session.starters.shown
+    if typed:
+        session.drawer.chat.feed.active_widget._process_events({"value_input": "S"})
+    doc.tick()
+    assert session.starters.shown is not typed
+
+
+@pytest.mark.parametrize("awaited", [False, True])
+async def test_a_draft_in_the_input_keeps_the_questions_away(store, monkeypatch, awaited):
+    async def later(context):
+        return ["From the catalogue?"]
+
+    app = _session_app(
+        store, monkeypatch, agent_starters=later if awaited else (lambda context: None)
+    )
+    session = app._agent_session
+    session.drawer.chat.feed.active_widget._process_events({"value_input": "Half a question"})
+    app._create_new_dashboard("Fresh")
+    if awaited:
+        await session.starters._task
+        await asyncio.sleep(0)
+    assert not session.starters.shown
+
+
+async def test_the_context_is_made_once(store, monkeypatch):
+    made = []
+    tables = starters_module.data_tables
+    monkeypatch.setattr(
+        starters_module, "data_tables", lambda editor: made.append(1) or tables(editor)
+    )
+    app = _session_app(store, monkeypatch, agent_starters=lambda context: None)
+    app._create_new_dashboard("Fresh")
+    assert made == [1] and app._agent_session.starters.questions == DEFAULT
+
+
+def _loading_presets(app):
+    """A palette presets load that never finishes."""
+    task = asyncio.get_running_loop().create_future()
+    app._preset_tasks.add(task)
+    return task
+
+
+async def test_presets_still_loading_at_the_deadline_leave_the_tables_known(
+    store, monkeypatch, caplog
+):
+    monkeypatch.setattr(starters_module, "STARTER_TIMEOUT", 0.05)
+    app = _session_app(store, monkeypatch)
+    loading = _loading_presets(app)
+    session = app._agent_session
+    with caplog.at_level(logging.WARNING, logger="panel_flowdash.agent.starters"):
+        app._create_new_dashboard("Fresh")
+        await session.starters._task
+        await asyncio.sleep(0)
+    assert session.starters.questions == DEFAULT
+    assert "the tables known so far" in caplog.text
+    loading.cancel()
+
+
+async def test_the_presets_and_the_hook_share_one_deadline(store, monkeypatch, caplog):
+    monkeypatch.setattr(starters_module, "STARTER_TIMEOUT", 0.2)
+
+    async def slow(context):
+        await asyncio.sleep(0.15)
+        return ["Too late?"]
+
+    app = _session_app(store, monkeypatch, agent_starters=slow)
+    loading = _loading_presets(app)
+    session = app._agent_session
+    with caplog.at_level(logging.WARNING, logger="panel_flowdash.agent.starters"):
+        app._create_new_dashboard("Fresh")
+        started = asyncio.get_running_loop().time()
+        with pytest.raises(TimeoutError):
+            await session.starters._task
+        elapsed = asyncio.get_running_loop().time() - started
+    # Each alone fits in 0.2 s, both together do not.
+    assert elapsed < 0.3 and not session.starters.shown
+    assert "were given up" in caplog.text
+    loading.cancel()

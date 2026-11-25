@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import itertools
 import logging
+import time
 import typing as t
 from dataclasses import dataclass
 
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 #: How many starter questions the drawer offers at most.
 STARTER_LIMIT = 3
 
-#: Seconds an awaitable hook, or the palette presets a new dashboard waits for, may take.
+#: Seconds the palette presets a new dashboard waits for and an awaitable hook may take together.
 STARTER_TIMEOUT = 10
 
 # How many items of a hook's result are looked at for valid questions at most.
@@ -115,12 +116,12 @@ def starter_questions(found: t.Any, context: StarterContext) -> list[str]:
     """Return the questions a hook's result *found* offers, at most `STARTER_LIMIT`.
 
     None offers the default questions and an empty list none. A result that
-    is not a list of strings offers none and is logged; items that are
-    empty or not strings are left out.
+    is not a list of strings, such as a string or a mapping, offers none and
+    is logged; items that are empty or not strings are left out.
     """
     if found is None:
         return default_starter_questions(context)
-    if isinstance(found, (str, bytes)) or not isinstance(found, t.Iterable):
+    if isinstance(found, (str, bytes, t.Mapping)) or not isinstance(found, t.Iterable):
         logger.error(
             "The starter questions hook returned %s, not a list of questions",
             type(found).__name__,
@@ -161,7 +162,9 @@ class StarterQuestions:
         self.questions: list[str] = []
         self._dashboard: str | None = None
         self._task: asyncio.Task | None = None
-        # Whether the person typed or sent a message while the questions were awaited.
+        # Whether questions are awaited, until shown, and whether the person typed or sent a
+        # message meanwhile.
+        self._awaiting = False
         self._interrupted = False
         self._docs: set[int] = set()
         self._list = pmui.Column(margin=0, sizing_mode="stretch_width")
@@ -202,7 +205,9 @@ class StarterQuestions:
         *context* makes the hook's `StarterContext`, once the palette presets
         loading for the new dashboard are in. A hook may return its questions
         or an awaitable of them, see `starter_questions`. One that fails is
-        logged and offers none.
+        logged and offers none. The presets and an awaitable hook have
+        `STARTER_TIMEOUT` seconds together; presets still loading then leave
+        the tables known so far.
         """
         self.clear()
         editor = self.session.app._editor
@@ -211,21 +216,26 @@ class StarterQuestions:
         dashboard = editor.dashboard.dashboard_id
         self._dashboard = dashboard
         self._interrupted = False
+        deadline = time.monotonic() + STARTER_TIMEOUT
         presets = [
             task for task in getattr(self.session.app, "_preset_tasks", ()) if not task.done()
         ]
         if presets:
-            self._wait(self._resolve(context, hook, presets=presets), dashboard)
+            self._wait(self._resolve(context, hook, deadline, presets=presets), dashboard)
             return
+        made = context()
         try:
-            found = hook(context()) if hook is not None else None
+            found = hook(made) if hook is not None else None
         except Exception:
             logger.exception("The starter questions hook failed")
             return
         if inspect.isawaitable(found):
-            self._wait(self._resolve(context, hook, found=found), dashboard, found)
+            self._wait(
+                self._resolve(context, hook, deadline, made=made, found=found), dashboard, found
+            )
             return
-        self._show(starter_questions(found, context()))
+        if not self._drafting():
+            self._show(starter_questions(found, made))
 
     def _wait(self, resolving: t.Coroutine, dashboard: str, found: t.Any = None):
         try:
@@ -239,17 +249,31 @@ class StarterQuestions:
         if doc is not None and doc.session_context is not None and id(doc) not in self._docs:
             self._docs.add(id(doc))
             doc.on_session_destroyed(lambda _context: self.clear())
+        self._awaiting = True
         self._task = task = loop.create_task(resolving)
         task.add_done_callback(lambda done: self._arrived(done, dashboard, doc, found))
 
-    async def _resolve(self, context, hook, presets=(), found=None) -> list[str]:
+    async def _resolve(self, context, hook, deadline, presets=(), made=None, found=None):
         if presets:
-            await asyncio.wait(presets, timeout=STARTER_TIMEOUT)
-        made = context()
+            _done, loading = await asyncio.wait(
+                presets, timeout=max(0, deadline - time.monotonic())
+            )
+            if loading:
+                logger.warning(
+                    "Palette presets were still loading after %s s; the starter questions "
+                    "use the tables known so far",
+                    STARTER_TIMEOUT,
+                )
+        if made is None:
+            made = context()
         if hook is not None and found is None:
             found = hook(made)
         if inspect.isawaitable(found):
-            found = await asyncio.wait_for(found, STARTER_TIMEOUT)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                _close(found)
+                raise TimeoutError
+            found = await asyncio.wait_for(found, remaining)
         return starter_questions(found, made)
 
     def _arrived(self, task: asyncio.Future, dashboard: str, doc, found: t.Any = None):
@@ -260,24 +284,30 @@ class StarterQuestions:
         self._task = None
         error = task.exception()
         if isinstance(error, TimeoutError):
+            self._awaiting = False
             logger.warning(
                 "The starter questions took over %s s and were given up", STARTER_TIMEOUT
             )
             return
         if error is not None:
+            self._awaiting = False
             logger.error("The starter questions hook failed", exc_info=error)
             return
         questions = task.result()
 
         def show():
+            # Still awaited until shown, so typing meanwhile drops them.
+            awaited, self._awaiting = self._awaiting, False
             editor = self.session.app._editor
             current = editor.dashboard.dashboard_id if editor.dashboard is not None else None
             if (
-                self._dashboard != dashboard
+                not awaited
+                or self._dashboard != dashboard
                 or current != dashboard
                 or not editor.editable
                 or editor.read_only
                 or self._interrupted
+                or self._drafting()
                 or self.session.runner.state.running
             ):
                 return
@@ -293,6 +323,10 @@ class StarterQuestions:
 
         # Changed under the document's lock, as the session's own callbacks are.
         doc.add_next_tick_callback(locked)
+
+    def _drafting(self) -> bool:
+        """Whether the person has started a message in the drawer's input."""
+        return bool((self.session.drawer.chat.feed.active_widget.value_input or "").strip())
 
     def _show(self, questions: list[str]):
         self.questions = questions
@@ -341,6 +375,7 @@ class StarterQuestions:
         if self._task is not None and not self._task.done():
             self._task.cancel()
         self._task = None
+        self._awaiting = False
         self._dashboard = None
         self.questions = []
         if self._list.objects:
@@ -353,8 +388,11 @@ class StarterQuestions:
             self.view.visible = visible
 
     def _on_input(self, event):
-        if event.new and self._task is not None:
+        # The person types or asks while the questions are awaited: they are not wanted.
+        if event.new and self._awaiting:
             self._interrupted = True
+            if self._task is not None and not self._task.done():
+                self._task.cancel()
 
     def _on_running(self, event):
         if event.new:
