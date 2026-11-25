@@ -513,10 +513,14 @@ def test_the_dock_keeps_to_half_the_window_as_it_narrows(page):
     wait_until(lambda: page.evaluate(_DOCK_STATE)["width"] == 492, page, timeout=8000)
 
     page.set_viewport_size({"width": 700, "height": 768})
-    wait_until(lambda: page.evaluate(_DOCK_STATE)["width"] == 350, page, timeout=8000)
-    state = page.evaluate(_DOCK_STATE)
-    assert state["right"] <= 700
-    assert (state["now"], state["max"]) == (350, 350)
+
+    def narrowed():
+        # The separator describes the dock once the browser has measured it again.
+        state = page.evaluate(_DOCK_STATE)
+        return (state["width"], state["now"], state["max"]) == (350, 350, 350)
+
+    wait_until(narrowed, page, timeout=8000)
+    assert page.evaluate(_DOCK_STATE)["right"] <= 700
     # Wide again, it takes the width it was dragged to.
     page.set_viewport_size({"width": 1024, "height": 768})
     wait_until(lambda: page.evaluate(_DOCK_STATE)["width"] == 492, page, timeout=8000)
@@ -580,11 +584,9 @@ def test_the_assistant_keeps_to_half_the_window_as_it_narrows(page):
     )
     ask_button(page).click()
     wait_until(lambda: session.drawer.open, page, timeout=8000)
-    handle = page.get_by_role("separator", name="Resize Assistant")
-    handle.focus()
-    # Dragged as wide as it goes, half the window.
-    for _ in range(16):
-        handle.press("ArrowLeft")
+    # Stored as wide as dragging allows, half the window; released panel-agents has no
+    # resize handle, so the width is set as a drag stores it.
+    apps[0]._editor._split_view.preferences.assistant_width = 720
     wait_until(lambda: session.drawer.width == 720, page, timeout=8000)
     paper = page.locator(".MuiDrawer-paper").filter(
         has=page.get_by_placeholder(re.compile("^Ask the agent"))
