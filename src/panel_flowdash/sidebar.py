@@ -11,6 +11,8 @@ session's ``app``, ``user`` (:class:`~panel_flowdash.Identity`) and
 ``section``. Sections can also serve their own routes by setting both
 ``route`` and ``view``: FlowDash then routes ``/<route>`` and
 ``/<route>/...`` to ``view(ctx, path)`` without registering them under Pages.
+Pass routed sections to :meth:`~panel_flowdash.app.FlowDashApp.build_routes`
+so direct loads and browser reloads resolve cleanly.
 
 The built-in Dashboards navigation uses the same :class:`SidebarSection`
 mechanism (with ``id="dashboards"`` and ``order=0``). Sidebar sections render
@@ -19,6 +21,7 @@ only when ``FlowDashApp.nav_variant`` is ``"rail"`` (the default).
 
 from __future__ import annotations
 
+import re
 import typing as t
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -39,10 +42,24 @@ __all__ = [
 #: Section ids reserved for built-in rail destinations.
 RESERVED_SECTION_IDS: frozenset[str] = frozenset({"home", "components", "pages", "help", "admin"})
 
-#: Top-level URL path prefixes reserved for built-in app routes.
+#: Top-level URL path prefixes reserved for built-in app, auth and Bokeh endpoints.
 RESERVED_ROUTE_PREFIXES: frozenset[str] = frozenset(
-    {"dash", "components", "admin", "access-denied"}
+    {
+        "access-denied",
+        "admin",
+        "autoload.js",
+        "components",
+        "dash",
+        "login",
+        "logout",
+        "metadata",
+        "static",
+        "ws",
+    }
 )
+
+# Valid CSS-safe identifiers for section ids (used in rail menu classes).
+_SECTION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
 @dataclass(frozen=True)
@@ -65,11 +82,24 @@ class SidebarContext:
 
     @property
     def is_admin(self) -> bool:
-        """Whether the current session administers this project."""
+        """Whether this session administers the project (cached per session).
+
+        Use this for showing or hiding UI. Before performing a privileged write
+        or admin action, re-check with :meth:`still_admin`.
+        """
         return self.app.is_admin
 
+    def still_admin(self) -> bool:
+        """Whether this session is still an admin, with the project file read again."""
+        return self.app.still_admin()
+
     def navigate(self, url: str) -> None:
-        """Navigate this session to *url* through the app's router."""
+        """Navigate this session to *url*.
+
+        Internal routes open through the app's router; external ``http://`` and
+        ``https://`` URLs open in a new browser tab (falling back to the current
+        window if popups are blocked).
+        """
         self.app._navigate_url(url)
 
     def refresh(self, section_id: str | None = None) -> None:
@@ -166,8 +196,10 @@ class SidebarSection:
     ----------
     id
         Unique section identifier (e.g. ``"dashboards"``, ``"reports"``).
-        Built-in ids in :data:`RESERVED_SECTION_IDS` are rejected. Registering
-        a section with an existing ``id`` replaces the earlier one.
+        Must start with an ASCII letter or digit and contain only ASCII
+        letters, digits, ``"-"`` or ``"_"``. Built-in ids in
+        :data:`RESERVED_SECTION_IDS` are rejected. Registering a section with
+        an existing ``id`` replaces the earlier one.
     label
         Heading displayed in the rail button, narrow-screen drawer and
         breadcrumbs.
@@ -176,8 +208,9 @@ class SidebarSection:
     items
         Optional callable ``items(ctx: SidebarContext) -> Sequence[SidebarItem]``
         returning the destinations visible in this session. Results are cached
-        per refresh and re-fetched when the section's menu or drawer opens or
-        when :meth:`~panel_flowdash.app.FlowDashApp.refresh_sections` is called.
+        per refresh and re-fetched when the section's menu or the narrow drawer
+        opens or when :meth:`~panel_flowdash.app.FlowDashApp.refresh_sections`
+        is called.
     order
         Sort key controlling section order (ascending). Ties preserve
         registration order. The built-in Dashboards section uses ``0``; custom
@@ -197,7 +230,14 @@ class SidebarSection:
     route
         Optional URL prefix served by this section, e.g. ``"reports"`` for
         ``/reports`` and ``/reports/...``. Leading and trailing slashes are
-        stripped. Must be paired with ``view``.
+        stripped. Must be paired with ``view``, must not use a prefix in
+        :data:`RESERVED_ROUTE_PREFIXES`, and must not clash with a registry
+        page section. Subpaths whose final segment is ``ws``, ``metadata``,
+        ``autoload.js`` or ``static`` (or that contain a ``static/`` segment)
+        are reserved for Bokeh/Panel endpoints and cannot be reloaded directly.
+        Pass routed sections to :meth:`~panel_flowdash.app.FlowDashApp.build_routes`
+        for direct loads and reloads; routed sections added later via
+        ``add_section()`` work in-session only.
     view
         Optional callable ``view(ctx: SidebarContext, path: str) -> Viewable``
         (sync or async) rendering ``/<route>`` (``path == ""``) and
@@ -219,6 +259,11 @@ class SidebarSection:
     def __post_init__(self):  # noqa: D105
         if not isinstance(self.id, str) or not self.id.strip():
             raise ValueError("SidebarSection.id must be a non-empty string.")
+        if not _SECTION_ID_RE.fullmatch(self.id):
+            raise ValueError(
+                f"SidebarSection.id {self.id!r} must start with an ASCII letter or digit and "
+                "contain only ASCII letters, digits, '-' or '_'."
+            )
         if self.id in RESERVED_SECTION_IDS:
             reserved = ", ".join(sorted(RESERVED_SECTION_IDS))
             raise ValueError(
@@ -268,7 +313,7 @@ class SidebarSection:
                 or "#" in normalized
             ):
                 raise ValueError(
-                    f"SidebarSection.route must be a clean URL prefix without spaces or query, "
+                    "SidebarSection.route must be a clean URL prefix without spaces or query, "
                     f"got {self.route!r}."
                 )
             top_segment = normalized.split("/", 1)[0]

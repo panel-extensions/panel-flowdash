@@ -840,7 +840,15 @@ class TestSidebarSections:
             "Q3",
         ]
 
+        # Opening the desktop sidebar (narrow=False) must not re-fetch sections.
         store_items.append(SidebarItem(title="Q4", url="/reports/q4"))
+        assert not app._shell._menu_observer.narrow
+        app._page.sidebar_open = True
+        assert calls == 3
+        app._page.sidebar_open = False
+
+        # Opening the narrow-screen drawer (narrow=True) re-fetches fresh items.
+        app._shell._menu_observer.narrow = True
         app._page.sidebar_open = True
         assert calls == 4
         assert [i["label"] for i in app._shell._rail_buttons["reports"].items] == [
@@ -849,6 +857,113 @@ class TestSidebarSections:
             "Q3",
             "Q4",
         ]
+
+    async def test_cross_section_exact_match_beats_earlier_queryless_fallback(self, app):
+        sec_a = SidebarSection(
+            id="sec_a",
+            label="Section A",
+            icon="folder",
+            order=10,
+            items=lambda _ctx: [SidebarItem(title="All views", url="/shared/view")],
+        )
+        sec_b = SidebarSection(
+            id="sec_b",
+            label="Section B",
+            icon="assessment",
+            order=20,
+            items=lambda _ctx: [SidebarItem(title="Scoped view", url="/shared/view?scope=b")],
+        )
+        app.add_section(sec_a)
+        app.add_section(sec_b)
+        a_idx = next(
+            i for i, item in enumerate(app._shell._nav_list.items) if item["key"] == "sec_a"
+        )
+        b_idx = next(
+            i for i, item in enumerate(app._shell._nav_list.items) if item["key"] == "sec_b"
+        )
+
+        app._shell.sync("/shared/view?scope=b")
+        assert app._shell._active() == "sec_b"
+        assert app._shell._nav_list.active == (b_idx, 0)
+        assert app._shell.crumbs() == [
+            Crumb("Home", "/"),
+            Crumb("Section B"),
+            Crumb("Scoped view"),
+        ]
+
+        app._shell.sync("/shared/view?scope=other")
+        assert app._shell._active() == "sec_a"
+        assert app._shell._nav_list.active == (a_idx, 0)
+        assert app._shell.crumbs() == [Crumb("Home", "/"), Crumb("Section A"), Crumb("All views")]
+
+    async def test_ctx_navigate_opens_external_urls_in_browser(self, app):
+        internal: list[tuple[str, str]] = []
+        external: list[str] = []
+        app._request_navigation = lambda path, search="": internal.append((path, search))
+        app._shell._menu_observer.open_url = lambda url: external.append(url)
+
+        ctx = app._sidebar_context(app.sections[0])
+        ctx.navigate("https://example.com/docs?v=1")
+        ctx.navigate("http://example.org/help")
+        ctx.navigate("/reports/q4?tab=2")
+
+        assert external == ["https://example.com/docs?v=1", "http://example.org/help"]
+        assert internal == [("/reports/q4", "?tab=2")]
+
+    async def test_ctx_still_admin_rechecks_live_admin_status(self, app):
+        app._is_admin = True
+        live = [True]
+        app._still_admin = lambda: live[0]
+        ctx = app._sidebar_context(app.sections[0])
+
+        assert ctx.is_admin is True
+        assert ctx.still_admin() is True
+
+        live[0] = False
+        assert ctx.is_admin is True
+        assert ctx.still_admin() is False
+
+    async def test_build_routes_accepts_callable_sections_and_rejects_clashes(self, tmp_path):
+        _create_project(tmp_path)
+        sys.path.insert(0, str(tmp_path))
+        try:
+            store = DashboardStore(tmp_path / "test.db")
+            reports = SidebarSection(
+                id="reports",
+                label="Reports",
+                icon="assessment",
+                route="reports",
+                view=lambda _ctx, subpath: f"body:{subpath}",
+            )
+            routes = FlowDashApp.build_routes(
+                project_dir=tmp_path, store=store, sections=lambda: [reports]
+            )
+            assert "/reports" in routes
+            assert any(pattern.startswith("/reports/") for pattern in routes)
+
+            clashing = SidebarSection(
+                id="analytics_ext",
+                label="Analytics",
+                icon="analytics",
+                route="Analytics",
+                view=lambda _ctx, _p: "clash",
+            )
+            with pytest.raises(ValueError, match="clashes with registry page section"):
+                FlowDashApp.build_routes(project_dir=tmp_path, store=store, sections=[clashing])
+
+            nested = SidebarSection(
+                id="sub_reports",
+                label="Sub Reports",
+                icon="assessment",
+                route="reports/sub",
+                view=lambda _ctx, _p: "nested",
+            )
+            with pytest.raises(ValueError, match="overlaps with section"):
+                FlowDashApp.build_routes(
+                    project_dir=tmp_path, store=store, sections=[reports, nested]
+                )
+        finally:
+            sys.path.remove(str(tmp_path))
 
     async def test_callable_path_switches_between_direct_link_and_menu(self, app):
         use_landing = [True]
@@ -971,8 +1086,9 @@ class TestSidebarSections:
             SidebarItem(title="X", url="")
         with pytest.raises(TypeError, match="callable or a route"):
             SidebarAction(label="New", action=123)  # type: ignore[arg-type]
-        with pytest.raises(ValueError, match="id"):
-            SidebarSection(id="", label="X", icon="star")
+        for bad_id in ("", " ", "my reports", "reports.v1", "-bad", "a/b"):
+            with pytest.raises(ValueError, match="id"):
+                SidebarSection(id=bad_id, label="X", icon="star")
         for reserved_id in sorted(RESERVED_SECTION_IDS):
             with pytest.raises(ValueError, match="reserved"):
                 SidebarSection(id=reserved_id, label="X", icon="star")
@@ -988,9 +1104,33 @@ class TestSidebarSections:
             SidebarSection(id="only_route", label="R", icon="star", route="r")
         with pytest.raises(ValueError, match=r"route and SidebarSection\.view"):
             SidebarSection(id="only_view", label="V", icon="star", view=lambda _c, _p: "hi")
-        with pytest.raises(ValueError, match="reserved route prefix"):
-            SidebarSection(
-                id="bad_route", label="B", icon="star", route="admin/extra", view=lambda _c, _p: ""
+        for reserved_route in (
+            "admin/extra",
+            "static",
+            "static/assets",
+            "login",
+            "logout",
+            "ws",
+            "metadata",
+            "autoload.js",
+        ):
+            with pytest.raises(ValueError, match="reserved route prefix"):
+                SidebarSection(
+                    id="bad_route",
+                    label="B",
+                    icon="star",
+                    route=reserved_route,
+                    view=lambda _c, _p: "",
+                )
+        with pytest.raises(ValueError, match="clashes with registry page section"):
+            app.add_section(
+                SidebarSection(
+                    id="analytics_ext",
+                    label="Analytics",
+                    icon="analytics",
+                    route="Analytics",
+                    view=lambda _c, _p: "",
+                )
             )
         with pytest.raises(TypeError, match="SidebarSection"):
             app.add_section("not-a-section")  # type: ignore[arg-type]

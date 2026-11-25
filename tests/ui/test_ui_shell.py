@@ -406,3 +406,65 @@ def test_custom_sidebar_section_in_rail_and_narrow_drawer(page):
     wait_until(lambda: _path(page) == "/reports/monthly", page, timeout=10000)
     page.get_by_text("Monthly KPI body").wait_for()
     expect(drawer).to_be_hidden()
+
+
+def test_rail_menu_observer_refreshes_once_after_resizes_and_keyboard(page):
+    store, _ = _store_with("Plant")
+    calls = [0]
+    apps = []
+
+    def list_reports(_ctx):
+        calls[0] += 1
+        return [SidebarItem(title="Weekly Summary", url="/reports/weekly")]
+
+    reports = SidebarSection(
+        id="reports",
+        label="Reports",
+        icon="assessment",
+        order=10,
+        route="reports",
+        view=lambda _ctx, subpath: f"Report: {subpath}",
+        items=list_reports,
+    )
+    _serve_app(page, store, "/", apps=apps, sections=[reports])
+
+    page.set_viewport_size({"width": 1280, "height": 800})
+    nav = page.get_by_role("navigation")
+    reports_button = nav.get_by_role("button", name="Reports", exact=True)
+    expect(reports_button).to_be_visible()
+
+    # Cross the 600 px breakpoint three times so the observer re-renders repeatedly.
+    for _ in range(3):
+        page.set_viewport_size({"width": 390, "height": 844})
+        expect(reports_button).to_be_hidden()
+        wait_until(lambda: apps[0]._shell._menu_observer.narrow, page, timeout=10000)
+        page.set_viewport_size({"width": 1280, "height": 800})
+        expect(reports_button).to_be_visible()
+        wait_until(lambda: not apps[0]._shell._menu_observer.narrow, page, timeout=10000)
+
+    # Opening the rail menu by click must invoke items() exactly once.
+    before_click = calls[0]
+    reports_button.click()
+    expect(page.get_by_role("menuitem", name="Weekly Summary")).to_be_visible()
+    wait_until(lambda: calls[0] >= before_click + 1, page, timeout=10000)
+    page.wait_for_function("() => Bokeh.documents.every((d) => d.is_idle)", timeout=10000)
+    assert calls[0] == before_click + 1
+
+    # Close menu, then open with Enter: must also invoke items() exactly once.
+    page.keyboard.press("Escape")
+    expect(page.get_by_role("menuitem", name="Weekly Summary")).to_be_hidden()
+    before_enter = calls[0]
+    reports_button.focus()
+    page.keyboard.press("Enter")
+    expect(page.get_by_role("menuitem", name="Weekly Summary")).to_be_visible()
+    wait_until(lambda: calls[0] >= before_enter + 1, page, timeout=10000)
+    page.wait_for_function("() => Bokeh.documents.every((d) => d.is_idle)", timeout=10000)
+    assert calls[0] == before_enter + 1
+
+    # Opening the sidebar on desktop (not the narrow drawer) must not refresh sections.
+    page.keyboard.press("Escape")
+    expect(page.get_by_role("menuitem", name="Weekly Summary")).to_be_hidden()
+    before_sidebar = calls[0]
+    apps[0]._page.sidebar_open = True
+    page.wait_for_function("() => Bokeh.documents.every((d) => d.is_idle)", timeout=10000)
+    assert calls[0] == before_sidebar

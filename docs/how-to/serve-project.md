@@ -513,7 +513,10 @@ at runtime.
 
 Every callback (`items`, `visible`, `path`, `new_action.action`, and `view`)
 receives a `SidebarContext` with `ctx.app`, `ctx.user`, `ctx.section`,
-`ctx.is_admin`, `ctx.navigate(url)`, and `ctx.refresh()`. Give a section its
+`ctx.is_admin`, `ctx.still_admin()`, `ctx.navigate(url)`, and `ctx.refresh()`.
+`ctx.is_admin` (like `app.is_admin`) is cached per session for showing or hiding
+UI; call `ctx.still_admin()` before performing a privileged write or admin
+action so revoked permissions take effect immediately. Give a section its
 own URL prefix with `route` and `view` so FlowDash serves `/<route>` and
 `/<route>/...` directly without registering pages under Pages:
 
@@ -560,10 +563,18 @@ reports = SidebarSection(
 
 A section with `route` and `view` and no `items` or `new_action` (such as a
 Data catalog) links directly to `/<route>` in the rail and drawer. Each item's
-`url` opens through the app's router (or in a new tab if it starts with
-`http://` or `https://`). Item subtitles (`SidebarItem.subtitle`) are shown as
-secondary text in the narrow-screen drawer; desktop rail menus show titles only
-because `pmui.MenuButton` does not render secondary lines.
+`url` (and `ctx.navigate(url)`) opens through the app's router, or in a new tab
+if it starts with `http://` or `https://`. Item subtitles (`SidebarItem.subtitle`)
+are shown as secondary text in the narrow-screen drawer; desktop rail menus show
+titles only because `pmui.MenuButton` does not render secondary lines.
+
+Pass routed sections to `FlowDashApp.build_routes(sections=...)` (as a list or
+zero-argument callable) or define `sections` in the project's `__init__.py` so
+direct loads and browser reloads resolve; a routed section added later with
+`app.add_section()` works for in-session navigation only and returns 404 on
+reload. Avoid subpaths whose final segment is `ws`, `metadata`, `autoload.js`
+or `static` (or that contain a `static/` segment), as Bokeh/Panel reserves
+those endpoints and cannot reload them directly.
 
 Section items are cached per refresh so navigation does not re-query on every
 route change. Call `app.refresh_sections(section_id=None)` (or `ctx.refresh()`)

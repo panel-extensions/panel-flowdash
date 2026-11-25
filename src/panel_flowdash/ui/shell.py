@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import logging
 import typing as t
+import uuid
 from urllib.parse import parse_qsl, urlencode
 
 import panel as pn
 import panel_material_ui as pmui
+import param
 from panel.custom import JSComponent
 
 # The app module imports this one; its route constants are only read at runtime.
@@ -89,11 +91,36 @@ _DRAWER_ALIGN_CSS = """
 """
 
 
+# Material UI's sm breakpoint, below which the page moves its rail into the
+# sidebar drawer: the rail buttons show above it, the navigation list below it.
+NARROW_BREAKPOINT = 600
+
+
 class RailMenuObserver(JSComponent):
-    """Notifies Python when a rail MenuButton opens so its items can be re-fetched."""
+    """Browser bridge for rail menu open notifications, narrow-viewport tracking and external links."""
+
+    observer_id = param.String(
+        default="",
+        doc="Stable key used to deduplicate document listeners across re-renders.",
+    )
+    breakpoint = param.Integer(
+        default=NARROW_BREAKPOINT,
+        doc="Viewport width threshold (px) below which the rail moves into the drawer.",
+    )
+    narrow = param.Boolean(
+        default=False,
+        doc="True while the viewport matches the narrow-screen drawer breakpoint.",
+    )
 
     _esm = """
     export function render({ model }) {
+      const registry = (window.__fdRailMenuObservers = window.__fdRailMenuObservers || new Map())
+      const id = model.observer_id
+      const previous = registry.get(id)
+      if (previous) previous()
+
+      // Native <button> synthesises a click event for Enter and Space, so a single
+      // capture-phase click listener covers mouse, touch and keyboard activation once.
       const notify = (event) => {
         const path = event.composedPath ? event.composedPath() : []
         const btn = path.find(
@@ -112,21 +139,47 @@ class RailMenuObserver(JSComponent):
         const cls = [...host.classList].find((c) => c.startsWith("fd-rail-menu-"))
         if (cls) model.send_msg({ type: "opened", key: cls.slice("fd-rail-menu-".length) })
       }
-      const onKey = (event) => {
-        if (event.key === "Enter" || event.key === " ") notify(event)
+
+      const mql = window.matchMedia(`(max-width: ${model.breakpoint - 0.05}px)`)
+      const syncNarrow = () => {
+        if (model.narrow !== mql.matches) model.narrow = mql.matches
       }
+      syncNarrow()
+
+      const onMsg = (msg) => {
+        if (msg && msg.type === "open_url" && typeof msg.url === "string") {
+          const win = window.open(msg.url, "_blank", "noopener,noreferrer")
+          if (!win) window.location.assign(msg.url)
+        }
+      }
+
       document.addEventListener("click", notify, true)
-      document.addEventListener("keydown", onKey, true)
-      model.on("remove", () => {
+      mql.addEventListener("change", syncNarrow)
+      model.on("msg:custom", onMsg)
+
+      let active = true
+      const cleanup = () => {
+        if (!active) return
+        active = false
         document.removeEventListener("click", notify, true)
-        document.removeEventListener("keydown", onKey, true)
-      })
+        mql.removeEventListener("change", syncNarrow)
+        model.off("msg:custom", onMsg)
+        model.off("remove", cleanup)
+        if (registry.get(id) === cleanup) registry.delete(id)
+      }
+      registry.set(id, cleanup)
+      model.on("remove", cleanup)
     }
     """
 
     def __init__(self, on_open: t.Callable[[str], None], **params):
+        params.setdefault("observer_id", uuid.uuid4().hex)
         super().__init__(width=0, height=0, margin=0, styles={"display": "none"}, **params)
         self._on_open = on_open
+
+    def open_url(self, url: str) -> None:
+        """Ask the browser to open *url* in a new tab (falling back to the current window)."""
+        self._send_msg({"type": "open_url", "url": url})
 
     def _handle_msg(self, data):
         if (
@@ -136,10 +189,6 @@ class RailMenuObserver(JSComponent):
         ):
             self._on_open(data["key"])
 
-
-# Material UI's sm breakpoint, below which the page moves its rail into the
-# sidebar drawer: the rail buttons show above it, the navigation list below it.
-NARROW_BREAKPOINT = 600
 
 _HIDE_WHEN_NARROW = (
     f"@media (max-width: {NARROW_BREAKPOINT - 0.05}px) {{ :host {{ display: none !important; }} }}"
@@ -499,27 +548,48 @@ class AppShell:
             return f"/{section.route}"
         return None
 
-    def _match_section_route(self, section: SidebarSection) -> tuple[bool, SidebarItem | None]:
-        """Return ``(matched, item)`` for *section* against the current route."""
-        cached_items = self._section_items_cache.get(section.id, ())
-        matched_item = _match_url(
-            ((item.url, item) for item in cached_items), self._path, self._search
-        )
-        if matched_item is not None:
-            return True, matched_item
-        if section.new_action is not None and isinstance(section.new_action.action, str):
-            if _match_url([(section.new_action.action, True)], self._path, self._search):
-                return True, None
-        if section.route:
-            route_prefix = f"/{section.route}"
-            if self._path == route_prefix or self._path.startswith(f"{route_prefix}/"):
-                return True, None
-        section_path = self._section_paths_cache.get(section.id)
-        if section_path is not None and not _is_external_url(section_path):
-            sp, _ = _split_route(section_path)
-            if sp != "/" and (self._path == sp or self._path.startswith(f"{sp}/")):
-                return True, None
-        return False, None
+    def _match_visible_section(self) -> tuple[SidebarSection | None, SidebarItem | None]:
+        """Match the current route against all visible sections.
+
+        Exact ``(pathname, search)`` matches across all visible sections beat any
+        path-only fallback, matching ``_nav_list_active``.
+        """
+        visible = self._visible_sections()
+        candidates: list[tuple[str, tuple[SidebarSection, SidebarItem | None]]] = [
+            (item.url, (section, item))
+            for section in visible
+            for item in self._section_items_cache.get(section.id, ())
+        ]
+        for section in visible:
+            if section.new_action is not None and isinstance(section.new_action.action, str):
+                candidates.append((section.new_action.action, (section, None)))
+        for section in visible:
+            section_path = self._section_paths_cache.get(section.id)
+            if section_path is not None and not _is_external_url(section_path):
+                sp, _ = _split_route(section_path)
+                if sp != "/":
+                    candidates.append((section_path, (section, None)))
+        matched = _match_url(candidates, self._path, self._search)
+        if matched is not None:
+            return matched
+
+        best_prefix: tuple[int, SidebarSection] | None = None
+        for section in visible:
+            prefixes: list[str] = []
+            if section.route:
+                prefixes.append(f"/{section.route}")
+            section_path = self._section_paths_cache.get(section.id)
+            if section_path is not None and not _is_external_url(section_path):
+                sp, _ = _split_route(section_path)
+                if sp != "/":
+                    prefixes.append(sp)
+            for prefix in prefixes:
+                if self._path == prefix or self._path.startswith(f"{prefix}/"):
+                    if best_prefix is None or len(prefix) > best_prefix[0]:
+                        best_prefix = (len(prefix), section)
+        if best_prefix is not None:
+            return best_prefix[1], None
+        return None, None
 
     def _active(self) -> str:
         path = self._path
@@ -531,10 +601,9 @@ class AppShell:
             return "admin"
         if path == "/":
             return "home"
-        for section in self._visible_sections():
-            matched, _item = self._match_section_route(section)
-            if matched:
-                return section.id
+        matched_section, _item = self._match_visible_section()
+        if matched_section is not None:
+            return matched_section.id
         if path.strip("/") in {e.page_path.strip("/") for e in self._page_entries()}:
             return "pages"
         return ""
@@ -603,7 +672,7 @@ class AppShell:
             self.refresh(key)
 
     def _on_drawer_open(self, event):
-        if event.new:
+        if event.new and self._menu_observer.narrow:
             self.refresh()
 
     def _on_nav_list_expanded(self, event):
@@ -854,10 +923,8 @@ class AppShell:
             if section is None:
                 return [Crumb("Admin")]
             return [Crumb("Admin", app_module.ADMIN_ROUTE), Crumb(section.label)]
-        for sidebar_section in self._visible_sections():
-            matched, item = self._match_section_route(sidebar_section)
-            if not matched:
-                continue
+        sidebar_section, item = self._match_visible_section()
+        if sidebar_section is not None:
             if item is not None:
                 return [
                     home,
