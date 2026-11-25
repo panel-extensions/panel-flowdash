@@ -4309,8 +4309,8 @@ class FlowDash(Viewer):
         self._palette_sheet.open = self._layout_sheet.open = False
         # Sized for where they go before they move, so the columns they leave
         # and join keep their own sizing.
+        self._palette_panel.touch = self._inspector.sheet = phone
         if phone:
-            self._palette_panel.touch = self._inspector.sheet = True
             self._palette_drawer.detach()
             self._panel_slot[:] = []
             self._palette_sheet_body[:] = [self._palette_section]
@@ -4322,10 +4322,6 @@ class FlowDash(Viewer):
             self._inspector_sheet[:] = []
             self._layout_sheet_body[:] = []
             self._palette_sheet_body[:] = []
-            # Only once out of the sheets: a closed sheet never rendered them, and
-            # Panel 1.11.0rc1 fails on a size change of an unrendered custom
-            # component, dropping the rest of the patch (holoviz/panel#9154).
-            self._palette_panel.touch = self._inspector.sheet = False
             self._palette_drawer.attach()
             self._panel_slot[:] = [self._inspector]
             # A sheet dismissed on the phone is not a fold of the column.
