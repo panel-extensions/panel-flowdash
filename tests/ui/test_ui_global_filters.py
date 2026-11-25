@@ -110,6 +110,40 @@ def test_the_filter_bar_filters_matching_views_and_hints_on_the_rest(page):
     assert editor._edit_count == edits
 
 
+# The accessible name of the focused element, across shadow roots.
+_FOCUSED = """() => {
+  let el = document.activeElement
+  while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement
+  return el ? el.getAttribute("aria-label") || "" : ""
+}"""
+
+_BLUR = """() => {
+  let el = document.activeElement
+  while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement
+  if (el && el.blur) el.blur()
+}"""
+
+
+def test_a_tiles_filter_note_is_reached_from_the_keyboard(page):
+    editor = _editor(editable=False)
+    serve_component(page, editor)
+    bar = page.locator(".fd-filter-bar")
+    expect(bar.get_by_role("combobox", name="State")).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
+    _choose(page, "State", "TX")
+    expect(page.locator(".flowdash-tile-filter-hint")).to_have_count(1)
+    # Out of the State menu once it has closed, which keeps the focus after a pick.
+    page.keyboard.press("Escape")
+    expect(page.locator(".MuiMenuItem-root").filter(visible=True)).to_have_count(0)
+    page.evaluate(_BLUR)
+    # The note is an icon whose text is its tooltip, shown on focus as on hover.
+    for _ in range(20):
+        page.keyboard.press("Tab")
+        if page.evaluate(_FOCUSED).startswith("Not filtered by State"):
+            break
+    assert page.evaluate(_FOCUSED).startswith("Not filtered by State")
+    expect(page.get_by_role("tooltip")).to_contain_text("Not filtered by State")
+
+
 def test_a_view_opts_out_in_the_tile_tab(page):
     editor = _editor(editable=True)
     page.set_viewport_size({"width": 1600, "height": 1000})

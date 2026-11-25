@@ -381,10 +381,20 @@ def test_a_manual_edit_while_exploring_keeps_the_feed_in_place(page):
     assert errors == []
 
 
-_DEEP_COUNT = """() => {
-  const roots = [document]
+# The elements of the Explore feed, across the shadow roots inside it.
+_FEED_COUNT = """() => {
+  const find = (root) => {
+    for (const el of root.querySelectorAll("*")) {
+      if (el.classList.contains("flowdash-explore")) return el
+      const found = el.shadowRoot && find(el.shadowRoot)
+      if (found) return found
+    }
+    return null
+  }
+  const roots = [find(document)]
   let n = 0
   for (let i = 0; i < roots.length; i++) {
+    if (roots[i].shadowRoot) roots.push(roots[i].shadowRoot)
     for (const el of roots[i].querySelectorAll("*")) {
       n++
       if (el.shadowRoot) roots.push(el.shadowRoot)
@@ -407,22 +417,23 @@ def test_a_long_history_shows_its_latest_page_and_loads_earlier_ones(page):
         editor.end_turn()
         with agent_edits(run=f"run-{i}", question=f"Note number {i}"):
             editor.add_component("Test/note", instance_id=f"memo{i}")
-    page.wait_for_timeout(1000)
-    before = page.evaluate(_DEEP_COUNT)
     start = time.monotonic()
     ask_button(page).click()
     page.locator(".artifact-cell", has_text="memo59").wait_for(timeout=120000)
     switched = time.monotonic() - start
+    # The feed holds one page of the history: the latest 20 requests and their cards.
     cells = page.locator(".artifact-cell")
     expect(cells).to_have_count(20)
-    # The feed holds one page, so the page grows by a bounded amount whatever the history.
-    assert page.evaluate(_DEEP_COUNT) - before < 20000, page.evaluate(_DEEP_COUNT) - before
-    # A loose budget for slow runners; the node count above is what bounds the feed.
+    questions = page.get_by_text(re.compile(r"^Note number \d+$"))
+    expect(questions).to_have_count(20)
+    expect(page.get_by_text("Note number 39", exact=True)).to_have_count(0)
+    page.wait_for_timeout(1000)
+    one_page = page.evaluate(_FEED_COUNT)
+    # A loose budget for slow runners; the page held is what bounds the feed.
     assert switched < 120, switched
 
     # The entry on screen stays where it is while older ones go in above it.
     latest = page.get_by_text("Note number 59", exact=True)
-    page.wait_for_timeout(1000)
     before = latest.bounding_box()["y"]
     feed = editor.explore_feed
     page.get_by_role("button", name=re.compile(r"Show earlier requests \(41 more\)")).click()
@@ -449,3 +460,108 @@ def test_a_long_history_shows_its_latest_page_and_loads_earlier_ones(page):
     expect(cells).to_have_count(60, timeout=120000)
     page.wait_for_timeout(1500)
     assert abs(top.bounding_box()["y"] - before) < 50, (before, top.bounding_box())
+
+    # The feed's elements grow with the entries shown, not with the history: the first
+    # page of three is about a third of them (7.7k of 23k in Chromium), so under half
+    # leaves room for what every feed holds, while a feed that held the whole history
+    # from the start would already have all of them.
+    expect(questions).to_have_count(60)
+    whole = page.evaluate(_FEED_COUNT)
+    assert one_page < whole / 2, (one_page, whole)
+
+
+# The Ask dock's box, its accessible name and role, its separator's ARIA values,
+# and how far the page reaches right of the window, across shadow roots.
+_DOCK_STATE = """() => {
+  const roots = [document]
+  for (let i = 0; i < roots.length; i++) {
+    for (const el of roots[i].querySelectorAll("*")) {
+      if (el.shadowRoot) roots.push(el.shadowRoot)
+    }
+  }
+  const all = (sel) => roots.flatMap((r) => [...r.querySelectorAll(sel)])
+  const dock = all(".fd-ask-dock")[0]
+  const bar = all("[role=separator]").find((el) => el.getAttribute("aria-label") === "Resize Ask")
+  const tiles = all(".flowdash-tile").filter((el) => el.getBoundingClientRect().width > 0)
+  return {
+    width: dock.getBoundingClientRect().width,
+    role: dock.getAttribute("role"),
+    label: dock.getAttribute("aria-label"),
+    now: Number(bar.getAttribute("aria-valuenow")),
+    max: Number(bar.getAttribute("aria-valuemax")),
+    right: Math.max(document.documentElement.scrollWidth, ...tiles.map((t) => t.getBoundingClientRect().right)),
+  }
+}"""
+
+
+def test_the_dock_keeps_to_half_the_window_as_it_narrows(page):
+    page.set_viewport_size({"width": 1024, "height": 768})
+    store, (dash,) = _store_with("Plant")
+    agent = Agent(scripted(), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()])
+    _serve_app(page, store, f"/dash/{dash}", [], agent=agent, explore_agent=agent)
+    page.get_by_text("note tile").first.wait_for()
+    _open_ask(page)
+    # A region named Ask, whose separator says its width from the start.
+    wait_until(lambda: page.evaluate(_DOCK_STATE)["now"] == 420, page, timeout=8000)
+    state = page.evaluate(_DOCK_STATE)
+    assert (state["role"], state["label"], state["max"]) == ("region", "Ask", 512)
+    handle = page.get_by_role("separator", name="Resize Ask")
+    handle.focus()
+    for _ in range(3):
+        handle.press("ArrowRight")
+    wait_until(lambda: page.evaluate(_DOCK_STATE)["width"] == 492, page, timeout=8000)
+
+    page.set_viewport_size({"width": 700, "height": 768})
+    wait_until(lambda: page.evaluate(_DOCK_STATE)["width"] == 350, page, timeout=8000)
+    state = page.evaluate(_DOCK_STATE)
+    assert state["right"] <= 700
+    assert (state["now"], state["max"]) == (350, 350)
+    # Wide again, it takes the width it was dragged to.
+    page.set_viewport_size({"width": 1024, "height": 768})
+    wait_until(lambda: page.evaluate(_DOCK_STATE)["width"] == 492, page, timeout=8000)
+
+
+def test_done_is_in_reach_beside_the_assistant_in_a_narrow_window(page):
+    page.set_viewport_size({"width": 1024, "height": 768})
+    store, (dash,) = _store_with("Plant")
+    agent = Agent(scripted(), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()])
+    apps = []
+    _serve_app(page, store, f"/dash/{dash}", apps, agent=agent, explore_agent=agent)
+    page.get_by_text("note tile").first.wait_for()
+    editor, session = apps[0]._editor, apps[0]._agent_session
+    _open_ask(page)
+    page.mouse.move(0, 400)
+    page.get_by_role("button", name="Edit", exact=True).click()
+    done = page.get_by_role("button", name="Done", exact=True)
+    expect(done).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
+    # Ask carries into edit mode as the assistant's drawer, beside the editor, not over it.
+    wait_until(lambda: session.drawer.open, page, timeout=8000)
+    chat = page.get_by_placeholder(re.compile("^Ask the agent"))
+    expect(chat).to_be_visible(timeout=8000)
+    expect(page.locator(".MuiBackdrop-root").filter(visible=True)).to_have_count(0)
+    chat.press("Escape")
+    done.click()
+    wait_until(lambda: not editor.editable, page, timeout=8000)
+    # View mode gets its Ask back, the feed docked beside the dashboard.
+    expect(page.locator(".flowdash-explore")).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
+    assert editor.ask_docked and not session.drawer.open
+
+
+def test_the_assistant_opened_in_edit_mode_leaves_the_dock_closed_after(page):
+    store, (dash,) = _store_with("Plant")
+    agent = Agent(scripted(), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()])
+    apps = []
+    _serve_app(page, store, f"/dash/{dash}", apps, agent=agent, explore_agent=agent)
+    page.get_by_text("note tile").first.wait_for()
+    editor, session = apps[0]._editor, apps[0]._agent_session
+    page.get_by_role("button", name="Edit", exact=True).click()
+    expect(page.get_by_role("button", name="Done", exact=True)).to_be_visible(
+        timeout=DASHBOARD_LOAD_TIMEOUT
+    )
+    ask_button(page).click()
+    wait_until(lambda: session.drawer.open, page, timeout=8000)
+    page.get_by_role("button", name="Done", exact=True).click()
+    wait_until(lambda: not editor.editable, page, timeout=8000)
+    wait_until(lambda: not session.drawer.open, page, timeout=8000)
+    expect(page.locator(".flowdash-explore")).to_have_count(0)
+    expect(ask_button(page)).to_have_attribute("aria-pressed", "false")

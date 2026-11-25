@@ -14,6 +14,7 @@ from panel.viewable import Viewer
 
 from panel_flowdash.ui.health import DashboardHealth
 from panel_flowdash.ui.health_popover import HealthPopover
+from panel_flowdash.ui.output_switch import REPORT_MENU_BREAKPOINT, OutputSwitch
 from panel_flowdash.ui.text import escape_markdown, markdown_pane
 from panel_flowdash.util import close_dialog, confirm, open_dialog
 
@@ -284,31 +285,15 @@ def format_period(seconds: float) -> str:
     return f"{seconds} s"
 
 
-_REPORT_LABEL = ":material/description: Report"
-
-# The outputs a dashboard is read as, in view and in edit mode alike.
-_OUTPUT_OPTIONS = {":material/dashboard: Dashboard": "dashboard", _REPORT_LABEL: "report"}
-
-# How edit mode shows the output: the dataflow, its layout or both side by side.
-# The report's layout is its block editor, and it has no split.
-_DATAFLOW_TAB = {":material/account_tree: Dataflow": "wiring"}
-_LAYOUT_TAB = {":material/grid_view: Layout": "dashboard"}
-_SPLIT_TAB = {":material/vertical_split: Split": "split"}
-_EDIT_TABS = {**_DATAFLOW_TAB, **_LAYOUT_TAB, **_SPLIT_TAB}
-_REPORT_EDIT_TABS = {**_DATAFLOW_TAB, **_LAYOUT_TAB}
+# How edit mode shows the dashboard: its dataflow, its layout or both side by side.
+_EDIT_TABS = {
+    ":material/account_tree: Dataflow": "wiring",
+    ":material/grid_view: Layout": "dashboard",
+    ":material/vertical_split: Split": "split",
+}
 
 # The views shown in place of the workspace on phones, picked in the overflow menu.
 _SURFACES = ("explore", "report")
-
-# Below this width the Report segment, second in the output switch, leaves it for
-# the overflow menu, so the dashboard title keeps its room. While Report is shown
-# it stays, so the switch still says where the reader is.
-REPORT_MENU_BREAKPOINT = 1100
-_REPORT_IN_MENU = f"""
-@media (max-width: {REPORT_MENU_BREAKPOINT - 0.05}px) {{
-  .MuiToggleButton-root:nth-child(2):not(.Mui-selected) {{ display: none !important; }}
-}}
-"""
 
 
 def _view(editor) -> str:
@@ -499,18 +484,13 @@ class DashboardBar(Viewer):
             stylesheets=[_HIDE_ON_PHONE],
         )
         self._syncing = False
-        # The output edit mode returns to from the Dataflow tab, which both outputs share.
-        self._edit_output = "report" if editor.surface == "report" else "dashboard"
-        self.output_toggle = pmui.RadioButtonGroup(
-            options=_OUTPUT_OPTIONS,
-            value=self._output(),
-            size="small",
+        self.output_switch = OutputSwitch(
+            editor,
             margin=(0, 4),
             sx=_TOGGLE_SX,
-            css_classes=["fd-output-switch"],
-            stylesheets=[_ICON_ONLY_WHEN_NARROW, _HIDE_ON_PHONE, _REPORT_IN_MENU],
+            stylesheets=[_ICON_ONLY_WHEN_NARROW, _HIDE_ON_PHONE],
         )
-        self.output_toggle.param.watch(self._on_output, "value")
+        self.output_toggle = self.output_switch.toggle
         self.ask_button = pmui.Toggle(
             label="Ask",
             icon="forum",
@@ -536,8 +516,8 @@ class DashboardBar(Viewer):
         self.edit_button.on_click(lambda _event: self._edit())
 
         self.mode_tabs = pmui.RadioButtonGroup(
-            options=_EDIT_TABS,
-            value=self._edit_tab(),
+            options=self.output_switch.tabs(_EDIT_TABS),
+            value=self.output_switch.tab(),
             size="small",
             margin=(0, 12, 0, 4),
             sx=_TOGGLE_SX,
@@ -774,8 +754,7 @@ class DashboardBar(Viewer):
         if self._phone_query.phone:
             phone = self._phone_items()
         else:
-            if self._narrow_query.phone and self._output() != "report":
-                phone.append({"label": "Report", "icon": "description", "action": "output:report"})
+            phone += self.output_switch.menu_items(self._narrow_query.phone)
             if self._settings_query.phone and self.editor.editable and not self.editor.read_only:
                 phone.append(_SETTINGS)
         items = self._menu_items()
@@ -828,7 +807,7 @@ class DashboardBar(Viewer):
         elif kind == "tab":
             self._choose_tab(value)
         elif kind == "output":
-            self.output_toggle.value = value
+            self.output_switch.show(value)
         elif kind == "assistant":
             self._show_assistant(value == "open")
         elif action == "refresh":
@@ -898,37 +877,16 @@ class DashboardBar(Viewer):
         self.settings_button.disabled = editor.read_only
         self._sync_switchers()
 
-    def _output(self) -> str:
-        """Return the output the switch shows: the report, or the dashboard, or in the Dataflow tab the last one."""
-        editor = self.editor
-        if editor.surface == "report":
-            return "report"
-        if self._in_dataflow():
-            return self._edit_output
-        return "dashboard"
-
-    def _edit_tab(self) -> str | None:
-        """Return the tab edit mode shows: Layout for the report, else the editor's mode."""
-        editor = self.editor
-        if editor.surface == "report":
-            return "dashboard"
-        return editor.mode if editor.surface == "workspace" else None
-
     def _sync_switchers(self, *_events):
         """Show the open output in the switch, the open tab in the tabs and whether Ask is open."""
         editor = self.editor
-        if editor.surface == "report":
-            self._edit_output = "report"
-        elif editor.surface == "workspace" and editor.mode != "wiring":
-            self._edit_output = "dashboard"
-        output = self._output()
-        options = _REPORT_EDIT_TABS if output == "report" else _EDIT_TABS
-        tab = self._edit_tab()
+        switch = self.output_switch
+        switch.sync()
+        options = switch.tabs(_EDIT_TABS)
+        tab = switch.tab()
         # Showing the editor's state is not a choice of the person's.
         self._syncing = True
         try:
-            if self.output_toggle.value != output:
-                self.output_toggle.value = output
             if self.mode_tabs.options != options or self.mode_tabs.value != tab:
                 self.mode_tabs.param.update(options=options, value=tab)
             if self.ask_button.value != editor.ask:
@@ -1042,29 +1000,6 @@ class DashboardBar(Viewer):
     # Actions
     # ------------------------------------------------------------------
 
-    def _on_output(self, event):
-        """Show the dashboard or the report; from the Dataflow tab, which both share, in its Layout."""
-        output = event.new
-        editor = self.editor
-        if (
-            self._syncing
-            or output is None
-            or (output == self._output() and not self._in_dataflow())
-        ):
-            return
-        self._edit_output = output
-        with param.parameterized.batch_call_watchers(editor):
-            if output == "report":
-                editor.surface = "report"
-            else:
-                if editor.editable and editor.mode == "wiring":
-                    editor.mode = "dashboard"
-                editor.surface = "workspace"
-
-    def _in_dataflow(self) -> bool:
-        editor = self.editor
-        return editor.editable and editor.surface == "workspace" and editor.mode == "wiring"
-
     def _on_ask_toggled(self, event):
         if not self._syncing and self.editor.ask != event.new:
             self.editor.ask = event.new
@@ -1081,7 +1016,7 @@ class DashboardBar(Viewer):
         editor = self.editor
         if editor.surface == "explore":
             editor.surface = "workspace"
-        self._edit_output = "report" if editor.surface == "report" else "dashboard"
+        self.output_switch.edit()
         self.request_mode("edit")
 
     def _choose_view(self, view: str):
@@ -1098,16 +1033,13 @@ class DashboardBar(Viewer):
             self._choose_tab(event.new)
 
     def _choose_tab(self, tab: str):
-        """Show an edit tab: Layout is the report's blocks while the report is the output."""
+        """Show an edit tab, or a surface picked in the phone menu."""
         editor = self.editor
         if tab in _SURFACES:
             editor.surface = tab
             return
-        if tab == "dashboard" and self._output() == "report":
-            editor.surface = "report"
+        if self.output_switch.choose_tab(tab):
             return
-        if tab == "split":
-            self._edit_output = "dashboard"
         with param.parameterized.batch_call_watchers(editor):
             editor.mode = tab
             editor.surface = "workspace"

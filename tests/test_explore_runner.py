@@ -476,6 +476,39 @@ async def test_the_drawer_opened_in_view_mode_stays_open_as_edit_mode_starts(sto
     session.drawer.open = True
     editor.editable = True
     assert session.drawer.open and editor.ask
+    # Done gives view mode back its Ask, which was off: the drawer closes and nothing docks.
+    app._on_dashboard_bar_mode("view")
+    assert not editor.ask and not editor.ask_docked and not session.drawer.open
+
+
+async def test_the_assistant_opened_in_edit_mode_leaves_ask_in_view_mode_as_it_was(
+    store, monkeypatch
+):
+    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    session, editor = app._agent_session, app._editor
+    editor.param.update(editable=False, ask=False)
+    app._on_dashboard_bar_mode("edit")
+    editor.ask = True
+    assert session.drawer.open
+    app._on_dashboard_bar_mode("view")
+    assert not editor.ask and not editor.ask_docked and not session.drawer.open
+    # Docked before edit mode, Ask comes back however the assistant was left.
+    editor.ask = True
+    app._on_dashboard_bar_mode("edit")
+    assert session.drawer.open
+    session.drawer.open = False
+    assert not editor.ask
+    app._on_dashboard_bar_mode("view")
+    assert editor.ask_docked and not session.drawer.open
+
+
+async def test_ask_set_as_edit_mode_ends_is_kept(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    session, editor = app._agent_session, app._editor
+    editor.param.update(editable=False, ask=False)
+    editor.editable = True
+    editor.param.update(editable=False, ask=True)
+    assert editor.ask_docked and not session.drawer.open
 
 
 async def test_the_drawer_opens_at_the_width_last_dragged_to(store, monkeypatch):
@@ -549,7 +582,9 @@ async def test_an_answer_added_from_the_docked_feed_is_shown_in_layout_and_ask_r
     assert editor.surface == "workspace" and editor.ask_docked
 
 
-async def test_ask_turned_on_and_off_after_an_add_from_the_dock_stays_off(store, monkeypatch):
+async def test_the_assistant_opened_and_closed_after_an_add_from_the_dock_leaves_ask_docked(
+    store, monkeypatch
+):
     app, _ = await _add_from_the_dock(store, monkeypatch)
     session, editor = app._agent_session, app._editor
     editor.ask = True
@@ -557,7 +592,7 @@ async def test_ask_turned_on_and_off_after_an_add_from_the_dock_stays_off(store,
     session.drawer.open = False
     assert not editor.ask
     app._on_dashboard_bar_mode("view")
-    assert not editor.ask and not editor.ask_docked
+    assert editor.ask_docked and not session.drawer.open
 
 
 async def test_an_approval_waiting_as_an_add_from_the_dock_starts_edit_mode_opens_the_drawer(
