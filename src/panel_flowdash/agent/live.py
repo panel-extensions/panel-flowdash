@@ -121,7 +121,7 @@ class LiveDashboardOps(DashboardOps):
             )
         template, doc = await self.template_document_async(template_id, bindings)
         name = self._checked_title(title, template)
-        created = app._new_dashboard_from_document(doc, name)
+        created = app._new_dashboard_from_document(doc, name, template_id)
         await self.open_dashboard_async(created.dashboard_id)
         return f"Created '{created.title}' and opened it. " + self._template_result(template, doc)
 
