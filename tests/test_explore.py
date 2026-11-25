@@ -360,6 +360,17 @@ def test_a_docked_card_names_the_dashboard_view_it_cannot_show(editor):
     assert feed._output(instance_id).objects[0] in editor._tile_objects
 
 
+def test_the_bar_follows_changes_made_in_one_update(editor):
+    bar = editor._dashboard_bar
+    editor.editable = False
+    editor.param.update(surface="report", ask=True)
+    assert bar.output_toggle.value == "report" and bar.ask_button.value
+    editor.param.update(assistant=True, read_only=True)
+    assert bar.edit_button not in bar._actions
+    bar.param.update(layout="full", placement="header")
+    assert bar.ask_button in bar._actions
+
+
 def test_the_phone_menu_shows_explore_as_ask(editor):
     bar = editor._dashboard_bar
     editor.editable = False
