@@ -188,7 +188,7 @@ class ExploreFeed(Viewer):
         self.explorations = None
         self._add: t.Callable[[str, str], t.Awaitable[str]] | None = None
         self._show: t.Callable[[str], None] | None = None
-        self._adding = 0
+        self._handover: t.Callable[[str, str, bool], None] | None = None
         self._recorded: dict[str, list[ev.Event]] = {}
         self._roots: dict[str, str] = {}
         # The dashboard open when each recorded run started; a run shows in that dashboard's feed only.
@@ -407,6 +407,7 @@ class ExploreFeed(Viewer):
         explorations: t.Any = None,
         add: t.Callable[[str, str], t.Awaitable[str]] | None = None,
         show: t.Callable[[str], None] | None = None,
+        handover: t.Callable[[str, str, bool], None] | None = None,
     ):
         """Ask the Explore view's agent *runner* (a panel-agents ``AgentRunner``) and show its runs.
 
@@ -421,12 +422,17 @@ class ExploreFeed(Viewer):
         runner builds its answers; their cards show the exploration's nodes.
         *add* is awaited with a run and one of its answer nodes to add the
         answer to the dashboard, returning the node's name there, and *show*
-        shows a dashboard node, e.g. an answer once added.
+        shows a dashboard node, e.g. an answer once added. *handover* is
+        called with a node added from a card in view mode, which switched to
+        edit mode, the surface it was added from and whether the dashboard
+        had no unsaved changes before, to show the node and hand it to the
+        assistant; without it *show* shows it.
         """
         self._foreign = foreign
         self.explorations = explorations
         self._add = add
         self._show = show
+        self._handover = handover
         if self._unsubscribe is not None:
             self._unsubscribe()
         self._chat_params = dict(chat_params or {})
@@ -1165,34 +1171,30 @@ class ExploreFeed(Viewer):
 
         return DashboardOps(self.editor)
 
-    @property
-    def adding(self) -> bool:
-        """Whether an add from one of the feed's cards is under way."""
-        return self._adding > 0
-
     async def _add_to_dashboard(
         self, name: str | None = None, exploration: str | None = None, node: str | None = None
     ) -> str:
         """Add an answer of the exploration to the dashboard, or show a dashboard node's output as a tile.
 
-        An add from the dock that starts edit mode shows the tile there, as Show does.
+        An add from view mode, which switches to edit mode, hands the node
+        over to the assistant there, see `attach`.
         """
-        docked = self.docked
-        self._adding += 1
-        try:
-            if exploration is not None and node is not None:
-                if self._add is None:
-                    raise ValueError("Answers cannot be added to this dashboard.")
-                name = await self._add(exploration, node)
-            elif name is not None:
-                self._ops().place_tile(name, visible=True)
-            else:
-                raise ValueError("Name a node, or an answer by its exploration and node.")
-        finally:
-            self._adding -= 1
+        editor = self.editor
+        viewing, surface, clean = not editor.editable, editor.surface, not editor.dirty
+        if exploration is not None and node is not None:
+            if self._add is None:
+                raise ValueError("Answers cannot be added to this dashboard.")
+            name = await self._add(exploration, node)
+        elif name is not None:
+            self._ops().place_tile(name, visible=True)
+        else:
+            raise ValueError("Name a node, or an answer by its exploration and node.")
         self.refresh()
-        if docked and self.editor.editable and self._show is not None:
-            self._show(name)
+        if viewing and editor.editable:
+            if self._handover is not None:
+                self._handover(name, surface, clean)
+            elif self._show is not None:
+                self._show(name)
         return f"Added {name} to the dashboard."
 
     def _show_on_dashboard(self, name: str) -> str:

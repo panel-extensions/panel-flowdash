@@ -290,6 +290,16 @@ Undo; the card then says "On dashboard as `name`", and **Show** goes to the dash
 marks the tile. When the dashboard shows that answer already, nothing is added and the
 card says "Already on dashboard as `name`". A failed addition takes back what it wrote.
 
+An answer added in view mode is handed to the assistant. Edit mode opens on the Layout
+tab with the new tile marked and scrolled into view, and the assistant's drawer opens
+beside it with the new node mentioned in its input, as a chip that sending a message
+writes as `@name`, so the next instruction is about it. Explore and the assistant keep
+their own conversations; the mention is all that passes between them. A notice offers
+**Undo**, which takes the add back in one step and returns to view mode, where Ask shows
+the card again, until the dashboard changes again. On a phone, where the drawer covers
+the page, the tile stays in sight and the notice's **Assistant** opens the drawer. Done
+returns to the view the answer was added from.
+
 Only one request at a time edits the dashboard: a request takes it at its first edit and
 keeps it until it ends, so each request stays one step of Undo. Adding an answer from
 Explore while the assistant's request is editing waits, saying "Waiting for the
