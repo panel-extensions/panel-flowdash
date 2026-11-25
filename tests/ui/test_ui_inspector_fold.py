@@ -12,6 +12,8 @@ from pydantic_ai import Agent
 from panel_flowdash import MemoryDashboardStore
 from panel_flowdash.agent.tools import FlowDashDeps, dashboard_toolset
 from panel_flowdash.auth import resolve_identity
+from panel_flowdash.ui.sidecar import SHARED_SLOT_BELOW
+from panel_flowdash.ui.split_view import ASSISTANT_WIDTH
 
 from ..test_agent_tools import scripted
 from .test_ui_shell import _serve_app
@@ -46,8 +48,12 @@ _NARROWEST_TEXT = """(left) => {
 }"""
 
 
+# Narrower than SHARED_SLOT_BELOW, where opening the assistant folds the inspector.
+_WIDTH = SHARED_SLOT_BELOW - 100
+
+
 def test_inspector_text_is_not_squeezed_after_folding_beside_the_assistant(page):
-    page.set_viewport_size({"width": 1600, "height": 1000})
+    page.set_viewport_size({"width": _WIDTH, "height": 1000})
     store = MemoryDashboardStore()
     dash = store.create_dashboard(resolve_identity().user, "Wind fleet").dashboard_id
     apps = []
@@ -64,5 +70,5 @@ def test_inspector_text_is_not_squeezed_after_folding_beside_the_assistant(page)
     expect(page.get_by_text("Issues", exact=True)).to_be_visible()
     page.wait_for_timeout(500)
 
-    narrowest = page.evaluate(_NARROWEST_TEXT, 1600 - 360)
+    narrowest = page.evaluate(_NARROWEST_TEXT, _WIDTH - ASSISTANT_WIDTH)
     assert narrowest["width"] >= 30, narrowest
