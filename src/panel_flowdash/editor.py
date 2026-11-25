@@ -3953,9 +3953,10 @@ class FlowDash(Viewer):
         if render is None:
             wiring = self._component_wiring.setdefault(node_id, [])
         else:
+            wiring = render
+        if render is not None and "config" in kwargs:
             # The function sets its outputs on what it is given, so it gets a
             # stand-in whose inputs follow the node's and whose outputs go nowhere.
-            wiring = render
             stand_in = type(node_state)(name=node_id)
             spec = self._node_spec(node_id)
             stand_in.param.update(
@@ -7485,7 +7486,8 @@ class FlowDash(Viewer):
             self._report = report
 
         own_spec = self._instance_spec(entry, spec, config)
-        if own_spec is not spec:
+        has_own = own_spec is not spec
+        if has_own:
             spec = self._instance_specs[instance_id] = own_spec
             type_key = self._node_type_key(component_id, instance_id)
             self._flow.node_types = {
@@ -7493,7 +7495,7 @@ class FlowDash(Viewer):
                 type_key: self._node_type(type_key, spec),
             }
         node_state = self._dataflow_graph.add_node(
-            instance_id, component_id, spec if own_spec is spec else None
+            instance_id, component_id, spec if has_own else None
         )
         config_state = self._dataflow_graph.get_config_state(instance_id)
         config_data = self._seed_config_state(instance_id, config)
