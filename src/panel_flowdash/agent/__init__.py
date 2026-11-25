@@ -17,6 +17,7 @@ from panel_flowdash.agent.ops import (
     read_revision,
 )
 from panel_flowdash.agent.schema import SCHEMA_ID, component_schema, dashboard_schema
+from panel_flowdash.agent.starters import StarterContext, default_starter_questions
 from panel_flowdash.agent.validation import Issue, validate_dashboard
 from panel_flowdash.agent.yaml_format import (
     FORMAT_VERSION,
@@ -69,6 +70,7 @@ __all__ = [
     "NotFound",
     "OperationError",
     "OutputUnavailable",
+    "StarterContext",
     "approval_policy",
     "component_schema",
     "create_agent",
@@ -77,6 +79,7 @@ __all__ = [
     "dashboard_schema",
     "dashboard_to_yaml",
     "dashboard_toolset",
+    "default_starter_questions",
     "palette_actions",
     "read_revision",
     "validate_dashboard",

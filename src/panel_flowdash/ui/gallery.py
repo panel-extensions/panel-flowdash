@@ -879,7 +879,8 @@ class ComponentGallery(Viewer):
         if entry is None:
             return None
         if dashboard_id is None:
-            if not app._create_new_dashboard(self._new_dashboard_title(entry)):
+            # The component goes on it, so it is no blank dashboard to start with a question.
+            if not app._create_new_dashboard(self._new_dashboard_title(entry), ask=False):
                 return None
         else:
             if pn.state.location is not None:

@@ -343,11 +343,14 @@ class FlowDashApp(Viewer):
         default=None,
         doc="""
         The questions the assistant offers when a new dashboard opens, with
-        Ask on, until its first request. Called with the session's
-        `LiveDashboardOps`, it returns a list of question strings, or an
+        Ask on, until its first request. Called with a read-only
+        `panel_flowdash.agent.StarterContext` (the person's identity, the
+        dashboard, whether it is blank or from a template, and the tables
+        they may place), it returns a list of question strings, or an
         awaitable of one, e.g. from a data catalogue's tables; at most three
-        are shown. None asks about the data sources the person may place, by
-        title (see `panel_flowdash.agent.starters.default_starter_questions`).""",
+        are shown. Returning None offers the default questions, and an empty
+        list none. Without a hook the defaults ask about the data sources the
+        person may place, by title (`panel_flowdash.agent.default_starter_questions`).""",
     )
 
     agent_model_settings = param.Dict(
@@ -555,8 +558,9 @@ class FlowDashApp(Viewer):
     # touching the page, so a slow load cannot overwrite a newer navigation.
     _nav_generation: int = 0
 
-    # A dashboard just created from a template, which opens with Ask on once loaded.
-    _fresh_dashboard: str | None = None
+    # A dashboard just created from a template, and the template's id, which opens with
+    # Ask on once loaded.
+    _fresh_dashboard: tuple[str, str | None] | None = None
 
     _RESERVED_EDITOR_OPTIONS = (
         "authorize_admin",
@@ -1780,6 +1784,8 @@ class FlowDashApp(Viewer):
     def _leave_dashboard(self):
         """Forget the current dashboard, leaving edit mode, for a route that shows none."""
         self._current_dashboard = None
+        # A template's new dashboard left before it loaded opens later as any other.
+        self._fresh_dashboard = None
         # Editor actions such as the command palette's "Add to this dashboard"
         # would otherwise act on the hidden canvas.
         self._editor.param.update(editable=False, read_only=False)
@@ -1891,8 +1897,8 @@ class FlowDashApp(Viewer):
         ]
         self._note_opened(dashboard_id)
         fresh, self._fresh_dashboard = self._fresh_dashboard, None
-        if fresh == dashboard_id and edit:
-            self._start_asking()
+        if fresh is not None and fresh[0] == dashboard_id and edit:
+            self._start_asking("template", fresh[1])
         opening = (parse_qs((search or "").lstrip("?")).get("open") or [None])[0]
         if opening is not None:
             pn.state.execute(partial(self._open_on_load, opening, edit), schedule=True)
@@ -1909,8 +1915,11 @@ class FlowDashApp(Viewer):
             return
         self._usage_ledger().opened(dashboard_id)
 
-    def _create_new_dashboard(self, title_str: str) -> bool:
-        """Create a dashboard and open it for editing, returning whether it was created."""
+    def _create_new_dashboard(self, title_str: str, ask: bool = True) -> bool:
+        """Create a dashboard and open it for editing, returning whether it was created.
+
+        With *ask* the assistant opens beside it with questions to start from.
+        """
         title_str = title_str.strip()
         if not title_str:
             self._notify("warning", "Dashboard title cannot be empty.", duration=3000)
@@ -1945,17 +1954,44 @@ class FlowDashApp(Viewer):
             self._unsaved_dialog,
             *self._page_dialogs,
         ]
-        self._start_asking()
+        if ask:
+            self._start_asking("blank")
         return True
 
-    def _start_asking(self):
-        """Turn Ask on for a new dashboard, opening the assistant with questions to start from."""
+    def _start_asking(self, origin: str, template: str | None = None):
+        """Turn Ask on for a new dashboard, opening the assistant with questions to start from.
+
+        *origin* is "blank" or "template", and *template* the template's id.
+        """
         session = self._agent_session
         editor = self._editor
         if session is None or not editor.assistant or not editor.editable or editor.read_only:
             return
-        editor.ask = True
-        session.starters.offer(self.agent_starters)
+        # Taken away since the session opened: the assistant is not offered.
+        if not self._assistant_still_allowed():
+            return
+        from panel_flowdash.agent.starters import StarterContext, data_tables
+
+        # A new dashboard shows its canvas, and the drawer its chat, whatever was open before.
+        editor.surface = "workspace"
+        session.drawer.tab = "chat"
+        # A drawer that covers the canvas, as on a phone, holds the questions until it is
+        # opened. The editor learns it is on a phone once shown, the drawer the window's width
+        # on every page.
+        covers = editor._phone or getattr(session.drawer, "_variant", None) == "temporary"
+        editor.ask = not covers
+        dashboard = editor.dashboard
+        session.starters.offer(
+            lambda: StarterContext(
+                identity=self._identity,
+                dashboard_id=dashboard.dashboard_id,
+                title=dashboard.title,
+                origin=origin,
+                template=template,
+                tables=tuple(data_tables(editor)),
+            ),
+            self.agent_starters,
+        )
 
     def _request_new_dashboard(self, title_str: str) -> bool:
         """Create a dashboard, first asking about unsaved changes on the current one.
@@ -2699,11 +2735,16 @@ class FlowDashApp(Viewer):
         from panel_flowdash.templates import fill_template
 
         return self._new_dashboard_from_document(
-            fill_template(template, bindings), title.strip() or template.name
+            fill_template(template, bindings), title.strip() or template.name, template.id
         )
 
-    def _new_dashboard_from_document(self, doc: dict, title: str) -> DashboardModel:
-        """Save a filled-in template document as a new dashboard of the user, titled *title*."""
+    def _new_dashboard_from_document(
+        self, doc: dict, title: str, template: str | None = None
+    ) -> DashboardModel:
+        """Save a filled-in template document as a new dashboard of the user, titled *title*.
+
+        *template* is the id of the template it was filled in from.
+        """
         from panel_flowdash.templates import document_model
 
         title = unique_title(self.store, self._user_id, title)
@@ -2712,7 +2753,7 @@ class FlowDashApp(Viewer):
         created = copy_dashboard(self.store, model, self._user_id, title)
         self._refresh_sidebar_dashboards()
         # It opens once navigation loads it, see _load_dashboard_sync.
-        self._fresh_dashboard = created.dashboard_id
+        self._fresh_dashboard = (created.dashboard_id, template)
         return created
 
     def _reset_dialog(self, context: dict, subject: str):

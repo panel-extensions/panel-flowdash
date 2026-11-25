@@ -109,7 +109,7 @@ agent_model = "anthropic:<model>"
 | `agent_authorize` | Called with the signed-in user's `Identity`; only sessions for which it returns True get the agent. |
 | `agent_sensitive_components` | Component ids or glob patterns (`"Sources/*"`) of components whose config can reach outside the dashboard, see [Untrusted text](#untrusted-text). |
 | `agent_approval_rules` | More calls that need the user's approval: tool names such as `"remove_node"`, or `panel_agents.ApprovalRule("run_command", when=lambda args: ...)` for calls with particular arguments. Saving, deleting and sharing always need it. |
-| `agent_starters` | The starter questions a new dashboard opens with, see [Start a new dashboard](#start-a-new-dashboard): a callable taking the session's `LiveDashboardOps` and returning a list of questions, or an awaitable of one. |
+| `agent_starters` | The starter questions a new dashboard opens with, see [Start a new dashboard](#start-a-new-dashboard): a callable taking a read-only `StarterContext` and returning a list of questions, None for the defaults, or an awaitable of either. |
 
 To give the default agent knowledge about your project, build it yourself and pass
 extra instructions:
@@ -230,23 +230,36 @@ action out.
 ### Start a new dashboard
 
 A new dashboard, blank or from a template, opens in edit mode with Ask on, so the
-assistant's drawer is open beside the empty canvas. Above the chat it offers up to
-three questions to start from, one click each, until the dashboard's first request,
+assistant's drawer is open beside the canvas, on its chat. Above the chat it offers up
+to three questions to start from, one click each, until the dashboard's first request,
 and they go when you leave edit mode or open another dashboard. By default they ask
 about the data sources you may place, by their titles in the component palette, or
 the titles of their palette presets: "What's in Wind Turbines?", "Add a table of
-State Population". Nothing is loaded to write them.
+State Population". A dashboard from a template is not offered to add a table. Nothing
+is loaded to write them, though a new dashboard waits for the palette presets its
+components load. Where the drawer would cover the canvas, as on a phone, it stays
+closed and the questions wait in it until you open the assistant from the More actions
+menu. A component added to a new dashboard from the component gallery opens it
+without the assistant.
 
 A project that knows its tables better, such as one served by Lumen, passes
-`agent_starters`, a callable that takes the session's `LiveDashboardOps` and returns
-the questions, or an awaitable of them; a hook that fails offers none.
+`agent_starters`, a callable that takes a read-only `StarterContext` and returns the
+questions, or an awaitable of them. The context has the signed-in person's `identity`
+(their user name, groups and login claims), the new dashboard's `dashboard_id` and
+`title`, its `origin` (`"blank"` or `"template"`) and `template` id, and the `tables`
+the person may place. Returning None offers the default questions and an empty list
+none; a hook that fails, returns something other than a list of questions, or takes
+over ten seconds offers none, and questions that arrive after you started typing or
+asking are left out.
 
 ```python
 # my_project/__init__.py
-from panel_flowdash.agent.starters import default_starter_questions
+from panel_flowdash.agent import default_starter_questions
 
-def agent_starters(ops):
-    return ["How did sales change this quarter?", *default_starter_questions(ops)]
+def agent_starters(context):
+    if "finance" in context.identity.groups:
+        return ["How did revenue change this quarter?", *default_starter_questions(context)]
+    return None
 ```
 
 ### Ask and Explore
