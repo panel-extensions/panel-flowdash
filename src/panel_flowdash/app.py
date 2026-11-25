@@ -73,6 +73,7 @@ from panel_flowdash.project import (
 from panel_flowdash.registry import RegistryEntry, build_registry
 from panel_flowdash.session_state import build_session_state_class, check_requirements
 from panel_flowdash.settings import DashboardSettings
+from panel_flowdash.sidebar import SidebarContext, SidebarItem, SidebarSection
 from panel_flowdash.ui.command_palette import CommandPaletteController
 from panel_flowdash.ui.dashboard_bar import (
     COMPACT_BREAKPOINT,
@@ -506,6 +507,21 @@ class FlowDashApp(Viewer):
         editor, see `FlowDash.propagate_failures`.""",
     )
 
+    sections = param.List(
+        default=[],
+        item_type=SidebarSection,
+        doc="""
+        Navigation sections shown in the rail and narrow-screen drawer (when
+        ``nav_variant="rail"``), each a :class:`~panel_flowdash.SidebarSection`.
+        The built-in Dashboards section (``id="dashboards"``, ``order=0``) is
+        registered automatically unless a section with ``id="dashboards"`` is
+        supplied here. Assigning ``app.sections = [...]`` keeps the built-in
+        Dashboards section, deduplicates by ``id`` and sorts in ascending
+        ``order`` (custom sections default to ``100``). Use :meth:`add_section`,
+        :meth:`remove_section` and :meth:`refresh_sections` to manage sections
+        at runtime.""",
+    )
+
     settings_sources = param.Dict(
         default={},
         doc="""
@@ -657,7 +673,10 @@ class FlowDashApp(Viewer):
         if self.nav_variant == "rail":
             # The top bar shows the dashboard's title (the breadcrumb) and actions.
             self._editor._dashboard_bar.placement = "header"
+        self._init_sections()
         self._shell = AppShell(self) if self.nav_variant == "rail" else None
+        self.param.watch(self._on_sections_changed, "sections")
+        self.param.watch(self._on_home_dashboard_changed, "home_dashboard")
         self._command_palette = CommandPaletteController.install(self)
         self._agent_session = self._build_agent_session()
         if self._agent_session is not None and self._shell is not None:
@@ -727,6 +746,8 @@ class FlowDashApp(Viewer):
             ]
         self._page_sx = {**page_kwargs.get("sx", {}), **self.page_options.get("sx", {})}
         self._page = pmui.Page(**{**page_kwargs, "sx": self._header_sx()})
+        if self._shell is not None:
+            self._page.param.watch(self._shell._on_drawer_open, "sidebar_open")
         self.param.watch(self._sync_page_sidebar, "sidebar")
         pn.state.onload(self._load_page_layout)
 
@@ -988,6 +1009,16 @@ class FlowDashApp(Viewer):
         ):
             pn.state.execute(self._load_page_layout)
 
+    @property
+    def is_admin(self) -> bool:
+        """Whether this session administers the project (cached per session).
+
+        Use this for showing or hiding UI. Before performing a privileged write
+        or admin action, re-check with :meth:`still_admin`, which re-reads the
+        project file and permissions.
+        """
+        return bool(self._is_admin)
+
     def still_admin(self) -> bool:
         """Whether this session is still an admin, with the project file read again.
 
@@ -1082,6 +1113,210 @@ class FlowDashApp(Viewer):
 
     def _sync_page_sidebar(self, *_events):
         self._page.sidebar = [*self.sidebar, *self._sidebar_views]
+
+    # ------------------------------------------------------------------
+    # Sidebar navigation sections
+    # ------------------------------------------------------------------
+
+    def _sidebar_context(self, section: SidebarSection) -> SidebarContext:
+        """Build the :class:`SidebarContext` passed to *section*'s callbacks."""
+        return SidebarContext(app=self, user=self._identity, section=section)
+
+    def _list_dashboard_items(self, ctx: SidebarContext) -> list[SidebarItem]:
+        """List accessible dashboards for ``ctx.user`` as :class:`SidebarItem` entries."""
+        dashboards = self.store.list_accessible(ctx.user, default_allow=self._default_allow())
+        return [
+            SidebarItem(
+                title=d.title,
+                url=f"{DASH_ROUTE_PREFIX}{d.dashboard_id}",
+                icon="dashboard",
+            )
+            for d in sorted(dashboards, key=lambda d: d.title.lower())
+        ]
+
+    def _build_dashboards_section(self) -> SidebarSection:
+        """Build the built-in Dashboards navigation section."""
+        return SidebarSection(
+            id="dashboards",
+            label="Dashboards",
+            icon="space_dashboard",
+            order=0,
+            items=self._list_dashboard_items,
+            path=lambda ctx: None if ctx.app.home_dashboard else "/",
+        )
+
+    @staticmethod
+    def _validate_section_routes(
+        sections: t.Iterable[SidebarSection],
+        page_entries: t.Mapping[str, RegistryEntry],
+    ) -> None:
+        """Reject section routes that clash with registry page sections or with each other."""
+        page_prefixes = {
+            entry.page_path.strip("/").split("/", 1)[0]
+            for entry in page_entries.values()
+            if entry.page_path.strip("/")
+        }
+        seen_routes: dict[str, str] = {}
+        for section in sections:
+            if not section.route:
+                continue
+            top = section.route.split("/", 1)[0]
+            if top in page_prefixes:
+                raise ValueError(
+                    f"SidebarSection {section.id!r} route {section.route!r} clashes with "
+                    f"registry page section {top!r}."
+                )
+            for existing_route, existing_id in seen_routes.items():
+                if (
+                    section.route == existing_route
+                    or section.route.startswith(f"{existing_route}/")
+                    or existing_route.startswith(f"{section.route}/")
+                ):
+                    raise ValueError(
+                        f"SidebarSection {section.id!r} route {section.route!r} overlaps with "
+                        f"section {existing_id!r} route {existing_route!r}."
+                    )
+            seen_routes[section.route] = section.id
+
+    def _normalize_sections(self, sections: t.Iterable[SidebarSection]) -> list[SidebarSection]:
+        """Keep the built-in Dashboards section, dedupe by id (last wins) and sort by ``order``."""
+        by_id: dict[str, SidebarSection] = {}
+        if self._include_dashboards_section:
+            by_id[self._dashboards_section.id] = self._dashboards_section
+        for section in sections:
+            by_id[section.id] = section
+        ordered = sorted(by_id.values(), key=lambda s: s.order)
+        self._validate_section_routes(ordered, self._page_entries)
+        return ordered
+
+    def _set_sections(self, sections: t.Iterable[SidebarSection]):
+        normalized = self._normalize_sections(sections)
+        self._normalizing_sections = True
+        try:
+            self.sections = normalized
+        finally:
+            self._normalizing_sections = False
+        if getattr(self, "_shell", None) is not None:
+            self._shell.refresh()
+
+    def _init_sections(self):
+        """Register the built-in Dashboards section alongside any user-supplied sections."""
+        self._normalizing_sections = False
+        self._include_dashboards_section = True
+        self._dashboards_section = self._build_dashboards_section()
+        self._set_sections(self.sections)
+
+    def _on_sections_changed(self, event):
+        if self._normalizing_sections:
+            return
+        try:
+            self._set_sections(event.new)
+        except Exception:
+            self._normalizing_sections = True
+            try:
+                self.sections = event.old
+            finally:
+                self._normalizing_sections = False
+            raise
+
+    def _on_home_dashboard_changed(self, _event):
+        self.refresh_sections("dashboards")
+
+    def add_section(self, section: SidebarSection) -> SidebarSection:
+        """Register a :class:`~panel_flowdash.SidebarSection` on this app.
+
+        If a section with the same ``id`` is already registered, it is
+        replaced. Sections are ordered by their ``order`` key and the
+        navigation rail and narrow-screen drawer (when ``nav_variant="rail"``)
+        refresh immediately. Note that a routed section added after startup
+        works for in-session navigation only; pass routed sections to
+        :meth:`build_routes` so direct loads and browser reloads resolve.
+        """
+        if not isinstance(section, SidebarSection):
+            raise TypeError(f"section must be a SidebarSection, got {type(section).__name__}.")
+        if section.id == "dashboards":
+            self._include_dashboards_section = True
+        self._set_sections([*self.sections, section])
+        return section
+
+    def remove_section(self, section_id: str) -> SidebarSection | None:
+        """Remove the section with id *section_id*, returning it or ``None`` if absent."""
+        removed = next((s for s in self.sections if s.id == section_id), None)
+        if removed is not None:
+            if section_id == "dashboards":
+                self._include_dashboards_section = False
+            self._set_sections([s for s in self.sections if s.id != section_id])
+        return removed
+
+    def refresh_sections(self, section_id: str | None = None) -> None:
+        """Re-fetch cached sidebar items and update the navigation rail and drawer.
+
+        Pass *section_id* to refresh a single section, or ``None`` to refresh
+        every registered section. No-op when ``nav_variant != "rail"`` or when
+        *section_id* is not registered.
+        """
+        if self._shell is None:
+            return
+        if section_id is not None and not any(s.id == section_id for s in self.sections):
+            return
+        self._shell.refresh(section_id)
+
+    def _section_for_path(self, pathname: str) -> tuple[SidebarSection, str] | None:
+        """Return ``(section, subpath)`` for a section serving *pathname*, or ``None``."""
+        normalized = pathname.strip("/")
+        if not normalized:
+            return None
+        for section in self.sections:
+            if not section.route:
+                continue
+            if normalized == section.route:
+                return section, ""
+            prefix = f"{section.route}/"
+            if normalized.startswith(prefix):
+                return section, normalized[len(prefix) :]
+        return None
+
+    async def _call_section_view(self, section: SidebarSection, ctx: SidebarContext, subpath: str):
+        view = section.view
+        assert view is not None
+        result = (
+            await view(ctx, subpath) if inspect.iscoroutinefunction(view) else view(ctx, subpath)
+        )
+        if isinstance(result, pn.viewable.Viewer):
+            return panel_viewer(result)
+        return pn.panel(result)
+
+    @staticmethod
+    def _render_error_pane(exc: Exception):
+        """Format an unhandled page or sidebar section error as an alert pane."""
+        err_name = type(exc).__name__
+        return alert_pane(
+            f"**{err_name}**: {escape_markdown(error_text(exc))}\n<hr>\n"
+            f"<pre> {escape_html(redact_secrets(traceback.format_exc()))}</pre>\n",
+            alert_type="danger",
+            styles={"color": "black"},
+        )
+
+    async def _render_section_view(self, section: SidebarSection, subpath: str):
+        ctx = self._sidebar_context(section)
+        if section.visible is not None:
+            try:
+                allowed = bool(section.visible(ctx))
+            except Exception:
+                logger.exception(
+                    "SidebarSection %r visible predicate failed; denying route access", section.id
+                )
+                allowed = False
+            if not allowed:
+                return self._access_denied_view(section.label)
+        try:
+            async with self._loading_screen():
+                return await self._run_navigation_task(
+                    self._call_section_view(section, ctx, subpath)
+                )
+        except Exception as exc:
+            logger.exception("Error rendering sidebar section %r at %r", section.id, subpath)
+            return self._render_error_pane(exc)
 
     def _header_sx(self) -> dict:
         """Return the page's ``sx``, making room for a dashboard's actions in the top bar."""
@@ -1462,12 +1697,7 @@ class FlowDashApp(Viewer):
                 )
         except Exception as e:
             logger.exception("Error rendering page '%s'", "/".join(key))
-            err_name = type(e).__name__
-            return alert_pane(
-                f"**{err_name}**: {escape_markdown(error_text(e))}\n<hr>\n<pre> {escape_html(redact_secrets(traceback.format_exc()))}</pre>\n",
-                alert_type="danger",
-                styles={"color": "black"},
-            )
+            return self._render_error_pane(e)
 
     def _build_editor(self) -> FlowDash:
         """Construct the embedded editor and wire it into the app shell."""
@@ -2011,7 +2241,7 @@ class FlowDashApp(Viewer):
         self._menu_list.items = items
         self._refresh_menu_bar()
         if self._shell is not None:
-            self._shell.refresh()
+            self._shell.refresh("dashboards")
         self._editor._dashboard_bar.sync()
         location = pn.state.location
         if self._launcher is not None and location is not None and location.pathname == "/":
@@ -2075,6 +2305,7 @@ class FlowDashApp(Viewer):
             return
         generation = self._begin_navigation()
         pathname = pn.state.location.pathname
+        search = pn.state.location.search or ""
         # Importing pending pages awaits, so a newer navigation may have started.
         await self._resolve_pending_entries()
         if not self._is_current_navigation(generation):
@@ -2160,10 +2391,17 @@ class FlowDashApp(Viewer):
                 return
 
         self._leave_dashboard()
-        self._set_sidebar_views([])
+        matched_section = self._section_for_path(pathname)
         key = tuple(pathname.strip("/").split("/"))
-        if len(key) == 2 and self._entry_from_key(key):
-            content = await self._render_page(key)
+        if matched_section is not None or (len(key) == 2 and self._entry_from_key(key)):
+            if matched_section is not None:
+                section, subpath = matched_section
+                # Arriving from a dashboard must not keep its components running.
+                self._reset_canvas()
+                content = await self._render_section_view(section, subpath)
+            else:
+                self._set_sidebar_views([])
+                content = await self._render_page(key)
             if not self._is_current_navigation(generation):
                 return
             self._apply_layout_config(content, pathname)
@@ -2174,7 +2412,10 @@ class FlowDashApp(Viewer):
                 self._unsaved_dialog,
                 *self._page_dialogs,
             ]
+            if self._shell is not None:
+                self._shell.sync(pathname, search)
         else:
+            self._set_sidebar_views([])
             self._apply_layout_config(None, pathname)
             main = [
                 self._route_state_view(pathname),
@@ -2991,7 +3232,7 @@ class FlowDashApp(Viewer):
         if pn.state.location is None:
             return
         pn.state.location.param.update(pathname=path, search=search)
-        self._sync_menu_active(path)
+        self._sync_menu_active(path, search)
         doc = pn.state.curdoc
         if doc is not None and doc.session_context is not None:
             # Started right away, loading could send the new page before the
@@ -3001,9 +3242,33 @@ class FlowDashApp(Viewer):
         else:
             pn.state.execute(self._load_page_layout)
 
-    def _sync_menu_active(self, path: str):
+    def _open_external_url(self, url: str) -> None:
+        """Open an external ``http(s)://`` URL in the browser."""
         if self._shell is not None:
-            self._shell.sync(path)
+            self._shell._menu_observer.open_url(url)
+
+    def _navigate_url(self, url: str):
+        """Navigate to *url*, opening ``http(s)://`` links externally and routes in-app."""
+        if url.startswith(("http://", "https://")):
+            self._open_external_url(url)
+            return
+        route, sep, query = url.partition("?")
+        route = "/" + route.strip("/") if route.strip("/") else "/"
+        search = f"?{query}" if sep and query else ""
+        if pn.state.location is None:
+            return
+        current_path = "/" + (pn.state.location.pathname or "").strip("/")
+        current_search = pn.state.location.search or ""
+        if route == current_path and search == current_search:
+            return
+        if route == current_path and not search and "edit=true" in current_search:
+            self._on_nav_click({"path": route})
+            return
+        self._request_navigation(route, search=search)
+
+    def _sync_menu_active(self, path: str, search: str = ""):
+        if self._shell is not None:
+            self._shell.sync(path, search)
         items = self._menu_list.items
         for si, section in enumerate(items):
             if section.get("path") == path:
@@ -3235,12 +3500,22 @@ class FlowDashApp(Viewer):
     @classmethod
     def build_routes(
         cls,
-        project_dir: str | pathlib.Path,
+        project_dir: str | pathlib.Path | None = None,
         registry: dict[str, RegistryEntry] | None = None,
         **params,
     ) -> dict[str, t.Any]:
-        """Generate route mapping for pn.serve."""
+        """Generate route mapping for ``pn.serve``.
+
+        Registers HTTP routes for the built-in views, every registered page,
+        and every routed :class:`~panel_flowdash.SidebarSection` supplied via
+        ``sections`` (as a sequence or a zero-argument callable returning one)
+        or defined on ``cls.param.sections.default``. Routed sections added
+        later inside a session with :meth:`add_section` work for in-session
+        navigation only and return 404 on direct load or reload.
+        """
         if registry is None:
+            if project_dir is None:
+                raise ValueError("build_routes requires either project_dir or registry.")
             registry = build_registry(pathlib.Path(project_dir), package=params.get("package"))
         # Merged once here, so every session shares the libraries' entries.
         registry = cls._with_libraries(
@@ -3257,6 +3532,16 @@ class FlowDashApp(Viewer):
             # The admin view writes the project file there when there is none yet.
             params.setdefault("project_dir", project_dir)
 
+        configured_sections = params.get("sections")
+        if callable(configured_sections):
+            configured_sections = list(configured_sections())
+            params["sections"] = configured_sections
+        elif configured_sections is None:
+            configured_sections = cls.param.sections.default
+        page_entries = {k: v for k, v in registry.items() if v.metadata.page}
+        section_list = [s for s in (configured_sections or ()) if isinstance(s, SidebarSection)]
+        cls._validate_section_routes(section_list, page_entries)
+
         def factory():
             return cls(registry=registry, **params)
 
@@ -3268,6 +3553,14 @@ class FlowDashApp(Viewer):
             f"{ADMIN_ROUTE}/[^/]+": factory,
             f"{DASH_ROUTE_PREFIX}[^/]+": factory,
         }
+        for section in section_list:
+            if section.route:
+                prefix = f"/{section.route}"
+                routes[prefix] = factory
+                # Exclude Bokeh's per-app endpoints and static assets from the catch-all subpath.
+                routes[
+                    f"{prefix}/(?:(?!static/)[^/]+/)*(?!ws$|autoload\\.js$|metadata$|static$)[^/]+"
+                ] = factory
         for app_id, v in registry.items():
             if v.metadata.page:
                 routes[f"/{app_id}"] = factory

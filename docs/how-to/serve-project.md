@@ -212,6 +212,7 @@ missing or set to `None` keeps its default.
 | `notifications` | `bool` | Show user-facing messages as Panel notifications. Default `True`. |
 | `page_options` | `dict` | Extra keyword arguments for the underlying `panel_material_ui.Page`. |
 | `propagate_failures` | `bool` | Carry failures downstream, see [Wire Dataflow](wire-dataflow.md#carry-failures-downstream). |
+| `sections` | `list[SidebarSection]` | Extra navigation sections shown in the rail and narrow-screen drawer (`nav_variant="rail"` only), see [Sidebar sections](#sidebar-sections). |
 | `settings_class` | `DashboardSettings` subclass | Dashboard-wide settings, see [Dashboard Settings](dashboard-settings.md#add-your-own-settings). |
 | `title` | `str` | Application title in the browser tab. Overridden by `--title`. |
 
@@ -500,6 +501,86 @@ items set through `configure_layout`. Components registered with `sidebar=True`
 are shown with the dashboard's tiles (above them or in a panel to their left,
 see `controls_position`), or in the sidebar when
 `editor_options={"controls_bar": False}`.
+
+### Sidebar sections
+
+When `nav_variant="rail"` (the default), the navigation rail and narrow-screen
+drawer render registered `SidebarSection` entries in ascending `order`,
+starting with the built-in Dashboards section (`id="dashboards"`, `order=0`).
+Sidebar sections do not appear in the legacy `left`, `right`, or `menubar`
+variants. Pass additional sections via `FlowDashApp(sections=[...])`, define
+`sections = [...]` in the project's `__init__.py`, or call `app.add_section(...)`
+at runtime.
+
+Every callback (`items`, `visible`, `path`, `new_action.action`, and `view`)
+receives a `SidebarContext` with `ctx.app`, `ctx.user`, `ctx.section`,
+`ctx.is_admin`, `ctx.still_admin()`, `ctx.navigate(url)`, and `ctx.refresh()`.
+`ctx.is_admin` (like `app.is_admin`) is cached per session for showing or hiding
+UI; call `ctx.still_admin()` before performing a privileged write or admin
+action so revoked permissions take effect immediately. Give a section its
+own URL prefix with `route` and `view` so FlowDash serves `/<route>` and
+`/<route>/...` directly without registering pages under Pages:
+
+```python
+import panel as pn
+
+from panel_flowdash import SidebarAction, SidebarItem, SidebarSection
+
+REPORTS = {"q4": "Q4 Revenue Summary"}
+
+
+def list_reports(ctx):
+    return [
+        SidebarItem(title=title, url=f"/reports/{slug}", subtitle=ctx.user.user)
+        for slug, title in REPORTS.items()
+    ]
+
+
+def report_view(ctx, path):
+    if not path:
+        return pn.pane.Markdown("## All reports")
+    return pn.pane.Markdown(f"## {REPORTS.get(path, path)}")
+
+
+def create_report(ctx):
+    slug = f"r{len(REPORTS) + 1}"
+    REPORTS[slug] = f"Report {slug.upper()}"
+    ctx.refresh()
+    ctx.navigate(f"/reports/{slug}")
+
+
+reports = SidebarSection(
+    id="reports",
+    label="Reports",
+    icon="assessment",
+    order=10,
+    route="reports",
+    view=report_view,
+    items=list_reports,
+    new_action=SidebarAction(label="New report", action=create_report),
+    visible=lambda ctx: ctx.is_admin or "analysts" in ctx.user.groups,
+)
+```
+
+A section with `route` and `view` and no `items` or `new_action` (such as a
+Data catalog) links directly to `/<route>` in the rail and drawer. Each item's
+`url` (and `ctx.navigate(url)`) opens through the app's router, or in a new tab
+if it starts with `http://` or `https://`. Item subtitles (`SidebarItem.subtitle`)
+are shown as secondary text in the narrow-screen drawer; desktop rail menus show
+titles only because `pmui.MenuButton` does not render secondary lines.
+
+Pass routed sections to `FlowDashApp.build_routes(sections=...)` (as a list or
+zero-argument callable) or define `sections` in the project's `__init__.py` so
+direct loads and browser reloads resolve; a routed section added later with
+`app.add_section()` works for in-session navigation only and returns 404 on
+reload. Avoid subpaths whose final segment is `ws`, `metadata`, `autoload.js`
+or `static` (or that contain a `static/` segment), as Bokeh/Panel reserves
+those endpoints and cannot reload them directly.
+
+Section items are cached per refresh so navigation does not re-query on every
+route change. Call `app.refresh_sections(section_id=None)` (or `ctx.refresh()`)
+after mutating items; items also re-fetch automatically when a section's rail
+menu or the narrow-screen drawer opens so changes made by other users appear.
 
 ---
 

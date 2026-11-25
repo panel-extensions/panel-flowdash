@@ -74,6 +74,7 @@ nav = [
       {"secret_store" = "reference/api/secret_store.md"},
       {"session_state" = "reference/api/session_state.md"},
       {"settings" = "reference/api/settings.md"},
+      {"sidebar" = "reference/api/sidebar.md"},
       {"spec_settings" = "reference/api/spec_settings.md"},
       {"text_components" = "reference/api/text_components.md"},
       {"transform_editor" = "reference/api/transform_editor.md"},
