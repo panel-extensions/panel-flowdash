@@ -1,11 +1,15 @@
 """References: a node of one dashboard shown, read only, in another."""
 
+import weakref
+
 import pandas as pd
 import panel as pn
 import param
 import pytest
+from bokeh.document import Document
 from panel.viewable import Viewer
 
+import panel_flowdash.references as references
 from panel_flowdash import DashboardStore, FlowDash, MemoryDashboardStore, Permission, register
 from panel_flowdash.references import _SOURCES, REFERENCE_COMPONENT, Reference, source_graph
 
@@ -132,7 +136,9 @@ def test_an_edit_saved_at_the_source_updates_the_reference(source, importer):
     assert importer._component_instances["ref"]._holder.objects[0] is view
 
 
-def test_references_in_one_session_share_one_source_graph(store, source, importer):
+def test_references_in_one_session_share_one_source_graph(store, source, importer, monkeypatch):
+    doc = Document()
+    monkeypatch.setattr(references, "_session_doc", lambda: doc)
     other = make_editor(store)
     other.new_dashboard("Board dashboard")
     dashboard_id = source.dashboard.dashboard_id
@@ -145,10 +151,24 @@ def test_references_in_one_session_share_one_source_graph(store, source, importe
     assert text(tile(other, "ref")) == text(tile(importer, "ref")) == "bars blue 12"
     # Only what the chart needs is computed.
     assert set(graph._loaded) == {"numbers", "chart"}
+    # The graph does not keep the session alive, and goes the moment the session ends.
+    assert isinstance(graph._doc, weakref.ref)
+    for callback in doc.session_destroyed_callbacks:
+        callback(None)
+    assert graph.disposed and graph.editor is None
+    assert doc not in _SOURCES
+
+
+def test_editors_outside_a_session_never_share_a_source_graph(store, source, importer):
+    other = make_editor(store, user="bob")
+    other.new_dashboard("Board dashboard")
+    dashboard_id = source.dashboard.dashboard_id
+    add_reference(importer, dashboard_id, "chart")
+    add_reference(other, dashboard_id, "chart")
+    assert source_graph(importer, dashboard_id) is not source_graph(other, dashboard_id)
     importer.remove_component("ref")
     other.remove_component("ref")
-    assert graph.disposed
-    assert not any(_SOURCES.get(store, {}))
+    assert not _SOURCES.get(importer) and not _SOURCES.get(other)
 
 
 def test_a_deleted_node_shows_missing_node(source, importer):
@@ -323,3 +343,118 @@ def test_stores_say_which_dashboard_changed(kind, tmp_path):
     assert len(seen) == 5
     if kind == "sqlite":
         store.close()
+
+
+def hide(editor, instance_id):
+    layout = [e for e in editor.layout if e.get("instance_id") != instance_id]
+    editor._set_grid_layout([*layout, {"instance_id": instance_id, "visible": False}], True)
+
+
+def viewer_of(dashboard_id):
+    """An authorize_dashboard letting its user view, but not edit, *dashboard_id*."""
+    return lambda model, access: access == "view" or model.dashboard_id != dashboard_id
+
+
+def test_a_viewer_may_reference_only_visible_tiles_unless_they_may_inspect(store, source):
+    dashboard_id = source.dashboard.dashboard_id
+    source._pending_tile_layout = [
+        {"instance_id": "numbers", "visible": False},
+        {"instance_id": "chart"},
+    ]
+    source.save()
+    assert {e["instance_id"]: e.get("visible") for e in store._load_any(dashboard_id).tile_layout}[
+        "numbers"
+    ] is False
+    viewer = make_editor(store, authorize_dashboard=viewer_of(dashboard_id))
+    viewer.new_dashboard("Ops dashboard")
+    add_reference(viewer, dashboard_id, "numbers", "hidden")
+    add_reference(viewer, dashboard_id, "chart", "shown")
+    assert viewer._component_instances["hidden"].status == "denied"
+    assert viewer._node_spec("hidden").outputs == []
+    assert viewer._component_instances["shown"].status == "ok"
+    model = store._load_any(dashboard_id)
+    model.settings["viewers_can_inspect"] = True
+    store.save_dashboard(model)
+    assert viewer._component_instances["hidden"].status == "ok"
+    viewer.dispose()
+
+
+async def test_the_inspector_offers_a_viewer_only_the_visible_tiles(store, source):
+    from panel_flowdash.config_choices import node_choices
+
+    dashboard_id = source.dashboard.dashboard_id
+    source._pending_tile_layout = [{"instance_id": "numbers", "visible": False}]
+    source.save()
+    viewer = make_editor(store, authorize_dashboard=viewer_of(dashboard_id))
+    viewer.new_dashboard("Ops dashboard")
+    viewer.add_component(REFERENCE_COMPONENT, {"dashboard": dashboard_id}, instance_id="ref")
+    assert (await node_choices(viewer, "ref"))["node"].values() == ["chart"]
+    viewer.dispose()
+
+
+def test_a_revoked_dashboard_is_not_computed_again(store, source, importer):
+    dashboard_id = source.dashboard.dashboard_id
+    importer.authorize_dashboard = lambda model, access: "bob" not in model.permission.deny_users
+    add_reference(importer, dashboard_id, "chart")
+    graph = source_graph(importer, dashboard_id)
+    store.set_permission(dashboard_id, Permission.from_spec(deny_users=["bob"]))
+    source._apply_config_patch("numbers", {"scale": 100})
+    source.save()
+    assert importer._component_instances["ref"].status == "denied"
+    # The graph read the new version but loaded none of it.
+    assert graph.disposed or not graph._loaded
+
+
+@register(page=False, component=True, title="Banner")
+def banner():
+    return pn.pane.Markdown("banner ok")
+
+
+def test_a_function_component_without_config_is_shown(store):
+    components = {**COMPONENTS, "Test/banner": banner}
+    source = FlowDash(components, store=store, notifications=False)
+    source.new_dashboard("Exec dashboard")
+    source.add_component("Test/banner", instance_id="banner")
+    source.save()
+    importer = FlowDash(components, store=store, notifications=False)
+    importer.new_dashboard("Ops dashboard")
+    add_reference(importer, source.dashboard.dashboard_id, "banner")
+    assert importer._component_instances["ref"].status == "ok"
+    assert text(tile(importer, "ref")) == "banner ok"
+    importer.dispose()
+    source.dispose()
+
+
+def test_a_node_of_a_restricted_component_is_no_access(store, source):
+    importer = make_editor(store, authorize_component=lambda entry: entry.app_id != "Test/bars")
+    importer.new_dashboard("Ops dashboard")
+    add_reference(importer, source.dashboard.dashboard_id, "chart")
+    assert importer._component_instances["ref"].status == "denied"
+    assert importer._node_spec("ref").outputs == []
+    importer.dispose()
+
+
+def test_a_forbidden_dashboard_with_a_guessable_id_looks_missing(store):
+    source = make_editor(store)
+    source.new_dashboard("Exec dashboard")
+    source.add_component("Test/bars", instance_id="chart")
+    model = source.to_model()
+    model.dashboard_id = "exec"
+    store.save_dashboard(model)
+    importer = make_editor(
+        store, authorize_dashboard=lambda model, access: model.dashboard_id != "exec"
+    )
+    importer.new_dashboard("Ops dashboard")
+    add_reference(importer, "exec", "chart", "guessed")
+    add_reference(importer, "nothing", "chart", "absent")
+    assert importer._component_instances["guessed"].status == "missing"
+    assert importer._component_instances["absent"].status == "missing"
+    importer.dispose()
+    source.dispose()
+
+
+def test_nodes_of_one_component_share_their_state_class(source):
+    source.add_component("Test/numbers", instance_id="more")
+    graph = source._dataflow_graph
+    assert type(graph.get_state("numbers")) is type(graph.get_state("more"))
+    assert type(graph.get_state("more")) is graph._state_classes["Test/numbers"]

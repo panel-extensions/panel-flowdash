@@ -83,6 +83,10 @@ class Bars(Viewer):
 
 COMPONENTS = {"Test/numbers": Numbers, "Test/bars": Bars}
 
+# Ids of the form the store makes, which cannot be guessed, so a dashboard
+# someone may not open is said to be out of reach rather than missing.
+IDS = {"exec": "0e1ec0da5b0a", "ops": "0b5da5b0a4d1"}
+
 # How many Vega charts are drawn on the page.
 CHARTS = """() => Bokeh.documents.flatMap((doc) => [...doc.all_models])
   .filter((model) => model.type.endsWith("VegaPlot"))
@@ -92,7 +96,7 @@ CHARTS = """() => Bokeh.documents.flatMap((doc) => [...doc.all_models])
 
 def _store():
     source = DashboardModel(
-        dashboard_id="exec",
+        dashboard_id=IDS["exec"],
         user_id="alice",
         title="Exec dashboard",
         items=[
@@ -106,18 +110,18 @@ def _store():
         ],
     )
     importer = DashboardModel(
-        dashboard_id="ops",
+        dashboard_id=IDS["ops"],
         user_id="alice",
         title="Ops dashboard",
         items=[
             DashboardItem(
                 instance_id="ref",
                 component_id=REFERENCE_COMPONENT,
-                config={"dashboard": "exec", "node": "chart"},
+                config={"dashboard": IDS["exec"], "node": "chart"},
             )
         ],
     )
-    return MemoryDashboardStore({"exec": source, "ops": importer})
+    return MemoryDashboardStore({IDS["exec"]: source, IDS["ops"]: importer})
 
 
 def _app(store, editors):
@@ -129,10 +133,10 @@ def _app(store, editors):
             COMPONENTS,
             store=store,
             user="alice",
-            dashboard=dashboard,
+            dashboard=IDS[dashboard],
             mode="dashboard",
             notifications=False,
-            authorize_dashboard=(lambda model, access: model.dashboard_id != "exec")
+            authorize_dashboard=(lambda model, access: model.dashboard_id != IDS["exec"])
             if denied
             else None,
         )
@@ -180,7 +184,7 @@ def test_a_chart_shown_through_a_reference_follows_its_dashboard(page):
     wait_until(lambda: page.evaluate(CHARTS) == 1, page, timeout=10000)
 
     # The source dashboard is deleted, e.g. from the launcher of a third session.
-    store.delete_dashboard("alice", "exec")
+    store.delete_dashboard("alice", IDS["exec"])
     expect(tile.get_by_text("Missing node: chart").first).to_be_visible(timeout=10000)
     expect(page.locator(".flowdash-provenance-chip")).to_contain_text("Missing node: chart")
     source.close()
@@ -206,7 +210,7 @@ def test_two_editors_on_one_page_show_the_chart_at_once(page):
                 COMPONENTS,
                 store=store,
                 user="alice",
-                dashboard=dashboard,
+                dashboard=IDS[dashboard],
                 mode="dashboard",
                 notifications=False,
             )

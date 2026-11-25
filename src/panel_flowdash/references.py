@@ -34,6 +34,7 @@ import typing as t
 import weakref
 from contextvars import ContextVar
 from dataclasses import replace
+from functools import partial
 
 import panel as pn
 import param
@@ -53,9 +54,9 @@ logger = logging.getLogger(__name__)
 
 REFERENCE_COMPONENT = "Data/Reference"
 
-# The source graphs of each session, or of each store outside a session, by
-# store and dashboard id.
-_SOURCES: weakref.WeakKeyDictionary[t.Any, dict[tuple[int, str], SourceGraph]] = (
+# The source graphs of each session, or of each editor outside a session, by
+# store, user and dashboard id.
+_SOURCES: weakref.WeakKeyDictionary[t.Any, dict[tuple[int, str, str], SourceGraph]] = (
     weakref.WeakKeyDictionary()
 )
 
@@ -69,6 +70,93 @@ _MAX_DEPTH = 8
 def _session_doc() -> t.Any:
     doc = pn.state.curdoc
     return doc if doc is not None and doc.session_context is not None else None
+
+
+def _doc_ref() -> weakref.ref | None:
+    doc = _session_doc()
+    return weakref.ref(doc) if doc is not None else None
+
+
+def _schedule(doc_ref: weakref.ref | None, callback: t.Callable[[], t.Any]) -> bool:
+    """Run *callback* on the next tick of the session of *doc_ref*, as that session.
+
+    A store change can come from another session's thread, whose context the
+    callback would otherwise run in. Returns False when there is no session
+    to run it in any more.
+    """
+    from panel.io.state import set_curdoc
+
+    doc = doc_ref() if doc_ref is not None else None
+    if doc is None:
+        return False
+
+    def run():
+        with set_curdoc(doc):
+            callback()
+
+    try:
+        doc.add_next_tick_callback(run)
+    except Exception:
+        logger.debug("The session of a reference is gone", exc_info=True)
+        return False
+    return True
+
+
+def _session_destroyed(doc_ref: weakref.ref, session_context: t.Any):
+    """Dispose the source graphs of a session that ended, right away rather than on a tick that never comes."""
+    doc = doc_ref()
+    graphs = _SOURCES.pop(doc, {}) if doc is not None else {}
+    for graph in list(graphs.values()):
+        graph.dispose(ended=True)
+
+
+def may_inspect(editor: FlowDash, model: DashboardModel) -> bool:
+    """Whether the editor's user may see every node of *model*, not only its tiles.
+
+    They may if they may edit it, or if it lets its viewers inspect outputs
+    (its ``viewers_can_inspect`` setting).
+    """
+    return editor._dashboard_authorized(model, "edit") or bool(
+        model.settings.get("viewers_can_inspect", False)
+    )
+
+
+def visible_nodes(editor: FlowDash, model: DashboardModel) -> set[str]:
+    """Return the nodes of *model* a viewer sees: all but those whose tile is hidden."""
+    from panel_flowdash.editor import _key_saved_layout
+
+    layout = _key_saved_layout(model.tile_layout, editor._legacy_layout_ids(model))
+    hidden = {entry["instance_id"] for entry in layout if entry.get("visible") is False}
+    return {item.instance_id for item in model.items} - hidden
+
+
+def access(
+    editor: FlowDash, model: DashboardModel | None, dashboard_id: str, node: str
+) -> tuple[str, str | None]:
+    """Return whether the editor's user may reference *node* of *model*: a status and its instance id.
+
+    The status is ``"ok"``, ``"missing"`` (the dashboard or node does not
+    exist) or ``"denied"``: the user may not view the dashboard, the node
+    has no visible tile and they may not inspect the dashboard, or they may
+    not use the node's component. A dashboard they may not view whose id
+    could be guessed is answered like a missing one, as the app does.
+    """
+    if model is None:
+        return "missing", None
+    if not editor._dashboard_authorized(model, "view"):
+        guessable = editor.store is not None and editor.store.guessable_id(dashboard_id)
+        return ("missing" if guessable else "denied"), None
+    item = find_item(model, node)
+    if item is None:
+        return "missing", None
+    if item.instance_id not in visible_nodes(editor, model) and not may_inspect(editor, model):
+        return "denied", None
+    component_id = editor._resolve_component_id(item.component_id, editor._component_aliases())
+    if component_id in editor._component_entries and not editor._component_authorized(
+        component_id
+    ):
+        return "denied", None
+    return "ok", item.instance_id
 
 
 def find_item(model: DashboardModel, node: str) -> DashboardItem | None:
@@ -131,8 +219,9 @@ class SourceGraph:
     def __init__(self, host: FlowDash, dashboard_id: str):
         self.dashboard_id = dashboard_id
         self.store = host.store
-        self._host = weakref.ref(host)
-        self._doc = _session_doc()
+        # The editors its references are on, all of one user; any one of them answers for access.
+        self._hosts: weakref.WeakSet[FlowDash] = weakref.WeakSet([host])
+        self._doc = _doc_ref()
         self.editor: FlowDash | None = None
         self.model: DashboardModel | None = None
         self.disposed = False
@@ -158,15 +247,23 @@ class SourceGraph:
         item = find_item(self.model, node)
         return item.instance_id if item is not None else None
 
+    @property
+    def host(self) -> FlowDash | None:
+        return next(iter(self._hosts), None)
+
     def attach(self, reference: Reference, instance_id: str):
         """Have the graph compute *instance_id* for *reference*."""
         self._references.add(reference)
+        if reference._host is not None:
+            self._hosts.add(reference._host)
         self._wanted[instance_id] = self._wanted.get(instance_id, 0) + 1
         if instance_id not in self._loaded:
             self._load()
 
     def detach(self, reference: Reference, instance_id: str | None):
         """Stop computing *instance_id* for *reference*; the graph goes with its last reference."""
+        if self.disposed:
+            return
         if reference._source is not self:
             self._references.discard(reference)
         if instance_id is not None and instance_id in self._wanted:
@@ -175,13 +272,8 @@ class SourceGraph:
                 del self._wanted[instance_id]
         if self._references:
             return
-        if self._doc is None:
-            self.dispose()
-            return
         # A node placed again, e.g. with new ports, takes the graph over on this tick.
-        try:
-            self._doc.add_next_tick_callback(self._dispose_unused)
-        except Exception:
+        if not _schedule(self._doc, self._dispose_unused):
             self.dispose()
 
     def _dispose_unused(self):
@@ -200,7 +292,7 @@ class SourceGraph:
     def _make_editor(self) -> FlowDash:
         from panel_flowdash.editor import _SESSION_EDITORS, FlowDash
 
-        host = self._host()
+        host = self.host
         doc = pn.state.curdoc
         previous = _SESSION_EDITORS.get(doc) if doc is not None else None
         try:
@@ -232,13 +324,29 @@ class SourceGraph:
         return editor
 
     def _load(self):
-        """Load the wanted nodes and their upstream, patching what the editor already holds."""
+        """Load the wanted nodes and their upstream, patching what the editor already holds.
+
+        Only the nodes the user may reference now are loaded, checked
+        against the very model that is loaded, so a dashboard whose
+        sharing changed is never computed for someone it is no longer
+        shared with.
+        """
         from panel_flowdash.editor import _placing
 
-        if self.model is None:
+        host = self.host
+        if self.model is None or host is None:
             return
-        present = {item.instance_id for item in self.model.items}
-        keep = _upstream(self.model, [iid for iid in self._wanted if iid in present])
+        allowed = [
+            iid
+            for iid in self._wanted
+            if access(host, self.model, self.dashboard_id, iid)[0] == "ok"
+        ]
+        if not allowed:
+            if self.editor is not None and self._loaded:
+                self.editor._reset_canvas()
+            self._loaded = set()
+            return
+        keep = _upstream(self.model, allowed)
         model = _pruned(self.model, keep)
         if self.editor is None:
             self.editor = self._make_editor()
@@ -259,16 +367,12 @@ class SourceGraph:
     def _on_store_change(self, dashboard_id: str):
         if dashboard_id != self.dashboard_id or self.disposed or self._refresh_pending:
             return
+        if self._doc is None:
+            self.refresh()
+            return
         self._refresh_pending = True
-        doc = self._doc
-        if doc is not None:
-            try:
-                doc.add_next_tick_callback(self.refresh)
-                return
-            except Exception:
-                logger.debug("Session of a source graph is gone", exc_info=True)
-                return
-        self.refresh()
+        if not _schedule(self._doc, self.refresh):
+            self.dispose(ended=True)
 
     def refresh(self):
         """Read the dashboard again, load what changed and tell the references to it."""
@@ -289,26 +393,44 @@ class SourceGraph:
             except Exception:
                 logger.exception("Updating a reference to %r failed", self.dashboard_id)
 
-    def dispose(self):
+    def dispose(self, ended: bool = False):
+        """Stop the graph's components and stop following the store.
+
+        With *ended*, the session is gone, so its components are disposed
+        without updating views that are no longer anywhere.
+        """
         if self.disposed:
             return
         self.disposed = True
         self.store.unwatch_changes(self._on_store_change)
-        if self.editor is not None:
-            self.editor.dispose()
-            self.editor = None
-        key = (id(self.store), self.dashboard_id)
+        editor, self.editor = self.editor, None
+        if editor is not None:
+            if ended:
+                editor._stop_refresh_timer()
+                editor._dispose_components()
+            else:
+                editor.dispose()
         for graphs in list(_SOURCES.values()):
-            if graphs.get(key) is self:
-                del graphs[key]
+            for key, graph in list(graphs.items()):
+                if graph is self:
+                    del graphs[key]
 
 
 def source_graph(host: FlowDash, dashboard_id: str) -> SourceGraph:
-    """Return the session's source graph of *dashboard_id*, creating it if needed."""
+    """Return the source graph of *dashboard_id* for *host*'s session and user, creating it if needed.
+
+    In a session the graphs are shared by the session's editors of one user;
+    outside a session each editor has its own, so editors of different users
+    or contexts never share one.
+    """
     doc = _session_doc()
-    owner = doc if doc is not None else host.store
-    graphs = _SOURCES.setdefault(owner, {})
-    key = (id(host.store), dashboard_id)
+    owner = doc if doc is not None else host
+    graphs = _SOURCES.get(owner)
+    if graphs is None:
+        graphs = _SOURCES[owner] = {}
+        if doc is not None:
+            doc.on_session_destroyed(partial(_session_destroyed, weakref.ref(doc)))
+    key = (id(host.store), host.user, dashboard_id)
     graph = graphs.get(key)
     if graph is None or graph.disposed:
         graph = graphs[key] = SourceGraph(host, dashboard_id)
@@ -323,11 +445,9 @@ def _source_spec(editor: FlowDash, dashboard: str, node: str) -> ComponentSpec |
     if (dashboard, node) in resolving or len(resolving) >= _MAX_DEPTH:
         return None
     model = editor.store._load_any(dashboard)
-    if model is None or not editor._dashboard_authorized(model, "view"):
+    if access(editor, model, dashboard, node)[0] != "ok":
         return None
     item = find_item(model, node)
-    if item is None:
-        return None
     component_id = editor._resolve_component_id(item.component_id, editor._component_aliases())
     editor.ensure_components_loaded([component_id])
     spec = editor._component_specs.get(component_id)
@@ -357,11 +477,16 @@ def reference_choices(config: t.Mapping[str, t.Any], inputs: t.Mapping[str, t.An
         if model.dashboard_id != own and editor._dashboard_authorized(model, "view")
     }
     choices: dict[str, t.Any] = {"dashboard": dashboards}
-    if config.get("dashboard") in dashboards.values():
-        model = editor.store._load_any(config["dashboard"])
+    dashboard = config.get("dashboard")
+    if dashboard in dashboards.values():
+        model = editor.store._load_any(dashboard)
         if model is not None:
             names = node_names({"instance_id": item.instance_id} for item in model.items)
-            choices["node"] = sorted(names.values())
+            choices["node"] = sorted(
+                name
+                for iid, name in names.items()
+                if access(editor, model, dashboard, iid)[0] == "ok"
+            )
     return choices
 
 
@@ -419,7 +544,7 @@ class Reference(Viewer):
         self._bound: param.Parameterized | None = None
         self._release_view: t.Callable[[], None] | None = None
         self._holder = pn.Column(sizing_mode="stretch_both", margin=0)
-        self._doc = _session_doc()
+        self._doc = _doc_ref()
         self._resolve_pending = False
         self.status = "unset"
         self.source_title: str | None = None
@@ -492,21 +617,21 @@ class Reference(Viewer):
         if key in self._depth or len(self._depth) >= _MAX_DEPTH:
             self._set_status("missing")
             return
-        model = host.store._load_any(self.dashboard)
-        if model is None:
-            self._set_status("missing")
-            return
-        if not host._dashboard_authorized(model, "view"):
-            self._set_status("denied")
+        status, _ = access(host, host.store._load_any(self.dashboard), self.dashboard, self.node)
+        if status != "ok":
+            self._set_status(status)
             return
         token = _RESOLVING.set((*self._depth, key))
         try:
             source = source_graph(host, self.dashboard)
-            target = source.instance_id(self.node)
-            if target is None:
+            # Checked again on the model the graph loads, read now, since the
+            # store may tell this reference of a change before the graph.
+            source._read()
+            status, target = access(host, source.model, self.dashboard, self.node)
+            if status != "ok":
                 if not source._references:
                     source.dispose()
-                self._set_status("missing")
+                self._set_status(status)
                 return
             self._source, self._target = source, target
             source.attach(self, target)
@@ -552,9 +677,7 @@ class Reference(Viewer):
         if ports == [(p.name, p.type) for p in current.outputs]:
             return
         node_id = self._node_id
-        if self._doc is not None:
-            self._doc.add_next_tick_callback(lambda: host._respec(node_id))
-        else:
+        if not _schedule(self._doc, partial(host._respec, node_id)):
             host._respec(node_id, {"dashboard": self.dashboard, "node": self.node})
 
     def _bind_outputs(self, state: param.Parameterized | None, failure: str | None = None):
@@ -624,14 +747,12 @@ class Reference(Viewer):
     def _on_store_change(self, dashboard_id: str):
         if dashboard_id != self.dashboard or self._source is not None or self._resolve_pending:
             return
-        self._resolve_pending = True
-        if self._doc is not None:
-            try:
-                self._doc.add_next_tick_callback(self._resolve_again)
-            except Exception:
-                logger.debug("Session of a reference is gone", exc_info=True)
+        if self._doc is None:
+            self._resolve_again()
             return
-        self._resolve_again()
+        self._resolve_pending = True
+        if not _schedule(self._doc, self._resolve_again):
+            self._resolve_pending = False
 
     def _resolve_again(self):
         self._resolve_pending = False
@@ -649,12 +770,9 @@ class Reference(Viewer):
         if host is None:
             return
         model = source.model if source is not None else None
+        status, target = access(host, model, self.dashboard, self.node)
         same = (
-            source is not None
-            and model is not None
-            and host._dashboard_authorized(model, "view")
-            and source.instance_id(self.node) == self._target
-            and source.state(self._target) is self._bound
+            status == "ok" and target == self._target and source.state(self._target) is self._bound
         )
         if same:
             self.source_title = source.title
