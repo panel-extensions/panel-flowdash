@@ -300,9 +300,11 @@ An answer added in view mode is handed to the assistant. Edit mode opens on the 
 tab with the new tile marked and scrolled into view, and the assistant's drawer opens
 beside it with the new node mentioned in its input, as a chip that sending a message
 writes as `@name`, so the next instruction is about it. Explore and the assistant keep
-their own conversations; the mention is all that passes between them. A notice offers
-**Undo**, which takes the add back in one step and returns to view mode, where Ask shows
-the card again, until the dashboard changes again. On a phone, where the drawer covers
+their own conversations; the mention is all that passes between them. With the edit
+history on, a notice offers **Undo**, which takes the add back in one step and returns to
+view mode, where Ask shows the card again, until the dashboard changes again; while an
+agent's request runs it waits. Other unsaved changes, such as a second add made
+meanwhile, keep the dashboard in edit mode. On a phone, where the drawer covers
 the page, the tile stays in sight and the notice's **Assistant** opens the drawer. Done
 returns to the view the answer was added from.
 
