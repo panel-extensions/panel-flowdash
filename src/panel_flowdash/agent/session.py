@@ -32,6 +32,7 @@ from .actions import palette_actions
 from .assistant import create_agent, create_explore_agent
 from .chrome import OVERLAY_BELOW, SessionChrome
 from .exploration import ExplorationOps
+from .handover import AddHandover
 from .highlight import ChangeHighlighter
 from .live import LiveDashboardOps
 from .models import agent_model_choice
@@ -210,6 +211,7 @@ class AgentSession:
                     explorations=self.explorations,
                     add=self.add_answer,
                     show=self.show_answer,
+                    handover=self.hand_over,
                 )
             elif len(models or ()) > 1:
                 # The Explore view's composer offers the same models and shares the drawer's pick.
@@ -221,6 +223,7 @@ class AgentSession:
                     explorations=self.explorations,
                     add=self.add_answer,
                     show=self.show_answer,
+                    handover=self.hand_over,
                 )
             else:
                 # With nothing to pick, the composer names the Explore agent's own model.
@@ -232,14 +235,13 @@ class AgentSession:
                     explorations=self.explorations,
                     add=self.add_answer,
                     show=self.show_answer,
+                    handover=self.hand_over,
                 )
         # The drawer opens at the width last dragged to in this browser, see `_fit_drawer`.
         self._fitting = False
         preferences.param.watch(self._fit_drawer, "assistant_width")
         editor._split_view.storage.param.watch(self._fit_drawer, "window_width")
         self.drawer.param.watch(self._on_drawer_resized, "width")
-        # Whether Ask was set aside for the edit an add from its docked feed started.
-        self._ask_resumes = False
         editor.param.watch(self._on_explore, ["explore", "ask", "editable"])
         # In edit mode Ask is this drawer, opened and closed with the bar's Ask.
         editor.assistant = True
@@ -247,6 +249,7 @@ class AgentSession:
         self._on_explore()
         self.highlighter = ChangeHighlighter(self)
         self.chrome = SessionChrome(self)
+        self.handover = AddHandover(self)
         editor.run_pending = self.run_pending
         self.history_notice = pmui.Alert(
             text_typography("", variant="body2", margin=0),
@@ -339,18 +342,9 @@ class AgentSession:
         self.ledger.add(model_id, run.cost_usd)
 
     def _on_explore(self, *events):
-        """Open the drawer as Ask in edit mode, close it while the feed is Ask, and bring back a pending approval.
-
-        An add from Ask's docked feed that starts edit mode sets Ask aside
-        rather than opening the drawer, whose conversation is another one,
-        and Ask comes back as edit mode ends, unless the person turned it on
-        or off meanwhile.
-        """
+        """Open the drawer as Ask in edit mode, close it while the feed is Ask, and bring back a pending approval."""
         editor = self.app._editor
         names = {event.name for event in events}
-        if "editable" in names and not editor.editable and self._ask_resumes:
-            self._ask_resumes = False
-            editor.ask = True
         exploring = editor.explore or (editor.ask and not editor.editable)
         self.drawer.open_on_approval = not exploring
         pending = self.runner.state.pending_approvals
@@ -358,15 +352,10 @@ class AgentSession:
             self.drawer.open = False
         elif editor.editable:
             if "ask" in names:
-                self._ask_resumes = False
                 self.drawer.open = editor.ask
             elif self.drawer.open:
                 # Open as edit mode starts, e.g. as the assistant begins to edit: it is Ask now.
                 editor.ask = True
-            elif editor.ask and self._adding_from_feed() and not pending:
-                editor.ask = False
-                # Only now: turning Ask off runs this again, as a change that clears it.
-                self._ask_resumes = True
             elif editor.ask or pending:
                 self.drawer.open = True
         elif pending:
@@ -374,10 +363,6 @@ class AgentSession:
         elif "editable" in names:
             # Ask in edit mode closes with it; view mode gets back its own Ask, see `FlowDash.ask`.
             self.drawer.open = False
-
-    def _adding_from_feed(self) -> bool:
-        feed = self.app._editor._explore_feed
-        return feed is not None and feed.adding
 
     def _on_drawer_toggled(self, event):
         """Keep Ask in step with the drawer: it is Ask in edit mode, and takes the docked feed's place in view mode.
@@ -427,10 +412,17 @@ class AgentSession:
             node,
             question=self.explore_runner.questions.get(run),
             edit_lock=self.edit_lock,
-            on_wait=self.app._editor.explore_feed.show_waiting,
+            on_wait=self._on_add_wait,
         )
         self.publish_agent_layout(run)
         return name
+
+    def _on_add_wait(self, waiting: str | None):
+        """Say that an add waits, in the feed, and on the tiles once an add from view mode left it."""
+        editor = self.app._editor
+        editor.explore_feed.show_waiting(waiting)
+        if waiting is None or not editor.feed_shown:
+            self.handover.waiting(waiting)
 
     def run_pending(self, turn_id: str):
         """Ask the assistant the question of the pending turn *turn_id*, as the turn's request.
@@ -457,6 +449,10 @@ class AgentSession:
         editor = self.app._editor
         if turn_id in editor.running_pending:
             editor.running_pending = [t for t in editor.running_pending if t != turn_id]
+
+    def hand_over(self, name: str, surface: str = "workspace", saved: str | None = None):
+        """Hand the dashboard node *name*, just added from Ask in view mode, to the assistant; see `AddHandover.hand_over`."""
+        self.handover.hand_over(name, surface, saved)
 
     def show_answer(self, name: str):
         """Show the tiles, leaving the Explore view or the report, and mark the dashboard node *name*, e.g. an answer just added."""

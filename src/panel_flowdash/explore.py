@@ -189,7 +189,7 @@ class ExploreFeed(Viewer):
         self.explorations = None
         self._add: t.Callable[[str, str], t.Awaitable[str]] | None = None
         self._show: t.Callable[[str], None] | None = None
-        self._adding = 0
+        self._handover: t.Callable[[str, str, str | None], None] | None = None
         self._recorded: dict[str, list[ev.Event]] = {}
         self._roots: dict[str, str] = {}
         # The dashboard open when each recorded run started; a run shows in that dashboard's feed only.
@@ -411,6 +411,7 @@ class ExploreFeed(Viewer):
         explorations: t.Any = None,
         add: t.Callable[[str, str], t.Awaitable[str]] | None = None,
         show: t.Callable[[str], None] | None = None,
+        handover: t.Callable[[str, str, str | None], None] | None = None,
     ):
         """Ask the Explore view's agent *runner* (a panel-agents ``AgentRunner``) and show its runs.
 
@@ -425,12 +426,17 @@ class ExploreFeed(Viewer):
         runner builds its answers; their cards show the exploration's nodes.
         *add* is awaited with a run and one of its answer nodes to add the
         answer to the dashboard, returning the node's name there, and *show*
-        shows a dashboard node, e.g. an answer once added.
+        shows a dashboard node, e.g. an answer once added. *handover* is
+        called with a node added from a card in view mode, which switched to
+        edit mode, the surface it was added from and the revision of the
+        canvas before, if it had no unsaved changes then, to show the node
+        and hand it to the assistant; without it *show* shows it.
         """
         self._foreign = foreign
         self.explorations = explorations
         self._add = add
         self._show = show
+        self._handover = handover
         if self._unsubscribe is not None:
             self._unsubscribe()
         self._chat_params = dict(chat_params or {})
@@ -1196,20 +1202,29 @@ class ExploreFeed(Viewer):
 
         return DashboardOps(self.editor)
 
-    @property
-    def adding(self) -> bool:
-        """Whether an add from one of the feed's cards is under way."""
-        return self._adding > 0
-
     async def _add_to_dashboard(
         self, name: str | None = None, exploration: str | None = None, node: str | None = None
     ) -> str:
         """Add an answer of the exploration to the dashboard, or show a dashboard node's output as a tile.
 
-        An add from the dock that starts edit mode shows the tile there, as Show does.
+        An add from view mode, which switches to edit mode, hands the node
+        over to the assistant there, see `attach`.
         """
-        docked = self.docked
-        self._adding += 1
+        editor = self.editor
+        viewing, surface, mode = not editor.editable, editor.surface, editor.mode
+        handing_over = viewing and self._handover is not None
+        history = editor.edit_history
+        # Taken before any wait, so Undo knows the canvas as it was saved.
+        saved = (
+            history.snapshot()[1] if handing_over and history.active and not editor.dirty else None
+        )
+        if handing_over:
+            # The tiles are on screen, on the Layout tab, before edit mode starts, so it
+            # changes the grid in place rather than building it anew with the canvas between.
+            with pn.io.hold():
+                if mode == "wiring":
+                    editor.mode = "dashboard"
+                editor.surface = "workspace"
         try:
             if exploration is not None and node is not None:
                 if self._add is None:
@@ -1220,10 +1235,15 @@ class ExploreFeed(Viewer):
             else:
                 raise ValueError("Name a node, or an answer by its exploration and node.")
         finally:
-            self._adding -= 1
+            if handing_over and not editor.editable:
+                # Nothing needed an edit, or the add failed: back to where it was asked.
+                editor.param.update(mode=mode, surface=surface)
         self.refresh()
-        if docked and self.editor.editable and self._show is not None:
-            self._show(name)
+        if viewing and editor.editable:
+            if self._handover is not None:
+                self._handover(name, surface, saved)
+            elif self._show is not None:
+                self._show(name)
         return f"Added {name} to the dashboard."
 
     def _show_on_dashboard(self, name: str) -> str:
