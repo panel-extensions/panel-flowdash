@@ -249,9 +249,9 @@ questions, or an awaitable of them. The context has the signed-in person's `iden
 (their user name, groups and login claims), the new dashboard's `dashboard_id` and
 `title`, its `origin` (`"blank"` or `"template"`) and `template` id, and the `tables`
 the person may place. Returning None offers the default questions and an empty list
-none; a hook that fails, returns something other than a list of questions, or takes
-over ten seconds offers none, and questions that arrive after you started typing or
-asking are left out.
+none; a hook that fails, returns something other than a list of questions, or, with
+the palette presets the dashboard waits for, takes over ten seconds offers none, and
+questions that would arrive after you started typing or asking are left out.
 
 ```python
 # my_project/__init__.py

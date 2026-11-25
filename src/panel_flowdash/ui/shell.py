@@ -2,22 +2,192 @@
 
 from __future__ import annotations
 
+import logging
 import typing as t
+import uuid
+from urllib.parse import parse_qsl, urlencode
 
 import panel as pn
 import panel_material_ui as pmui
+import param
+from panel.custom import JSComponent
 
 # The app module imports this one; its route constants are only read at runtime.
 from panel_flowdash import app as app_module
+from panel_flowdash.sidebar import SidebarAction, SidebarContext, SidebarItem, SidebarSection
 
 if t.TYPE_CHECKING:
     from panel_flowdash.app import FlowDashApp
 
+logger = logging.getLogger("panel_flowdash")
+
 DOCS_URL = "https://panel-extensions.github.io/panel-flowdash/"
+
+
+def _is_external_url(url: str) -> bool:
+    return url.startswith(("http://", "https://"))
+
+
+def _normalize_pathname(path: str) -> str:
+    stripped = path.strip("/")
+    return f"/{stripped}" if stripped else "/"
+
+
+def _normalize_search(search: str) -> str:
+    raw = search.lstrip("?")
+    if not raw:
+        return ""
+    pairs = sorted(parse_qsl(raw, keep_blank_values=True))
+    return f"?{urlencode(pairs)}" if pairs else ""
+
+
+def _split_route(url: str) -> tuple[str, str]:
+    raw_path, sep, raw_query = url.partition("?")
+    return _normalize_pathname(raw_path), _normalize_search(raw_query) if sep else ""
+
+
+def _match_url(
+    candidates: t.Iterable[tuple[str, t.Any]],
+    current_path: str,
+    current_search: str,
+) -> t.Any:
+    """Match ``(url, payload)`` pairs against the current route.
+
+    Matches exact ``(pathname, search)`` first, then falls back to a path-only
+    match for candidates that declare no query string.
+    """
+    path_fallback = None
+    for url, payload in candidates:
+        if _is_external_url(url):
+            continue
+        cand_path, cand_search = _split_route(url)
+        if cand_path != current_path:
+            continue
+        if cand_search == current_search:
+            return payload
+        if not cand_search and path_fallback is None:
+            path_fallback = payload
+    return path_fallback
+
+
+# Align iconless menu entries with entries that carry an icon (such as "+ New").
+_RAIL_MENU_ALIGN_CSS = """
+.MuiMenu-list:has(.MuiIcon-root, .MuiSvgIcon-root) .MuiMenuItem-root:not(:has(.MuiIcon-root, .MuiSvgIcon-root))::before {
+  content: "";
+  display: inline-block;
+  width: 1em;
+  font-size: 1.5rem;
+  padding-right: 1.5em;
+  box-sizing: border-box;
+  flex-shrink: 0;
+}
+"""
+
+# Align iconless drawer entries inside an expanded section with entries that carry an icon.
+_DRAWER_ALIGN_CSS = """
+.MuiCollapse-root .MuiList-root:has(.MuiListItemIcon-root) .MuiListItemButton-root:not(:has(.MuiListItemIcon-root)) .MuiListItemText-root {
+  padding-left: 32px;
+}
+"""
+
 
 # Material UI's sm breakpoint, below which the page moves its rail into the
 # sidebar drawer: the rail buttons show above it, the navigation list below it.
 NARROW_BREAKPOINT = 600
+
+
+class RailMenuObserver(JSComponent):
+    """Browser bridge for rail menu open notifications, narrow-viewport tracking and external links."""
+
+    observer_id = param.String(
+        default="",
+        doc="Stable key used to deduplicate document listeners across re-renders.",
+    )
+    breakpoint = param.Integer(
+        default=NARROW_BREAKPOINT,
+        doc="Viewport width threshold (px) below which the rail moves into the drawer.",
+    )
+    narrow = param.Boolean(
+        default=False,
+        doc="True while the viewport matches the narrow-screen drawer breakpoint.",
+    )
+
+    _esm = """
+    export function render({ model }) {
+      const registry = (window.__fdRailMenuObservers = window.__fdRailMenuObservers || new Map())
+      const id = model.observer_id
+      const previous = registry.get(id)
+      if (previous) previous()
+
+      // Native <button> synthesises a click event for Enter and Space, so a single
+      // capture-phase click listener covers mouse, touch and keyboard activation once.
+      const notify = (event) => {
+        const path = event.composedPath ? event.composedPath() : []
+        const btn = path.find(
+          (el) =>
+            el instanceof HTMLElement &&
+            el.tagName === "BUTTON" &&
+            el.getAttribute("aria-haspopup") === "menu"
+        )
+        if (!btn || btn.getAttribute("aria-expanded") === "true") return
+        const host = path.find(
+          (el) =>
+            el instanceof HTMLElement &&
+            [...el.classList].some((c) => c.startsWith("fd-rail-menu-"))
+        )
+        if (!host) return
+        const cls = [...host.classList].find((c) => c.startsWith("fd-rail-menu-"))
+        if (cls) model.send_msg({ type: "opened", key: cls.slice("fd-rail-menu-".length) })
+      }
+
+      const mql = window.matchMedia(`(max-width: ${model.breakpoint - 0.05}px)`)
+      const syncNarrow = () => {
+        if (model.narrow !== mql.matches) model.narrow = mql.matches
+      }
+      syncNarrow()
+
+      const onMsg = (msg) => {
+        if (msg && msg.type === "open_url" && typeof msg.url === "string") {
+          window.open(msg.url, "_blank", "noopener,noreferrer")
+        }
+      }
+
+      document.addEventListener("click", notify, true)
+      mql.addEventListener("change", syncNarrow)
+      model.on("msg:custom", onMsg)
+
+      let active = true
+      const cleanup = () => {
+        if (!active) return
+        active = false
+        document.removeEventListener("click", notify, true)
+        mql.removeEventListener("change", syncNarrow)
+        model.off("msg:custom", onMsg)
+        model.off("remove", cleanup)
+        if (registry.get(id) === cleanup) registry.delete(id)
+      }
+      registry.set(id, cleanup)
+      model.on("remove", cleanup)
+    }
+    """
+
+    def __init__(self, on_open: t.Callable[[str], None], **params):
+        params.setdefault("observer_id", uuid.uuid4().hex)
+        super().__init__(width=0, height=0, margin=0, styles={"display": "none"}, **params)
+        self._on_open = on_open
+
+    def open_url(self, url: str) -> None:
+        """Ask the browser to open *url* in a new tab."""
+        self._send_msg({"type": "open_url", "url": url})
+
+    def _handle_msg(self, data):
+        if (
+            isinstance(data, dict)
+            and data.get("type") == "opened"
+            and isinstance(data.get("key"), str)
+        ):
+            self._on_open(data["key"])
+
 
 _HIDE_WHEN_NARROW = (
     f"@media (max-width: {NARROW_BREAKPOINT - 0.05}px) {{ :host {{ display: none !important; }} }}"
@@ -163,7 +333,8 @@ class AppShell:
     def __init__(self, app: FlowDashApp):
         self._app = app
         location = pn.state.location
-        self._path = "/" + (location.pathname if location is not None else "").strip("/")
+        self._path = _normalize_pathname(location.pathname if location is not None else "")
+        self._search = _normalize_search(location.search if location is not None else "")
 
         self.breadcrumb = pn.Row(margin=0, align="center", min_width=0, stylesheets=[_SHRINK])
         self.dashboard_switcher = pmui.MenuButton(
@@ -198,7 +369,19 @@ class AppShell:
         )
         self._rail_buttons: dict[str, pmui.Button | pmui.MenuButton] = {}
         self._rail_layout: list[tuple] | None = None
-        self._nav_list = pmui.MenuList(items=[], dense=False, on_click=self._on_nav_list_click)
+        self._section_visible_cache: dict[str, bool] = {}
+        self._section_paths_cache: dict[str, str | None] = {}
+        self._section_items_cache: dict[str, list[SidebarItem]] = {}
+        self._known_drawer_groups: set[str] = set()
+        self._updating_nav_list = False
+        self._nav_list = pmui.MenuList(
+            items=[],
+            dense=False,
+            sizing_mode="stretch_width",
+            stylesheets=[_DRAWER_ALIGN_CSS],
+            on_click=self._on_nav_list_click,
+        )
+        self._nav_list.param.watch(self._on_nav_list_expanded, "expanded")
         self.nav_list = pn.Column(
             pmui.Typography(app.title, variant="h6", margin=(8, 16, 8, 16)),
             self._nav_list,
@@ -206,6 +389,7 @@ class AppShell:
             margin=0,
             stylesheets=[_HIDE_WHEN_WIDE],
         )
+        self._menu_observer = RailMenuObserver(self._on_rail_menu_open)
         app._editor._dashboard_bar.param.watch(lambda _event: self._render_breadcrumb(), "layout")
         app._editor.param.watch(lambda _event: self._render_dashboard_slots(), "editable")
         self._header = [
@@ -229,22 +413,35 @@ class AppShell:
     @property
     def rail_content(self) -> list:
         """Items for the page rail: the rail buttons and, for narrow screens, the list."""
-        return [self.rail, self.nav_list]
+        return [self.rail, self.nav_list, self._menu_observer]
 
     # ------------------------------------------------------------------
     # State
     # ------------------------------------------------------------------
 
-    def sync(self, path: str):
-        """Point the breadcrumb and the active rail item at the route *path*."""
-        self._path = "/" + path.strip("/")
+    def sync(self, path: str, search: str | None = None):
+        """Point the breadcrumb and the active rail item at the route *path* (and optional *search*)."""
+        if "?" in path and search is None:
+            self._path, self._search = _split_route(path)
+        else:
+            self._path = _normalize_pathname(path)
+            if search is None:
+                location = pn.state.location
+                same_path = (
+                    location is not None
+                    and _normalize_pathname(location.pathname or "") == self._path
+                )
+                self._search = _normalize_search(location.search or "") if same_path else ""
+            else:
+                self._search = _normalize_search(search)
         with pn.io.hold():
             self._mark_active()
             self._render_breadcrumb()
 
-    def refresh(self):
-        """Rebuild the rail and switcher after the accessible dashboards or pages changed."""
+    def refresh(self, section_id: str | None = None):
+        """Rebuild the rail and switcher after sections, dashboards or pages changed."""
         with pn.io.hold():
+            self._refresh_section_cache(section_id)
             self._render_rail()
             self._mark_active()
             self._render_breadcrumb()
@@ -252,6 +449,149 @@ class AppShell:
     # ------------------------------------------------------------------
     # Navigation rail
     # ------------------------------------------------------------------
+
+    def _section_by_id(self, section_id: str) -> SidebarSection | None:
+        return next((s for s in self._app.sections if s.id == section_id), None)
+
+    def _eval_section_visible(self, section: SidebarSection, ctx: SidebarContext) -> bool:
+        if section.visible is None:
+            return True
+        try:
+            return bool(section.visible(ctx))
+        except Exception:
+            logger.exception(
+                "SidebarSection %r visible predicate failed; hiding section", section.id
+            )
+            return False
+
+    def _eval_section_path(self, section: SidebarSection, ctx: SidebarContext) -> str | None:
+        if section.path is None:
+            if section.route and section.items is None and section.new_action is None:
+                return f"/{section.route}"
+            return None
+        if callable(section.path):
+            try:
+                resolved = section.path(ctx)
+            except Exception:
+                logger.exception("SidebarSection %r path callable failed", section.id)
+                return None
+        else:
+            resolved = section.path
+        if resolved is None:
+            return None
+        if not isinstance(resolved, str):
+            logger.warning(
+                "Ignoring invalid path %r from SidebarSection %r: expected str or None",
+                resolved,
+                section.id,
+            )
+            return None
+        return resolved.strip() or None
+
+    def _fetch_section_items(
+        self, section: SidebarSection, ctx: SidebarContext | None = None
+    ) -> list[SidebarItem]:
+        if section.items is None:
+            return []
+        if ctx is None:
+            ctx = self._app._sidebar_context(section)
+        try:
+            raw = section.items(ctx) or ()
+        except Exception:
+            logger.exception("SidebarSection %r items callable failed", section.id)
+            return []
+        items: list[SidebarItem] = []
+        for item in raw:
+            if not isinstance(item, SidebarItem):
+                logger.warning(
+                    "Skipping invalid item %r from SidebarSection %r: expected SidebarItem",
+                    item,
+                    section.id,
+                )
+                continue
+            items.append(item)
+        return items
+
+    def _refresh_section_cache(self, section_id: str | None = None):
+        valid_ids = {s.id for s in self._app.sections}
+        for cache in (
+            self._section_visible_cache,
+            self._section_paths_cache,
+            self._section_items_cache,
+        ):
+            for key in list(cache):
+                if key not in valid_ids:
+                    del cache[key]
+        for section in self._app.sections:
+            if section_id is not None and section.id != section_id:
+                continue
+            ctx = self._app._sidebar_context(section)
+            visible = self._eval_section_visible(section, ctx)
+            self._section_visible_cache[section.id] = visible
+            if not visible:
+                self._section_paths_cache[section.id] = None
+                self._section_items_cache[section.id] = []
+                continue
+            resolved_path = self._eval_section_path(section, ctx)
+            self._section_paths_cache[section.id] = resolved_path
+            if resolved_path is None and section.items is not None:
+                self._section_items_cache[section.id] = self._fetch_section_items(section, ctx)
+            else:
+                self._section_items_cache[section.id] = []
+
+    def _visible_sections(self) -> list[SidebarSection]:
+        return [s for s in self._app.sections if self._section_visible_cache.get(s.id, False)]
+
+    def _section_landing_path(self, section: SidebarSection) -> str | None:
+        section_path = self._section_paths_cache.get(section.id)
+        if section_path is not None and not _is_external_url(section_path):
+            return section_path
+        if section.route:
+            return f"/{section.route}"
+        return None
+
+    def _match_visible_section(self) -> tuple[SidebarSection | None, SidebarItem | None]:
+        """Match the current route against all visible sections.
+
+        Exact ``(pathname, search)`` matches across all visible sections beat any
+        path-only fallback, matching ``_nav_list_active``.
+        """
+        visible = self._visible_sections()
+        candidates: list[tuple[str, tuple[SidebarSection, SidebarItem | None]]] = [
+            (item.url, (section, item))
+            for section in visible
+            for item in self._section_items_cache.get(section.id, ())
+        ]
+        for section in visible:
+            if section.new_action is not None and isinstance(section.new_action.action, str):
+                candidates.append((section.new_action.action, (section, None)))
+        for section in visible:
+            section_path = self._section_paths_cache.get(section.id)
+            if section_path is not None and not _is_external_url(section_path):
+                sp, _ = _split_route(section_path)
+                if sp != "/":
+                    candidates.append((section_path, (section, None)))
+        matched = _match_url(candidates, self._path, self._search)
+        if matched is not None:
+            return matched
+
+        best_prefix: tuple[int, SidebarSection] | None = None
+        for section in visible:
+            prefixes: list[str] = []
+            if section.route:
+                prefixes.append(f"/{section.route}")
+            section_path = self._section_paths_cache.get(section.id)
+            if section_path is not None and not _is_external_url(section_path):
+                sp, _ = _split_route(section_path)
+                if sp != "/":
+                    prefixes.append(sp)
+            for prefix in prefixes:
+                if self._path == prefix or self._path.startswith(f"{prefix}/"):
+                    if best_prefix is None or len(prefix) > best_prefix[0]:
+                        best_prefix = (len(prefix), section)
+        if best_prefix is not None:
+            return best_prefix[1], None
+        return None, None
 
     def _active(self) -> str:
         path = self._path
@@ -263,25 +603,101 @@ class AppShell:
             return "admin"
         if path == "/":
             return "home"
+        matched_section, _item = self._match_visible_section()
+        if matched_section is not None:
+            return matched_section.id
         if path.strip("/") in {e.page_path.strip("/") for e in self._page_entries()}:
             return "pages"
         return ""
+
+    @staticmethod
+    def _item_dict(item: SidebarItem) -> dict:
+        entry: dict[str, t.Any] = {"label": item.title, "icon": item.icon}
+        if _is_external_url(item.url):
+            entry["href"] = item.url
+        else:
+            entry["path"] = item.url
+        if item.subtitle:
+            entry["secondary"] = item.subtitle
+        return entry
+
+    @staticmethod
+    def _action_dict(section_id: str, action: SidebarAction) -> dict:
+        entry: dict[str, t.Any] = {"label": action.label, "icon": action.icon}
+        if isinstance(action.action, str):
+            if _is_external_url(action.action):
+                entry["href"] = action.action
+            else:
+                entry["path"] = action.action
+        else:
+            entry["section_action"] = section_id
+        return entry
+
+    def _section_rail_item(self, section: SidebarSection) -> dict:
+        section_path = self._section_paths_cache.get(section.id)
+        if section_path is not None:
+            key = "href" if _is_external_url(section_path) else "path"
+            return {
+                "key": section.id,
+                "label": section.label,
+                "icon": section.icon,
+                key: section_path,
+            }
+        section_items = self._section_items_cache.get(section.id, ())
+        menu_items: list[dict | None] = [self._item_dict(item) for item in section_items]
+        if section.new_action is not None:
+            if menu_items:
+                menu_items.append(None)
+            menu_items.append(self._action_dict(section.id, section.new_action))
+        return {
+            "key": section.id,
+            "label": section.label,
+            "icon": section.icon,
+            "items": menu_items,
+        }
+
+    def _run_section_action(self, section_id: str):
+        section = next((s for s in self._visible_sections() if s.id == section_id), None)
+        if section is None or section.new_action is None:
+            return
+        action = section.new_action.action
+        if isinstance(action, str):
+            self._navigate(action)
+            return
+        try:
+            action(self._app._sidebar_context(section))
+        except Exception:
+            logger.exception("SidebarSection %r new_action failed", section.id)
+
+    def _on_rail_menu_open(self, key: str):
+        if self._section_by_id(key) is not None:
+            self.refresh(key)
+
+    def _on_drawer_open(self, event):
+        if event.new and self._menu_observer.narrow:
+            self.refresh()
+
+    def _on_nav_list_expanded(self, event):
+        if self._updating_nav_list:
+            return
+        old = {tuple(p) if isinstance(p, (list, tuple)) else (p,) for p in (event.old or ())}
+        new = {tuple(p) if isinstance(p, (list, tuple)) else (p,) for p in (event.new or ())}
+        for path in new - old:
+            if len(path) == 1 and 0 <= path[0] < len(self._nav_list.items):
+                item = self._nav_list.items[path[0]]
+                key = item.get("key") if isinstance(item, dict) else None
+                if isinstance(key, str) and self._section_by_id(key) is not None:
+                    self.refresh(key)
 
     def _page_entries(self) -> list:
         entries = self._app._accessible_page_entries().values()
         return sorted(entries, key=lambda e: (e.section, e.name))
 
     def _dashboard_items(self) -> list[dict]:
-        app = self._app
-        dashboards = app.store.list_accessible(app._identity, default_allow=app._default_allow())
-        return [
-            {
-                "label": d.title,
-                "icon": "dashboard",
-                "path": f"{app_module.DASH_ROUTE_PREFIX}{d.dashboard_id}",
-            }
-            for d in sorted(dashboards, key=lambda d: d.title.lower())
-        ]
+        section = self._section_by_id("dashboards")
+        if section is None:
+            return []
+        return [self._item_dict(item) for item in self._fetch_section_items(section)]
 
     def _page_items(self) -> list[dict]:
         items: list = []
@@ -301,26 +717,9 @@ class AppShell:
 
     def rail_items(self) -> list[dict]:
         """Return the rail destinations: a ``path`` to open, ``items`` for a menu or an ``href``."""
-        items = [{"key": "home", "label": "Home", "icon": "home", "path": "/"}]
-        if self._app.home_dashboard:
-            # "/" shows the home dashboard, so the dashboards are listed in a menu.
-            items.append(
-                {
-                    "key": "dashboards",
-                    "label": "Dashboards",
-                    "icon": "space_dashboard",
-                    "items": self._dashboard_items(),
-                }
-            )
-        else:
-            items.append(
-                {
-                    "key": "dashboards",
-                    "label": "Dashboards",
-                    "icon": "space_dashboard",
-                    "path": "/",
-                }
-            )
+        items: list[dict] = [{"key": "home", "label": "Home", "icon": "home", "path": "/"}]
+        for section in self._visible_sections():
+            items.append(self._section_rail_item(section))
         items.append(
             {
                 "key": "components",
@@ -344,11 +743,47 @@ class AppShell:
         items.append({"key": "help", "label": "Help", "icon": "help_outline", "href": DOCS_URL})
         return items
 
+    def _expanded_drawer_keys(self) -> set[str]:
+        keys: set[str] = set()
+        for path in self._nav_list.expanded or ():
+            idx = path[0] if isinstance(path, (list, tuple)) and path else path
+            if isinstance(idx, int) and 0 <= idx < len(self._nav_list.items):
+                item = self._nav_list.items[idx]
+                if isinstance(item, dict) and isinstance(item.get("key"), str):
+                    keys.add(item["key"])
+        return keys
+
     def _render_rail(self):
         items = self.rail_items()
-        self._nav_list.items = self._drawer_items(items)
+        drawer_items = self._drawer_items(items)
+        prev_expanded = self._expanded_drawer_keys()
+        new_expanded: list[tuple[int, ...]] = []
+        current_groups: set[str] = set()
+        for i, item in enumerate(drawer_items):
+            if "items" not in item:
+                continue
+            key = item["key"]
+            current_groups.add(key)
+            if key not in self._known_drawer_groups or key in prev_expanded:
+                new_expanded.append((i,))
+        self._known_drawer_groups = current_groups
+        self._updating_nav_list = True
+        try:
+            self._nav_list.items = drawer_items
+            # Set expanded after items: TreeLikeBase._update_expanded remaps expanded on items change.
+            self._nav_list.expanded = new_expanded
+        finally:
+            self._updating_nav_list = False
         layout = [
-            (item["key"], item.get("path"), item.get("href"), "items" in item) for item in items
+            (
+                item["key"],
+                item["label"],
+                item["icon"],
+                item.get("path"),
+                item.get("href"),
+                "items" in item,
+            )
+            for item in items
         ]
         if layout == self._rail_layout:
             # Replacing the buttons would drop a click that reaches the old ones
@@ -372,6 +807,8 @@ class AppShell:
                     icon_size="1.5rem",
                     margin=(0, 4),
                     sx=sx,
+                    css_classes=[f"fd-rail-menu-{item['key']}"],
+                    stylesheets=[_RAIL_MENU_ALIGN_CSS],
                 )
                 button.on_click(self._on_menu_item)
             else:
@@ -394,18 +831,48 @@ class AppShell:
             objects.append(button)
         self.rail[:] = objects
 
+    def _nav_list_active(self, active: str) -> tuple[int, ...] | None:
+        candidates: list[tuple[str, tuple[int, ...]]] = []
+        for si, item in enumerate(self._nav_list.items):
+            if not isinstance(item, dict):
+                continue
+            item_path = item.get("path")
+            if isinstance(item_path, str):
+                candidates.append((item_path, (si,)))
+            for pi, child in enumerate(item.get("items", [])):
+                if not isinstance(child, dict):
+                    continue
+                child_path = child.get("path")
+                if isinstance(child_path, str):
+                    candidates.append((child_path, (si, pi)))
+        matched = _match_url(candidates, self._path, self._search)
+        if matched is not None:
+            return matched
+        if active:
+            for si, item in enumerate(self._nav_list.items):
+                if (
+                    isinstance(item, dict)
+                    and item.get("key") == active
+                    and item.get("selectable", True)
+                ):
+                    return (si,)
+        return None
+
     def _mark_active(self):
         active = self._active()
         for key, button in self._rail_buttons.items():
             sx = _RAIL_ACTIVE_SX if key == active else _RAIL_ITEM_SX
             if button.sx != sx:
                 button.sx = sx
+        nav_active = self._nav_list_active(active)
+        if self._nav_list.active != nav_active:
+            self._nav_list.active = nav_active
 
     def _drawer_items(self, rail_items: list[dict]) -> list[dict]:
         """Return the rail as a list for the narrow-screen drawer, menus expanded inline."""
         items = []
         for item in rail_items:
-            entry = {k: item[k] for k in ("label", "icon", "path", "href") if k in item}
+            entry = {k: item[k] for k in ("key", "label", "icon", "path", "href") if k in item}
             if "items" in item:
                 entry["items"] = [i for i in item["items"] if i is not None]
                 entry["selectable"] = False
@@ -413,6 +880,12 @@ class AppShell:
         return items
 
     def _on_nav_list_click(self, item):
+        if not isinstance(item, dict):
+            return
+        if "section_action" in item:
+            self._app._page.sidebar_open = False
+            self._run_section_action(item["section_action"])
+            return
         if "path" not in item:
             return
         # On narrow screens the list sits in the page's temporary sidebar drawer.
@@ -420,11 +893,15 @@ class AppShell:
         self._navigate(item["path"])
 
     def _on_menu_item(self, item):
-        if isinstance(item, dict) and "path" in item:
+        if not isinstance(item, dict):
+            return
+        if "section_action" in item:
+            self._run_section_action(item["section_action"])
+        elif "path" in item:
             self._navigate(item["path"])
 
     def _navigate(self, path: str):
-        self._app._on_nav_click({"path": path})
+        self._app._navigate_url(path)
 
     # ------------------------------------------------------------------
     # Breadcrumb
@@ -448,6 +925,15 @@ class AppShell:
             if section is None:
                 return [Crumb("Admin")]
             return [Crumb("Admin", app_module.ADMIN_ROUTE), Crumb(section.label)]
+        sidebar_section, item = self._match_visible_section()
+        if sidebar_section is not None:
+            if item is not None:
+                return [
+                    home,
+                    Crumb(sidebar_section.label, self._section_landing_path(sidebar_section)),
+                    Crumb(item.title),
+                ]
+            return [home, Crumb(sidebar_section.label)]
         for entry in self._page_entries():
             if path.strip("/") == entry.page_path.strip("/"):
                 return [home, Crumb(entry.section.replace("_", " ")), Crumb(entry.title)]
