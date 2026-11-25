@@ -30,7 +30,7 @@ from panel_flowdash.value_text import error_text
 
 from .actions import palette_actions
 from .assistant import create_agent, create_explore_agent
-from .chrome import SessionChrome
+from .chrome import OVERLAY_BELOW, SessionChrome
 from .exploration import ExplorationOps
 from .highlight import ChangeHighlighter
 from .live import LiveDashboardOps
@@ -232,9 +232,11 @@ class AgentSession:
                     add=self.add_answer,
                     show=self.show_answer,
                 )
-        # The drawer opens at the width last dragged to in this browser.
-        preferences.param.watch(lambda e: setattr(self.drawer, "width", e.new), "assistant_width")
-        self.drawer.param.watch(lambda e: setattr(preferences, "assistant_width", e.new), "width")
+        # The drawer opens at the width last dragged to in this browser, see `_fit_drawer`.
+        self._fitting = False
+        preferences.param.watch(self._fit_drawer, "assistant_width")
+        editor._split_view.storage.param.watch(self._fit_drawer, "window_width")
+        self.drawer.param.watch(self._on_drawer_resized, "width")
         # Whether Ask was set aside for the edit an add from its docked feed started.
         self._ask_resumes = False
         editor.param.watch(self._on_explore, ["explore", "ask", "editable"])
@@ -385,7 +387,30 @@ class AgentSession:
             if not editor.explore and editor.ask != event.new:
                 editor.ask = event.new
         elif event.new and editor.ask:
-            editor.ask = False
+            editor.set_ask_aside()
+
+    def _fit_drawer(self, *_events):
+        """Open the drawer at the width last dragged to, no wider than half the window beside the page.
+
+        As the window narrows the drawer keeps to half of it, like Ask's panel
+        in view mode, and widening it brings back the width dragged to. Below
+        `OVERLAY_BELOW` it covers the page instead, up to the screen's width.
+        """
+        split = self.app._editor._split_view
+        width = split.preferences.assistant_width
+        window = split.storage.window_width
+        if window is not None and window >= OVERLAY_BELOW:
+            width = min(width, max(ASK_MIN_WIDTH, int(window * ASK_MAX_RATIO)))
+        self._fitting = True
+        try:
+            self.drawer.width = width
+        finally:
+            self._fitting = False
+
+    def _on_drawer_resized(self, event):
+        # A width fitted to the window is not one the person dragged to.
+        if not self._fitting:
+            self.app._editor._split_view.preferences.assistant_width = event.new
 
     async def add_answer(self, run: str, node: str) -> str:
         """Add the answer *node* of Explore run *run* to the dashboard and return its name there.

@@ -163,7 +163,8 @@ agent = create_agent(
 The robot button in the top bar opens the assistant: a drawer beside the page with
 the chat, the versions of the dashboard the agent published and the calls waiting for
 approval. It stays open while you move between dashboards. On a dashboard, **Ask** in
-edit mode takes the robot button's place and opens the same drawer; closing the drawer
+edit mode opens the same drawer, and with the default `nav_variant="rail"` it takes the
+robot button's place; closing the drawer
 turns Ask off, and Done closes it. The command palette
 (Ctrl+K) also offers "Ask the assistant" for whatever you typed; a question asked
 while the agent is busy is sent once it is done. In full screen, a call waiting for
@@ -232,7 +233,8 @@ action out.
 the Explore feed left of the dashboard or the report, which stay on screen beside it.
 Drag its right edge to resize it, from 320 pixels to half the window; the width is
 remembered by the browser, and the feed keeps to half the window as the window narrows.
-In edit mode Ask opens the assistant's drawer instead, resized within the same bounds.
+In edit mode Ask opens the assistant's drawer instead, resized within the same bounds and
+kept to half the window as it narrows.
 Edit mode starts with Ask as view mode left it, and Done gives view mode back its own
 Ask: the feed comes back if it was open before, whatever happened to the assistant
 meanwhile, and opening the assistant in edit mode or from the command palette never

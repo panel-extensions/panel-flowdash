@@ -1510,7 +1510,8 @@ class FlowDash(Viewer):
         itself. In edit mode it is the host's assistant, see `assistant`.
         Edit mode starts with Ask as view mode left it, and view mode gets
         back the Ask it had as edit mode ends, whatever happened to the
-        assistant meanwhile.""",
+        assistant meanwhile; `set_ask_aside` closes it for something taking
+        its place in view mode without changing what view mode gets back.""",
     )
 
     assistant = param.Boolean(
@@ -1760,6 +1761,8 @@ class FlowDash(Viewer):
         # Whether Ask is open in view mode and in edit mode, and the mode last seen, see `_remember_ask`.
         self._view_ask = self._edit_ask = False
         self._ask_editing: bool | None = None
+        # Set while something takes Ask's place in view mode, see `set_ask_aside`.
+        self._ask_aside = False
 
         super().__init__(**params)
         self._ask_editing = self.editable
@@ -4546,18 +4549,31 @@ class FlowDash(Viewer):
         """Whether the Explore view's feed is on screen, docked in Ask or as the Explore view."""
         return self.surface == "explore" or self.ask_docked
 
+    def set_ask_aside(self):
+        """Close Ask in view mode for something taking its place, such as the host's assistant.
+
+        View mode still gets Ask back as edit mode ends, e.g. after the
+        assistant's first edit, as it does after Ask is closed in edit mode.
+        """
+        self._ask_aside = True
+        try:
+            self.ask = False
+        finally:
+            self._ask_aside = False
+
     @param.depends("ask", "editable", watch=True)
     def _remember_ask(self):
         """Give view mode back the Ask it had as edit mode ends, see `ask`.
 
-        Ask set as edit mode ends, e.g. ``param.update(editable=False, ask=True)``, is kept.
+        Ask that changes in the same update as edit mode ends is kept, e.g.
+        ``param.update(editable=False, ask=True)`` with Ask off in edit mode.
         """
         editing, self._ask_editing = self._ask_editing, self.editable
         if self.editable:
             self._edit_ask = self.ask
         elif editing and self.ask == self._edit_ask:
             self.ask = self._view_ask
-        else:
+        elif not self._ask_aside:
             self._view_ask = self.ask
 
     @pn.io.hold()
