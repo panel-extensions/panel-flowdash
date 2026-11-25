@@ -84,6 +84,10 @@ async def test_an_answer_added_from_the_dock_is_handed_to_the_assistant_beside_i
     assert editor.ask_docked and not session.drawer.open and not handover.notice.visible
     feed = editor.explore_feed
     assert feed._placed(card) == "On dashboard as explored" and feed._placement(card) is None
+    # Docked beside the report, Show switches to the dashboard to point the tile out.
+    editor.surface = "report"
+    await feed.actions.invoke("show_on_dashboard", {"name": "explored"})
+    assert editor.surface == "workspace" and editor.ask_docked and not editor.editable
 
 
 @needs_mentions
