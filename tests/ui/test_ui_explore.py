@@ -381,10 +381,20 @@ def test_a_manual_edit_while_exploring_keeps_the_feed_in_place(page):
     assert errors == []
 
 
-_DEEP_COUNT = """() => {
-  const roots = [document]
+# The elements of the Explore feed, across the shadow roots inside it.
+_FEED_COUNT = """() => {
+  const find = (root) => {
+    for (const el of root.querySelectorAll("*")) {
+      if (el.classList.contains("flowdash-explore")) return el
+      const found = el.shadowRoot && find(el.shadowRoot)
+      if (found) return found
+    }
+    return null
+  }
+  const roots = [find(document)]
   let n = 0
   for (let i = 0; i < roots.length; i++) {
+    if (roots[i].shadowRoot) roots.push(roots[i].shadowRoot)
     for (const el of roots[i].querySelectorAll("*")) {
       n++
       if (el.shadowRoot) roots.push(el.shadowRoot)
@@ -407,22 +417,23 @@ def test_a_long_history_shows_its_latest_page_and_loads_earlier_ones(page):
         editor.end_turn()
         with agent_edits(run=f"run-{i}", question=f"Note number {i}"):
             editor.add_component("Test/note", instance_id=f"memo{i}")
-    page.wait_for_timeout(1000)
-    before = page.evaluate(_DEEP_COUNT)
     start = time.monotonic()
     ask_button(page).click()
     page.locator(".artifact-cell", has_text="memo59").wait_for(timeout=120000)
     switched = time.monotonic() - start
+    # The feed holds one page of the history: the latest 20 requests and their cards.
     cells = page.locator(".artifact-cell")
     expect(cells).to_have_count(20)
-    # The feed holds one page, so the page grows by a bounded amount whatever the history.
-    assert page.evaluate(_DEEP_COUNT) - before < 20000, page.evaluate(_DEEP_COUNT) - before
-    # A loose budget for slow runners; the node count above is what bounds the feed.
+    questions = page.get_by_text(re.compile(r"^Note number \d+$"))
+    expect(questions).to_have_count(20)
+    expect(page.get_by_text("Note number 39", exact=True)).to_have_count(0)
+    page.wait_for_timeout(1000)
+    one_page = page.evaluate(_FEED_COUNT)
+    # A loose budget for slow runners; the page held is what bounds the feed.
     assert switched < 120, switched
 
     # The entry on screen stays where it is while older ones go in above it.
     latest = page.get_by_text("Note number 59", exact=True)
-    page.wait_for_timeout(1000)
     before = latest.bounding_box()["y"]
     feed = editor.explore_feed
     page.get_by_role("button", name=re.compile(r"Show earlier requests \(41 more\)")).click()
@@ -449,6 +460,14 @@ def test_a_long_history_shows_its_latest_page_and_loads_earlier_ones(page):
     expect(cells).to_have_count(60, timeout=120000)
     page.wait_for_timeout(1500)
     assert abs(top.bounding_box()["y"] - before) < 50, (before, top.bounding_box())
+
+    # The feed's elements grow with the entries shown, not with the history: the first
+    # page of three is about a third of them (7.7k of 23k in Chromium), so under half
+    # leaves room for what every feed holds, while a feed that held the whole history
+    # from the start would already have all of them.
+    expect(questions).to_have_count(60)
+    whole = page.evaluate(_FEED_COUNT)
+    assert one_page < whole / 2, (one_page, whole)
 
 
 # The Ask dock's box, its accessible name and role, its separator's ARIA values,
