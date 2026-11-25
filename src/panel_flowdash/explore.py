@@ -1180,15 +1180,33 @@ class ExploreFeed(Viewer):
         over to the assistant there, see `attach`.
         """
         editor = self.editor
-        viewing, surface, clean = not editor.editable, editor.surface, not editor.dirty
-        if exploration is not None and node is not None:
-            if self._add is None:
-                raise ValueError("Answers cannot be added to this dashboard.")
-            name = await self._add(exploration, node)
-        elif name is not None:
-            self._ops().place_tile(name, visible=True)
-        else:
-            raise ValueError("Name a node, or an answer by its exploration and node.")
+        viewing, surface, mode, clean = (
+            not editor.editable,
+            editor.surface,
+            editor.mode,
+            not editor.dirty,
+        )
+        handing_over = viewing and self._handover is not None
+        if handing_over:
+            # The tiles are on screen, on the Layout tab, before edit mode starts, so it
+            # changes the grid in place rather than building it anew with the canvas between.
+            with pn.io.hold():
+                if mode == "wiring":
+                    editor.mode = "dashboard"
+                editor.surface = "workspace"
+        try:
+            if exploration is not None and node is not None:
+                if self._add is None:
+                    raise ValueError("Answers cannot be added to this dashboard.")
+                name = await self._add(exploration, node)
+            elif name is not None:
+                self._ops().place_tile(name, visible=True)
+            else:
+                raise ValueError("Name a node, or an answer by its exploration and node.")
+        finally:
+            if handing_over and not editor.editable:
+                # Nothing needed an edit, or the add failed: back to where it was asked.
+                editor.param.update(mode=mode, surface=surface)
         self.refresh()
         if viewing and editor.editable:
             if self._handover is not None:

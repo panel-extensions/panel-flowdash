@@ -255,3 +255,23 @@ async def test_the_added_tile_is_scrolled_into_view(store, monkeypatch):
     )
     await _add_from_the_dock(store, monkeypatch)
     assert sent == [{"css_class": TILE_CLASSES["add"], "timeout": 3000}]
+
+
+async def test_a_failed_add_stays_where_it_was_asked(store, monkeypatch):
+    app, _ = _seeded(
+        store, monkeypatch, agent=_adding("drawn"), explore_agent=_exploring("explored")
+    )
+    session, editor = app._agent_session, app._editor
+    editor._dashboard_bar._phone_query.phone = True
+    card = await _ask(app, surface="explore")
+    feed = editor.explore_feed
+
+    async def refuse(run, node):
+        assert editor.surface == "workspace" and editor.mode == "dashboard"
+        raise PermissionError("Busy.")
+
+    feed._add = refuse
+    with pytest.raises(PermissionError):
+        await _add(app, card)
+    assert not editor.editable and editor.surface == "explore" and editor.mode == "wiring"
+    assert not session.handover.notice.visible

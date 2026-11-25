@@ -31,8 +31,8 @@ pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference alrea
 MENTIONS = "mentions" in AgentChat.param
 QUESTION = "Ask a question about this dashboard…"
 PHONE = 390
-# Screenshots for review, when FLOWDASH_SHOTS names a folder.
-SHOTS = os.environ.get("FLOWDASH_SHOTS")
+# Screenshots for review, when FLOWDASH_ASK_SHOTS names a folder.
+SHOTS = os.environ.get("FLOWDASH_ASK_SHOTS")
 
 
 @register(page=False, component=True, title="Panel", default_size={"width": 600, "height": 360})
