@@ -131,6 +131,7 @@ class AddHandover:
         editor.param.watch(self._on_editable, "editable")
         editor.param.watch(self._on_edited, "edited")
         editor.param.watch(self._on_dashboard, "dashboard")
+        editor.param.watch(self._on_saved, "saved")
         editor.param.watch(self._on_surface, "surface")
         session.drawer.param.watch(self._place_notice, ["open", "width"])
         # Undo waits while an agent's request runs, as the edit history does.
@@ -199,6 +200,7 @@ class AddHandover:
         history = editor.edit_history
         if self.name is None or not history.active:
             return
+        saved = self._saved
         try:
             undone = editor.undo()
         except HistoryBusy:
@@ -208,7 +210,7 @@ class AddHandover:
             self.session.app._notify("error", f"Could not undo: {error_text(exc)}", duration=8000)
             return
         # Back as it was saved, give or take the layout defaults a restore writes out.
-        if undone and self._saved is not None and history.snapshot()[1] == self._saved:
+        if undone and saved is not None and history.snapshot()[1] == saved:
             editor.dirty = False
         self._end()
         if editor.editable and not editor.dirty:
@@ -265,10 +267,16 @@ class AddHandover:
             self._forget_mention(name)
 
     def _on_dashboard(self, event):
-        # Saving replaces the model of the same dashboard; another one ends the handover.
+        # Another dashboard, or this one loaded again, e.g. on discarding, ends the handover;
+        # saving or an undo replaces the model of the same dashboard and leaves it.
         old, new = (getattr(model, "dashboard_id", None) for model in (event.old, event.new))
-        if old != new or new is None:
+        editor = self._editor
+        if old != new or new is None or (editor._hydrating and not editor._history_quiet):
             self._end()
+
+    def _on_saved(self, _event):
+        # The add is stored now, so Undo leaves it as an unsaved change to keep or save.
+        self._saved = None
 
     def _on_edited(self, _event):
         # Another edit: one Undo would no longer take back just the add.

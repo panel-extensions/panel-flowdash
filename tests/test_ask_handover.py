@@ -445,3 +445,26 @@ async def test_a_wait_after_leaving_the_explore_view_shows_on_the_notice(store, 
     await drawer
     await adding
     assert handover.name == "explored" and handover.undo_button.visible
+
+
+async def test_undo_after_saving_leaves_the_add_unsaved_in_edit_mode(store, monkeypatch):
+    app, _ = await _add_from_the_dock(store, monkeypatch)
+    session, editor = app._agent_session, app._editor
+    dashboard_id = editor.dashboard.dashboard_id
+    assert editor._on_save_clicked()
+    stored = [i.instance_id for i in store._load_any(dashboard_id).items]
+    assert "explored" in stored and session.handover.notice.visible
+    session.handover.undo()
+    # The store still holds the add, so taking it back is a change to save or discard.
+    assert "explored" not in _nodes(editor) and editor.dirty and editor.editable
+    assert "explored" in [i.instance_id for i in store._load_any(dashboard_id).items]
+
+
+async def test_discarding_ends_the_handover(store, monkeypatch):
+    app, _ = await _add_from_the_dock(store, monkeypatch)
+    session, editor = app._agent_session, app._editor
+    editor._dashboard_bar.discard()
+    handover = session.handover
+    assert not handover.notice.visible and handover.name is None and _mentions(session) == []
+    handover.undo()
+    assert "explored" not in _nodes(editor)
