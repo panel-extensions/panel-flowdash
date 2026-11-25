@@ -146,6 +146,22 @@ async def test_project_options_reach_the_app_and_editor(project, monkeypatch):
     assert app.home_dashboard == "sales"
 
 
+async def test_agent_starters_from_the_project_reach_the_app(project, monkeypatch):
+    _write_init(
+        project,
+        """
+        def agent_starters(context):
+            return [f"What changed in {table}?" for table in context.tables]
+        """,
+    )
+
+    kwargs = _serve(project, monkeypatch)["routes"]
+    app = FlowDashApp.build_routes(**kwargs)["/"]()
+
+    assert app.agent_starters is kwargs["agent_starters"]
+    assert app.agent_starters.__name__ == "agent_starters"
+
+
 @pytest.mark.failures
 async def test_propagate_failures_reaches_the_editor(project, monkeypatch):
     _write_init(project, "propagate_failures = True\nnotifications = False\n")
