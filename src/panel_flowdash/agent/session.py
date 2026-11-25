@@ -19,6 +19,7 @@ from panel_agents.events import RunStarted
 
 from panel_flowdash.ai import ModelEntry, UsageLedger, model_choice, select_model
 from panel_flowdash.explore import EXPLORE_RUN_PREFIX, is_explore_run
+from panel_flowdash.ui.split_view import ASK_MAX_RATIO, ASK_MIN_WIDTH
 from panel_flowdash.ui.text import text_typography
 from panel_flowdash.util import confirm
 
@@ -29,7 +30,7 @@ from panel_flowdash.value_text import error_text
 
 from .actions import palette_actions
 from .assistant import create_agent, create_explore_agent
-from .chrome import SessionChrome
+from .chrome import OVERLAY_BELOW, SessionChrome
 from .exploration import ExplorationOps
 from .highlight import ChangeHighlighter
 from .live import LiveDashboardOps
@@ -174,10 +175,19 @@ class AgentSession:
         chat_params = {"models": list(models), "model_id": model} if models else {}
         if len(models or ()) > 1:
             chat_params["remember_model"] = MODEL_KEY
+        preferences = editor._split_view.preferences
+        # Resized within the same bounds as Ask's panel in view mode, where panel-agents can.
+        bounds = (
+            {"min_resize_width": ASK_MIN_WIDTH, "max_resize_ratio": ASK_MAX_RATIO}
+            if "max_resize_ratio" in AgentDrawer.param
+            else {}
+        )
         self.drawer = AgentDrawer(
             self.runner,
             title="Assistant",
             variant="persistent",
+            width=preferences.assistant_width,
+            **bounds,
             on_apply=self.apply_version,
             # Someone else's request is redacted for people who may not see what it touched.
             redact_runs=editor.run_redacted,
@@ -222,7 +232,17 @@ class AgentSession:
                     add=self.add_answer,
                     show=self.show_answer,
                 )
-        editor.param.watch(self._on_explore, "explore")
+        # The drawer opens at the width last dragged to in this browser, see `_fit_drawer`.
+        self._fitting = False
+        preferences.param.watch(self._fit_drawer, "assistant_width")
+        editor._split_view.storage.param.watch(self._fit_drawer, "window_width")
+        self.drawer.param.watch(self._on_drawer_resized, "width")
+        # Whether Ask was set aside for the edit an add from its docked feed started.
+        self._ask_resumes = False
+        editor.param.watch(self._on_explore, ["explore", "ask", "editable"])
+        # In edit mode Ask is this drawer, opened and closed with the bar's Ask.
+        editor.assistant = True
+        self.drawer.param.watch(self._on_drawer_toggled, "open")
         self._on_explore()
         self.highlighter = ChangeHighlighter(self)
         self.chrome = SessionChrome(self)
@@ -314,14 +334,83 @@ class AgentSession:
             return
         self.ledger.add(model_id, run.cost_usd)
 
-    def _on_explore(self, *_events):
-        """Close the drawer while Explore shows the chat, and bring back an approval left pending there."""
-        exploring = self.app._editor.explore
+    def _on_explore(self, *events):
+        """Open the drawer as Ask in edit mode, close it while the feed is Ask, and bring back a pending approval.
+
+        An add from Ask's docked feed that starts edit mode sets Ask aside
+        rather than opening the drawer, whose conversation is another one,
+        and Ask comes back as edit mode ends, unless the person turned it on
+        or off meanwhile.
+        """
+        editor = self.app._editor
+        names = {event.name for event in events}
+        if "editable" in names and not editor.editable and self._ask_resumes:
+            self._ask_resumes = False
+            editor.ask = True
+        exploring = editor.explore or (editor.ask and not editor.editable)
         self.drawer.open_on_approval = not exploring
+        pending = self.runner.state.pending_approvals
         if exploring:
             self.drawer.open = False
-        elif self.runner.state.pending_approvals:
+        elif editor.editable:
+            if "ask" in names:
+                self._ask_resumes = False
+                self.drawer.open = editor.ask
+            elif self.drawer.open:
+                # Open as edit mode starts, e.g. as the assistant begins to edit: it is Ask now.
+                editor.ask = True
+            elif editor.ask and self._adding_from_feed() and not pending:
+                editor.ask = False
+                # Only now: turning Ask off runs this again, as a change that clears it.
+                self._ask_resumes = True
+            elif editor.ask or pending:
+                self.drawer.open = True
+        elif pending:
             self.drawer.open = True
+        elif "editable" in names:
+            # Ask in edit mode closes with it; view mode gets back its own Ask, see `FlowDash.ask`.
+            self.drawer.open = False
+
+    def _adding_from_feed(self) -> bool:
+        feed = self.app._editor._explore_feed
+        return feed is not None and feed.adding
+
+    def _on_drawer_toggled(self, event):
+        """Keep Ask in step with the drawer: it is Ask in edit mode, and takes the docked feed's place in view mode.
+
+        In view mode the drawer and the docked feed would squeeze the output
+        between them, so opening the drawer, e.g. to review an approval,
+        turns Ask off, as turning Ask on closes the drawer.
+        """
+        editor = self.app._editor
+        if editor.editable:
+            if not editor.explore and editor.ask != event.new:
+                editor.ask = event.new
+        elif event.new and editor.ask:
+            editor.set_ask_aside()
+
+    def _fit_drawer(self, *_events):
+        """Open the drawer at the width last dragged to, no wider than half the window beside the page.
+
+        As the window narrows the drawer keeps to half of it, like Ask's panel
+        in view mode, and widening it brings back the width dragged to. Below
+        `OVERLAY_BELOW` it covers the page instead, up to the screen's width.
+        """
+        split = self.app._editor._split_view
+        width = split.preferences.assistant_width
+        window = split.storage.window_width
+        if window is not None and window >= OVERLAY_BELOW:
+            width = min(width, max(ASK_MIN_WIDTH, int(window * ASK_MAX_RATIO)))
+        self._fitting = True
+        try:
+            self.drawer.width = width
+        finally:
+            self._fitting = False
+
+    def _on_drawer_resized(self, event):
+        # A width fitted to the window is not one the person dragged to.
+        if not self._fitting:
+            self.app._editor._split_view.preferences.assistant_width = event.new
 
     async def add_answer(self, run: str, node: str) -> str:
         """Add the answer *node* of Explore run *run* to the dashboard and return its name there.
@@ -366,11 +455,11 @@ class AgentSession:
             editor.running_pending = [t for t in editor.running_pending if t != turn_id]
 
     def show_answer(self, name: str):
-        """Leave the Explore view for the tiles and mark the dashboard node *name*, e.g. an answer just added."""
+        """Show the tiles, leaving the Explore view or the report, and mark the dashboard node *name*, e.g. an answer just added."""
         editor = self.app._editor
         if editor.editable and editor.mode == "wiring":
             editor.mode = "dashboard"
-        editor.explore = False
+        editor.surface = "workspace"
         self.highlighter.show({name: "add"})
 
     def _note_run(self, event):

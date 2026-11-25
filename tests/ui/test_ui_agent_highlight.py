@@ -1,6 +1,7 @@
 """UI test: the canvas and grid outline what the assistant's edit added."""
 
 import io
+import re
 
 import pytest
 from panel.tests.util import wait_until
@@ -17,7 +18,7 @@ from panel_flowdash.agent.tools import FlowDashDeps, dashboard_toolset
 
 from ..test_agent_tools import scripted
 from .test_ui_shell import _serve_app, _store_with
-from .util import AGENT_RUN_TIMEOUT
+from .util import AGENT_RUN_TIMEOUT, open_assistant
 
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
@@ -69,8 +70,8 @@ def test_the_added_node_is_outlined_until_the_next_run(page):
     _serve_app(page, store, f"/dash/{dash}", apps, agent=agent)
 
     page.get_by_text("note tile").first.wait_for()
-    page.get_by_role("button", name="Assistant", exact=True).click()
-    chat = page.get_by_role("textbox").last
+    open_assistant(page)
+    chat = page.get_by_placeholder(re.compile("^Ask the agent"))
     chat.fill("Add another note")
     chat.press("Enter")
 
@@ -94,8 +95,8 @@ def test_leaving_edit_mode_leaves_no_outline_on_the_tiles(page):
     _serve_app(page, store, f"/dash/{dash}", apps, agent=agent)
 
     page.get_by_text("note tile").first.wait_for()
-    page.get_by_role("button", name="Assistant", exact=True).click()
-    chat = page.get_by_role("textbox").last
+    open_assistant(page)
+    chat = page.get_by_placeholder(re.compile("^Ask the agent"))
     chat.fill("Add another note")
     chat.press("Enter")
 
@@ -196,8 +197,8 @@ def test_the_tile_outline_sits_on_the_tiles_visible_edge(page, preview):
     _serve_app(page, store, f"/dash/{dash}", apps, agent=agent)
 
     page.get_by_text("note tile").first.wait_for()
-    page.get_by_role("button", name="Assistant", exact=True).click()
-    chat = page.get_by_role("textbox").last
+    open_assistant(page)
+    chat = page.get_by_placeholder(re.compile("^Ask the agent"))
     chat.fill("Add a framed and an unframed note")
     chat.press("Enter")
 

@@ -14,6 +14,7 @@ from panel.viewable import Viewer
 
 from panel_flowdash.ui.health import DashboardHealth
 from panel_flowdash.ui.health_popover import HealthPopover
+from panel_flowdash.ui.output_switch import REPORT_MENU_BREAKPOINT, OutputSwitch
 from panel_flowdash.ui.text import escape_markdown, markdown_pane
 from panel_flowdash.util import close_dialog, confirm, open_dialog
 
@@ -33,14 +34,8 @@ li.MuiMenuItem-root:last-of-type {
 }
 """
 
-# Below this width the edit actions only fit one row with Settings as an icon.
+# Below this width the edit actions show only their icons, so they fit one row.
 _WIDE_BREAKPOINT = 1280
-_HIDE_WHEN_NARROW = (
-    f"@media (max-width: {_WIDE_BREAKPOINT - 0.05}px) {{ :host {{ display: none !important; }} }}"
-)
-_HIDE_WHEN_WIDE = (
-    f"@media (min-width: {_WIDE_BREAKPOINT}px) {{ :host {{ display: none !important; }} }}"
-)
 
 # Below these widths the top bar's labelled actions show only their icons, so
 # the actions, search, assistant and theme toggle fit one row: the view
@@ -208,6 +203,17 @@ ICON_ONLY_WHEN_COMPACT = icon_only_below(COMPACT_BREAKPOINT)
 # Done keeps its label longer than the view actions: its eye icon alone does not say
 # it ends editing. Below this width the title and save state need the room.
 DONE_COMPACT_BREAKPOINT = 900
+
+# Below this width Settings leaves the edit actions for the overflow menu, so the title keeps its room.
+SETTINGS_MENU_BREAKPOINT = 900
+_SETTINGS_IN_MENU = f"@media (max-width: {SETTINGS_MENU_BREAKPOINT - 0.05}px) {{ :host {{ display: none !important; }} }}"
+
+
+def _icon_only(tooltip: str) -> str:
+    """Return a stylesheet showing only a button's icon at any width, its label as the tooltip when disabled."""
+    return icon_only_below(100_000, disabled_tooltip=tooltip)
+
+
 _DONE_ICON_ONLY = icon_only_below(DONE_COMPACT_BREAKPOINT)
 
 # Icon buttons are as tall as the text buttons beside them.
@@ -219,6 +225,19 @@ _TOGGLE_SX = {
     "& .MuiToggleButton-root": {"textTransform": "none", "px": 1.5, "py": "6px"},
     # Icon-only segments need less padding, which leaves the title room beside the Explore segment.
     "@media (max-width: 799.95px)": {"& .MuiToggleButton-root": {"px": 0.75}},
+}
+
+# pmui's Toggle renders at MUI's medium size; these are the small toggle groups' metrics beside it.
+_ASK_SX = {
+    "textTransform": "none",
+    "fontSize": "0.8125rem",
+    "lineHeight": 1.75,
+    "px": 1.5,
+    "py": "6px",
+    "gap": "6px",
+    "whiteSpace": "nowrap",
+    # As narrow as a toggle group's icon-only segments once its label is hidden.
+    f"@media (max-width: {EDIT_COMPACT_BREAKPOINT - 0.05}px)": {"gap": 0, "px": 0.75},
 }
 
 _DIRTY_DOT_SX = {
@@ -238,11 +257,12 @@ _DIRTY_DOT_SX = {
 
 # Below this width the save state gives its room in the top bar to the edit
 # actions: only the dot of unsaved changes shows, its text stays for screen readers.
-_SAVE_STATE_DOT_ONLY = """
-@media (max-width: 799.95px) {
-  .MuiTypography-root { font-size: 0 !important; }
-  .MuiTypography-root::before { margin-right: 0 !important; }
-}
+SAVE_STATE_TEXT_BREAKPOINT = 800
+_SAVE_STATE_DOT_ONLY = f"""
+@media (max-width: {SAVE_STATE_TEXT_BREAKPOINT - 0.05}px) {{
+  .MuiTypography-root {{ font-size: 0 !important; }}
+  .MuiTypography-root::before {{ margin-right: 0 !important; }}
+}}
 """
 
 _PERIODS = [
@@ -265,42 +285,24 @@ def format_period(seconds: float) -> str:
     return f"{seconds} s"
 
 
-_EXPLORE_LABEL = ":material/forum: Explore"
-_REPORT_LABEL = ":material/description: Report"
+# How edit mode shows the dashboard: its dataflow, its layout or both side by side.
+_EDIT_TABS = {
+    ":material/account_tree: Dataflow": "wiring",
+    ":material/grid_view: Layout": "dashboard",
+    ":material/vertical_split: Split": "split",
+}
 
-# The view-mode toggle; people who may only view the dashboard get no Edit.
-_VIEW_OPTIONS = {
-    _EXPLORE_LABEL: "explore",
-    _REPORT_LABEL: "report",
-    ":material/visibility: View": "view",
-    ":material/edit: Edit": "edit",
-}
-_READER_OPTIONS = {
-    _EXPLORE_LABEL: "explore",
-    _REPORT_LABEL: "report",
-    ":material/visibility: View": "view",
-}
-# The views shown in place of the workspace, picked in the toggle and the tabs alike.
+# The views shown in place of the workspace on phones, picked in the overflow menu.
 _SURFACES = ("explore", "report")
-
-# Below this width the Report segment, second in both switchers, leaves them for
-# the overflow menu, so the dashboard title keeps its room. While Report is shown
-# it stays, so the switcher still says where the reader is.
-REPORT_MENU_BREAKPOINT = 1100
-_REPORT_IN_MENU = f"""
-@media (max-width: {REPORT_MENU_BREAKPOINT - 0.05}px) {{
-  .MuiToggleButton-root:nth-child(2):not(.Mui-selected) {{ display: none !important; }}
-}}
-"""
 
 
 def _view(editor) -> str:
-    """Return the entry of the View/Edit toggle the editor shows: a surface, or "view"."""
+    """Return the phone menu's entry for what the editor shows: a surface, or "view"."""
     return editor.surface if editor.surface in _SURFACES else "view"
 
 
 def _tab(editor) -> str:
-    """Return the edit tab the editor shows: a surface, or its mode."""
+    """Return the edit tab the editor shows: a surface, or its mode, Layout for the report."""
     return editor.surface if editor.surface in _SURFACES else editor.mode
 
 
@@ -309,12 +311,14 @@ class DashboardBar(Viewer):
 
     In view mode it shows the dashboard title, an info button opening the
     description, the health chip (whose popover holds the pipeline and any
-    issues) and the view actions: the View/Edit control, Refresh (its tooltip
-    says when the dashboard was last refreshed) with the auto-refresh period,
-    the editor's ``toolbar_extra`` items, Full screen and an overflow menu
-    (Download, Settings). In edit mode it shows the title with the save state, the
-    Dataflow/Layout/Split tabs and the edit actions: Settings, an overflow menu
-    (Download, Import file, Clear canvas), Discard, Save and Done.
+    issues) and the view actions: the Dashboard/Report switch, Ask, Edit,
+    Refresh (its tooltip says when the dashboard was last refreshed) with the
+    auto-refresh period, the editor's ``toolbar_extra`` items, Full screen and
+    an overflow menu (Download, Settings). In edit mode it shows the title with
+    the save state, the same Dashboard/Report switch, the Dataflow/Layout/Split
+    tabs (Dataflow/Layout for the report), Ask when the host has an assistant,
+    and the edit actions: Settings, an overflow menu (Download, Import file,
+    Clear canvas), Discard, Save and Done.
 
     ``layout`` arranges these parts. With ``"compact"`` they form one line:
     the description sits behind an info button, and Refresh's tooltip says
@@ -479,86 +483,92 @@ class DashboardBar(Viewer):
             sx=_ICON_BUTTON_SX,
             stylesheets=[_HIDE_ON_PHONE],
         )
-        self.mode_toggle = pmui.RadioButtonGroup(
-            options=_VIEW_OPTIONS,
-            value="view",
-            size="small",
-            margin=(0, 12, 0, 4),
+        self._syncing = False
+        self.output_switch = OutputSwitch(
+            editor,
+            margin=(0, 4),
             sx=_TOGGLE_SX,
-            stylesheets=[ICON_ONLY_WHEN_COMPACT, _HIDE_ON_PHONE, _REPORT_IN_MENU],
+            stylesheets=[_ICON_ONLY_WHEN_NARROW, _HIDE_ON_PHONE],
         )
-        self.mode_toggle.param.watch(self._on_mode_toggled, "value")
-
-        self.mode_tabs = pmui.RadioButtonGroup(
-            options={
-                _EXPLORE_LABEL: "explore",
-                _REPORT_LABEL: "report",
-                ":material/account_tree: Dataflow": "wiring",
-                ":material/dashboard: Layout": "dashboard",
-                ":material/vertical_split: Split": "split",
-            },
-            value=_tab(editor),
-            size="small",
-            margin=(0, 12, 0, 4),
-            sx=_TOGGLE_SX,
-            stylesheets=[_ICON_ONLY_WHEN_NARROW, _HIDE_ON_PHONE, _REPORT_IN_MENU],
+        self.output_toggle = self.output_switch.toggle
+        self.ask_button = pmui.Toggle(
+            label="Ask",
+            icon="forum",
+            icon_size="18px",
+            value=editor.ask,
+            margin=(0, 4),
+            description="Ask about this dashboard",
+            css_classes=["fd-ask-toggle"],
+            sx=_ASK_SX,
+            stylesheets=[_ICON_ONLY_WHEN_NARROW, _HIDE_ON_PHONE],
         )
-        self.mode_tabs.param.watch(self._on_tab, "value")
-        editor.param.watch(self._sync_switchers, ["surface", "mode", "read_only"])
-        # The overflow menu offers the views the switchers have no room for.
-        editor.param.watch(lambda _event: self.sync(), "surface")
-        self.settings_button = pmui.Button(
-            label="Settings",
-            icon="tune",
-            variant="text",
+        self.ask_button.param.watch(self._on_ask_toggled, "value")
+        self.edit_button = pmui.Button(
+            label="Edit",
+            icon="edit",
+            variant="outlined",
             size="small",
             margin=(0, 4),
-            description="Settings",
-            stylesheets=[_HIDE_WHEN_NARROW],
+            description="Edit",
+            css_classes=["fd-edit-button"],
+            stylesheets=[ICON_ONLY_WHEN_COMPACT, _HIDE_ON_PHONE],
         )
-        # On narrower screens only the icon shows, so the edit actions fit one row.
-        self.settings_icon_button = pmui.IconButton(
+        self.edit_button.on_click(lambda _event: self._edit())
+
+        self.mode_tabs = pmui.RadioButtonGroup(
+            options=self.output_switch.tabs(_EDIT_TABS),
+            value=self.output_switch.tab(),
+            size="small",
+            margin=(0, 12, 0, 4),
+            sx=_TOGGLE_SX,
+            stylesheets=[_ICON_ONLY_WHEN_NARROW, _HIDE_ON_PHONE],
+        )
+        self.mode_tabs.param.watch(self._on_tab, "value")
+        editor.param.watch(self._sync_switchers, ["surface", "mode", "read_only", "ask"])
+        editor.param.watch(lambda *_events: self.sync(), ["assistant", "read_only"])
+        # The overflow menu offers the views the switchers have no room for and,
+        # on a phone in edit mode, opens or closes the assistant.
+        editor.param.watch(lambda *_events: self.sync(), ["surface", "ask"])
+        # An icon, so the edit actions keep to one row beside the switches and tabs.
+        self.settings_button = pmui.IconButton(
             icon="tune",
             size="small",
             margin=(0, 4),
             color="primary",
             description="Settings",
             sx=_ICON_BUTTON_SX,
-            stylesheets=[_HIDE_WHEN_WIDE, _HIDE_ON_PHONE],
+            stylesheets=[_HIDE_ON_PHONE, _SETTINGS_IN_MENU],
         )
-        self.settings_icon_button.on_click(lambda _event: self._click_settings())
+        # Discard and Save are quiet icons and Done a text action, so the edit actions stay compact.
         self.discard_button = pmui.Button(
             label="Discard",
             icon="undo",
-            variant="outlined",
+            variant="text",
+            color="default",
             size="small",
-            margin=(0, 4),
+            margin=(0, 2),
             description="Discard",
-            stylesheets=[
-                icon_only_below(EDIT_COMPACT_BREAKPOINT, disabled_tooltip="Discard"),
-                _HIDE_ON_PHONE,
-            ],
+            sx={"color": "text.secondary"},
+            stylesheets=[_icon_only("Discard"), _HIDE_ON_PHONE],
         )
         self.discard_button.on_click(lambda _event: self._confirm_discard())
         self.save_button = pmui.Button(
             label="Save",
             icon="save",
-            variant="contained",
+            variant="text",
             size="small",
-            margin=(0, 4),
+            margin=(0, 2),
             description="Save",
-            stylesheets=[
-                icon_only_below(EDIT_COMPACT_BREAKPOINT, disabled_tooltip="Save"),
-                PHONE_TOUCH_CSS,
-            ],
+            stylesheets=[_icon_only("Save"), PHONE_TOUCH_CSS],
         )
         self.done_button = pmui.Button(
             label="Done",
-            icon="visibility",
-            variant="outlined",
+            icon="check",
+            variant="text",
             size="small",
-            margin=(0, 4),
+            margin=(0, 4, 0, 2),
             description="Done",
+            sx={"fontWeight": 600},
             stylesheets=[_DONE_ICON_ONLY, _HIDE_ON_PHONE],
         )
         self.done_button.on_click(lambda _event: self.request_mode("view"))
@@ -597,6 +607,10 @@ class DashboardBar(Viewer):
             breakpoint=REPORT_MENU_BREAKPOINT, width=0, height=0, margin=0
         )
         self._narrow_query.param.watch(lambda _event: self.sync(), "phone")
+        self._settings_query = PhoneQuery(
+            breakpoint=SETTINGS_MENU_BREAKPOINT, width=0, height=0, margin=0
+        )
+        self._settings_query.param.watch(lambda _event: self.sync(), "phone")
 
         self._lead = pn.FlexBox(
             align_items="center",
@@ -644,7 +658,7 @@ class DashboardBar(Viewer):
                 "border-bottom": "1px solid var(--mui-palette-divider)",
             },
         )
-        self.param.watch(lambda _event: self.sync(), ["layout", "placement"])
+        self.param.watch(lambda *_events: self.sync(), ["layout", "placement"])
         # In a host header the lead and actions hide with the bar, e.g. in full screen.
         self.param.watch(lambda _event: self._sync_lead(), "visible")
         editor.param.watch(self._on_dashboard_changed, "dashboard")
@@ -691,13 +705,15 @@ class DashboardBar(Viewer):
         return items
 
     def _view_actions(self) -> list:
-        """Actions on the right in view mode, the View/Edit control first.
+        """Actions on the right in view mode: the output switch, Ask and Edit first.
 
-        The order mirrors edit mode, where the Dataflow/Layout tabs come first,
-        then the actions (``toolbar_extra`` such as Share) and the overflow menu.
+        The order mirrors edit mode, where the output switch and the tabs come
+        first, then the actions (``toolbar_extra`` such as Share) and the overflow menu.
         """
         editor = self.editor
-        actions = [self.mode_toggle]
+        actions = [self.output_toggle, self.ask_button]
+        if not editor.read_only:
+            actions.append(self.edit_button)
         actions += [
             self.refresh_button,
             self.refresh_period,
@@ -713,11 +729,13 @@ class DashboardBar(Viewer):
         return [self.save_state]
 
     def _edit_actions(self) -> list:
-        """Actions on the right in edit mode, the tabs first."""
+        """Actions on the right in edit mode: the output switch, the tabs and Ask first."""
+        ask = [self.ask_button] if self.editor.assistant else []
         return [
+            self.output_toggle,
             self.mode_tabs,
+            *ask,
             self.settings_button,
-            self.settings_icon_button,
             *self.editor.toolbar_extra,
             self.overflow,
             self._divider,
@@ -732,13 +750,13 @@ class DashboardBar(Viewer):
         Each entry has an ``action`` key that :meth:`_on_overflow` dispatches on.
         A destructive entry goes last and is shown in the error colour.
         """
+        phone = []
         if self._phone_query.phone:
             phone = self._phone_items()
-        elif self._narrow_query.phone and self.editor.surface != "report":
-            kind = "tab" if self.editor.editable else "mode"
-            phone = [{"label": "Report", "icon": "description", "action": f"{kind}:report"}]
         else:
-            phone = []
+            phone += self.output_switch.menu_items(self._narrow_query.phone)
+            if self._settings_query.phone and self.editor.editable and not self.editor.read_only:
+                phone.append(_SETTINGS)
         items = self._menu_items()
         return [*phone, None, *items] if phone and items else phone or items
 
@@ -752,6 +770,10 @@ class DashboardBar(Viewer):
                 for tab, label, icon in _PHONE_TABS
                 if tab != current
             ]
+            if editor.assistant:
+                # The drawer stays closed on the Explore view even while Ask is on.
+                shown = editor.ask and editor.surface != "explore"
+                items.append(_PHONE_CLOSE_ASSISTANT if shown else _PHONE_ASSISTANT)
             if not editor.read_only:
                 items.append(_SETTINGS)
             if editor.dirty:
@@ -781,9 +803,13 @@ class DashboardBar(Viewer):
             return
         kind, _, value = action.partition(":")
         if kind == "mode":
-            self.mode_toggle.value = value
+            self._choose_view(value)
         elif kind == "tab":
-            self.mode_tabs.value = value
+            self._choose_tab(value)
+        elif kind == "output":
+            self.output_switch.show(value)
+        elif kind == "assistant":
+            self._show_assistant(value == "open")
         elif action == "refresh":
             self.editor.trigger_refresh()
         elif action == "fullscreen":
@@ -835,6 +861,7 @@ class DashboardBar(Viewer):
             self.download_button,
             self._phone_query,
             self._narrow_query,
+            self._settings_query,
         ]
         if list(self._actions) != actions:
             self._actions[:] = actions
@@ -848,19 +875,24 @@ class DashboardBar(Viewer):
         )
         self.discard_button.disabled = not editor.dirty
         self.settings_button.disabled = editor.read_only
-        self.settings_icon_button.disabled = editor.read_only
         self._sync_switchers()
 
     def _sync_switchers(self, *_events):
-        """Show the open view in the View/Edit toggle and the edit tabs; readers get no Edit."""
+        """Show the open output in the switch, the open tab in the tabs and whether Ask is open."""
         editor = self.editor
-        options = _READER_OPTIONS if editor.read_only else _VIEW_OPTIONS
-        view = _view(editor)
-        if self.mode_toggle.options != options or self.mode_toggle.value != view:
-            self.mode_toggle.param.update(options=options, value=view)
-        tab = _tab(editor)
-        if self.mode_tabs.value != tab:
-            self.mode_tabs.value = tab
+        switch = self.output_switch
+        switch.sync()
+        options = switch.tabs(_EDIT_TABS)
+        tab = switch.tab()
+        # Showing the editor's state is not a choice of the person's.
+        self._syncing = True
+        try:
+            if self.mode_tabs.options != options or self.mode_tabs.value != tab:
+                self.mode_tabs.param.update(options=options, value=tab)
+            if self.ask_button.value != editor.ask:
+                self.ask_button.value = editor.ask
+        finally:
+            self._syncing = False
 
     def _sync_lead(self):
         row = not self.in_header
@@ -945,9 +977,6 @@ class DashboardBar(Viewer):
             if not self.editor.editable:
                 self._sync_lead()
 
-    def _click_settings(self):
-        self.settings_button.clicks += 1
-
     def _on_period_chosen(self, item):
         """Set the auto-refresh period for this session, without marking the dashboard changed."""
         if not isinstance(item, dict) or "period" not in item:
@@ -971,23 +1000,49 @@ class DashboardBar(Viewer):
     # Actions
     # ------------------------------------------------------------------
 
-    def _on_mode_toggled(self, event):
-        if event.new == "edit":
-            self.editor.surface = "workspace"
-            self.request_mode("edit")
-        elif event.new in _SURFACES:
-            self.editor.surface = event.new
-        elif event.new == "view":
+    def _on_ask_toggled(self, event):
+        if not self._syncing and self.editor.ask != event.new:
+            self.editor.ask = event.new
+
+    def _show_assistant(self, show: bool):
+        """Open or close the host's assistant, first leaving the Explore view, which keeps it closed."""
+        editor = self.editor
+        if show and editor.surface == "explore":
+            editor.surface = "workspace"
+        editor.ask = show
+
+    def _edit(self):
+        """Edit the output on screen: the report's blocks, or the dashboard."""
+        editor = self.editor
+        if editor.surface == "explore":
+            editor.surface = "workspace"
+        self.output_switch.edit()
+        self.request_mode("edit")
+
+    def _choose_view(self, view: str):
+        """Show a view picked in the phone menu: Ask's feed, the report, the dashboard, or edit it."""
+        if view == "edit":
+            self._edit()
+        elif view in _SURFACES:
+            self.editor.surface = view
+        else:
             self.editor.surface = "workspace"
 
     def _on_tab(self, event):
+        if not self._syncing and event.new is not None:
+            self._choose_tab(event.new)
+
+    def _choose_tab(self, tab: str):
+        """Show an edit tab, or a surface picked in the phone menu."""
         editor = self.editor
-        if event.new in _SURFACES:
-            editor.surface = event.new
-        elif event.new is not None:
-            with param.parameterized.batch_call_watchers(editor):
-                editor.mode = event.new
-                editor.surface = "workspace"
+        if tab in _SURFACES:
+            editor.surface = tab
+            return
+        if self.output_switch.choose_tab(tab):
+            return
+        with param.parameterized.batch_call_watchers(editor):
+            editor.mode = tab
+            editor.surface = "workspace"
 
     def request_mode(self, mode: str):
         """Switch to *mode* ("edit" or "view") through `on_mode`, or directly."""
@@ -1108,19 +1163,25 @@ _IMPORT = {"label": "Import file", "icon": "upload_file", "action": "import"}
 _SETTINGS = {"label": "Settings", "icon": "tune", "action": "settings"}
 # The entries standing in for the top bar's actions on phones.
 _PHONE_MODES = [
-    ("explore", "Explore", "forum"),
+    ("explore", "Ask", "forum"),
     ("report", "Report", "description"),
-    ("view", "View", "visibility"),
+    ("view", "Dashboard", "dashboard"),
     ("edit", "Edit", "edit"),
 ]
 _PHONE_TABS = [
-    ("explore", "Explore", "forum"),
+    ("explore", "Ask", "forum"),
     ("report", "Report", "description"),
     ("wiring", "Dataflow", "account_tree"),
     ("dashboard", "Layout", "dashboard"),
 ]
 _PHONE_REFRESH = {"label": "Refresh now", "icon": "refresh", "action": "refresh"}
 _PHONE_FULLSCREEN = {"label": "Full screen", "icon": "fullscreen", "action": "fullscreen"}
+_PHONE_ASSISTANT = {"label": "Assistant", "icon": "smart_toy", "action": "assistant:open"}
+_PHONE_CLOSE_ASSISTANT = {
+    "label": "Close assistant",
+    "icon": "smart_toy",
+    "action": "assistant:close",
+}
 _PHONE_DISCARD = {"label": "Discard changes", "icon": "undo", "action": "discard"}
 _PHONE_DONE = {"label": "Done editing", "icon": "visibility", "action": "done"}
 _CLEAR = {

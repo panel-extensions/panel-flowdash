@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 import typing as t
 from datetime import datetime
+from functools import partial
 
 import panel as pn
 import panel_material_ui as pmui
@@ -98,6 +99,9 @@ def is_explore_run(run_id: str | None) -> bool:
 
 _ARTIFACT_EVENTS = (ev.ArtifactPublished, ev.ArtifactApplied, ev.ArtifactVersionsDropped)
 
+# The chat feed's frame in Ask's dock, which draws its own edge.
+_DOCKED_FRAME = {"sx": {"boxShadow": "none", "borderRadius": 0}, "margin": 0}
+
 # How long forwarded events are gathered before the feed catches up, in milliseconds.
 _COALESCE_MS = 50
 
@@ -157,6 +161,14 @@ class ExploreFeed(Viewer):
         agent's events, and catches up when shown.""",
     )
 
+    docked = param.Boolean(
+        default=False,
+        doc="""
+        Whether the feed is docked in Ask beside the dashboard or the report,
+        which show the dashboard's views. A view is on screen only once, so
+        the card of a dashboard node then says where its view is instead.""",
+    )
+
     page_size = param.Integer(
         default=20,
         bounds=(1, None),
@@ -177,11 +189,14 @@ class ExploreFeed(Viewer):
         self.explorations = None
         self._add: t.Callable[[str, str], t.Awaitable[str]] | None = None
         self._show: t.Callable[[str], None] | None = None
+        self._adding = 0
         self._recorded: dict[str, list[ev.Event]] = {}
         self._roots: dict[str, str] = {}
         # The dashboard open when each recorded run started; a run shows in that dashboard's feed only.
         self._run_dashboards: dict[str, str | None] = {}
         self._applied: list[ev.Event] = []
+        # Where the cards were rendered for, docked or not: a hidden feed placed elsewhere renders them anew once shown.
+        self._cards_docked = self.docked
         # The projected change lists, which may grow while their turn is open.
         self._summaries: set[str] = set()
         # The watchers of the data cards' values, by node.
@@ -193,6 +208,8 @@ class ExploreFeed(Viewer):
         self._chat: AgentChat | None = None
         self._chat_params: dict = {}
         self._model_chat: AgentChat | None = None
+        # The chat feed's own frame, a card, restored when it leaves the dock.
+        self._card_frame: dict[str, t.Any] | None = None
         self._model_watchers: list = []
         self._chat_key: tuple | None = None
         self._foreign: t.Callable[[str], bool] | None = None
@@ -233,6 +250,7 @@ class ExploreFeed(Viewer):
         )
         self._earlier.on_click(lambda _event: self.show_earlier())
         editor.param.watch(self._on_dashboard, "dashboard")
+        editor.param.watch(self._on_surface, "surface")
 
     def _on_dashboard(self, *_events):
         self._first = None
@@ -285,7 +303,18 @@ class ExploreFeed(Viewer):
             # already on the page, each card is a patch of its own, and under load the
             # browser can miss some of them.
             self._chat = self._build_chat(composer=key[0])
+            self._frame_chat()
         return self._chat
+
+    def _frame_chat(self):
+        """Lay the feed flat in Ask's dock, which frames it, and as a card in the Explore view."""
+        if self._chat is None:
+            return
+        feed = self._chat.feed
+        if self._card_frame is None:
+            self._card_frame = {"sx": feed.sx, "margin": feed.margin}
+        frame = _DOCKED_FRAME if self.docked else self._card_frame
+        feed.param.update(**frame)
 
     def _build_chat(self, composer: bool) -> AgentChat:
         params: dict[str, t.Any] = {}
@@ -295,6 +324,11 @@ class ExploreFeed(Viewer):
                 approval_factory=self._approval,
                 placeholder="Ask a question about this dashboard…",
                 **self._chat_params,
+            )
+        if "user_placement" in AgentChat.param:
+            # As in the assistant's chat: questions as bubbles on the right, no avatars or names.
+            params.update(
+                user_placement="right", message_params={"show_avatar": False, "show_user": False}
             )
         from panel_flowdash.agent.chrome import TOOL_LABELS
 
@@ -405,6 +439,19 @@ class ExploreFeed(Viewer):
         self._unsubscribe = runner.state.subscribe(self._on_event)
         if self.shown:
             self.sync()
+
+    @param.depends("docked", watch=True)
+    def _on_docked(self):
+        self._frame_chat()
+        # The cards rendered for the other placement show or leave out the dashboard's
+        # views, so they are rendered anew, now or once the feed is shown.
+        if self.shown:
+            self.sync()
+
+    def _on_surface(self, _event):
+        # A docked card says whether its view is on the dashboard beside it or not.
+        if self.shown and self.docked:
+            self.refresh()
 
     @param.depends("shown", watch=True)
     def _on_shown(self):
@@ -710,8 +757,10 @@ class ExploreFeed(Viewer):
         timeline, cells = self.project()
         applied = self._applied
         prefix = timeline[: len(applied)]
-        if [self._key(e) for e in prefix] != [self._key(e) for e in applied] or any(
-            aid not in cells for aid in self._published
+        if (
+            self._cards_docked != self.docked
+            or [self._key(e) for e in prefix] != [self._key(e) for e in applied]
+            or any(aid not in cells for aid in self._published)
         ):
             self._rebuild(timeline, cells)
         else:
@@ -755,6 +804,7 @@ class ExploreFeed(Viewer):
         self.state.apply_many(cells.values())
         self._applied = list(timeline)
         self._published = dict(cells)
+        self._cards_docked = self.docked
 
     def refresh(self):
         """Update what the cards say about their nodes: changed later, on the dashboard."""
@@ -937,6 +987,12 @@ class ExploreFeed(Viewer):
             return self._value(instance_id, spec.outputs[0].name, editor, key)
         if dashboard and tile_layout.area_of(editor, item) == tile_layout.SIDEBAR:
             return self._caption("Shown in the sidebar.")
+        if dashboard and self.docked:
+            caption = self._caption("")
+            describe = partial(self._docked_note, instance_id)
+            caption.param.update(**describe())
+            self._notes[f"docked:{id(caption)}"] = (caption, describe)
+            return caption
         view = editor._tile_objects[index] if index < len(editor._tile_objects) else None
         if view is None:
             return self._caption("This output has nothing to show yet.")
@@ -947,6 +1003,24 @@ class ExploreFeed(Viewer):
         entry = tile_layout.tile_entry(editor, instance_id).get("height") if dashboard else None
         height = max(int(entry or 0), int(size.get("height") or 0), CARD_HEIGHT)
         return pn.Column(view, height=height, sizing_mode="stretch_width", margin=(4, 8))
+
+    def _docked_note(self, instance_id: str) -> dict[str, t.Any]:
+        """Say where a docked card's view is: on the dashboard beside it, or away from the report beside it."""
+        item = self._items().get(instance_id)
+        placed = item is not None and self._placed_item(item)
+        if self.editor.surface == "report":
+            text = (
+                "On the dashboard; switch to Dashboard to see it."
+                if placed
+                else "Add it to the dashboard to see it there."
+            )
+        else:
+            text = (
+                "Shown on the dashboard."
+                if placed
+                else "Add it to the dashboard to see it beside this conversation."
+            )
+        return {"object": escape_markdown(text)}
 
     def _kind(self, item: dict, editor: FlowDash | None = None) -> str:
         """Return the kind a node's card is labelled with, the same whether it shows the view or the value."""
@@ -1122,23 +1196,38 @@ class ExploreFeed(Viewer):
 
         return DashboardOps(self.editor)
 
+    @property
+    def adding(self) -> bool:
+        """Whether an add from one of the feed's cards is under way."""
+        return self._adding > 0
+
     async def _add_to_dashboard(
         self, name: str | None = None, exploration: str | None = None, node: str | None = None
     ) -> str:
-        """Add an answer of the exploration to the dashboard, or show a dashboard node's output as a tile."""
-        if exploration is not None and node is not None:
-            if self._add is None:
-                raise ValueError("Answers cannot be added to this dashboard.")
-            name = await self._add(exploration, node)
-        elif name is not None:
-            self._ops().place_tile(name, visible=True)
-        else:
-            raise ValueError("Name a node, or an answer by its exploration and node.")
+        """Add an answer of the exploration to the dashboard, or show a dashboard node's output as a tile.
+
+        An add from the dock that starts edit mode shows the tile there, as Show does.
+        """
+        docked = self.docked
+        self._adding += 1
+        try:
+            if exploration is not None and node is not None:
+                if self._add is None:
+                    raise ValueError("Answers cannot be added to this dashboard.")
+                name = await self._add(exploration, node)
+            elif name is not None:
+                self._ops().place_tile(name, visible=True)
+            else:
+                raise ValueError("Name a node, or an answer by its exploration and node.")
+        finally:
+            self._adding -= 1
         self.refresh()
+        if docked and self.editor.editable and self._show is not None:
+            self._show(name)
         return f"Added {name} to the dashboard."
 
     def _show_on_dashboard(self, name: str) -> str:
-        """Leave the Explore view and point out the dashboard node *name*."""
+        """Show the tiles and point out the dashboard node *name*."""
         if self._show is not None:
             self._show(name)
         return f"Showing {name}."

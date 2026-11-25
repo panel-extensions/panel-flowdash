@@ -14,6 +14,7 @@ from pydantic_ai import Agent
 from panel_flowdash.agent.tools import FlowDashDeps, dashboard_toolset
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.component_library import normalize_components
+from panel_flowdash.ui.dashboard_bar import SETTINGS_MENU_BREAKPOINT
 
 from ..test_agent_tools import scripted
 from .test_ui_header_layout import EDIT_ACTIONS, TOP_BAR, VIEW_ACTIONS
@@ -49,14 +50,17 @@ _TOP_BAR_ITEMS = """() => {
 # The content of the tooltip shown below a control while it is hovered.
 _TOOLTIP = "(el) => getComputedStyle(el, '::after').content"
 
+# The Ask toggle's name, which its tooltip shows below the width its label needs.
+ASK = "Ask about this dashboard"
+
 # The outlined controls, which share one height, and the text buttons, which share another.
 _OUTLINED = {
-    False: ["View", "Edit", "Refresh now", "Update automatically"],
-    True: ["Dataflow", "Layout", "Split", "Discard", "Done"],
+    False: ["Dashboard", "Ask", "Edit", "Refresh now", "Update automatically"],
+    True: ["Dashboard", "Dataflow", "Layout", "Split", "Ask"],
 }
 _TEXT = {
-    False: ["Share", "Full screen", "More actions", "Assistant"],
-    True: ["Settings", "More actions", "Assistant"],
+    False: ["Full screen", "More actions"],
+    True: ["Settings", "Share", "More actions", "Discard", "Save", "Done"],
 }
 
 
@@ -78,7 +82,11 @@ def _serve(page, width, edit):
 
     suffix = f"/dash/{dash}" + ("?edit=true" if edit else "")
     serve_component(page, {"/": factory, "/dash/[^/]+": factory}, suffix=suffix)
-    names = (EDIT_ACTIONS if edit else VIEW_ACTIONS) + TOP_BAR + ["Assistant"]
+    # With an assistant, edit mode has Ask too, which opens it.
+    names = [*([*EDIT_ACTIONS, "Ask"] if edit else VIEW_ACTIONS), *TOP_BAR]
+    if width < SETTINGS_MENU_BREAKPOINT:
+        # Settings is in the overflow menu, so the title keeps its room.
+        names = [name for name in names if name != "Settings"]
     for name in names:
         expect(_button(page, name)).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
         stable_box(_button(page, name), page)
@@ -108,30 +116,51 @@ def test_top_bar_items_never_overlap(page, width, edit):
 def test_top_bar_buttons_keep_their_height_without_labels(page, width, edit):
     _serve(page, width, edit)
 
-    for group in (_OUTLINED[edit], _TEXT[edit]):
+    shown = [_OUTLINED[edit], _TEXT[edit]]
+    if width < SETTINGS_MENU_BREAKPOINT:
+        shown = [[n for n in group if n != "Settings"] for group in shown]
+    for group in shown:
         heights = {name: stable_box(_button(page, name), page)["height"] for name in group}
         assert max(heights.values()) - min(heights.values()) <= 1, heights
-    outlined = stable_box(_button(page, _OUTLINED[edit][0]), page)["height"]
-    text = stable_box(_button(page, _TEXT[edit][0]), page)["height"]
+    outlined = stable_box(_button(page, shown[0][0]), page)["height"]
+    text = stable_box(_button(page, shown[1][0]), page)["height"]
     assert outlined == pytest.approx(36.75, abs=1)
     assert text == pytest.approx(34.75, abs=1)
 
 
 @pytest.mark.parametrize(
     ("edit", "names"),
-    [(False, ["View", "Edit", "Assistant"]), (True, ["Dataflow", "Layout", "Split", "Assistant"])],
+    [
+        (False, {"Dashboard": "Dashboard", "Ask": ASK}),
+        (
+            True,
+            {
+                "Dashboard": "Dashboard",
+                "Dataflow": "Dataflow",
+                "Layout": "Layout",
+                "Split": "Split",
+                "Ask": ASK,
+            },
+        ),
+    ],
     ids=["view", "edit"],
 )
 def test_icon_only_controls_show_their_name_on_hover(page, edit, names):
     _serve(page, 800, edit)
 
-    for name in names:
+    for name, tooltip in names.items():
         button = _button(page, name)
         page.mouse.move(1, 400)
         wait_until(lambda b=button: b.evaluate(_TOOLTIP) == "none", page)
         button.hover()
-        wait_until(lambda b=button, n=name: b.evaluate(_TOOLTIP) == f'"{n}"', page)
+        wait_until(lambda b=button, t=tooltip: b.evaluate(_TOOLTIP) == f'"{t}"', page)
     page.mouse.move(1, 400)
+
+    # Edit is a button rather than a toggle, with a tooltip of its own.
+    if not edit:
+        _button(page, "Edit").hover()
+        expect(page.get_by_role("tooltip").filter(has_text="Edit")).to_be_visible()
+        page.mouse.move(1, 400)
 
     # A disabled button takes no pointer events, so its host shows its name.
     for name in ["Discard", "Save"] if edit else []:
@@ -170,7 +199,7 @@ def test_tapping_an_icon_only_control_leaves_no_tooltip_open(browser):
     )
     page = context.new_page()
     try:
-        for edit, name in ((False, "View"), (True, "Dataflow")):
+        for edit, name in ((False, "Dashboard"), (True, "Dataflow")):
             _serve(page, 800, edit)
             button = _button(page, name)
             button.tap()

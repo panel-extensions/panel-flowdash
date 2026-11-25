@@ -1,5 +1,7 @@
 """Helpers shared by the UI tests."""
 
+import re
+
 from panel.tests.util import serve_component as _serve_component, wait_until
 
 # Whether every stylesheet linked into a shadow root has loaded. Panel's own
@@ -36,6 +38,48 @@ INERT_COUNT = """() => {
   walk(document)
   return found.length
 }"""
+
+
+def ask_button(page):
+    """The dashboard bar's Ask toggle, named by its description.
+
+    In view mode it docks the Explore feed beside the dashboard or the
+    report; in edit mode it opens and closes the assistant's drawer.
+    """
+    return page.get_by_role("button", name="Ask about this dashboard", exact=True).filter(
+        visible=True
+    )
+
+
+def open_assistant(page):
+    """Open the assistant's drawer on a dashboard: Edit if in view mode, then Ask.
+
+    The top bar's Assistant button is hidden on dashboard pages, where the
+    bar's Ask opens the drawer in edit mode. Ask left on in view mode opens
+    it as edit mode starts.
+    """
+    from playwright.sync_api import expect
+
+    edit = page.get_by_role("button", name="Edit", exact=True).filter(visible=True)
+    done = page.get_by_role("button", name="Done", exact=True).filter(visible=True)
+    expect(edit.or_(done).first).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
+    if edit.count():
+        edit.click()
+        expect(done).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
+    ask = ask_button(page)
+    if ask.get_attribute("aria-pressed") != "true":
+        ask.click()
+        # Off Ask, whose tooltip would otherwise stay over the edit actions beside it.
+        page.mouse.move(0, 0)
+
+
+def ask_from_palette(page, text):
+    """Ask the assistant *text* from the command palette, which opens its drawer in view mode too."""
+    from panel_flowdash.ui.command_palette import PLACEHOLDER
+
+    page.keyboard.press("Control+k")
+    page.get_by_role("combobox", name=PLACEHOLDER).press_sequentially(text)
+    page.get_by_role("option", name=re.compile("^Ask the assistant")).click()
 
 
 def serve_component(page, app, suffix="", wait=True, **kwargs):

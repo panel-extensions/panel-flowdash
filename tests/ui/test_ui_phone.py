@@ -48,9 +48,11 @@ _OFF_SCREEN = """() => {
 }"""
 
 # What stays in the top bar on a phone; the other actions are in the overflow menu.
+# On a dashboard the bar's Ask stands in for the top bar's Assistant, and a phone
+# finds Ask in the overflow menu.
 _PHONE_TOP_BAR = {
-    False: ["Share", "More actions", "Search", "Assistant", "Toggle theme"],
-    True: ["More actions", "Save", "Search", "Assistant", "Toggle theme"],
+    False: ["More actions", "Search", "Toggle theme"],
+    True: ["Share", "More actions", "Save", "Search", "Toggle theme"],
 }
 
 
@@ -116,8 +118,8 @@ def test_the_top_bar_fits_a_phone_screen(page, edit):
 @pytest.mark.parametrize(
     ("edit", "entries"),
     [
-        (False, ["Explore", "Report", "Edit", "Refresh now", "Full screen"]),
-        (True, ["Explore", "Report", "Layout", "Settings", "Done editing"]),
+        (False, ["Ask", "Report", "Edit", "Refresh now", "Full screen"]),
+        (True, ["Ask", "Report", "Layout", "Assistant", "Settings", "Done editing"]),
     ],
     ids=["view", "edit"],
 )
@@ -125,7 +127,8 @@ def test_a_phone_finds_the_hidden_actions_in_the_overflow_menu(page, edit, entri
     _serve(page, PHONE, edit)
 
     assert _menu_entries(page)[: len(entries)] == entries
-    for name in ["View", "Edit", "Refresh now", "Full screen", "Dataflow", "Layout", "Done"]:
+    hidden = ["Dashboard", "Ask about this dashboard", "Edit", "Refresh now", "Full screen"]
+    for name in [*hidden, "Dataflow", "Layout", "Done"]:
         expect(
             page.get_by_role("button", name=name, exact=True).filter(visible=True)
         ).to_have_count(0)
@@ -136,7 +139,7 @@ def test_wider_screens_keep_the_actions_out_of_the_overflow_menu(page, edit):
     _serve(page, 1024, edit)
 
     entries = _menu_entries(page)
-    for name in ["Explore", "Edit", "Refresh now", "Full screen", "Dataflow", "Done editing"]:
+    for name in ["Ask", "Edit", "Refresh now", "Full screen", "Dataflow", "Done editing"]:
         assert name not in entries
 
 
@@ -148,4 +151,5 @@ def test_the_overflow_menu_switches_a_phone_to_edit_mode(page):
     expect(_button(page, "Save")).to_be_visible()
     _button(page, "More actions").click()
     page.get_by_role("menuitem", name="Done editing").click()
-    expect(_button(page, "Share")).to_be_visible()
+    # Sharing is an edit action.
+    expect(page.get_by_role("button", name="Save", exact=True)).to_be_hidden()

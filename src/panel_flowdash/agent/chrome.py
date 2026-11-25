@@ -7,13 +7,16 @@ import typing as t
 import panel as pn
 import panel_material_ui as pmui
 
+from panel_flowdash.ui.dashboard_bar import PHONE_BREAKPOINT
 from panel_flowdash.ui.text import escape_markdown, text_typography
 
 if t.TYPE_CHECKING:
     from .session import AgentSession
 
-#: Below this window width the drawer overlays the app instead of narrowing it.
-OVERLAY_BELOW = 1200
+#: Below this window width, a phone's, the drawer overlays the app instead of narrowing it.
+#: Wider, it is Ask beside the canvas in edit mode, where an overlay's backdrop would
+#: cover the edit bar's Done.
+OVERLAY_BELOW = PHONE_BREAKPOINT
 
 
 def _node(value: t.Any) -> str:
@@ -121,8 +124,9 @@ class SessionChrome:
       where they share one slot.
     - An approval that waits on a surface out of sight shows a notice whose
       Review button brings that surface back: one of the assistant's in full
-      screen or while Explore is shown opens the drawer, and one of the
-      Explore agent's, asked before leaving Explore, shows Explore again.
+      screen or while Explore or Ask's feed is shown opens the drawer in the
+      feed's place, and one of the Explore agent's, asked before leaving
+      Explore, shows Explore again.
     - The command palette offers to ask the assistant whatever was typed. A
       question asked while the assistant is busy is sent once it is done.
     """
@@ -176,7 +180,7 @@ class SessionChrome:
             # Inside the editor, so the notice is on screen when the editor is in full screen.
             editor._view.append(self.notice)
             editor.param.watch(self._on_fullscreen, "fullscreen")
-            editor.param.watch(self._on_explore, "explore")
+            editor.param.watch(self._on_explore, ["explore", "ask", "editable"])
             editor._sidecar.on_close_drawer = lambda: setattr(drawer, "open", False)
             editor._split_view.storage.param.watch(
                 lambda _e: self._report_drawer(), "window_width"
@@ -230,14 +234,17 @@ class SessionChrome:
     # ------------------------------------------------------------------
 
     def review(self):
-        """Leave full screen and bring back the surface whose approval is pending."""
+        """Leave full screen and bring back the surface whose approval is pending.
+
+        The drawer opened in view mode turns Ask off, so the docked feed makes room for it.
+        """
         self.notice.visible = False
         editor = self.session.app._editor
         if editor is not None:
             editor.fullscreen = False
         if self._review_target == "explore":
             if editor is not None:
-                editor.explore = True
+                editor.show_ask()
             return
         if editor is not None:
             editor.explore = False
@@ -245,11 +252,11 @@ class SessionChrome:
 
     def _drawer_hidden(self) -> bool:
         editor = self.session.app._editor
-        return editor is not None and (editor.fullscreen or editor.explore)
+        return editor is not None and (editor.fullscreen or editor.explore or editor.ask_docked)
 
     def _explore_hidden(self) -> bool:
         editor = self.session.app._editor
-        return editor is not None and (editor.fullscreen or not editor.explore)
+        return editor is not None and (editor.fullscreen or not editor.feed_shown)
 
     def _on_pending(self, event):
         self._refresh_notice()
@@ -305,7 +312,7 @@ class SessionChrome:
     def _on_fullscreen(self, event):
         self._refresh_notice()
 
-    def _on_explore(self, event):
+    def _on_explore(self, *_events):
         self._refresh_notice()
 
     # ------------------------------------------------------------------

@@ -12,10 +12,16 @@ class DockHandle(JSComponent):
     """A bar dragged to resize the layout holding it, which reports its new :attr:`size`.
 
     A horizontal bar sits on top of a layout docked under the page and sets
-    its height; a vertical one sits on the left of a layout docked to the
-    right and sets its width. While dragging, the layout follows the pointer
+    its height; a vertical one sits on the inner edge of a layout docked to
+    the side and sets its width: on the left of one docked to the right, or
+    on the right of one docked to the left (``edge="end"``). While dragging, the layout follows the pointer
     in the page; :attr:`size` is set once the pointer is released. Arrow keys
-    resize it by 24 pixels when the bar has focus.
+    resize it by 24 pixels when the bar has focus. A width it sets stays
+    within ``max_ratio`` of the window as the window narrows, and comes back
+    as the window widens again.
+
+    The bar is a separator reporting the layout's size, and with
+    :attr:`region` it names the layout as a region it controls.
     """
 
     size = param.Integer(
@@ -38,6 +44,21 @@ class DockHandle(JSComponent):
         doc="A horizontal bar resizes the height, a vertical one the width.",
     )
 
+    region = param.String(
+        default=None,
+        allow_None=True,
+        doc="The accessible name of the layout it resizes, which is then a region the bar controls.",
+    )
+
+    edge = param.Selector(
+        default="start",
+        objects=["start", "end"],
+        doc="""
+        Which edge of its layout a vertical bar sits on: the left ("start"),
+        for a layout docked to the right, or the right ("end"), for one
+        docked to the left, which grows as the bar is dragged right.""",
+    )
+
     _stylesheets: t.ClassVar[list[str]] = [
         """
         :host { cursor: row-resize; }
@@ -56,6 +77,8 @@ class DockHandle(JSComponent):
     _esm = """
     export function render({ el, model }) {
       const vertical = model.orientation === "vertical"
+      // Dragging away from the layout's docked side grows it.
+      const grow = vertical && model.edge === "end" ? 1 : -1
       const bar = document.createElement("div")
       bar.className = vertical ? "fd-dock-handle vertical" : "fd-dock-handle"
       bar.tabIndex = 0
@@ -90,15 +113,38 @@ class DockHandle(JSComponent):
         if (target) bar.setAttribute("aria-valuemax", String(highest(target)))
         if (size != null) bar.setAttribute("aria-valuenow", String(Math.round(size)))
       }
+      function label(target) {
+        if (!model.region || !target) return
+        target.setAttribute("role", "region")
+        target.setAttribute("aria-label", model.region)
+        // An id cannot reach out of the bar's shadow root, but the layout holding it can be referenced as an element.
+        if ("ariaControlsElements" in bar) bar.ariaControlsElements = [target]
+      }
+      // Hidden, the layout measures nothing: it is described once shown.
+      function measure() {
+        const target = dock()
+        const size = target ? extent(target.getBoundingClientRect()) : 0
+        if (size > 0) describe(size)
+        label(target)
+      }
+      const observer = new ResizeObserver(measure)
       requestAnimationFrame(() => {
         const target = dock()
-        describe(target ? extent(target.getBoundingClientRect()) : model.size)
+        if (target) observer.observe(target)
+        measure()
+      })
+      window.addEventListener("resize", measure)
+      model.on("remove", () => {
+        observer.disconnect()
+        window.removeEventListener("resize", measure)
       })
       function resize(target, size) {
         describe(size)
         if (vertical) {
-          target.style.width = `${size}px`
-          target.style.minWidth = `${size}px`
+          // Within its share of the window as the window narrows, as dragging keeps it.
+          const width = `clamp(${model.min_size}px, ${size}px, ${model.max_ratio * 100}vw)`
+          target.style.width = width
+          target.style.minWidth = width
         } else {
           target.style.height = `${size}px`
         }
@@ -119,7 +165,7 @@ class DockHandle(JSComponent):
       bar.addEventListener("pointermove", (event) => {
         if (!start) return
         const at = vertical ? event.clientX : event.clientY
-        const size = clamp(start.size + start.at - at, start.target)
+        const size = clamp(start.size + grow * (at - start.at), start.target)
         resize(start.target, size)
         start.last = size
       })
@@ -132,7 +178,9 @@ class DockHandle(JSComponent):
       bar.addEventListener("pointerup", end)
       bar.addEventListener("pointercancel", end)
       bar.addEventListener("keydown", (event) => {
-        const keys = vertical ? {ArrowLeft: 24, ArrowRight: -24} : {ArrowUp: 24, ArrowDown: -24}
+        const keys = vertical
+          ? {ArrowLeft: -24 * grow, ArrowRight: 24 * grow}
+          : {ArrowUp: 24, ArrowDown: -24}
         const step = keys[event.key]
         const target = dock()
         if (!step || !target) return

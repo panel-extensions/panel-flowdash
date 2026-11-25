@@ -83,8 +83,10 @@ def make_inspect_sheet() -> pmui.Drawer:
             "boxSizing": "border-box",
             "p": 2,
             "width": {"xs": "100%", "sm": SHEET_WIDTH},
-            # Above the page's app bar, like the page's own context bar, so the
-            # sheet's header is never hidden behind it.
+            # Below the page's app bar, whose actions stay in reach, e.g. Edit, which
+            # closes it, and above the page's drawers.
+            "top": "var(--fd-header-height, 0px)",
+            "height": "calc(100% - var(--fd-header-height, 0px))",
             "zIndex": 1202,
         },
     )

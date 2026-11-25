@@ -14,8 +14,8 @@ from panel_flowdash.auth import resolve_identity
 from panel_flowdash.component_library import normalize_components
 
 from .test_ui_header_overflow import _button
-from .test_ui_phone import _OFF_SCREEN, PHONE
-from .util import DASHBOARD_LOAD_TIMEOUT, serve_component
+from .test_ui_phone import _OFF_SCREEN, PHONE, _menu_entries
+from .util import DASHBOARD_LOAD_TIMEOUT, ask_from_palette, serve_component
 
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
@@ -200,7 +200,8 @@ def test_widening_a_phone_with_the_assistant_open_keeps_the_inspector_folded(pag
     # browser gets the load timeout to show the result.
     _tap_header(page.locator(".react-flow__node[data-id='first']"))
     expect(_sheet(page, "fd-inspector-sheet")).to_be_visible(timeout=DASHBOARD_LOAD_TIMEOUT)
-    _button(page, "Assistant").click()
+    # A phone's dashboard has no Assistant or Ask button for the drawer; the palette opens it.
+    ask_from_palette(page, "Hello")
     wait_until(lambda: editor._inspector.collapsed, page)
 
     page.set_viewport_size({"width": 1280, "height": 844})
@@ -211,3 +212,19 @@ def test_widening_a_phone_with_the_assistant_open_keeps_the_inspector_folded(pag
     wait_until(lambda: editor._inspector.collapsed, page)
     flow = page.locator(".react-flow").first
     wait_until(lambda: _box(flow)["width"] >= 300, page)
+
+
+def test_a_phone_opens_the_assistant_from_the_menu_in_edit_mode(page):
+    pytest.importorskip("pydantic_ai")
+    editor = _serve(page, agent=True)
+    wait_until(lambda: editor._phone, page)
+
+    _menu(page, "Assistant")
+    wait_until(lambda: editor.ask, page)
+    new_conversation = page.get_by_role("button", name="New conversation")
+    expect(new_conversation).to_be_visible()
+    # On a phone the drawer covers the bar, so its own button closes it.
+    page.get_by_role("button", name="Close", exact=True).click()
+    wait_until(lambda: not editor.ask, page)
+    expect(new_conversation).not_to_be_visible()
+    assert "Assistant" in _menu_entries(page)

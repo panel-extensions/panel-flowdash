@@ -20,7 +20,7 @@ from panel_flowdash.turns import agent_edits
 from ..test_agent_ops import _editor
 from ..test_agent_tools import scripted
 from .test_ui_shell import _serve_app, _store_with
-from .util import DASHBOARD_LOAD_TIMEOUT, serve_component
+from .util import DASHBOARD_LOAD_TIMEOUT, ask_button, open_assistant, serve_component
 
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
@@ -46,17 +46,17 @@ def _report(apps):
     sys.stdout.write("\n".join(lines) + "\n")
 
 
-def _ask_for_a_note(page):
+def _ask_for_a_note(page, apps=None):
     store, (dash,) = _store_with("Plant")
     agent = Agent(
         scripted(("add_node", {"component": "Test/note"})),
         deps_type=FlowDashDeps,
         toolsets=[dashboard_toolset()],
     )
-    apps = []
+    apps = [] if apps is None else apps
     _serve_app(page, store, f"/dash/{dash}", apps, agent=agent)
     page.get_by_text("note tile").first.wait_for()
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    open_assistant(page)
     chat = page.get_by_placeholder(re.compile("^Ask the agent"))
     chat.fill("Add another note")
     chat.press("Enter")
@@ -77,7 +77,7 @@ def _ask_for_a_note(page):
 
 def test_the_sidecars_history_tab_shows_how_a_node_the_agent_added_was_made(page):
     _, added = _ask_for_a_note(page)
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    ask_button(page).click()
     page.locator(f".react-flow__node[data-id='{added}']").click()
     expect(page.get_by_role("button", name="How was this made?")).to_have_count(0)
     page.locator(".fd-sidecar").get_by_role("tab", name="History").click()
@@ -97,8 +97,9 @@ def test_the_sidecars_history_tab_shows_how_a_node_the_agent_added_was_made(page
 
 
 def test_the_tile_menu_shows_it_and_a_viewer_sees_their_own_request_in_full(page):
-    editor, _added = _ask_for_a_note(page)
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    apps = []
+    editor, _added = _ask_for_a_note(page, apps)
+    ask_button(page).click()
     page.get_by_role("button", name="Done").click()
     page.get_by_role("button", name="Save and leave").click()
     wait_until(lambda: not editor.editable, page, timeout=8000)
@@ -117,14 +118,16 @@ def test_the_tile_menu_shows_it_and_a_viewer_sees_their_own_request_in_full(page
     page.get_by_role("button", name="Close inspector").click()
     wait_until(lambda: not editor._inspect_dialog.open, page, timeout=8000)
     expect(sheet.locator(".sv-question")).to_be_hidden()
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    # In view mode the bar's Ask docks the Explore feed, so the drawer is opened as a
+    # link's ?open=history opens it.
+    apps[0]._agent_session.drawer.open = True
     page.locator(".run-details button").click()
     expect(page.get_by_role("dialog").locator(".sv-question")).to_have_text("Add another note")
 
 
 def test_the_side_sheet_closes_when_editing_starts(page):
     editor, _added = _ask_for_a_note(page)
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    ask_button(page).click()
     page.get_by_role("button", name="Done").click()
     page.get_by_role("button", name="Save and leave").click()
     wait_until(lambda: not editor.editable, page, timeout=8000)
@@ -193,7 +196,7 @@ def _left_edges_match(*locators):
 @pytest.mark.parametrize("width", [1280, 900])
 def test_the_caption_lines_up_with_the_request_in_the_history_tab(page, width):
     _, added = _ask_for_a_note(page)
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    ask_button(page).click()
     page.locator(f".react-flow__node[data-id='{added}']").click()
     page.locator(".fd-sidecar").get_by_role("tab", name="History").click()
     page.set_viewport_size({"width": width, "height": 900})
@@ -207,7 +210,7 @@ def test_the_caption_lines_up_with_the_request_in_the_history_tab(page, width):
 @pytest.mark.parametrize("width", [1280, 420])
 def test_the_title_lines_up_with_the_request_in_the_side_sheet(page, width):
     editor, added = _ask_for_a_note(page)
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    ask_button(page).click()
     page.get_by_role("button", name="Done").click()
     page.get_by_role("button", name="Save and leave").click()
     wait_until(lambda: not editor.editable, page, timeout=8000)

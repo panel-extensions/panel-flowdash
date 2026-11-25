@@ -117,15 +117,7 @@ def test_share_and_settings_open_the_same_dialog_on_their_sections(page, tmp_pat
     dashboard = store.create_dashboard(resolve_identity(AUTH).user, "Plant")
     _serve_edit(page, tmp_path, store, dashboard, suffix=f"/dash/{dashboard.dashboard_id}")
 
-    page.get_by_role("button", name="Share").click()
     dialog = page.get_by_role("dialog")
-    expect(dialog.get_by_label("Link")).to_have_value(
-        f"{page.url.split('/dash/')[0]}/dash/{dashboard.dashboard_id}"
-    )
-    expect(dialog.get_by_role("button", name="Copy link")).to_be_visible()
-    dialog.get_by_role("button", name="Cancel").click()
-    expect(dialog).to_be_hidden()
-
     page.get_by_role("button", name="More actions").click()
     page.get_by_role("menuitem", name="Settings").click()
     expect(dialog.get_by_label("Name")).to_have_value("Plant")
@@ -133,7 +125,16 @@ def test_share_and_settings_open_the_same_dialog_on_their_sections(page, tmp_pat
     dialog.get_by_role("button", name="Cancel").click()
     expect(dialog).to_be_hidden()
 
+    # Sharing is an edit action.
     page.get_by_role("button", name="Edit").click()
+    page.get_by_role("button", name="Share").click()
+    expect(dialog.get_by_label("Link")).to_have_value(
+        f"{page.url.split('/dash/')[0]}/dash/{dashboard.dashboard_id}"
+    )
+    expect(dialog.get_by_role("button", name="Copy link")).to_be_visible()
+    dialog.get_by_role("button", name="Cancel").click()
+    expect(dialog).to_be_hidden()
+
     page.get_by_role("button", name="Settings").click()
     expect(dialog.get_by_label("Name")).to_have_value("Plant")
     expect(dialog.get_by_label("Link")).to_be_hidden()

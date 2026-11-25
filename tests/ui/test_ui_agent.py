@@ -21,7 +21,7 @@ from ..test_agent_tools import responses, scripted
 from ..untrusted_payloads import ALL, PAYLOADS
 from .test_ui_shell import COMPONENTS, _serve_app, _store_with
 from .test_ui_text_math_escaping import _FOUND
-from .util import serve_component
+from .util import ask_button, ask_from_palette, open_assistant, serve_component
 
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
@@ -39,7 +39,7 @@ def test_the_agent_adds_a_component_from_the_drawer(page):
     _serve_app(page, store, f"/dash/{dash}", apps, agent=agent)
 
     page.get_by_text("note tile").first.wait_for()
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    open_assistant(page)
     chat = page.get_by_placeholder(re.compile("^Ask the agent"))
     chat.fill("Add another note")
     chat.press("Enter")
@@ -53,7 +53,7 @@ def test_the_agent_adds_a_component_from_the_drawer(page):
     # Closed, the drawer takes no width: none of its controls is visible (so none can
     # take focus) and the editor's status bar, which spans the main area, reaches the
     # right edge of the window.
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    ask_button(page).click()
     expect(chat).to_be_hidden()
     expect(page.get_by_role("button", name="New conversation")).to_be_hidden()
     zoom = page.get_by_text(re.compile(r"^Zoom \d+%$"))
@@ -98,7 +98,7 @@ def test_untrusted_text_reaches_the_drawer_as_text(page):
 
     serve_component(page, {"/dash/[^/]+": factory}, suffix=f"/dash/{dash}")
     page.get_by_text("note tile").first.wait_for()
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    open_assistant(page)
     chat = page.get_by_placeholder(re.compile("^Ask the agent"))
     chat.fill("Tidy up " + PAYLOADS["raw_html"])
     chat.press("Enter")
@@ -138,10 +138,8 @@ def test_the_full_screen_notice_shows_a_tools_description_as_text(page):
     _serve_app(page, store, f"/dash/{dash}", apps, agent=agent)
 
     page.get_by_text("note tile").first.wait_for()
-    page.get_by_role("button", name="Assistant", exact=True).click()
-    chat = page.get_by_placeholder(re.compile("^Ask the agent"))
-    chat.fill("Fetch the report")
-    chat.press("Enter")
+    # Asked from the command palette, the drawer opens in view mode, which has Full screen.
+    ask_from_palette(page, "Fetch the report")
     session = apps[0]._agent_session
     wait_until(lambda: bool(session.runner.state.pending_approvals), page, timeout=30000)
     page.get_by_role("button", name="Full screen").first.click()

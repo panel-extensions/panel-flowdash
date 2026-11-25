@@ -57,6 +57,17 @@ _TILE_CSS = """
 :host(.flowdash-tile-stale) {
   position: relative;
 }
+/* An untitled tile's notes sit in its top-right corner; its hover actions open left of them. */
+:host(.flowdash-tile-notes-float) .flowdash-tile-filters {
+  position: absolute !important;
+  right: 6px;
+  top: 6px;
+  width: auto !important;
+  z-index: 19;
+}
+:host(.flowdash-tile-floating.flowdash-tile-noted) .flowdash-tile-header {
+  right: calc(6px + var(--fd-tile-notes-width, 0px));
+}
 /* Shown over the view's top-left corner while its result does not match its spec in the code panel. */
 .flowdash-tile-stale-mark {
   left: 8px;
@@ -78,21 +89,34 @@ _STATUS = {
     "waiting": ("Waiting", "warning"),
 }
 
+# The size of a note's icon, and the room the notes of an untitled tile keep from its hover actions.
+_NOTE_SIZE = 22
+_NOTE_GAP = 2
+
 #: What the marker of a tile whose result does not match its spec says, by state.
 _STALE = {"draft": "Not run", "running": "Running…"}
 
-# Tile notes (filters, provenance) read as a quiet caption line, not as chips competing with the view.
+# Tile notes (filters, provenance) are quiet icons with their text as the tooltip, so they take
+# no line of their own; the label stays for screen readers.
 _NOTE_SX = {
-    "height": 20,
+    "height": _NOTE_SIZE,
+    "width": _NOTE_SIZE,
     "border": "none",
     "backgroundColor": "transparent",
     "color": "text.secondary",
-    "fontSize": "0.75rem",
     "cursor": "default",
     "&.MuiChip-clickable:hover, &.MuiChip-clickable:active": {"backgroundColor": "transparent"},
     "& .MuiTouchRipple-root": {"display": "none"},
-    "& .MuiChip-label": {"px": 0},
-    "& .MuiChip-icon": {"fontSize": 16, "color": "text.secondary", "ml": 0, "mr": "4px"},
+    "& .MuiChip-label": {
+        "position": "absolute",
+        "width": "1px",
+        "height": "1px",
+        "padding": 0,
+        "overflow": "hidden",
+        "clip": "rect(0 0 0 0)",
+        "whiteSpace": "nowrap",
+    },
+    "& .MuiChip-icon": {"fontSize": 18, "color": "text.secondary", "m": 0},
 }
 # A flex wrapper, so the chip is not laid out on a text line taller than itself.
 _NOTE_CSS = ".chip { display: flex; }"
@@ -272,12 +296,13 @@ class Tile(pn.Column):
         self.body = pn.Column(view, margin=(0, 8, 8, 8), sizing_mode="stretch_both")
         # The Filter nodes feeding the view, and the global filters that do not reach it.
         self.filter_notes = pn.FlexBox(
-            margin=(0, 12, 4, 16),
-            gap="6px",
-            flex_wrap="wrap",
+            margin=0,
+            gap=f"{_NOTE_GAP}px",
+            flex_wrap="nowrap",
             align_items="center",
-            sizing_mode="stretch_width",
+            align="center",
             visible=False,
+            styles={"flex": "none"},
             css_classes=["flowdash-tile-filters"],
         )
         self._filter_notes: tuple = ((), "", "")
@@ -341,16 +366,45 @@ class Tile(pn.Column):
         self.header.visible = shown
         self.header.margin = (10, 8, 6, 16) if titled else 0
         self._sync_margins()
+        self._place_notes(titled)
+        noted = self.filter_notes.visible
         classes = [
             c
             for c in self.css_classes
-            if c not in ("flowdash-tile-framed", "flowdash-tile-floating")
+            if c
+            not in (
+                "flowdash-tile-framed",
+                "flowdash-tile-floating",
+                "flowdash-tile-noted",
+                "flowdash-tile-notes-float",
+            )
         ]
         if shown and self._framed:
             classes.append("flowdash-tile-framed")
         if shown and not titled:
             classes.append("flowdash-tile-floating")
+        if noted:
+            classes.append("flowdash-tile-noted")
+        if not titled:
+            classes.append("flowdash-tile-notes-float")
         self.css_classes = classes
+        count = len(self.filter_notes.objects)
+        width = count * _NOTE_SIZE + max(0, count - 1) * _NOTE_GAP + 4 if noted else 0
+        styles = {**(self.styles or {}), "--fd-tile-notes-width": f"{width}px"}
+        if styles != self.styles:
+            self.styles = styles
+
+    def _place_notes(self, titled: bool):
+        """Put the notes beside the title in the header, or in the tile, floating in its corner."""
+        notes = self.filter_notes
+        in_header = notes in self.header.objects
+        if titled and not in_header:
+            if notes in self.objects:
+                self.remove(notes)
+            self.header.insert(1, notes)
+        elif not titled and in_header:
+            self.header.remove(notes)
+            self.insert(1, notes)
 
     def set_actions(
         self,
@@ -415,7 +469,9 @@ class Tile(pn.Column):
         self._render_notes()
 
     def set_filters(self, chips=(), hint: str = "", detail: str = ""):
-        """Show the Filter nodes feeding the view as chips, ``(instance_id, title)``, and *hint*.
+        """Note the Filter nodes feeding the view, ``(instance_id, title)``, and *hint*.
+
+        The filters share one filter icon, which names them on hover.
 
         *hint* says which active global filters do not reach the view, e.g.
         "Not filtered by State", and *detail* why, as its tooltip.
@@ -429,20 +485,22 @@ class Tile(pn.Column):
     def _render_notes(self):
         chips, hint, detail = self._filter_notes
         objects = [] if self._provenance_chip is None else [self._provenance_chip]
-        objects += [
-            pmui.Chip(
-                label=title,
-                icon="filter_alt",
-                color="default",
-                size="small",
-                variant="outlined",
-                margin=0,
-                sx=_NOTE_SX,
-                stylesheets=[_NOTE_CSS],
-                css_classes=["flowdash-tile-filter-chip"],
+        if chips:
+            titles = ", ".join(title for _, title in chips)
+            objects.append(
+                pmui.Chip(
+                    label=titles,
+                    icon="filter_alt",
+                    color="default",
+                    size="small",
+                    variant="outlined",
+                    description=f"Filtered by {titles}",
+                    margin=0,
+                    sx=_NOTE_SX,
+                    stylesheets=[_NOTE_CSS],
+                    css_classes=["flowdash-tile-filter-chip"],
+                )
             )
-            for _, title in chips
-        ]
         if hint:
             objects.append(
                 pmui.Chip(
@@ -451,7 +509,7 @@ class Tile(pn.Column):
                     color="default",
                     size="small",
                     variant="outlined",
-                    description=detail or None,
+                    description=f"{hint}: {detail}" if detail else hint,
                     margin=0,
                     sx=_NOTE_SX,
                     stylesheets=[_NOTE_CSS],
@@ -460,23 +518,16 @@ class Tile(pn.Column):
             )
         self.filter_notes[:] = objects
         self.filter_notes.visible = bool(objects)
-        self._sync_margins()
+        self._sync_style()
 
     def _sync_margins(self):
         titled = self._titled and self._framed
-        noted = self.filter_notes.visible
-        if self._arranging:
-            # The grid's drag handle sits on the tile's top edge.
-            self.filter_notes.margin = (24, 12, 0, 16)
-        elif titled:
-            self.filter_notes.margin = (0, 12, 2, 16)
-        else:
-            # Clear of the top edge, with the view moved up to keep its place.
-            self.filter_notes.margin = (10, 12, 0, 16)
-        if titled:
-            self.body.margin = (0, 8, 8, 8)
-        else:
-            self.body.margin = (4, 8, 8, 8) if noted and not self._arranging else 8
+        self.body.margin = (0, 8, 8, 8) if titled else 8
+        # Beside the title in its header, or floating in the top-right corner, below
+        # the grid's drag handle while the tiles are arranged.
+        self.filter_notes.margin = (
+            (0, 4, 0, 8) if titled else ((18, 0, 0, 0) if self._arranging else 0)
+        )
 
     def expand(self, _event=None):
         """Show the tile's view in a full-screen dialog until the dialog closes."""

@@ -1,4 +1,4 @@
-"""UI tests: the tile grid in view mode, after editing and beside a right-hand sidebar."""
+"""UI tests: the tile grid in view mode, after editing and beside Ask."""
 
 import pytest
 from panel.tests.util import wait_until
@@ -15,11 +15,12 @@ from panel_flowdash.auth import resolve_identity
 
 from ..test_agent_tools import scripted
 from .test_ui_shell import _serve_app
+from .util import ask_button
 
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
-# The edges of the visible tile grid and its tiles, the left edge of the open
-# right-hand drawer (or None), and the edit-only decorations left on the grid.
+# The edges of the visible tile grid and its tiles, the right edge of Ask docked
+# on the left (or None), and the edit-only decorations left on the grid.
 _GRID_STATE = """() => {
   const roots = [document]
   for (let i = 0; i < roots.length; i++) {
@@ -32,10 +33,7 @@ _GRID_STATE = """() => {
   const grid = all(".muuri-grid").find(shown)
   if (!grid) return null
   const items = [...grid.children].filter((c) => c.classList.contains("muuri-grid-item") && shown(c))
-  const drawer = all(".MuiDrawer-paper").find((d) => {
-    const box = d.getBoundingClientRect()
-    return box.width > 0 && box.left < window.innerWidth - 1
-  })
+  const ask = all(".fd-ask-dock").find(shown)
   const handles = [...grid.querySelectorAll(".muuri-handle")].filter((h) => getComputedStyle(h).display !== "none")
   const edges = (el) => {
     const box = el.getBoundingClientRect()
@@ -44,7 +42,7 @@ _GRID_STATE = """() => {
   return {
     grid: edges(grid),
     tiles: items.map(edges),
-    drawer: drawer ? drawer.getBoundingClientRect().left : null,
+    ask: ask ? ask.getBoundingClientRect().right : null,
     gridClasses: [...grid.classList],
     shownHandles: handles.length,
     outlines: items.map((i) => getComputedStyle(i).outlineStyle).filter((s) => s !== "none"),
@@ -86,7 +84,7 @@ def _settled_state(page):
 
 
 @pytest.mark.parametrize("width", [1440, 1920])
-def test_tiles_keep_the_same_spacing_from_the_assistant_as_from_the_rail(page, width):
+def test_tiles_keep_the_same_spacing_from_ask_as_from_the_rail(page, width):
     page.set_viewport_size({"width": width, "height": 900})
     store, dash = _store()
     _serve_app(page, store, f"/dash/{dash}", agent=_agent())
@@ -98,14 +96,15 @@ def test_tiles_keep_the_same_spacing_from_the_assistant_as_from_the_rail(page, w
     assert state["grid"][1] == pytest.approx(width, abs=1)
     assert width - max(right for _, right in state["tiles"]) == pytest.approx(inset, abs=1.5)
 
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    ask_button(page).click()
     wait_until(
-        lambda: (page.evaluate(_GRID_STATE) or {}).get("drawer") is not None, page, timeout=10000
+        lambda: (page.evaluate(_GRID_STATE) or {}).get("ask") is not None, page, timeout=10000
     )
     state = _settled_state(page)
-    assert state["grid"][1] == pytest.approx(state["drawer"], abs=1)
-    right = max(right for _, right in state["tiles"])
-    assert state["drawer"] - right == pytest.approx(inset, abs=1.5)
+    assert state["grid"][0] == pytest.approx(state["ask"], abs=1)
+    assert state["grid"][1] == pytest.approx(width, abs=1)
+    assert min(left for left, _ in state["tiles"]) - state["ask"] == pytest.approx(inset, abs=1.5)
+    assert width - max(right for _, right in state["tiles"]) == pytest.approx(inset, abs=1.5)
 
 
 @pytest.mark.parametrize("tab", ["Layout", "Split"])

@@ -1336,6 +1336,8 @@ class FlowDashApp(Viewer):
                 classes.append(_EDIT_HEADER_CLASS)
             if classes != toggle.css_classes:
                 toggle.css_classes = classes
+            # Beside a dashboard's actions, the bar's Ask opens the assistant.
+            toggle.visible = mode is None
 
     def _begin_navigation(self) -> int:
         """Start a navigation, superseding the one in flight, and return its generation."""
@@ -2465,10 +2467,11 @@ class FlowDashApp(Viewer):
     @pn.io.hold()
     def _show_edit_mode(self):
         current = self._current_dashboard
-        _can_admin, can_edit = (
+        can_admin, can_edit = (
             self._dashboard_rights(current.dashboard_id) if current else (False, False)
         )
-        self._share_button.visible = False
+        # Sharing changes who may open the dashboard, so it is an edit action.
+        self._share_button.visible = can_admin
         self._editor.param.update(editable=True, read_only=not can_edit)
         self._import_preset_components()
         if pn.state.location is not None:
@@ -2477,10 +2480,10 @@ class FlowDashApp(Viewer):
     @pn.io.hold()
     def _show_view_mode(self):
         current = self._current_dashboard
-        can_admin, can_edit = (
+        _can_admin, can_edit = (
             self._dashboard_rights(current.dashboard_id) if current else (False, False)
         )
-        self._share_button.visible = can_admin
+        self._share_button.visible = False
         # The editor treats a read-only session as a viewer, e.g. for inspecting
         # outputs. Without a dashboard (the components route) there is nothing to refuse.
         self._editor.param.update(editable=False, read_only=current is not None and not can_edit)

@@ -87,7 +87,7 @@ class TestSplitTab:
 
     async def test_offered_by_the_edit_tabs(self, editor):
         tabs = editor._dashboard_bar.mode_tabs
-        assert list(tabs.options.values()) == ["explore", "report", "wiring", "dashboard", "split"]
+        assert list(tabs.options.values()) == ["wiring", "dashboard", "split"]
         tabs.value = "split"
         assert editor.mode == "split"
 
@@ -293,6 +293,8 @@ class TestToggleAndCollapse:
             "spec_text": "yaml",
             "sidecar_width": 360,
             "palette_open": True,
+            "ask_width": 420,
+            "assistant_width": 360,
         }
         editor.mode = "wiring"
         assert json.loads(split_view.storage.value)["split"] is False

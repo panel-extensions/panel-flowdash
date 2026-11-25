@@ -16,6 +16,7 @@ from pydantic_ai.models.function import FunctionModel
 from panel_flowdash.agent import FlowDashDeps, dashboard_toolset
 
 from .test_ui_shell import _serve_app, _store_with
+from .util import ask_button, open_assistant
 
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
@@ -39,7 +40,7 @@ def _open(page, **params):
     agent = Agent(answering("fast-model"), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()])
     _serve_app(page, store, f"/dash/{dash}", apps, agent=agent, **params)
     page.get_by_text("note tile").first.wait_for()
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    open_assistant(page)
     return apps
 
 
@@ -60,11 +61,11 @@ def test_one_labelled_model_shows_its_id_in_a_tooltip(page):
     models = [ModelChoice("test", label="Fast")]
     _serve_app(page, store, f"/dash/{dash}", agent=True, agent_models=models)
     page.get_by_text("note tile").first.wait_for()
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    open_assistant(page)
     label = page.locator(".pa-model-fixed")
     expect(label).to_have_text("Model: Fast")
     expect(label).to_have_accessible_name("Model: Fast, test")
-    tip = page.get_by_role("tooltip")
+    tip = page.get_by_role("tooltip", name="test", exact=True)
     expect(tip).to_be_hidden()
     label.hover()
     expect(tip).to_have_text("test")
@@ -144,9 +145,9 @@ def test_the_browser_remembers_the_pick(page):
         ),
         page,
     )
+    # The page reloads in edit mode, where Ask opens the drawer.
     page.reload()
-    page.get_by_text("note tile").first.wait_for()
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    open_assistant(page)
     expect(page.get_by_role("button", name="Model: Deep")).to_be_visible()
     _ask(page, "Hi")
     expect(page.get_by_text("Answered by deep-model.")).to_be_visible(timeout=20000)
@@ -165,7 +166,11 @@ def test_a_viewer_without_the_assistant_sees_no_picker(page):
         agent_authorize=lambda _: False,
     )
     page.get_by_text("note tile").first.wait_for()
-    expect(page.get_by_role("button", name="Assistant", exact=True)).to_have_count(0)
+    expect(page.get_by_role("button", name=re.compile("^Model:"))).to_have_count(0)
+    # Without an assistant, edit mode has no Ask to open one.
+    page.get_by_role("button", name="Edit", exact=True).click()
+    expect(page.get_by_role("button", name="Done", exact=True)).to_be_visible()
+    expect(ask_button(page)).to_have_count(0)
     expect(page.get_by_role("button", name=re.compile("^Model:"))).to_have_count(0)
 
 
@@ -175,7 +180,7 @@ def test_explore_offers_the_same_models_and_shares_the_pick(page):
     agent = Agent(answering("fast-model"), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()])
     _serve_app(page, store, f"/dash/{dash}", apps, agent=agent, agent_models=MODELS)
     page.get_by_text("note tile").first.wait_for()
-    page.get_by_role("button", name="Explore", exact=True).click()
+    ask_button(page).click()
     explore = page.locator(".flowdash-explore")
     explore.get_by_role("button", name="Model: Fast").click()
     page.get_by_role("listbox", name="Model").get_by_role(
@@ -188,6 +193,6 @@ def test_explore_offers_the_same_models_and_shares_the_pick(page):
     expect(explore.get_by_text("Answered by deep-model.")).to_be_visible(timeout=20000)
     session = apps[0]._agent_session
     assert session.drawer.chat.model_id == "deep-model"
-    page.get_by_role("button", name="View", exact=True).click()
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    # In edit mode Ask is the drawer, which has the same pick.
+    open_assistant(page)
     expect(page.get_by_role("button", name="Model: Deep")).to_be_visible()

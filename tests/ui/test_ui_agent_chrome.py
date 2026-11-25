@@ -14,6 +14,7 @@ from panel_flowdash.ui.command_palette import PLACEHOLDER
 
 from ..test_agent_tools import scripted
 from .test_ui_shell import _serve_app, _store_with
+from .util import ask_button, open_assistant, stable_box
 
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
@@ -52,24 +53,25 @@ def test_a_short_query_that_matches_keeps_the_question_last(page):
     expect(options.first).not_to_contain_text("Ask the assistant")
 
 
-def test_the_drawer_toggle_looks_like_the_buttons_beside_it(page):
+def test_ask_looks_like_the_buttons_beside_it(page):
+    # On a dashboard the bar's Ask stands in for the top bar's Assistant.
     store, (dash,) = _store_with("Plant")
     _serve_app(page, store, f"/dash/{dash}", agent=_agent())
     page.get_by_text("note tile").first.wait_for()
+    expect(page.get_by_role("button", name="Assistant", exact=True)).to_have_count(0)
 
     keys = ["textTransform", "fontSize", "fontWeight", "lineHeight", "letterSpacing"]
 
-    def look(name):
-        button = page.get_by_role("button", name=name, exact=True)
+    def look(button):
         style = button.evaluate(
             "(el, keys) => Object.fromEntries(keys.map(k => [k, getComputedStyle(el)[k]]))", keys
         )
-        box = button.bounding_box()
+        box = stable_box(button, page)
         return style, box["height"], round(box["y"] + box["height"] / 2)
 
-    assistant, share = look("Assistant"), look("Share")
-    assert assistant[0]["textTransform"] == "none"
-    assert assistant == share
+    ask, edit = look(ask_button(page)), look(page.get_by_role("button", name="Edit", exact=True))
+    assert ask[0]["textTransform"] == "none"
+    assert ask == edit
 
 
 def test_opening_the_drawer_folds_the_inspector_and_closing_restores_it(page):
@@ -80,7 +82,7 @@ def test_opening_the_drawer_folds_the_inspector_and_closing_restores_it(page):
     inspector = apps[0]._editor._inspector
     wait_until(lambda: inspector.visible and not inspector.collapsed, page, timeout=10000)
 
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    open_assistant(page)
     wait_until(lambda: inspector.collapsed, page, timeout=10000)
     page.get_by_role("button", name="Close", exact=True).click()
     wait_until(lambda: not inspector.collapsed, page, timeout=10000)
@@ -97,7 +99,7 @@ def test_below_1600_px_the_drawer_and_the_sidecar_share_one_slot(page):
     wait_until(lambda: editor._split_view.storage.window_width == 1280, page, timeout=10000)
     wait_until(lambda: inspector.visible and not inspector.collapsed, page, timeout=10000)
 
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    open_assistant(page)
     wait_until(lambda: drawer.open and inspector.collapsed, page, timeout=10000)
     # Opening the sidecar again takes the slot back from the drawer.
     show = page.get_by_role("button", name="Show inspector")
@@ -122,7 +124,7 @@ def test_narrowing_the_window_leaves_one_of_the_drawer_and_the_sidecar(page):
     editor = apps[0]._editor
     inspector, drawer = editor._inspector, apps[0]._agent_session.drawer
     wait_until(lambda: inspector.visible and not inspector.collapsed, page, timeout=10000)
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    open_assistant(page)
     wait_until(lambda: drawer.open, page, timeout=10000)
     assert not inspector.collapsed
 
@@ -141,7 +143,7 @@ def test_in_a_wide_window_the_drawer_opens_beside_the_sidecar(page):
     inspector, drawer = editor._inspector, apps[0]._agent_session.drawer
     page.get_by_role("button", name="Dataflow").click()
     wait_until(lambda: editor.mode == "wiring" and not inspector.collapsed, page, timeout=10000)
-    page.get_by_role("button", name="Assistant", exact=True).click()
+    open_assistant(page)
     wait_until(lambda: drawer.open, page, timeout=10000)
     page.wait_for_timeout(500)
     assert not inspector.collapsed

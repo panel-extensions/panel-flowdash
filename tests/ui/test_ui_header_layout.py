@@ -17,12 +17,21 @@ expect = pytest.importorskip("playwright.sync_api").expect
 
 pytestmark = [pytest.mark.ui, pytest.mark.filterwarnings("ignore:reference already known")]
 
-VIEW_ACTIONS = ["View", "Edit", "Refresh now", "Update automatically", "Share", "More actions"]
+VIEW_ACTIONS = [
+    "Dashboard",
+    "Ask",
+    "Edit",
+    "Refresh now",
+    "Update automatically",
+    "More actions",
+]
 EDIT_ACTIONS = [
+    "Dashboard",
     "Dataflow",
     "Layout",
     "Split",
     "Settings",
+    "Share",
     "More actions",
     "Discard",
     "Save",
@@ -46,7 +55,7 @@ def _serve(page, store, dash, width=1440, edit=False, **params):
 
 
 def _button(page, name):
-    pattern = re.compile(rf"(^|\s){re.escape(name)}")
+    pattern = re.compile(rf"(^|\s){re.escape(name)}\b")
     return page.get_by_role("button", name=pattern).filter(visible=True).first
 
 
@@ -116,8 +125,8 @@ def test_every_view_action_is_reachable(page, width, header_layout):
     _serve(page, store, dash, width=width, header_layout=header_layout)
 
     _assert_reachable(page, VIEW_ACTIONS + TOP_BAR)
-    edit = _button(page, "Edit")
-    assert stable_box(_button(page, "View"), page)["x"] < stable_box(edit, page)["x"]
+    lefts = [stable_box(_button(page, name), page)["x"] for name in ("Dashboard", "Ask", "Edit")]
+    assert lefts == sorted(lefts)
 
 
 @pytest.mark.parametrize("header_layout", ["compact", "full"])

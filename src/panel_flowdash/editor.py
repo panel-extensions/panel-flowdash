@@ -215,7 +215,7 @@ from panel_flowdash.ui.sheet import (
     sheet_button,
 )
 from panel_flowdash.ui.sidecar import SidecarFold
-from panel_flowdash.ui.split_view import SplitView
+from panel_flowdash.ui.split_view import ASK_MAX_RATIO, ASK_MIN_WIDTH, ASK_WIDTH, SplitView
 from panel_flowdash.ui.states import StartCard
 from panel_flowdash.ui.status_bar import StatusBar, select_on_canvas
 from panel_flowdash.ui.text import (
@@ -1066,6 +1066,20 @@ class _EditorCall:
         return f"_EditorCall({self._method!r})"
 
 
+class _AskRow(pn.Row):
+    """The row holding the open surface, with the Ask dock on its left.
+
+    Panel adds every child's width to a row's minimum width, hidden or not, so
+    the dock's would keep the canvas wider than the window in edit mode, where
+    Ask is never docked, and lay a phone's canvas out wider than the screen
+    until the server knows it is a phone. Where the dock shows, in view mode,
+    the row narrows to the window anyway, so only the surface sets its minimum.
+    """
+
+    def _compute_sizing_mode(self, children, props):
+        return super()._compute_sizing_mode(children[1:], props)
+
+
 def _plain_integer_formatters(df) -> dict[str, dict[str, str]]:
     """Show integer columns below 10,000 without thousands separators, as cards do (years, ids)."""
     formatters = {}
@@ -1482,8 +1496,30 @@ class FlowDash(Viewer):
     explore = param.Boolean(
         default=False,
         doc="""
-        Whether the Explore view is shown: the same as ``surface == 'explore'``.
-        Setting it to False returns to the workspace.""",
+        Whether the Explore view is shown in place of the workspace: the same
+        as ``surface == 'explore'``. Setting it to False returns to the
+        workspace. Ask (`ask`) docks the same feed beside it instead.""",
+    )
+
+    ask = param.Boolean(
+        default=False,
+        doc="""
+        Whether Ask is open. In view mode it docks the Explore view's feed
+        left of the dashboard or the report, resizable by its right edge;
+        on a phone, which has no room for it, Ask is the Explore view
+        itself. In edit mode it is the host's assistant, see `assistant`.
+        Edit mode starts with Ask as view mode left it, and view mode gets
+        back the Ask it had as edit mode ends, whatever happened to the
+        assistant meanwhile; `set_ask_aside` closes it for something taking
+        its place in view mode without changing what view mode gets back.""",
+    )
+
+    assistant = param.Boolean(
+        default=False,
+        doc="""
+        Whether a host docks an assistant beside the editor that Ask opens in
+        edit mode, as FlowDashApp does with its agent's drawer. Without one,
+        Ask is offered in view mode only.""",
     )
 
     edited = param.Event(doc="Triggered after each edit is recorded in its turn.")
@@ -1722,8 +1758,18 @@ class FlowDash(Viewer):
         self._tile_signatures: dict[str, tuple] | None = None
         # Called by `refresh_provenance` with the ids it refreshes, or None for all, e.g. the sidecar's chip.
         self._provenance_listeners: list[t.Callable[[set[str] | None], None]] = []
+        # Whether Ask is open in view mode and in edit mode, and the mode last seen, see `_remember_ask`.
+        self._view_ask = self._edit_ask = False
+        self._ask_editing: bool | None = None
+        # Set while something takes Ask's place in view mode, see `set_ask_aside`.
+        self._ask_aside = False
 
         super().__init__(**params)
+        self._ask_editing = self.editable
+        if self.editable:
+            self._edit_ask = self.ask
+        else:
+            self._view_ask = self.ask
         self.context = copy_context(self.context)
 
         self._registry: dict[str, RegistryEntry] = normalize_components(self.components)
@@ -1803,6 +1849,8 @@ class FlowDash(Viewer):
         self._origins: dict[str, str] = {}
         self._explore_feed = None
         self._report_view = None
+        # Whether the Explore view's feed and the report are on screen, as last placed.
+        self._placed: dict[str, bool] = {}
         # The dashboard's parameters by name, each naming its node by instance id.
         self._parameters: dict[str, DashboardParameter] = {}
         # The component each parameter's node had when it was declared or loaded.
@@ -4235,6 +4283,44 @@ class FlowDash(Viewer):
             sizing_mode="stretch_both",
             stylesheets=[hide_on_phone(_SIDE_PANEL_CLASS)],
         )
+        # Ask docked left of the dashboard or the report in view mode, resized by its right edge.
+        self._ask_handle = DockHandle(
+            orientation="vertical",
+            edge="end",
+            min_size=ASK_MIN_WIDTH,
+            max_ratio=ASK_MAX_RATIO,
+            label="Resize Ask",
+            region="Ask",
+            width=7,
+            margin=0,
+            sizing_mode="stretch_height",
+        )
+        self._ask_handle.param.watch(self._on_ask_resized, "size")
+        self._ask_body = pn.Column(sizing_mode="stretch_both", margin=0, min_width=0)
+        self._ask_dock = pn.Row(
+            self._ask_body,
+            self._ask_handle,
+            width=ASK_WIDTH,
+            margin=0,
+            sizing_mode="stretch_height",
+            css_classes=["fd-ask-dock"],
+            styles={
+                "flex": "none",
+                # No wider than half the window, as dragging its edge allows, also as the window narrows.
+                "max-width": f"max({ASK_MIN_WIDTH}px, {ASK_MAX_RATIO * 100:g}vw)",
+                "background": "var(--mui-palette-background-paper)",
+                "border-right": "1px solid var(--mui-palette-divider)",
+            },
+        )
+        self._ask_dock.visible = False
+        # Holds the open surface, with the dock on its left; it stays in the view.
+        self._ask_row = _AskRow(
+            self._ask_dock,
+            self._editor_row,
+            sizing_mode="stretch_both",
+            margin=0,
+            css_classes=["fd-ask-row"],
+        )
         self._card_bridge = CardBridge(
             canvas_class=f"fd-canvas-{id(self)}",
             on_action=_EditorCall(self, "_on_card_bridge_action"),
@@ -4243,7 +4329,7 @@ class FlowDash(Viewer):
         )
         return pn.Column(
             bar,
-            self._editor_row,
+            self._ask_row,
             # Under the palette, the canvas and the inspector, so it has the window's width.
             self._code_dock,
             self._status_bar,
@@ -4328,6 +4414,7 @@ class FlowDash(Viewer):
             self._sidecar.left_phone()
         self._sync_min_width()
         self._apply_mode_state()
+        self._place_output()
         self._sync_code_dock_side()
         if self._inspector.visible:
             # Fit to the canvas's new width once the browser has laid it out.
@@ -4427,28 +4514,120 @@ class FlowDash(Viewer):
         surface = self.surface
         if self.explore != (surface == "explore"):
             self.explore = surface == "explore"
-        view = self._view
         self._sync_min_width()
-        away = {"explore": self._explore_feed, "report": self._report_view}
-        for name, shown in away.items():
-            if shown is not None and name != surface:
-                shown.shown = False
+        if surface != "workspace":
+            self.fullscreen = False
+        self._place_output()
         if surface == "workspace":
-            view[1] = self._editor_row
             self._status_bar.visible = self.editable
             self._sync_tile_drag()
+        else:
+            self._status_bar.visible = False
+
+    @property
+    def ask_docked(self) -> bool:
+        """Whether Ask is docked left of the dashboard or the report: open, in view mode, on a wide screen."""
+        return (
+            self.ask
+            and not self.editable
+            and not self.fullscreen
+            and not self._phone
+            and self.surface != "explore"
+        )
+
+    def show_ask(self):
+        """Bring the Explore view's feed on screen: Ask docked in view mode, the Explore view otherwise."""
+        if self.editable or self._phone:
+            self.surface = "explore"
+        else:
+            self.fullscreen = False
+            self.surface = "workspace" if self.surface == "explore" else self.surface
+            self.ask = True
+
+    @property
+    def feed_shown(self) -> bool:
+        """Whether the Explore view's feed is on screen, docked in Ask or as the Explore view."""
+        return self.surface == "explore" or self.ask_docked
+
+    def set_ask_aside(self):
+        """Close Ask in view mode for something taking its place, such as the host's assistant.
+
+        View mode still gets Ask back as edit mode ends, e.g. after the
+        assistant's first edit, as it does after Ask is closed in edit mode.
+        """
+        self._ask_aside = True
+        try:
+            self.ask = False
+        finally:
+            self._ask_aside = False
+
+    @param.depends("ask", "editable", watch=True)
+    def _remember_ask(self):
+        """Give view mode back the Ask it had as edit mode ends, see `ask`.
+
+        Ask that changes in the same update as edit mode ends is kept, e.g.
+        ``param.update(editable=False, ask=True)`` with Ask off in edit mode.
+        """
+        editing, self._ask_editing = self._ask_editing, self.editable
+        if self.editable:
+            self._edit_ask = self.ask
+        elif editing and self.ask == self._edit_ask:
+            self.ask = self._view_ask
+        elif not self._ask_aside:
+            self._view_ask = self.ask
+
+    @pn.io.hold()
+    @param.depends("ask", "editable", "fullscreen", watch=True)
+    def _place_output(self):
+        """Show the open surface, with Ask docked on its left while `ask_docked`.
+
+        The output stays where it is as Ask opens and closes, so its views are
+        not rendered again; only the dock beside it is shown or hidden.
+        """
+        surface = self.surface
+        if surface == "workspace":
+            output = self._editor_row
+        elif surface == "explore":
+            output = self.explore_feed
+        else:
+            output = self.report_view
+        docked = self.ask_docked
+        if docked:
+            feed = self.explore_feed.__panel__()
+            if list(self._ask_body) != [feed]:
+                self._ask_body[:] = [feed]
+        elif self._ask_body.objects:
+            self._ask_body[:] = []
+        if self._ask_row[1] is not output:
+            self._ask_row[1] = output
+        self._ask_dock.visible = docked
+        # Only a change of where they are shows or hides them. The feed is hidden
+        # before it leaves the dock and docked before it is shown, so its cards are
+        # only rendered for where they show.
+        placed = {"explore": docked or surface == "explore", "report": surface == "report"}
+        views = {"explore": self._explore_feed, "report": self._report_view}
+        for name, view in views.items():
+            if view is not None and not placed[name] and self._placed.get(name):
+                view.shown = False
+        if self._explore_feed is not None:
+            self._explore_feed.docked = docked
+        for name, view in views.items():
+            if view is not None and placed[name] and not self._placed.get(name):
+                view.shown = True
+        self._placed = placed
+
+    def _on_ask_resized(self, event):
+        if event.new is None:
             return
-        self.fullscreen = False
-        shown = self.explore_feed if surface == "explore" else self.report_view
-        view[1] = shown
-        self._status_bar.visible = False
-        shown.shown = True
+        self._ask_dock.width = event.new
+        self._split_view.preferences.ask_width = max(ASK_MIN_WIDTH, event.new)
 
     @param.depends("editable", watch=True)
     def _sync_min_width(self):
         """Let the feed, the report and the dashboard narrow to the window; only the canvas and its panels need the room."""
         canvas = self.editable and self.surface == "workspace" and not self._phone
         self._view.min_width = None if canvas else 0
+        self._ask_row.min_width = self._view.min_width
         self._fullscreen.min_width = self._view.min_width
 
     @param.depends("edited", watch=True)
@@ -5033,6 +5212,7 @@ class FlowDash(Viewer):
         self._apply_stored_split()
         self._inspector.width = self._split_view.preferences.sidecar_width
         self._palette_drawer.open = self._split_view.preferences.palette_open
+        self._ask_dock.width = self._split_view.preferences.ask_width
         self._sync_code_dock_side()
         if self._code_panel is not None:
             self._sync_code_spec_view()
@@ -5314,6 +5494,7 @@ class FlowDash(Viewer):
         # Their minimum heights were worked out from the canvas's own while it had the window.
         for layout in (
             self._view,
+            self._ask_row,
             self._editor_row,
             self._workspace_area,
             self._split_view.left,
