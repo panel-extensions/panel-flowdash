@@ -65,7 +65,7 @@ def _assistant(prompts):
     return Agent(FunctionModel(stream_function=stream), deps_type=FlowDashDeps)
 
 
-def _serve(page, *, width=1400, scheme="light", tiles=4, prompts=None):
+def _serve(page, *, width=1400, scheme="light", tiles=4, prompts=None, name="memo"):
     """Serve a dashboard of *tiles* tall panels, whose Explore agent answers with a tile of its own."""
     page.emulate_media(color_scheme=scheme)
     page.set_viewport_size({"width": width, "height": 844 if width == PHONE else 900})
@@ -77,7 +77,7 @@ def _serve(page, *, width=1400, scheme="light", tiles=4, prompts=None):
     ]
     store.save_dashboard(model)
     explore = Agent(
-        scripted(("add_node", {"component": "Test/answer", "name": "memo"})),
+        scripted(("add_node", {"component": "Test/answer", "name": name})),
         deps_type=FlowDashDeps,
         toolsets=[dashboard_toolset()],
     )
@@ -102,7 +102,7 @@ def _serve(page, *, width=1400, scheme="light", tiles=4, prompts=None):
     return apps
 
 
-def _ask_explore(page, apps, phone=False):
+def _ask_explore(page, apps, phone=False, name="memo"):
     """Ask the Explore agent in view mode, Ask docked or, on a phone, the Explore view, and return the answer's card."""
     if phone:
         page.get_by_role("button", name="More actions").click()
@@ -120,7 +120,7 @@ def _ask_explore(page, apps, phone=False):
         page,
         timeout=AGENT_RUN_TIMEOUT,
     )
-    card = page.locator(".artifact-cell", has_text="memo")
+    card = page.locator(".artifact-cell", has_text=name)
     expect(card.get_by_role("button", name="Add to dashboard")).to_be_visible(
         timeout=DASHBOARD_LOAD_TIMEOUT
     )
@@ -213,30 +213,39 @@ def test_undo_takes_the_answer_back_and_returns_to_the_docked_feed(page):
     assert getattr(apps[0]._agent_session.drawer.chat, "mentions", []) == []
 
 
-@pytest.mark.parametrize("scheme", ["light", "dark"])
-def test_a_phone_keeps_the_new_tile_in_sight_and_opens_the_assistant_from_the_notice(page, scheme):
-    apps = _serve(page, width=PHONE, scheme=scheme, tiles=2)
-    card = _ask_explore(page, apps, phone=True)
+LONG_NAME = "monthly_revenue_by_region_and_segment"
+
+
+@pytest.mark.parametrize(
+    ("scheme", "name"), [("light", "memo"), ("dark", "memo"), ("light", LONG_NAME)]
+)
+def test_a_phone_keeps_the_new_tile_in_sight_and_opens_the_assistant_from_the_notice(
+    page, scheme, name
+):
+    apps = _serve(page, width=PHONE, scheme=scheme, tiles=2, name=name)
+    card = _ask_explore(page, apps, phone=True, name=name)
     card.get_by_role("button", name="Add to dashboard").click()
 
     tile = page.locator(f".{TILE_CLASSES['add']}")
     expect(tile).to_have_count(1, timeout=DASHBOARD_LOAD_TIMEOUT)
     wait_until(lambda: _in_view(page, tile), page, timeout=5000)
     notice = _notice(page)
-    expect(notice).to_have_text(re.compile("^Added memo"))
-    expect(notice.get_by_role("button", name="Undo")).to_be_visible()
+    expect(notice).to_have_text(re.compile(f"^Added {name[:10]}"))
+    # A long name gives way to the actions, which stay on the screen.
+    for label in ("Undo", "Assistant", "Dismiss"):
+        action = notice.get_by_role("button", name=label)
+        expect(action).to_be_visible()
+        action_box = action.bounding_box()
+        assert action_box["x"] >= 0 and action_box["x"] + action_box["width"] <= PHONE
     box = notice.bounding_box()
     assert box["x"] >= 0 and box["x"] + box["width"] <= PHONE
-    # Clear of the Layout tab's floating button.
-    fab = page.get_by_role("button", name="Layout").filter(visible=True).last
-    if fab.count():
-        assert (
-            box["y"] + box["height"] <= fab.bounding_box()["y"]
-            or box["x"] + box["width"] <= fab.bounding_box()["x"]
-        )
+    # Clear of the Layout tab's floating Arrange tiles button.
+    fab = page.locator(".fd-arrange-tiles").filter(visible=True)
+    expect(fab).to_have_count(1)
+    assert box["y"] + box["height"] <= fab.bounding_box()["y"]
     session = apps[0]._agent_session
     assert not session.drawer.open
-    _shot(page, f"phone-added-{scheme}")
+    _shot(page, f"phone-added-{scheme}" + ("-long" if name == LONG_NAME else ""))
 
     notice.get_by_role("button", name="Assistant").click()
     assistant = page.get_by_placeholder("Ask the agent…")
@@ -244,8 +253,9 @@ def test_a_phone_keeps_the_new_tile_in_sight_and_opens_the_assistant_from_the_no
     # The notice makes way for the drawer, whose input it would cover.
     expect(notice).to_be_hidden()
     if MENTIONS:
-        expect(page.locator(".agent-chat-mention")).to_contain_text("memo")
-    _shot(page, f"phone-assistant-{scheme}")
+        expect(page.locator(".agent-chat-mention")).to_contain_text(name)
+    if name != LONG_NAME:
+        _shot(page, f"phone-assistant-{scheme}")
 
 
 def test_undo_on_a_phone_returns_to_the_explore_view(page):

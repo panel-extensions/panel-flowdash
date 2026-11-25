@@ -1,5 +1,7 @@
 """Adding an answer from Ask in view mode hands it to the assistant in edit mode."""
 
+import asyncio
+
 import pytest
 
 pytest.importorskip("pydantic_ai")
@@ -12,8 +14,8 @@ from pydantic_ai.models.function import FunctionModel
 from panel_flowdash import MemoryDashboardStore
 from panel_flowdash.agent.highlight import TILE_CLASSES
 
-from .test_exploration import _exploring, _open as _seeded
-from .test_explore_runner import _adding, _open
+from .test_exploration import _agent, _exploring, _open as _seeded
+from .test_explore_runner import _adding, _gated, _open, _until
 
 needs_mentions = pytest.mark.skipif(
     "mentions" not in AgentChat.param, reason="panel-agents has no mentions yet"
@@ -130,12 +132,17 @@ async def test_undo_takes_the_add_back_and_returns_to_the_docked_feed(store, mon
     assert feed._placed(card) is None and feed._placement(card) is not None
 
 
-async def test_undo_without_the_edit_history_discards_the_add(store, monkeypatch):
-    app, _ = await _add_from_the_dock(store, monkeypatch)
+async def test_without_the_edit_history_no_undo_is_offered(store, monkeypatch):
+    app, _ = _seeded(
+        store, monkeypatch, agent=_adding("drawn"), explore_agent=_exploring("explored")
+    )
     editor = app._editor
     editor.history = False
-    app._agent_session.handover.undo()
-    assert _nodes(editor) == ["base"] and not editor.dirty and not editor.editable
+    await _add(app, await _ask(app, ask=True))
+    handover = app._agent_session.handover
+    assert handover.notice.visible and not handover.undo_button.visible
+    handover.undo()
+    assert "explored" in _nodes(editor) and editor.editable
 
 
 async def test_another_edit_withdraws_the_undo_and_keeps_the_mention(store, monkeypatch):
@@ -281,3 +288,160 @@ async def test_a_failed_add_stays_where_it_was_asked(store, monkeypatch):
         await _add(app, card)
     assert not editor.editable and editor.surface == "explore" and editor.mode == "wiring"
     assert not session.handover.notice.visible
+
+
+def _scaling(name, factor):
+    """An Explore agent scaling ``base`` by *factor* in a node *name*."""
+    return (
+        ("add_node", {"component": "T/scaled", "name": name, "config": {"factor": factor}}),
+        ("connect", {"source": "base.value", "target": f"{name}.value"}),
+    )
+
+
+async def test_undo_keeps_the_unsaved_flag_of_another_add_made_meanwhile(store, monkeypatch):
+    from panel_flowdash.agent.exploration import ExplorationOps
+
+    app, _ = _seeded(
+        store,
+        monkeypatch,
+        agent=_adding("drawn"),
+        explore_agent=_agent(*_scaling("qa", 2), *_scaling("qb", 3)),
+    )
+    session, editor = app._agent_session, app._editor
+    feed = editor.explore_feed
+    editor.param.update(editable=False, ask=True)
+    feed.shown = True
+    await session.explore_runner.run("Two answers")
+    run = session.explore_runner.run_id
+    feed.sync()
+    cards = {
+        a.artifact_id.rsplit(":", 1)[1]: a
+        for a in feed.state.artifacts
+        if a.artifact_id.startswith(f"explore:{run}:")
+    }
+    gate, checks = asyncio.Event(), []
+    check = ExplorationOps._check
+
+    async def slow_check(self, exploration, plan):
+        checks.append(plan)
+        if len(checks) == 1:
+            await gate.wait()
+        return await check(self, exploration, plan)
+
+    monkeypatch.setattr(ExplorationOps, "_check", slow_check)
+    # Both adds start in view mode, with nothing unsaved.
+    first = asyncio.ensure_future(_add(app, cards["qa"]))
+    await _until(lambda: len(checks) == 1, first)
+    second = asyncio.ensure_future(_add(app, cards["qb"]))
+    await _until(lambda: feed._waiting.visible or len(checks) == 2, second)
+    gate.set()
+    await first
+    await second
+    assert set(_nodes(editor)) == {"base", "qa", "qb"}
+    session.handover.undo()
+    # Undo took back one add; the other is still unsaved, so edit mode stays.
+    assert len(_nodes(editor)) == 2 and editor.dirty and editor.editable
+
+
+async def test_undo_keeps_the_unsaved_flag_of_an_assistant_edit_the_add_waited_for(
+    store, monkeypatch
+):
+    a2, a_end = asyncio.Event(), asyncio.Event()
+    app, _ = _seeded(
+        store,
+        monkeypatch,
+        agent=_gated([("a1", None), ("a2", a2)], end=a_end),
+        explore_agent=_exploring("explored"),
+    )
+    session, editor = app._agent_session, app._editor
+    card = await _ask(app, ask=True)
+    drawer = asyncio.ensure_future(session.runner.run("A please"))
+    await _until(lambda: "a1" in _nodes(editor), drawer)
+    # Saved and back in view mode while the request still runs.
+    assert editor._on_save_clicked()
+    app._on_dashboard_bar_mode("view")
+    assert not editor.editable and not editor.dirty
+    editor.ask = True
+    adding = asyncio.ensure_future(_add(app, card))
+    await _until(lambda: editor.explore_feed._waiting.visible, adding)
+    a2.set()
+    await _until(lambda: "a2" in _nodes(editor), drawer)
+    a_end.set()
+    await drawer
+    await adding
+    session.handover.undo()
+    assert "a2" in _nodes(editor) and "explored" not in _nodes(editor)
+    assert editor.dirty and editor.editable
+
+
+async def test_undo_waits_for_the_assistants_request(store, monkeypatch):
+    from pydantic_ai import Agent
+    from pydantic_ai.models.function import FunctionModel
+
+    from panel_flowdash.agent.handover import UNDO_BUSY
+    from panel_flowdash.agent.tools import FlowDashDeps
+
+    gate = asyncio.Event()
+
+    async def stream(messages, info):
+        await gate.wait()
+        yield "Done."
+
+    app, _ = _seeded(
+        store,
+        monkeypatch,
+        agent=Agent(FunctionModel(stream_function=stream), deps_type=FlowDashDeps),
+        explore_agent=_exploring("explored"),
+    )
+    session, editor = app._agent_session, app._editor
+    notes = []
+    monkeypatch.setattr(app, "_notify", lambda *args, **kwargs: notes.append(args))
+    await _add(app, await _ask(app, ask=True))
+    handover = session.handover
+    run = asyncio.ensure_future(session.drawer.chat.submit("make it a bar chart"))
+    await _until(lambda: session.runner.state.running, run)
+    assert handover.undo_button.disabled and handover.undo_button.description == UNDO_BUSY
+    handover.undo()
+    assert notes == [("info", UNDO_BUSY)] and "explored" in _nodes(editor)
+    assert handover.notice.visible
+    gate.set()
+    await run
+    assert not handover.undo_button.disabled
+
+
+async def test_saving_keeps_the_mention(store, monkeypatch):
+    app, _ = await _add_from_the_dock(store, monkeypatch)
+    session, editor = app._agent_session, app._editor
+    mentioned = _mentions(session)
+    assert editor._on_save_clicked()
+    assert _mentions(session) == mentioned
+    assert editor.editable
+
+
+async def test_a_wait_after_leaving_the_explore_view_shows_on_the_notice(store, monkeypatch):
+    a_end = asyncio.Event()
+    app, _ = _seeded(
+        store,
+        monkeypatch,
+        agent=_gated([("a1", None)], end=a_end),
+        explore_agent=_exploring("explored"),
+    )
+    session, editor = app._agent_session, app._editor
+    editor._dashboard_bar._phone_query.phone = True
+    card = await _ask(app, surface="explore")
+    editor.editable = True
+    drawer = asyncio.ensure_future(session.runner.run("A please"))
+    await _until(lambda: "a1" in _nodes(editor), drawer)
+    assert editor._on_save_clicked()
+    app._on_dashboard_bar_mode("view")
+    editor.surface = "explore"
+    adding = asyncio.ensure_future(_add(app, card))
+    handover = session.handover
+    await _until(lambda: handover.notice.visible, adding)
+    # The tiles are on screen, so the notice says what the add waits for.
+    assert editor.surface == "workspace" and handover._text.object.startswith("Waiting for")
+    assert not handover.undo_button.visible
+    a_end.set()
+    await drawer
+    await adding
+    assert handover.name == "explored" and handover.undo_button.visible

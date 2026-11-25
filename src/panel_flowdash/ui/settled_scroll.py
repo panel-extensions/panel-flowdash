@@ -11,9 +11,10 @@ class SettledScroll(JSComponent):
     pmui's ``Reveal`` scrolls as soon as the element exists. A tile just added
     to the grid is still moving then: the grid animates it into place, and a
     drawer opening beside the grid narrows it and lays the tiles out again.
-    This waits until the element has kept its place for a few frames, for at
-    most ``timeout`` milliseconds, and then scrolls it into view. It renders
-    nothing itself, but must be on the page.
+    This waits until the element has kept its place for a few checks, for at
+    most ``timeout`` milliseconds, and then scrolls it into view. The page's
+    shadow roots are searched until the element is found, and after that
+    only its box is read. It renders nothing itself, but must be on the page.
     """
 
     _esm = """
@@ -37,8 +38,12 @@ export function render({model}) {
     const start = performance.now()
     let last = null
     let still = 0
+    let el = null
     const step = () => {
-      const el = collect(document, msg.css_class, [])[0]
+      // Looked up across the shadow roots until found, then only measured.
+      if (!el || !el.isConnected || !el.classList.contains(msg.css_class)) {
+        el = collect(document, msg.css_class, [])[0] || null
+      }
       if (el) {
         const box = el.getBoundingClientRect()
         const place = [box.left, box.top, box.width, box.height].map(Math.round).join()

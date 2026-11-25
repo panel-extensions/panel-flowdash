@@ -408,10 +408,17 @@ class AgentSession:
             node,
             question=self.explore_runner.questions.get(run),
             edit_lock=self.edit_lock,
-            on_wait=self.app._editor.explore_feed.show_waiting,
+            on_wait=self._on_add_wait,
         )
         self.publish_agent_layout(run)
         return name
+
+    def _on_add_wait(self, waiting: str | None):
+        """Say that an add waits, in the feed, and on the tiles once an add from view mode left it."""
+        editor = self.app._editor
+        editor.explore_feed.show_waiting(waiting)
+        if waiting is None or not editor.feed_shown:
+            self.handover.waiting(waiting)
 
     def run_pending(self, turn_id: str):
         """Ask the assistant the question of the pending turn *turn_id*, as the turn's request.
@@ -439,9 +446,9 @@ class AgentSession:
         if turn_id in editor.running_pending:
             editor.running_pending = [t for t in editor.running_pending if t != turn_id]
 
-    def hand_over(self, name: str, surface: str = "workspace", clean: bool = True):
+    def hand_over(self, name: str, surface: str = "workspace", saved: str | None = None):
         """Hand the dashboard node *name*, just added from Ask in view mode, to the assistant; see `AddHandover.hand_over`."""
-        self.handover.hand_over(name, surface, clean)
+        self.handover.hand_over(name, surface, saved)
 
     def show_answer(self, name: str):
         """Show the tiles, leaving the Explore view or the report, and mark the dashboard node *name*, e.g. an answer just added."""

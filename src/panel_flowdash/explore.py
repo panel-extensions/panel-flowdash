@@ -189,7 +189,7 @@ class ExploreFeed(Viewer):
         self.explorations = None
         self._add: t.Callable[[str, str], t.Awaitable[str]] | None = None
         self._show: t.Callable[[str], None] | None = None
-        self._handover: t.Callable[[str, str, bool], None] | None = None
+        self._handover: t.Callable[[str, str, str | None], None] | None = None
         self._recorded: dict[str, list[ev.Event]] = {}
         self._roots: dict[str, str] = {}
         # The dashboard open when each recorded run started; a run shows in that dashboard's feed only.
@@ -411,7 +411,7 @@ class ExploreFeed(Viewer):
         explorations: t.Any = None,
         add: t.Callable[[str, str], t.Awaitable[str]] | None = None,
         show: t.Callable[[str], None] | None = None,
-        handover: t.Callable[[str, str, bool], None] | None = None,
+        handover: t.Callable[[str, str, str | None], None] | None = None,
     ):
         """Ask the Explore view's agent *runner* (a panel-agents ``AgentRunner``) and show its runs.
 
@@ -428,9 +428,9 @@ class ExploreFeed(Viewer):
         answer to the dashboard, returning the node's name there, and *show*
         shows a dashboard node, e.g. an answer once added. *handover* is
         called with a node added from a card in view mode, which switched to
-        edit mode, the surface it was added from and whether the dashboard
-        had no unsaved changes before, to show the node and hand it to the
-        assistant; without it *show* shows it.
+        edit mode, the surface it was added from and the revision of the
+        canvas before, if it had no unsaved changes then, to show the node
+        and hand it to the assistant; without it *show* shows it.
         """
         self._foreign = foreign
         self.explorations = explorations
@@ -1211,13 +1211,13 @@ class ExploreFeed(Viewer):
         over to the assistant there, see `attach`.
         """
         editor = self.editor
-        viewing, surface, mode, clean = (
-            not editor.editable,
-            editor.surface,
-            editor.mode,
-            not editor.dirty,
-        )
+        viewing, surface, mode = not editor.editable, editor.surface, editor.mode
         handing_over = viewing and self._handover is not None
+        history = editor.edit_history
+        # Taken before any wait, so Undo knows the canvas as it was saved.
+        saved = (
+            history.snapshot()[1] if handing_over and history.active and not editor.dirty else None
+        )
         if handing_over:
             # The tiles are on screen, on the Layout tab, before edit mode starts, so it
             # changes the grid in place rather than building it anew with the canvas between.
@@ -1241,7 +1241,7 @@ class ExploreFeed(Viewer):
         self.refresh()
         if viewing and editor.editable:
             if self._handover is not None:
-                self._handover(name, surface, clean)
+                self._handover(name, surface, saved)
             elif self._show is not None:
                 self._show(name)
         return f"Added {name} to the dashboard."
