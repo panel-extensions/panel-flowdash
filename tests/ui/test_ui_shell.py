@@ -269,68 +269,73 @@ def test_import_file_from_the_overflow_menu(page, tmp_path):
     wait_until(lambda: editor.dirty, page, timeout=10000)
 
 
-@register(page=True, component=False, title="Weekly Summary")
-def weekly_report(config):
-    return "Weekly report content"
-
-
-@register(page=True, component=False, title="Monthly KPI")
-def monthly_report(config):
-    return "Monthly KPI content"
-
-
 def test_custom_sidebar_section_in_rail_and_narrow_drawer(page):
     store, _ = _store_with("Plant")
-    created = []
+    report_titles = {"weekly": "Weekly Summary", "monthly": "Monthly KPI"}
+
+    def list_reports(_ctx):
+        return [
+            SidebarItem(
+                title=report_titles["weekly"],
+                url="/reports/weekly",
+                subtitle="Owner: alice",
+            ),
+            SidebarItem(
+                title=report_titles["monthly"],
+                url="/reports/monthly",
+                subtitle="Updated today",
+            ),
+            SidebarItem(title="Q1 view", url="/reports/view?id=q1", subtitle="Query 1"),
+            SidebarItem(title="Q2 view", url="/reports/view?id=q2", subtitle="Query 2"),
+            *[
+                SidebarItem(title=title, url=f"/reports/{slug}")
+                for slug, title in report_titles.items()
+                if slug not in ("weekly", "monthly")
+            ],
+        ]
+
+    def report_view(_ctx, subpath):
+        import panel as pn
+
+        if subpath == "view":
+            search = pn.state.location.search if pn.state.location is not None else ""
+            return pn.pane.Markdown(f"Report viewer ({search})")
+        if not subpath:
+            return pn.pane.Markdown("All reports index")
+        return pn.pane.Markdown(f"{report_titles.get(subpath, subpath)} body")
+
+    def create_report(ctx):
+        report_titles["q3"] = "Q3 Forecast"
+        ctx.refresh()
+        ctx.navigate("/reports/q3")
+
     reports = SidebarSection(
         id="reports",
         label="Reports",
         icon="assessment",
         order=10,
-        items=lambda _user: [
-            SidebarItem(
-                title="Weekly Summary",
-                url="/Reports/weekly",
-                subtitle="Owner: alice",
-            ),
-            SidebarItem(
-                title="Monthly KPI",
-                url="/Reports/monthly",
-                subtitle="Updated today",
-            ),
-        ],
-        new_action=SidebarAction(label="New report", action=lambda: created.append(True)),
+        route="reports",
+        view=report_view,
+        items=list_reports,
+        new_action=SidebarAction(label="New report", action=create_report),
     )
-    registry = normalize_components(
-        {
-            **COMPONENTS,
-            "Reports/weekly": weekly_report,
-            "Reports/monthly": monthly_report,
-        }
+    routes = FlowDashApp.build_routes(
+        registry=normalize_components(COMPONENTS),
+        store=store,
+        notifications=False,
+        sections=[reports],
     )
-
-    def factory():
-        return FlowDashApp(
-            registry=registry,
-            store=store,
-            notifications=False,
-            sections=[reports],
-        )
-
-    routes = {
-        "/": factory,
-        "/components": factory,
-        "/dash/[^/]+": factory,
-        "/Reports/weekly": factory,
-        "/Reports/monthly": factory,
-    }
     page.set_viewport_size({"width": 1280, "height": 800})
     serve_component(page, routes, suffix="/")
 
-    # Desktop rail shows the Reports section, opens its menu and navigates.
-    reports_button = page.get_by_role("navigation").get_by_role(
-        "button", name="Reports", exact=True
-    )
+    nav = page.get_by_role("navigation")
+    header = page.locator("header.MuiAppBar-root")
+
+    # Section routes never appear in Pages.
+    expect(nav.get_by_role("button", name="Pages", exact=True)).to_have_count(0)
+
+    # Desktop rail shows Reports, opens its menu and navigates with active highlight and crumbs.
+    reports_button = nav.get_by_role("button", name="Reports", exact=True)
     expect(reports_button).to_be_visible()
     reports_button.click()
     expect(page.get_by_role("menuitem", name="Weekly Summary")).to_be_visible()
@@ -338,14 +343,48 @@ def test_custom_sidebar_section_in_rail_and_narrow_drawer(page):
     expect(page.get_by_role("menuitem", name="New report")).to_be_visible()
 
     page.get_by_role("menuitem", name="Weekly Summary").click()
-    wait_until(lambda: _path(page) == "/Reports/weekly", page, timeout=10000)
-    page.get_by_text("Weekly report content").wait_for()
+    wait_until(lambda: _path(page) == "/reports/weekly", page, timeout=10000)
+    page.get_by_text("Weekly Summary body").wait_for()
+    expect(header.get_by_role("button", name="Reports", exact=True)).to_be_visible()
+    expect(header.get_by_role("button", name="Weekly Summary", exact=True)).to_be_visible()
+    # Active rail button gets the non-transparent pill highlight on its icon.
+    wait_until(
+        lambda: reports_button.locator(".MuiButton-startIcon").evaluate(
+            "el => getComputedStyle(el).backgroundColor !== 'rgba(0, 0, 0, 0)'"
+        ),
+        page,
+        timeout=10000,
+    )
 
+    # Reloading a section route directly serves the section view with crumbs intact.
+    page.reload()
+    page.wait_for_function(
+        "() => window.Bokeh?.documents?.length > 0 && Bokeh.documents.every((d) => d.is_idle)",
+        timeout=30000,
+    )
+    page.locator("#loader").wait_for(state="hidden", timeout=30000)
+    page.get_by_text("Weekly Summary body").wait_for(timeout=15000)
+    expect(header.get_by_role("button", name="Reports", exact=True)).to_be_visible()
+    expect(header.get_by_role("button", name="Weekly Summary", exact=True)).to_be_visible()
+
+    # An item added outside this session appears when the rail menu opens.
+    report_titles["ext"] = "Shared External"
     reports_button.click()
-    page.get_by_role("menuitem", name="New report").click()
-    wait_until(lambda: created == [True], page, timeout=10000)
+    expect(page.get_by_role("menuitem", name="Shared External")).to_be_visible(timeout=10000)
 
-    # At 390 px the section moves into the drawer, expanded inline, and navigates.
+    # "+ New" creates an item, refreshes the section and navigates to it.
+    page.get_by_role("menuitem", name="New report").click()
+    wait_until(lambda: _path(page) == "/reports/q3", page, timeout=10000)
+    page.get_by_text("Q3 Forecast body").wait_for()
+
+    # Query-string items highlight distinctly and show the right crumb.
+    reports_button.click()
+    page.get_by_role("menuitem", name="Q2 view").click()
+    wait_until(lambda: page.url.endswith("/reports/view?id=q2"), page, timeout=10000)
+    page.get_by_text("Report viewer (?id=q2)").wait_for()
+    expect(header.get_by_role("button", name="Q2 view", exact=True)).to_be_visible()
+
+    # At 390 px the section moves into the drawer, highlights only Q2 view, and navigates.
     page.set_viewport_size({"width": 390, "height": 844})
     expect(reports_button).to_be_hidden()
     page.get_by_role("button", name="Open drawer").click()
@@ -356,11 +395,14 @@ def test_custom_sidebar_section_in_rail_and_narrow_drawer(page):
         .filter(has_text="Weekly Summary")
         .filter(has_text="Owner: alice")
     ).to_be_visible()
+    expect(drawer.get_by_text("Q3 Forecast")).to_be_visible()
     expect(drawer.get_by_text("New report")).to_be_visible()
+    q1_row = drawer.locator(".MuiListItemButton-root").filter(has_text="Q1 view")
+    q2_row = drawer.locator(".MuiListItemButton-root").filter(has_text="Q2 view")
+    expect(q2_row).to_have_class(re.compile(r"Mui-selected"))
+    expect(q1_row).not_to_have_class(re.compile(r"Mui-selected"))
 
-    drawer.locator(".MuiListItemButton-root").filter(has_text="Monthly KPI").filter(
-        has_text="Updated today"
-    ).click()
-    wait_until(lambda: _path(page) == "/Reports/monthly", page, timeout=10000)
-    page.get_by_text("Monthly KPI content").wait_for()
+    drawer.locator(".MuiListItemButton-root").filter(has_text="Monthly KPI").click()
+    wait_until(lambda: _path(page) == "/reports/monthly", page, timeout=10000)
+    page.get_by_text("Monthly KPI body").wait_for()
     expect(drawer).to_be_hidden()

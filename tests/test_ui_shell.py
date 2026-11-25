@@ -8,11 +8,12 @@ import pytest
 from bokeh.document import Document
 from panel.io.state import set_curdoc
 
-from panel_flowdash import SidebarAction, SidebarItem, SidebarSection
+from panel_flowdash import SidebarAction, SidebarContext, SidebarItem, SidebarSection
 from panel_flowdash.app import COMPONENTS_ROUTE, DASH_ROUTE_PREFIX, FlowDashApp
 from panel_flowdash.auth import Identity
 from panel_flowdash.dashboard_store import DashboardStore, MemoryDashboardStore
 from panel_flowdash.editor import FlowDash
+from panel_flowdash.sidebar import RESERVED_SECTION_IDS
 from panel_flowdash.ui.shell import DOCS_URL, HEADER_SX, Crumb
 from tests.test_editor import COMPONENTS, SELECTOR
 from tests.test_navigation import FakeLocation, _create_project
@@ -553,7 +554,8 @@ class TestSidebarSections:
 
         plant = _open(app, "Plant")
         depot = _open(app, "Depot")
-        items = dashboards.items(app._identity)
+        ctx = app._sidebar_context(dashboards)
+        items = dashboards.items(ctx)
         assert items == [
             SidebarItem(
                 title="Depot", url=f"{DASH_ROUTE_PREFIX}{depot.dashboard_id}", icon="dashboard"
@@ -571,28 +573,37 @@ class TestSidebarSections:
         pn.state._location = FakeLocation()
         try:
             store = DashboardStore(tmp_path / "test.db")
+            seen_contexts: list[SidebarContext] = []
+
+            def list_reports(ctx: SidebarContext):
+                seen_contexts.append(ctx)
+                return [
+                    SidebarItem(
+                        title=f"{ctx.user.user}'s weekly",
+                        url="/Analytics/page",
+                        subtitle=f"Owner: {ctx.user.user}",
+                    ),
+                ]
+
             reports = SidebarSection(
                 id="reports",
                 label="Reports",
                 icon="assessment",
                 order=10,
-                items=lambda user: [
-                    SidebarItem(
-                        title=f"{user.user}'s weekly",
-                        url="/Analytics/page",
-                        subtitle=f"Owner: {user.user}",
-                    ),
-                ],
+                items=list_reports,
             )
             data = SidebarSection(
                 id="data",
                 label="Data",
                 icon="storage",
                 order=20,
-                items=lambda _user: [SidebarItem(title="Tables", url="/data/tables")],
+                items=lambda _ctx: [SidebarItem(title="Tables", url="/data/tables")],
             )
             app = FlowDashApp(project_dir=tmp_path, store=store, sections=[data, reports])
 
+            assert seen_contexts and seen_contexts[-1].app is app
+            assert seen_contexts[-1].user == app._identity
+            assert seen_contexts[-1].section == reports
             assert [s.id for s in app.sections] == ["dashboards", "reports", "data"]
             keys = [item["key"] for item in app._shell.rail_items()]
             assert keys == ["home", "dashboards", "reports", "data", "components", "pages", "help"]
@@ -615,7 +626,7 @@ class TestSidebarSections:
             ]
 
             app._identity = Identity(user="alice")
-            app._shell.refresh()
+            app.refresh_sections("reports")
             rail_by_key = {item["key"]: item for item in app._shell.rail_items()}
             assert rail_by_key["reports"]["items"] == [
                 {
@@ -630,7 +641,7 @@ class TestSidebarSections:
             assert drawer_by_key["reports"]["items"][0]["secondary"] == "Owner: alice"
 
             app._identity = Identity(user="bob")
-            app._shell.refresh()
+            app.refresh_sections("reports")
             rail_by_key = {item["key"]: item for item in app._shell.rail_items()}
             assert rail_by_key["reports"]["items"][0]["label"] == "bob's weekly"
             assert rail_by_key["reports"]["items"][0]["secondary"] == "Owner: bob"
@@ -642,38 +653,62 @@ class TestSidebarSections:
             pn.state._location = previous
             sys.path.remove(str(tmp_path))
 
-    async def test_visible_predicate_hides_section(self, app):
+    async def test_assigning_sections_normalizes_dedupes_and_keeps_dashboards(self, app):
+        first = SidebarSection(id="reports", label="Old Reports", icon="assessment", order=20)
+        second = SidebarSection(id="reports", label="Reports", icon="assessment", order=10)
+        data = SidebarSection(id="data", label="Data", icon="storage", order=30, path="/data")
+
+        app.sections = [data, first, second]
+
+        assert [s.id for s in app.sections] == ["dashboards", "reports", "data"]
+        assert app.sections[1].label == "Reports"
+        assert [i["key"] for i in app._shell.rail_items()][:4] == [
+            "home",
+            "dashboards",
+            "reports",
+            "data",
+        ]
+
+    async def test_visible_predicate_receives_context_and_hides_section(self, app):
+        seen: list[SidebarContext] = []
+
+        def is_visible(ctx: SidebarContext) -> bool:
+            seen.append(ctx)
+            return ctx.app.is_admin or "analysts" in ctx.user.groups
+
         restricted = SidebarSection(
             id="catalog",
             label="Data",
             icon="storage",
             order=15,
-            items=lambda _user: [SidebarItem(title="Sources", url="/catalog/sources")],
-            visible=lambda user: "analysts" in user.groups,
+            items=lambda _ctx: [SidebarItem(title="Sources", url="/catalog/sources")],
+            visible=is_visible,
         )
+        app._is_admin = False
         app._identity = Identity(user="viewer", groups=frozenset())
         app.add_section(restricted)
 
+        assert seen and seen[-1].app is app and seen[-1].section == restricted
         assert "catalog" not in [item["key"] for item in app._shell.rail_items()]
         assert "catalog" not in app._shell._rail_buttons
         assert "catalog" not in [item["key"] for item in app._shell._nav_list.items]
 
-        app._identity = Identity(user="analyst", groups=frozenset({"analysts"}))
-        app._shell.refresh()
+        app._is_admin = True
+        app.refresh_sections("catalog")
 
         assert "catalog" in [item["key"] for item in app._shell.rail_items()]
         assert "catalog" in app._shell._rail_buttons
         assert "catalog" in [item["key"] for item in app._shell._nav_list.items]
 
-    async def test_new_action_calls_callable_and_navigates_route(self, app):
-        called = []
+    async def test_new_action_receives_context_and_supports_routes(self, app):
+        received: list[SidebarContext] = []
         reports = SidebarSection(
             id="reports",
             label="Reports",
             icon="assessment",
             order=10,
-            items=lambda _user: [SidebarItem(title="Q1", url="/reports/q1")],
-            new_action=SidebarAction(label="New report", action=lambda: called.append("new")),
+            items=lambda _ctx: [SidebarItem(title="Q1", url="/reports/q1")],
+            new_action=SidebarAction(label="New report", action=lambda ctx: received.append(ctx)),
         )
         app.add_section(reports)
 
@@ -683,14 +718,14 @@ class TestSidebarSections:
             None,
             "New report",
         ]
-        new_item = rail_reports["items"][-1]
-        app._shell._on_menu_item(new_item)
-        assert called == ["new"]
+        app._shell._on_menu_item(rail_reports["items"][-1])
+        assert len(received) == 1
+        assert received[0].app is app and received[0].user == app._identity
 
         app._page.sidebar_open = True
         drawer_reports = next(i for i in app._shell._nav_list.items if i["key"] == "reports")
         app._shell._on_nav_list_click(drawer_reports["items"][-1])
-        assert called == ["new", "new"]
+        assert len(received) == 2
         assert not app._page.sidebar_open
 
         navigated = []
@@ -700,38 +735,236 @@ class TestSidebarSections:
             label="Data",
             icon="storage",
             order=20,
-            new_action=SidebarAction(label="Add source", action="/data/new"),
+            new_action=SidebarAction(label="Add source", action="/data/new?kind=sql"),
         )
         app.add_section(route_section)
         rail_data = next(i for i in app._shell.rail_items() if i["key"] == "data")
         assert [i["label"] for i in rail_data["items"]] == ["Add source"]
         app._shell._on_menu_item(rail_data["items"][0])
-        assert navigated == [("/data/new", "")]
+        assert navigated == [("/data/new", "?kind=sql")]
 
-    async def test_active_highlighting_and_crumbs_for_custom_section(self, app):
+    async def test_query_string_route_matching_and_breadcrumbs(self, app):
         reports = SidebarSection(
             id="reports",
             label="Reports",
             icon="assessment",
             order=10,
-            items=lambda _user: [
-                SidebarItem(title="Weekly", url="/reports/weekly"),
-                SidebarItem(title="Monthly", url="/reports/monthly"),
+            route="reports",
+            view=lambda ctx, subpath: f"view:{subpath}",
+            items=lambda _ctx: [
+                SidebarItem(title="Q1 report", url="/reports/view?id=q1"),
+                SidebarItem(title="Q2 report", url="/reports/view?id=q2"),
+                SidebarItem(title="Overview", url="/reports/overview"),
             ],
         )
         app.add_section(reports)
-
-        app._shell.sync("/reports/weekly")
-        assert app._shell._active() == "reports"
-        sx = app._shell._rail_buttons["reports"].sx
-        assert sx["& .MuiButton-startIcon"]["color"] == "primary.text"
-        reports_index = next(
+        reports_idx = next(
             i for i, item in enumerate(app._shell._nav_list.items) if item["key"] == "reports"
         )
-        assert app._shell._nav_list.active == (reports_index, 0)
-        assert app._shell.crumbs() == [Crumb("Home", "/"), Crumb("Reports"), Crumb("Weekly")]
 
-    async def test_section_spec_validation(self, app):
+        # Exact path + query matches distinguish q1 from q2.
+        app._shell.sync("/reports/view?id=q2")
+        assert app._shell._active() == "reports"
+        assert app._shell._nav_list.active == (reports_idx, 1)
+        assert app._shell.crumbs() == [
+            Crumb("Home", "/"),
+            Crumb("Reports", "/reports"),
+            Crumb("Q2 report"),
+        ]
+
+        app._shell.sync("/reports/view", "?id=q1")
+        assert app._shell._nav_list.active == (reports_idx, 0)
+        assert app._shell.crumbs() == [
+            Crumb("Home", "/"),
+            Crumb("Reports", "/reports"),
+            Crumb("Q1 report"),
+        ]
+
+        # Path-only fallback matches a query-less item when extra query params appear.
+        app._shell.sync("/reports/overview?tab=details")
+        assert app._shell._nav_list.active == (reports_idx, 2)
+        assert app._shell.crumbs() == [
+            Crumb("Home", "/"),
+            Crumb("Reports", "/reports"),
+            Crumb("Overview"),
+        ]
+
+        # Unknown query on a path with only query-specific items highlights neither item.
+        app._shell.sync("/reports/view?id=unknown")
+        assert app._shell._active() == "reports"
+        assert app._shell._nav_list.active is None
+        assert app._shell.crumbs() == [Crumb("Home", "/"), Crumb("Reports")]
+
+    async def test_refresh_sections_updates_cache_without_requerying_on_navigation(self, app):
+        store_items = [SidebarItem(title="Q1", url="/reports/q1")]
+        calls = 0
+
+        def list_reports(_ctx: SidebarContext):
+            nonlocal calls
+            calls += 1
+            return list(store_items)
+
+        reports = SidebarSection(
+            id="reports",
+            label="Reports",
+            icon="assessment",
+            order=10,
+            items=list_reports,
+        )
+        app.add_section(reports)
+        assert calls == 1
+
+        # Calling rail_items() and sync() uses cached items and does not mutate state.
+        before_cache = dict(app._shell._section_items_cache)
+        _ = app._shell.rail_items()
+        app._shell.sync("/reports/q1")
+        app._shell.sync("/components")
+        assert calls == 1
+        assert app._shell._section_items_cache == before_cache
+
+        # A new item added later appears once refresh_sections() is called.
+        store_items.append(SidebarItem(title="Q2", url="/reports/q2"))
+        app.refresh_sections("reports")
+        assert calls == 2
+        assert [i["label"] for i in app._shell._rail_buttons["reports"].items] == ["Q1", "Q2"]
+        drawer_reports = next(i for i in app._shell._nav_list.items if i["key"] == "reports")
+        assert [i["label"] for i in drawer_reports["items"]] == ["Q1", "Q2"]
+
+        # Opening the rail menu or narrow drawer also re-fetches fresh items.
+        store_items.append(SidebarItem(title="Q3", url="/reports/q3"))
+        app._shell._on_rail_menu_open("reports")
+        assert calls == 3
+        assert [i["label"] for i in app._shell._rail_buttons["reports"].items] == [
+            "Q1",
+            "Q2",
+            "Q3",
+        ]
+
+        store_items.append(SidebarItem(title="Q4", url="/reports/q4"))
+        app._page.sidebar_open = True
+        assert calls == 4
+        assert [i["label"] for i in app._shell._rail_buttons["reports"].items] == [
+            "Q1",
+            "Q2",
+            "Q3",
+            "Q4",
+        ]
+
+    async def test_callable_path_switches_between_direct_link_and_menu(self, app):
+        use_landing = [True]
+        seen_ctx: list[SidebarContext] = []
+
+        def resolve_path(ctx: SidebarContext) -> str | None:
+            seen_ctx.append(ctx)
+            return "/catalog" if use_landing[0] else None
+
+        catalog = SidebarSection(
+            id="catalog",
+            label="Data",
+            icon="storage",
+            order=20,
+            path=resolve_path,
+            items=lambda _ctx: [SidebarItem(title="Tables", url="/catalog/tables")],
+        )
+        app.add_section(catalog)
+
+        assert seen_ctx and seen_ctx[-1].app is app and seen_ctx[-1].section == catalog
+        rail_cat = next(i for i in app._shell.rail_items() if i["key"] == "catalog")
+        assert rail_cat["path"] == "/catalog"
+        assert "items" not in rail_cat
+
+        use_landing[0] = False
+        app.refresh_sections("catalog")
+        rail_cat = next(i for i in app._shell.rail_items() if i["key"] == "catalog")
+        assert "path" not in rail_cat
+        assert [i["label"] for i in rail_cat["items"]] == ["Tables"]
+
+    async def test_section_route_serves_view_and_stays_out_of_pages(self, tmp_path):
+        _create_project(tmp_path)
+        sys.path.insert(0, str(tmp_path))
+        previous = pn.state._location
+        pn.state._location = FakeLocation()
+        try:
+            store = DashboardStore(tmp_path / "test.db")
+            seen: list[tuple[str, str]] = []
+
+            def report_view(ctx: SidebarContext, subpath: str):
+                seen.append((ctx.user.user, subpath))
+                return pn.pane.Markdown(f"Report body: {subpath or 'index'}")
+
+            reports = SidebarSection(
+                id="reports",
+                label="Reports",
+                icon="assessment",
+                order=10,
+                route="reports",
+                view=report_view,
+                items=lambda _ctx: [SidebarItem(title="Q4 Report", url="/reports/q4")],
+            )
+            routes = FlowDashApp.build_routes(
+                project_dir=tmp_path, store=store, sections=[reports]
+            )
+            assert "/reports" in routes
+            assert any(pattern.startswith("/reports/") for pattern in routes)
+
+            pn.state.location.pathname = "/reports/q4"
+            app = routes["/reports"]()
+            # Section routes never appear in Pages.
+            pages_entry = next(i for i in app._shell.rail_items() if i["key"] == "pages")
+            assert all("/reports" not in i["path"] for i in pages_entry["items"] if i)
+
+            await app._load_page_layout()
+            assert seen[-1] == (app._identity.user, "q4")
+            assert app._shell._active() == "reports"
+            assert app._shell.crumbs() == [
+                Crumb("Home", "/"),
+                Crumb("Reports", "/reports"),
+                Crumb("Q4 Report"),
+            ]
+
+            pn.state.location.pathname = "/reports"
+            await app._load_page_layout()
+            assert seen[-1] == (app._identity.user, "")
+            assert app._shell.crumbs() == [Crumb("Home", "/"), Crumb("Reports")]
+
+            # Hidden section refuses direct route access.
+            secret_called = []
+            secret = SidebarSection(
+                id="secret",
+                label="Secret",
+                icon="lock",
+                route="secret",
+                view=lambda _ctx, _p: secret_called.append(True) or "classified",
+                visible=lambda _ctx: False,
+            )
+            app.add_section(secret)
+            pn.state.location.pathname = "/secret/top"
+            await app._load_page_layout()
+            assert secret_called == []
+            assert "flowdash-empty-state" in app._page.main[0][0].css_classes
+        finally:
+            pn.state._location = previous
+            sys.path.remove(str(tmp_path))
+
+    async def test_bad_extension_items_are_logged_and_skipped(self, app, caplog):
+        broken = SidebarSection(
+            id="broken",
+            label="Broken",
+            icon="warning",
+            order=30,
+            items=lambda _ctx: [
+                SidebarItem(title="Valid", url="/valid"),
+                {"title": "Not a SidebarItem"},  # type: ignore[list-item]
+            ],
+        )
+        with caplog.at_level("WARNING", logger="panel_flowdash"):
+            app.add_section(broken)
+
+        rail_broken = next(i for i in app._shell.rail_items() if i["key"] == "broken")
+        assert [i["label"] for i in rail_broken["items"]] == ["Valid"]
+        assert "Skipping invalid item" in caplog.text
+
+    async def test_section_spec_validation_and_reserved_ids(self, app):
         with pytest.raises(ValueError, match="title"):
             SidebarItem(title=" ", url="/x")
         with pytest.raises(ValueError, match="url"):
@@ -740,5 +973,24 @@ class TestSidebarSections:
             SidebarAction(label="New", action=123)  # type: ignore[arg-type]
         with pytest.raises(ValueError, match="id"):
             SidebarSection(id="", label="X", icon="star")
+        for reserved_id in sorted(RESERVED_SECTION_IDS):
+            with pytest.raises(ValueError, match="reserved"):
+                SidebarSection(id=reserved_id, label="X", icon="star")
+        with pytest.raises(ValueError, match="static 'path'"):
+            SidebarSection(
+                id="combo",
+                label="Combo",
+                icon="star",
+                path="/combo",
+                items=lambda _ctx: [],
+            )
+        with pytest.raises(ValueError, match=r"route and SidebarSection\.view"):
+            SidebarSection(id="only_route", label="R", icon="star", route="r")
+        with pytest.raises(ValueError, match=r"route and SidebarSection\.view"):
+            SidebarSection(id="only_view", label="V", icon="star", view=lambda _c, _p: "hi")
+        with pytest.raises(ValueError, match="reserved route prefix"):
+            SidebarSection(
+                id="bad_route", label="B", icon="star", route="admin/extra", view=lambda _c, _p: ""
+            )
         with pytest.raises(TypeError, match="SidebarSection"):
             app.add_section("not-a-section")  # type: ignore[arg-type]

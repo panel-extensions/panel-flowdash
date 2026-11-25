@@ -5,8 +5,16 @@ Data catalog) by passing :class:`SidebarSection` objects to
 :class:`~panel_flowdash.app.FlowDashApp` via its ``sections`` parameter or by
 calling :meth:`~panel_flowdash.app.FlowDashApp.add_section`.
 
+Every callback on a section (``items``, ``visible``, ``path``, ``view`` and
+:attr:`SidebarAction.action`) receives a :class:`SidebarContext` carrying the
+session's ``app``, ``user`` (:class:`~panel_flowdash.Identity`) and
+``section``. Sections can also serve their own routes by setting both
+``route`` and ``view``: FlowDash then routes ``/<route>`` and
+``/<route>/...`` to ``view(ctx, path)`` without registering them under Pages.
+
 The built-in Dashboards navigation uses the same :class:`SidebarSection`
-mechanism (with ``id="dashboards"`` and ``order=0``).
+mechanism (with ``id="dashboards"`` and ``order=0``). Sidebar sections render
+only when ``FlowDashApp.nav_variant`` is ``"rail"`` (the default).
 """
 
 from __future__ import annotations
@@ -16,13 +24,57 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 if t.TYPE_CHECKING:
+    from panel_flowdash.app import FlowDashApp
     from panel_flowdash.auth import Identity
 
 __all__ = [
+    "RESERVED_ROUTE_PREFIXES",
+    "RESERVED_SECTION_IDS",
     "SidebarAction",
+    "SidebarContext",
     "SidebarItem",
     "SidebarSection",
 ]
+
+#: Section ids reserved for built-in rail destinations.
+RESERVED_SECTION_IDS: frozenset[str] = frozenset({"home", "components", "pages", "help", "admin"})
+
+#: Top-level URL path prefixes reserved for built-in app routes.
+RESERVED_ROUTE_PREFIXES: frozenset[str] = frozenset(
+    {"dash", "components", "admin", "access-denied"}
+)
+
+
+@dataclass(frozen=True)
+class SidebarContext:
+    """Session context passed to :class:`SidebarSection` and :class:`SidebarAction` callables.
+
+    Attributes
+    ----------
+    app
+        The session's :class:`~panel_flowdash.app.FlowDashApp` instance.
+    user
+        The session's resolved :class:`~panel_flowdash.Identity`.
+    section
+        The :class:`SidebarSection` being evaluated.
+    """
+
+    app: FlowDashApp
+    user: Identity
+    section: SidebarSection
+
+    @property
+    def is_admin(self) -> bool:
+        """Whether the current session administers this project."""
+        return self.app.is_admin
+
+    def navigate(self, url: str) -> None:
+        """Navigate this session to *url* through the app's router."""
+        self.app._navigate_url(url)
+
+    def refresh(self, section_id: str | None = None) -> None:
+        """Refresh cached section items; defaults to this section's id."""
+        self.app.refresh_sections(self.section.id if section_id is None else section_id)
 
 
 @dataclass(frozen=True)
@@ -34,11 +86,13 @@ class SidebarItem:
     title
         Display label shown in the rail menu and narrow-screen drawer.
     url
-        App route (e.g. ``"/reports/q4"``) opened through the app's router, or
-        an external ``http://``/``https://`` URL opened in a new tab.
+        App route (e.g. ``"/reports/q4"`` or ``"/reports/view?id=q1"``) opened
+        through the app's router, or an external ``http://``/``https://`` URL
+        opened in a new tab.
     subtitle
-        Optional secondary text such as the owner or last updated time, shown
-        under the item title in the narrow-screen drawer.
+        Optional secondary text such as the owner or last updated time. Shown
+        under the item title in the narrow-screen drawer; desktop rail menus
+        show titles only (``pmui.MenuButton`` does not render secondary text).
     icon
         Optional Material icon name for the item.
     """
@@ -64,14 +118,15 @@ class SidebarAction:
     label
         Text shown for the action, e.g. ``"New report"``.
     action
-        Either a zero-argument callable invoked when clicked, or a route/URL
-        string to open through the app's router (or in a new tab if external).
+        Either a callable ``action(ctx: SidebarContext)`` invoked when clicked,
+        or a route/URL string opened through the app's router (or in a new tab
+        if external).
     icon
         Material icon name shown beside the label. Defaults to ``"add"``.
     """
 
     label: str
-    action: Callable[[], t.Any] | str
+    action: Callable[[SidebarContext], t.Any] | str
     icon: str = "add"
 
     def __post_init__(self):  # noqa: D105
@@ -90,18 +145,39 @@ class SidebarAction:
 class SidebarSection:
     """Specification for a navigation section in the FlowDash rail and drawer.
 
+    Sidebar sections render only with ``nav_variant="rail"`` (the default).
+    A section may either:
+
+    - list destinations via ``items`` and/or ``new_action`` (rendered as a
+      menu in the desktop rail and an expanded group in the narrow drawer),
+    - link directly to a landing route via ``path`` (rendered as a single
+      button), or
+    - pass a callable ``path(ctx)`` returning a route string or ``None`` to
+      switch dynamically between direct-link mode and menu mode (as the
+      built-in Dashboards section does for ``home_dashboard``).
+
+    Setting both ``route`` and ``view`` lets the section serve its own routes
+    at ``/<route>`` and ``/<route>/<subpath>`` through ``view(ctx, subpath)``
+    without appearing in Pages. When ``route`` and ``view`` are set without
+    ``items``, ``new_action`` or ``path``, the section links directly to
+    ``/<route>``.
+
     Attributes
     ----------
     id
         Unique section identifier (e.g. ``"dashboards"``, ``"reports"``).
-        Registering a section with an existing ``id`` replaces the earlier one.
+        Built-in ids in :data:`RESERVED_SECTION_IDS` are rejected. Registering
+        a section with an existing ``id`` replaces the earlier one.
     label
-        Heading displayed in the rail button and the narrow-screen drawer.
+        Heading displayed in the rail button, narrow-screen drawer and
+        breadcrumbs.
     icon
         Material icon name for the section (e.g. ``"space_dashboard"``).
     items
-        Optional callable ``items(user) -> Sequence[SidebarItem]`` returning
-        the destinations visible to the current :class:`~panel_flowdash.Identity`.
+        Optional callable ``items(ctx: SidebarContext) -> Sequence[SidebarItem]``
+        returning the destinations visible in this session. Results are cached
+        per refresh and re-fetched when the section's menu or drawer opens or
+        when :meth:`~panel_flowdash.app.FlowDashApp.refresh_sections` is called.
     order
         Sort key controlling section order (ascending). Ties preserve
         registration order. The built-in Dashboards section uses ``0``; custom
@@ -110,26 +186,44 @@ class SidebarSection:
         Optional :class:`SidebarAction` (such as "+ New") placed at the end of
         the section's items.
     visible
-        Optional predicate ``visible(user) -> bool`` deciding whether the
-        section appears for the current :class:`~panel_flowdash.Identity`.
+        Optional predicate ``visible(ctx: SidebarContext) -> bool`` deciding
+        whether the section appears in the navigation and whether its ``route``
+        may be opened.
     path
-        Optional landing route (or zero-argument callable returning a route or
-        ``None``). When resolved to a non-empty string, clicking the section
-        navigates directly to that route instead of opening an item menu.
+        Optional landing route (or callable ``path(ctx: SidebarContext) -> str | None``).
+        A static string ``path`` cannot be combined with ``items`` or
+        ``new_action``; use ``route`` and ``view`` to serve a landing page
+        alongside items, or a callable ``path(ctx)`` to switch modes dynamically.
+    route
+        Optional URL prefix served by this section, e.g. ``"reports"`` for
+        ``/reports`` and ``/reports/...``. Leading and trailing slashes are
+        stripped. Must be paired with ``view``.
+    view
+        Optional callable ``view(ctx: SidebarContext, path: str) -> Viewable``
+        (sync or async) rendering ``/<route>`` (``path == ""``) and
+        ``/<route>/<subpath>`` (``path == "<subpath>"``). Must be paired with
+        ``route``.
     """
 
     id: str
     label: str
     icon: str
-    items: Callable[[Identity], Sequence[SidebarItem]] | None = None
+    items: Callable[[SidebarContext], Sequence[SidebarItem]] | None = None
     order: float = 100
     new_action: SidebarAction | None = None
-    visible: Callable[[Identity], bool] | None = None
-    path: str | Callable[[], str | None] | None = None
+    visible: Callable[[SidebarContext], bool] | None = None
+    path: str | Callable[[SidebarContext], str | None] | None = None
+    route: str | None = None
+    view: Callable[[SidebarContext, str], t.Any] | None = None
 
     def __post_init__(self):  # noqa: D105
         if not isinstance(self.id, str) or not self.id.strip():
             raise ValueError("SidebarSection.id must be a non-empty string.")
+        if self.id in RESERVED_SECTION_IDS:
+            reserved = ", ".join(sorted(RESERVED_SECTION_IDS))
+            raise ValueError(
+                f"SidebarSection.id {self.id!r} is reserved for built-in navigation ({reserved})."
+            )
         if not isinstance(self.label, str) or not self.label.strip():
             raise ValueError("SidebarSection.label must be a non-empty string.")
         if not isinstance(self.icon, str) or not self.icon.strip():
@@ -152,4 +246,40 @@ class SidebarSection:
             raise TypeError(
                 "SidebarSection.path must be a string, a callable or None, "
                 f"got {type(self.path).__name__}."
+            )
+        if isinstance(self.path, str) and (self.items is not None or self.new_action is not None):
+            raise ValueError(
+                "SidebarSection with a static 'path' cannot also set 'items' or 'new_action'; "
+                "use 'route' and 'view' to serve a section landing page alongside items, or "
+                "pass a callable 'path(ctx)' returning a route or None to switch modes dynamically."
+            )
+        if (self.route is None) != (self.view is None):
+            raise ValueError("SidebarSection.route and SidebarSection.view must be set together.")
+        if self.route is not None:
+            if not isinstance(self.route, str):
+                raise TypeError(
+                    f"SidebarSection.route must be a string or None, got {type(self.route).__name__}."
+                )
+            normalized = self.route.strip("/")
+            if (
+                not normalized
+                or any(ch.isspace() for ch in normalized)
+                or "?" in normalized
+                or "#" in normalized
+            ):
+                raise ValueError(
+                    f"SidebarSection.route must be a clean URL prefix without spaces or query, "
+                    f"got {self.route!r}."
+                )
+            top_segment = normalized.split("/", 1)[0]
+            if top_segment in RESERVED_ROUTE_PREFIXES:
+                reserved = ", ".join(sorted(RESERVED_ROUTE_PREFIXES))
+                raise ValueError(
+                    f"SidebarSection.route {self.route!r} collides with a reserved route prefix "
+                    f"({reserved})."
+                )
+            object.__setattr__(self, "route", normalized)
+        if self.view is not None and not callable(self.view):
+            raise TypeError(
+                f"SidebarSection.view must be callable or None, got {type(self.view).__name__}."
             )

@@ -39,7 +39,6 @@ from panel_flowdash.admin.wizard import SETUP_SECTION, SetupWizard, project_is_n
 from panel_flowdash.ai import UsageLedger, ledger_for
 from panel_flowdash.auth import (
     AuthConfig,
-    Identity,
     Permission,
     entry_authorized,
     is_authorized,
@@ -74,7 +73,7 @@ from panel_flowdash.project import (
 from panel_flowdash.registry import RegistryEntry, build_registry
 from panel_flowdash.session_state import build_session_state_class, check_requirements
 from panel_flowdash.settings import DashboardSettings
-from panel_flowdash.sidebar import SidebarItem, SidebarSection
+from panel_flowdash.sidebar import SidebarContext, SidebarItem, SidebarSection
 from panel_flowdash.ui.command_palette import CommandPaletteController
 from panel_flowdash.ui.dashboard_bar import (
     COMPACT_BREAKPOINT,
@@ -512,13 +511,15 @@ class FlowDashApp(Viewer):
         default=[],
         item_type=SidebarSection,
         doc="""
-        Navigation sections shown in the rail and narrow-screen drawer, each a
-        :class:`~panel_flowdash.SidebarSection`. The built-in Dashboards
-        section (``id="dashboards"``, ``order=0``) is registered automatically
-        unless a section with ``id="dashboards"`` is supplied here. Sections
-        render in ascending ``order`` (custom sections default to ``100``),
-        preserving registration order on ties. Use :meth:`add_section` and
-        :meth:`remove_section` to update sections after construction.""",
+        Navigation sections shown in the rail and narrow-screen drawer (when
+        ``nav_variant="rail"``), each a :class:`~panel_flowdash.SidebarSection`.
+        The built-in Dashboards section (``id="dashboards"``, ``order=0``) is
+        registered automatically unless a section with ``id="dashboards"`` is
+        supplied here. Assigning ``app.sections = [...]`` keeps the built-in
+        Dashboards section, deduplicates by ``id`` and sorts in ascending
+        ``order`` (custom sections default to ``100``). Use :meth:`add_section`,
+        :meth:`remove_section` and :meth:`refresh_sections` to manage sections
+        at runtime.""",
     )
 
     settings_sources = param.Dict(
@@ -675,6 +676,7 @@ class FlowDashApp(Viewer):
         self._init_sections()
         self._shell = AppShell(self) if self.nav_variant == "rail" else None
         self.param.watch(self._on_sections_changed, "sections")
+        self.param.watch(self._on_home_dashboard_changed, "home_dashboard")
         self._command_palette = CommandPaletteController.install(self)
         self._agent_session = self._build_agent_session()
         if self._agent_session is not None and self._shell is not None:
@@ -744,6 +746,8 @@ class FlowDashApp(Viewer):
             ]
         self._page_sx = {**page_kwargs.get("sx", {}), **self.page_options.get("sx", {})}
         self._page = pmui.Page(**{**page_kwargs, "sx": self._header_sx()})
+        if self._shell is not None:
+            self._page.param.watch(self._shell._on_drawer_open, "sidebar_open")
         self.param.watch(self._sync_page_sidebar, "sidebar")
         pn.state.onload(self._load_page_layout)
 
@@ -1005,6 +1009,11 @@ class FlowDashApp(Viewer):
         ):
             pn.state.execute(self._load_page_layout)
 
+    @property
+    def is_admin(self) -> bool:
+        """Whether this session administers the project."""
+        return bool(self._is_admin)
+
     def still_admin(self) -> bool:
         """Whether this session is still an admin, with the project file read again.
 
@@ -1104,9 +1113,13 @@ class FlowDashApp(Viewer):
     # Sidebar navigation sections
     # ------------------------------------------------------------------
 
-    def _list_dashboard_items(self, user: Identity) -> list[SidebarItem]:
-        """List accessible dashboards for *user* as :class:`SidebarItem` entries."""
-        dashboards = self.store.list_accessible(user, default_allow=self._default_allow())
+    def _sidebar_context(self, section: SidebarSection) -> SidebarContext:
+        """Build the :class:`SidebarContext` passed to *section*'s callbacks."""
+        return SidebarContext(app=self, user=self._identity, section=section)
+
+    def _list_dashboard_items(self, ctx: SidebarContext) -> list[SidebarItem]:
+        """List accessible dashboards for ``ctx.user`` as :class:`SidebarItem` entries."""
+        dashboards = self.store.list_accessible(ctx.user, default_allow=self._default_allow())
         return [
             SidebarItem(
                 title=d.title,
@@ -1124,43 +1137,131 @@ class FlowDashApp(Viewer):
             icon="space_dashboard",
             order=0,
             items=self._list_dashboard_items,
-            path=lambda: None if self.home_dashboard else "/",
+            path=lambda ctx: None if ctx.app.home_dashboard else "/",
         )
 
-    @staticmethod
-    def _order_sections(sections: t.Iterable[SidebarSection]) -> list[SidebarSection]:
-        """Deduplicate *sections* by id (last registration wins) and sort by ``order``."""
+    def _normalize_sections(self, sections: t.Iterable[SidebarSection]) -> list[SidebarSection]:
+        """Keep the built-in Dashboards section, dedupe by id (last wins) and sort by ``order``."""
         by_id: dict[str, SidebarSection] = {}
+        if self._include_dashboards_section:
+            by_id[self._dashboards_section.id] = self._dashboards_section
         for section in sections:
             by_id[section.id] = section
         return sorted(by_id.values(), key=lambda s: s.order)
 
+    def _set_sections(self, sections: t.Iterable[SidebarSection]):
+        normalized = self._normalize_sections(sections)
+        self._normalizing_sections = True
+        try:
+            self.sections = normalized
+        finally:
+            self._normalizing_sections = False
+        if getattr(self, "_shell", None) is not None:
+            self._shell.refresh()
+
     def _init_sections(self):
         """Register the built-in Dashboards section alongside any user-supplied sections."""
-        self.sections = self._order_sections([self._build_dashboards_section(), *self.sections])
+        self._normalizing_sections = False
+        self._include_dashboards_section = True
+        self._dashboards_section = self._build_dashboards_section()
+        self._set_sections(self.sections)
 
-    def _on_sections_changed(self, _event):
-        if self._shell is not None:
-            self._shell.refresh()
+    def _on_sections_changed(self, event):
+        if self._normalizing_sections:
+            return
+        self._set_sections(event.new)
+
+    def _on_home_dashboard_changed(self, _event):
+        self.refresh_sections("dashboards")
 
     def add_section(self, section: SidebarSection) -> SidebarSection:
         """Register a :class:`~panel_flowdash.SidebarSection` on this app.
 
         If a section with the same ``id`` is already registered, it is
         replaced. Sections are ordered by their ``order`` key and the
-        navigation rail and narrow-screen drawer refresh immediately.
+        navigation rail and narrow-screen drawer (when ``nav_variant="rail"``)
+        refresh immediately.
         """
         if not isinstance(section, SidebarSection):
             raise TypeError(f"section must be a SidebarSection, got {type(section).__name__}.")
-        self.sections = self._order_sections([*self.sections, section])
+        if section.id == "dashboards":
+            self._include_dashboards_section = True
+        self._set_sections([*self.sections, section])
         return section
 
     def remove_section(self, section_id: str) -> SidebarSection | None:
         """Remove the section with id *section_id*, returning it or ``None`` if absent."""
         removed = next((s for s in self.sections if s.id == section_id), None)
         if removed is not None:
-            self.sections = [s for s in self.sections if s.id != section_id]
+            if section_id == "dashboards":
+                self._include_dashboards_section = False
+            self._set_sections([s for s in self.sections if s.id != section_id])
         return removed
+
+    def refresh_sections(self, section_id: str | None = None) -> None:
+        """Re-fetch cached sidebar items and update the navigation rail and drawer.
+
+        Pass *section_id* to refresh a single section, or ``None`` to refresh
+        every registered section. No-op when ``nav_variant != "rail"`` or when
+        *section_id* is not registered.
+        """
+        if self._shell is None:
+            return
+        if section_id is not None and not any(s.id == section_id for s in self.sections):
+            return
+        self._shell.refresh(section_id)
+
+    def _section_for_path(self, pathname: str) -> tuple[SidebarSection, str] | None:
+        """Return ``(section, subpath)`` for a section serving *pathname*, or ``None``."""
+        normalized = pathname.strip("/")
+        if not normalized:
+            return None
+        for section in self.sections:
+            if not section.route:
+                continue
+            if normalized == section.route:
+                return section, ""
+            prefix = f"{section.route}/"
+            if normalized.startswith(prefix):
+                return section, normalized[len(prefix) :]
+        return None
+
+    async def _call_section_view(self, section: SidebarSection, ctx: SidebarContext, subpath: str):
+        view = section.view
+        assert view is not None
+        result = (
+            await view(ctx, subpath) if inspect.iscoroutinefunction(view) else view(ctx, subpath)
+        )
+        if isinstance(result, pn.viewable.Viewer):
+            return panel_viewer(result)
+        return pn.panel(result)
+
+    async def _render_section_view(self, section: SidebarSection, subpath: str):
+        ctx = self._sidebar_context(section)
+        if section.visible is not None:
+            try:
+                allowed = bool(section.visible(ctx))
+            except Exception:
+                logger.exception(
+                    "SidebarSection %r visible predicate failed; denying route access", section.id
+                )
+                allowed = False
+            if not allowed:
+                return self._access_denied_view(section.label)
+        try:
+            async with self._loading_screen():
+                return await self._run_navigation_task(
+                    self._call_section_view(section, ctx, subpath)
+                )
+        except Exception as exc:
+            logger.exception("Error rendering sidebar section %r at %r", section.id, subpath)
+            err_name = type(exc).__name__
+            return alert_pane(
+                f"**{err_name}**: {escape_markdown(error_text(exc))}\n<hr>\n"
+                f"<pre> {escape_html(redact_secrets(traceback.format_exc()))}</pre>\n",
+                alert_type="danger",
+                styles={"color": "black"},
+            )
 
     def _header_sx(self) -> dict:
         """Return the page's ``sx``, making room for a dashboard's actions in the top bar."""
@@ -2088,7 +2189,7 @@ class FlowDashApp(Viewer):
         self._menu_list.items = items
         self._refresh_menu_bar()
         if self._shell is not None:
-            self._shell.refresh()
+            self._shell.refresh("dashboards")
         self._editor._dashboard_bar.sync()
         location = pn.state.location
         if self._launcher is not None and location is not None and location.pathname == "/":
@@ -2152,6 +2253,7 @@ class FlowDashApp(Viewer):
             return
         generation = self._begin_navigation()
         pathname = pn.state.location.pathname
+        search = pn.state.location.search or ""
         # Importing pending pages awaits, so a newer navigation may have started.
         await self._resolve_pending_entries()
         if not self._is_current_navigation(generation):
@@ -2236,6 +2338,27 @@ class FlowDashApp(Viewer):
                     )
                 return
 
+        matched_section = self._section_for_path(pathname)
+        if matched_section is not None:
+            section, subpath = matched_section
+            self._leave_dashboard()
+            self._reset_canvas()
+            self._set_sidebar_views([])
+            content = await self._render_section_view(section, subpath)
+            if not self._is_current_navigation(generation):
+                return
+            self._apply_layout_config(content, pathname)
+            wrapper = pmui.Column(content, sizing_mode="stretch_width")
+            self._page.main = [
+                self._nav_content(wrapper),
+                self._dialog,
+                self._unsaved_dialog,
+                *self._page_dialogs,
+            ]
+            if self._shell is not None:
+                self._shell.sync(pathname, search)
+            return
+
         self._leave_dashboard()
         self._set_sidebar_views([])
         key = tuple(pathname.strip("/").split("/"))
@@ -2251,6 +2374,8 @@ class FlowDashApp(Viewer):
                 self._unsaved_dialog,
                 *self._page_dialogs,
             ]
+            if self._shell is not None:
+                self._shell.sync(pathname, search)
         else:
             self._apply_layout_config(None, pathname)
             main = [
@@ -3067,7 +3192,7 @@ class FlowDashApp(Viewer):
         if pn.state.location is None:
             return
         pn.state.location.param.update(pathname=path, search=search)
-        self._sync_menu_active(path)
+        self._sync_menu_active(path, search)
         doc = pn.state.curdoc
         if doc is not None and doc.session_context is not None:
             # Started right away, loading could send the new page before the
@@ -3077,9 +3202,25 @@ class FlowDashApp(Viewer):
         else:
             pn.state.execute(self._load_page_layout)
 
-    def _sync_menu_active(self, path: str):
+    def _navigate_url(self, url: str):
+        """Navigate to an internal route *url*, preserving any query string."""
+        route, sep, query = url.partition("?")
+        route = "/" + route.strip("/") if route.strip("/") else "/"
+        search = f"?{query}" if sep and query else ""
+        if pn.state.location is None:
+            return
+        current_path = "/" + (pn.state.location.pathname or "").strip("/")
+        current_search = pn.state.location.search or ""
+        if route == current_path and search == current_search:
+            return
+        if route == current_path and not search and "edit=true" in current_search:
+            self._on_nav_click({"path": route})
+            return
+        self._request_navigation(route, search=search)
+
+    def _sync_menu_active(self, path: str, search: str = ""):
         if self._shell is not None:
-            self._shell.sync(path)
+            self._shell.sync(path, search)
         items = self._menu_list.items
         for si, section in enumerate(items):
             if section.get("path") == path:
@@ -3311,12 +3452,14 @@ class FlowDashApp(Viewer):
     @classmethod
     def build_routes(
         cls,
-        project_dir: str | pathlib.Path,
+        project_dir: str | pathlib.Path | None = None,
         registry: dict[str, RegistryEntry] | None = None,
         **params,
     ) -> dict[str, t.Any]:
         """Generate route mapping for pn.serve."""
         if registry is None:
+            if project_dir is None:
+                raise ValueError("build_routes requires either project_dir or registry.")
             registry = build_registry(pathlib.Path(project_dir), package=params.get("package"))
         # Merged once here, so every session shares the libraries' entries.
         registry = cls._with_libraries(
@@ -3344,6 +3487,17 @@ class FlowDashApp(Viewer):
             f"{ADMIN_ROUTE}/[^/]+": factory,
             f"{DASH_ROUTE_PREFIX}[^/]+": factory,
         }
+        configured_sections = params.get("sections")
+        if configured_sections is None:
+            configured_sections = cls.param.sections.default
+        for section in configured_sections or ():
+            if isinstance(section, SidebarSection) and section.route:
+                prefix = f"/{section.route}"
+                routes[prefix] = factory
+                # Exclude Bokeh's per-app endpoints and static assets from the catch-all subpath.
+                routes[
+                    f"{prefix}/(?:(?!static/)[^/]+/)*(?!ws$|autoload\\.js$|metadata$|static$)[^/]+"
+                ] = factory
         for app_id, v in registry.items():
             if v.metadata.page:
                 routes[f"/{app_id}"] = factory
