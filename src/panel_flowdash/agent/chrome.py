@@ -7,13 +7,16 @@ import typing as t
 import panel as pn
 import panel_material_ui as pmui
 
+from panel_flowdash.ui.dashboard_bar import PHONE_BREAKPOINT
 from panel_flowdash.ui.text import escape_markdown, text_typography
 
 if t.TYPE_CHECKING:
     from .session import AgentSession
 
-#: Below this window width the drawer overlays the app instead of narrowing it.
-OVERLAY_BELOW = 1200
+#: Below this window width, a phone's, the drawer overlays the app instead of narrowing it.
+#: Wider, it is Ask beside the canvas in edit mode, where an overlay's backdrop would
+#: cover the edit bar's Done.
+OVERLAY_BELOW = PHONE_BREAKPOINT
 
 
 def _node(value: t.Any) -> str:
@@ -309,7 +312,7 @@ class SessionChrome:
     def _on_fullscreen(self, event):
         self._refresh_notice()
 
-    def _on_explore(self, event):
+    def _on_explore(self, *_events):
         self._refresh_notice()
 
     # ------------------------------------------------------------------

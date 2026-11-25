@@ -19,6 +19,7 @@ from panel_agents.events import RunStarted
 
 from panel_flowdash.ai import ModelEntry, UsageLedger, model_choice, select_model
 from panel_flowdash.explore import EXPLORE_RUN_PREFIX, is_explore_run
+from panel_flowdash.ui.split_view import ASK_MAX_RATIO, ASK_MIN_WIDTH
 from panel_flowdash.ui.text import text_typography
 from panel_flowdash.util import confirm
 
@@ -175,11 +176,18 @@ class AgentSession:
         if len(models or ()) > 1:
             chat_params["remember_model"] = MODEL_KEY
         preferences = editor._split_view.preferences
+        # Resized within the same bounds as Ask's panel in view mode, where panel-agents can.
+        bounds = (
+            {"min_resize_width": ASK_MIN_WIDTH, "max_resize_ratio": ASK_MAX_RATIO}
+            if "max_resize_ratio" in AgentDrawer.param
+            else {}
+        )
         self.drawer = AgentDrawer(
             self.runner,
             title="Assistant",
             variant="persistent",
             width=preferences.assistant_width,
+            **bounds,
             on_apply=self.apply_version,
             # Someone else's request is redacted for people who may not see what it touched.
             redact_runs=editor.run_redacted,
@@ -357,6 +365,9 @@ class AgentSession:
                 self.drawer.open = True
         elif pending:
             self.drawer.open = True
+        elif "editable" in names:
+            # Ask in edit mode closes with it; view mode gets back its own Ask, see `FlowDash.ask`.
+            self.drawer.open = False
 
     def _adding_from_feed(self) -> bool:
         feed = self.app._editor._explore_feed

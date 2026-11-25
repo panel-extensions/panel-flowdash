@@ -164,13 +164,13 @@ The robot button in the top bar opens the assistant: a drawer beside the page wi
 the chat, the versions of the dashboard the agent published and the calls waiting for
 approval. It stays open while you move between dashboards. On a dashboard, **Ask** in
 edit mode takes the robot button's place and opens the same drawer; closing the drawer
-turns Ask off. The command palette
+turns Ask off, and Done closes it. The command palette
 (Ctrl+K) also offers "Ask the assistant" for whatever you typed; a question asked
 while the agent is busy is sent once it is done. In full screen, a call waiting for
 approval shows a notice whose Review button leaves full screen and opens the drawer.
 The chat names each finished step in the dashboard's terms ("Connect filter to map",
-"Change kpi: label") and folds it away. In windows narrower than 1200 pixels the
-drawer opens over the page instead of beside it. The agent's edits appear on the user's canvas as they happen, as unsaved changes:
+"Change kpi: label") and folds it away. On a phone the drawer opens over the page
+instead of beside it. The agent's edits appear on the user's canvas as they happen, as unsaved changes:
 a dashboard shown in view mode switches to edit mode, and Save, Discard and the
 unsaved-changes review work as for the user's own edits. The nodes and tiles the
 agent added (green) or changed (amber) during a request stay outlined until the next
@@ -231,14 +231,18 @@ action out.
 **Ask** in a dashboard's top bar, next to the Dashboard/Report switch and Edit, opens
 the Explore feed left of the dashboard or the report, which stay on screen beside it.
 Drag its right edge to resize it, from 320 pixels to half the window; the width is
-remembered by the browser. In edit mode Ask opens the assistant's drawer instead, and
-Done brings the feed back if Ask is still on. A phone has no room beside the dashboard,
+remembered by the browser, and the feed keeps to half the window as the window narrows.
+In edit mode Ask opens the assistant's drawer instead, resized within the same bounds.
+Edit mode starts with Ask as view mode left it, and Done gives view mode back its own
+Ask: the feed comes back if it was open before, whatever happened to the assistant
+meanwhile, and opening the assistant in edit mode or from the command palette never
+opens the feed later. A phone has no room beside the dashboard,
 so there Ask, in the More actions menu, shows the feed in place of the dashboard.
 
 The feed shows the dashboard as a conversation: one entry per turn, the question,
 the assistant's steps and answer, and below it a card for each node the turn created,
-showing that node live. A view or control shows what its tile shows, except beside the
-dashboard, whose tile already shows it, where the card says so; a data source or
+showing that node live. A view or control shows what its tile shows, except docked
+beside the dashboard or the report, where the card says where its tile is; a data source or
 transform shows its output as a table. **Add to dashboard** on a card places the node's
 tile on the grid, and "On dashboard" says it is there already. A card whose node a later
 turn changed says so ("Changed later by 1 manual edit"), and a batch of manual edits is

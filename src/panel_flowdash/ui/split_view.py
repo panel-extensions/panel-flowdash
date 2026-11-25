@@ -54,14 +54,14 @@ DEFAULT_SIZES = (55.0, 45.0)
 #: The width of the Ask panel docked left of a dashboard, until the person drags it.
 ASK_WIDTH = 420
 
-#: The narrowest the Ask panel gets; the widest is half the window.
+#: The narrowest the Ask panel and the assistant's drawer, Ask in edit mode, get.
 ASK_MIN_WIDTH = 320
 
-#: The width of the assistant's drawer, Ask in edit mode, until the person drags its edge.
-ASSISTANT_WIDTH = 360
+#: The widest share of the window the Ask panel and the assistant's drawer get.
+ASK_MAX_RATIO = 0.5
 
-#: The narrowest the assistant's drawer gets, as panel-agents' AgentDrawer allows.
-ASSISTANT_MIN_WIDTH = 240
+#: The width of the assistant's drawer until the person drags its edge.
+ASSISTANT_WIDTH = 360
 
 # Narrower than this, a pane counts as collapsed; split.js reports a collapsed
 # pane at 0 to 1 percent and a pane dragged into its snap zone at under 5.
@@ -115,7 +115,7 @@ class SplitPreferences(param.Parameterized):
 
     assistant_width = param.Integer(
         default=ASSISTANT_WIDTH,
-        bounds=(ASSISTANT_MIN_WIDTH, None),
+        bounds=(ASK_MIN_WIDTH, None),
         doc="The width of the assistant's drawer, Ask in edit mode, set by dragging its left edge.",
     )
 
@@ -172,7 +172,7 @@ class SplitPreferences(param.Parameterized):
             update["ask_width"] = max(ASK_MIN_WIDTH, width)
         width = stored.get("assistant_width")
         if isinstance(width, int) and not isinstance(width, bool):
-            update["assistant_width"] = max(ASSISTANT_MIN_WIDTH, width)
+            update["assistant_width"] = max(ASK_MIN_WIDTH, width)
         if update:
             self.param.update(update)
         return bool(update)
