@@ -69,6 +69,8 @@ def open_assistant(page):
     ask = ask_button(page)
     if ask.get_attribute("aria-pressed") != "true":
         ask.click()
+        # Off Ask, whose tooltip would otherwise stay over the edit actions beside it.
+        page.mouse.move(0, 0)
 
 
 def ask_from_palette(page, text):

@@ -65,7 +65,7 @@ def test_one_labelled_model_shows_its_id_in_a_tooltip(page):
     label = page.locator(".pa-model-fixed")
     expect(label).to_have_text("Model: Fast")
     expect(label).to_have_accessible_name("Model: Fast, test")
-    tip = page.get_by_role("tooltip")
+    tip = page.get_by_role("tooltip", name="test", exact=True)
     expect(tip).to_be_hidden()
     label.hover()
     expect(tip).to_have_text("test")
