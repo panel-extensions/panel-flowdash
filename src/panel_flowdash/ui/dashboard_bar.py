@@ -525,10 +525,10 @@ class DashboardBar(Viewer):
         )
         self.mode_tabs.param.watch(self._on_tab, "value")
         editor.param.watch(self._sync_switchers, ["surface", "mode", "read_only", "ask"])
-        editor.param.watch(lambda _event: self.sync(), ["assistant", "read_only"])
+        editor.param.watch(lambda *_events: self.sync(), ["assistant", "read_only"])
         # The overflow menu offers the views the switchers have no room for and,
         # on a phone in edit mode, opens or closes the assistant.
-        editor.param.watch(lambda _event: self.sync(), ["surface", "ask"])
+        editor.param.watch(lambda *_events: self.sync(), ["surface", "ask"])
         # An icon, so the edit actions keep to one row beside the switches and tabs.
         self.settings_button = pmui.IconButton(
             icon="tune",
@@ -658,7 +658,7 @@ class DashboardBar(Viewer):
                 "border-bottom": "1px solid var(--mui-palette-divider)",
             },
         )
-        self.param.watch(lambda _event: self.sync(), ["layout", "placement"])
+        self.param.watch(lambda *_events: self.sync(), ["layout", "placement"])
         # In a host header the lead and actions hide with the bar, e.g. in full screen.
         self.param.watch(lambda _event: self._sync_lead(), "visible")
         editor.param.watch(self._on_dashboard_changed, "dashboard")
