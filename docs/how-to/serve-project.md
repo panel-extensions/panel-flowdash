@@ -425,9 +425,9 @@ dashboard's description and a health chip ("9/9 up to date", or the number of
 failed and waiting tiles), which opens the pipeline and a Show issues action.
 On the right it has the Dashboard/Report switch, Ask, Edit, Refresh with the
 auto-refresh period (its tooltip says when the dashboard was last refreshed),
-Share, Full screen and a menu of further actions. In edit mode the same row holds
+Full screen and a menu of further actions. In edit mode the same row holds
 the save state, the Dashboard/Report switch, the Dataflow/Layout/Split tabs, Ask,
-Settings, Discard, Save and Done. The search field
+Settings, Share (for admins), Discard, Save and Done. The search field
 shrinks to an icon button on a dashboard unless the window is very wide.
 
 `header_layout="full"` gives the dashboard a row of its own under the top bar
@@ -461,7 +461,7 @@ one. Outside text fields these shortcuts also work:
 ### Full screen
 
 To present a dashboard, or show it on a wall display, open it in full screen
-with the full screen button next to *Refresh* and *Share*, *Full screen* in
+with the full screen button next to *Refresh*, *Full screen* in
 the command palette, or <kbd>F</kbd>. The tiles and the controls bar
 then fill the screen, reflowed to its size, without the top bar, the
 navigation rail or the dashboard bar. Moving the pointer, a tap or a key press

@@ -153,7 +153,9 @@ async def test_another_edit_withdraws_the_undo_and_keeps_the_mention(store, monk
     assert _mentions(session) == []
 
 
-async def test_closing_the_assistant_after_a_handover_keeps_ask_off(store, monkeypatch):
+async def test_closing_the_assistant_after_a_handover_leaves_view_mode_its_own_ask(
+    store, monkeypatch
+):
     app, _ = await _add_from_the_dock(store, monkeypatch)
     session, editor = app._agent_session, app._editor
     session.drawer.open = False
@@ -161,7 +163,7 @@ async def test_closing_the_assistant_after_a_handover_keeps_ask_off(store, monke
     # The tile and its Undo stay until the next edit.
     assert session.handover.notice.visible
     app._on_dashboard_bar_mode("view")
-    assert not editor.ask and not editor.ask_docked
+    assert editor.ask_docked and not session.drawer.open
 
 
 async def test_a_hidden_output_shown_from_the_dock_is_handed_over_too(store, monkeypatch):

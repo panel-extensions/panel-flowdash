@@ -29,6 +29,9 @@ _HIDE_WHEN_WIDE = (
 HEADER_SX = {
     # The top bar is one 56px row; the page's spacers below it follow suit.
     "& .MuiToolbar-root": {"minHeight": "56px"},
+    # Its height with the busy indicator under the row and its bottom border, for
+    # what is laid out below it, e.g. the inspect sheet.
+    "--fd-header-height": "61px",
     "& .header .MuiToolbar-root": {"gap": "4px"},
     "& .header .title": {"fontSize": "1.25rem", "fontWeight": 600},
     # The header items may get narrower than their content, so the breadcrumb

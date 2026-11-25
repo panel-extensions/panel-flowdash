@@ -476,6 +476,39 @@ async def test_the_drawer_opened_in_view_mode_stays_open_as_edit_mode_starts(sto
     session.drawer.open = True
     editor.editable = True
     assert session.drawer.open and editor.ask
+    # Done gives view mode back its Ask, which was off: the drawer closes and nothing docks.
+    app._on_dashboard_bar_mode("view")
+    assert not editor.ask and not editor.ask_docked and not session.drawer.open
+
+
+async def test_the_assistant_opened_in_edit_mode_leaves_ask_in_view_mode_as_it_was(
+    store, monkeypatch
+):
+    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    session, editor = app._agent_session, app._editor
+    editor.param.update(editable=False, ask=False)
+    app._on_dashboard_bar_mode("edit")
+    editor.ask = True
+    assert session.drawer.open
+    app._on_dashboard_bar_mode("view")
+    assert not editor.ask and not editor.ask_docked and not session.drawer.open
+    # Docked before edit mode, Ask comes back however the assistant was left.
+    editor.ask = True
+    app._on_dashboard_bar_mode("edit")
+    assert session.drawer.open
+    session.drawer.open = False
+    assert not editor.ask
+    app._on_dashboard_bar_mode("view")
+    assert editor.ask_docked and not session.drawer.open
+
+
+async def test_ask_set_as_edit_mode_ends_is_kept(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    session, editor = app._agent_session, app._editor
+    editor.param.update(editable=False, ask=False)
+    editor.editable = True
+    editor.param.update(editable=False, ask=True)
+    assert editor.ask_docked and not session.drawer.open
 
 
 async def test_the_drawer_opens_at_the_width_last_dragged_to(store, monkeypatch):

@@ -31,6 +31,7 @@ from __future__ import annotations
 import logging
 import typing as t
 from datetime import datetime
+from functools import partial
 
 import panel as pn
 import panel_material_ui as pmui
@@ -194,6 +195,8 @@ class ExploreFeed(Viewer):
         # The dashboard open when each recorded run started; a run shows in that dashboard's feed only.
         self._run_dashboards: dict[str, str | None] = {}
         self._applied: list[ev.Event] = []
+        # Where the cards were rendered for, docked or not: a hidden feed placed elsewhere renders them anew once shown.
+        self._cards_docked = self.docked
         # The projected change lists, which may grow while their turn is open.
         self._summaries: set[str] = set()
         # The watchers of the data cards' values, by node.
@@ -247,6 +250,7 @@ class ExploreFeed(Viewer):
         )
         self._earlier.on_click(lambda _event: self.show_earlier())
         editor.param.watch(self._on_dashboard, "dashboard")
+        editor.param.watch(self._on_surface, "surface")
 
     def _on_dashboard(self, *_events):
         self._first = None
@@ -445,9 +449,15 @@ class ExploreFeed(Viewer):
     @param.depends("docked", watch=True)
     def _on_docked(self):
         self._frame_chat()
-        # The cards rendered for the other placement show or leave out the dashboard's views.
-        if self.shown and self._applied:
-            self._rebuild(*self.project())
+        # The cards rendered for the other placement show or leave out the dashboard's
+        # views, so they are rendered anew, now or once the feed is shown.
+        if self.shown:
+            self.sync()
+
+    def _on_surface(self, _event):
+        # A docked card says whether its view is on the dashboard beside it or not.
+        if self.shown and self.docked:
+            self.refresh()
 
     @param.depends("shown", watch=True)
     def _on_shown(self):
@@ -753,8 +763,10 @@ class ExploreFeed(Viewer):
         timeline, cells = self.project()
         applied = self._applied
         prefix = timeline[: len(applied)]
-        if [self._key(e) for e in prefix] != [self._key(e) for e in applied] or any(
-            aid not in cells for aid in self._published
+        if (
+            self._cards_docked != self.docked
+            or [self._key(e) for e in prefix] != [self._key(e) for e in applied]
+            or any(aid not in cells for aid in self._published)
         ):
             self._rebuild(timeline, cells)
         else:
@@ -798,6 +810,7 @@ class ExploreFeed(Viewer):
         self.state.apply_many(cells.values())
         self._applied = list(timeline)
         self._published = dict(cells)
+        self._cards_docked = self.docked
 
     def refresh(self):
         """Update what the cards say about their nodes: changed later, on the dashboard."""
@@ -981,11 +994,11 @@ class ExploreFeed(Viewer):
         if dashboard and tile_layout.area_of(editor, item) == tile_layout.SIDEBAR:
             return self._caption("Shown in the sidebar.")
         if dashboard and self.docked:
-            return self._caption(
-                "Shown on the dashboard."
-                if self._placed_item(item)
-                else "Add it to the dashboard to see it beside this conversation."
-            )
+            caption = self._caption("")
+            describe = partial(self._docked_note, instance_id)
+            caption.param.update(**describe())
+            self._notes[f"docked:{id(caption)}"] = (caption, describe)
+            return caption
         view = editor._tile_objects[index] if index < len(editor._tile_objects) else None
         if view is None:
             return self._caption("This output has nothing to show yet.")
@@ -996,6 +1009,24 @@ class ExploreFeed(Viewer):
         entry = tile_layout.tile_entry(editor, instance_id).get("height") if dashboard else None
         height = max(int(entry or 0), int(size.get("height") or 0), CARD_HEIGHT)
         return pn.Column(view, height=height, sizing_mode="stretch_width", margin=(4, 8))
+
+    def _docked_note(self, instance_id: str) -> dict[str, t.Any]:
+        """Say where a docked card's view is: on the dashboard beside it, or away from the report beside it."""
+        item = self._items().get(instance_id)
+        placed = item is not None and self._placed_item(item)
+        if self.editor.surface == "report":
+            text = (
+                "On the dashboard; switch to Dashboard to see it."
+                if placed
+                else "Add it to the dashboard to see it there."
+            )
+        else:
+            text = (
+                "Shown on the dashboard."
+                if placed
+                else "Add it to the dashboard to see it beside this conversation."
+            )
+        return {"object": escape_markdown(text)}
 
     def _kind(self, item: dict, editor: FlowDash | None = None) -> str:
         """Return the kind a node's card is labelled with, the same whether it shows the view or the value."""

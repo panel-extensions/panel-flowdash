@@ -16,7 +16,12 @@ class DockHandle(JSComponent):
     the side and sets its width: on the left of one docked to the right, or
     on the right of one docked to the left (``edge="end"``). While dragging, the layout follows the pointer
     in the page; :attr:`size` is set once the pointer is released. Arrow keys
-    resize it by 24 pixels when the bar has focus.
+    resize it by 24 pixels when the bar has focus. A width it sets stays
+    within ``max_ratio`` of the window as the window narrows, and comes back
+    as the window widens again.
+
+    The bar is a separator reporting the layout's size, and with
+    :attr:`region` it names the layout as a region it controls.
     """
 
     size = param.Integer(
@@ -37,6 +42,12 @@ class DockHandle(JSComponent):
         default="horizontal",
         objects=["horizontal", "vertical"],
         doc="A horizontal bar resizes the height, a vertical one the width.",
+    )
+
+    region = param.String(
+        default=None,
+        allow_None=True,
+        doc="The accessible name of the layout it resizes, which is then a region the bar controls.",
     )
 
     edge = param.Selector(
@@ -102,15 +113,38 @@ class DockHandle(JSComponent):
         if (target) bar.setAttribute("aria-valuemax", String(highest(target)))
         if (size != null) bar.setAttribute("aria-valuenow", String(Math.round(size)))
       }
+      function label(target) {
+        if (!model.region || !target) return
+        target.setAttribute("role", "region")
+        target.setAttribute("aria-label", model.region)
+        // An id cannot reach out of the bar's shadow root, but the layout holding it can be referenced as an element.
+        if ("ariaControlsElements" in bar) bar.ariaControlsElements = [target]
+      }
+      // Hidden, the layout measures nothing: it is described once shown.
+      function measure() {
+        const target = dock()
+        const size = target ? extent(target.getBoundingClientRect()) : 0
+        if (size > 0) describe(size)
+        label(target)
+      }
+      const observer = new ResizeObserver(measure)
       requestAnimationFrame(() => {
         const target = dock()
-        describe(target ? extent(target.getBoundingClientRect()) : model.size)
+        if (target) observer.observe(target)
+        measure()
+      })
+      window.addEventListener("resize", measure)
+      model.on("remove", () => {
+        observer.disconnect()
+        window.removeEventListener("resize", measure)
       })
       function resize(target, size) {
         describe(size)
         if (vertical) {
-          target.style.width = `${size}px`
-          target.style.minWidth = `${size}px`
+          // Within its share of the window as the window narrows, as dragging keeps it.
+          const width = `clamp(${model.min_size}px, ${size}px, ${model.max_ratio * 100}vw)`
+          target.style.width = width
+          target.style.minWidth = width
         } else {
           target.style.height = `${size}px`
         }
