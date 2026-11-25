@@ -148,8 +148,7 @@ class RailMenuObserver(JSComponent):
 
       const onMsg = (msg) => {
         if (msg && msg.type === "open_url" && typeof msg.url === "string") {
-          const win = window.open(msg.url, "_blank", "noopener,noreferrer")
-          if (!win) window.location.assign(msg.url)
+          window.open(msg.url, "_blank", "noopener,noreferrer")
         }
       }
 
@@ -178,7 +177,7 @@ class RailMenuObserver(JSComponent):
         self._on_open = on_open
 
     def open_url(self, url: str) -> None:
-        """Ask the browser to open *url* in a new tab (falling back to the current window)."""
+        """Ask the browser to open *url* in a new tab."""
         self._send_msg({"type": "open_url", "url": url})
 
     def _handle_msg(self, data):

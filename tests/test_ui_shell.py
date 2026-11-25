@@ -669,6 +669,22 @@ class TestSidebarSections:
             "data",
         ]
 
+        # An invalid assignment rolls back atomically, leaving previous sections and the rail intact.
+        before_sections = list(app.sections)
+        before_rail_keys = [i["key"] for i in app._shell.rail_items()]
+        clashing = SidebarSection(
+            id="analytics_ext",
+            label="Analytics",
+            icon="analytics",
+            route="Analytics",
+            view=lambda _ctx, _p: "",
+        )
+        with pytest.raises(ValueError, match="clashes with registry page section"):
+            app.sections = [clashing]
+        assert list(app.sections) == before_sections
+        assert [i["key"] for i in app._shell.rail_items()] == before_rail_keys
+        assert "dashboards" in app._shell._rail_buttons
+
     async def test_visible_predicate_receives_context_and_hides_section(self, app):
         seen: list[SidebarContext] = []
 

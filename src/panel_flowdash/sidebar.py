@@ -97,8 +97,7 @@ class SidebarContext:
         """Navigate this session to *url*.
 
         Internal routes open through the app's router; external ``http://`` and
-        ``https://`` URLs open in a new browser tab (falling back to the current
-        window if popups are blocked).
+        ``https://`` URLs open in a new browser tab.
         """
         self.app._navigate_url(url)
 

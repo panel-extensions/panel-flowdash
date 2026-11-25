@@ -468,3 +468,47 @@ def test_rail_menu_observer_refreshes_once_after_resizes_and_keyboard(page):
     apps[0]._page.sidebar_open = True
     page.wait_for_function("() => Bokeh.documents.every((d) => d.is_idle)", timeout=10000)
     assert calls[0] == before_sidebar
+
+
+def test_external_ctx_navigate_opens_one_popup_without_leaving_app(page):
+    store, _ = _store_with("Plant")
+    external_url = "http://127.0.0.1:9/x"
+    reports = SidebarSection(
+        id="reports",
+        label="Reports",
+        icon="assessment",
+        order=10,
+        route="reports",
+        view=lambda _ctx, subpath: f"Report: {subpath}",
+        items=lambda _ctx: [SidebarItem(title="Weekly Summary", url="/reports/weekly")],
+        new_action=SidebarAction(
+            label="Open external",
+            action=lambda ctx: ctx.navigate(external_url),
+        ),
+    )
+    routes = FlowDashApp.build_routes(
+        registry=normalize_components(COMPONENTS),
+        store=store,
+        notifications=False,
+        sections=[reports],
+    )
+    page.set_viewport_size({"width": 1280, "height": 800})
+    serve_component(page, routes, suffix="/components")
+
+    nav = page.get_by_role("navigation")
+    page.get_by_text("Building blocks for dashboards").wait_for()
+
+    popups = []
+    page.on("popup", lambda p: popups.append(p))
+
+    nav.get_by_role("button", name="Reports", exact=True).click()
+    with page.expect_popup(timeout=10000) as popup_info:
+        page.get_by_role("menuitem", name="Open external").click()
+    popup = popup_info.value
+
+    page.wait_for_function("() => Bokeh.documents.every((d) => d.is_idle)", timeout=10000)
+    page.wait_for_timeout(300)
+    assert len(popups) == 1
+    assert _path(page) == "/components"
+    expect(page.get_by_text("Building blocks for dashboards")).to_be_visible()
+    popup.close()

@@ -1209,7 +1209,15 @@ class FlowDashApp(Viewer):
     def _on_sections_changed(self, event):
         if self._normalizing_sections:
             return
-        self._set_sections(event.new)
+        try:
+            self._set_sections(event.new)
+        except Exception:
+            self._normalizing_sections = True
+            try:
+                self.sections = event.old
+            finally:
+                self._normalizing_sections = False
+            raise
 
     def _on_home_dashboard_changed(self, _event):
         self.refresh_sections("dashboards")
