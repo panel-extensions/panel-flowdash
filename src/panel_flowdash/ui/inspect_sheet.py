@@ -301,11 +301,9 @@ def dataframe_preview(frame, filename: str) -> pn.Column:
         label="Download CSV",
         icon="download",
         size="small",
+        variant="outlined",
         margin=(0, 8, 0, 0),
     )
-    # Released Panel warns about `button_style` when a Material FileDownload is
-    # constructed with `variant`; drop once holoviz/panel#8752 is the minimum.
-    download.variant = "outlined"
     copy = pmui.Button(
         label="Copy as Python",
         icon="content_copy",

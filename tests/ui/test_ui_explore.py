@@ -566,3 +566,37 @@ def test_the_assistant_opened_in_edit_mode_leaves_the_dock_closed_after(page):
     wait_until(lambda: not session.drawer.open, page, timeout=8000)
     expect(page.locator(".flowdash-explore")).to_have_count(0)
     expect(ask_button(page)).to_have_attribute("aria-pressed", "false")
+
+
+def test_the_assistant_keeps_to_half_the_window_as_it_narrows(page):
+    page.set_viewport_size({"width": 1440, "height": 900})
+    store, (dash,) = _store_with("Plant")
+    agent = Agent(scripted(), deps_type=FlowDashDeps, toolsets=[dashboard_toolset()])
+    apps = []
+    _serve_app(page, store, f"/dash/{dash}?edit=true", apps, agent=agent, explore_agent=agent)
+    session = apps[0]._agent_session
+    expect(page.get_by_role("button", name="Done", exact=True)).to_be_visible(
+        timeout=DASHBOARD_LOAD_TIMEOUT
+    )
+    ask_button(page).click()
+    wait_until(lambda: session.drawer.open, page, timeout=8000)
+    handle = page.get_by_role("separator", name="Resize Assistant")
+    handle.focus()
+    # Dragged as wide as it goes, half the window.
+    for _ in range(16):
+        handle.press("ArrowLeft")
+    wait_until(lambda: session.drawer.width == 720, page, timeout=8000)
+    paper = page.locator(".MuiDrawer-paper").filter(
+        has=page.get_by_placeholder(re.compile("^Ask the agent"))
+    )
+    for width in (1000, 700):
+        page.set_viewport_size({"width": width, "height": 900})
+        wait_until(lambda w=width: session.drawer.width == w // 2, page, timeout=8000)
+        wait_until(
+            lambda w=width: abs(paper.bounding_box()["width"] - w // 2) < 2, page, timeout=8000
+        )
+        assert page.evaluate("document.documentElement.scrollWidth") <= width
+        page.get_by_role("button", name="Done", exact=True).click(trial=True)
+    # Wide again, it takes the width it was dragged to.
+    page.set_viewport_size({"width": 1440, "height": 900})
+    wait_until(lambda: session.drawer.width == 720, page, timeout=8000)

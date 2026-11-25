@@ -522,6 +522,21 @@ async def test_the_drawer_opens_at_the_width_last_dragged_to(store, monkeypatch)
     assert session.drawer.width == 400
 
 
+async def test_the_drawer_keeps_to_half_the_window_beside_the_page(store, monkeypatch):
+    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    session, editor = app._agent_session, app._editor
+    preferences, storage = editor._split_view.preferences, editor._split_view.storage
+    storage.window_width = 1440
+    session.drawer.width = 720
+    widths = []
+    for window in (1000, 700, 640, 390, 1440):
+        storage.window_width = window
+        widths.append(session.drawer.width)
+    # At least as wide as the Ask panel can get, and as dragged on a phone, which it covers.
+    assert widths == [500, 350, 320, 720, 720]
+    assert preferences.assistant_width == 720
+
+
 async def test_review_opens_the_drawer_in_place_of_the_docked_feed(store, monkeypatch):
     app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
     session, editor = app._agent_session, app._editor
@@ -542,6 +557,21 @@ async def test_the_drawer_and_the_docked_feed_take_turns_in_view_mode(store, mon
     session.drawer.open = True
     assert not editor.ask and not editor.ask_docked
     editor.ask = True
+    assert editor.ask_docked and not session.drawer.open
+
+
+async def test_a_drawer_taking_the_docks_place_leaves_ask_to_come_back_after_edit_mode(
+    store, monkeypatch
+):
+    app, _ = _open(store, monkeypatch, agent=_adding("drawn"), explore_agent=_adding("explored"))
+    session, editor = app._agent_session, app._editor
+    editor.param.update(editable=False, ask=True)
+    # Asked from the command palette; the assistant's first edit switches to edit mode.
+    session.drawer.open = True
+    assert not editor.ask
+    editor.editable = True
+    assert session.drawer.open and editor.ask
+    app._on_dashboard_bar_mode("view")
     assert editor.ask_docked and not session.drawer.open
 
 

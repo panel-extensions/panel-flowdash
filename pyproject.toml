@@ -46,8 +46,10 @@ dependencies = [
     # Imported directly, as panel stops depending on it in 1.11; the
     # copy_on_write option read by transforms arrived in 1.5.
     "pandas >=1.5",
-    # panel-material-ui 0.17 needs Panel 1.11, as 1.10 pins it below 0.17.
-    "panel >=1.11.0rc0",
+    # panel-material-ui 0.17 needs Panel 1.11, as 1.10 pins it below 0.17; 1.11.0 no longer
+    # loses a patch that resizes a component before it renders (as leaving the phone layout
+    # does) or a change to a component made while the message adding it is still being sent.
+    "panel >=1.11.0",
     # RunState undo and redo and drop_artifact_versions, which the edit history builds on;
     # 0.1.0b8 shows a version's metadata["detail"] as the history row's tooltip; 0.1.0b9 has SpanView;
     # 0.1.0b13 fits the drawer on a phone screen and makes the single-model label keyboard accessible.
