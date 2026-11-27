@@ -35,7 +35,9 @@ _EXCLUDED_ARGS = ("files", "--args")
 # ``sidebar`` and ``contextbar`` are left out because module-level Panel objects
 # would be shared by every session; ``configure_layout`` sets them per session.
 PROJECT_OPTIONS = (
+    "admin_hidden_sections",
     "admin_link",
+    "admin_section_redirects",
     "agent",
     "agent_approval_rules",
     "agent_authorize",
@@ -53,6 +55,8 @@ PROJECT_OPTIONS = (
     "header_layout",
     "home_dashboard",
     "include_builtin_components",
+    "mcp_servers",
+    "mcp_stdio_commands",
     "nav_variant",
     "notifications",
     "page_options",
@@ -60,6 +64,7 @@ PROJECT_OPTIONS = (
     "sections",
     "settings_class",
     "title",
+    "tool_authorize",
     "trusted_proxies",
 )
 
