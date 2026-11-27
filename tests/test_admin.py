@@ -281,6 +281,7 @@ class TestSections:
             "theme",
             "ai",
             "permissions",
+            "mcp",
             "components",
             "dashboards",
             "sources",
