@@ -755,7 +755,7 @@ THEME = ProjectSection(
     group="App",
 )
 
-BUILTIN_SECTIONS = ("general", "theme", "ai", "permissions")
+BUILTIN_SECTIONS = ("general", "theme", "ai", "permissions", "mcp")
 
 for _section in (GENERAL, THEME):
     register_section(_section)

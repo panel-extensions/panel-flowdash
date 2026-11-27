@@ -14,6 +14,7 @@ from panel.viewable import Viewer
 from panel_flowdash.admin import (
     ai as _ai,  # noqa: F401  (registers the ai section)
     components as _components,  # noqa: F401
+    mcp as _mcp,  # noqa: F401
     permissions as _permissions,  # noqa: F401
 )
 from panel_flowdash.admin.dashboards import DASHBOARDS
@@ -120,7 +121,8 @@ class AdminPage(Viewer):
         self.project = project
         self._on_select = on_select
         self._on_saved = on_saved
-        self._sections = {s.name: s for s in admin_sections()}
+        hidden = app._hidden_admin_sections() if hasattr(app, "_hidden_admin_sections") else set()
+        self._sections = {s.name: s for s in admin_sections() if s.name not in hidden}
         self._views: dict[str, t.Any] = {}
         self._saved: set[str] = set()
 
