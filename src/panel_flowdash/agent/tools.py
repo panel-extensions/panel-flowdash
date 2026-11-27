@@ -1172,9 +1172,9 @@ def get_report(ctx: RunContext[FlowDashDeps]) -> str:
     """
     ops = ctx.deps.ops
     text = _fenced("The report", ops.get_report())
-    context = ops.report_context_text()
-    if context is not None:
-        text += "\n" + _fenced("What the report's placeholders can read", context)
+    catalogue = ops.report_catalogue()
+    if catalogue is not None:
+        text += "\n" + _fenced("What the report's placeholders can read", catalogue)
     return text
 
 
@@ -1187,10 +1187,25 @@ def report_text(ctx: RunContext[FlowDashDeps]) -> str:
     return _fenced("The report as a reader sees it", ctx.deps.ops.report_text())
 
 
-def _report_result(ops: DashboardOps, message: str, issues) -> t.Any:
+def _report_texts(ops: DashboardOps) -> list[str]:
+    return [
+        block["text"]
+        for block in ops.report().get("blocks") or []
+        if isinstance(block.get("text"), str)
+    ]
+
+
+def _report_result(ops: DashboardOps, message: str, issues, before: list[str]) -> t.Any:
+    from panel_flowdash.report import fill_report_text
+
     if issues:
         message += " Warnings:\n" + "\n".join(f"- {i}" for i in issues)
-    return _artifact(ops, f"{message}\n{_fenced('The report now', ops.get_report())}")
+    text = f"{message}\n{_fenced('The report now', ops.get_report())}"
+    new = [t for t in dict.fromkeys(_report_texts(ops)) if t not in before]
+    if new:
+        filled = "\n\n".join(fill_report_text(ops.editor, t) for t in new)
+        text += "\n" + _fenced("Your new text as readers see it now", filled)
+    return _artifact(ops, text)
 
 
 def edit_report(
@@ -1202,7 +1217,8 @@ def edit_report(
 
     Operations apply in order, each to the blocks the earlier ones left:
     {"op": "insert", "block": {"text": "..."}, "index": 2} inserts before the
-    block at index 2, or last without index; {"op": "update", "index": 2,
+    block at index 2, or last without index; "after": "sales_chart" (or
+    "before") in place of index puts it next to the block showing that node; {"op": "update", "index": 2,
     "block": {"caption": "..."}} changes keys of a block, null removing one;
     {"op": "move", "index": 2, "to": 0}; {"op": "remove", "index": 2};
     {"op": "title", "title": "..."} renames the report.
@@ -1214,8 +1230,9 @@ def edit_report(
             report since.
     """
     ops = ctx.deps.ops
+    before = _report_texts(ops)
     issues = ops.edit_report(operations, revision)
-    return _report_result(ops, "Changed the report.", issues)
+    return _report_result(ops, "Changed the report.", issues, before)
 
 
 def set_report(ctx: RunContext[FlowDashDeps], blocks_yaml: str) -> t.Any:
@@ -1226,8 +1243,9 @@ def set_report(ctx: RunContext[FlowDashDeps], blocks_yaml: str) -> t.Any:
             in the form get_report returns; keep its "# revision:" line.
     """
     ops = ctx.deps.ops
+    before = _report_texts(ops)
     issues = ops.set_report(blocks_yaml)
-    return _report_result(ops, "Replaced the report.", issues)
+    return _report_result(ops, "Replaced the report.", issues, before)
 
 
 def ask_in_report(ctx: RunContext[FlowDashDeps], question: str, after: int | None = None) -> t.Any:

@@ -299,18 +299,19 @@ class FlowDashApp(Viewer):
         default=None,
         doc="""
         Called with a node's component id and its instance (None before it
-        is built) for a `panel_flowdash.report.PlaceholderHint` telling the
-        agent what a placeholder in report text should read instead of the
-        node, e.g. the table a view shows. Consulted for components that do
-        not declare one with ``__flowdash_placeholder_hint__``.""",
+        is built) for a `panel_flowdash.report.PlaceholderHint`: the input
+        a node's data arrives on, followed first when the agent is pointed
+        at the data a view shows, and a note for the agent. Consulted for
+        components that do not declare one with
+        ``__flowdash_placeholder_hint__``.""",
     )
 
     agent_report_context = param.Callable(
         default=None,
         doc="""
         Called with the session's `DashboardOps` for text the agent's
-        get_report tool adds after the report, fenced as data, e.g. a
-        catalogue of the values and columns its placeholders can read.
+        get_report tool adds after FlowDash's own catalogue of the data
+        placeholders can read, fenced as data, e.g. what the columns mean.
         Return None to add nothing.""",
     )
 

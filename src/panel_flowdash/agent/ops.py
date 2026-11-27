@@ -55,6 +55,7 @@ from panel_flowdash.parameters import ContractError, ParameterError
 from panel_flowdash.report import (
     PlaceholderHint,
     ReportError,
+    bare_braces,
     block_kind,
     call_placeholder_hint,
     insert_block,
@@ -2578,39 +2579,28 @@ class DashboardOps:
         return hint
 
     def _placeholder_suggestion(self, name: str) -> str:
-        """Return sentences pointing a placeholder on node *name* at its data; empty without a hint."""
-        from panel_flowdash.report import output_value
+        """Return sentences pointing a placeholder on node *name* at data it can read; empty if none.
 
-        hint = self.node_placeholder_hint(name)
-        if hint is None:
+        A node without data outputs of its own, such as a chart, is pointed at
+        the nearest node upstream with data, following the input its
+        :class:`~panel_flowdash.report.PlaceholderHint` names first.
+        """
+        from .report_data import data_outputs, data_upstream, example
+
+        if name not in self._report_ids():
             return ""
-        editor = self.editor
-        names = self._names()
-        instance_id = self._report_ids()[name]
+        hint = self.node_placeholder_hint(name)
         parts = []
-        if hint.upstream:
-            edge = next(
-                (
-                    e
-                    for e in editor._dataflow_graph.edges
-                    if e["target"] == instance_id
-                    and e["target_port"] == hint.upstream
-                    and e["source"] in names
-                    and not editor._node_restricted(e["source"])
-                ),
-                None,
-            )
-            if edge is not None:
-                ref = f"{names[edge['source']]}.{edge['source_port']}"
-                value = output_value(editor, names[edge["source"]], edge["source_port"])
-                example = ref
-                if type(value).__name__ == "DataFrame" and len(getattr(value, "columns", ())):
-                    example = f"{ref}.{value.columns[0]}"
+        if data_outputs(self, name):
+            parts.append(f"'{name}' has data placeholders can read, e.g. '{example(self, name)}'.")
+        else:
+            upstream = data_upstream(self, name, hint.upstream if hint is not None else None)
+            if upstream is not None:
                 parts.append(
-                    f"'{name}' shows the data of {ref}; read that instead, e.g. "
-                    f"'{{{{ {example} }}}}'."
+                    f"'{name}' has no data of its own; it reads '{upstream}', so read that "
+                    f"instead, e.g. '{example(self, upstream)}'."
                 )
-        if hint.note:
+        if hint is not None and hint.note:
             parts.append(hint.note)
         return " ".join(parts)
 
@@ -2644,6 +2634,7 @@ class DashboardOps:
             problems = found.get(path, [])
             not_data = value_problems(self.editor, text)
             problems += [p for _, p in not_data if p not in problems]
+            problems += [p for p in bare_braces(text) if p not in problems]
             if not problems:
                 continue
             nodes = {name for name, _ in not_data}
@@ -2663,6 +2654,19 @@ class DashboardOps:
                 "Fix them and try again:\n" + "\n".join(errors)
             )
         return kept
+
+    def report_catalogue(self) -> str | None:
+        """Return what the report's placeholders can read, with :attr:`report_context`'s text after it.
+
+        See :func:`~panel_flowdash.agent.report_data.report_catalogue`. None
+        when there is neither. Refused, like :meth:`report_text`, to people
+        who may not read the dashboard's definition.
+        """
+        from .report_data import report_catalogue
+
+        self._require_source()
+        parts = [report_catalogue(self), self.report_context_text()]
+        return "\n\n".join(p for p in parts if p) or None
 
     def report_context_text(self) -> str | None:
         """Return what :attr:`report_context` adds after the report for the agent, None without it."""
@@ -2702,6 +2706,44 @@ class DashboardOps:
             raise OperationError(str(exc)) from exc
         return warnings
 
+    def _anchor_insert(self, report: dict[str, t.Any], operation: t.Any) -> t.Any:
+        """Return an insert *operation* placed ``before`` or ``after`` a node as one placed by index."""
+        from panel_flowdash.report import group_members
+
+        if not isinstance(operation, dict) or operation.get("op") != "insert":
+            return operation
+        anchors = [key for key in ("before", "after") if key in operation]
+        if not anchors:
+            return operation
+        if len(anchors) > 1 or "index" in operation:
+            raise ReportError(anchors[-1], "give one of index, before and after.")
+        key = anchors[0]
+        node = operation[key]
+        blocks = report.get("blocks") or []
+        names = self._names()
+        found = next((i for i, b in enumerate(blocks) if b.get("node") == node), None)
+        if found is None:
+            found = next(
+                (
+                    i
+                    for i, b in enumerate(blocks)
+                    if "group" in b
+                    and node in {names.get(m, m) for m in group_members(self.editor, b["group"])}
+                ),
+                None,
+            )
+        if found is None:
+            shown = [b["node"] for b in blocks if "node" in b]
+            raise ReportError(
+                key,
+                f"no block of the report shows {node!r}"
+                + (f"; those shown are {', '.join(shown)}." if shown else "; give an index.")
+                + " A node shown through another, e.g. a query behind a chart, is not a block.",
+            )
+        placed = {k: v for k, v in operation.items() if k != key}
+        placed["index"] = found if key == "before" else found + 1
+        return placed
+
     def edit_report(
         self, operations: list[dict[str, t.Any]], revision: str | None = None
     ) -> list[Issue]:
@@ -2710,7 +2752,9 @@ class DashboardOps:
         Each operation is a mapping with an ``op``:
 
         - ``{"op": "insert", "block": {...}, "index": 2}`` inserts a block
-          before the block at ``index``, or last without it;
+          before the block at ``index``, or last without it; ``"before":
+          "<node>"`` or ``"after": "<node>"`` in place of ``index`` puts it
+          next to the block showing that node, or its group;
         - ``{"op": "update", "index": 2, "block": {...}}`` changes keys of a
           block, a null value removing the key;
         - ``{"op": "move", "index": 2, "to": 0}`` moves a block to ``to``;
@@ -2741,6 +2785,7 @@ class DashboardOps:
         labels: list[str] = []
         for i, operation in enumerate(operations):
             try:
+                operation = self._anchor_insert(report, operation)
                 report, label = _report_operation(report, operation)
             except ReportError as exc:
                 raise OperationError(f"operations[{i}].{exc.key}: {exc.reason}") from None

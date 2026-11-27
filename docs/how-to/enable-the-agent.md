@@ -399,17 +399,27 @@ browser saves, as **Export...** in the Report view does: `html`, `pdf`, `docx`, 
 `ipynb`. A file leaves the app, so every export waits for the user's approval, and
 questions not run yet are never run for it.
 
-Two `FlowDashApp` parameters let a host help the agent write placeholders.
+After the report, `get_report` gives the agent a catalogue of what placeholders can
+read: each node with data outputs (judged by their current values, so an output holding
+an object such as a data source is left out) with its values, or a table's row count,
+columns, first rows and example placeholders, and each node without data of its own,
+such as a chart, with the nearest node upstream that has data. Restricted nodes are
+left out, and the catalogue stops at about 6000 characters. A refused placeholder on a
+chart suggests that node's data, e.g. `{{ sales.data.region }}`. `edit_report` can
+place an inserted block next to the one showing a node, with `"after": "<node>"` or
+`"before": "<node>"` in place of `index`, and the reply to an edit shows new text as
+readers see it.
+
+Two `FlowDashApp` parameters let a host add what only it knows.
 `agent_placeholder_hint` is called with a node's component id and instance and returns
-a `panel_flowdash.report.PlaceholderHint(upstream=..., note=...)`: `upstream` names
-the input the node's data arrives on, so a refused placeholder on a view suggests the
-output connected to it, e.g. `{{ table.value.region }}`, and `note` is a line for the
-agent. A component can declare its own with a `__flowdash_placeholder_hint__()`
-method, which takes precedence. `agent_report_context` is called with the session's
-`DashboardOps` and returns text `get_report` adds after the report, fenced as data,
-e.g. a catalogue of the tables and columns placeholders can read. Explore cannot
-change the report: `edit_report`, `set_report`, `ask_in_report` and `run_pending` are
-refused there.
+a `panel_flowdash.report.PlaceholderHint(upstream=..., note=...)`: `upstream` names the
+input the node's data arrives on, followed first when a node has several, and `note`
+is a line for the agent, shown in the catalogue and in refusals. A component can
+declare its own with a `__flowdash_placeholder_hint__()` method, which takes
+precedence. `agent_report_context` is called with the session's `DashboardOps` and
+returns text `get_report` adds after the catalogue, e.g. what the columns mean. Explore
+cannot change the report: `edit_report`, `set_report`, `ask_in_report` and
+`run_pending` are refused there.
 
 An agent given a subset of the tools (`create_agent(tools=...)`) gets the report tools
 by name; `panel_flowdash.agent.REPORT_TOOLS` lists them. When it is offered

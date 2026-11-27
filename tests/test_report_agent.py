@@ -163,9 +163,10 @@ class TestEditing:
         with pytest.raises(OperationError) as info:
             ops.edit_report([{"op": "insert", "block": {"text": "East is {{ east.value }}"}}])
         message = str(info.value)
-        assert "'east' shows the data of m.total; read that instead, e.g. '{{ m.total }}'." in (
+        assert "'east' has no data of its own; it reads 'm', so read that instead, e.g. " in (
             message
         )
+        assert "'{{ m.total }}'" in message
         assert "Cite totals, not the chart." in message
         assert seen == ["R/chart"]
 
@@ -410,7 +411,8 @@ class TestTools:
         )
         match = re.search(
             r"What the report's placeholders can read is between <data-([0-9a-f]{16})>.*"
-            r"<data-\1>\nbase.value is a number \(True\)\n</data-\1>",
+            r"<data-\1>\n.*\{\{ base.value \}\} is now 21.*"
+            r"\n\nbase.value is a number \(True\)\n</data-\1>",
             result,
             re.S,
         )

@@ -668,15 +668,16 @@ class PlaceholderHint:
 
     A component declares one with ``__flowdash_placeholder_hint__(self)``,
     returning a hint or None; a host can give one for any component with
-    ``FlowDashApp(agent_placeholder_hint=...)``. A view, say, has no value a
-    placeholder can show, so it names the input its data arrives on and the
-    agent is pointed at the output connected to it.
+    ``FlowDashApp(agent_placeholder_hint=...)``. A node without data of its
+    own, such as a chart, is pointed at the nearest node upstream with data
+    outputs, whatever the hint; *upstream* says which input to follow first
+    when it has several.
 
     Parameters
     ----------
     upstream
-        An input port of the node; the output connected to it holds the
-        data the node shows, which placeholders should read instead.
+        The input of the node its data arrives on, followed first when
+        looking upstream for the node placeholders should read instead.
     note
         One line for the agent, e.g. which columns are worth citing.
     """
@@ -738,6 +739,28 @@ def value_problems(editor: FlowDash, text: str) -> list[tuple[str, str]]:
     return problems
 
 
+_CODE = re.compile(r"```.*?```|`[^`\n]+`", re.DOTALL)
+_BRACES = re.compile(r"\{\{[^{}]*\}\}")
+
+
+def bare_braces(text: str) -> list[str]:
+    """Return a problem for each ``{{ ... }}`` outside code that is no placeholder, e.g. ``{{ value }}``.
+
+    Such text names no node and output, so readers see the braces as typed.
+    """
+    problems = []
+    for match in _BRACES.finditer(_CODE.sub("", text or "")):
+        if PLACEHOLDER.fullmatch(match.group(0)):
+            continue
+        problem = (
+            f"'{match.group(0)}' names no node and output, so it shows as typed; write "
+            "'{{ node.port }}', e.g. '{{ total.value }}' or '{{ sales.data.region }}'."
+        )
+        if problem not in problems:
+            problems.append(problem)
+    return problems
+
+
 _EACH_REF = re.compile(rf"\{{\{{\s*#each\s+({_ROOT})")
 
 
@@ -761,6 +784,7 @@ __all__ = [
     "PlaceholderHint",
     "ReportError",
     "ResolvedReport",
+    "bare_braces",
     "call_placeholder_hint",
     "check_block",
     "check_report",
