@@ -88,6 +88,11 @@ Source = "https://github.com/panel-extensions/panel-flowdash"
 agent = [
     "panel-agents[pydantic-ai]>=0.1.0b13",
 ]
+# Connecting the agent to Model Context Protocol (MCP) servers.
+mcp = [
+    "panel-agents[pydantic-ai]>=0.1.0b13",
+    "pydantic-ai-slim[mcp]",
+]
 # Provider keys entered in the admin view, stored encrypted; the key can live in the OS keyring.
 secrets = [
     "cryptography",
