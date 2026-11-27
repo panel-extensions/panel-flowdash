@@ -467,6 +467,14 @@ class ExplorationOps(DashboardOps):
         self._adding: dict[tuple[str, str], asyncio.Future] = {}
         dashboard.editor.param.watch(self._on_dashboard, "dashboard")
 
+    @property
+    def placeholder_hint(self):
+        return self.dashboard.placeholder_hint
+
+    @property
+    def report_context(self):
+        return self.dashboard.report_context
+
     def _on_dashboard(self, event):
         current = event.new.dashboard_id if event.new is not None else None
         for dashboard_id in [d for d in self._explorations if d != current]:

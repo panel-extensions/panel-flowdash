@@ -108,6 +108,8 @@ agent_model = "anthropic:<model>"
 | `agent` | `None` (default): the default agent when a model is configured. `True`: the default agent, and an error saying how to configure a model when none is. A string: the default agent with that model. `False`: no agent, even if a model is configured. A `pydantic_ai.Agent`: your own agent. |
 | `agent_authorize` | Called with the signed-in user's `Identity`; only sessions for which it returns True get the agent. |
 | `agent_sensitive_components` | Component ids or glob patterns (`"Sources/*"`) of components whose config can reach outside the dashboard, see [Untrusted text](#untrusted-text). |
+| `agent_placeholder_hint` | Called with a node's component id and instance for a `PlaceholderHint` pointing report placeholders at the data a node shows, see [Report](#report). |
+| `agent_report_context` | Called with the session's `DashboardOps` for text `get_report` adds after the report, e.g. a data catalogue. |
 | `agent_approval_rules` | More calls that need the user's approval: tool names such as `"remove_node"`, or `panel_agents.ApprovalRule("run_command", when=lambda args: ...)` for calls with particular arguments. Saving, deleting and sharing always need it. |
 | `agent_starters` | The starter questions a new dashboard opens with, see [Start a new dashboard](#start-a-new-dashboard): a callable taking a read-only `StarterContext` and returning a list of questions, None for the defaults, or an awaitable of either. |
 
@@ -372,8 +374,11 @@ given that token, and `set_report` given YAML keeping the line, refuse the edit 
 report changed since, so a person's edit never shifts the indices under the agent. The
 report's text is handed to the model between random markers, as data written by people.
 The edits are checked like `replace_dashboard` (blocks must
-name nodes, groups and turns the dashboard has; a placeholder naming no output is a
-warning), need no approval, are one step of Undo per request, and are listed in the
+name nodes, groups and turns the dashboard has), and a new or changed text block whose
+placeholder names no node, output, column or row, or reads a value that is not data
+such as a view or a whole table, is refused with what to fix, so the agent retries
+rather than saving text that shows nothing; text already in the report is not checked
+again. The edits need no approval, are one step of Undo per request, and are listed in the
 request's summary ("Wrote a paragraph in the report. Added revenue_kpi to the
 report."). Each block the agent writes or changes records its turn as `origin`. The
 agent is told to put prose about a dashboard in the report, as text blocks with live
@@ -393,6 +398,28 @@ an assistant, or for people who may only view the dashboard, Run is disabled;
 browser saves, as **Export...** in the Report view does: `html`, `pdf`, `docx`, `md` or
 `ipynb`. A file leaves the app, so every export waits for the user's approval, and
 questions not run yet are never run for it.
+
+After the report, `get_report` gives the agent a catalogue of what placeholders can
+read: each node with data outputs (judged by their current values, so an output holding
+an object such as a data source is left out) with its values, or a table's row count,
+columns, first rows and example placeholders, and each node without data of its own,
+such as a chart, with the nearest node upstream that has data. Restricted nodes are
+left out, and the catalogue stops at about 6000 characters. A refused placeholder on a
+chart suggests that node's data, e.g. `{{ sales.data.region }}`. `edit_report` can
+place an inserted block next to the one showing a node, with `"after": "<node>"` or
+`"before": "<node>"` in place of `index`, and the reply to an edit shows new text as
+readers see it.
+
+Two `FlowDashApp` parameters let a host add what only it knows.
+`agent_placeholder_hint` is called with a node's component id and instance and returns
+a `panel_flowdash.report.PlaceholderHint(upstream=..., note=...)`: `upstream` names the
+input the node's data arrives on, followed first when a node has several, and `note`
+is a line for the agent, shown in the catalogue and in refusals. A component can
+declare its own with a `__flowdash_placeholder_hint__()` method, which takes
+precedence. `agent_report_context` is called with the session's `DashboardOps` and
+returns text `get_report` adds after the catalogue, e.g. what the columns mean. Explore
+cannot change the report: `edit_report`, `set_report`, `ask_in_report` and
+`run_pending` are refused there.
 
 An agent given a subset of the tools (`create_agent(tools=...)`) gets the report tools
 by name; `panel_flowdash.agent.REPORT_TOOLS` lists them. When it is offered
