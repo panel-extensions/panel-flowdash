@@ -43,6 +43,14 @@ class LiveDashboardOps(DashboardOps):
         super().__init__(app._editor)
         self.app = app
 
+    @property
+    def placeholder_hint(self):
+        return self.app.agent_placeholder_hint
+
+    @property
+    def report_context(self):
+        return self.app.agent_report_context
+
     def _check_edit(self):
         if self.app._current_dashboard is None:
             raise OperationError("No dashboard is open; open one with open_dashboard first.")

@@ -295,6 +295,25 @@ class FlowDashApp(Viewer):
         change its config or connect an edge into it.""",
     )
 
+    agent_placeholder_hint = param.Callable(
+        default=None,
+        doc="""
+        Called with a node's component id and its instance (None before it
+        is built) for a `panel_flowdash.report.PlaceholderHint` telling the
+        agent what a placeholder in report text should read instead of the
+        node, e.g. the table a view shows. Consulted for components that do
+        not declare one with ``__flowdash_placeholder_hint__``.""",
+    )
+
+    agent_report_context = param.Callable(
+        default=None,
+        doc="""
+        Called with the session's `DashboardOps` for text the agent's
+        get_report tool adds after the report, fenced as data, e.g. a
+        catalogue of the values and columns its placeholders can read.
+        Return None to add nothing.""",
+    )
+
     agent_approval_rules = param.List(
         default=[],
         doc="""

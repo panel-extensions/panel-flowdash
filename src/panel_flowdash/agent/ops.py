@@ -12,6 +12,7 @@ import asyncio
 import copy
 import hashlib
 import json
+import logging
 import re
 import typing as t
 import unicodedata
@@ -52,14 +53,17 @@ from panel_flowdash.global_filters import (
 from panel_flowdash.input_literals import check_literal
 from panel_flowdash.parameters import ContractError, ParameterError
 from panel_flowdash.report import (
+    PlaceholderHint,
     ReportError,
     block_kind,
+    call_placeholder_hint,
     insert_block,
     move_block,
     remove_block,
     report_blocks,
     set_title,
     update_block,
+    value_problems,
 )
 from panel_flowdash.turns import _agent_source
 from panel_flowdash.ui import tile_layout
@@ -81,6 +85,8 @@ from .yaml_format import (
     parse_yaml,
     split_port,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class OperationError(ValueError):
@@ -370,6 +376,16 @@ class DashboardOps:
 
     #: Whether the edit tools publish the dashboard as a version after each edit.
     versioned: bool = True
+
+    #: Called with a node's component id and instance for the
+    #: :class:`~panel_flowdash.report.PlaceholderHint` of a component that
+    #: declares none itself, see ``FlowDashApp.agent_placeholder_hint``.
+    placeholder_hint: t.Callable[[str, t.Any], PlaceholderHint | None] | None = None
+
+    #: Called with these operations for text :meth:`report_context_text` gives
+    #: the agent after the report, e.g. what data its placeholders can read;
+    #: see ``FlowDashApp.agent_report_context``.
+    report_context: t.Callable[[DashboardOps], str | None] | None = None
 
     def __init__(self, editor: FlowDash):
         self.editor = editor
@@ -2538,6 +2554,127 @@ class DashboardOps:
                     issues.append(Issue(path, problem, "warning"))
         return issues
 
+    def node_placeholder_hint(self, name: str) -> PlaceholderHint | None:
+        """Return the :class:`~panel_flowdash.report.PlaceholderHint` of node *name*, None without one.
+
+        The component's own ``__flowdash_placeholder_hint__`` comes first,
+        then :attr:`placeholder_hint`.
+        """
+        editor = self.editor
+        instance_id = {n: iid for iid, n in self._names().items()}.get(name)
+        if instance_id is None or editor._node_restricted(instance_id):
+            return None
+        instance = editor._component_instances.get(instance_id)
+        hint = call_placeholder_hint(instance)
+        if hint is None and self.placeholder_hint is not None:
+            try:
+                hint = self.placeholder_hint(self._item(instance_id)["component_id"], instance)
+            except Exception:
+                logger.exception("placeholder_hint failed for %s", name)
+                return None
+            if not (hint is None or isinstance(hint, PlaceholderHint)):
+                logger.warning("placeholder_hint returned %r for %s", hint, name)
+                return None
+        return hint
+
+    def _placeholder_suggestion(self, name: str) -> str:
+        """Return sentences pointing a placeholder on node *name* at its data; empty without a hint."""
+        from panel_flowdash.report import output_value
+
+        hint = self.node_placeholder_hint(name)
+        if hint is None:
+            return ""
+        editor = self.editor
+        names = self._names()
+        instance_id = self._report_ids()[name]
+        parts = []
+        if hint.upstream:
+            edge = next(
+                (
+                    e
+                    for e in editor._dataflow_graph.edges
+                    if e["target"] == instance_id
+                    and e["target_port"] == hint.upstream
+                    and e["source"] in names
+                    and not editor._node_restricted(e["source"])
+                ),
+                None,
+            )
+            if edge is not None:
+                ref = f"{names[edge['source']]}.{edge['source_port']}"
+                value = output_value(editor, names[edge["source"]], edge["source_port"])
+                example = ref
+                if type(value).__name__ == "DataFrame" and len(getattr(value, "columns", ())):
+                    example = f"{ref}.{value.columns[0]}"
+                parts.append(
+                    f"'{name}' shows the data of {ref}; read that instead, e.g. "
+                    f"'{{{{ {example} }}}}'."
+                )
+        if hint.note:
+            parts.append(hint.note)
+        return " ".join(parts)
+
+    def _refuse_broken_text(self, report: dict[str, t.Any], warnings: list[Issue]) -> list[Issue]:
+        """Raise OperationError if a new or changed text block has a placeholder that cannot show; return the other warnings.
+
+        Text already in the report is not checked again, so an edit is never
+        refused for what someone else wrote.
+        """
+        from panel_flowdash.report import placeholder_refs
+
+        before = {
+            block["text"]
+            for block in self.report().get("blocks") or []
+            if isinstance(block, dict) and isinstance(block.get("text"), str)
+        }
+        errors: list[str] = []
+        kept: list[Issue] = []
+        changed: dict[str, str] = {}
+        for i, block in enumerate(report.get("blocks") or []):
+            if isinstance(block, dict) and isinstance(block.get("text"), str):
+                if block["text"] not in before:
+                    changed[f"report.blocks[{i}].text"] = block["text"]
+        found: dict[str, list[str]] = {}
+        for issue in warnings:
+            if issue.path in changed:
+                found.setdefault(issue.path, []).append(issue.message)
+            else:
+                kept.append(issue)
+        for path, text in changed.items():
+            problems = found.get(path, [])
+            not_data = value_problems(self.editor, text)
+            problems += [p for _, p in not_data if p not in problems]
+            if not problems:
+                continue
+            nodes = {name for name, _ in not_data}
+            for node in dict.fromkeys(name for name, _ in placeholder_refs(text)):
+                mention = re.compile(rf"'{re.escape(node)}'|\{{\{{\s*{re.escape(node)}\.")
+                if any(mention.search(p) for p in problems):
+                    nodes.add(node)
+            hints = [
+                hint
+                for node in dict.fromkeys(name for name, _ in placeholder_refs(text))
+                if node in nodes and (hint := self._placeholder_suggestion(node))
+            ]
+            errors += [f"- {path}: {p}" for p in problems] + [f"  {h}" for h in hints]
+        if errors:
+            raise OperationError(
+                "Nothing was changed: placeholders in the text would not show what you meant. "
+                "Fix them and try again:\n" + "\n".join(errors)
+            )
+        return kept
+
+    def report_context_text(self) -> str | None:
+        """Return what :attr:`report_context` adds after the report for the agent, None without it."""
+        if self.report_context is None:
+            return None
+        try:
+            text = self.report_context(self)
+        except Exception:
+            logger.exception("report_context failed")
+            return None
+        return text if isinstance(text, str) and text.strip() else None
+
     def _apply_report(self, report: dict[str, t.Any], labels: list[str]) -> list[Issue]:
         """Store *report*, nodes by name, as one edit described by *labels*; return its warnings."""
         editor = self.editor
@@ -2558,6 +2695,7 @@ class DashboardOps:
             if issue.path.startswith("report") and issue.severity != "error"
         ]
         warnings += self._report_text_problems(report, warnings)
+        warnings = self._refuse_broken_text(report, warnings)
         try:
             editor.set_report(stored, label=labels, coalesce=False)
         except ValueError as exc:
@@ -2582,8 +2720,9 @@ class DashboardOps:
 
         Operations apply in order, each to the blocks the earlier ones left.
         A dashboard without a report of its own starts from the derived one.
-        Nothing changes unless every operation applies and the result names
-        only nodes, groups and turns the dashboard has. With *revision*, the
+        Nothing changes unless every operation applies, the result names
+        only nodes, groups and turns the dashboard has and the placeholders
+        of new or changed text can show a value. With *revision*, the
         token :meth:`get_report` gave, nothing changes either if the report
         changed since, as its indices may have moved.
 
@@ -2619,7 +2758,8 @@ class DashboardOps:
         Raises
         ------
         OperationError
-            If the YAML is malformed or names a node, group or turn the dashboard does not have.
+            If the YAML is malformed, names a node, group or turn the dashboard
+            does not have, or new or changed text has a placeholder that cannot show a value.
         """
         self._require_edit()
         if isinstance(blocks_yaml, str):

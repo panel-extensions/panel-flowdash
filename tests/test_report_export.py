@@ -669,21 +669,28 @@ class TestTablePlaceholders:
         tabled.graph.get_state("sales").frame = None
         assert fill_report_text(tabled, self.TEXT) == "Top region  at ;  \n\n"
 
-    def test_edit_report_warns_about_unknown_columns(self, tabled):
-        from panel_flowdash.agent import DashboardOps
+    def test_edit_report_refuses_unknown_columns(self, tabled):
+        from panel_flowdash.agent import DashboardOps, OperationError
 
-        issues = DashboardOps(tabled).edit_report(
-            [
-                {
-                    "op": "insert",
-                    "block": {"text": "{{ sales.frame.rgion }} {{#each sales.frame}}x"},
-                }
-            ]
-        )
-        messages = [i.message for i in issues]
+        with pytest.raises(OperationError) as info:
+            DashboardOps(tabled).edit_report(
+                [
+                    {
+                        "op": "insert",
+                        "block": {"text": "{{ sales.frame.rgion }} {{#each sales.frame}}x"},
+                    }
+                ]
+            )
+        messages = str(info.value).splitlines()[1:]
         assert any("no column rgion" in m for m in messages)
         assert any("has no '{{/each}}'" in m for m in messages)
         assert len(messages) == len(set(messages))
+
+    def test_a_placeholder_reading_a_whole_table_is_refused(self, tabled):
+        from panel_flowdash.agent import DashboardOps, OperationError
+
+        with pytest.raises(OperationError, match=r"reads a whole table.*sales\.frame\.column"):
+            DashboardOps(tabled).set_report("- text: '{{ sales.frame }}'")
 
     def test_placeholder_refs_include_blocks(self):
         from panel_flowdash.report import placeholder_refs

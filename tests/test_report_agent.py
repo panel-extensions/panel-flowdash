@@ -123,13 +123,76 @@ class TestEditing:
         assert editor.report == before
         assert len(editor._history.versions) == versions
 
-    def test_a_placeholder_naming_nothing_is_a_warning(self, editor):
-        warnings = DashboardOps(editor).edit_report(
-            [{"op": "insert", "block": {"text": "{{ m.totl }} and {{ nobody.value }}"}}]
+    def test_a_placeholder_naming_nothing_is_refused(self, editor):
+        before = editor.report
+        versions = len(editor._history.versions)
+        with pytest.raises(OperationError) as info:
+            DashboardOps(editor).edit_report(
+                [{"op": "insert", "block": {"text": "{{ m.totl }} and {{ nobody.value }}"}}]
+            )
+        message = str(info.value)
+        assert message.startswith("Nothing was changed")
+        assert "report.blocks[5].text: '{{ m.totl }}': 'm' has no output 'totl'" in message
+        assert "'{{ nobody.value }}' names no node" in message
+        assert editor.report == before
+        assert len(editor._history.versions) == versions
+
+    def test_a_placeholder_reading_an_object_is_refused(self, editor):
+        with pytest.raises(OperationError, match=r"reads a Credentials, not data"):
+            DashboardOps(editor).set_report("- text: Key {{ m.secret }}")
+
+    def test_text_already_in_the_report_is_not_checked_again(self, editor):
+        editor.set_report({"blocks": [{"text": "Old {{ gone.value }}"}]})
+        ops = DashboardOps(editor)
+        warnings = ops.edit_report([{"op": "insert", "block": {"text": "New {{ m.total }}"}}])
+        assert [w.path for w in warnings] == ["report.blocks[0].text"]
+        assert editor.report["blocks"][1]["text"] == "New {{ m.total }}"
+
+    def test_a_hint_points_a_placeholder_on_a_view_at_its_data(self, editor):
+        from panel_flowdash.report import PlaceholderHint
+
+        seen = []
+
+        def hint(component_id, instance):
+            seen.append(component_id)
+            if component_id == "R/chart":
+                return PlaceholderHint(upstream="value", note="Cite totals, not the chart.")
+
+        ops = DashboardOps(editor)
+        ops.placeholder_hint = hint
+        with pytest.raises(OperationError) as info:
+            ops.edit_report([{"op": "insert", "block": {"text": "East is {{ east.value }}"}}])
+        message = str(info.value)
+        assert "'east' shows the data of m.total; read that instead, e.g. '{{ m.total }}'." in (
+            message
         )
-        new = [w for w in warnings if w.path == "report.blocks[5].text"]
-        assert len(new) == 2 and "has no output 'totl'" in new[0].message
-        assert editor.report["blocks"][5]["text"].startswith("{{ m.totl }}")
+        assert "Cite totals, not the chart." in message
+        assert seen == ["R/chart"]
+
+    def test_a_component_declares_its_own_hint(self, editor):
+        from panel_flowdash.report import PlaceholderHint
+
+        class View:
+            def __flowdash_placeholder_hint__(self):
+                return PlaceholderHint(upstream="value")
+
+        ops = DashboardOps(editor)
+        ops.placeholder_hint = lambda *_: PlaceholderHint(note="host")
+        solo = ops._report_ids()["solo"]
+        editor._component_instances[solo] = View()
+        assert ops.node_placeholder_hint("solo") == PlaceholderHint(upstream="value")
+        assert ops.node_placeholder_hint("east") == PlaceholderHint(note="host")
+
+    def test_a_failing_hint_is_ignored(self, editor):
+        class View:
+            def __flowdash_placeholder_hint__(self):
+                raise RuntimeError("boom")
+
+        ops = DashboardOps(editor)
+        editor._component_instances[ops._report_ids()["solo"]] = View()
+        assert ops.node_placeholder_hint("solo") is None
+        ops.placeholder_hint = lambda *_: 1 / 0
+        assert ops.node_placeholder_hint("east") is None
 
     def test_set_report_takes_blocks_or_a_whole_report(self, plain_editor):
         ops = DashboardOps(plain_editor)
@@ -335,6 +398,39 @@ class TestTools:
             nonces.add(match[1])
         assert len(nonces) == 2
 
+    async def test_get_report_adds_the_hosts_context_as_data(self, ops):
+        ops.report_context = lambda o: f"base.value is a number ({o is ops})"
+        runner = _runner(ops, ("get_report", {}))
+        await runner.run("Read it")
+        result = next(
+            str(part.content)
+            for message in runner.messages
+            for part in getattr(message, "parts", [])
+            if part.part_kind == "tool-return"
+        )
+        match = re.search(
+            r"What the report's placeholders can read is between <data-([0-9a-f]{16})>.*"
+            r"<data-\1>\nbase.value is a number \(True\)\n</data-\1>",
+            result,
+            re.S,
+        )
+        assert match
+
+    def test_a_failing_report_context_adds_nothing(self, ops):
+        ops.report_context = lambda o: 1 / 0
+        assert ops.report_context_text() is None
+        ops.report_context = lambda o: "  "
+        assert ops.report_context_text() is None
+
+    async def test_a_broken_placeholder_is_sent_back_for_a_retry(self, ops):
+        runner = _runner(
+            ops,
+            ("edit_report", {"operations": [{"op": "insert", "block": {"text": "{{ x.y }}"}}]}),
+        )
+        output = await runner.run("Write it")
+        assert "Nothing was changed" in output and "names no node" in output
+        assert ops.editor.report is None
+
     async def test_a_mistake_is_sent_back_and_changes_nothing(self, ops):
         runner = _runner(ops, ("edit_report", {"operations": [{"op": "remove", "index": 3}]}))
         output = await runner.run("Remove it")
@@ -354,6 +450,14 @@ class TestTools:
         output = await runner.run("Answer the open question")
         runner.deps.end_request()
         assert "Connected base.value to twice.value." in output
+        reply = next(
+            str(part.content)
+            for message in runner.messages
+            for part in getattr(message, "parts", [])
+            if part.part_kind == "tool-return" and part.tool_name == "run_pending"
+        )
+        assert "Build the answer now with your tools" in reply
+        assert "add_node" not in reply and "preview_dashboard" not in reply
         answered = next(t for t in editor.turns if t.id == turn)
         assert (answered.status, answered.actor) == (None, "agent")
         assert answered.question == "What is twice the base?"
@@ -429,3 +533,27 @@ async def test_running_a_question_twice_asks_once(monkeypatch):
     # The request changed nothing, so the question can be run again.
     assert editor.running_pending == []
     assert next(t for t in editor.turns if t.id == turn).status == "pending"
+
+
+def test_the_apps_report_hooks_reach_the_sessions_ops(monkeypatch):
+    from panel_flowdash.agent.exploration import ExplorationOps
+    from panel_flowdash.agent.live import LiveDashboardOps
+    from panel_flowdash.report import PlaceholderHint
+
+    def hint(component_id, instance):
+        return PlaceholderHint(note=component_id)
+
+    def context(ops):
+        return "catalogue"
+
+    app = _app(
+        MemoryDashboardStore(),
+        monkeypatch,
+        agent_placeholder_hint=hint,
+        agent_report_context=context,
+    )
+    ops = LiveDashboardOps(app)
+    assert ops.placeholder_hint is hint
+    assert ops.report_context_text() == "catalogue"
+    explore = ExplorationOps(ops)
+    assert explore.placeholder_hint is hint and explore.report_context is context

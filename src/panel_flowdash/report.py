@@ -30,17 +30,30 @@ import copy
 import datetime as dt
 import decimal
 import fractions
+import logging
 import re
 import typing as t
 from collections.abc import Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 
 from panel_flowdash.groups import GroupError, check_group_id
-from panel_flowdash.text_fill import UNAVAILABLE, Filled, placeholder_pattern, prepare
+from panel_flowdash.text_fill import (
+    UNAVAILABLE,
+    Filled,
+    Missing,
+    Unavailable,
+    _frame,
+    placeholder_pattern,
+    prepare,
+    resolve,
+    segments,
+)
 from panel_flowdash.turns import TURN_ID_PATTERN
 
 if t.TYPE_CHECKING:
     from panel_flowdash.editor import FlowDash
+
+logger = logging.getLogger(__name__)
 
 REPORT_KEYS = ("title", "blocks")
 # The key that gives a block its kind, and the keys each kind may add.
@@ -649,6 +662,82 @@ def text_problems(editor: FlowDash | None, text: str) -> list[str]:
     return problems
 
 
+@dataclass(frozen=True)
+class PlaceholderHint:
+    """What a node tells the agent about writing placeholders for it in report text.
+
+    A component declares one with ``__flowdash_placeholder_hint__(self)``,
+    returning a hint or None; a host can give one for any component with
+    ``FlowDashApp(agent_placeholder_hint=...)``. A view, say, has no value a
+    placeholder can show, so it names the input its data arrives on and the
+    agent is pointed at the output connected to it.
+
+    Parameters
+    ----------
+    upstream
+        An input port of the node; the output connected to it holds the
+        data the node shows, which placeholders should read instead.
+    note
+        One line for the agent, e.g. which columns are worth citing.
+    """
+
+    upstream: str | None = None
+    note: str | None = None
+
+
+PLACEHOLDER_HINT_HOOK = "__flowdash_placeholder_hint__"
+
+
+def call_placeholder_hint(instance: t.Any) -> PlaceholderHint | None:
+    """Return what ``instance.__flowdash_placeholder_hint__`` declares, or None if it has no hook or it fails."""
+    hook = getattr(instance, PLACEHOLDER_HINT_HOOK, None)
+    if hook is None or not callable(hook):
+        return None
+    try:
+        value = hook()
+    except Exception:
+        logger.exception("The placeholder hint of %s failed", type(instance).__name__)
+        return None
+    if value is None or isinstance(value, PlaceholderHint):
+        return value
+    logger.warning("The placeholder hint of %s returned %r", type(instance).__name__, value)
+    return None
+
+
+def value_problems(editor: FlowDash, text: str) -> list[tuple[str, str]]:
+    """Return ``(node, problem)`` for each placeholder of *text* reading a value that is not data.
+
+    Such a placeholder, e.g. one reading a view or a whole table, shows only
+    the value's type's name.
+    """
+    ids = _node_ids(editor)
+    nodes = {name: _Outputs(editor, name, ids) for name in ids}
+    problems: list[tuple[str, str]] = []
+    for match in PLACEHOLDER.finditer(text or ""):
+        root = match.group("root")
+        if root is None:
+            continue
+        parts = segments(root, match.group("path"))
+        value = resolve(nodes, parts, _lookup)
+        if value is None or isinstance(value, (Missing, Unavailable)) or _plain(value):
+            continue
+        ref = match.group(0)
+        if _frame(value):
+            problem = (
+                f"'{ref}' reads a whole table, which shows only as its type's name; read a "
+                f"cell, e.g. '{{{{ {root}.column }}}}', or repeat rows with "
+                f"'{{{{#each {root} limit=5}}}}- {{{{ .column }}}}{{{{/each}}}}'."
+            )
+        else:
+            problem = (
+                f"'{ref}' reads a {type(value).__name__}, not data, so it shows only as its "
+                "type's name."
+            )
+        if (parts[0], problem) not in problems:
+            problems.append((str(parts[0]), problem))
+    return problems
+
+
 _EACH_REF = re.compile(rf"\{{\{{\s*#each\s+({_ROOT})")
 
 
@@ -669,8 +758,10 @@ __all__ = [
     "BLOCK_KINDS",
     "COMMON_BLOCK_KEYS",
     "REPORT_KEYS",
+    "PlaceholderHint",
     "ReportError",
     "ResolvedReport",
+    "call_placeholder_hint",
     "check_block",
     "check_report",
     "dashboard_nodes",
@@ -689,5 +780,6 @@ __all__ = [
     "text_problems",
     "turn_outputs",
     "update_block",
+    "value_problems",
     "without_nodes",
 ]
