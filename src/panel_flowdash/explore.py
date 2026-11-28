@@ -331,7 +331,9 @@ class ExploreFeed(Viewer):
                 user_placement="right", message_params={"show_avatar": False, "show_user": False}
             )
         from panel_flowdash.agent.chrome import TOOL_LABELS
+        from panel_flowdash.agent.steps import mark_refusals
 
+        mark_refusals(self.state)
         chat = AgentChat(
             self.state,
             layout="document",

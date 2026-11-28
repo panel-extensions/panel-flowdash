@@ -173,7 +173,12 @@ turns Ask off, and Done closes it. The command palette
 while the agent is busy is sent once it is done. In full screen, a call waiting for
 approval shows a notice whose Review button leaves full screen and opens the drawer.
 The chat names each finished step in the dashboard's terms ("Connect filter to map",
-"Change kpi: label") and folds it away. On a phone the drawer opens over the page
+"Change kpi: label") and folds it away. A step a tool refused stays open as failed,
+with the reason and whether a later step retried it, and when a request ends with
+steps refused or failed and not redone, the agent is told to name them in its answer.
+Hosts name their own tools' steps with
+`panel_flowdash.agent.register_tool_labels({"run_sql": "Query the data"})`, where a
+label may also be a callable taking the call's arguments. On a phone the drawer opens over the page
 instead of beside it. The agent's edits appear on the user's canvas as they happen, as unsaved changes:
 a dashboard shown in view mode switches to edit mode, and Save, Discard and the
 unsaved-changes review work as for the user's own edits. The nodes and tiles the

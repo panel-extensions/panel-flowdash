@@ -11,6 +11,7 @@ from pydantic_ai import Agent, RunContext
 
 from .models import MODEL_ENV, default_model
 from .ops import DashboardOps
+from .steps import failure_instructions
 from .tools import FlowDashDeps, dashboard_toolset
 
 _GENERAL = """\
@@ -368,6 +369,10 @@ def create_agent(
         @agent.instructions
         def components(ctx: RunContext[FlowDashDeps]) -> str:
             return _describe_components(ctx.deps.ops, compact, lookup)
+
+    @agent.instructions
+    def failures(ctx: RunContext[FlowDashDeps]) -> str:
+        return failure_instructions(ctx.messages)
 
     return agent
 
