@@ -1719,11 +1719,16 @@ class TestDisplayModes:
             editor._settings_dialog,
             editor._transform_offer.dialog,
         ]
-        assert editor._dialog_host.objects[:4] == dialogs
-        assert editor._workspace_area.objects[-1] is editor._dialog_host
-        editor.mode = "dashboard"
-        assert editor._dialog_host.objects[:4] == dialogs
-        assert editor._workspace_area.objects[-1] is editor._dialog_host
+        for mode in ("wiring", "dashboard"):
+            editor.mode = mode
+            objects = editor._workspace_area.objects
+            start = objects.index(dialogs[0])
+            assert objects[start : start + 4] == dialogs
+
+    async def test_closed_dialogs_add_nothing_to_the_canvas_minimum_width(self, editor):
+        # The settings dialog is far wider than a phone, but it overlays the page.
+        assert editor._settings_dialog in editor._workspace_area.objects
+        assert editor._workspace_area.get_root().min_width == 0
 
     async def test_non_editable_always_shows_the_grid(self, editor):
         editor.editable = False

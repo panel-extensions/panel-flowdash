@@ -4205,17 +4205,15 @@ class FlowDash(Viewer):
         self._side_panel.css_classes = [*self._side_panel.css_classes, _SIDE_PANEL_CLASS]
         self._start_card = StartCard(editor=self)
         self._empty_hint = self._start_card.__panel__()
-        # Its own minimum, or the closed dialogs it holds (Clear canvas, a tile's full
-        # screen view) would keep the canvas their width and push the inspector off screen.
+        # No minimum inferred from its children, or the closed dialogs it holds (Clear
+        # canvas, a tile's full screen view) would keep the canvas their width, push
+        # the inspector off screen and keep the dashboard wider than a phone.
         self._workspace_area = pn.Column(
             sizing_mode="stretch_both",
             scroll="y-auto",
+            min_width=0,
             stylesheets=[f":host {{ min-width: {_CANVAS_MIN_WIDTH}px !important; }}"],
         )
-        # The modal dialogs overlay the page, so they hold no room in it. Panel
-        # adds a child's width to its layout's minimum even when that child is a
-        # closed dialog, which would keep the dashboard wider than a phone.
-        self._dialog_host = pn.Column(margin=0, width=0, height=0, sizing_mode="fixed")
         self._inspector = Inspector(editor=self)
         self._layout_panel = LayoutPanel(editor=self)
         self._sidecar = SidecarFold(self)
@@ -5156,9 +5154,6 @@ class FlowDash(Viewer):
         shared_dialog = page_dialog() if self.include_page_dialog else None
         if shared_dialog is not None:
             dialogs.append(shared_dialog)
-        if list(self._dialog_host) != dialogs:
-            self._dialog_host[:] = dialogs
-        dialogs = [self._dialog_host]
         if self.inspect_outputs or self.provenance:
             dialogs.insert(0, self._inspect_dialog)
         canvas_host = "split" if split else "wiring" if showing_canvas else None
