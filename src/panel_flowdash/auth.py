@@ -346,6 +346,64 @@ def is_authorized(
     return default_allow
 
 
+def evaluate_permission(
+    permission: Permission | None,
+    identity: Identity | None,
+    *,
+    is_admin: bool = False,
+    default_allow: bool = True,
+) -> bool:
+    """Evaluate a resource *permission* against *identity* with admin bypass for allowlists.
+
+    Order of precedence:
+
+    1. An empty or ``None`` permission defers to *default_allow*.
+    2. A non-empty permission without an *identity* fails closed (False).
+    3. Explicit deny (``deny_users`` / ``deny_groups``) denies, even for admins.
+    4. Admins (``is_admin=True``) pass allowlists unless denied in step 3.
+    5. Otherwise delegates to :func:`is_authorized` with *default_allow*.
+    """
+    if permission is None or permission.is_empty:
+        return default_allow
+    if identity is None:
+        return False
+    if permission.deny_users and identity.is_user(permission.deny_users):
+        return False
+    if permission.deny_groups and identity.in_groups(permission.deny_groups):
+        return False
+    if is_admin:
+        return True
+    return is_authorized(permission, identity, default_allow=default_allow)
+
+
+def permission_lockout_reason(
+    permission: Permission | None,
+    identity: Identity | None,
+    *,
+    is_admin: bool = True,
+) -> str | None:
+    """Return why saving *permission* would lock out *identity*, or None if allowed."""
+    if permission is None or permission.is_empty:
+        return None
+    if evaluate_permission(permission, identity, is_admin=is_admin):
+        return None
+    if identity is None:
+        return "This rule cannot be saved because your user identity is unknown."
+    if permission.deny_users and identity.is_user(permission.deny_users):
+        matched = sorted(identity.user_names & permission.deny_users)
+        return (
+            f"Saving this rule would lock you out because deny_users includes "
+            f"{', '.join(matched)} (deny rules apply even to admins)."
+        )
+    if permission.deny_groups and identity.in_groups(permission.deny_groups):
+        matched = sorted(identity.groups & permission.deny_groups)
+        return (
+            f"Saving this rule would lock you out because deny_groups includes "
+            f"{', '.join(matched)} (deny rules apply even to admins)."
+        )
+    return "Saving this rule would lock you out of this resource."
+
+
 def can_administer(identity: Identity, owner: str, admin_groups: Iterable[str]) -> bool:
     """Whether *identity* may administer a resource owned by *owner*.
 

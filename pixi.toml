@@ -72,6 +72,9 @@ test-coverage = "pytest -n auto --cov=panel_flowdash --cov-report=xml --cov-repo
 
 [feature.agent.pypi-dependencies]
 panel-agents = { version = ">=0.1.0b13", extras = ["pydantic-ai"] }
+pydantic-ai-slim = { version = "*", extras = ["mcp"] }
+# Tests spin up in-process, HTTP and stdio FastMCP servers.
+fastmcp-slim = { version = ">=3.3.0", extras = ["server"] }
 
 [feature.build.dependencies]
 python-build = "*"

@@ -282,6 +282,7 @@ class AgentSession:
         return [self.runner] + ([self.explore_runner] if self.explore_runner is not None else [])
 
     def _approval_policy(self):
+        from panel_flowdash.agent.mcp import mcp_approval_rules
         from panel_flowdash.permissions import approval_rules
 
         app = self.app
@@ -291,12 +292,58 @@ class AgentSession:
             p for p in permissions.get("sensitive_components") or () if p not in sensitive
         ]
         sensitive += [cid for cid in app._approval_components() if cid not in sensitive]
+        mcp_rules = mcp_approval_rules(app._mcp_configs())
         return approval_policy(
+            *mcp_rules,
             *app.agent_approval_rules,
             *approval_rules(permissions),
             sensitive_components=sensitive,
             ops=self.ops,
         )
+
+    def _mcp_toolsets(self, surface: str) -> list:
+        """Build resilient MCP toolsets for *surface* using current config and dynamic auth."""
+        from pathlib import Path
+
+        from panel_flowdash.agent.mcp import build_mcp_toolsets
+        from panel_flowdash.mcp import project_check_key
+
+        app = self.app
+        configs = app._mcp_configs()
+        if not configs:
+            return []
+        project = app._settings_project()
+        directory = (
+            project.directory
+            if project.directory is not None
+            else (Path(app.project_dir) if app.project_dir is not None else None)
+        )
+        # Re-read admin status fresh per run so a demoted admin cannot keep bypassing allowlists.
+        is_admin = (
+            app._authorize_admin(fresh=True)
+            if hasattr(app, "_authorize_admin")
+            else bool(getattr(app, "is_admin", False))
+        )
+        return build_mcp_toolsets(
+            configs,
+            surface=surface,
+            identity=app._identity,
+            is_admin=is_admin,
+            tool_authorize=app.tool_authorize,
+            allowed_stdio=app._allowed_stdio_commands(),
+            allowed_stdio_env=app._allowed_stdio_env(),
+            allowed_secret_env=app._allowed_secret_env_vars(),
+            directory=directory,
+            project_key=project_check_key(project, directory),
+        )
+
+    def _extra_capabilities(self) -> list:
+        """Return run-scoped capabilities, including dynamic `tool_authorize` when configured."""
+        if self.app.tool_authorize is None:
+            return []
+        from panel_flowdash.agent.mcp import ToolAuthorizeCapability
+
+        return [ToolAuthorizeCapability(self.app._tool_authorized)]
 
     def model_id(self, target: t.Any) -> str | None:
         """Return the id of the offered model a runner's ``model`` is, or None."""
@@ -674,6 +721,8 @@ class _SessionRunner(AgentRunner):
     ends the turn of the user's own edits, so those made after it form a new one.
     """
 
+    _surface = "assistant"
+
     def __init__(self, session: AgentSession, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._session = session
@@ -699,8 +748,18 @@ class _SessionRunner(AgentRunner):
         if not app._assistant_still_allowed():
             app._notify("error", "You no longer have access to the assistant.", duration=8000)
             return None
-        # Approval rules and sensitive components changed in the admin view apply from this request.
+        # Approval rules, MCP servers and sensitive components changed in Admin apply on this run.
         self.approval_policy = self._session._approval_policy()
+        mcp_toolsets = self._session._mcp_toolsets(self._surface)
+        if mcp_toolsets:
+            base_toolsets = list(self.run_kwargs.get("toolsets") or ())
+            extra_toolsets = list(kwargs.get("toolsets") or ())
+            kwargs = {**kwargs, "toolsets": [*base_toolsets, *extra_toolsets, *mcp_toolsets]}
+        extra_caps = self._session._extra_capabilities()
+        if extra_caps:
+            base_caps = list(self.run_kwargs.get("capabilities") or ())
+            caller_caps = list(kwargs.get("capabilities") or ())
+            kwargs = {**kwargs, "capabilities": [*base_caps, *caller_caps, *extra_caps]}
         model_id, model_kwargs, note = self._session.plan_request(kwargs.get("model", self.model))
         if note:
             self._session.app._notify("warning" if model_id else "error", note, duration=8000)
@@ -732,6 +791,8 @@ class _ExploreRunner(_SessionRunner):
     Each run works on the open dashboard's exploration (``deps.ops`` is an
     ``ExplorationOps``), brought up to date with the dashboard first.
     """
+
+    _surface = "explore"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

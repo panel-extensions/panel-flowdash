@@ -222,6 +222,23 @@ AGENT_EXTRA_MISSING = (
 class FlowDashApp(Viewer):
     """FlowDash application: scans a project directory and serves its pages and components."""
 
+    admin_hidden_sections = param.List(
+        default=[],
+        item_type=str,
+        doc="""
+        Project file section names hidden from the ``/admin`` navigation,
+        e.g. when a host app places a section's settings view in its own page.""",
+    )
+
+    admin_section_redirects = param.Dict(
+        default={},
+        doc="""
+        Map of ``/admin/<section>`` names to routes they moved to, e.g.
+        ``{"mcp": "/data/integrations"}``. Listed sections are also hidden
+        from the ``/admin`` sidebar, and opening ``/admin/<section>``
+        redirects to the target route.""",
+    )
+
     admin_link = param.Boolean(
         default=True,
         doc="""
@@ -282,6 +299,65 @@ class FlowDashApp(Viewer):
         Called with the signed-in `Identity` to decide whether this session
         gets the agent, e.g. to roll it out to some groups first. None offers
         it to everyone when an agent is configured.""",
+    )
+
+    tool_authorize = param.Callable(
+        default=None,
+        doc="""
+        Called with ``(identity, tool_name)`` to decide whether the agent may
+        offer and call *tool_name* in this session. MCP tools are named
+        ``mcp_<server>__<tool>`` (see `panel_flowdash.mcp.parse_mcp_tool_name`).
+        Returning False hides the tool from the model and refuses execution;
+        exceptions fail closed (False). Read dynamically before each run so
+        host apps may attach or wrap it after construction.""",
+    )
+
+    mcp_servers = param.Dict(
+        default={},
+        doc="""
+        Programmatic MCP servers keyed by server id: each value is a
+        `panel_flowdash.mcp.MCPServerConfig`, a config mapping or a ready-made
+        pydantic-ai toolset / FastMCP server. Code-defined servers take
+        precedence over identically named entries in ``flowdash.yaml`` and
+        appear locked in the admin UI.""",
+    )
+
+    mcp_stdio_commands = param.List(
+        default=None,
+        allow_None=True,
+        doc="""
+        Allowlist of full argv prefixes that ``stdio`` MCP servers configured in
+        ``flowdash.yaml`` or the admin UI may launch. Each entry is a command
+        string (e.g. ``"/opt/mcp/docs-server --readonly"``) or an argv sequence
+        (e.g. ``["/usr/local/bin/my-mcp", "--mode", "read"]``); path entries must
+        be absolute. A configured server must match the whole prefix and only
+        trailing arguments beyond it are free. Allowlisting a package launcher
+        or interpreter without a pinned subcommand/script prefix grants arbitrary
+        code execution to anyone who can edit ``flowdash.yaml`` or is an app
+        admin. When None, reads the comma-separated ``FLOWDASH_MCP_STDIO_COMMANDS``
+        environment variable; when empty, file/UI ``stdio`` servers are denied.""",
+    )
+
+    mcp_stdio_env = param.List(
+        default=None,
+        allow_None=True,
+        item_type=str,
+        doc="""
+        Allowlist of subprocess environment variable names that file/UI ``stdio``
+        MCP servers may set in ``env:``. When None, reads the comma-separated
+        ``FLOWDASH_MCP_STDIO_ENV`` environment variable; when empty, file/UI
+        ``stdio`` servers cannot inject environment variables.""",
+    )
+
+    mcp_secret_env_vars = param.List(
+        default=None,
+        allow_None=True,
+        item_type=str,
+        doc="""
+        Allowlist of glob patterns or variable names permitted in ``${VAR}``
+        secret references inside ``flowdash.yaml``'s ``mcp:`` section. When
+        None, reads ``FLOWDASH_MCP_SECRET_ENV_VARS`` (comma-separated) or
+        defaults to ``["FLOWDASH_MCP_*"]``.""",
     )
 
     agent_sensitive_components = param.List(
@@ -800,20 +876,31 @@ class FlowDashApp(Viewer):
         the project directory, created on the first save.
         """
         if isinstance(self.project, Project):
+            if self.mcp_secret_env_vars is not None:
+                self.project.context["mcp_secret_env_vars"] = self._allowed_secret_env_vars()
             return self.project
         if getattr(self, "_own_project", None) is not None:
+            if self.mcp_secret_env_vars is not None:
+                self._own_project.context["mcp_secret_env_vars"] = self._allowed_secret_env_vars()
             return self._own_project
         if self.project_dir is None:
-            self._own_project = Project(context=self._project_context(self._registry, None))
+            context = self._project_context(self._registry, None)
+            if self.mcp_secret_env_vars is not None:
+                context["mcp_secret_env_vars"] = self._allowed_secret_env_vars()
+            self._own_project = Project(context=context)
             return self._own_project
         path = pathlib.Path(self.project_dir).resolve() / PROJECT_FILE
         key = str(path)
         project = _SETTINGS_PROJECTS.get(key)
         if project is None:
             context = self._project_context(self._registry, self.project_dir)
+            if self.mcp_secret_env_vars is not None:
+                context["mcp_secret_env_vars"] = self._allowed_secret_env_vars()
             project = _unloaded_project(path, context) if path.is_file() else None
             project = project or Project(key, context=context)
             project = _SETTINGS_PROJECTS.setdefault(key, project)
+        elif self.mcp_secret_env_vars is not None:
+            project.context["mcp_secret_env_vars"] = self._allowed_secret_env_vars()
         return project
 
     def _code_setting_source(self, target: str) -> str | None:
@@ -1124,6 +1211,45 @@ class FlowDashApp(Viewer):
             self._navigate_to("/")
         else:
             self._navigate_to(f"{ADMIN_ROUTE}/general")
+
+    def _hidden_admin_sections(self) -> set[str]:
+        """Return admin section names omitted from ``/admin`` navigation."""
+        return set(self.admin_hidden_sections) | set(self.admin_section_redirects)
+
+    def _allowed_stdio_commands(self) -> tuple[tuple[str, ...], ...]:
+        """Return the allowlisted argv prefixes for file/UI stdio MCP servers."""
+        from panel_flowdash.mcp import allowed_stdio_commands
+
+        return allowed_stdio_commands(self.mcp_stdio_commands)
+
+    def _allowed_stdio_env(self) -> frozenset[str]:
+        """Return the allowlisted environment variable names for file/UI stdio MCP servers."""
+        from panel_flowdash.mcp import allowed_stdio_env
+
+        return allowed_stdio_env(self.mcp_stdio_env)
+
+    def _allowed_secret_env_vars(self) -> tuple[str, ...]:
+        """Return the allowlisted ``${VAR}`` patterns/names for ``mcp:`` secrets."""
+        from panel_flowdash.mcp import allowed_secret_env_vars
+
+        return allowed_secret_env_vars(self.mcp_secret_env_vars)
+
+    def _mcp_configs(self) -> list:
+        """Return all configured MCP servers from code and ``flowdash.yaml``."""
+        from panel_flowdash.mcp import configured_servers
+
+        return list(configured_servers(self._settings_project(), self).values())
+
+    def _tool_authorized(self, tool_name: str) -> bool:
+        """Evaluate `tool_authorize` dynamically for the session's identity (fail closed)."""
+        hook = self.tool_authorize
+        if hook is None:
+            return True
+        try:
+            return bool(hook(self._identity, tool_name))
+        except Exception:
+            logger.exception("tool_authorize failed for %r; denying tool", tool_name)
+            return False
 
     def _admin_view(self, pathname: str):
         """Return the admin page showing the section *pathname* names, or a refusal."""
@@ -2445,6 +2571,12 @@ class FlowDashApp(Viewer):
             return
 
         if pathname == ADMIN_ROUTE or pathname.startswith(f"{ADMIN_ROUTE}/"):
+            # Redirects match exact /admin/<section> paths (with trailing slash stripped).
+            section = pathname[len(ADMIN_ROUTE) :].strip("/")
+            redirect = self.admin_section_redirects.get(section)
+            if redirect:
+                self._navigate_url(redirect)
+                return
             self._leave_dashboard()
             self._reset_canvas()
             self._set_sidebar_views([])

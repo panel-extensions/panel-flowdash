@@ -63,6 +63,7 @@ _EMPTY: dict[str, t.Any] = {
 BUILT_IN_RULES = (
     ("save_dashboard, delete_*, share_*", "Always, and the palette's save, delete and share"),
     ("add_node, set_config, load YAML", "places or changes a sensitive component"),
+    ("mcp_*", "Always, unless allowed on the MCP server"),
 )
 
 _AVATAR_COLORS = ("#00796b", "#5e35b1", "#c2185b", "#ef6c00", "#1565c0", "#6d4c41", "#2e7d32")
