@@ -107,3 +107,45 @@ def test_the_view_of_a_spec_node_draws_its_chart(page):
     # A run draws a new chart, which is sized to the panel too.
     editor._component_instances[chart].spec = {**SPEC, "mark": "point"}
     wait_until(drawn, page, timeout=10000)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Panel 1.11's Vega pane misses a narrowing container when a layout pass "
+        "updated its box first, so ViewFrame still dispatches window resizes; "
+        "drop ViewFrame's dispatch once this passes"
+    ),
+)
+def test_the_chart_follows_its_container_without_window_resizes(page):
+    editor = FlowDash(
+        {"T/rows": Rows, "T/chart": Chart}, notifications=False, include_builtin_components=False
+    )
+    rows = editor.add_component("T/rows", position=(0, 0))
+    chart = editor.add_component("T/chart", position=(320, 0))
+    editor.connect(rows, "data", chart, "data")
+    page.set_viewport_size({"width": 1440, "height": 900})
+    serve_component(page, editor)
+    # Drop the window resizes the splitter and ViewFrame dispatch, leaving the
+    # chart only its own observation of its container.
+    page.evaluate(
+        """() => {
+          const dispatch = window.dispatchEvent.bind(window)
+          window.dispatchEvent = (event) => event.type === "resize" ? true : dispatch(event)
+        }"""
+    )
+    page.locator(f".react-flow__node[data-id='{chart}']").click()
+    page.locator(".fd-edit-spec").first.click(timeout=8000)
+    expect(page.locator(".fd-code-panel .fd-code-view")).to_be_visible(timeout=10000)
+    wait_until(lambda: len(page.evaluate(DRAWN)) == 1, page, timeout=10000)
+
+    width = page.evaluate(DRAWN)[0]["width"]
+    box = page.locator(".fd-code-panel-body .gutter").bounding_box()
+    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    page.mouse.move(x, y)
+    page.mouse.down()
+    for step in range(1, 11):
+        page.mouse.move(x + 20 * step, y)
+        page.wait_for_timeout(20)
+    page.mouse.up()
+    wait_until(lambda: page.evaluate(DRAWN)[0]["width"] < width - 100, page, timeout=5000)
