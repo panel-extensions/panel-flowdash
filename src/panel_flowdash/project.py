@@ -51,6 +51,7 @@ __all__ = [
     "ProjectSection",
     "Section",
     "SectionError",
+    "current_section",
     "expand_env",
     "find_project",
     "load_entry_points",
@@ -762,3 +763,23 @@ def find_project(places: Iterable[Any] = (), cwd: str | os.PathLike | None = Non
     return next(
         (candidate for candidate in dict.fromkeys(candidates) if candidate.is_file()), None
     )
+
+
+def current_section(project: Project, name: str) -> Any:
+    """Return section *name* as the project file has it now, loaded by its loader.
+
+    The file is read again, so what another process wrote since the project
+    was loaded counts; without a file, or if it cannot be read, the loaded
+    value is returned. None when the section is not in the file.
+    """
+    path = Path(project.path) if project.path else None
+    section = sections().get(name)
+    if path is not None and path.is_file() and section is not None:
+        try:
+            data, _ = _parse(path.read_text(encoding="utf-8"), str(path))
+            if name not in data:
+                return None
+            return section.loader(Section(name, data[name], project))
+        except (OSError, UnicodeDecodeError, ProjectError, SectionError, TypeError, ValueError):
+            logger.warning("Could not read %s again; using the loaded values.", path)
+    return project.get(name)

@@ -10,6 +10,13 @@ from panel_flowdash.admin.ai import AI, AISettings
 from panel_flowdash.admin.form import Group, Setting, SettingsForm, current_app, settings_loader
 from panel_flowdash.admin.mcp import MCP, MCPSettings
 from panel_flowdash.admin.page import ADMIN_ROUTE, AdminPage, admin_sections
+from panel_flowdash.admin.permission_editor import (
+    PermissionDialog,
+    PermissionEditor,
+    format_name_list,
+    known_principals,
+    parse_name_list,
+)
 from panel_flowdash.admin.permissions import PERMISSIONS, PermissionsForm
 from panel_flowdash.admin.sections import GENERAL, THEME, project_overrides
 from panel_flowdash.admin.wizard import SetupWizard, WizardStep
@@ -25,6 +32,8 @@ __all__ = [
     "AdminPage",
     "Group",
     "MCPSettings",
+    "PermissionDialog",
+    "PermissionEditor",
     "PermissionsForm",
     "Setting",
     "SettingsForm",
@@ -34,7 +43,10 @@ __all__ = [
     "admin_sections",
     "admin_token",
     "current_app",
+    "format_name_list",
     "is_admin",
+    "known_principals",
+    "parse_name_list",
     "project_overrides",
     "settings_loader",
 ]
