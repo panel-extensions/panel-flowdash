@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import getpass
+import json
 import socket
 import sys
 import threading
@@ -502,8 +503,9 @@ class TestRealMCPTransports:
             "  servers:\n"
             "    local:\n"
             "      transport: stdio\n"
-            f"      command: {sys.executable!r}\n"
-            f"      args: [{str(script)!r}]\n"
+            # JSON strings are YAML double-quoted strings; repr() doubles Windows backslashes.
+            f"      command: {json.dumps(sys.executable)}\n"
+            f"      args: [{json.dumps(str(script))}]\n"
             "      cwd: srv\n"
             "      env:\n"
             f"        MCP_TEST_SECRET: {{encrypted: {enc['encrypted']!r}, key_id: {enc['key_id']!r}}}\n"

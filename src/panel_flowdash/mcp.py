@@ -244,6 +244,17 @@ def _has_path_separator(value: str) -> bool:
     return "/" in value or "\\" in value
 
 
+def split_command(text: str, *, windows: bool | None = None) -> list[str]:
+    """Split a command line into argv, keeping Windows paths' backslashes on Windows."""
+    if not (os.name == "nt" if windows is None else windows):
+        return shlex.split(text)
+    # POSIX shlex treats backslash as an escape and would turn C:\tools\x.exe into C:toolsx.exe.
+    lexer = shlex.shlex(text, posix=True)
+    lexer.whitespace_split = True
+    lexer.escape = ""
+    return list(lexer)
+
+
 def parse_stdio_prefix(entry: str | Sequence[str]) -> tuple[str, ...] | None:
     """Parse one stdio allowlist entry (command string or argv sequence) into an argv prefix."""
     if isinstance(entry, str):
@@ -251,7 +262,7 @@ def parse_stdio_prefix(entry: str | Sequence[str]) -> tuple[str, ...] | None:
         if not text:
             return None
         try:
-            tokens = tuple(shlex.split(text))
+            tokens = tuple(split_command(text))
         except ValueError:
             return None
         return tokens or None

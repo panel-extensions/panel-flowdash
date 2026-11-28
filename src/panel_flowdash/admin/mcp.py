@@ -70,6 +70,7 @@ from panel_flowdash.mcp import (
     mcp_server_authorized,
     mcp_tool_authorized,
     mcp_tool_name,
+    split_command,
     url_origin,
     validate_server_name,
 )
@@ -1532,7 +1533,7 @@ class MCPSettings(Viewer):
             raw_args = _text(self._args)
             if raw_args:
                 try:
-                    parsed_args = shlex.split(raw_args)
+                    parsed_args = split_command(raw_args)
                 except ValueError as exc:
                     problems.append(f"Arguments could not be parsed: {exc}")
             cmd_err = check_stdio_command(command, self._allowed_stdio(), args=parsed_args)

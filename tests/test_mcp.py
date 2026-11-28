@@ -5,7 +5,9 @@ from __future__ import annotations
 import getpass
 import json
 import logging
+import os
 import sys
+from pathlib import Path
 
 import panel as pn
 import pytest
@@ -58,9 +60,15 @@ from panel_flowdash.mcp import (
     resolve_stdio_env,
     resolve_stdio_executable,
     set_mcp_check,
+    split_command,
     url_origin,
     validate_server_name,
 )
+
+# Absolute on every platform: "/opt/mcp" has no drive, so Windows treats it as relative.
+OPT = str(Path("C:/opt/mcp") if sys.platform == "win32" else Path("/opt/mcp"))
+DOCS_SERVER = os.path.join(OPT, "docs-server")
+A, B, C = (os.path.join(OPT, name) for name in "abc")
 from panel_flowdash.project import PROJECT_FILE, Problem, ProjectError, load_project, parse_project
 from panel_flowdash.secret_store import (
     KEY_ENV,
@@ -179,13 +187,13 @@ mcp:
           allow_groups: [admins]
     local_docs:
       transport: stdio
-      command: /opt/mcp/docs-server
+      command: '{DOCS_SERVER}'
       args: ["--readonly"]
       cwd: docs
       env:
         DOCS_KEY: ${FLOWDASH_MCP_DOCS_KEY}
       enabled: false
-"""
+""".replace("{DOCS_SERVER}", DOCS_SERVER)
         project = parse_project(text, tmp_path / PROJECT_FILE)
         data = project.get("mcp")
         assert set(data["servers"]) == {"github", "local_docs"}
@@ -212,10 +220,10 @@ mcp:
         X-Api-Key: raw-secret
     local:
       transport: stdio
-      command: /opt/mcp/docs-server
+      command: '{DOCS_SERVER}'
       env:
         API_KEY: raw-env-secret
-"""
+""".replace("{DOCS_SERVER}", DOCS_SERVER)
         with pytest.raises(ProjectError) as info:
             parse_project(text, tmp_path / PROJECT_FILE)
         keys = {p.keys for p in info.value.problems}
@@ -235,10 +243,10 @@ mcp:
         X-Key: ${FLOWDASH_SECRET_KEY}
     local:
       transport: stdio
-      command: /opt/mcp/docs-server
+      command: '{DOCS_SERVER}'
       env:
         AWS_SECRET: ${AWS_SECRET_ACCESS_KEY}
-"""
+""".replace("{DOCS_SERVER}", DOCS_SERVER)
         with pytest.raises(ProjectError) as info:
             parse_project(text, tmp_path / PROJECT_FILE)
         keys = {p.keys for p in info.value.problems}
@@ -315,7 +323,7 @@ mcp:
 
 class TestStdioCommandAndEnvPolicy:
     def test_empty_allowlist_denies_everything(self):
-        err = check_stdio_command("/opt/mcp/server", ())
+        err = check_stdio_command(os.path.join(OPT, "server"), ())
         assert err is not None and "disabled by server policy" in err
 
     def test_argv_prefix_matching_blocks_launcher_argument_injection(self):
@@ -354,6 +362,16 @@ class TestStdioCommandAndEnvPolicy:
         )
         assert check_stdio_command("npx", allowed, args=["-y", "evil-pkg"]) is not None
 
+    def test_windows_command_lines_keep_backslashes(self):
+        line = r'C:\tools\mcp.exe --root "C:\Program Files\data" -v'
+        assert split_command(line, windows=True) == [
+            r"C:\tools\mcp.exe",
+            "--root",
+            r"C:\Program Files\data",
+            "-v",
+        ]
+        assert split_command(r"/opt/a\ b --x", windows=False) == ["/opt/a b", "--x"]
+
     def test_absolute_path_required_for_separator_entries(self, tmp_path):
         exe = tmp_path / "my-mcp"
         exe.write_text("#!/bin/sh\n")
@@ -368,10 +386,10 @@ class TestStdioCommandAndEnvPolicy:
         assert check_stdio_command("./bin/server", ("./bin/server",)) is not None
 
     def test_env_var_fallback_and_explicit_override(self, monkeypatch):
-        monkeypatch.setenv(STDIO_COMMANDS_ENV, "/opt/mcp/a --read, /opt/mcp/b")
-        assert allowed_stdio_commands(None) == (("/opt/mcp/a", "--read"), ("/opt/mcp/b",))
+        monkeypatch.setenv(STDIO_COMMANDS_ENV, f"{A} --read, {B}")
+        assert allowed_stdio_commands(None) == ((A, "--read"), (B,))
         assert allowed_stdio_commands([]) == ()
-        assert allowed_stdio_commands([["/opt/mcp/c", "--safe"]]) == (("/opt/mcp/c", "--safe"),)
+        assert allowed_stdio_commands([[C, "--safe"]]) == ((C, "--safe"),)
 
     def test_resolve_stdio_executable_raises_for_disallowed(self):
         with pytest.raises(PermissionError):
@@ -448,7 +466,7 @@ class TestSecretsResolutionAndOrigin:
         cfg = MCPServerConfig(
             name="local",
             transport="stdio",
-            command="/opt/mcp/docs",
+            command=os.path.join(OPT, "docs"),
             env={"DOCS_API_KEY": "${FLOWDASH_MCP_DOCS_KEY}"},
         )
         assert resolve_stdio_env(cfg, allowed_env=["DOCS_API_KEY"]) == {
@@ -459,7 +477,7 @@ class TestSecretsResolutionAndOrigin:
         cfg_missing = MCPServerConfig(
             name="local",
             transport="stdio",
-            command="/opt/mcp/docs",
+            command=os.path.join(OPT, "docs"),
             env={"DOCS_API_KEY": "${FLOWDASH_MCP_MISSING}"},
         )
         with pytest.raises(SecretError, match="FLOWDASH_MCP_MISSING"):
@@ -691,20 +709,20 @@ class TestMCPSettingsAndHostHooks:
         view.open_server(None)
         view._name_input.value = "local"
         view._transport.value = "stdio"
-        view._command.value = "/opt/mcp/docs-server"
+        view._command.value = DOCS_SERVER
         assert view.save_server() is False
         assert "disabled by server policy" in view._drawer_alert.object
 
         app_allowed = _app(
             tmp_path,
-            mcp_stdio_commands=["/opt/mcp/docs-server --readonly"],
+            mcp_stdio_commands=[f"{DOCS_SERVER} --readonly"],
             mcp_stdio_env=["DOCS_API_KEY"],
         )
         view2 = MCPSettings(app_allowed._settings_project(), editable=True, app=app_allowed)
         view2.open_server(None)
         view2._name_input.value = "local"
         view2._transport.value = "stdio"
-        view2._command.value = "/opt/mcp/docs-server"
+        view2._command.value = DOCS_SERVER
         # Missing required prefix arg --readonly is refused.
         view2._args.value = "--write"
         assert view2.save_server() is False
@@ -723,7 +741,7 @@ class TestMCPSettingsAndHostHooks:
         view2._add_secret_entry("env")
         assert view2.save_server() is True
         saved = load_project(tmp_path / PROJECT_FILE).get("mcp")["servers"]["local"]
-        assert saved["command"] == "/opt/mcp/docs-server"
+        assert saved["command"] == DOCS_SERVER
         assert saved["args"] == ["--readonly", "--timeout", "10"]
         assert saved["env"] == {"DOCS_API_KEY": "${FLOWDASH_MCP_DOCS_KEY}"}
 
