@@ -6,27 +6,34 @@ mcp:
     github:
       transport: http
       url: https://api.githubcopilot.com/mcp/
-      token: ${GITHUB_TOKEN}
+      token: ${FLOWDASH_MCP_GITHUB_TOKEN}
       description: GitHub issues and pull requests
       auto_approve: [list_issues, get_*]
       access:
         allow_groups: [engineering]
     docs:
       transport: stdio
-      command: uvx
-      args: ["mcp-server-fetch"]
+      command: /opt/mcp/docs-server
+      args: ["--readonly"]
       env:
-        DOCS_API_KEY: ${DOCS_API_KEY}
+        DOCS_API_KEY: ${FLOWDASH_MCP_DOCS_KEY}
 ```
 
 Every credential (``token``, ``headers`` values and ``env`` values) is stored
 through :mod:`panel_flowdash.secret_store`: either a ``${VARIABLE}`` reference
 or a Fernet-encrypted value saved from the admin UI. Plaintext secrets in
-``flowdash.yaml`` are rejected.
+``flowdash.yaml`` are rejected. ``${VARIABLE}`` references in ``mcp:`` are
+restricted to operator-allowlisted names/patterns, defaulting to
+``FLOWDASH_MCP_*``.
 
 ``stdio`` servers configured in ``flowdash.yaml`` or the UI are denied by
-default unless the server operator explicitly allowlists commands via
-``FlowDashApp.mcp_stdio_commands`` or ``FLOWDASH_MCP_STDIO_COMMANDS``.
+default unless the server operator explicitly allowlists full argv prefixes via
+``FlowDashApp.mcp_stdio_commands`` or ``FLOWDASH_MCP_STDIO_COMMANDS``, and
+permitted subprocess environment variable names via
+``FlowDashApp.mcp_stdio_env`` or ``FLOWDASH_MCP_STDIO_ENV``. Allowlisting a
+package launcher or interpreter without a pinned subcommand/script prefix
+grants arbitrary code execution to anyone who can edit ``flowdash.yaml`` or is
+an app admin.
 
 This module needs nothing beyond panel-flowdash itself; pydantic-ai and the
 MCP client library are imported lazily when an agent session or connection
@@ -41,14 +48,21 @@ import logging
 import math
 import os
 import re
+import shlex
 import shutil
 import typing as t
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from panel_flowdash.auth import Identity, Permission
-from panel_flowdash.project import ProjectError, Section, SectionError
+from panel_flowdash.auth import Identity, Permission, evaluate_permission
+from panel_flowdash.project import (
+    ProjectError,
+    Section,
+    SectionError,
+    current_section,
+)
 from panel_flowdash.secret_store import SecretError, check_secret, describe_secret, resolve_secret
 from panel_flowdash.value_text import error_text
 
@@ -58,9 +72,17 @@ MCP_SECTION = "mcp"
 
 STDIO_COMMANDS_ENV = "FLOWDASH_MCP_STDIO_COMMANDS"
 
+STDIO_ENV_VARS_ENV = "FLOWDASH_MCP_STDIO_ENV"
+
+SECRET_ENV_VARS_ENV = "FLOWDASH_MCP_SECRET_ENV_VARS"
+
+DEFAULT_SECRET_ENV_VARS: tuple[str, ...] = ("FLOWDASH_MCP_*",)
+
 DEFAULT_INIT_TIMEOUT = 10.0
 
 DEFAULT_TIMEOUT = 30.0
+
+MAX_TOOL_NAME_LENGTH = 64
 
 TRANSPORTS = ("http", "stdio")
 
@@ -73,28 +95,8 @@ MCP_EXTRA_MISSING = (
     "(or 'pydantic-ai-slim[mcp]')."
 )
 
-# Loader and interpreter override variables that must not be injected via stdio env config.
-BLOCKED_ENV_VARS = frozenset(
-    {
-        "BASH_ENV",
-        "DYLD_FRAMEWORK_PATH",
-        "DYLD_INSERT_LIBRARIES",
-        "DYLD_LIBRARY_PATH",
-        "ENV",
-        "IFS",
-        "LD_AUDIT",
-        "LD_LIBRARY_PATH",
-        "LD_PRELOAD",
-        "NODE_OPTIONS",
-        "PATH",
-        "PROMPT_COMMAND",
-        "PYTHONHOME",
-        "PYTHONPATH",
-        "PYTHONSTARTUP",
-    }
-)
-
 _SERVER_NAME_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]|_(?!_))*$")
+_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 _COMMON_KEYS = (
@@ -140,6 +142,14 @@ def mcp_tool_name(server: str, tool: str) -> str:
     return f"mcp_{server}__{tool}"
 
 
+def is_valid_mcp_tool_name(server: str, raw_tool: str) -> bool:
+    """Return whether ``mcp_<server>__<raw_tool>`` matches provider tool-name rules."""
+    if not isinstance(raw_tool, str) or not raw_tool:
+        return False
+    prefixed = mcp_tool_name(server, raw_tool)
+    return len(prefixed) <= MAX_TOOL_NAME_LENGTH and bool(_TOOL_NAME_RE.match(prefixed))
+
+
 def parse_mcp_tool_name(name: str) -> tuple[str, str] | None:
     """Split a model-facing MCP tool name into ``(server, tool)``, or None if not an MCP tool."""
     if not isinstance(name, str) or not name.startswith("mcp_"):
@@ -154,6 +164,24 @@ def parse_mcp_tool_name(name: str) -> tuple[str, str] | None:
 def is_mcp_tool(name: str) -> bool:
     """Return whether *name* is a prefixed MCP tool name."""
     return parse_mcp_tool_name(name) is not None
+
+
+def url_origin(url: str | None) -> tuple[str, str, int] | None:
+    """Return normalized ``(scheme, host, port)`` for an http(s) URL, or None."""
+    if not isinstance(url, str) or not url.strip():
+        return None
+    parsed = urlsplit(url.strip())
+    scheme = parsed.scheme.lower()
+    host = (parsed.hostname or "").lower()
+    if scheme not in ("http", "https") or not host:
+        return None
+    try:
+        port = parsed.port
+    except ValueError:
+        return None
+    if port is None:
+        port = 443 if scheme == "https" else 80
+    return (scheme, host, port)
 
 
 def _check_access_mapping(value: t.Any) -> tuple[Permission, list[tuple[tuple, str, bool]]]:
@@ -194,12 +222,8 @@ def access_to_dict(permission: Permission | None) -> dict[str, list[str]]:
     """Serialize *permission*'s four access fields to a sparse dict for ``flowdash.yaml``."""
     if permission is None or permission.is_empty:
         return {}
-    out: dict[str, list[str]] = {}
-    for key in ACCESS_KEYS:
-        values = sorted(getattr(permission, key, ()))
-        if values:
-            out[key] = values
-    return out
+    full = permission.to_dict()
+    return {key: full[key] for key in ACCESS_KEYS if full[key]}
 
 
 def resolve_cwd(cwd: str | None, directory: Path | None) -> Path | None:
@@ -216,58 +240,119 @@ def resolve_cwd(cwd: str | None, directory: Path | None) -> Path | None:
     return resolved if resolved.is_relative_to(root) else None
 
 
-def allowed_stdio_commands(
-    configured: Sequence[str] | None = None,
-    environ: Mapping[str, str] | None = None,
-) -> tuple[str, ...]:
-    """Return the allowlisted executables for file/UI-configured stdio MCP servers.
-
-    An explicit *configured* sequence (even empty when explicitly passed as a
-    non-None collection by an app that overrides the env var) wins; when None,
-    ``FLOWDASH_MCP_STDIO_COMMANDS`` is read as a comma-separated list.
-    """
-    if configured is not None:
-        return tuple(item.strip() for item in configured if isinstance(item, str) and item.strip())
-    env = os.environ if environ is None else environ
-    raw = env.get(STDIO_COMMANDS_ENV, "")
-    return tuple(item.strip() for item in raw.split(",") if item.strip())
-
-
 def _has_path_separator(value: str) -> bool:
-    return "/" in value or "\\" in value or (os.sep in value)
+    return "/" in value or "\\" in value
 
 
-def check_stdio_command(command: str, allowed: Sequence[str]) -> str | None:
-    """Return why *command* is not allowed under *allowed* stdio commands, or None if allowed."""
+def parse_stdio_prefix(entry: str | Sequence[str]) -> tuple[str, ...] | None:
+    """Parse one stdio allowlist entry (command string or argv sequence) into an argv prefix."""
+    if isinstance(entry, str):
+        text = entry.strip()
+        if not text:
+            return None
+        try:
+            tokens = tuple(shlex.split(text))
+        except ValueError:
+            return None
+        return tokens or None
+    if isinstance(entry, Sequence):
+        tokens = tuple(item.strip() for item in entry if isinstance(item, str) and item.strip())
+        return tokens or None
+    return None
+
+
+def format_stdio_prefix(entry: str | Sequence[str]) -> str:
+    """Format a stdio allowlist prefix for display in messages and UI."""
+    tokens = parse_stdio_prefix(entry)
+    return shlex.join(tokens) if tokens else str(entry)
+
+
+def allowed_stdio_commands(
+    configured: Sequence[str | Sequence[str]] | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> tuple[tuple[str, ...], ...]:
+    """Return allowlisted argv prefixes for file/UI-configured stdio MCP servers.
+
+    A non-None *configured* wins, even when empty; otherwise
+    ``FLOWDASH_MCP_STDIO_COMMANDS`` is read as a comma-separated list of
+    command prefixes.
+    """
+    raw_items: Sequence[str | Sequence[str]]
+    if configured is not None:
+        raw_items = configured
+    else:
+        env = os.environ if environ is None else environ
+        raw = env.get(STDIO_COMMANDS_ENV, "")
+        raw_items = [item.strip() for item in raw.split(",") if item.strip()]
+    prefixes: list[tuple[str, ...]] = []
+    for item in raw_items:
+        parsed = parse_stdio_prefix(item)
+        if parsed is None:
+            continue
+        if _has_path_separator(parsed[0]) and not Path(parsed[0]).is_absolute():
+            logger.warning(
+                "Ignoring relative stdio allowlist entry %r; path entries must be absolute.",
+                item,
+            )
+            continue
+        prefixes.append(parsed)
+    return tuple(prefixes)
+
+
+def check_stdio_command(
+    command: str,
+    allowed: Sequence[str | Sequence[str]],
+    args: Sequence[str] = (),
+) -> str | None:
+    """Return why ``(command, args)`` is not allowed under *allowed* argv prefixes, or None."""
     if not isinstance(command, str) or not command.strip():
         return "A stdio server needs a command."
-    if not allowed:
+    prefixes: list[tuple[str, ...]] = []
+    for entry in allowed:
+        parsed = parse_stdio_prefix(entry)
+        if parsed is None:
+            continue
+        if _has_path_separator(parsed[0]) and not Path(parsed[0]).is_absolute():
+            continue
+        prefixes.append(parsed)
+    if not prefixes:
         return (
-            "Stdio MCP servers are disabled by server policy. Allowlist commands with "
+            "Stdio MCP servers are disabled by server policy. Allowlist command prefixes with "
             f"`FlowDashApp(mcp_stdio_commands=[...])` or `{STDIO_COMMANDS_ENV}`."
         )
     cmd = command.strip()
-    for entry in allowed:
-        entry = entry.strip()
-        if not entry:
-            continue
-        if _has_path_separator(entry):
-            if _has_path_separator(cmd):
-                try:
-                    if Path(cmd).resolve() == Path(entry).resolve():
-                        return None
-                except OSError:
+    if _has_path_separator(cmd) and not Path(cmd).is_absolute():
+        return f"Stdio command {cmd!r} must be an absolute path or a bare executable name."
+    argv_args = tuple(args)
+    for prefix in prefixes:
+        prefix_cmd, *prefix_args = prefix
+        if _has_path_separator(prefix_cmd):
+            if not _has_path_separator(cmd):
+                continue
+            try:
+                if Path(cmd).resolve() != Path(prefix_cmd).resolve():
                     continue
+            except OSError:
+                continue
         else:
-            if not _has_path_separator(cmd) and cmd == entry:
-                return None
-    listed = ", ".join(f"`{item}`" for item in allowed)
-    return f"Command {cmd!r} is not in the allowed stdio commands ({listed})."
+            if _has_path_separator(cmd) or cmd != prefix_cmd:
+                continue
+        if len(argv_args) >= len(prefix_args) and argv_args[: len(prefix_args)] == tuple(
+            prefix_args
+        ):
+            return None
+    listed = ", ".join(f"`{shlex.join(p)}`" for p in prefixes)
+    full = shlex.join([cmd, *argv_args])
+    return f"Command `{full}` does not match an allowed stdio prefix ({listed})."
 
 
-def resolve_stdio_executable(command: str, allowed: Sequence[str]) -> str:
-    """Validate *command* against *allowed* and return the resolved executable path."""
-    problem = check_stdio_command(command, allowed)
+def resolve_stdio_executable(
+    command: str,
+    allowed: Sequence[str | Sequence[str]],
+    args: Sequence[str] = (),
+) -> str:
+    """Validate ``(command, args)`` against *allowed* and return the resolved executable path."""
+    problem = check_stdio_command(command, allowed, args=args)
     if problem is not None:
         raise PermissionError(problem)
     cmd = command.strip()
@@ -282,37 +367,90 @@ def resolve_stdio_executable(command: str, allowed: Sequence[str]) -> str:
     return found
 
 
-def evaluate_permission(
-    permission: Permission | None,
-    identity: Identity | None,
-    *,
-    is_admin: bool = False,
-) -> bool:
-    """Evaluate a resource *permission* for *identity*, matching Wave 1's access semantics.
+def allowed_stdio_env(
+    configured: Sequence[str] | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> frozenset[str]:
+    """Return the allowlisted subprocess environment variable names for file/UI stdio servers.
 
-    1. Explicit deny (`deny_users` / `deny_groups`) denies, even for admins.
-    2. An empty permission allows access.
-    3. A non-empty permission without an identity fails closed.
-    4. Admins pass allowlists unless explicitly denied in step 1.
-    5. Non-empty allowlists require a user or group match.
-    6. Deny-only rules allow anyone not denied in step 1.
+    A non-None *configured* wins, even when empty; otherwise
+    ``FLOWDASH_MCP_STDIO_ENV`` is read as a comma-separated list.
     """
-    if permission is None or permission.is_empty:
-        return True
-    if identity is None:
-        return False
-    if permission.deny_users and identity.is_user(permission.deny_users):
-        return False
-    if permission.deny_groups and identity.in_groups(permission.deny_groups):
-        return False
-    if is_admin:
-        return True
-    if permission.allow_users or permission.allow_groups:
-        return bool(
-            (permission.allow_users and identity.is_user(permission.allow_users))
-            or (permission.allow_groups and identity.in_groups(permission.allow_groups))
+    if configured is not None:
+        return frozenset(
+            item.strip() for item in configured if isinstance(item, str) and item.strip()
         )
-    return True
+    env = os.environ if environ is None else environ
+    raw = env.get(STDIO_ENV_VARS_ENV, "")
+    return frozenset(item.strip() for item in raw.split(",") if item.strip())
+
+
+def check_stdio_env(env_names: Iterable[str], allowed: Iterable[str]) -> str | None:
+    """Return why *env_names* are not allowed under *allowed* stdio env names, or None."""
+    names = [name for name in env_names if name]
+    if not names:
+        return None
+    allowed_set = frozenset(
+        item.strip() for item in allowed if isinstance(item, str) and item.strip()
+    )
+    if not allowed_set:
+        return (
+            "Stdio MCP environment variables are disabled by server policy. Allowlist variable "
+            f"names with `FlowDashApp(mcp_stdio_env=[...])` or `{STDIO_ENV_VARS_ENV}`."
+        )
+    disallowed = sorted(name for name in names if name not in allowed_set)
+    if disallowed:
+        bad = ", ".join(f"`{n}`" for n in disallowed)
+        permitted = ", ".join(f"`{n}`" for n in sorted(allowed_set))
+        return f"Stdio environment variable(s) {bad} are not in the allowed list ({permitted})."
+    return None
+
+
+def allowed_secret_env_vars(
+    configured: Sequence[str] | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> tuple[str, ...]:
+    """Return glob patterns/names of env vars allowed in ``mcp:`` ``${VAR}`` references.
+
+    A non-None *configured* wins, even when empty; otherwise
+    ``FLOWDASH_MCP_SECRET_ENV_VARS`` is read (comma-separated), defaulting to
+    ``("FLOWDASH_MCP_*",)``.
+    """
+    if configured is not None:
+        return tuple(item.strip() for item in configured if isinstance(item, str) and item.strip())
+    env = os.environ if environ is None else environ
+    if SECRET_ENV_VARS_ENV in env:
+        raw = env[SECRET_ENV_VARS_ENV]
+        return tuple(item.strip() for item in raw.split(",") if item.strip())
+    return DEFAULT_SECRET_ENV_VARS
+
+
+def check_mcp_secret_ref(
+    value: t.Any,
+    what: str,
+    allowed_env_vars: Sequence[str] | None = None,
+) -> str | None:
+    """Validate a secret in ``mcp:`` and enforce allowed ``${VAR}`` variable names."""
+    msg = check_secret(value, what)
+    if msg is not None:
+        return msg
+    if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
+        var_name = value[2:-1]
+        patterns = (
+            allowed_secret_env_vars(None) if allowed_env_vars is None else tuple(allowed_env_vars)
+        )
+        if not any(fnmatch.fnmatchcase(var_name, pat) for pat in patterns):
+            if patterns:
+                listed = ", ".join(f"`{p}`" for p in patterns)
+                return (
+                    f"`{what}` references `${{{var_name}}}`, which is not allowed in `mcp:` "
+                    f"(allowed: {listed})."
+                )
+            return (
+                f"`{what}` references `${{{var_name}}}`, but environment variable references "
+                "are disabled for `mcp:`."
+            )
+    return None
 
 
 @dataclass(frozen=True)
@@ -334,8 +472,85 @@ class MCPServerCheck:
     when: dt.datetime = field(default_factory=lambda: dt.datetime.now(dt.UTC))
 
 
-# Process-level cache of last test / discovery result per server name (never holds secrets).
-MCP_CHECKS: dict[str, MCPServerCheck] = {}
+# Process-level cache of last test / discovery result keyed by (project_key, server_name).
+MCP_CHECKS: dict[tuple[str, str], MCPServerCheck] = {}
+
+
+def project_check_key(project: t.Any = None, directory: Path | None = None) -> str:
+    """Return a stable cache scope key for *project* or *directory*."""
+    if project is not None:
+        path = getattr(project, "path", None)
+        if path:
+            try:
+                return str(Path(path).resolve())
+            except OSError:
+                return str(path)
+        proj_dir = getattr(project, "directory", None)
+        if proj_dir:
+            try:
+                return str(Path(proj_dir).resolve())
+            except OSError:
+                return str(proj_dir)
+        return f"project:{id(project)}"
+    if directory is not None:
+        try:
+            return str(Path(directory).resolve())
+        except OSError:
+            return str(directory)
+    return ""
+
+
+def mcp_check_key(
+    server_name: str,
+    *,
+    project: t.Any = None,
+    directory: Path | None = None,
+    project_key: str | None = None,
+) -> tuple[str, str]:
+    """Return the :data:`MCP_CHECKS` key for *server_name* scoped to *project*."""
+    scope = project_key if project_key is not None else project_check_key(project, directory)
+    return (scope, server_name)
+
+
+def get_mcp_check(
+    server_name: str,
+    *,
+    project: t.Any = None,
+    directory: Path | None = None,
+    project_key: str | None = None,
+) -> MCPServerCheck | None:
+    """Return the cached :class:`MCPServerCheck` for *server_name* in *project*, or None."""
+    return MCP_CHECKS.get(
+        mcp_check_key(server_name, project=project, directory=directory, project_key=project_key)
+    )
+
+
+def set_mcp_check(
+    server_name: str,
+    check: MCPServerCheck,
+    *,
+    project: t.Any = None,
+    directory: Path | None = None,
+    project_key: str | None = None,
+) -> None:
+    """Store *check* for *server_name* scoped to *project*."""
+    MCP_CHECKS[
+        mcp_check_key(server_name, project=project, directory=directory, project_key=project_key)
+    ] = check
+
+
+def clear_mcp_check(
+    server_name: str,
+    *,
+    project: t.Any = None,
+    directory: Path | None = None,
+    project_key: str | None = None,
+) -> None:
+    """Remove any cached :class:`MCPServerCheck` for *server_name* in *project*."""
+    MCP_CHECKS.pop(
+        mcp_check_key(server_name, project=project, directory=directory, project_key=project_key),
+        None,
+    )
 
 
 @dataclass(frozen=True)
@@ -370,21 +585,51 @@ class MCPServerConfig:
         """Whether this server is offered on *surface* (``assistant`` or ``explore``)."""
         return self.enabled and surface in self.offered_to
 
-    def secret_problems(self, environ: Mapping[str, str] | None = None) -> list[str]:
+    def secret_problems(
+        self,
+        environ: Mapping[str, str] | None = None,
+        *,
+        allowed_secret_env: Sequence[str] | None = None,
+    ) -> list[str]:
         """Return problems resolving this server's configured secrets, without leaking values."""
         problems: list[str] = []
+        check_refs = not self.locked
         if self.token is not None:
-            info = describe_secret(self.token, environ)
-            if info.error:
-                problems.append(f"token: {info.error}")
+            ref_err = (
+                check_mcp_secret_ref(self.token, "token", allowed_secret_env)
+                if check_refs
+                else None
+            )
+            if ref_err:
+                problems.append(ref_err)
+            else:
+                info = describe_secret(self.token, environ)
+                if info.error:
+                    problems.append(f"token: {info.error}")
         for key, value in self.headers.items():
-            info = describe_secret(value, environ)
-            if info.error:
-                problems.append(f"header {key}: {info.error}")
+            ref_err = (
+                check_mcp_secret_ref(value, f"headers.{key}", allowed_secret_env)
+                if check_refs
+                else None
+            )
+            if ref_err:
+                problems.append(ref_err)
+            else:
+                info = describe_secret(value, environ)
+                if info.error:
+                    problems.append(f"header {key}: {info.error}")
         for key, value in self.env.items():
-            info = describe_secret(value, environ)
-            if info.error:
-                problems.append(f"env {key}: {info.error}")
+            ref_err = (
+                check_mcp_secret_ref(value, f"env.{key}", allowed_secret_env)
+                if check_refs
+                else None
+            )
+            if ref_err:
+                problems.append(ref_err)
+            else:
+                info = describe_secret(value, environ)
+                if info.error:
+                    problems.append(f"env {key}: {info.error}")
         return problems
 
     def to_data(self) -> dict[str, t.Any]:
@@ -432,31 +677,77 @@ class MCPServerConfig:
         return data
 
 
+def _resolve_mcp_secret(
+    value: t.Any,
+    what: str,
+    environ: Mapping[str, str] | None,
+    *,
+    locked: str | None,
+    allowed_secret_env: Sequence[str] | None,
+) -> str | None:
+    if value is None:
+        return None
+    if not locked:
+        err = check_mcp_secret_ref(value, what, allowed_secret_env)
+        if err is not None:
+            raise SecretError(err)
+    return resolve_secret(value, environ)
+
+
 def resolve_http_headers(
-    config: MCPServerConfig, environ: Mapping[str, str] | None = None
+    config: MCPServerConfig,
+    environ: Mapping[str, str] | None = None,
+    *,
+    allowed_secret_env: Sequence[str] | None = None,
 ) -> dict[str, str]:
     """Resolve HTTP headers and optional Bearer token for *config* lazily."""
     headers: dict[str, str] = {}
     for key, raw in config.headers.items():
-        resolved = resolve_secret(raw, environ)
+        resolved = _resolve_mcp_secret(
+            raw,
+            f"headers.{key}",
+            environ,
+            locked=config.locked,
+            allowed_secret_env=allowed_secret_env,
+        )
         if resolved is not None:
             headers[key] = resolved
     if config.token is not None and not any(k.lower() == "authorization" for k in headers):
-        resolved_token = resolve_secret(config.token, environ)
+        resolved_token = _resolve_mcp_secret(
+            config.token,
+            "token",
+            environ,
+            locked=config.locked,
+            allowed_secret_env=allowed_secret_env,
+        )
         if resolved_token:
             headers["Authorization"] = f"Bearer {resolved_token}"
     return headers
 
 
 def resolve_stdio_env(
-    config: MCPServerConfig, environ: Mapping[str, str] | None = None
+    config: MCPServerConfig,
+    environ: Mapping[str, str] | None = None,
+    *,
+    allowed_env: Iterable[str] | None = None,
+    allowed_secret_env: Sequence[str] | None = None,
 ) -> dict[str, str] | None:
     """Resolve stdio environment variables for *config* lazily, returning None if none set."""
     if not config.env:
         return None
+    if not config.locked and allowed_env is not None:
+        err = check_stdio_env(config.env, allowed_env)
+        if err is not None:
+            raise PermissionError(err)
     resolved: dict[str, str] = {}
     for key, raw in config.env.items():
-        value = resolve_secret(raw, environ)
+        value = _resolve_mcp_secret(
+            raw,
+            f"env.{key}",
+            environ,
+            locked=config.locked,
+            allowed_secret_env=allowed_secret_env,
+        )
         if value is not None:
             resolved[key] = value
     return resolved or None
@@ -497,6 +788,13 @@ def _project_directory(section: Section) -> Path | None:
     return Path(project_dir) if project_dir is not None else None
 
 
+def _section_allowed_secret_env(section: Section) -> tuple[str, ...]:
+    ctx = section.context or {}
+    if "mcp_secret_env_vars" in ctx and ctx["mcp_secret_env_vars"] is not None:
+        return allowed_secret_env_vars(ctx["mcp_secret_env_vars"])
+    return allowed_secret_env_vars(None)
+
+
 def _check_secret_mapping(
     section: Section,
     base_path: tuple[str | int, ...],
@@ -504,6 +802,7 @@ def _check_secret_mapping(
     label: str,
     *,
     env_names: bool = False,
+    allowed_env_vars: Sequence[str] | None = None,
 ) -> list:
     problems = []
     if value is None:
@@ -516,26 +815,16 @@ def _check_secret_mapping(
                 section.problem((*base_path, key), f"`{label}` keys must be text.", True)
             )
             continue
-        if env_names:
-            if not _ENV_NAME_RE.match(key):
-                problems.append(
-                    section.problem(
-                        (*base_path, key),
-                        f"{key!r} is not a valid environment variable name.",
-                        True,
-                    )
+        if env_names and not _ENV_NAME_RE.match(key):
+            problems.append(
+                section.problem(
+                    (*base_path, key),
+                    f"{key!r} is not a valid environment variable name.",
+                    True,
                 )
-                continue
-            if key.upper() in BLOCKED_ENV_VARS:
-                problems.append(
-                    section.problem(
-                        (*base_path, key),
-                        f"Environment variable {key!r} is blocked for security reasons.",
-                        True,
-                    )
-                )
-                continue
-        msg = check_secret(item, f"{label}.{key}")
+            )
+            continue
+        msg = check_mcp_secret_ref(item, f"{label}.{key}", allowed_env_vars)
         if msg:
             problems.append(section.problem((*base_path, key), msg))
     return problems
@@ -549,6 +838,7 @@ def _server_problems(section: Section, name: str, config: t.Any) -> list:
     if not isinstance(config, Mapping):
         return [section.problem(path, "An MCP server is a mapping with `transport`.")]
     problems = []
+    allowed_env_vars = _section_allowed_secret_env(section)
     transport = config.get("transport")
     if transport not in TRANSPORTS:
         known = ", ".join(f"`{tr}`" for tr in TRANSPORTS)
@@ -566,19 +856,32 @@ def _server_problems(section: Section, name: str, config: t.Any) -> list:
 
     if transport == "http":
         url = config.get("url")
-        if not isinstance(url, str) or not url.lower().startswith(("http://", "https://")):
+        if url_origin(url) is None:
             problems.append(section.problem((*path, "url"), "`url` is an http(s) URL."))
         if "token" in config:
-            msg = check_secret(config.get("token"), "token")
+            msg = check_mcp_secret_ref(config.get("token"), "token", allowed_env_vars)
             if msg:
                 problems.append(section.problem((*path, "token"), msg))
         problems.extend(
-            _check_secret_mapping(section, (*path, "headers"), config.get("headers"), "headers")
+            _check_secret_mapping(
+                section,
+                (*path, "headers"),
+                config.get("headers"),
+                "headers",
+                allowed_env_vars=allowed_env_vars,
+            )
         )
     elif transport == "stdio":
         command = config.get("command")
         if not isinstance(command, str) or not command.strip():
             problems.append(section.problem((*path, "command"), "`command` names an executable."))
+        elif _has_path_separator(command.strip()) and not Path(command.strip()).is_absolute():
+            problems.append(
+                section.problem(
+                    (*path, "command"),
+                    "`command` must be an absolute path or a bare executable name.",
+                )
+            )
         args = config.get("args")
         if args is not None and (
             not isinstance(args, list) or not all(isinstance(a, str) for a in args)
@@ -607,7 +910,12 @@ def _server_problems(section: Section, name: str, config: t.Any) -> list:
                     )
         problems.extend(
             _check_secret_mapping(
-                section, (*path, "env"), config.get("env"), "env", env_names=True
+                section,
+                (*path, "env"),
+                config.get("env"),
+                "env",
+                env_names=True,
+                allowed_env_vars=allowed_env_vars,
             )
         )
 
@@ -759,15 +1067,7 @@ def server_configs(
             continue
         seen.add(name)
         if isinstance(entry, MCPServerConfig):
-            configs.append(
-                MCPServerConfig(
-                    **{
-                        **entry.__dict__,
-                        "name": name,
-                        "locked": entry.locked or lock_label,
-                    }
-                )
-            )
+            configs.append(replace(entry, name=name, locked=entry.locked or lock_label))
         elif isinstance(entry, Mapping):
             configs.append(_config_from_mapping(name, entry, locked=lock_label))
         else:
@@ -798,8 +1098,6 @@ def configured_servers(project: t.Any, app: t.Any = None) -> dict[str, MCPServer
     """
     mcp_data: Mapping[str, t.Any] = {}
     if project is not None:
-        from panel_flowdash.admin.form import current_section
-
         try:
             mcp_data = current_section(project, MCP_SECTION) or {}
         except ProjectError as exc:
@@ -816,70 +1114,95 @@ def configured_servers(project: t.Any, app: t.Any = None) -> dict[str, MCPServer
     }
 
 
-async def test_mcp_server(
+async def check_mcp_server(
     config: MCPServerConfig,
     *,
-    allowed_stdio: Sequence[str] = (),
+    allowed_stdio: Sequence[str | Sequence[str]] = (),
+    allowed_stdio_env: Iterable[str] = (),
+    allowed_secret_env: Sequence[str] | None = None,
     directory: Path | None = None,
+    project: t.Any = None,
+    project_key: str | None = None,
 ) -> MCPServerCheck:
     """Connect to *config*, list its tools, cache and return the :class:`MCPServerCheck`."""
+    scope = project_key if project_key is not None else project_check_key(project, directory)
     if config.transport == "stdio" and not config.locked and config.toolset is None:
-        problem = check_stdio_command(config.command or "", allowed_stdio)
+        problem = check_stdio_command(config.command or "", allowed_stdio, args=config.args)
+        if problem is None and config.env:
+            problem = check_stdio_env(config.env, allowed_stdio_env)
         if problem is not None:
             result = MCPServerCheck(False, problem)
-            MCP_CHECKS[config.name] = result
+            set_mcp_check(config.name, result, project_key=scope)
             return result
     try:
         from panel_flowdash.agent.mcp import probe_mcp_server
     except ImportError:
         result = MCPServerCheck(False, MCP_EXTRA_MISSING)
-        MCP_CHECKS[config.name] = result
+        set_mcp_check(config.name, result, project_key=scope)
         return result
     try:
-        result = await probe_mcp_server(config, allowed_stdio=allowed_stdio, directory=directory)
-    except SecretError as exc:
+        result = await probe_mcp_server(
+            config,
+            allowed_stdio=allowed_stdio,
+            allowed_stdio_env=allowed_stdio_env,
+            allowed_secret_env=allowed_secret_env,
+            directory=directory,
+        )
+    except (SecretError, PermissionError) as exc:
         result = MCPServerCheck(False, str(exc))
     except Exception as exc:
         result = MCPServerCheck(False, f"{type(exc).__name__}: {error_text(exc)}")
-    MCP_CHECKS[config.name] = result
+    set_mcp_check(config.name, result, project_key=scope)
     return result
-
-
-# Prevent pytest from collecting this helper when imported in test modules.
-test_mcp_server.__test__ = False  # type: ignore[attr-defined]
 
 
 __all__ = [
     "ACCESS_KEYS",
-    "BLOCKED_ENV_VARS",
     "DEFAULT_INIT_TIMEOUT",
+    "DEFAULT_SECRET_ENV_VARS",
     "DEFAULT_TIMEOUT",
+    "MAX_TOOL_NAME_LENGTH",
     "MCP_CHECKS",
     "MCP_EXTRA_MISSING",
     "MCP_SECTION",
+    "SECRET_ENV_VARS_ENV",
     "STDIO_COMMANDS_ENV",
+    "STDIO_ENV_VARS_ENV",
     "SURFACES",
     "TRANSPORTS",
     "MCPServerCheck",
     "MCPServerConfig",
     "MCPToolInfo",
     "access_to_dict",
+    "allowed_secret_env_vars",
     "allowed_stdio_commands",
+    "allowed_stdio_env",
+    "check_mcp_secret_ref",
+    "check_mcp_server",
     "check_stdio_command",
+    "check_stdio_env",
+    "clear_mcp_check",
     "configured_servers",
     "dump_mcp",
     "evaluate_permission",
+    "format_stdio_prefix",
+    "get_mcp_check",
     "is_mcp_tool",
+    "is_valid_mcp_tool_name",
     "load_mcp",
+    "mcp_check_key",
     "mcp_server_authorized",
     "mcp_tool_authorized",
     "mcp_tool_name",
     "parse_mcp_tool_name",
+    "parse_stdio_prefix",
+    "project_check_key",
     "resolve_cwd",
     "resolve_http_headers",
     "resolve_stdio_env",
     "resolve_stdio_executable",
     "server_configs",
-    "test_mcp_server",
+    "set_mcp_check",
+    "url_origin",
     "validate_server_name",
 ]

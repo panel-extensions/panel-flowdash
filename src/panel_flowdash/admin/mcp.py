@@ -20,7 +20,7 @@ import logging
 import shlex
 import types
 import typing as t
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from functools import partial
 from pathlib import Path
 
@@ -29,7 +29,7 @@ import panel_material_ui as pmui
 import param
 from panel.viewable import Viewer
 
-from panel_flowdash.admin.form import current_app, current_section
+from panel_flowdash.admin.form import current_app
 from panel_flowdash.admin.kit import (
     KEY_SVG,
     LINK_SVG,
@@ -41,26 +41,36 @@ from panel_flowdash.admin.kit import (
     esc,
     heading,
 )
-from panel_flowdash.auth import Permission
+from panel_flowdash.admin.permission_editor import PermissionEditor
+from panel_flowdash.auth import Permission, permission_lockout_reason
 from panel_flowdash.mcp import (
     DEFAULT_INIT_TIMEOUT,
     DEFAULT_TIMEOUT,
-    MCP_CHECKS,
     MCP_SECTION,
+    STDIO_COMMANDS_ENV,
+    STDIO_ENV_VARS_ENV,
     SURFACES,
     MCPServerCheck,
     MCPServerConfig,
     MCPToolInfo,
     access_to_dict,
+    allowed_secret_env_vars,
     allowed_stdio_commands,
+    allowed_stdio_env,
+    check_mcp_secret_ref,
+    check_mcp_server,
     check_stdio_command,
+    check_stdio_env,
+    clear_mcp_check,
     configured_servers,
     dump_mcp,
+    format_stdio_prefix,
+    get_mcp_check,
     load_mcp,
     mcp_server_authorized,
     mcp_tool_authorized,
     mcp_tool_name,
-    test_mcp_server,
+    url_origin,
     validate_server_name,
 )
 from panel_flowdash.project import (
@@ -69,6 +79,7 @@ from panel_flowdash.project import (
     Project,
     ProjectError,
     ProjectSection,
+    current_section,
     register_section,
 )
 from panel_flowdash.secret_store import (
@@ -114,10 +125,6 @@ def _redacted_log(widget, msg: str, *args, level: str = "debug") -> None:
 def _text(widget) -> str:
     value = widget.value_input if widget.value_input is not None else widget.value
     return (value or "").strip()
-
-
-def _csv_names(text: str) -> list[str]:
-    return [part.strip() for part in text.replace("\n", ",").split(",") if part.strip()]
 
 
 def _ago(when: dt.datetime) -> str:
@@ -170,19 +177,25 @@ class ServerStatus(t.NamedTuple):
 def server_status(
     config: MCPServerConfig,
     *,
-    allowed_stdio: t.Sequence[str] = (),
+    allowed_stdio: Sequence[str | Sequence[str]] = (),
+    allowed_stdio_env: Iterable[str] = (),
+    allowed_secret_env: Sequence[str] | None = None,
+    project: t.Any = None,
+    project_key: str | None = None,
 ) -> ServerStatus:
     """Return the status chip, tone and detail message for *config*."""
     if not config.enabled:
         return ServerStatus("Disabled", "outlined", "")
     if config.transport == "stdio" and not config.locked and config.toolset is None:
-        problem = check_stdio_command(config.command or "", allowed_stdio)
+        problem = check_stdio_command(config.command or "", allowed_stdio, args=config.args)
+        if problem is None and config.env:
+            problem = check_stdio_env(config.env, allowed_stdio_env)
         if problem is not None:
             return ServerStatus("Blocked by policy", "warning", problem, error=True)
-    secret_issues = config.secret_problems()
+    secret_issues = config.secret_problems(allowed_secret_env=allowed_secret_env)
     if secret_issues:
         return ServerStatus("Needs secret", "error", secret_issues[0], error=True)
-    check = MCP_CHECKS.get(config.name)
+    check = get_mcp_check(config.name, project=project, project_key=project_key)
     if check is None:
         return ServerStatus("Not tested", "", "")
     if check.ok:
@@ -312,10 +325,23 @@ class MCPSettings(Viewer):
     # Data and permissions
     # ------------------------------------------------------------------
 
-    def _allowed_stdio(self) -> tuple[str, ...]:
+    def _allowed_stdio(self) -> tuple[tuple[str, ...], ...]:
         if self._app is not None and hasattr(self._app, "_allowed_stdio_commands"):
             return tuple(self._app._allowed_stdio_commands())
         return allowed_stdio_commands(None)
+
+    def _allowed_stdio_env(self) -> frozenset[str]:
+        if self._app is not None and hasattr(self._app, "_allowed_stdio_env"):
+            return frozenset(self._app._allowed_stdio_env())
+        return allowed_stdio_env(None)
+
+    def _allowed_secret_env_vars(self) -> tuple[str, ...]:
+        if self._app is not None and hasattr(self._app, "_allowed_secret_env_vars"):
+            return tuple(self._app._allowed_secret_env_vars())
+        ctx = getattr(self.project, "context", None) or {}
+        if "mcp_secret_env_vars" in ctx and ctx["mcp_secret_env_vars"] is not None:
+            return allowed_secret_env_vars(ctx["mcp_secret_env_vars"])
+        return allowed_secret_env_vars(None)
 
     def _project_directory(self) -> Path | None:
         if self.project.directory is not None:
@@ -337,9 +363,17 @@ class MCPSettings(Viewer):
         return getattr(self._app, "_identity", None) if self._app is not None else None
 
     def _is_admin(self) -> bool:
-        return (
-            bool(getattr(self._app, "is_admin", False)) if self._app is not None else self.editable
-        )
+        if self._app is None:
+            return bool(self.editable)
+        if hasattr(self._app, "_authorize_admin"):
+            return bool(self._app._authorize_admin(fresh=True))
+        return bool(getattr(self._app, "is_admin", False))
+
+    def _access_lockout_reason(self, permission: Permission) -> str | None:
+        identity = self._identity()
+        if identity is None:
+            return None
+        return permission_lockout_reason(permission, identity, is_admin=True)
 
     def mcp_data(self) -> dict[str, t.Any]:
         """Return the ``mcp`` section as the project file has it now."""
@@ -422,14 +456,16 @@ class MCPSettings(Viewer):
     def refresh(self) -> None:
         """Redraw the server cards from the project file and cached status checks."""
         allowed = self._allowed_stdio()
+        allowed_env = self._allowed_stdio_env()
+        allowed_secret_env = self._allowed_secret_env_vars()
         visible = self._visible_servers()
         with pn.io.hold():
             if self.editable:
                 if allowed:
-                    cmds = ", ".join(allowed)
+                    cmds = ", ".join(format_stdio_prefix(p) for p in allowed)
                     self._policy_note.object = (
                         f"MCP tools require user approval by default unless auto-approved per server. "
-                        f"Allowed stdio commands: {cmds}."
+                        f"Allowed stdio prefixes: {cmds}."
                     )
                 else:
                     self._policy_note.object = (
@@ -441,7 +477,10 @@ class MCPSettings(Viewer):
                 self._policy_note.visible = False
 
             if visible:
-                self._cards[:] = [self._card(server, allowed) for server in visible]
+                self._cards[:] = [
+                    self._card(server, allowed, allowed_env, allowed_secret_env)
+                    for server in visible
+                ]
             else:
                 empty = (
                     "No MCP servers configured yet. Click Add server to connect one."
@@ -450,8 +489,20 @@ class MCPSettings(Viewer):
                 )
                 self._cards[:] = [caption(empty, margin=(4, 0))]
 
-    def _card(self, server: MCPServerConfig, allowed: tuple[str, ...]):
-        status = server_status(server, allowed_stdio=allowed)
+    def _card(
+        self,
+        server: MCPServerConfig,
+        allowed: tuple[tuple[str, ...], ...],
+        allowed_env: frozenset[str],
+        allowed_secret_env: tuple[str, ...],
+    ):
+        status = server_status(
+            server,
+            allowed_stdio=allowed,
+            allowed_stdio_env=allowed_env,
+            allowed_secret_env=allowed_secret_env,
+            project=self.project,
+        )
         color = _TRANSPORT_COLORS.get(server.transport, "#455a64")
         badge_text = "HTTP" if server.transport == "http" else "STDIO"
         chips_html = chip(badge_text, "outlined") + chip(status.chip, status.tone)
@@ -492,7 +543,7 @@ class MCPSettings(Viewer):
                 f'<div class="detail"><span class="small muted">{esc(status.detail)}</span></div>'
             )
 
-        check = MCP_CHECKS.get(server.name)
+        check = get_mcp_check(server.name, project=self.project)
         tools_html = ""
         if check is not None and check.ok:
             visible_tools = self._visible_tools(server, check.tools)
@@ -614,6 +665,7 @@ class MCPSettings(Viewer):
             data = self.mcp_data()
             servers = dict(data.get("servers") or {})
             if name not in servers:
+                self.refresh()
                 return False
             entry = dict(servers[name])
             if enabled:
@@ -632,10 +684,13 @@ class MCPSettings(Viewer):
         server = next((s for s in self.servers() if s.name == name), None)
         if server is None:
             return MCPServerCheck(False, f"MCP server {name!r} was not found.")
-        result = await test_mcp_server(
+        result = await check_mcp_server(
             server,
             allowed_stdio=self._allowed_stdio(),
+            allowed_stdio_env=self._allowed_stdio_env(),
+            allowed_secret_env=self._allowed_secret_env_vars(),
             directory=self._project_directory(),
+            project=self.project,
         )
         self.refresh()
         self._notify("success" if result.ok else "error", f"{name}: {result.message}")
@@ -648,6 +703,10 @@ class MCPSettings(Viewer):
     def _build_drawer(self) -> None:
         self._editing: str | None = None
         self._editing_locked: bool = False
+        self._editing_url: str | None = None
+        self._loading_drawer: bool = False
+        self._reentered_token: bool = False
+        self._reentered_headers: set[str] = set()
         self._existing_token: t.Any = None
         self._existing_headers: dict[str, t.Any] = {}
         self._existing_env: dict[str, t.Any] = {}
@@ -700,6 +759,15 @@ class MCPSettings(Viewer):
             margin=0,
             size="small",
         )
+        self._url.param.watch(lambda _e: self._sync_origin_warning(), "value")
+        self._url.param.watch(lambda _e: self._sync_origin_warning(), "value_input")
+        self._url_origin_warn = pmui.Alert(
+            object="",
+            severity="warning",
+            visible=False,
+            sizing_mode="stretch_width",
+            margin=0,
+        )
         self._token_status = caption("", visible=False)
         self._token_mode = pmui.RadioButtonGroup(
             options={"None": "none", "Environment var": "env", "Encrypted secret": "encrypted"},
@@ -712,7 +780,7 @@ class MCPSettings(Viewer):
         self._token_mode.param.watch(lambda _e: self._sync_drawer(), "value")
         self._token_env = pmui.TextInput(
             label="Token environment variable",
-            placeholder="e.g. GITHUB_TOKEN",
+            placeholder="e.g. FLOWDASH_MCP_GITHUB_TOKEN",
             sizing_mode="stretch_width",
             margin=0,
             size="small",
@@ -723,6 +791,18 @@ class MCPSettings(Viewer):
             margin=0,
         )
         self._token_secret._log = types.MethodType(_redacted_log, self._token_secret)
+
+        def _mark_token_reentered(event) -> None:
+            if self._loading_drawer:
+                return
+            if (event.new or "").strip():
+                self._reentered_token = True
+            self._sync_origin_warning()
+
+        self._token_env.param.watch(_mark_token_reentered, "value")
+        self._token_env.param.watch(_mark_token_reentered, "value_input")
+        self._token_secret.param.watch(_mark_token_reentered, "value")
+        self._token_secret.param.watch(_mark_token_reentered, "value_input")
         self._token_hint = caption("", visible=False)
 
         # Custom HTTP headers (secret_store backed)
@@ -738,7 +818,7 @@ class MCPSettings(Viewer):
         self._header_use_env.param.watch(lambda _e: self._sync_drawer(), "value")
         self._header_env = pmui.TextInput(
             label="Variable",
-            placeholder="e.g. MY_API_KEY",
+            placeholder="e.g. FLOWDASH_MCP_API_KEY",
             sizing_mode="stretch_width",
             margin=0,
             size="small",
@@ -754,6 +834,7 @@ class MCPSettings(Viewer):
 
         self._http_box = pn.Column(
             self._url,
+            self._url_origin_warn,
             self._token_status,
             self._token_mode,
             self._token_env,
@@ -787,7 +868,7 @@ class MCPSettings(Viewer):
         )
         self._command = pmui.AutocompleteInput(
             label="Command",
-            placeholder="e.g. uvx",
+            placeholder="e.g. /opt/mcp/docs-server",
             options=[],
             restrict=False,
             min_characters=0,
@@ -797,7 +878,7 @@ class MCPSettings(Viewer):
         )
         self._args = pmui.TextInput(
             label="Arguments",
-            placeholder="Space-separated, e.g. mcp-server-fetch --timeout 10",
+            placeholder="Space-separated, e.g. --readonly --timeout 10",
             sizing_mode="stretch_width",
             margin=0,
             size="small",
@@ -821,7 +902,7 @@ class MCPSettings(Viewer):
         self._env_use_ref.param.watch(lambda _e: self._sync_drawer(), "value")
         self._env_ref = pmui.TextInput(
             label="Source variable",
-            placeholder="e.g. DOCS_API_KEY",
+            placeholder="e.g. FLOWDASH_MCP_DOCS_KEY",
             sizing_mode="stretch_width",
             margin=0,
             size="small",
@@ -898,35 +979,20 @@ class MCPSettings(Viewer):
         )
         self._add_auto_btn.on_click(lambda _e: self._add_auto_pattern())
 
-        # Access rules (optional, hidden when host manages access)
-        self._allow_groups = pmui.TextInput(
-            label="Allow groups",
-            placeholder="Comma-separated, e.g. engineering, analysts",
-            sizing_mode="stretch_width",
-            margin=0,
-            size="small",
+        # Access rules (shared PermissionEditor; hidden when host manages access)
+        self._permission_editor = PermissionEditor(
+            framed=False,
+            show_title=False,
+            show_actions=False,
+            caption_text="Leave empty to allow everyone who has access to the assistant.",
+            app=self._app,
+            project=self.project,
+            lockout_check=self._access_lockout_reason,
         )
-        self._allow_users = pmui.TextInput(
-            label="Allow users",
-            placeholder="Comma-separated user names",
-            sizing_mode="stretch_width",
-            margin=0,
-            size="small",
-        )
-        self._deny_groups = pmui.TextInput(
-            label="Deny groups",
-            placeholder="Comma-separated group names",
-            sizing_mode="stretch_width",
-            margin=0,
-            size="small",
-        )
-        self._deny_users = pmui.TextInput(
-            label="Deny users",
-            placeholder="Comma-separated user names",
-            sizing_mode="stretch_width",
-            margin=0,
-            size="small",
-        )
+        self._allow_groups = self._permission_editor.allow_groups_input
+        self._allow_users = self._permission_editor.allow_users_input
+        self._deny_groups = self._permission_editor.deny_groups_input
+        self._deny_users = self._permission_editor.deny_users_input
         self._access_box = pn.Column(
             pmui.Typography(
                 "Access rules",
@@ -934,14 +1000,10 @@ class MCPSettings(Viewer):
                 sx={"color": "text.secondary", "fontSize": "0.75rem", "letterSpacing": "1.2px"},
                 margin=(8, 0, 0, 0),
             ),
-            caption("Leave empty to allow everyone who has access to the assistant."),
-            self._allow_groups,
-            self._allow_users,
-            self._deny_groups,
-            self._deny_users,
+            self._permission_editor,
             margin=0,
             sizing_mode="stretch_width",
-            styles={"gap": "10px"},
+            styles={"gap": "8px"},
             visible=self._show_access,
         )
 
@@ -1087,6 +1149,33 @@ class MCPSettings(Viewer):
         for widget in (self._token_secret, self._header_secret, self._env_secret):
             clear_text(widget)
 
+    def _origin_changed(self, url: str | None = None) -> bool:
+        if self._editing is None or self._editing_url is None:
+            return False
+        current = _text(self._url) if url is None else url
+        return url_origin(self._editing_url) != url_origin(current)
+
+    def _sync_origin_warning(self) -> None:
+        if self._drawer is None or self._loading_drawer:
+            return
+        if self._transport.value != "http" or self._editing_locked:
+            self._url_origin_warn.visible = False
+            return
+        has_unreentered_token = self._existing_token is not None and not self._reentered_token
+        has_unreentered_headers = any(
+            k not in self._reentered_headers for k in self._existing_headers
+        )
+        if self._origin_changed() and (has_unreentered_token or has_unreentered_headers):
+            self._url_origin_warn.param.update(
+                object=(
+                    "Changing the URL scheme, host or port will drop stored token and headers "
+                    "unless you re-enter them before saving."
+                ),
+                visible=True,
+            )
+        else:
+            self._url_origin_warn.visible = False
+
     def _render_secret_entries(self, kind: str) -> None:
         entries = self._existing_headers if kind == "headers" else self._existing_env
         container = self._headers_list if kind == "headers" else self._env_list
@@ -1116,6 +1205,9 @@ class MCPSettings(Viewer):
     def _remove_secret_entry(self, kind: str, key: str) -> None:
         target = self._existing_headers if kind == "headers" else self._existing_env
         target.pop(key, None)
+        if kind == "headers":
+            self._reentered_headers.discard(key)
+            self._sync_origin_warning()
         self._render_secret_entries(kind)
 
     def _add_secret_entry(self, kind: str) -> None:
@@ -1139,17 +1231,28 @@ class MCPSettings(Viewer):
                 visible=True,
             )
             return
+        if kind == "env":
+            env_err = check_stdio_env([key], self._allowed_stdio_env())
+            if env_err:
+                self._drawer_alert.param.update(object=env_err, visible=True)
+                return
         try:
             stored: t.Any = env_reference(var_name) if use_env else encrypt_secret(raw_secret)
         except SecretError as exc:
             self._drawer_alert.param.update(object=str(exc), visible=True)
             return
+        ref_err = check_mcp_secret_ref(stored, f"{kind}.{key}", self._allowed_secret_env_vars())
+        if ref_err:
+            self._drawer_alert.param.update(object=ref_err, visible=True)
+            return
         self._drawer_alert.visible = False
         target[key] = stored
         if kind == "headers":
+            self._reentered_headers.add(key)
             clear_text(self._header_name)
             clear_text(self._header_env)
             clear_text(self._header_secret)
+            self._sync_origin_warning()
         else:
             clear_text(self._env_name)
             clear_text(self._env_ref)
@@ -1171,6 +1274,7 @@ class MCPSettings(Viewer):
         is_http = self._transport.value == "http"
         can_encrypt = encryption_available()
         allowed = self._allowed_stdio()
+        allowed_secret_env = self._allowed_secret_env_vars()
         locked = self._editing_locked
 
         self._http_box.visible = is_http
@@ -1183,15 +1287,17 @@ class MCPSettings(Viewer):
         self._token_secret.visible = is_http and mode == "encrypted"
         if is_http and mode == "encrypted":
             self._token_hint.object = (
-                "Stored encrypted in flowdash.yaml. Leave blank while editing to keep the current token."
+                "Stored encrypted in flowdash.yaml. Leave blank while editing to keep the current "
+                "token (dropped if the URL scheme, host or port changes)."
                 if self._existing_token is not None
                 else "Stored encrypted in flowdash.yaml and never shown again."
             )
             self._token_hint.visible = True
         elif is_http and mode == "env":
+            patterns = ", ".join(allowed_secret_env) if allowed_secret_env else "none"
             self._token_hint.object = (
-                "Read from the server environment at runtime; never written to flowdash.yaml."
-                + ("" if can_encrypt else f" {INSTALL_HINT}")
+                f"Read from the server environment at runtime (allowed: {patterns}); "
+                "never written to flowdash.yaml." + ("" if can_encrypt else f" {INSTALL_HINT}")
             )
             self._token_hint.visible = True
         else:
@@ -1208,11 +1314,13 @@ class MCPSettings(Viewer):
         self._env_secret.visible = not env_use_ref
 
         if not is_http and not locked:
-            self._command.options = list(allowed)
+            self._command.options = list(dict.fromkeys(prefix[0] for prefix in allowed))
             if not allowed:
                 self._stdio_policy_alert.object = (
-                    "Stdio MCP servers are disabled by server policy. Allowlist commands with "
-                    "`FlowDashApp(mcp_stdio_commands=[...])` or `FLOWDASH_MCP_STDIO_COMMANDS`."
+                    "Stdio MCP servers are disabled by server policy. Allowlist command prefixes "
+                    f"with `FlowDashApp(mcp_stdio_commands=[...])` or `{STDIO_COMMANDS_ENV}`. "
+                    f"Allowlist subprocess env vars with `FlowDashApp(mcp_stdio_env=[...])` or "
+                    f"`{STDIO_ENV_VARS_ENV}`."
                 )
                 self._stdio_policy_alert.visible = True
             else:
@@ -1220,6 +1328,7 @@ class MCPSettings(Viewer):
         else:
             self._stdio_policy_alert.visible = False
 
+        self._sync_origin_warning()
         self._save_btn.visible = not locked
         self._save_btn.disabled = locked or (not is_http and not allowed)
 
@@ -1230,120 +1339,122 @@ class MCPSettings(Viewer):
         server = next((s for s in self.servers() if s.name == name), None) if name else None
         self._editing = server.name if server is not None else None
         self._editing_locked = bool(server and server.locked)
+        self._editing_url = server.url if server is not None else None
+        self._reentered_token = False
+        self._reentered_headers = set()
         self._existing_token = server.token if server is not None else None
         self._existing_headers = dict(server.headers) if server is not None else {}
         self._existing_env = dict(server.env) if server is not None else {}
         self._clear_secret_inputs()
 
-        check = MCP_CHECKS.get(server.name) if server is not None else None
+        check = get_mcp_check(server.name, project=self.project) if server is not None else None
         discovered = [t.name for t in check.tools] if check and check.ok else []
         auto_values = list(server.auto_approve) if server is not None else []
         auto_options = list(dict.fromkeys([*discovered, *auto_values]))
 
-        with pn.io.hold():
-            self._drawer_alert.visible = False
-            if server is None:
-                self._drawer_title.object = "Add an MCP server"
-                self._drawer_subtitle.object = (
-                    "Connect a streamable HTTP or allowlisted stdio MCP server"
-                )
-            else:
-                self._drawer_title.object = server.name
-                self._drawer_subtitle.object = (
-                    f"Configured in code ({server.locked}); read-only here."
-                    if server.locked
-                    else f"{'Streamable HTTP' if server.transport == 'http' else 'Stdio'} MCP server"
-                )
-
-            locked = self._editing_locked
-            self._name_input.param.update(
-                value=server.name if server else "",
-                disabled=server is not None,
-            )
-            self._transport.param.update(
-                value=server.transport if server else "http",
-                disabled=locked,
-            )
-            self._description.param.update(
-                value=server.description if server else "",
-                disabled=locked,
-            )
-            self._enabled.param.update(
-                value=server.enabled if server else True,
-                disabled=locked,
-            )
-            self._offered.param.update(
-                value=list(server.offered_to) if server else list(SURFACES),
-                disabled=locked,
-            )
-            self._url.param.update(
-                value=(server.url or "") if server else "",
-                disabled=locked,
-            )
-            if server is not None and server.token is not None:
-                self._token_status.object = f"Current token: {_secret_summary(server.token)}"
-                self._token_status.visible = True
-                if isinstance(server.token, str) and server.token.startswith("${"):
-                    self._token_mode.value = "env"
-                    self._token_env.value = server.token[2:-1]
+        self._loading_drawer = True
+        try:
+            with pn.io.hold():
+                self._drawer_alert.visible = False
+                self._url_origin_warn.visible = False
+                if server is None:
+                    self._drawer_title.object = "Add an MCP server"
+                    self._drawer_subtitle.object = (
+                        "Connect a streamable HTTP or allowlisted stdio MCP server"
+                    )
                 else:
-                    self._token_mode.value = "encrypted"
+                    self._drawer_title.object = server.name
+                    self._drawer_subtitle.object = (
+                        f"Configured in code ({server.locked}); read-only here."
+                        if server.locked
+                        else f"{'Streamable HTTP' if server.transport == 'http' else 'Stdio'} MCP server"
+                    )
+
+                locked = self._editing_locked
+                self._name_input.param.update(
+                    value=server.name if server else "",
+                    disabled=server is not None,
+                )
+                self._transport.param.update(
+                    value=server.transport if server else "http",
+                    disabled=locked,
+                )
+                self._description.param.update(
+                    value=server.description if server else "",
+                    disabled=locked,
+                )
+                self._enabled.param.update(
+                    value=server.enabled if server else True,
+                    disabled=locked,
+                )
+                self._offered.param.update(
+                    value=list(server.offered_to) if server else list(SURFACES),
+                    disabled=locked,
+                )
+                self._url.param.update(
+                    value=(server.url or "") if server else "",
+                    disabled=locked,
+                )
+                if server is not None and server.token is not None:
+                    self._token_status.object = f"Current token: {_secret_summary(server.token)}"
+                    self._token_status.visible = True
+                    if isinstance(server.token, str) and server.token.startswith("${"):
+                        self._token_mode.value = "env"
+                        self._token_env.value = server.token[2:-1]
+                    else:
+                        self._token_mode.value = "encrypted"
+                        self._token_env.value = ""
+                else:
+                    self._token_status.visible = False
+                    self._token_mode.value = "none"
                     self._token_env.value = ""
-            else:
-                self._token_status.visible = False
-                self._token_mode.value = "none"
-                self._token_env.value = ""
-            self._token_mode.disabled = locked
-            self._token_env.disabled = locked
-            self._token_secret.disabled = locked
+                self._token_mode.disabled = locked
+                self._token_env.disabled = locked
+                self._token_secret.disabled = locked
 
-            self._command.param.update(
-                value=(server.command or "") if server else "",
-                disabled=locked,
-            )
-            self._args.param.update(
-                value=shlex.join(server.args) if (server and server.args) else "",
-                disabled=locked,
-            )
-            self._cwd.param.update(
-                value=(server.cwd or "") if server else "",
-                disabled=locked,
-            )
-            self._init_timeout.param.update(
-                value=f"{server.init_timeout:g}" if server else f"{DEFAULT_INIT_TIMEOUT:g}",
-                disabled=locked,
-            )
-            self._timeout.param.update(
-                value=f"{server.timeout:g}" if server else f"{DEFAULT_TIMEOUT:g}",
-                disabled=locked,
-            )
-            self._auto_approve.param.update(
-                options=auto_options,
-                value=auto_values,
-                disabled=locked,
-            )
-            self._auto_pattern.disabled = locked
-            self._add_auto_btn.disabled = locked
+                self._command.param.update(
+                    value=(server.command or "") if server else "",
+                    disabled=locked,
+                )
+                self._args.param.update(
+                    value=shlex.join(server.args) if (server and server.args) else "",
+                    disabled=locked,
+                )
+                self._cwd.param.update(
+                    value=(server.cwd or "") if server else "",
+                    disabled=locked,
+                )
+                self._init_timeout.param.update(
+                    value=f"{server.init_timeout:g}" if server else f"{DEFAULT_INIT_TIMEOUT:g}",
+                    disabled=locked,
+                )
+                self._timeout.param.update(
+                    value=f"{server.timeout:g}" if server else f"{DEFAULT_TIMEOUT:g}",
+                    disabled=locked,
+                )
+                self._auto_approve.param.update(
+                    options=auto_options,
+                    value=auto_values,
+                    disabled=locked,
+                )
+                self._auto_pattern.disabled = locked
+                self._add_auto_btn.disabled = locked
 
-            perm = server.access if server is not None else Permission()
-            self._allow_groups.param.update(
-                value=", ".join(sorted(perm.allow_groups)), disabled=locked
-            )
-            self._allow_users.param.update(
-                value=", ".join(sorted(perm.allow_users)), disabled=locked
-            )
-            self._deny_groups.param.update(
-                value=", ".join(sorted(perm.deny_groups)), disabled=locked
-            )
-            self._deny_users.param.update(
-                value=", ".join(sorted(perm.deny_users)), disabled=locked
-            )
+                perm = server.access if server is not None else Permission()
+                self._permission_editor.load(
+                    perm,
+                    app=self._app,
+                    project=self.project,
+                    disabled=locked,
+                )
 
-            self._render_secret_entries("headers")
-            self._render_secret_entries("env")
-            self._remove_btn.visible = server is not None and not locked
-            self._sync_drawer()
-            self._drawer.open = True
+                self._render_secret_entries("headers")
+                self._render_secret_entries("env")
+                self._remove_btn.visible = server is not None and not locked
+                self._sync_drawer()
+                self._drawer.open = True
+        finally:
+            self._loading_drawer = False
 
     def close_server(self) -> None:
         """Close the drawer without saving and clear typed secrets."""
@@ -1351,6 +1462,9 @@ class MCPSettings(Viewer):
             self._drawer.open = False
         self._editing = None
         self._editing_locked = False
+        self._editing_url = None
+        self._reentered_token = False
+        self._reentered_headers = set()
         self._clear_secret_inputs()
 
     def _drawer_payload(self) -> tuple[str | None, dict[str, t.Any] | None, list[str]]:
@@ -1362,20 +1476,29 @@ class MCPSettings(Viewer):
 
         transport = self._transport.value
         entry: dict[str, t.Any] = {"transport": transport}
+        allowed_secret_env = self._allowed_secret_env_vars()
 
         if transport == "http":
             url = _text(self._url)
-            if not url.lower().startswith(("http://", "https://")):
-                problems.append("Server URL must start with http:// or https://.")
+            if url_origin(url) is None:
+                problems.append("Server URL must be an http:// or https:// URL with a host.")
             else:
                 entry["url"] = url
+            origin_changed = self._origin_changed(url)
             mode = self._token_mode.value
             if mode == "env":
-                var_name = _text(self._token_env)
-                try:
-                    entry["token"] = env_reference(var_name)
-                except SecretError as exc:
-                    problems.append(str(exc))
+                if not origin_changed or self._reentered_token:
+                    var_name = _text(self._token_env)
+                    try:
+                        ref = env_reference(var_name)
+                    except SecretError as exc:
+                        problems.append(str(exc))
+                    else:
+                        ref_err = check_mcp_secret_ref(ref, "token", allowed_secret_env)
+                        if ref_err:
+                            problems.append(ref_err)
+                        else:
+                            entry["token"] = ref
             elif mode == "encrypted":
                 typed = _text(self._token_secret)
                 if typed:
@@ -1383,31 +1506,53 @@ class MCPSettings(Viewer):
                         entry["token"] = encrypt_secret(typed)
                     except SecretError as exc:
                         problems.append(str(exc))
+                elif origin_changed:
+                    # Drop the stored token when the URL scheme, host or port changed unless re-entered.
+                    pass
                 elif isinstance(self._existing_token, Mapping):
                     entry["token"] = dict(self._existing_token)
                 else:
                     problems.append(
                         "Enter a bearer token or switch to environment variable / None."
                     )
-            if self._existing_headers:
-                entry["headers"] = dict(self._existing_headers)
+            kept_headers = (
+                {k: v for k, v in self._existing_headers.items() if k in self._reentered_headers}
+                if origin_changed
+                else dict(self._existing_headers)
+            )
+            for key, val in kept_headers.items():
+                ref_err = check_mcp_secret_ref(val, f"headers.{key}", allowed_secret_env)
+                if ref_err:
+                    problems.append(ref_err)
+            if kept_headers:
+                entry["headers"] = kept_headers
         else:
             command = _text(self._command)
-            cmd_err = check_stdio_command(command, self._allowed_stdio())
+            parsed_args: list[str] = []
+            raw_args = _text(self._args)
+            if raw_args:
+                try:
+                    parsed_args = shlex.split(raw_args)
+                except ValueError as exc:
+                    problems.append(f"Arguments could not be parsed: {exc}")
+            cmd_err = check_stdio_command(command, self._allowed_stdio(), args=parsed_args)
             if cmd_err:
                 problems.append(cmd_err)
             else:
                 entry["command"] = command
-            raw_args = _text(self._args)
-            if raw_args:
-                try:
-                    entry["args"] = shlex.split(raw_args)
-                except ValueError as exc:
-                    problems.append(f"Arguments could not be parsed: {exc}")
+                if parsed_args:
+                    entry["args"] = parsed_args
             cwd = _text(self._cwd)
             if cwd:
                 entry["cwd"] = cwd
             if self._existing_env:
+                env_err = check_stdio_env(self._existing_env, self._allowed_stdio_env())
+                if env_err:
+                    problems.append(env_err)
+                for key, val in self._existing_env.items():
+                    ref_err = check_mcp_secret_ref(val, f"env.{key}", allowed_secret_env)
+                    if ref_err:
+                        problems.append(ref_err)
                 entry["env"] = dict(self._existing_env)
 
         desc = _text(self._description)
@@ -1437,13 +1582,7 @@ class MCPSettings(Viewer):
             entry["auto_approve"] = list(self._auto_approve.value)
 
         if self._show_access:
-            perm = Permission.from_spec(
-                allow_groups=_csv_names(_text(self._allow_groups)),
-                allow_users=_csv_names(_text(self._allow_users)),
-                deny_groups=_csv_names(_text(self._deny_groups)),
-                deny_users=_csv_names(_text(self._deny_users)),
-            )
-            acc = access_to_dict(perm)
+            acc = access_to_dict(self._permission_editor.permission())
             if acc:
                 entry["access"] = acc
         elif self._editing is not None:
@@ -1487,7 +1626,7 @@ class MCPSettings(Viewer):
                 return False
         user = self._app._identity.user if self._app is not None else "someone"
         logger.info("Admin: %s saved MCP server %r (%s).", user, name, entry["transport"])
-        MCP_CHECKS.pop(name, None)
+        clear_mcp_check(name, project=self.project)
         self.close_server()
         return True
 
@@ -1509,7 +1648,7 @@ class MCPSettings(Viewer):
         if ok:
             user = self._app._identity.user if self._app is not None else "someone"
             logger.info("Admin: %s removed MCP server %r.", user, name)
-            MCP_CHECKS.pop(name, None)
+            clear_mcp_check(name, project=self.project)
             self.close_server()
         return ok
 

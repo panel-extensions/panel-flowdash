@@ -325,13 +325,39 @@ class FlowDashApp(Viewer):
     mcp_stdio_commands = param.List(
         default=None,
         allow_None=True,
+        doc="""
+        Allowlist of full argv prefixes that ``stdio`` MCP servers configured in
+        ``flowdash.yaml`` or the admin UI may launch. Each entry is a command
+        string (e.g. ``"/opt/mcp/docs-server --readonly"``) or an argv sequence
+        (e.g. ``["/usr/local/bin/my-mcp", "--mode", "read"]``); path entries must
+        be absolute. A configured server must match the whole prefix and only
+        trailing arguments beyond it are free. Allowlisting a package launcher
+        or interpreter without a pinned subcommand/script prefix grants arbitrary
+        code execution to anyone who can edit ``flowdash.yaml`` or is an app
+        admin. When None, reads the comma-separated ``FLOWDASH_MCP_STDIO_COMMANDS``
+        environment variable; when empty, file/UI ``stdio`` servers are denied.""",
+    )
+
+    mcp_stdio_env = param.List(
+        default=None,
+        allow_None=True,
         item_type=str,
         doc="""
-        Allowlist of executables that ``stdio`` MCP servers configured in
-        ``flowdash.yaml`` or the admin UI may launch, e.g. ``["uvx", "npx"]``
-        or absolute executable paths. When None, reads the comma-separated
-        ``FLOWDASH_MCP_STDIO_COMMANDS`` environment variable; when empty,
-        file/UI ``stdio`` servers are denied by policy.""",
+        Allowlist of subprocess environment variable names that file/UI ``stdio``
+        MCP servers may set in ``env:``. When None, reads the comma-separated
+        ``FLOWDASH_MCP_STDIO_ENV`` environment variable; when empty, file/UI
+        ``stdio`` servers cannot inject environment variables.""",
+    )
+
+    mcp_secret_env_vars = param.List(
+        default=None,
+        allow_None=True,
+        item_type=str,
+        doc="""
+        Allowlist of glob patterns or variable names permitted in ``${VAR}``
+        secret references inside ``flowdash.yaml``'s ``mcp:`` section. When
+        None, reads ``FLOWDASH_MCP_SECRET_ENV_VARS`` (comma-separated) or
+        defaults to ``["FLOWDASH_MCP_*"]``.""",
     )
 
     agent_sensitive_components = param.List(
@@ -850,20 +876,31 @@ class FlowDashApp(Viewer):
         the project directory, created on the first save.
         """
         if isinstance(self.project, Project):
+            if self.mcp_secret_env_vars is not None:
+                self.project.context["mcp_secret_env_vars"] = self._allowed_secret_env_vars()
             return self.project
         if getattr(self, "_own_project", None) is not None:
+            if self.mcp_secret_env_vars is not None:
+                self._own_project.context["mcp_secret_env_vars"] = self._allowed_secret_env_vars()
             return self._own_project
         if self.project_dir is None:
-            self._own_project = Project(context=self._project_context(self._registry, None))
+            context = self._project_context(self._registry, None)
+            if self.mcp_secret_env_vars is not None:
+                context["mcp_secret_env_vars"] = self._allowed_secret_env_vars()
+            self._own_project = Project(context=context)
             return self._own_project
         path = pathlib.Path(self.project_dir).resolve() / PROJECT_FILE
         key = str(path)
         project = _SETTINGS_PROJECTS.get(key)
         if project is None:
             context = self._project_context(self._registry, self.project_dir)
+            if self.mcp_secret_env_vars is not None:
+                context["mcp_secret_env_vars"] = self._allowed_secret_env_vars()
             project = _unloaded_project(path, context) if path.is_file() else None
             project = project or Project(key, context=context)
             project = _SETTINGS_PROJECTS.setdefault(key, project)
+        elif self.mcp_secret_env_vars is not None:
+            project.context["mcp_secret_env_vars"] = self._allowed_secret_env_vars()
         return project
 
     def _code_setting_source(self, target: str) -> str | None:
@@ -1179,11 +1216,23 @@ class FlowDashApp(Viewer):
         """Return admin section names omitted from ``/admin`` navigation."""
         return set(self.admin_hidden_sections) | set(self.admin_section_redirects)
 
-    def _allowed_stdio_commands(self) -> tuple[str, ...]:
-        """Return the allowlisted executables for file/UI stdio MCP servers."""
+    def _allowed_stdio_commands(self) -> tuple[tuple[str, ...], ...]:
+        """Return the allowlisted argv prefixes for file/UI stdio MCP servers."""
         from panel_flowdash.mcp import allowed_stdio_commands
 
         return allowed_stdio_commands(self.mcp_stdio_commands)
+
+    def _allowed_stdio_env(self) -> frozenset[str]:
+        """Return the allowlisted environment variable names for file/UI stdio MCP servers."""
+        from panel_flowdash.mcp import allowed_stdio_env
+
+        return allowed_stdio_env(self.mcp_stdio_env)
+
+    def _allowed_secret_env_vars(self) -> tuple[str, ...]:
+        """Return the allowlisted ``${VAR}`` patterns/names for ``mcp:`` secrets."""
+        from panel_flowdash.mcp import allowed_secret_env_vars
+
+        return allowed_secret_env_vars(self.mcp_secret_env_vars)
 
     def _mcp_configs(self) -> list:
         """Return all configured MCP servers from code and ``flowdash.yaml``."""
@@ -2522,6 +2571,7 @@ class FlowDashApp(Viewer):
             return
 
         if pathname == ADMIN_ROUTE or pathname.startswith(f"{ADMIN_ROUTE}/"):
+            # Redirects match exact /admin/<section> paths (with trailing slash stripped).
             section = pathname[len(ADMIN_ROUTE) :].strip("/")
             redirect = self.admin_section_redirects.get(section)
             if redirect:

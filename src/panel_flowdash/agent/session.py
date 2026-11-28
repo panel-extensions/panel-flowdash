@@ -306,6 +306,7 @@ class AgentSession:
         from pathlib import Path
 
         from panel_flowdash.agent.mcp import build_mcp_toolsets
+        from panel_flowdash.mcp import project_check_key
 
         app = self.app
         configs = app._mcp_configs()
@@ -317,14 +318,23 @@ class AgentSession:
             if project.directory is not None
             else (Path(app.project_dir) if app.project_dir is not None else None)
         )
+        # Re-read admin status fresh per run so a demoted admin cannot keep bypassing allowlists.
+        is_admin = (
+            app._authorize_admin(fresh=True)
+            if hasattr(app, "_authorize_admin")
+            else bool(getattr(app, "is_admin", False))
+        )
         return build_mcp_toolsets(
             configs,
             surface=surface,
             identity=app._identity,
-            is_admin=app.is_admin,
+            is_admin=is_admin,
             tool_authorize=app.tool_authorize,
             allowed_stdio=app._allowed_stdio_commands(),
+            allowed_stdio_env=app._allowed_stdio_env(),
+            allowed_secret_env=app._allowed_secret_env_vars(),
             directory=directory,
+            project_key=project_check_key(project, directory),
         )
 
     def _extra_capabilities(self) -> list:
