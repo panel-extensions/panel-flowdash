@@ -494,6 +494,8 @@ class Serve(_PanelServe):
 
     def customize_kwargs(self, args, server_kwargs):
         kwargs = super().customize_kwargs(args, server_kwargs)
+        # Tiles rendered after an in-app route change, e.g. from home to a dashboard,
+        # request their stylesheets relative to the new route, still in Panel 1.11.
         kwargs["extra_patterns"].append(
             (r"/.+/static/extensions/(.*)", MultiRootStaticHandler, dict(root=extension_dirs))
         )
