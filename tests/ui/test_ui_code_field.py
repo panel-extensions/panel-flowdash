@@ -137,6 +137,25 @@ def test_escape_then_tab_leaves_the_editor(page):
     assert editor._component_instances[node].sql == "SELECT 1", "Tab inserted nothing"
 
 
+def test_a_long_line_wraps_in_the_large_editor(page):
+    editor = FlowDash(COMPONENTS, notifications=False, include_builtin_components=False)
+    long_sql = "SELECT " + ", ".join(f"column_{i}" for i in range(60)) + " FROM turbines"
+    node = editor.add_component("D/query", {"sql": long_sql}, position=(0, 0))
+    # Where the code panel cannot edit a field, the inspector's code field edits it.
+    editor._code_panel_allowed = lambda: False
+    page.set_viewport_size({"width": 900, "height": 800})
+    serve_component(page, editor)
+
+    page.locator(f".react-flow__node[data-id='{node}']").click()
+    page.locator(".fd-code-edit").first.click(timeout=8000)
+    large = page.locator(".fd-code-field-large")
+    expect(large.locator(".ace_content")).to_contain_text("column_0", timeout=8000)
+    # One line of text takes several screen rows, and nothing scrolls sideways.
+    expect(large.locator(".ace_gutter-cell")).to_have_count(1)
+    wait_until(lambda: large.locator(".ace_line").count() > 1, timeout=8000)
+    assert not large.locator(".ace_scrollbar-h").is_visible()
+
+
 def test_the_large_editor_closes_on_escape(page):
     editor = FlowDash(COMPONENTS, notifications=False, include_builtin_components=False)
     node = editor.add_component("D/query", position=(0, 0))

@@ -196,3 +196,16 @@ def test_code_keeps_manual_run(page):
     )
     expect(page.locator(".fd-code-stale-badge")).to_be_hidden(timeout=TIMEOUT)
     expect(node.locator(".fd-stale-mark")).to_have_count(0, timeout=TIMEOUT)
+
+
+def test_escape_then_tab_leaves_the_spec_text(page):
+    _open(page)
+    _view(page, "JSON")
+    wait_until(lambda: '"mark": "bar"' in _ace(page).get("text", ""), page, timeout=TIMEOUT)
+    before = _ace(page)["text"]
+    page.locator(".fd-spec-editor .ace_content").click()
+    wait_until(lambda: _ace(page).get("focused"), page, timeout=TIMEOUT)
+    page.keyboard.press("Escape")
+    page.keyboard.press("Tab")
+    wait_until(lambda: not _ace(page).get("focused"), page, timeout=TIMEOUT)
+    assert _ace(page)["text"] == before, "Tab inserted nothing"

@@ -62,7 +62,6 @@ from panel_flowdash.spec_settings import (
 )
 from panel_flowdash.ui.choice_widgets import setting_choices
 from panel_flowdash.ui.code_field import (
-    ACE_OPTIONS,
     ACE_THEME_CSS,
     AceTools,
     code_formatter,
@@ -468,6 +467,8 @@ class CodePanel(Viewer):
             value_input="",
             language="text",
             on_keyup=False,
+            keyboard_accessible=True,
+            soft_wrap=True,
             sizing_mode="stretch_both",
             min_height=80,
             margin=0,
@@ -477,7 +478,6 @@ class CodePanel(Viewer):
         self.code.param.watch(self._typed, "value_input")
         self.tools = AceTools(
             target_class=_EDITOR_CLASS,
-            options=ACE_OPTIONS,
             on_run=self.run,
             on_format=self.format,
             scroll_margin=8,
@@ -500,7 +500,6 @@ class CodePanel(Viewer):
         self.spec_editor.param.watch(self._spec_mode_set, "mode")
         self.spec_tools = AceTools(
             target_class=_SPEC_TEXT_CLASS,
-            options={**ACE_OPTIONS, "wrap": False, "tabSize": 2},
             on_run=self.run,
             on_format=self.format,
             scroll_margin=8,

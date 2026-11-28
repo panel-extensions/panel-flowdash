@@ -392,17 +392,12 @@ def code_formatter(parameter: param.Parameter) -> t.Callable[[str], str] | None:
     return FORMATTERS.get(language.lower())
 
 
-class AceOptions(JSComponent):
-    """Sets Ace options Panel's ``CodeEditor`` does not expose on the editors beside it.
+class AceFocus(JSComponent):
+    """Focuses the Ace editor with the :attr:`focus_class` CSS class when :attr:`focus` is bumped.
 
-    It looks for the Ace editors among its siblings in the layout it is
-    placed in and applies :attr:`options`, e.g. ``enableKeyboardAccessibility``
-    so Tab moves on rather than trapping the keyboard (Enter edits, Escape
-    leaves the text), and ``wrap`` for soft-wrapped lines. Bumping
-    :attr:`focus` focuses the editor with the :attr:`focus_class` CSS class.
+    The editor may render in a dialog, outside this component's layout, once
+    the dialog opens, so it is looked for across the page until it shows.
     """
-
-    options = param.Dict(default={})
 
     focus = param.Integer(default=0)
 
@@ -419,30 +414,11 @@ class AceOptions(JSComponent):
       return found
     }
 
-    function siblings(el) {
-      const host = el.getRootNode().host
-      const root = host && host.parentNode
-      return root && root.querySelectorAll ? editorsUnder(root) : []
-    }
-
-    function apply(el, model, tries = 0) {
-      const found = siblings(el)
-      for (const [, editor] of found) {
-        try { editor.setOptions(model.options) } catch (e) { console.warn(e) }
-      }
-      // Ace renders after this component when the page is slow, so keep looking.
-      if (!found.length && tries < 150) {
-        setTimeout(() => apply(el, model, tries + 1), 200)
-      }
-    }
-
-    // The large editor renders in a dialog, outside this layout, once opened.
     function focus(model, tries = 0) {
       const target = editorsUnder(document).find(
         ([host]) => host && host.classList.contains(model.focus_class) && host.getClientRects().length
       )
       if (target) {
-        try { target[1].setOptions(model.options) } catch (e) { console.warn(e) }
         target[1].navigateFileEnd()
         target[1].focus()
       } else if (tries < 150) {
@@ -452,8 +428,6 @@ class AceOptions(JSComponent):
 
     export function render({ el, model }) {
       el.style.display = "none"
-      apply(el, model)
-      model.on("options", () => apply(el, model))
       model.on("focus", () => focus(model))
     }
     """
@@ -469,9 +443,6 @@ ACE_THEME_CSS = """
   background: rgba(var(--mui-palette-primary-mainChannel, 0 114 181) / 0.3) !important;
 }
 """
-
-#: The Ace options every code field uses, see :class:`AceOptions`.
-ACE_OPTIONS = {"enableKeyboardAccessibility": True, "wrap": True}
 
 
 class AceTools(JSComponent):
@@ -825,7 +796,7 @@ class CodeField(CompositeWidget):
         # Alias kept for existing callers and tests.
         self.expand_button = self.edit_button
         self._large = self._make_editor(_EXPANDED_HEIGHT, ["fd-code-field-large"])
-        self._ace = AceOptions(options=ACE_OPTIONS, focus_class="fd-code-field-large")
+        self._ace = AceFocus(focus_class="fd-code-field-large")
         done = pmui.Button(label="Done", variant="text")
         self._dialog = pmui.Dialog(
             objects=[self._large],
@@ -885,6 +856,8 @@ class CodeField(CompositeWidget):
             language=self.language,
             height=height,
             on_keyup=False,
+            keyboard_accessible=True,
+            soft_wrap=True,
             sizing_mode="stretch_width",
             margin=0,
             css_classes=css_classes,

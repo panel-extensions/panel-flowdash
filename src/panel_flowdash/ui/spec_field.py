@@ -50,7 +50,7 @@ from panel_flowdash.spec_settings import (
     text_spans,
     unrepresented_paths,
 )
-from panel_flowdash.ui.code_field import ACE_OPTIONS, ACE_THEME_CSS, AceOptions
+from panel_flowdash.ui.code_field import ACE_THEME_CSS
 from panel_flowdash.value_text import error_text
 
 if t.TYPE_CHECKING:
@@ -320,6 +320,7 @@ class SpecEditor(CompositeWidget):
             on_keyup=False,
             indent=2,
             soft_tabs=True,
+            keyboard_accessible=True,
             sizing_mode="stretch_width",
             margin=0,
             css_classes=["fd-spec-editor"],
@@ -353,7 +354,6 @@ class SpecEditor(CompositeWidget):
             self.editor,
             self.status,
             self._marks,
-            AceOptions(options={**ACE_OPTIONS, "wrap": False, "tabSize": 2}),
             margin=0,
             sizing_mode="stretch_width",
             css_classes=["fd-spec-text"],
