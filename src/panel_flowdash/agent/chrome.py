@@ -10,6 +10,8 @@ import panel_material_ui as pmui
 from panel_flowdash.ui.dashboard_bar import PHONE_BREAKPOINT
 from panel_flowdash.ui.text import escape_markdown, text_typography
 
+from .steps import mark_refusals
+
 if t.TYPE_CHECKING:
     from .session import AgentSession
 
@@ -88,6 +90,19 @@ TOOL_LABELS: dict[str, str | t.Callable[[dict], str]] = {
     "run_command": lambda a: f"Run {a['command']}",
 }
 
+
+def register_tool_labels(labels: dict[str, str | t.Callable[[dict], str]]) -> None:
+    """Name a host's tools in the assistant's steps, as :data:`TOOL_LABELS` does FlowDash's.
+
+    *labels* maps tool names to an imperative label, or to a callable taking
+    the call's arguments and returning one, e.g. ``{"run_sql": "Query the data",
+    "add_metric": lambda a: f"Add the metric {a['name']}"}``. A label given
+    for one of FlowDash's tools replaces FlowDash's. Steps shown from then on
+    use them, so register labels before sessions start, e.g. at import.
+    """
+    TOOL_LABELS.update(labels)
+
+
 _NOTICE_STYLES = {
     "position": "fixed",
     "left": "50%",
@@ -117,7 +132,9 @@ class SessionChrome:
     """Connects a session's drawer to the parts of the app it shares the screen with.
 
     - Below :data:`OVERLAY_BELOW` pixels the drawer overlays the app, and the
-      assistant's steps are named with :data:`TOOL_LABELS`.
+      assistant's steps are named with :data:`TOOL_LABELS`. Refused steps show
+      as failed, with the reason and whether they were retried (see
+      :func:`~panel_flowdash.agent.steps.mark_refusals`).
     - The drawer's state is reported to the editor's sidecar, which decides
       whether the two fit side by side (see :mod:`panel_flowdash.ui.sidecar`)
       and closes the drawer when the person opens the sidecar in a window
@@ -143,6 +160,7 @@ class SessionChrome:
         drawer = session.drawer
         drawer.overlay_below = OVERLAY_BELOW
         drawer.chat.tool_labels = TOOL_LABELS
+        mark_refusals(session.runner.state)
         drawer.param.watch(self._on_open, "open")
         state = session.runner.state
         state.param.watch(self._on_pending, "pending_approvals")
@@ -150,6 +168,7 @@ class SessionChrome:
         explore = session.explore_runner
         if explore is not None:
             explore.state.param.watch(self._on_explore_pending, "pending_approvals")
+            mark_refusals(explore.state)
 
         # The description may come from a third-party tool: show it as plain text.
         self._notice_text = text_typography("", variant="body2", margin=0, sx={"color": "inherit"})

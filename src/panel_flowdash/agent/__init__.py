@@ -34,6 +34,7 @@ _AGENT_NAMES = {
     "MCPApprovalRule": "mcp",
     "REPORT_TOOLS": "tools",
     "ResilientMCPToolset": "mcp",
+    "TOOL_LABELS": "chrome",
     "ToolAuthorizeCapability": "mcp",
     "approval_policy": "tools",
     "build_mcp_toolset": "mcp",
@@ -42,6 +43,7 @@ _AGENT_NAMES = {
     "create_explore_agent": "assistant",
     "dashboard_toolset": "tools",
     "mcp_approval_rules": "mcp",
+    "register_tool_labels": "chrome",
 }
 
 
@@ -67,6 +69,7 @@ __all__ = [
     "LAYOUT_TOOLS",
     "REPORT_TOOLS",
     "SCHEMA_ID",
+    "TOOL_LABELS",
     "DashboardOps",
     "DashboardYAMLError",
     "ExplorationOps",
@@ -94,5 +97,6 @@ __all__ = [
     "mcp_approval_rules",
     "palette_actions",
     "read_revision",
+    "register_tool_labels",
     "validate_dashboard",
 ]

@@ -10,10 +10,11 @@ pytest.importorskip("playwright")
 pytest.importorskip("pydantic_ai")
 expect = pytest.importorskip("playwright.sync_api").expect
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, FunctionToolset, RunContext
 from pydantic_ai.exceptions import ApprovalRequired
 
 from panel_flowdash.agent import FlowDashDeps, dashboard_toolset
+from panel_flowdash.agent.chrome import TOOL_LABELS
 from panel_flowdash.app import FlowDashApp
 from panel_flowdash.component_library import normalize_components
 
@@ -149,3 +150,41 @@ def test_the_full_screen_notice_shows_a_tools_description_as_text(page):
     page.wait_for_timeout(500)
     assert page.evaluate("() => window.__pwned || []") == []
     assert requests == []
+
+
+def test_a_refused_step_shows_its_reason_and_the_retry_that_followed(page, monkeypatch):
+    def fetch_rows(ctx: RunContext[FlowDashDeps], limit: int) -> str:
+        """Fetch rows of the data."""
+        return (
+            "Not applied: limit must be at most 100. Ask for fewer."
+            if limit > 100
+            else "Fetched 3 rows."
+        )
+
+    monkeypatch.setitem(TOOL_LABELS, "fetch_rows", lambda a: f"Fetch {a.get('limit')} rows")
+    agent = Agent(
+        scripted(("fetch_rows", {"limit": 500}), ("fetch_rows", {"limit": 100})),
+        deps_type=FlowDashDeps,
+        toolsets=[dashboard_toolset(), FunctionToolset([fetch_rows])],
+    )
+    store, (dash,) = _store_with("Plant")
+    _serve_app(page, store, f"/dash/{dash}", agent=agent)
+
+    page.get_by_text("note tile").first.wait_for()
+    open_assistant(page)
+    chat = page.get_by_placeholder(re.compile("^Ask the agent"))
+    chat.fill("Fetch the rows")
+    chat.press("Enter")
+
+    page.get_by_text("Done: Fetched 3 rows.").wait_for(timeout=20000)
+    # The refused step is not folded into the run's steps: it opens on its reason and its retry.
+    refused = page.locator(".tc-label-text", has_text="Fetch 500 rows")
+    expect(refused).to_be_visible()
+    expect(page.get_by_text("Failed", exact=True)).to_have_count(1)
+    reason = page.get_by_text("Not applied: limit must be at most 100.")
+    expect(reason).to_be_visible()
+    expect(reason).to_contain_text("Retried in a later step, which succeeded.")
+    expect(reason).not_to_contain_text("Ask for fewer")
+    # The retry that followed succeeded, so it folds into the steps after the refused one.
+    page.get_by_role("button", name=re.compile(r"^\d+ steps?\b.*expand$")).click()
+    expect(page.locator(".tc-label-text", has_text="Fetch 100 rows")).to_be_visible()
