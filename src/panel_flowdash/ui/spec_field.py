@@ -128,16 +128,8 @@ _UNSHOWN_CSS = """
 """
 
 
-class SpecMarks(JSComponent):
-    """Marks lines of the Ace editors beside it: rows only in the spec, and rows just changed.
-
-    :attr:`only` rows get an amber bar in the gutter, :attr:`changed` rows a
-    green bar and a green background, until the next change.
-    """
-
-    only = param.List(default=[])
-
-    changed = param.List(default=[])
+class AceGoto(JSComponent):
+    """Puts the cursor on a line of the visible Ace editor beside it, scrolled into view and focused."""
 
     goto = param.Dict(
         default={},
@@ -162,28 +154,6 @@ class SpecMarks(JSComponent):
       return root && root.querySelectorAll ? editorsUnder(root) : []
     }
 
-    function mark(el, model, tries = 0) {
-      const editors = siblings(el)
-      if (!editors.length) {
-        if (tries < 150) setTimeout(() => mark(el, model, tries + 1), 200)
-        return
-      }
-      for (const editor of editors) {
-        const session = editor.session
-        const state = session.__fdSpecMarks || {only: [], changed: [], markers: []}
-        for (const row of state.only) session.removeGutterDecoration(row, "fd-spec-only")
-        for (const row of state.changed) session.removeGutterDecoration(row, "fd-spec-changed-row")
-        for (const id of state.markers) session.removeMarker(id)
-        const markers = []
-        for (const row of model.only) session.addGutterDecoration(row, "fd-spec-only")
-        for (const row of model.changed) {
-          session.addGutterDecoration(row, "fd-spec-changed-row")
-          markers.push(session.highlightLines(row, row, "fd-spec-changed", false).id)
-        }
-        session.__fdSpecMarks = {only: [...model.only], changed: [...model.changed], markers}
-      }
-    }
-
     function goto(el, model, tries = 0) {
       const editor = siblings(el).find((e) => e.container.offsetParent !== null)
       if (!editor) {
@@ -199,9 +169,6 @@ class SpecMarks(JSComponent):
 
     export function render({ el, model }) {
       el.style.display = "none"
-      const update = () => setTimeout(() => mark(el, model), 0)
-      update()
-      model.on(["only", "changed"], update)
       model.on("goto", () => setTimeout(() => goto(el, model), 50))
     }
     """
@@ -333,7 +300,7 @@ class SpecEditor(CompositeWidget):
         self.status = pmui.Typography(
             variant="caption", margin=(4, 0, 0, 0), css_classes=["fd-spec-status"]
         )
-        self._marks = SpecMarks()
+        self._goto = AceGoto()
         self._labels: dict[str, dict[str, t.Any]] = {}
         self._notes = pmui.Typography(
             variant="caption",
@@ -353,7 +320,7 @@ class SpecEditor(CompositeWidget):
         self.spec = pn.Column(
             self.editor,
             self.status,
-            self._marks,
+            self._goto,
             margin=0,
             sizing_mode="stretch_width",
             css_classes=["fd-spec-text"],
@@ -599,7 +566,7 @@ class SpecEditor(CompositeWidget):
         if self.mode == "form":
             self.mode = "spec"
         row = self._spans.get(tuple(path), (0, 0))[0]
-        self._marks.goto = {"row": row, "count": self._marks.goto.get("count", 0) + 1}
+        self._goto.goto = {"row": row, "count": self._goto.goto.get("count", 0) + 1}
 
     def flush(self) -> bool:
         """Apply text typed and not applied yet, returning whether the text is a valid spec."""
@@ -652,7 +619,18 @@ class SpecEditor(CompositeWidget):
         self.unknown = [path_text(p) for p in unknown]
         only = sorted({row for p in unknown for row in _rows_of(self._spans.get(p))})
         rows = sorted({row for p in changed for row in _rows_of(self._spans.get(p), first=True)})
-        self._marks.param.update(only=only, changed=rows)
+        # Rows only in the spec get an amber gutter bar, rows just changed a green bar and background.
+        self.editor.markers = [
+            *({"start_row": row, "class": None, "gutter_class": "fd-spec-only"} for row in only),
+            *(
+                {
+                    "start_row": row,
+                    "class": "fd-spec-changed",
+                    "gutter_class": "fd-spec-changed-row",
+                }
+                for row in rows
+            ),
+        ]
         self.editor.annotations = [
             {
                 "row": self._spans[p][0],

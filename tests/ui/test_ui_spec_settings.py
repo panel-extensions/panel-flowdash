@@ -157,6 +157,10 @@ def test_a_title_set_in_the_form_updates_the_spec_and_the_chart(page):
     expect(changed).to_have_count(1, timeout=8000)
     row = format_spec(editor._component_instances[chart].spec)[1][("title",)][0]
     expect(changed).to_have_text(str(row + 1))
+    # The changed line is highlighted as well as marked in the gutter.
+    highlight = page.locator(".fd-spec-editor .ace_marker-layer .fd-spec-changed")
+    expect(highlight).to_have_count(1)
+    assert highlight.bounding_box()["height"] > 0
     wait_until(lambda: _chart_shows(page, "Capacity by year"), page, timeout=10000)
 
 

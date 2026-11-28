@@ -283,6 +283,10 @@ class TestText:
         assert parse_spec("  ") == {}
 
 
+def _marked(field, gutter_class):
+    return [m["start_row"] for m in field.editor.markers if m.get("gutter_class") == gutter_class]
+
+
 class TestField:
     def test_the_form_writes_the_spec_and_marks_the_changed_line(self):
         field = SpecEditor(value=SPEC, settings=SETTINGS)
@@ -292,7 +296,7 @@ class TestField:
         assert list(field.value)[:3] == ["mark", "encoding", "transform"]
         assert json.loads(field.editor.value) == field.value
         row = field._spans[("title",)][0]
-        assert field._marks.changed == [row]
+        assert _marked(field, "fd-spec-changed-row") == [row]
 
     def test_editing_the_text_updates_the_form(self):
         field = SpecEditor(value=SPEC, settings=SETTINGS)
@@ -312,7 +316,7 @@ class TestField:
             field._spans[("encoding", "x", "axis")][0],
             field._spans[("transform",)][0],
         }
-        assert set(field._marks.only) >= rows
+        assert set(_marked(field, "fd-spec-only")) >= rows
         field._controls["encoding.x.title"][1].value = "Year"
         assert field.value["transform"] == SPEC["transform"]
         assert field.value["encoding"]["x"]["axis"] == {"labelAngle": -45}
@@ -1021,7 +1025,7 @@ class TestFieldYaml:
         assert "# Capacity per year" in text and "# bars read best here" in text
         assert "on: click" in text and text.endswith("title: Capacity")
         row = field._spans[("title",)][0]
-        assert field._marks.changed == [row]
+        assert _marked(field, "fd-spec-changed-row") == [row]
 
     def test_switching_the_syntax_shows_the_same_spec(self):
         field = SpecEditor(value={}, settings=SETTINGS, syntax="yaml")
@@ -1081,7 +1085,7 @@ class TestFieldYaml:
         assert field.mode == "spec"
         row = field._spans[("transform",)][0]
         assert field.editor.value.splitlines()[row].startswith("transform:")
-        assert field._marks.goto == {"row": row, "count": 1}
+        assert field._goto.goto == {"row": row, "count": 1}
         field.syntax = "json"
         assert field.unshown[2][1].label == "Edit in JSON"
 
@@ -1172,7 +1176,7 @@ class TestSpecViews:
         assert [row[1].label for row in field.unshown[1:]] == ["Edit in YAML"] * 2
         field.unshown[2][1].clicks += 1
         assert panel.view_toggle.value == "yaml" and panel._spec_text.visible
-        row = field._marks.goto["row"]
+        row = field._goto.goto["row"]
         assert field.editor.value.splitlines()[row].startswith("transform:")
 
 
