@@ -1,4 +1,4 @@
-"""Playwright UI tests for MCP server administration at /admin/mcp and embedded MCPSettings."""
+"""Playwright UI tests for MCP server administration at /admin/mcp, PermissionEditor and embedded MCPSettings."""
 
 from __future__ import annotations
 
@@ -10,10 +10,11 @@ import pytest
 from panel.tests.util import wait_until
 
 from panel_flowdash import MemoryDashboardStore
-from panel_flowdash.admin.mcp import MCPSettings
+from panel_flowdash.admin import MCPSettings, PermissionEditor
 from panel_flowdash.app import FlowDashApp
-from panel_flowdash.mcp import MCP_CHECKS, MCPServerCheck, MCPToolInfo
-from panel_flowdash.project import PROJECT_FILE, load_project
+from panel_flowdash.auth import Identity, Permission, permission_lockout_reason
+from panel_flowdash.mcp import MCP_CHECKS, MCPServerCheck, MCPToolInfo, set_mcp_check
+from panel_flowdash.project import PROJECT_FILE, Problem, load_project
 from panel_flowdash.secret_store import KEY_ENV, fernet_key, resolve_secret
 
 from .util import serve_component
@@ -60,7 +61,14 @@ def test_admin_adds_tests_and_removes_mcp_server_with_encrypted_token(
     monkeypatch.setattr("panel_flowdash.secret_store._keyring", lambda: (None, ()))
     MCP_CHECKS.clear()
 
-    async def fake_probe(config, *, allowed_stdio=(), directory=None):
+    async def fake_probe(
+        config,
+        *,
+        allowed_stdio=(),
+        allowed_stdio_env=(),
+        allowed_secret_env=None,
+        directory=None,
+    ):
         return MCPServerCheck(
             True,
             "Connected (2 tools)",
@@ -151,13 +159,17 @@ def test_embedded_readonly_mcp_settings_hides_admin_controls(page, tmp_path):
         "      url: https://docs.internal/mcp\n"
         "      description: Documentation search\n"
     )
-    MCP_CHECKS["docs"] = MCPServerCheck(
-        True, "Connected (1 tool)", tools=(MCPToolInfo("search_docs", "Search docs"),)
+    project = load_project(tmp_path / PROJECT_FILE)
+    set_mcp_check(
+        "docs",
+        MCPServerCheck(
+            True, "Connected (1 tool)", tools=(MCPToolInfo("search_docs", "Search docs"),)
+        ),
+        project=project,
     )
 
     def factory():
-        project = load_project(tmp_path / PROJECT_FILE)
-        return MCPSettings(project, editable=False)
+        return MCPSettings(load_project(tmp_path / PROJECT_FILE), editable=False)
 
     serve_component(page, factory)
     card = page.locator(".flowdash-mcp-card-docs")
@@ -168,3 +180,53 @@ def test_embedded_readonly_mcp_settings_hides_admin_controls(page, tmp_path):
     expect(card.locator(".flowdash-mcp-edit")).to_have_count(0)
     expect(card.locator(".flowdash-mcp-test")).to_have_count(0)
     assert "docs.internal" not in page.content()
+
+
+def test_permission_editor_live_preview_lockout_warning_and_save(page):
+    saved: list[Permission] = []
+    admin = Identity(user="alice", groups=frozenset({"admins"}))
+
+    def effective(perm: Permission) -> str:
+        if perm.is_empty:
+            return "<span>Effective: Open</span>"
+        return f"<span>Effective: allow_groups={','.join(sorted(perm.allow_groups))}</span>"
+
+    def on_save(perm: Permission):
+        reason = permission_lockout_reason(perm, admin)
+        if reason:
+            return [Problem(reason)]
+        saved.append(perm)
+        return []
+
+    def factory():
+        return PermissionEditor(
+            Permission(),
+            title="Resource access",
+            effective_display=effective,
+            lockout_check=lambda p: permission_lockout_reason(p, admin),
+            on_save=on_save,
+        )
+
+    serve_component(page, factory)
+    editor = page.locator(".flowdash-permission-editor")
+    expect(editor).to_be_visible()
+    expect(editor.locator(".flowdash-permission-effective")).to_contain_text("Effective: Open")
+
+    editor.get_by_label("Allow groups").fill("engineering")
+    expect(editor.locator(".flowdash-permission-effective")).to_contain_text(
+        "Effective: allow_groups=engineering"
+    )
+
+    # Typing self into deny_users triggers live lockout warning and blocks save.
+    editor.get_by_label("Deny users").fill("alice")
+    expect(editor.locator(".flowdash-permission-lockout-warning")).to_be_visible()
+    editor.locator(".flowdash-permission-save").click()
+    expect(editor.locator(".flowdash-permission-error")).to_be_visible()
+    assert saved == []
+
+    # Removing self from deny_users allows saving.
+    editor.get_by_label("Deny users").fill("")
+    expect(editor.locator(".flowdash-permission-lockout-warning")).to_be_hidden()
+    editor.locator(".flowdash-permission-save").click()
+    wait_until(lambda: len(saved) == 1, page)
+    assert saved == [Permission.from_spec(allow_groups=["engineering"])]

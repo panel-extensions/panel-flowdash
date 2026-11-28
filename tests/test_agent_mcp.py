@@ -1,26 +1,36 @@
-"""Tests for agent MCP integration: approvals, tool_authorize, FastMCP execution and isolation."""
+"""Tests for agent MCP integration: approvals, tool_authorize, FastMCP transports and isolation."""
 
 from __future__ import annotations
 
 import asyncio
 import getpass
+import socket
+import sys
+import threading
+import time
+from dataclasses import dataclass
 
 import pytest
 
 pydantic_ai = pytest.importorskip("pydantic_ai")
-fastmcp = pytest.importorskip("fastmcp")
+try:
+    from fastmcp import FastMCP
+except ImportError:
+    pytest.skip("fastmcp server support is not installed", allow_module_level=True)
 
-from fastmcp import FastMCP
-from panel_agents import ApprovalPolicy, ApprovalRule
+from panel_agents import ApprovalPolicy, ApprovalRule, events as agent_events
 from pydantic_ai import Agent, ModelMessage, ModelResponse, TextPart, ToolCallPart
-from pydantic_ai.models.function import AgentInfo, FunctionModel
-from pydantic_ai.toolsets.abstract import AbstractToolset
+from pydantic_ai.exceptions import ApprovalRequired, CallDeferred, ModelRetry
+from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls, FunctionModel
+from pydantic_ai.tools import ToolDefinition
+from pydantic_ai.toolsets.abstract import AbstractToolset, ToolsetTool
 
 from panel_flowdash.agent.mcp import (
     ResilientMCPToolset,
     ToolAuthorizeCapability,
     build_mcp_toolset,
     mcp_approval_rules,
+    probe_mcp_server,
 )
 from panel_flowdash.agent.tools import approval_policy
 from panel_flowdash.app import FlowDashApp
@@ -29,16 +39,22 @@ from panel_flowdash.dashboard_store import MemoryDashboardStore
 from panel_flowdash.mcp import (
     MCP_CHECKS,
     MCPServerConfig,
+    check_mcp_server,
+    configured_servers,
+    get_mcp_check,
     mcp_tool_name,
-    test_mcp_server,
 )
-from panel_flowdash.project import PROJECT_FILE
+from panel_flowdash.project import PROJECT_FILE, load_project
+from panel_flowdash.secret_store import KEY_ENV, encrypt_secret, fernet_key
 
 ME = getpass.getuser()
 
 
 @pytest.fixture(autouse=True)
-def clear_checks():
+def clear_checks(monkeypatch, tmp_path):
+    monkeypatch.setenv(KEY_ENV, fernet_key())
+    monkeypatch.setenv("FLOWDASH_SECRET_KEY_FILE", str(tmp_path / "keys" / "secret.key"))
+    monkeypatch.setattr("panel_flowdash.secret_store._keyring", lambda: (None, ()))
     MCP_CHECKS.clear()
     yield
     MCP_CHECKS.clear()
@@ -94,6 +110,46 @@ class _FailingToolset(AbstractToolset):
 
     async def call_tool(self, name, tool_args, ctx, tool):
         raise RuntimeError("call_tool exploded")
+
+
+class _CustomToolset(AbstractToolset):
+    """In-memory toolset for testing tool name filtering and control-flow exceptions."""
+
+    def __init__(self, names: list[str], exc: BaseException | None = None):
+        self._names = names
+        self._exc = exc
+
+    @property
+    def id(self) -> str | None:
+        return "custom"
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return None
+
+    async def get_tools(self, ctx):
+        return {
+            name: ToolsetTool(
+                toolset=self,
+                tool_def=ToolDefinition(name=name, description=f"desc:{name}"),
+                max_retries=1,
+                args_validator=None,  # type: ignore[arg-type]
+            )
+            for name in self._names
+        }
+
+    async def call_tool(self, name, tool_args, ctx, tool):
+        if self._exc is not None:
+            raise self._exc
+        return f"ok:{name}"
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 class TestMCPApprovalRules:
@@ -172,8 +228,9 @@ class TestFastMCPIntegration:
         assert "mcp_demo__add" in seen_tool_names
         assert "mcp_demo__delete_all" not in seen_tool_names
         # MCP_CHECKS recorded discovered tools.
-        assert MCP_CHECKS["demo"].ok is True
-        assert {t.name for t in MCP_CHECKS["demo"].tools} == {"add", "delete_all", "slow_op"}
+        check = get_mcp_check("demo")
+        assert check is not None and check.ok is True
+        assert {t.name for t in check.tools} == {"add", "delete_all", "slow_op"}
         # Remote server instructions are never forwarded into the prompt.
         assert await toolset.get_instructions(None) is None  # type: ignore[arg-type]
 
@@ -248,8 +305,9 @@ class TestFastMCPIntegration:
         result = await agent.run("run", toolsets=[broken_ts, healthy_ts])
         assert result.output == "recovered"
         assert broken_ts.unavailable is not None
-        assert MCP_CHECKS["bad"].ok is False
-        assert "abc123" not in MCP_CHECKS["bad"].message
+        bad_check = get_mcp_check("bad")
+        assert bad_check is not None and bad_check.ok is False
+        assert "abc123" not in bad_check.message
 
     async def test_connect_timeout_and_call_timeout_are_isolated(self):
         slow_connect_cfg = MCPServerConfig(
@@ -284,6 +342,46 @@ class TestFastMCPIntegration:
         assert result.output == "handled timeout"
         assert any("timed out" in text.lower() for text in captured_return)
 
+    async def test_invalid_and_overlong_tool_names_are_skipped_and_recorded(self):
+        long_name = "x" * 60
+        custom = _CustomToolset(["ok_tool", "issues.list", long_name])
+        cfg = MCPServerConfig(name="srv", transport="http", locked="test", toolset=custom)
+        ts = ResilientMCPToolset(cfg, wrapped=custom)
+        async with ts:
+            tools = await ts.get_tools(None)  # type: ignore[arg-type]
+        assert list(tools) == ["mcp_srv__ok_tool"]
+        check = get_mcp_check("srv")
+        assert check is not None and check.ok is True
+        assert [t.name for t in check.tools] == ["ok_tool"]
+        assert "issues.list" in check.message
+        assert long_name in check.message
+
+        probed = await probe_mcp_server(cfg)
+        assert probed.ok is True
+        assert [t.name for t in probed.tools] == ["ok_tool"]
+        assert "issues.list" in probed.message
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            ModelRetry("try again"),
+            ApprovalRequired(),
+            CallDeferred(),
+        ],
+    )
+    async def test_call_tool_reraises_pydantic_ai_control_flow_exceptions(self, exc):
+        @dataclass
+        class _FakeCtx:
+            tool_name: str | None = None
+
+        custom = _CustomToolset(["op"], exc=exc)
+        cfg = MCPServerConfig(name="srv", transport="http", locked="test", toolset=custom)
+        ts = ResilientMCPToolset(cfg, wrapped=custom)
+        async with ts:
+            tools = await ts.get_tools(None)  # type: ignore[arg-type]
+            with pytest.raises(type(exc)):
+                await ts.call_tool("mcp_srv__op", {}, _FakeCtx(), tools["mcp_srv__op"])  # type: ignore[arg-type]
+
     async def test_blocked_stdio_degrades_without_spawning(self):
         cfg = MCPServerConfig(name="sh", transport="stdio", command="bash", args=["-c", "echo hi"])
         ts = build_mcp_toolset(cfg, allowed_stdio=())
@@ -291,16 +389,166 @@ class TestFastMCPIntegration:
             assert ts.unavailable and "disabled by server policy" in ts.unavailable
             assert await ts.get_tools(None) == {}  # type: ignore[arg-type]
 
-    async def test_probe_mcp_server_discovers_tools(self):
+    async def test_check_mcp_server_discovers_tools(self):
         fm = _demo_fastmcp()
         cfg = MCPServerConfig(name="demo", transport="http", locked="test", toolset=fm)
-        check = await test_mcp_server(cfg)
+        check = await check_mcp_server(cfg)
         assert check.ok is True
         assert {t.name for t in check.tools} == {"add", "delete_all", "slow_op"}
-        assert MCP_CHECKS["demo"] == check
+        assert get_mcp_check("demo") == check
 
 
-class TestAgentSessionDynamicHooks:
+class TestRealMCPTransports:
+    async def test_http_transport_sends_encrypted_bearer_token(self, tmp_path):
+        pytest.importorskip("cryptography")
+        uvicorn = pytest.importorskip("uvicorn")
+        import panel_flowdash.admin.mcp  # noqa: F401
+
+        seen_auth: list[str | None] = []
+        server = FastMCP("http_demo")
+
+        @server.tool
+        def ping(msg: str) -> str:
+            """Echo a message."""
+            return f"pong:{msg}"
+
+        inner_app = server.http_app(path="/mcp")
+
+        async def asgi_wrapper(scope, receive, send):
+            if scope["type"] == "http":
+                headers = dict(scope.get("headers") or ())
+                auth = headers.get(b"authorization")
+                seen_auth.append(auth.decode("latin-1") if auth else None)
+            await inner_app(scope, receive, send)
+
+        port = _free_port()
+        uv_cfg = uvicorn.Config(
+            asgi_wrapper,
+            host="127.0.0.1",
+            port=port,
+            log_level="error",
+            lifespan="on",
+            ws="none",
+            loop="asyncio",
+        )
+        uv_server = uvicorn.Server(uv_cfg)
+        thread = threading.Thread(target=uv_server.run, daemon=True)
+        thread.start()
+        try:
+            deadline = time.monotonic() + 10.0
+            while not uv_server.started and time.monotonic() < deadline:
+                await asyncio.sleep(0.05)
+            assert uv_server.started, "HTTP MCP test server failed to start"
+
+            secret = "http-bearer-secret-987654321"
+            enc = encrypt_secret(secret)
+            (tmp_path / PROJECT_FILE).write_text(
+                "mcp:\n"
+                "  servers:\n"
+                "    remote:\n"
+                "      transport: http\n"
+                f"      url: http://127.0.0.1:{port}/mcp\n"
+                f"      token: {{encrypted: {enc['encrypted']!r}, key_id: {enc['key_id']!r}}}\n"
+            )
+            project = load_project(tmp_path / PROJECT_FILE)
+            cfg = configured_servers(project)["remote"]
+
+            check = await check_mcp_server(cfg, project=project)
+            assert check.ok is True, check.message
+            assert [t.name for t in check.tools] == ["ping"]
+            assert f"Bearer {secret}" in seen_auth
+
+            ts = build_mcp_toolset(cfg, project=project)
+
+            def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+                if len(messages) == 1:
+                    return ModelResponse(parts=[ToolCallPart("mcp_remote__ping", {"msg": "hi"})])
+                tool_result = next(
+                    p.content
+                    for m in messages
+                    for p in m.parts
+                    if getattr(p, "part_kind", "") == "tool-return"
+                )
+                return ModelResponse(parts=[TextPart(str(tool_result))])
+
+            agent = Agent(FunctionModel(model_fn))
+            result = await agent.run("ping", toolsets=[ts])
+            assert result.output == "pong:hi"
+        finally:
+            uv_server.should_exit = True
+            thread.join(timeout=5.0)
+
+    async def test_stdio_transport_runs_allowlisted_script_with_cwd_and_env(self, tmp_path):
+        pytest.importorskip("cryptography")
+        import panel_flowdash.admin.mcp  # noqa: F401
+
+        srv_dir = tmp_path / "srv"
+        srv_dir.mkdir()
+        script = srv_dir / "echo_mcp.py"
+        script.write_text(
+            "import os\n"
+            "from fastmcp import FastMCP\n"
+            "mcp = FastMCP('local')\n"
+            "@mcp.tool\n"
+            "def whoami() -> str:\n"
+            "    return f\"{os.getcwd()}|{os.environ.get('MCP_TEST_SECRET', '')}\"\n"
+            "if __name__ == '__main__':\n"
+            "    mcp.run(transport='stdio', show_banner=False)\n"
+        )
+        secret_val = "stdio-secret-value-98765"
+        enc = encrypt_secret(secret_val)
+        (tmp_path / PROJECT_FILE).write_text(
+            "mcp:\n"
+            "  servers:\n"
+            "    local:\n"
+            "      transport: stdio\n"
+            f"      command: {sys.executable!r}\n"
+            f"      args: [{str(script)!r}]\n"
+            "      cwd: srv\n"
+            "      env:\n"
+            f"        MCP_TEST_SECRET: {{encrypted: {enc['encrypted']!r}, key_id: {enc['key_id']!r}}}\n"
+        )
+        project = load_project(tmp_path / PROJECT_FILE)
+        cfg = configured_servers(project)["local"]
+        allowed_prefix = [[sys.executable, str(script)]]
+
+        # Without env allowlist, subprocess is refused before spawning.
+        refused_ts = build_mcp_toolset(
+            cfg,
+            allowed_stdio=allowed_prefix,
+            allowed_stdio_env=(),
+            directory=tmp_path,
+            project=project,
+        )
+        async with refused_ts:
+            assert refused_ts.unavailable and "disabled by server policy" in refused_ts.unavailable
+
+        # With matching argv prefix and env allowlist, subprocess runs inside cwd with decrypted env.
+        ts = build_mcp_toolset(
+            cfg,
+            allowed_stdio=allowed_prefix,
+            allowed_stdio_env=["MCP_TEST_SECRET"],
+            directory=tmp_path,
+            project=project,
+        )
+
+        def model_fn(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            if len(messages) == 1:
+                return ModelResponse(parts=[ToolCallPart("mcp_local__whoami", {})])
+            tool_result = next(
+                p.content
+                for m in messages
+                for p in m.parts
+                if getattr(p, "part_kind", "") == "tool-return"
+            )
+            return ModelResponse(parts=[TextPart(str(tool_result))])
+
+        agent = Agent(FunctionModel(model_fn))
+        result = await agent.run("whoami", toolsets=[ts])
+        assert result.output == f"{srv_dir.resolve()}|{secret_val}"
+
+
+class TestAgentSessionDynamicHooksAndApprovals:
     async def test_dynamic_tool_authorize_attached_after_init_is_honored(self, tmp_path):
         fm = _demo_fastmcp()
         (tmp_path / PROJECT_FILE).write_text(f"general:\n  admins: [{ME}]\n")
@@ -329,6 +577,161 @@ class TestAgentSessionDynamicHooks:
         assert session is not None
         await session.runner.run("hello")
         assert seen_tools == ["mcp_demo__add"]
+
+    async def test_session_runner_holds_mcp_calls_for_approval_unless_auto_approved(
+        self, tmp_path
+    ):
+        executed: list[str] = []
+        server = FastMCP("demo")
+
+        @server.tool
+        def add(a: int, b: int) -> int:
+            """Add two integers."""
+            executed.append("add")
+            return a + b
+
+        @server.tool
+        def delete_all() -> str:
+            """Delete everything."""
+            executed.append("delete_all")
+            return "deleted"
+
+        (tmp_path / PROJECT_FILE).write_text(f"general:\n  admins: [{ME}]\n")
+
+        async def stream_delete(messages: list[ModelMessage], info: AgentInfo):
+            if len(messages) == 1:
+                yield DeltaToolCalls(
+                    {
+                        0: DeltaToolCall(
+                            name="mcp_demo__delete_all", json_args="{}", tool_call_id="c1"
+                        )
+                    }
+                )
+            else:
+                yield "finished"
+
+        app = FlowDashApp(
+            registry={},
+            project_dir=tmp_path,
+            store=MemoryDashboardStore(),
+            notifications=False,
+            include_builtin_components=False,
+            agent=Agent(FunctionModel(stream_function=stream_delete), name="Test"),
+            explore_agent=False,
+            agent_palette=False,
+            mcp_servers={
+                "demo": MCPServerConfig(
+                    name="demo",
+                    transport="http",
+                    toolset=server,
+                    auto_approve=("add",),
+                )
+            },
+        )
+        session = app._agent_session
+        assert session is not None
+        requested: list[str] = []
+
+        def deny_on_request(event):
+            if isinstance(event, agent_events.ApprovalRequested):
+                requested.append(event.tool_call_id)
+                assert executed == []
+                asyncio.get_running_loop().call_soon(
+                    lambda: session.runner.state.resolve_approval(
+                        event.tool_call_id, approved=False
+                    )
+                )
+
+        session.runner.state.subscribe(deny_on_request)
+        await session.runner.run("delete everything")
+        assert "c1" in requested
+        assert "c1" in session.runner.state.approvals
+        assert executed == []
+
+        # Auto-approved tool executes immediately without pending approvals.
+        async def stream_add(messages: list[ModelMessage], info: AgentInfo):
+            if len(messages) == 1:
+                yield DeltaToolCalls(
+                    {
+                        0: DeltaToolCall(
+                            name="mcp_demo__add",
+                            json_args='{"a": 2, "b": 3}',
+                            tool_call_id="c2",
+                        )
+                    }
+                )
+            else:
+                tool_result = next(
+                    p.content
+                    for m in messages
+                    for p in m.parts
+                    if getattr(p, "part_kind", "") == "tool-return"
+                )
+                yield f"res={tool_result}"
+
+        app2 = FlowDashApp(
+            registry={},
+            project_dir=tmp_path,
+            store=MemoryDashboardStore(),
+            notifications=False,
+            include_builtin_components=False,
+            agent=Agent(FunctionModel(stream_function=stream_add), name="Test"),
+            explore_agent=False,
+            agent_palette=False,
+            mcp_servers={
+                "demo": MCPServerConfig(
+                    name="demo",
+                    transport="http",
+                    toolset=server,
+                    auto_approve=("add",),
+                )
+            },
+        )
+        session2 = app2._agent_session
+        assert session2 is not None
+        await session2.runner.run("add numbers")
+        assert session2.runner.state.approvals == {}
+        assert executed == ["add"]
+
+    async def test_demoted_admin_loses_mcp_allowlist_bypass_on_next_run(self, tmp_path):
+        fm = _demo_fastmcp()
+        (tmp_path / PROJECT_FILE).write_text(f"general:\n  admins: [{ME}]\n")
+        seen_by_run: list[list[str]] = []
+
+        async def stream_fn(messages: list[ModelMessage], info: AgentInfo):
+            seen_by_run.append([td.name for td in info.function_tools])
+            yield "ok"
+
+        app = FlowDashApp(
+            registry={},
+            project_dir=tmp_path,
+            store=MemoryDashboardStore(),
+            notifications=False,
+            include_builtin_components=False,
+            agent=Agent(FunctionModel(stream_function=stream_fn), name="Test"),
+            explore_agent=False,
+            agent_palette=False,
+            mcp_servers={
+                "restricted": MCPServerConfig(
+                    name="restricted",
+                    transport="http",
+                    toolset=fm,
+                    access=Permission.from_spec(allow_groups=["secret_group"]),
+                )
+            },
+        )
+        session = app._agent_session
+        assert session is not None
+        # First run: session user is an admin, so allowlist is bypassed.
+        await session.runner.run("run 1")
+        assert "mcp_restricted__add" in seen_by_run[0]
+
+        # Demote the user in flowdash.yaml while the session stays open.
+        (tmp_path / PROJECT_FILE).write_text("general:\n  admins: [someone_else]\n")
+        # Second run: live admin check revokes the allowlist bypass even though app.is_admin is still cached True.
+        assert app.is_admin is True
+        await session.runner.run("run 2")
+        assert not any(name.startswith("mcp_restricted__") for name in seen_by_run[1])
 
     def test_surfaces_and_approval_policy_on_session(self, tmp_path):
         (tmp_path / PROJECT_FILE).write_text(
